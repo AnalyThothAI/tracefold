@@ -50,6 +50,10 @@ export function newsStoryPath(storyId: string): string {
   return `/news/stories/${encodeURIComponent(storyId)}`;
 }
 
+export function newsBriefPath(): string {
+  return "/news/brief";
+}
+
 export function stocksPath({
   window = "1h",
   scope = "all",

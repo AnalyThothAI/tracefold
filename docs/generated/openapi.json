@@ -266,6 +266,98 @@
         "title": "ApiEnvelope[MacroResearchReadData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsGlobalBriefData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsGlobalBriefData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsGlobalBriefData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsGlobalBriefHistoryData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsGlobalBriefHistoryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsGlobalBriefHistoryData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsSourcesData_": {
         "additionalProperties": false,
         "properties": {
@@ -310,6 +402,52 @@
           "ok"
         ],
         "title": "ApiEnvelope[NewsSourcesData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsStoryAnalysisRequestData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryAnalysisRequestData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsStoryAnalysisRequestData]",
         "type": "object"
       },
       "ApiEnvelope_NewsStoryDetailData_": {
@@ -2378,14 +2516,10 @@
         "title": "MacroResearchSectionData",
         "type": "object"
       },
-      "NewsArticleData": {
+      "NewsAnalysisAvailabilityData": {
         "additionalProperties": false,
         "properties": {
-          "article_id": {
-            "title": "Article Id",
-            "type": "string"
-          },
-          "canonical_url": {
+          "publication_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -2394,78 +2528,280 @@
                 "type": "null"
               }
             ],
-            "title": "Canonical Url"
+            "title": "Publication Id"
+          },
+          "published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At Ms"
+          },
+          "short_conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Short Conclusion"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "publication_id",
+          "published_at_ms",
+          "short_conclusion"
+        ],
+        "title": "NewsAnalysisAvailabilityData",
+        "type": "object"
+      },
+      "NewsArticleRevisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "article_id": {
+            "title": "Article Id",
+            "type": "string"
+          },
+          "canonical_url": {
+            "title": "Canonical Url",
+            "type": "string"
+          },
+          "content_byte_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Byte Count"
+          },
+          "content_extractor_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Extractor Version"
+          },
+          "content_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Failure Reason"
+          },
+          "content_fetched_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Fetched At Ms"
+          },
+          "content_form": {
+            "enum": [
+              "report",
+              "analysis",
+              "opinion",
+              "live",
+              "static",
+              "unknown"
+            ],
+            "title": "Content Form",
+            "type": "string"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "content_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Snapshot Id"
+          },
+          "content_snapshot_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Snapshot Status"
+          },
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "development_relation": {
+            "enum": [
+              "initial",
+              "follow_up",
+              "correction",
+              "background",
+              "retrospective"
+            ],
+            "title": "Development Relation",
+            "type": "string"
+          },
+          "epistemic_use": {
+            "enum": [
+              "fact_evidence",
+              "context",
+              "viewpoint",
+              "non_evidence"
+            ],
+            "title": "Epistemic Use",
+            "type": "string"
+          },
+          "first_observation_id": {
+            "title": "First Observation Id",
+            "type": "string"
           },
           "first_seen_at_ms": {
             "title": "First Seen At Ms",
             "type": "integer"
           },
-          "identity_method": {
+          "identity_status": {
             "enum": [
-              "canonical_url",
-              "source_guid",
-              "title_time_bucket"
+              "active",
+              "ended",
+              "revision_identity_ambiguous"
             ],
-            "title": "Identity Method",
+            "title": "Identity Status",
             "type": "string"
           },
           "identity_version": {
             "title": "Identity Version",
             "type": "string"
           },
+          "incarnation_key": {
+            "title": "Incarnation Key",
+            "type": "string"
+          },
+          "is_current": {
+            "title": "Is Current",
+            "type": "boolean"
+          },
           "language": {
             "title": "Language",
             "type": "string"
           },
-          "last_seen_at_ms": {
-            "title": "Last Seen At Ms",
-            "type": "integer"
-          },
-          "origin_domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Domain"
-          },
-          "origin_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Name"
-          },
-          "origin_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Url"
-          },
-          "provenance_status": {
+          "material_change_kind": {
             "enum": [
-              "verified",
-              "attributed",
-              "unknown"
+              "initial",
+              "title",
+              "summary",
+              "source_time",
+              "content",
+              "correction",
+              "url_reuse"
             ],
-            "title": "Provenance Status",
+            "title": "Material Change Kind",
             "type": "string"
           },
-          "published_at_ms": {
-            "title": "Published At Ms",
+          "membership_kind": {
+            "enum": [
+              "primary",
+              "contextual"
+            ],
+            "title": "Membership Kind",
+            "type": "string"
+          },
+          "observation_id": {
+            "title": "Observation Id",
+            "type": "string"
+          },
+          "observed_at_ms": {
+            "title": "Observed At Ms",
             "type": "integer"
+          },
+          "origin_confidence": {
+            "title": "Origin Confidence",
+            "type": "number"
+          },
+          "origin_relation": {
+            "enum": [
+              "originating",
+              "independent",
+              "syndicated",
+              "derived",
+              "unresolved"
+            ],
+            "title": "Origin Relation",
+            "type": "string"
+          },
+          "publisher_organization_id": {
+            "title": "Publisher Organization Id",
+            "type": "string"
+          },
+          "raw_url": {
+            "title": "Raw Url",
+            "type": "string"
+          },
+          "reporting_origin_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reporting Origin Id"
+          },
+          "revision_id": {
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "snapshot_content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Content Hash"
           },
           "snippet": {
             "title": "Snippet",
@@ -2473,6 +2809,14 @@
           },
           "source_chain_id": {
             "title": "Source Chain Id",
+            "type": "string"
+          },
+          "source_domain": {
+            "title": "Source Domain",
+            "type": "string"
+          },
+          "source_entry_key": {
+            "title": "Source Entry Key",
             "type": "string"
           },
           "source_id": {
@@ -2483,9 +2827,19 @@
             "title": "Source Name",
             "type": "string"
           },
+          "source_published_at_ms": {
+            "title": "Source Published At Ms",
+            "type": "integer"
+          },
+          "source_publisher_organization_id": {
+            "title": "Source Publisher Organization Id",
+            "type": "string"
+          },
           "source_role": {
             "enum": [
               "original_publisher",
+              "wire_service",
+              "official_authority",
               "trusted_aggregator"
             ],
             "title": "Source Role",
@@ -2504,102 +2858,651 @@
             ],
             "title": "Trust Tier",
             "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
           }
         },
         "required": [
           "article_id",
+          "publisher_organization_id",
+          "canonical_url",
+          "incarnation_key",
+          "first_observation_id",
+          "first_seen_at_ms",
+          "identity_version",
+          "identity_status",
+          "created_at_ms",
+          "updated_at_ms",
+          "revision_id",
+          "revision_number",
           "title",
           "snippet",
-          "published_at_ms",
+          "source_published_at_ms",
+          "observed_at_ms",
+          "language",
+          "content_hash",
+          "material_change_kind",
+          "is_current",
+          "observation_id",
           "source_id",
+          "raw_url",
+          "source_entry_key",
           "source_name",
+          "source_domain",
           "source_role",
           "trust_tier",
           "source_chain_id",
-          "canonical_url",
-          "origin_url",
-          "origin_domain",
-          "origin_name",
-          "provenance_status",
-          "language",
-          "first_seen_at_ms",
-          "last_seen_at_ms",
-          "identity_method",
-          "identity_version"
+          "source_publisher_organization_id",
+          "membership_kind",
+          "content_form",
+          "origin_relation",
+          "development_relation",
+          "epistemic_use",
+          "reporting_origin_id",
+          "origin_confidence",
+          "content_snapshot_id",
+          "content_snapshot_status",
+          "snapshot_content_hash",
+          "content_fetched_at_ms",
+          "content_failure_reason",
+          "content_extractor_version",
+          "content_byte_count"
         ],
-        "title": "NewsArticleData",
+        "title": "NewsArticleRevisionData",
         "type": "object"
       },
-      "NewsPrimaryArticleData": {
+      "NewsBriefEligibilityReasonData": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "eligible",
+          "reasons",
+          "version"
+        ],
+        "title": "NewsBriefEligibilityReasonData",
+        "type": "object"
+      },
+      "NewsBriefEvidenceBundleData": {
+        "additionalProperties": false,
+        "properties": {
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "evidence_bundle_hash": {
+            "title": "Evidence Bundle Hash",
+            "type": "string"
+          },
+          "narrative_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Narrative Groups",
+            "type": "array"
+          },
+          "selection_fingerprint": {
+            "title": "Selection Fingerprint",
+            "type": "string"
+          },
+          "selection_policy_version": {
+            "title": "Selection Policy Version",
+            "type": "string"
+          },
+          "selection_snapshot_id": {
+            "title": "Selection Snapshot Id",
+            "type": "string"
+          },
+          "stories": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Stories",
+            "type": "array"
+          }
+        },
+        "required": [
+          "selection_snapshot_id",
+          "selection_fingerprint",
+          "evidence_bundle_hash",
+          "cutoff_at_ms",
+          "stories",
+          "narrative_groups",
+          "selection_policy_version"
+        ],
+        "title": "NewsBriefEvidenceBundleData",
+        "type": "object"
+      },
+      "NewsBriefFailureData": {
+        "additionalProperties": false,
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          },
+          "validation_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validation Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "last_error",
+          "validation_errors",
+          "updated_at_ms"
+        ],
+        "title": "NewsBriefFailureData",
+        "type": "object"
+      },
+      "NewsBriefFallbackData": {
+        "additionalProperties": false,
+        "properties": {
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "decisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "evidence_bundle": {
+            "$ref": "#/components/schemas/NewsBriefEvidenceBundleData"
+          },
+          "selected_story_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Story Ids",
+            "type": "array"
+          },
+          "selection_fingerprint": {
+            "title": "Selection Fingerprint",
+            "type": "string"
+          },
+          "selection_snapshot_id": {
+            "title": "Selection Snapshot Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "debounced",
+              "publishable",
+              "published",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selection_snapshot_id",
+          "selection_fingerprint",
+          "cutoff_at_ms",
+          "status",
+          "selected_story_ids",
+          "decisions",
+          "evidence_bundle"
+        ],
+        "title": "NewsBriefFallbackData",
+        "type": "object"
+      },
+      "NewsBriefItemPayloadData": {
+        "additionalProperties": false,
+        "properties": {
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "transmission_scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/NewsConditionalTransmissionData"
+            },
+            "title": "Transmission Scenarios",
+            "type": "array"
+          },
+          "uncertainties": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncertainties",
+            "type": "array"
+          },
+          "watchpoints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watchpoints",
+            "type": "array"
+          },
+          "what_happened": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEvidenceBackedFactData"
+            },
+            "title": "What Happened",
+            "type": "array"
+          },
+          "why_it_matters": {
+            "title": "Why It Matters",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "what_happened",
+          "why_it_matters",
+          "transmission_scenarios",
+          "uncertainties",
+          "watchpoints"
+        ],
+        "title": "NewsBriefItemPayloadData",
+        "type": "object"
+      },
+      "NewsBriefPayloadData": {
+        "additionalProperties": false,
+        "properties": {
+          "executive_summary": {
+            "title": "Executive Summary",
+            "type": "string"
+          },
+          "global_watchpoints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Global Watchpoints",
+            "type": "array"
+          },
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NewsBriefItemPayloadData"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "narratives": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Narratives",
+            "type": "array"
+          }
+        },
+        "required": [
+          "headline",
+          "executive_summary",
+          "items",
+          "narratives",
+          "global_watchpoints"
+        ],
+        "title": "NewsBriefPayloadData",
+        "type": "object"
+      },
+      "NewsBriefPublicationData": {
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/NewsPublicationContractData"
+          },
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "evidence_bundle": {
+            "$ref": "#/components/schemas/NewsBriefEvidenceBundleData"
+          },
+          "evidence_bundle_hash": {
+            "title": "Evidence Bundle Hash",
+            "type": "string"
+          },
+          "evidence_references": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "narrative_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Narrative Groups",
+            "type": "array"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/NewsBriefPayloadData"
+          },
+          "publication_id": {
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "published_at_ms": {
+            "title": "Published At Ms",
+            "type": "integer"
+          },
+          "receipt": {
+            "additionalProperties": true,
+            "title": "Receipt",
+            "type": "object"
+          },
+          "selected_story_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Story Ids",
+            "type": "array"
+          },
+          "selection_decisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Selection Decisions",
+            "type": "array"
+          },
+          "selection_fingerprint": {
+            "title": "Selection Fingerprint",
+            "type": "string"
+          },
+          "selection_snapshot_id": {
+            "title": "Selection Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publication_id",
+          "selection_snapshot_id",
+          "selection_fingerprint",
+          "evidence_bundle_hash",
+          "cutoff_at_ms",
+          "published_at_ms",
+          "contract",
+          "payload",
+          "evidence_references",
+          "selected_story_ids",
+          "selection_decisions",
+          "narrative_groups",
+          "evidence_bundle",
+          "receipt"
+        ],
+        "title": "NewsBriefPublicationData",
+        "type": "object"
+      },
+      "NewsConditionalTransmissionData": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "title": "Condition",
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "mechanism": {
+            "title": "Mechanism",
+            "type": "string"
+          },
+          "possible_effect": {
+            "title": "Possible Effect",
+            "type": "string"
+          }
+        },
+        "required": [
+          "condition",
+          "mechanism",
+          "possible_effect",
+          "confidence"
+        ],
+        "title": "NewsConditionalTransmissionData",
+        "type": "object"
+      },
+      "NewsEventCoreData": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "actor_entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actor Entities",
+            "type": "array"
+          },
+          "entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "event_objects": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Objects",
+            "type": "array"
+          },
+          "locations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Locations",
+            "type": "array"
+          },
+          "named_event_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Named Event Keys",
+            "type": "array"
+          },
+          "stages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "target_entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Target Entities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entities",
+          "actor_entities",
+          "target_entities",
+          "actions",
+          "event_objects",
+          "locations",
+          "stages",
+          "named_event_keys"
+        ],
+        "title": "NewsEventCoreData",
+        "type": "object"
+      },
+      "NewsEvidenceBackedFactData": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_references": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "evidence_references"
+        ],
+        "title": "NewsEvidenceBackedFactData",
+        "type": "object"
+      },
+      "NewsGlobalBriefData": {
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsBriefPublicationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsBriefFallbackData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsBriefFailureData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "current",
+          "fallback",
+          "latest_failure"
+        ],
+        "title": "NewsGlobalBriefData",
+        "type": "object"
+      },
+      "NewsGlobalBriefHistoryData": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NewsBriefPublicationData"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "NewsGlobalBriefHistoryData",
+        "type": "object"
+      },
+      "NewsPublicationContractData": {
+        "additionalProperties": false,
+        "properties": {
+          "locale": {
+            "title": "Locale",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "prompt_version",
+          "workflow_version",
+          "schema_version",
+          "locale"
+        ],
+        "title": "NewsPublicationContractData",
+        "type": "object"
+      },
+      "NewsRepresentativeEvidenceData": {
         "additionalProperties": false,
         "properties": {
           "article_id": {
             "title": "Article Id",
             "type": "string"
           },
-          "canonical_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Canonical Url"
-          },
-          "origin_domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Domain"
-          },
-          "origin_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Name"
-          },
-          "origin_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Origin Url"
-          },
-          "provenance_status": {
-            "enum": [
-              "verified",
-              "attributed",
-              "unknown"
-            ],
-            "title": "Provenance Status",
+          "revision_id": {
+            "title": "Revision Id",
             "type": "string"
           },
-          "published_at_ms": {
-            "title": "Published At Ms",
-            "type": "integer"
-          },
-          "snippet": {
-            "title": "Snippet",
-            "type": "string"
-          },
-          "source_chain_id": {
-            "title": "Source Chain Id",
+          "source_domain": {
+            "title": "Source Domain",
             "type": "string"
           },
           "source_id": {
@@ -2610,51 +3513,37 @@
             "title": "Source Name",
             "type": "string"
           },
-          "source_role": {
-            "enum": [
-              "original_publisher",
-              "trusted_aggregator"
-            ],
-            "title": "Source Role",
-            "type": "string"
+          "source_published_at_ms": {
+            "title": "Source Published At Ms",
+            "type": "integer"
           },
           "title": {
             "title": "Title",
-            "type": "string"
-          },
-          "trust_tier": {
-            "enum": [
-              "authoritative",
-              "trusted",
-              "standard",
-              "low"
-            ],
-            "title": "Trust Tier",
             "type": "string"
           }
         },
         "required": [
           "article_id",
+          "revision_id",
+          "title",
           "source_id",
           "source_name",
-          "source_role",
-          "trust_tier",
-          "source_chain_id",
-          "canonical_url",
-          "title",
-          "snippet",
-          "published_at_ms",
-          "origin_url",
-          "origin_domain",
-          "origin_name",
-          "provenance_status"
+          "source_domain",
+          "source_published_at_ms"
         ],
-        "title": "NewsPrimaryArticleData",
+        "title": "NewsRepresentativeEvidenceData",
         "type": "object"
       },
       "NewsSourceData": {
         "additionalProperties": false,
         "properties": {
+          "canonical_domains": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Canonical Domains",
+            "type": "array"
+          },
           "consecutive_failures": {
             "title": "Consecutive Failures",
             "type": "integer"
@@ -2666,6 +3555,10 @@
             "title": "Coverage Tags",
             "type": "array"
           },
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
           "default_language": {
             "title": "Default Language",
             "type": "string"
@@ -2674,9 +3567,28 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "etag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Etag"
+          },
           "feed_url": {
             "title": "Feed Url",
             "type": "string"
+          },
+          "known_relationships": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Known Relationships",
+            "type": "array"
           },
           "last_error": {
             "anyOf": [
@@ -2722,6 +3634,17 @@
             ],
             "title": "Last Http Status"
           },
+          "last_modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
           "last_success_at_ms": {
             "anyOf": [
               {
@@ -2733,6 +3656,73 @@
             ],
             "title": "Last Success At Ms"
           },
+          "latest_duplicate_seen_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Duplicate Seen Count"
+          },
+          "latest_entries_admitted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Entries Admitted"
+          },
+          "latest_entries_seen": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Entries Seen"
+          },
+          "latest_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Error Code"
+          },
+          "latest_fetch_receipt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Fetch Receipt Id"
+          },
+          "latest_rejection_counts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Rejection Counts"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2741,9 +3731,28 @@
             "title": "Next Fetch At Ms",
             "type": "integer"
           },
+          "parent_organization_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Organization Id"
+          },
+          "publisher_organization_id": {
+            "title": "Publisher Organization Id",
+            "type": "string"
+          },
           "refresh_interval_seconds": {
             "title": "Refresh Interval Seconds",
             "type": "integer"
+          },
+          "registry_version": {
+            "title": "Registry Version",
+            "type": "string"
           },
           "source_chain_id": {
             "title": "Source Chain Id",
@@ -2757,9 +3766,16 @@
             "title": "Source Id",
             "type": "string"
           },
+          "source_quality_factors": {
+            "additionalProperties": true,
+            "title": "Source Quality Factors",
+            "type": "object"
+          },
           "source_role": {
             "enum": [
               "original_publisher",
+              "wire_service",
+              "official_authority",
               "trusted_aggregator"
             ],
             "title": "Source Role",
@@ -2774,6 +3790,10 @@
             ],
             "title": "Trust Tier",
             "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
           }
         },
         "required": [
@@ -2784,17 +3804,33 @@
           "source_role",
           "trust_tier",
           "source_chain_id",
+          "publisher_organization_id",
+          "parent_organization_id",
+          "canonical_domains",
+          "known_relationships",
+          "source_quality_factors",
+          "registry_version",
           "coverage_tags",
           "default_language",
           "enabled",
           "refresh_interval_seconds",
+          "etag",
+          "last_modified",
           "last_fetch_started_at_ms",
           "last_fetch_finished_at_ms",
           "last_success_at_ms",
           "last_http_status",
           "consecutive_failures",
           "last_error",
-          "next_fetch_at_ms"
+          "next_fetch_at_ms",
+          "created_at_ms",
+          "updated_at_ms",
+          "latest_fetch_receipt_id",
+          "latest_entries_seen",
+          "latest_entries_admitted",
+          "latest_duplicate_seen_count",
+          "latest_rejection_counts",
+          "latest_error_code"
         ],
         "title": "NewsSourceData",
         "type": "object"
@@ -2819,17 +3855,58 @@
       "NewsStoryAnalysisData": {
         "additionalProperties": false,
         "properties": {
-          "analysis_id": {
-            "title": "Analysis Id",
-            "type": "string"
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryAnalysisPublicationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "confirmed_facts": {
+          "history": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/NewsStoryAnalysisPublicationData"
             },
-            "title": "Confirmed Facts",
+            "title": "History",
             "type": "array"
           },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryAnalysisRequestDetailData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "available",
+              "unavailable",
+              "pending",
+              "claimed",
+              "failed",
+              "insufficient"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "request",
+          "current",
+          "history"
+        ],
+        "title": "NewsStoryAnalysisData",
+        "type": "object"
+      },
+      "NewsStoryAnalysisPayloadData": {
+        "additionalProperties": false,
+        "properties": {
           "disagreements_unknowns": {
             "items": {
               "type": "string"
@@ -2841,17 +3918,6 @@
             "title": "Economic Market Impact",
             "type": "string"
           },
-          "evidence_references": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence References",
-            "type": "array"
-          },
-          "model": {
-            "title": "Model",
-            "type": "string"
-          },
           "next_checkpoint": {
             "title": "Next Checkpoint",
             "type": "string"
@@ -2860,24 +3926,85 @@
             "title": "Political Impact",
             "type": "string"
           },
+          "transmission_scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/NewsConditionalTransmissionData"
+            },
+            "title": "Transmission Scenarios",
+            "type": "array"
+          },
+          "what_happened": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEvidenceBackedFactData"
+            },
+            "title": "What Happened",
+            "type": "array"
+          },
+          "why_it_matters": {
+            "title": "Why It Matters",
+            "type": "string"
+          }
+        },
+        "required": [
+          "what_happened",
+          "why_it_matters",
+          "political_impact",
+          "economic_market_impact",
+          "disagreements_unknowns",
+          "transmission_scenarios",
+          "next_checkpoint"
+        ],
+        "title": "NewsStoryAnalysisPayloadData",
+        "type": "object"
+      },
+      "NewsStoryAnalysisPublicationData": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_references": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "locale": {
+            "title": "Locale",
+            "type": "string"
+          },
+          "material_evidence_hash": {
+            "title": "Material Evidence Hash",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/NewsStoryAnalysisPayloadData"
+          },
           "prompt_version": {
             "title": "Prompt Version",
+            "type": "string"
+          },
+          "publication_id": {
+            "title": "Publication Id",
             "type": "string"
           },
           "published_at_ms": {
             "title": "Published At Ms",
             "type": "integer"
           },
+          "receipt": {
+            "additionalProperties": true,
+            "title": "Receipt",
+            "type": "object"
+          },
           "schema_version": {
             "title": "Schema Version",
             "type": "string"
           },
-          "what_happened": {
-            "title": "What Happened",
-            "type": "string"
-          },
-          "why_it_matters": {
-            "title": "Why It Matters",
+          "story_id": {
+            "title": "Story Id",
             "type": "string"
           },
           "workflow_version": {
@@ -2886,112 +4013,224 @@
           }
         },
         "required": [
-          "analysis_id",
+          "publication_id",
+          "story_id",
+          "material_evidence_hash",
           "model",
           "prompt_version",
           "workflow_version",
           "schema_version",
-          "what_happened",
-          "why_it_matters",
-          "political_impact",
-          "economic_market_impact",
-          "confirmed_facts",
-          "disagreements_unknowns",
-          "next_checkpoint",
+          "locale",
+          "payload",
           "evidence_references",
+          "receipt",
           "published_at_ms"
         ],
-        "title": "NewsStoryAnalysisData",
+        "title": "NewsStoryAnalysisPublicationData",
+        "type": "object"
+      },
+      "NewsStoryAnalysisRequestData": {
+        "additionalProperties": false,
+        "properties": {
+          "material_evidence_hash": {
+            "title": "Material Evidence Hash",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "story_id",
+          "material_evidence_hash",
+          "status"
+        ],
+        "title": "NewsStoryAnalysisRequestData",
+        "type": "object"
+      },
+      "NewsStoryAnalysisRequestDetailData": {
+        "additionalProperties": false,
+        "properties": {
+          "material_evidence_hash": {
+            "title": "Material Evidence Hash",
+            "type": "string"
+          },
+          "reason": {
+            "additionalProperties": true,
+            "title": "Reason",
+            "type": "object"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "request_kind": {
+            "enum": [
+              "automatic",
+              "on_demand"
+            ],
+            "title": "Request Kind",
+            "type": "string"
+          },
+          "requested_at_ms": {
+            "title": "Requested At Ms",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "claimed",
+              "published",
+              "failed",
+              "insufficient"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "story_id",
+          "material_evidence_hash",
+          "request_kind",
+          "reason",
+          "status",
+          "requested_at_ms",
+          "updated_at_ms"
+        ],
+        "title": "NewsStoryAnalysisRequestDetailData",
         "type": "object"
       },
       "NewsStoryDetailData": {
         "additionalProperties": false,
         "properties": {
           "analysis": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsStoryAnalysisData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "analysis_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Error"
-          },
-          "analysis_status": {
-            "enum": [
-              "pending",
-              "available",
-              "failed",
-              "unavailable"
-            ],
-            "title": "Analysis Status",
-            "type": "string"
-          },
-          "anchor_article_id": {
-            "title": "Anchor Article Id",
-            "type": "string"
-          },
-          "article_count": {
-            "title": "Article Count",
-            "type": "integer"
+            "$ref": "#/components/schemas/NewsStoryAnalysisData"
           },
           "articles": {
             "items": {
-              "$ref": "#/components/schemas/NewsArticleData"
+              "$ref": "#/components/schemas/NewsArticleRevisionData"
             },
             "title": "Articles",
             "type": "array"
           },
-          "evidence_set_hash": {
-            "title": "Evidence Set Hash",
+          "breaking": {
+            "title": "Breaking",
+            "type": "boolean"
+          },
+          "breaking_reason": {
+            "title": "Breaking Reason",
+            "type": "string"
+          },
+          "brief_eligibility_reason": {
+            "$ref": "#/components/schemas/NewsBriefEligibilityReasonData"
+          },
+          "brief_eligible": {
+            "title": "Brief Eligible",
+            "type": "boolean"
+          },
+          "contextual_member_count": {
+            "title": "Contextual Member Count",
+            "type": "integer"
+          },
+          "event_core": {
+            "$ref": "#/components/schemas/NewsEventCoreData"
+          },
+          "evidence_factors": {
+            "additionalProperties": true,
+            "title": "Evidence Factors",
+            "type": "object"
+          },
+          "evidence_posture": {
+            "title": "Evidence Posture",
             "type": "string"
           },
           "first_seen_at_ms": {
             "title": "First Seen At Ms",
             "type": "integer"
           },
+          "identity_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStoryIdentityDecisionData"
+            },
+            "title": "Identity Decisions",
+            "type": "array"
+          },
+          "identity_status": {
+            "title": "Identity Status",
+            "type": "string"
+          },
           "identity_version": {
             "title": "Identity Version",
             "type": "string"
           },
-          "importance_factors": {
+          "impact_profile": {
             "additionalProperties": true,
-            "title": "Importance Factors",
+            "title": "Impact Profile",
             "type": "object"
           },
-          "importance_score": {
-            "title": "Importance Score",
+          "impact_score": {
+            "title": "Impact Score",
             "type": "integer"
-          },
-          "importance_version": {
-            "title": "Importance Version",
-            "type": "string"
           },
           "independent_origin_count": {
             "title": "Independent Origin Count",
             "type": "integer"
           },
-          "language": {
-            "title": "Language",
-            "type": "string"
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
           },
-          "last_seen_at_ms": {
-            "title": "Last Seen At Ms",
+          "last_material_evidence_at_ms": {
+            "title": "Last Material Evidence At Ms",
             "type": "integer"
+          },
+          "last_presentation_at_ms": {
+            "title": "Last Presentation At Ms",
+            "type": "integer"
+          },
+          "lifecycle": {
+            "title": "Lifecycle",
+            "type": "string"
           },
           "lifecycle_version": {
             "title": "Lifecycle Version",
+            "type": "string"
+          },
+          "material_events": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStoryMaterialEventData"
+            },
+            "title": "Material Events",
+            "type": "array"
+          },
+          "material_evidence_hash": {
+            "title": "Material Evidence Hash",
+            "type": "string"
+          },
+          "material_evolution_state": {
+            "title": "Material Evolution State",
             "type": "string"
           },
           "memberships": {
@@ -3001,19 +4240,41 @@
             "title": "Memberships",
             "type": "array"
           },
-          "phase": {
-            "enum": [
-              "breaking",
-              "developing",
-              "sustained",
-              "fading"
-            ],
-            "title": "Phase",
+          "presentation_state_hash": {
+            "title": "Presentation State Hash",
             "type": "string"
           },
-          "primary_article_id": {
-            "title": "Primary Article Id",
+          "primary_member_count": {
+            "title": "Primary Member Count",
+            "type": "integer"
+          },
+          "priority_profile": {
+            "additionalProperties": true,
+            "title": "Priority Profile",
+            "type": "object"
+          },
+          "priority_score": {
+            "title": "Priority Score",
+            "type": "integer"
+          },
+          "representative_revision_id": {
+            "title": "Representative Revision Id",
             "type": "string"
+          },
+          "scoring_version": {
+            "title": "Scoring Version",
+            "type": "string"
+          },
+          "seed_article_id": {
+            "title": "Seed Article Id",
+            "type": "string"
+          },
+          "selection_audit": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStorySelectionAuditData"
+            },
+            "title": "Selection Audit",
+            "type": "array"
           },
           "snippet": {
             "title": "Snippet",
@@ -3030,50 +4291,115 @@
           "title": {
             "title": "Title",
             "type": "string"
-          },
-          "trusted_source_count": {
-            "title": "Trusted Source Count",
-            "type": "integer"
-          },
-          "verification_status": {
-            "enum": [
-              "corroborated",
-              "trusted",
-              "attributed",
-              "unverified"
-            ],
-            "title": "Verification Status",
-            "type": "string"
           }
         },
         "required": [
           "story_id",
-          "anchor_article_id",
-          "primary_article_id",
+          "seed_article_id",
+          "identity_version",
+          "identity_status",
+          "event_core",
           "title",
           "snippet",
-          "language",
+          "languages",
+          "representative_revision_id",
           "first_seen_at_ms",
-          "last_seen_at_ms",
-          "source_count",
-          "article_count",
-          "trusted_source_count",
-          "independent_origin_count",
-          "verification_status",
-          "phase",
+          "last_material_evidence_at_ms",
+          "last_presentation_at_ms",
+          "breaking",
+          "breaking_reason",
+          "material_evidence_hash",
+          "presentation_state_hash",
+          "evidence_posture",
+          "evidence_factors",
+          "lifecycle",
           "lifecycle_version",
-          "importance_score",
-          "importance_version",
-          "importance_factors",
-          "identity_version",
-          "evidence_set_hash",
-          "analysis_status",
-          "analysis_error",
-          "analysis",
+          "material_evolution_state",
+          "impact_score",
+          "impact_profile",
+          "priority_score",
+          "priority_profile",
+          "scoring_version",
+          "primary_member_count",
+          "contextual_member_count",
+          "independent_origin_count",
+          "source_count",
+          "brief_eligible",
+          "brief_eligibility_reason",
+          "memberships",
           "articles",
-          "memberships"
+          "identity_decisions",
+          "material_events",
+          "selection_audit",
+          "analysis"
         ],
         "title": "NewsStoryDetailData",
+        "type": "object"
+      },
+      "NewsStoryIdentityDecisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "article_id": {
+            "title": "Article Id",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "decided_at_ms": {
+            "title": "Decided At Ms",
+            "type": "integer"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "decision_reason": {
+            "additionalProperties": true,
+            "title": "Decision Reason",
+            "type": "object"
+          },
+          "identity_version": {
+            "title": "Identity Version",
+            "type": "string"
+          },
+          "revision_id": {
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "selected_story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Story Id"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "revision_id",
+          "article_id",
+          "identity_version",
+          "selected_story_id",
+          "verdict",
+          "candidates",
+          "decision_reason",
+          "decided_at_ms"
+        ],
+        "title": "NewsStoryIdentityDecisionData",
         "type": "object"
       },
       "NewsStoryListData": {
@@ -3105,6 +4431,62 @@
         "title": "NewsStoryListData",
         "type": "object"
       },
+      "NewsStoryMaterialEventData": {
+        "additionalProperties": false,
+        "properties": {
+          "event_factors": {
+            "additionalProperties": true,
+            "title": "Event Factors",
+            "type": "object"
+          },
+          "event_kind": {
+            "enum": [
+              "first_report",
+              "new_independent_origin",
+              "material_follow_up",
+              "material_correction",
+              "conflict_detected",
+              "conflict_resolved",
+              "retraction"
+            ],
+            "title": "Event Kind",
+            "type": "string"
+          },
+          "material_event_id": {
+            "title": "Material Event Id",
+            "type": "string"
+          },
+          "occurred_at_ms": {
+            "title": "Occurred At Ms",
+            "type": "integer"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_event_id",
+          "story_id",
+          "revision_id",
+          "event_kind",
+          "event_factors",
+          "occurred_at_ms"
+        ],
+        "title": "NewsStoryMaterialEventData",
+        "type": "object"
+      },
       "NewsStoryMembershipData": {
         "additionalProperties": false,
         "properties": {
@@ -3114,6 +4496,39 @@
           },
           "article_id": {
             "title": "Article Id",
+            "type": "string"
+          },
+          "content_form": {
+            "enum": [
+              "report",
+              "analysis",
+              "opinion",
+              "live",
+              "static",
+              "unknown"
+            ],
+            "title": "Content Form",
+            "type": "string"
+          },
+          "development_relation": {
+            "enum": [
+              "initial",
+              "follow_up",
+              "correction",
+              "background",
+              "retrospective"
+            ],
+            "title": "Development Relation",
+            "type": "string"
+          },
+          "epistemic_use": {
+            "enum": [
+              "fact_evidence",
+              "context",
+              "viewpoint",
+              "non_evidence"
+            ],
+            "title": "Epistemic Use",
             "type": "string"
           },
           "identity_version": {
@@ -3132,86 +4547,31 @@
           "match_score": {
             "title": "Match Score",
             "type": "number"
-          }
-        },
-        "required": [
-          "article_id",
-          "match_method",
-          "match_score",
-          "identity_version",
-          "admitted_at_ms",
-          "match_reason"
-        ],
-        "title": "NewsStoryMembershipData",
-        "type": "object"
-      },
-      "NewsStorySummaryData": {
-        "additionalProperties": false,
-        "properties": {
-          "analysis_published_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Published At Ms"
           },
-          "analysis_status": {
+          "membership_kind": {
             "enum": [
-              "pending",
-              "available",
-              "failed",
-              "unavailable"
+              "primary",
+              "contextual"
             ],
-            "title": "Analysis Status",
+            "title": "Membership Kind",
             "type": "string"
           },
-          "article_count": {
-            "title": "Article Count",
-            "type": "integer"
+          "origin_confidence": {
+            "title": "Origin Confidence",
+            "type": "number"
           },
-          "first_seen_at_ms": {
-            "title": "First Seen At Ms",
-            "type": "integer"
-          },
-          "importance_factors": {
-            "additionalProperties": true,
-            "title": "Importance Factors",
-            "type": "object"
-          },
-          "importance_score": {
-            "title": "Importance Score",
-            "type": "integer"
-          },
-          "independent_origin_count": {
-            "title": "Independent Origin Count",
-            "type": "integer"
-          },
-          "language": {
-            "title": "Language",
-            "type": "string"
-          },
-          "last_seen_at_ms": {
-            "title": "Last Seen At Ms",
-            "type": "integer"
-          },
-          "phase": {
+          "origin_relation": {
             "enum": [
-              "breaking",
-              "developing",
-              "sustained",
-              "fading"
+              "originating",
+              "independent",
+              "syndicated",
+              "derived",
+              "unresolved"
             ],
-            "title": "Phase",
+            "title": "Origin Relation",
             "type": "string"
           },
-          "primary_article": {
-            "$ref": "#/components/schemas/NewsPrimaryArticleData"
-          },
-          "short_conclusion": {
+          "reporting_origin_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -3220,7 +4580,212 @@
                 "type": "null"
               }
             ],
-            "title": "Short Conclusion"
+            "title": "Reporting Origin Id"
+          },
+          "revision_id": {
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "runner_up_margin": {
+            "title": "Runner Up Margin",
+            "type": "number"
+          },
+          "semantics_reason": {
+            "additionalProperties": true,
+            "title": "Semantics Reason",
+            "type": "object"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "article_id",
+          "revision_id",
+          "membership_kind",
+          "identity_version",
+          "verdict",
+          "match_method",
+          "match_score",
+          "runner_up_margin",
+          "match_reason",
+          "content_form",
+          "origin_relation",
+          "development_relation",
+          "epistemic_use",
+          "reporting_origin_id",
+          "origin_confidence",
+          "semantics_reason",
+          "admitted_at_ms",
+          "updated_at_ms"
+        ],
+        "title": "NewsStoryMembershipData",
+        "type": "object"
+      },
+      "NewsStorySelectionAuditData": {
+        "additionalProperties": false,
+        "properties": {
+          "critical": {
+            "title": "Critical",
+            "type": "boolean"
+          },
+          "cutoff_at_ms": {
+            "title": "Cutoff At Ms",
+            "type": "integer"
+          },
+          "decision": {
+            "additionalProperties": true,
+            "title": "Decision",
+            "type": "object"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "selection_fingerprint": {
+            "title": "Selection Fingerprint",
+            "type": "string"
+          },
+          "selection_snapshot_id": {
+            "title": "Selection Snapshot Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "debounced",
+              "publishable",
+              "published",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selection_snapshot_id",
+          "selection_fingerprint",
+          "policy_version",
+          "cutoff_at_ms",
+          "status",
+          "critical",
+          "decision"
+        ],
+        "title": "NewsStorySelectionAuditData",
+        "type": "object"
+      },
+      "NewsStorySummaryData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/NewsAnalysisAvailabilityData"
+          },
+          "breaking": {
+            "title": "Breaking",
+            "type": "boolean"
+          },
+          "breaking_reason": {
+            "title": "Breaking Reason",
+            "type": "string"
+          },
+          "brief_eligible": {
+            "title": "Brief Eligible",
+            "type": "boolean"
+          },
+          "contextual_member_count": {
+            "title": "Contextual Member Count",
+            "type": "integer"
+          },
+          "evidence_factors": {
+            "additionalProperties": true,
+            "title": "Evidence Factors",
+            "type": "object"
+          },
+          "evidence_posture": {
+            "enum": [
+              "single_origin_reported",
+              "independently_corroborated",
+              "primary_source_confirmed",
+              "contested",
+              "corrected",
+              "withdrawn"
+            ],
+            "title": "Evidence Posture",
+            "type": "string"
+          },
+          "first_seen_at_ms": {
+            "title": "First Seen At Ms",
+            "type": "integer"
+          },
+          "impact_profile": {
+            "additionalProperties": true,
+            "title": "Impact Profile",
+            "type": "object"
+          },
+          "impact_score": {
+            "title": "Impact Score",
+            "type": "integer"
+          },
+          "independent_origin_count": {
+            "title": "Independent Origin Count",
+            "type": "integer"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "last_material_evidence_at_ms": {
+            "title": "Last Material Evidence At Ms",
+            "type": "integer"
+          },
+          "last_presentation_at_ms": {
+            "title": "Last Presentation At Ms",
+            "type": "integer"
+          },
+          "lifecycle": {
+            "enum": [
+              "emerging",
+              "developing",
+              "stable",
+              "fading",
+              "dormant",
+              "reactivated"
+            ],
+            "title": "Lifecycle",
+            "type": "string"
+          },
+          "material_evolution_state": {
+            "title": "Material Evolution State",
+            "type": "string"
+          },
+          "primary_member_count": {
+            "title": "Primary Member Count",
+            "type": "integer"
+          },
+          "priority_profile": {
+            "additionalProperties": true,
+            "title": "Priority Profile",
+            "type": "object"
+          },
+          "priority_score": {
+            "title": "Priority Score",
+            "type": "integer"
+          },
+          "representative_evidence": {
+            "$ref": "#/components/schemas/NewsRepresentativeEvidenceData"
           },
           "snippet": {
             "title": "Snippet",
@@ -3237,41 +4802,33 @@
           "title": {
             "title": "Title",
             "type": "string"
-          },
-          "trusted_source_count": {
-            "title": "Trusted Source Count",
-            "type": "integer"
-          },
-          "verification_status": {
-            "enum": [
-              "corroborated",
-              "trusted",
-              "attributed",
-              "unverified"
-            ],
-            "title": "Verification Status",
-            "type": "string"
           }
         },
         "required": [
           "story_id",
           "title",
           "snippet",
-          "language",
-          "primary_article",
+          "languages",
           "first_seen_at_ms",
-          "last_seen_at_ms",
-          "source_count",
-          "article_count",
-          "trusted_source_count",
+          "last_material_evidence_at_ms",
+          "last_presentation_at_ms",
+          "breaking",
+          "breaking_reason",
+          "evidence_posture",
+          "evidence_factors",
+          "lifecycle",
+          "material_evolution_state",
+          "impact_score",
+          "impact_profile",
+          "priority_score",
+          "priority_profile",
+          "primary_member_count",
+          "contextual_member_count",
           "independent_origin_count",
-          "verification_status",
-          "phase",
-          "importance_score",
-          "importance_factors",
-          "analysis_status",
-          "short_conclusion",
-          "analysis_published_at_ms"
+          "source_count",
+          "brief_eligible",
+          "representative_evidence",
+          "analysis"
         ],
         "title": "NewsStorySummaryData",
         "type": "object"
@@ -6812,6 +8369,70 @@
         ]
       }
     },
+    "/api/news/brief": {
+      "get": {
+        "operationId": "get_news_global_brief_api_news_brief_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsGlobalBriefData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get News Global Brief",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/brief/history": {
+      "get": {
+        "operationId": "list_news_global_brief_history_api_news_brief_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsGlobalBriefHistoryData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List News Global Brief History",
+        "tags": [
+          "api"
+        ]
+      }
+    },
     "/api/news/sources": {
       "get": {
         "operationId": "list_news_sources_api_news_sources_get",
@@ -6869,11 +8490,11 @@
           },
           {
             "in": "query",
-            "name": "verification_status",
+            "name": "evidence_posture",
             "required": false,
             "schema": {
               "default": "",
-              "title": "Verification Status",
+              "title": "Evidence Posture",
               "type": "string"
             }
           },
@@ -6953,6 +8574,48 @@
           }
         },
         "summary": "Get News Story",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/stories/{story_id}/analysis-requests": {
+      "post": {
+        "operationId": "request_news_story_analysis_api_news_stories__story_id__analysis_requests_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsStoryAnalysisRequestData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request News Story Analysis",
         "tags": [
           "api"
         ]

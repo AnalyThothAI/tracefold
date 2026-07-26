@@ -1,7 +1,12 @@
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { newsStoryDetailFixture, newsStoryFixture } from "@tests/fixtures/newsFixture";
+import {
+  newsBriefPublicationFixture,
+  newsGlobalBriefFixture,
+  newsStoryDetailFixture,
+  newsStoryFixture,
+} from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
@@ -20,33 +25,43 @@ describe("NewsPage", () => {
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
         HttpResponse.json({ ok: true, data: newsStoryDetailFixture() }),
       ),
+      http.get(/.*\/api\/news\/brief$/, () =>
+        HttpResponse.json({ ok: true, data: newsGlobalBriefFixture() }),
+      ),
+      http.get(/.*\/api\/news\/brief\/history$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: { items: [newsBriefPublicationFixture()] },
+        }),
+      ),
     );
   });
 
   afterEach(cleanup);
 
-  it("renders one Story row with verification, importance, sources, and AI state", async () => {
+  it("renders one Story row with evidence posture, impact, priority, and AI state", async () => {
     renderNews(<NewsPage token="test-token" />);
 
     expect(screen.getByRole("status", { name: "loading News stories" })).toBeInTheDocument();
     expect(
       await screen.findByText("Central banks respond to a new global policy shock"),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("多源核验")).toHaveLength(2);
-    expect(screen.getByText("77")).toBeInTheDocument();
-    expect(screen.getByText("AI 已分析")).toBeInTheDocument();
+    expect(screen.getAllByText("独立多源佐证")).toHaveLength(2);
+    expect(screen.getByText("82")).toBeInTheDocument();
+    expect(screen.getByText("88")).toBeInTheDocument();
+    expect(screen.getByText("AI 分析可用")).toBeInTheDocument();
     expect(screen.getByText("Reuters World")).toBeInTheDocument();
   });
 
-  it("requests search, source, and verification filters", async () => {
+  it("requests only search, source, and evidence-posture filters", async () => {
     const requests: Array<Record<string, string | null>> = [];
     server.use(
       http.get(/.*\/api\/news\/stories$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
         requests.push({
+          evidence_posture: params.get("evidence_posture"),
           q: params.get("q"),
           source: params.get("source"),
-          verification: params.get("verification_status"),
         });
         return HttpResponse.json({
           ok: true,
@@ -57,7 +72,7 @@ describe("NewsPage", () => {
     renderNews(<NewsPage token="test-token" />);
     await screen.findByText("Central banks respond to a new global policy shock");
 
-    fireEvent.click(screen.getByRole("button", { name: "多源核验" }));
+    fireEvent.click(screen.getByRole("button", { name: "独立多源佐证" }));
     fireEvent.change(screen.getByLabelText("Search stories"), { target: { value: "rates" } });
     fireEvent.change(screen.getByLabelText("Filter by source"), {
       target: { value: "Reuters" },
@@ -69,7 +84,7 @@ describe("NewsPage", () => {
           (request) =>
             request.q === "rates" &&
             request.source === "Reuters" &&
-            request.verification === "corroborated",
+            request.evidence_posture === "independently_corroborated",
         ),
       ).toBe(true),
     );
@@ -84,54 +99,37 @@ describe("NewsPage", () => {
     expect(screen.getByTestId("location")).toHaveTextContent("/news/stories/story-global-policy");
   });
 
-  it("shows Chinese analysis and article-level provenance on the Story detail", async () => {
+  it("shows validated Chinese analysis and Article Revision evidence", async () => {
     renderNews(
       <NewsPage storyId="story-global-policy" token="test-token" />,
       "/news/stories/story-global-policy",
     );
 
-    expect(await screen.findByText("DeepSeek 中文分析")).toBeInTheDocument();
+    expect(await screen.findByText("中文 Story Analysis")).toBeInTheDocument();
     expect(screen.getByText("发生了什么")).toBeInTheDocument();
     expect(screen.getByText("独立原始源")).toBeInTheDocument();
-    expect(screen.getAllByText("AI 引用")).toHaveLength(2);
-    expect(screen.getByText("来源权威度")).toBeInTheDocument();
-    expect(screen.getByText("采集链：reuters")).toBeInTheDocument();
-    expect(screen.getByText(/原始出处：Reuters · reuters.com/)).toBeInTheDocument();
+    expect(screen.getByText("Article 与 Revision 证据")).toBeInTheDocument();
+    expect(screen.getByText("Revision 2 · content")).toBeInTheDocument();
+    expect(screen.getByText("身份判定")).toBeInTheDocument();
+    expect(screen.getByText("材料事件")).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "查看原文" })[0]).toHaveAttribute(
       "href",
       "https://www.reuters.com/world/story",
     );
   });
 
-  it("renders an explicit empty state", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/stories$/, () =>
-        HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } }),
-      ),
-    );
-    renderNews(<NewsPage token="test-token" />);
-    expect(await screen.findByText("暂无 Story")).toBeInTheDocument();
-  });
-
-  it("renders an explicit request-error state", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/stories$/, () =>
-        HttpResponse.json({ ok: false, error: "feed unavailable" }, { status: 503 }),
-      ),
-    );
-    renderNews(<NewsPage token="test-token" />);
-    expect(await screen.findByText("请求失败")).toBeInTheDocument();
-  });
-
-  it("renders a Story fully when AI is unavailable", async () => {
+  it("keeps Story facts readable when no AI publication exists", async () => {
     server.use(
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
         HttpResponse.json({
           ok: true,
           data: newsStoryDetailFixture({
-            analysis: null,
-            analysis_error: null,
-            analysis_status: "unavailable",
+            analysis: {
+              current: null,
+              history: [],
+              request: null,
+              status: "unavailable",
+            },
           }),
         }),
       ),
@@ -140,29 +138,72 @@ describe("NewsPage", () => {
       <NewsPage storyId="story-global-policy" token="test-token" />,
       "/news/stories/story-global-policy",
     );
-    expect(await screen.findAllByText("AI 未配置")).toHaveLength(2);
+
+    expect(await screen.findAllByText("尚无 AI 分析")).toHaveLength(2);
+    expect(screen.getByText("Article 与 Revision 证据")).toBeInTheDocument();
     expect(screen.queryByText("发生了什么")).not.toBeInTheDocument();
   });
 
-  it("keeps the last successful Story visible when a refresh fails", async () => {
-    const rendered = renderNews(<NewsPage token="test-token" />);
-    expect(
-      await screen.findByText("Central banks respond to a new global policy shock"),
-    ).toBeInTheDocument();
+  it("renders the validated Global Brief and immutable publication history", async () => {
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+
+    expect(await screen.findByText("全球政治经济简报")).toBeInTheDocument();
+    expect(screen.getByText(/全球政策冲击正在跨市场传导/)).toBeInTheDocument();
+    expect(screen.getByText("主要央行对新的全球政策冲击作出回应。")).toBeInTheDocument();
+    expect(screen.getByText(/deepseek-v4-flash/)).toBeInTheDocument();
+  });
+
+  it("falls back to frozen deterministic selection without synthesized prose", async () => {
     server.use(
-      http.get(/.*\/api\/news\/stories$/, () =>
-        HttpResponse.json({ ok: false, error: "refresh failed" }, { status: 503 }),
+      http.get(/.*\/api\/news\/brief$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            current: null,
+            fallback: {
+              cutoff_at_ms: 1_779_000_000_000,
+              decisions: [],
+              evidence_bundle: {
+                stories: [{ story_id: "story-global-policy", title: "Frozen selection title" }],
+              },
+              selected_story_ids: ["story-global-policy"],
+              selection_fingerprint: "selection-fingerprint",
+              selection_snapshot_id: "selection-snapshot",
+              status: "selected",
+            },
+            latest_failure: { error_code: "provider_unavailable" },
+          },
+        }),
+      ),
+      http.get(/.*\/api\/news\/brief\/history$/, () =>
+        HttpResponse.json({ ok: true, data: { items: [] } }),
       ),
     );
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
 
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-stories"] });
+    expect(await screen.findByText("确定性 Brief 选材")).toBeInTheDocument();
+    expect(screen.getByText("Frozen selection title")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("最近一次生成失败");
+    expect(screen.queryByText("全球政策冲击正在跨市场传导")).not.toBeInTheDocument();
+  });
 
-    expect(
-      await screen.findByText("最新更新失败，正在显示上一次成功读取的 Story。"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Central banks respond to a new global policy shock"),
-    ).toBeInTheDocument();
+  it("renders explicit empty and request-error states", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/stories$/, () =>
+        HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } }),
+      ),
+    );
+    const empty = renderNews(<NewsPage token="test-token" />);
+    expect(await screen.findByText("暂无 Story")).toBeInTheDocument();
+    empty.unmount();
+
+    server.use(
+      http.get(/.*\/api\/news\/stories$/, () =>
+        HttpResponse.json({ ok: false, error: "feed unavailable" }, { status: 503 }),
+      ),
+    );
+    renderNews(<NewsPage token="test-token" />);
+    expect(await screen.findByText("请求失败")).toBeInTheDocument();
   });
 });
 

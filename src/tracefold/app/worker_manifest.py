@@ -84,15 +84,28 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
     WorkerManifest(
         name="news_ingest",
         start_priority=90,
+    ),
+    WorkerManifest(
+        name="news_story_project",
+        start_priority=92,
         current_read_model_identities=(
             ("news_stories", ("story_id",)),
-            ("news_story_articles", ("story_id", "article_id")),
+            ("news_story_memberships", ("story_id", "article_id")),
         ),
     ),
     WorkerManifest(
-        name="news_analysis",
+        name="news_brief_plan",
+        start_priority=94,
+        current_read_model_identities=(("news_brief_selection_snapshots", ("selection_snapshot_id",)),),
+    ),
+    WorkerManifest(
+        name="news_ai_publish",
         start_priority=95,
-        queue_tables=("news_story_analysis_attempts",),
+        queue_tables=("news_ai_attempts", "news_story_analysis_requests"),
+        current_read_model_identities=(
+            ("news_brief_current", ("singleton_key",)),
+            ("news_story_analysis_current", ("story_id",)),
+        ),
     ),
     WorkerManifest(
         name="macro_research",

@@ -40,7 +40,6 @@ PLATFORM_TABLES = {
 RETIRED_NEWS_RUNTIME_MARKERS = (
     "NewsItem",
     "newsItem",
-    "news_fetch",
     "news_item_process",
     "news_items",
     "news_page_projection",
@@ -50,7 +49,16 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_intel",
     "opennews",
     "cryptopanic",
+    "NewsAnalysisWorker",
+    "StoryInterface",
+    "news_story_articles",
+    "news_story_analyses",
+    "news_story_analysis_attempts",
+    "news_analysis",
+    "verification_status",
+    "evidence_set_hash",
     "/api/news/items",
+    "/api/news/sources/status",
     "/news/items",
 )
 
@@ -164,6 +172,16 @@ def test_worker_manifest_has_one_writer_per_current_read_model() -> None:
     assert len(tables) == len(set(tables))
 
 
+def test_news_runtime_has_exactly_the_four_professional_pipeline_workers() -> None:
+    news_workers = {manifest.name for manifest in all_worker_manifests() if manifest.name.startswith("news_")}
+    assert news_workers == {
+        "news_ingest",
+        "news_story_project",
+        "news_brief_plan",
+        "news_ai_publish",
+    }
+
+
 def test_current_read_models_use_stable_product_keys() -> None:
     violations = {
         f"{manifest.name}:{table}": sorted(set(identity) & FORBIDDEN_CURRENT_IDENTITY_PARTS)
@@ -187,9 +205,7 @@ def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> N
                 continue
             content = path.read_text(encoding="utf-8").lower()
             violations.extend(
-                f"{relative}:{marker}"
-                for marker in RETIRED_NEWS_RUNTIME_MARKERS
-                if marker.lower() in content
+                f"{relative}:{marker}" for marker in RETIRED_NEWS_RUNTIME_MARKERS if marker.lower() in content
             )
     assert violations == []
 

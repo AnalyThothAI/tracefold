@@ -33,14 +33,23 @@ STATUS_QUEUE_SPECS = {
         due_statuses=("pending",),
         terminal_statuses=("failed", "expired"),
     ),
-    "news_story_analysis_attempts": StatusQueueSpec(
-        table="news_story_analysis_attempts",
+    "news_ai_attempts": StatusQueueSpec(
+        table="news_ai_attempts",
         active_statuses=("running", "failed"),
         due_statuses=("failed",),
         running_statuses=("running",),
         failed_statuses=("failed",),
-        terminal_statuses=("available",),
+        terminal_statuses=("available", "insufficient"),
         due_column="next_attempt_at_ms",
+    ),
+    "news_story_analysis_requests": StatusQueueSpec(
+        table="news_story_analysis_requests",
+        active_statuses=("pending", "claimed"),
+        due_statuses=("pending",),
+        running_statuses=("claimed",),
+        failed_statuses=("failed",),
+        terminal_statuses=("published", "failed", "insufficient"),
+        due_column="requested_at_ms",
     ),
 }
 

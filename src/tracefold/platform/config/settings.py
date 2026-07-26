@@ -706,9 +706,32 @@ class NewsIngestWorkerSettings(PerWorkerSettings):
     batch_size: int = Field(default=8, ge=1)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     fetch_timeout_seconds: float = Field(default=30.0, ge=1)
+    page_enrichment_enabled: bool = False
+    page_enrichment_batch_size: int = Field(default=2, ge=1, le=20)
+    page_enrichment_minimum_impact_score: int = Field(default=75, ge=0, le=100)
+    page_enrichment_timeout_seconds: float = Field(default=12.0, ge=1)
+    page_enrichment_max_bytes: int = Field(default=512_000, ge=16_384, le=2_000_000)
+    page_enrichment_lease_ms: int = Field(default=120_000, ge=1)
+    page_enrichment_max_attempts: int = Field(default=2, ge=1, le=5)
+    page_enrichment_retry_ms: int = Field(default=900_000, ge=1)
 
 
-class NewsAnalysisWorkerSettings(PerWorkerSettings):
+class NewsStoryProjectWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=5.0, ge=0)
+    batch_size: int = Field(default=100, ge=1)
+    presentation_batch_size: int = Field(default=500, ge=1)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+
+
+class NewsBriefPlanWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=30.0, ge=0)
+    candidate_limit: int = Field(default=200, ge=1, le=2000)
+    debounce_ms: int = Field(default=120_000, ge=0)
+    critical_debounce_ms: int = Field(default=10_000, ge=0)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+
+
+class NewsAiPublishWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=60.0, ge=0)
     batch_size: int = Field(default=2, ge=1)
     lease_ms: int = Field(default=600_000, ge=1)
@@ -741,7 +764,9 @@ class WorkersSettings(BaseModel):
         default_factory=NotificationDeliveryWorkerSettings
     )
     news_ingest: NewsIngestWorkerSettings = Field(default_factory=NewsIngestWorkerSettings)
-    news_analysis: NewsAnalysisWorkerSettings = Field(default_factory=NewsAnalysisWorkerSettings)
+    news_story_project: NewsStoryProjectWorkerSettings = Field(default_factory=NewsStoryProjectWorkerSettings)
+    news_brief_plan: NewsBriefPlanWorkerSettings = Field(default_factory=NewsBriefPlanWorkerSettings)
+    news_ai_publish: NewsAiPublishWorkerSettings = Field(default_factory=NewsAiPublishWorkerSettings)
 
 
 class Settings(BaseModel):

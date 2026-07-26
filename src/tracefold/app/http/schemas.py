@@ -577,42 +577,72 @@ class StocksRadarData(ExactApiSchema):
     health: StocksRadarHealthData
 
 
-class NewsPrimaryArticleData(ExactApiSchema):
+class NewsRepresentativeEvidenceData(ExactApiSchema):
     article_id: str
+    revision_id: str
+    title: str
     source_id: str
     source_name: str
-    source_role: Literal["original_publisher", "trusted_aggregator"]
-    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
-    source_chain_id: str
-    canonical_url: str | None
-    title: str
-    snippet: str
-    published_at_ms: int
-    origin_url: str | None
-    origin_domain: str | None
-    origin_name: str | None
-    provenance_status: Literal["verified", "attributed", "unknown"]
+    source_domain: str
+    source_published_at_ms: int
+
+
+class NewsAnalysisAvailabilityData(ExactApiSchema):
+    status: Literal["available", "unavailable"]
+    publication_id: str | None
+    published_at_ms: int | None
+    short_conclusion: str | None
+
+
+class NewsEventCoreData(ExactApiSchema):
+    entities: list[str]
+    actor_entities: list[str]
+    target_entities: list[str]
+    actions: list[str]
+    event_objects: list[str]
+    locations: list[str]
+    stages: list[str]
+    named_event_keys: list[str]
+
+
+class NewsBriefEligibilityReasonData(ExactApiSchema):
+    eligible: bool
+    reasons: list[str]
+    version: str
 
 
 class NewsStorySummaryData(ExactApiSchema):
     story_id: str
     title: str
     snippet: str
-    language: str
-    primary_article: NewsPrimaryArticleData
+    languages: list[str]
     first_seen_at_ms: int
-    last_seen_at_ms: int
-    source_count: int
-    article_count: int
-    trusted_source_count: int
+    last_material_evidence_at_ms: int
+    last_presentation_at_ms: int
+    breaking: bool
+    breaking_reason: str
+    evidence_posture: Literal[
+        "single_origin_reported",
+        "independently_corroborated",
+        "primary_source_confirmed",
+        "contested",
+        "corrected",
+        "withdrawn",
+    ]
+    evidence_factors: JsonObject
+    lifecycle: Literal["emerging", "developing", "stable", "fading", "dormant", "reactivated"]
+    material_evolution_state: str
+    impact_score: int
+    impact_profile: JsonObject
+    priority_score: int
+    priority_profile: JsonObject
+    primary_member_count: int
+    contextual_member_count: int
     independent_origin_count: int
-    verification_status: Literal["corroborated", "trusted", "attributed", "unverified"]
-    phase: Literal["breaking", "developing", "sustained", "fading"]
-    importance_score: int
-    importance_factors: JsonObject
-    analysis_status: Literal["pending", "available", "failed", "unavailable"]
-    short_conclusion: str | None
-    analysis_published_at_ms: int | None
+    source_count: int
+    brief_eligible: bool
+    representative_evidence: NewsRepresentativeEvidenceData
+    analysis: NewsAnalysisAvailabilityData
 
 
 class NewsStoryListData(ExactApiSchema):
@@ -620,80 +650,293 @@ class NewsStoryListData(ExactApiSchema):
     next_cursor: str | None
 
 
-class NewsArticleData(ExactApiSchema):
-    article_id: str
-    title: str
-    snippet: str
-    published_at_ms: int
-    source_id: str
-    source_name: str
-    source_role: Literal["original_publisher", "trusted_aggregator"]
-    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
-    source_chain_id: str
-    canonical_url: str | None
-    origin_url: str | None
-    origin_domain: str | None
-    origin_name: str | None
-    provenance_status: Literal["verified", "attributed", "unknown"]
-    language: str
-    first_seen_at_ms: int
-    last_seen_at_ms: int
-    identity_method: Literal["canonical_url", "source_guid", "title_time_bucket"]
-    identity_version: str
-
-
 class NewsStoryMembershipData(ExactApiSchema):
+    story_id: str
     article_id: str
+    revision_id: str
+    membership_kind: Literal["primary", "contextual"]
+    identity_version: str
+    verdict: str
     match_method: str
     match_score: float
-    identity_version: str
-    admitted_at_ms: int
+    runner_up_margin: float
     match_reason: JsonObject
+    content_form: Literal["report", "analysis", "opinion", "live", "static", "unknown"]
+    origin_relation: Literal["originating", "independent", "syndicated", "derived", "unresolved"]
+    development_relation: Literal["initial", "follow_up", "correction", "background", "retrospective"]
+    epistemic_use: Literal["fact_evidence", "context", "viewpoint", "non_evidence"]
+    reporting_origin_id: str | None
+    origin_confidence: float
+    semantics_reason: JsonObject
+    admitted_at_ms: int
+    updated_at_ms: int
 
 
-class NewsStoryAnalysisData(ExactApiSchema):
-    analysis_id: str
+class NewsArticleRevisionData(ExactApiSchema):
+    article_id: str
+    publisher_organization_id: str
+    canonical_url: str
+    incarnation_key: str
+    first_observation_id: str
+    first_seen_at_ms: int
+    identity_version: str
+    identity_status: Literal["active", "ended", "revision_identity_ambiguous"]
+    created_at_ms: int
+    updated_at_ms: int
+    revision_id: str
+    revision_number: int
+    title: str
+    snippet: str
+    source_published_at_ms: int
+    observed_at_ms: int
+    language: str
+    content_hash: str
+    material_change_kind: Literal["initial", "title", "summary", "source_time", "content", "correction", "url_reuse"]
+    is_current: bool
+    observation_id: str
+    source_id: str
+    raw_url: str
+    source_entry_key: str
+    source_name: str
+    source_domain: str
+    source_role: Literal["original_publisher", "wire_service", "official_authority", "trusted_aggregator"]
+    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
+    source_chain_id: str
+    source_publisher_organization_id: str
+    membership_kind: Literal["primary", "contextual"]
+    content_form: Literal["report", "analysis", "opinion", "live", "static", "unknown"]
+    origin_relation: Literal["originating", "independent", "syndicated", "derived", "unresolved"]
+    development_relation: Literal["initial", "follow_up", "correction", "background", "retrospective"]
+    epistemic_use: Literal["fact_evidence", "context", "viewpoint", "non_evidence"]
+    reporting_origin_id: str | None
+    origin_confidence: float
+    content_snapshot_id: str | None
+    content_snapshot_status: str | None
+    snapshot_content_hash: str | None
+    content_fetched_at_ms: int | None
+    content_failure_reason: str | None
+    content_extractor_version: str | None
+    content_byte_count: int | None
+
+
+class NewsStoryIdentityDecisionData(ExactApiSchema):
+    decision_id: str
+    revision_id: str
+    article_id: str
+    identity_version: str
+    selected_story_id: str | None
+    verdict: str
+    candidates: list[JsonObject]
+    decision_reason: JsonObject
+    decided_at_ms: int
+
+
+class NewsStoryMaterialEventData(ExactApiSchema):
+    material_event_id: str
+    story_id: str
+    revision_id: str | None
+    event_kind: Literal[
+        "first_report",
+        "new_independent_origin",
+        "material_follow_up",
+        "material_correction",
+        "conflict_detected",
+        "conflict_resolved",
+        "retraction",
+    ]
+    event_factors: JsonObject
+    occurred_at_ms: int
+
+
+class NewsStorySelectionAuditData(ExactApiSchema):
+    selection_snapshot_id: str
+    selection_fingerprint: str
+    policy_version: str
+    cutoff_at_ms: int
+    status: Literal["planned", "debounced", "publishable", "published", "superseded"]
+    critical: bool
+    decision: JsonObject
+
+
+class NewsEvidenceBackedFactData(ExactApiSchema):
+    text: str
+    evidence_references: list[str]
+
+
+class NewsConditionalTransmissionData(ExactApiSchema):
+    condition: str
+    mechanism: str
+    possible_effect: str
+    confidence: Literal["low", "medium", "high"]
+
+
+class NewsStoryAnalysisPayloadData(ExactApiSchema):
+    what_happened: list[NewsEvidenceBackedFactData]
+    why_it_matters: str
+    political_impact: str
+    economic_market_impact: str
+    disagreements_unknowns: list[str]
+    transmission_scenarios: list[NewsConditionalTransmissionData]
+    next_checkpoint: str
+
+
+class NewsStoryAnalysisRequestDetailData(ExactApiSchema):
+    request_id: str
+    story_id: str
+    material_evidence_hash: str
+    request_kind: Literal["automatic", "on_demand"]
+    reason: JsonObject
+    status: Literal["pending", "claimed", "published", "failed", "insufficient"]
+    requested_at_ms: int
+    updated_at_ms: int
+
+
+class NewsStoryAnalysisPublicationData(ExactApiSchema):
+    publication_id: str
+    story_id: str
+    material_evidence_hash: str
     model: str
     prompt_version: str
     workflow_version: str
     schema_version: str
-    what_happened: str
-    why_it_matters: str
-    political_impact: str
-    economic_market_impact: str
-    confirmed_facts: list[str]
-    disagreements_unknowns: list[str]
-    next_checkpoint: str
+    locale: str
+    payload: NewsStoryAnalysisPayloadData
     evidence_references: list[str]
+    receipt: JsonObject
     published_at_ms: int
+
+
+class NewsStoryAnalysisData(ExactApiSchema):
+    status: Literal["available", "unavailable", "pending", "claimed", "failed", "insufficient"]
+    request: NewsStoryAnalysisRequestDetailData | None
+    current: NewsStoryAnalysisPublicationData | None
+    history: list[NewsStoryAnalysisPublicationData]
 
 
 class NewsStoryDetailData(ExactApiSchema):
     story_id: str
-    anchor_article_id: str
-    primary_article_id: str
+    seed_article_id: str
+    identity_version: str
+    identity_status: str
+    event_core: NewsEventCoreData
     title: str
     snippet: str
-    language: str
+    languages: list[str]
+    representative_revision_id: str
     first_seen_at_ms: int
-    last_seen_at_ms: int
-    source_count: int
-    article_count: int
-    trusted_source_count: int
-    independent_origin_count: int
-    verification_status: Literal["corroborated", "trusted", "attributed", "unverified"]
-    phase: Literal["breaking", "developing", "sustained", "fading"]
+    last_material_evidence_at_ms: int
+    last_presentation_at_ms: int
+    breaking: bool
+    breaking_reason: str
+    material_evidence_hash: str
+    presentation_state_hash: str
+    evidence_posture: str
+    evidence_factors: JsonObject
+    lifecycle: str
     lifecycle_version: str
-    importance_score: int
-    importance_version: str
-    importance_factors: JsonObject
-    identity_version: str
-    evidence_set_hash: str
-    analysis_status: Literal["pending", "available", "failed", "unavailable"]
-    analysis_error: str | None
-    analysis: NewsStoryAnalysisData | None
-    articles: list[NewsArticleData]
+    material_evolution_state: str
+    impact_score: int
+    impact_profile: JsonObject
+    priority_score: int
+    priority_profile: JsonObject
+    scoring_version: str
+    primary_member_count: int
+    contextual_member_count: int
+    independent_origin_count: int
+    source_count: int
+    brief_eligible: bool
+    brief_eligibility_reason: NewsBriefEligibilityReasonData
     memberships: list[NewsStoryMembershipData]
+    articles: list[NewsArticleRevisionData]
+    identity_decisions: list[NewsStoryIdentityDecisionData]
+    material_events: list[NewsStoryMaterialEventData]
+    selection_audit: list[NewsStorySelectionAuditData]
+    analysis: NewsStoryAnalysisData
+
+
+class NewsStoryAnalysisRequestData(ExactApiSchema):
+    request_id: str
+    story_id: str
+    material_evidence_hash: str
+    status: str
+
+
+class NewsPublicationContractData(ExactApiSchema):
+    model: str
+    prompt_version: str
+    workflow_version: str
+    schema_version: str
+    locale: str
+
+
+class NewsBriefItemPayloadData(ExactApiSchema):
+    story_id: str
+    what_happened: list[NewsEvidenceBackedFactData]
+    why_it_matters: str
+    transmission_scenarios: list[NewsConditionalTransmissionData]
+    uncertainties: list[str]
+    watchpoints: list[str]
+
+
+class NewsBriefPayloadData(ExactApiSchema):
+    headline: str
+    executive_summary: str
+    items: list[NewsBriefItemPayloadData]
+    narratives: list[str]
+    global_watchpoints: list[str]
+
+
+class NewsBriefPublicationData(ExactApiSchema):
+    publication_id: str
+    selection_snapshot_id: str
+    selection_fingerprint: str
+    evidence_bundle_hash: str
+    cutoff_at_ms: int
+    published_at_ms: int
+    contract: NewsPublicationContractData
+    payload: NewsBriefPayloadData
+    evidence_references: list[str]
+    selected_story_ids: list[str]
+    selection_decisions: list[JsonObject]
+    narrative_groups: list[JsonObject]
+    evidence_bundle: NewsBriefEvidenceBundleData
+    receipt: JsonObject
+
+
+class NewsBriefEvidenceBundleData(ExactApiSchema):
+    selection_snapshot_id: str
+    selection_fingerprint: str
+    evidence_bundle_hash: str
+    cutoff_at_ms: int
+    stories: list[JsonObject]
+    narrative_groups: list[JsonObject]
+    selection_policy_version: str
+
+
+class NewsBriefFallbackData(ExactApiSchema):
+    selection_snapshot_id: str
+    selection_fingerprint: str
+    cutoff_at_ms: int
+    status: Literal["planned", "debounced", "publishable", "published", "superseded"]
+    selected_story_ids: list[str]
+    decisions: list[JsonObject]
+    evidence_bundle: NewsBriefEvidenceBundleData
+
+
+class NewsBriefFailureData(ExactApiSchema):
+    last_error: str | None
+    validation_errors: list[str]
+    updated_at_ms: int
+
+
+class NewsGlobalBriefData(ExactApiSchema):
+    current: NewsBriefPublicationData | None
+    fallback: NewsBriefFallbackData | None
+    latest_failure: NewsBriefFailureData | None
+
+
+class NewsGlobalBriefHistoryData(ExactApiSchema):
+    items: list[NewsBriefPublicationData]
 
 
 class NewsSourceData(ExactApiSchema):
@@ -701,13 +944,21 @@ class NewsSourceData(ExactApiSchema):
     name: str
     feed_url: str
     source_domain: str
-    source_role: Literal["original_publisher", "trusted_aggregator"]
+    source_role: Literal["original_publisher", "wire_service", "official_authority", "trusted_aggregator"]
     trust_tier: Literal["authoritative", "trusted", "standard", "low"]
     source_chain_id: str
+    publisher_organization_id: str
+    parent_organization_id: str | None
+    canonical_domains: list[str]
+    known_relationships: list[JsonObject]
+    source_quality_factors: JsonObject
+    registry_version: str
     coverage_tags: list[str]
     default_language: str
     enabled: bool
     refresh_interval_seconds: int
+    etag: str | None
+    last_modified: str | None
     last_fetch_started_at_ms: int | None
     last_fetch_finished_at_ms: int | None
     last_success_at_ms: int | None
@@ -715,6 +966,14 @@ class NewsSourceData(ExactApiSchema):
     consecutive_failures: int
     last_error: str | None
     next_fetch_at_ms: int
+    created_at_ms: int
+    updated_at_ms: int
+    latest_fetch_receipt_id: str | None
+    latest_entries_seen: int | None
+    latest_entries_admitted: int | None
+    latest_duplicate_seen_count: int | None
+    latest_rejection_counts: JsonObject | None
+    latest_error_code: str | None
 
 
 class NewsSourcesData(ExactApiSchema):

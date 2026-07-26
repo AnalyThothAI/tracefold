@@ -1,10 +1,11 @@
-import { newsPath, newsStoryPath } from "@shared/routing/paths";
+import { newsBriefPath, newsPath, newsStoryPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Newspaper,
   Radio,
   ShieldCheck,
   Sparkles,
@@ -16,40 +17,43 @@ import "./news.css";
 import "./newsDetail.css";
 import {
   analysisLabel,
-  phaseLabel,
-  type NewsArticle,
+  evidencePostureLabel,
+  lifecycleLabel,
+  type NewsEvidencePosture,
   type NewsStoryDetail,
   type NewsStorySummary,
-  type NewsVerificationStatus,
-  verificationLabel,
 } from "./model/newsStoryViewModel";
-import { NEWS_PAGE_SIZE, useNewsStoriesWithToken, useNewsStoryWithToken } from "./useNewsPage";
+import {
+  NEWS_PAGE_SIZE,
+  useNewsBriefHistoryWithToken,
+  useNewsBriefWithToken,
+  useNewsStoriesWithToken,
+  useNewsStoryWithToken,
+} from "./useNewsPage";
 
 type NewsPageProps = {
-  token: string;
+  brief?: boolean;
   storyId?: string | null;
+  token: string;
 };
 
-type CursorState = {
-  queryKey: string;
-  stack: Array<string | null>;
-};
+type CursorState = { queryKey: string; stack: Array<string | null> };
+type JsonRecord = Record<string, unknown>;
 
 const EMPTY_STORIES: NewsStorySummary[] = [];
-const VERIFICATION_FILTERS = [
+const POSTURE_FILTERS = [
   "all",
-  "corroborated",
-  "trusted",
-  "attributed",
-  "unverified",
+  "primary_source_confirmed",
+  "independently_corroborated",
+  "single_origin_reported",
+  "contested",
+  "corrected",
 ] as const;
 
-export function NewsPage({ token, storyId = null }: NewsPageProps) {
-  return storyId ? (
-    <NewsStoryRoute storyId={storyId} token={token} />
-  ) : (
-    <NewsStoryListRoute token={token} />
-  );
+export function NewsPage({ brief = false, token, storyId = null }: NewsPageProps) {
+  if (brief) return <GlobalBriefRoute token={token} />;
+  if (storyId) return <NewsStoryRoute storyId={storyId} token={token} />;
+  return <NewsStoryListRoute token={token} />;
 }
 
 function NewsStoryListRoute({ token }: { token: string }) {
@@ -57,19 +61,19 @@ function NewsStoryListRoute({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = searchParams.get("q") ?? "";
   const sourceQuery = searchParams.get("source") ?? "";
-  const verification = normalizeVerification(searchParams.get("verification"));
-  const queryKey = `${searchQuery}\n${sourceQuery}\n${verification}`;
+  const posture = normalizePosture(searchParams.get("posture"));
+  const queryKey = `${searchQuery}\n${sourceQuery}\n${posture}`;
   const [cursorState, setCursorState] = useState<CursorState>(() => ({
     queryKey,
     stack: [null],
   }));
   const cursorStack = cursorState.queryKey === queryKey ? cursorState.stack : [null];
-  const cursor = cursorStack[cursorStack.length - 1] ?? null;
+  const cursor = cursorStack.at(-1) ?? null;
   const query = useNewsStoriesWithToken(token, {
     cursor,
+    evidencePosture: posture === "all" ? null : posture,
     q: searchQuery.trim() || null,
     source: sourceQuery.trim() || null,
-    verificationStatus: verification === "all" ? null : verification,
   });
   const stories = query.data?.items ?? EMPTY_STORIES;
 
@@ -101,8 +105,12 @@ function NewsStoryListRoute({ token }: { token: string }) {
             <Radio aria-hidden />
             Global intelligence
           </span>
-          <h2>全球政治经济新闻流</h2>
-          <p>一个事件只显示为一个 Story；来源、核验状态与 AI 判断分开呈现。</p>
+          <h2>全球政治经济事件流</h2>
+          <p>Story 只代表一次现实状态变化；证据姿态、影响与当前优先级分开呈现。</p>
+          <Link className="news-back-link" to={newsBriefPath()}>
+            <Newspaper aria-hidden />
+            查看 Global Brief
+          </Link>
         </div>
         <StoryPager
           hasNextPage={Boolean(query.data?.next_cursor)}
@@ -120,10 +128,7 @@ function NewsStoryListRoute({ token }: { token: string }) {
           onPrevious={() =>
             setCursorState((state) => {
               const stack = state.queryKey === queryKey ? state.stack : [null];
-              return {
-                queryKey,
-                stack: stack.length > 1 ? stack.slice(0, -1) : stack,
-              };
+              return { queryKey, stack: stack.length > 1 ? stack.slice(0, -1) : stack };
             })
           }
         />
@@ -144,19 +149,19 @@ function NewsStoryListRoute({ token }: { token: string }) {
           <input
             aria-label="Filter by source"
             onChange={(event) => updateParam("source", event.target.value)}
-            placeholder="Reuters、6551…"
+            placeholder="Reuters、官方机构…"
             value={sourceQuery}
           />
         </label>
-        <div className="news-verification-filters" aria-label="Verification filters">
-          {VERIFICATION_FILTERS.map((value) => (
+        <div className="news-verification-filters" aria-label="Evidence posture filters">
+          {POSTURE_FILTERS.map((value) => (
             <button
-              aria-pressed={verification === value}
+              aria-pressed={posture === value}
               key={value}
-              onClick={() => updateParam("verification", value)}
+              onClick={() => updateParam("posture", value)}
               type="button"
             >
-              {value === "all" ? "全部" : verificationLabel(value)}
+              {value === "all" ? "全部" : evidencePostureLabel(value)}
             </button>
           ))}
         </div>
@@ -169,15 +174,10 @@ function NewsStoryListRoute({ token }: { token: string }) {
         {query.isError && !stories.length ? (
           <PageState.Error error={query.error ?? "News unavailable"} />
         ) : null}
-        {query.isError && stories.length ? (
-          <p className="news-degraded-state" role="status">
-            最新更新失败，正在显示上一次成功读取的 Story。
-          </p>
-        ) : null}
         {!query.isLoading && !query.isError && !stories.length ? (
-          <PageState.Empty title="暂无 Story" hint="当前筛选条件没有匹配的新闻事件。" />
+          <PageState.Empty title="暂无 Story" hint="当前筛选条件没有匹配的事件。" />
         ) : null}
-        {!query.isLoading && stories.length ? (
+        {stories.length ? (
           <PageState.Stale updating={query.isFetching && !query.isLoading}>
             {stories.map((story) => (
               <StoryRow
@@ -196,28 +196,28 @@ function NewsStoryListRoute({ token }: { token: string }) {
 function StoryRow({ story, onOpen }: { story: NewsStorySummary; onOpen: () => void }) {
   return (
     <button className="news-story-row" onClick={onOpen} type="button">
-      <span className="news-importance" data-level={importanceLevel(story.importance_score)}>
-        <b>{story.importance_score}</b>
-        <small>重要性</small>
+      <span className="news-importance" data-level={scoreLevel(story.impact_score)}>
+        <b>{story.impact_score}</b>
+        <small>影响</small>
       </span>
       <span className="news-story-copy">
         <span className="news-story-meta">
-          <b>{phaseLabel(story.phase)}</b>
-          <span data-verification={story.verification_status}>
-            {verificationLabel(story.verification_status)}
+          <b>{lifecycleLabel(story.lifecycle)}</b>
+          <span data-verification={story.evidence_posture}>
+            {evidencePostureLabel(story.evidence_posture)}
           </span>
-          <span>{story.primary_article.source_name}</span>
-          <time>{relativeTime(story.last_seen_at_ms)}</time>
+          <span>{story.representative_evidence.source_name}</span>
+          <time>{relativeTime(story.last_material_evidence_at_ms)}</time>
         </span>
         <strong>{story.title}</strong>
-        <small>{story.short_conclusion || story.snippet || "暂无摘要"}</small>
+        <small>{story.analysis.short_conclusion || story.snippet || "暂无摘要"}</small>
       </span>
       <span className="news-story-counts">
-        <b>{story.source_count}</b>
-        <small>采集源</small>
+        <b>{story.priority_score}</b>
+        <small>当前优先级</small>
         <b>{story.independent_origin_count}</b>
         <small>独立原始源</small>
-        <span data-analysis={story.analysis_status}>{analysisLabel(story.analysis_status)}</span>
+        <span data-analysis={story.analysis.status}>{analysisLabel(story.analysis.status)}</span>
       </span>
     </button>
   );
@@ -246,95 +246,78 @@ function NewsStoryRoute({ token, storyId }: { token: string; storyId: string }) 
       {!query.isLoading && !query.isError && !story ? (
         <PageState.Empty title="Story 不存在" />
       ) : null}
-      {story ? (
-        <PageState.Stale updating={query.isFetching}>
-          <StoryDetail story={story} />
-        </PageState.Stale>
-      ) : null}
+      {story ? <StoryDetail story={story} /> : null}
     </section>
   );
 }
 
 function StoryDetail({ story }: { story: NewsStoryDetail }) {
-  const articleById = new Map(story.articles.map((article) => [article.article_id, article]));
+  const analysis = record(story.analysis);
+  const currentPublication = record(analysis.current);
+  const analysisPayload = record(currentPublication.payload);
   return (
     <article className="news-story-detail">
       <header className="news-story-hero">
         <div>
           <span className="news-eyebrow">
             <ShieldCheck aria-hidden />
-            {verificationLabel(story.verification_status)} · {phaseLabel(story.phase)}
+            {evidencePostureLabel(story.evidence_posture)} · {lifecycleLabel(story.lifecycle)}
           </span>
           <h2>{story.title}</h2>
           <p>{story.snippet || "暂无事件摘要。"}</p>
         </div>
         <span className="news-detail-score">
-          <b>{story.importance_score}</b>
-          <small>重要性 / 100</small>
+          <b>{story.impact_score}</b>
+          <small>影响 / 100</small>
         </span>
       </header>
-
       <section className="news-evidence-metrics" aria-label="Story evidence metrics">
-        <Metric label="采集源" value={story.source_count} />
-        <Metric label="成员 Article" value={story.article_count} />
-        <Metric label="权威/可信源" value={story.trusted_source_count} />
+        <Metric label="当前优先级" value={story.priority_score} />
+        <Metric label="主要成员" value={story.primary_member_count} />
+        <Metric label="上下文成员" value={story.contextual_member_count} />
         <Metric label="独立原始源" value={story.independent_origin_count} />
       </section>
-
       <div className="news-detail-grid">
         <main>
-          <AnalysisCard story={story} />
+          <StoryAnalysis status={text(analysis.status)} payload={analysisPayload} />
           <section className="news-detail-card">
-            <SectionTitle icon={Radio} title="来源证据" />
+            <SectionTitle icon={Radio} title="Article 与 Revision 证据" />
             <div className="news-article-list">
-              {story.articles.map((article) => (
-                <ArticleEvidence
-                  article={article}
-                  key={article.article_id}
-                  referenced={Boolean(
-                    story.analysis?.evidence_references.includes(article.article_id),
-                  )}
-                />
+              {story.articles.map((article, index) => (
+                <ArticleEvidence article={article} key={`${text(article.revision_id)}-${index}`} />
               ))}
             </div>
           </section>
+          <AuditCard title="身份判定" rows={story.identity_decisions} />
+          <AuditCard title="材料事件" rows={story.material_events} />
+          <AuditCard title="Brief 选材判定" rows={story.selection_audit} />
         </main>
         <aside>
           <section className="news-detail-card">
             <h3>Story 状态</h3>
             <dl>
-              <Definition label="阶段" value={phaseLabel(story.phase)} />
-              <Definition label="核验" value={verificationLabel(story.verification_status)} />
+              <Definition label="材料变化" value={story.material_evolution_state} />
+              <Definition label="证据姿态" value={evidencePostureLabel(story.evidence_posture)} />
               <Definition label="首次发现" value={absoluteTime(story.first_seen_at_ms)} />
-              <Definition label="最近更新" value={absoluteTime(story.last_seen_at_ms)} />
-              <Definition label="AI" value={analysisLabel(story.analysis_status)} />
-            </dl>
-            {story.analysis_error ? (
-              <p className="news-analysis-error">{story.analysis_error}</p>
-            ) : null}
-          </section>
-          <section className="news-detail-card">
-            <h3>重要性因素</h3>
-            <dl>
-              <Definition label="来源权威度" value={importanceFactor(story, "authority")} />
               <Definition
-                label="独立交叉验证"
-                value={importanceFactor(story, "independent_corroboration")}
+                label="最后材料证据"
+                value={absoluteTime(story.last_material_evidence_at_ms)}
               />
-              <Definition label="时效性" value={importanceFactor(story, "recency")} />
-              <Definition label="事件严重性" value={importanceFactor(story, "severity")} />
+              <Definition label="AI" value={analysisLabel(text(analysis.status))} />
             </dl>
           </section>
+          <FactorCard title="影响因素" factors={story.impact_profile} />
+          <FactorCard title="优先级因素" factors={story.priority_profile} />
           <section className="news-detail-card">
-            <h3>成员归并审计</h3>
+            <h3>成员语义</h3>
             <div className="news-membership-list">
-              {story.memberships.map((membership) => (
-                <div key={membership.article_id}>
-                  <b>
-                    {articleById.get(membership.article_id)?.source_name ?? membership.article_id}
-                  </b>
-                  <span>{membership.match_method}</span>
-                  <small>{Math.round(membership.match_score * 100)}% 匹配</small>
+              {story.memberships.map((membership, index) => (
+                <div key={`${text(membership.article_id)}-${index}`}>
+                  <b>{text(membership.content_form, "unknown")}</b>
+                  <span>{text(membership.origin_relation, "unresolved")}</span>
+                  <small>
+                    {text(membership.development_relation)} · {text(membership.epistemic_use)}
+                  </small>
                 </div>
               ))}
             </div>
@@ -345,59 +328,142 @@ function StoryDetail({ story }: { story: NewsStoryDetail }) {
   );
 }
 
-function AnalysisCard({ story }: { story: NewsStoryDetail }) {
-  if (!story.analysis) {
+function StoryAnalysis({ status, payload }: { status: string; payload: JsonRecord }) {
+  if (!Object.keys(payload).length) {
     return (
       <section className="news-detail-card news-analysis-empty">
-        <SectionTitle icon={Sparkles} title="DeepSeek 中文分析" />
-        <h3>{analysisLabel(story.analysis_status)}</h3>
-        <p>原始证据已经保留；AI 结论只有在对应证据集成功发布后才会显示。</p>
+        <SectionTitle icon={Sparkles} title="中文 Story Analysis" />
+        <h3>{analysisLabel(status)}</h3>
+        <p>事实证据始终可读；只有通过证据引用和落地校验的分析才会发布。</p>
       </section>
     );
   }
-  const analysis = story.analysis;
   return (
     <section className="news-detail-card news-analysis-card">
-      <SectionTitle icon={Sparkles} title="DeepSeek 中文分析" />
-      <AnalysisSection title="发生了什么" value={analysis.what_happened} />
-      <AnalysisSection title="为什么重要" value={analysis.why_it_matters} />
+      <SectionTitle icon={Sparkles} title="中文 Story Analysis" />
+      <AnalysisSection title="发生了什么" value={factText(payload.what_happened)} />
+      <AnalysisSection title="为什么重要" value={text(payload.why_it_matters)} />
       <div className="news-impact-grid">
-        <AnalysisSection title="政治影响" value={analysis.political_impact} />
-        <AnalysisSection title="经济与市场影响" value={analysis.economic_market_impact} />
+        <AnalysisSection title="政治影响" value={text(payload.political_impact)} />
+        <AnalysisSection title="经济与市场影响" value={text(payload.economic_market_impact)} />
       </div>
-      <div className="news-impact-grid">
-        <StringList title="已确认事实" values={analysis.confirmed_facts} />
-        <StringList title="分歧与未知" values={analysis.disagreements_unknowns} />
-      </div>
-      <AnalysisSection title="下一检查点" value={analysis.next_checkpoint} />
-      <footer>
-        <span>{analysis.model}</span>
-        <time>{absoluteTime(analysis.published_at_ms)}</time>
-      </footer>
+      <StringList title="分歧与未知" values={strings(payload.disagreements_unknowns)} />
+      <AnalysisSection title="下一检查点" value={text(payload.next_checkpoint)} />
     </section>
   );
 }
 
-function ArticleEvidence({ article, referenced }: { article: NewsArticle; referenced: boolean }) {
-  const url = article.origin_url || article.canonical_url;
+function GlobalBriefRoute({ token }: { token: string }) {
+  const query = useNewsBriefWithToken(token);
+  const history = useNewsBriefHistoryWithToken(token);
+  const data = query.data;
+  const publication = data?.current ?? null;
+  const payload = record(publication?.payload);
+  const fallback = record(data?.fallback);
+  const fallbackBundle = record(fallback.evidence_bundle);
+  const fallbackStories = records(fallbackBundle.stories);
+  return (
+    <section
+      aria-label="Global Brief"
+      className="radar-panel news-panel news-detail-shell"
+      data-page-archetype="case"
+    >
+      <header className="radar-toolbar news-toolbar">
+        <Link className="news-back-link" to={newsPath()}>
+          <ArrowLeft aria-hidden />
+          返回 Story 流
+        </Link>
+        <span className="news-live-state">{query.isFetching ? "更新中" : "已验证发布"}</span>
+      </header>
+      {query.isLoading ? (
+        <PageState.Loading layout="panel" rows={8} label="loading Global Brief" />
+      ) : null}
+      {query.isError ? <PageState.Error error={query.error ?? "Global Brief unavailable"} /> : null}
+      {publication ? (
+        <article className="news-story-detail">
+          <header className="news-story-hero">
+            <div>
+              <span className="news-eyebrow">
+                <Newspaper aria-hidden />
+                Global Brief · {absoluteTime(publication.cutoff_at_ms)}
+              </span>
+              <h2>{text(payload.headline, "全球政治经济简报")}</h2>
+              <p>{text(payload.executive_summary)}</p>
+            </div>
+          </header>
+          <section className="news-article-list">
+            {records(payload.items).map((item, index) => (
+              <BriefItem item={item} key={`${text(item.story_id)}-${index}`} />
+            ))}
+          </section>
+        </article>
+      ) : fallbackStories.length ? (
+        <section className="news-detail-card news-analysis-empty">
+          <SectionTitle icon={ShieldCheck} title="确定性 Brief 选材" />
+          <p>尚无通过校验的 AI Brief。以下是冻结选材，不使用生成文本补位。</p>
+          {fallbackStories.map((story) => (
+            <Link key={text(story.story_id)} to={newsStoryPath(text(story.story_id))}>
+              {text(story.title)}
+            </Link>
+          ))}
+        </section>
+      ) : (
+        <PageState.Empty title="暂无 Global Brief" hint="尚没有达到选材门槛的 Story。" />
+      )}
+      {data?.latest_failure ? (
+        <p className="news-degraded-state" role="status">
+          最近一次生成失败；当前页面保留上一份有效发布或确定性选材。
+        </p>
+      ) : null}
+      {history.data?.items.length ? (
+        <section className="news-detail-card">
+          <h3>历史发布</h3>
+          <ul>
+            {history.data.items.map((item) => (
+              <li key={item.publication_id}>
+                {absoluteTime(item.cutoff_at_ms)} · {text(item.contract.model, "unknown model")}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function BriefItem({ item }: { item: JsonRecord }) {
+  return (
+    <article className="news-article-evidence">
+      <header>
+        <b>{factText(item.what_happened)}</b>
+      </header>
+      <p>{text(item.why_it_matters)}</p>
+      <p>{transmissionText(item.transmission_scenarios)}</p>
+      <footer>
+        <Link to={newsStoryPath(text(item.story_id))}>查看 Story 证据</Link>
+      </footer>
+    </article>
+  );
+}
+
+function ArticleEvidence({ article }: { article: JsonRecord }) {
+  const url = text(article.canonical_url);
   return (
     <article className="news-article-evidence">
       <header>
         <div>
-          <b>{article.source_name}</b>
-          <span>{article.source_role === "trusted_aggregator" ? "聚合源" : "原始媒体"}</span>
-          <span>采集链：{article.source_chain_id}</span>
-          <span data-provenance={article.provenance_status}>{article.provenance_status}</span>
-          {referenced ? <span data-referenced="true">AI 引用</span> : null}
+          <b>{text(article.source_name, text(article.source_id, "未知来源"))}</b>
+          <span>{text(article.source_role)}</span>
+          <span>{text(article.origin_relation, "unresolved")}</span>
+          <span>{text(article.epistemic_use)}</span>
         </div>
-        <time>{absoluteTime(article.published_at_ms)}</time>
+        <time>{absoluteTime(number(article.source_published_at_ms))}</time>
       </header>
-      <h3>{article.title}</h3>
-      {article.snippet ? <p>{article.snippet}</p> : null}
+      <h3>{text(article.title)}</h3>
+      {text(article.snippet) ? <p>{text(article.snippet)}</p> : null}
       <footer>
         <span>
-          原始出处：{article.origin_name || article.origin_domain || "未识别"}
-          {article.origin_domain ? ` · ${article.origin_domain}` : ""}
+          Revision {number(article.revision_number)} · {text(article.material_change_kind)}
         </span>
         {url ? (
           <a href={url} rel="noreferrer" target="_blank">
@@ -407,6 +473,29 @@ function ArticleEvidence({ article, referenced }: { article: NewsArticle; refere
         ) : null}
       </footer>
     </article>
+  );
+}
+
+function AuditCard({ title, rows }: { title: string; rows: JsonRecord[] }) {
+  if (!rows.length) return null;
+  return (
+    <section className="news-detail-card">
+      <h3>{title}</h3>
+      <pre>{JSON.stringify(rows, null, 2)}</pre>
+    </section>
+  );
+}
+
+function FactorCard({ title, factors }: { title: string; factors: JsonRecord }) {
+  return (
+    <section className="news-detail-card">
+      <h3>{title}</h3>
+      <dl>
+        {Object.entries(factors).map(([key, value]) => (
+          <Definition key={key} label={key} value={formatValue(value)} />
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -472,7 +561,7 @@ function AnalysisSection({ title, value }: { title: string; value: string }) {
   return (
     <div className="news-analysis-section">
       <h4>{title}</h4>
-      <p>{value}</p>
+      <p>{value || "未知"}</p>
     </div>
   );
 }
@@ -482,11 +571,7 @@ function StringList({ title, values }: { title: string; values: string[] }) {
     <div className="news-analysis-section">
       <h4>{title}</h4>
       {values.length ? (
-        <ul>
-          {values.map((value) => (
-            <li key={value}>{value}</li>
-          ))}
-        </ul>
+        <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul>
       ) : (
         <p>无</p>
       )}
@@ -503,36 +588,71 @@ function Definition({ label, value }: { label: string; value: string }) {
   );
 }
 
-function importanceFactor(
-  story: NewsStoryDetail,
-  key: "authority" | "independent_corroboration" | "recency" | "severity",
-): string {
-  const value = story.importance_factors[key];
-  return typeof value === "number" && Number.isFinite(value) ? `${value} 分` : "未知";
-}
-
-function normalizeVerification(value: string | null): NewsVerificationStatus | "all" {
-  return VERIFICATION_FILTERS.includes(value as (typeof VERIFICATION_FILTERS)[number])
-    ? (value as NewsVerificationStatus | "all")
+function normalizePosture(value: string | null): NewsEvidencePosture | "all" {
+  return POSTURE_FILTERS.includes(value as (typeof POSTURE_FILTERS)[number])
+    ? (value as NewsEvidencePosture | "all")
     : "all";
 }
 
-function importanceLevel(score: number): string {
-  if (score >= 75) return "critical";
-  if (score >= 55) return "high";
-  return "normal";
+function scoreLevel(score: number): string {
+  return score >= 85 ? "critical" : score >= 65 ? "high" : "normal";
 }
 
 function relativeTime(value: number): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - value) / 1000));
-  if (seconds < 60) return "刚刚";
-  const minutes = Math.floor(seconds / 60);
+  const minutes = Math.max(0, Math.floor((Date.now() - value) / 60_000));
+  if (minutes < 1) return "刚刚";
   if (minutes < 60) return `${minutes} 分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  return `${Math.floor(hours / 24)} 天前`;
+  if (minutes < 1_440) return `${Math.floor(minutes / 60)} 小时前`;
+  return `${Math.floor(minutes / 1_440)} 天前`;
 }
 
 function absoluteTime(value: number): string {
-  return new Date(value).toLocaleString();
+  return value > 0 ? new Date(value).toLocaleString() : "未知";
+}
+
+function record(value: unknown): JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonRecord)
+    : {};
+}
+
+function records(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.map(record) : [];
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function text(value: unknown, fallback = ""): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function number(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatValue(value: unknown): string {
+  if (typeof value === "number") return String(Math.round(value * 100) / 100);
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function factText(value: unknown): string {
+  return records(value)
+    .map((fact) => text(fact.text))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function transmissionText(value: unknown): string {
+  return records(value)
+    .map((scenario) =>
+      [text(scenario.condition), text(scenario.mechanism), text(scenario.possible_effect)]
+        .filter(Boolean)
+        .join("；"),
+    )
+    .filter(Boolean)
+    .join(" ");
 }

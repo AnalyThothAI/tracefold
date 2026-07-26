@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -10,8 +11,7 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.validators import _limit
-from tracefold.app.llm import litellm_proxy_model_name, llm_is_configured
-from tracefold.news import NewsAnalysisContract, StoryInterface
+from tracefold.news import NewsInterface
 
 router = APIRouter()
 
@@ -25,21 +25,21 @@ def list_news_stories(
     limit: Annotated[int, Query()] = 50,
     cursor: Annotated[str, Query()] = "",
     q: Annotated[str, Query()] = "",
-    verification_status: Annotated[str, Query()] = "",
+    evidence_posture: Annotated[str, Query()] = "",
     source: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     _validate_query_params(
         request,
-        supported={"limit", "cursor", "q", "verification_status", "source", "token"},
+        supported={"limit", "cursor", "q", "evidence_posture", "source", "token"},
     )
     runtime = _authenticated_runtime(request)
     try:
         with runtime.repositories() as repos:
-            data = _story_interface(runtime, repos).list_stories(
+            data = _news_interface(repos).list_stories(
                 limit=_limit(limit, maximum=200),
                 cursor=cursor or None,
                 q=q or None,
-                verification_status=verification_status or None,
+                evidence_posture=evidence_posture or None,
                 source=source or None,
             )
     except ValueError as exc:
@@ -57,7 +57,7 @@ def list_news_stories(
 def get_news_story(request: Request, story_id: str) -> JSONResponse:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = _story_interface(runtime, repos).get_story(story_id=story_id)
+        data = _news_interface(repos).get_story(story_id=story_id)
     if data is None:
         return _validated_json(
             api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData],
@@ -70,6 +70,65 @@ def get_news_story(request: Request, story_id: str) -> JSONResponse:
     )
 
 
+@router.post(
+    "/news/stories/{story_id}/analysis-requests",
+    response_model=api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
+)
+def request_news_story_analysis(request: Request, story_id: str) -> JSONResponse:
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos, repos.transaction():
+        data = _news_interface(repos).request_story_analysis(
+            story_id=story_id,
+            now_ms=int(time.time() * 1000),
+        )
+    if data is None:
+        return _validated_json(
+            api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
+            {"ok": False, "error": "news_story_not_found"},
+            status_code=404,
+        )
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
+        {"ok": True, "data": data},
+        status_code=202,
+    )
+
+
+@router.get(
+    "/news/brief",
+    response_model=api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefData],
+)
+def get_news_global_brief(request: Request) -> JSONResponse:
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        data = _news_interface(repos).get_global_brief()
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefData],
+        {"ok": True, "data": data},
+    )
+
+
+@router.get(
+    "/news/brief/history",
+    response_model=api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefHistoryData],
+)
+def list_news_global_brief_history(
+    request: Request,
+    limit: Annotated[int, Query()] = 20,
+) -> JSONResponse:
+    _validate_query_params(request, supported={"limit", "token"})
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        data = _news_interface(repos).list_global_brief_history(
+            limit=_limit(limit, maximum=100),
+        )
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefHistoryData],
+        {"ok": True, "data": data},
+    )
+
+
 @router.get(
     "/news/sources",
     response_model=api_schemas.ApiEnvelope[api_schemas.NewsSourcesData],
@@ -78,30 +137,15 @@ def list_news_sources(request: Request) -> JSONResponse:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = _story_interface(runtime, repos).list_sources()
+        data = _news_interface(repos).list_sources()
     return _validated_json(
         api_schemas.ApiEnvelope[api_schemas.NewsSourcesData],
         {"ok": True, "data": data},
     )
 
 
-def _story_interface(runtime: Any, repos: Any) -> StoryInterface:
-    analysis_contract = None
-    if (
-        runtime.settings.news.enabled
-        and runtime.settings.workers.news_analysis.enabled
-        and llm_is_configured(runtime.settings)
-    ):
-        analysis_contract = NewsAnalysisContract(
-            model=litellm_proxy_model_name(
-                runtime.settings.workers.news_analysis.model,
-                base_url=runtime.settings.llm.base_url,
-            )
-        )
-    return StoryInterface(
-        repos.news,
-        analysis_contract=analysis_contract,
-    )
+def _news_interface(repos: Any) -> NewsInterface:
+    return NewsInterface(repos.news)
 
 
 def _validate_query_params(request: Request, *, supported: set[str]) -> None:

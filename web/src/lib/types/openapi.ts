@@ -106,6 +106,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get News Global Brief */
+        get: operations["get_news_global_brief_api_news_brief_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/brief/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List News Global Brief History */
+        get: operations["list_news_global_brief_history_api_news_brief_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/news/sources": {
         parameters: {
             query?: never;
@@ -151,6 +185,23 @@ export interface paths {
         get: operations["get_news_story_api_news_stories__story_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/stories/{story_id}/analysis-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request News Story Analysis */
+        post: operations["request_news_story_analysis_api_news_stories__story_id__analysis_requests_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -562,9 +613,39 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** ApiEnvelope[NewsGlobalBriefData] */
+        ApiEnvelope_NewsGlobalBriefData_: {
+            data?: components["schemas"]["NewsGlobalBriefData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsGlobalBriefHistoryData] */
+        ApiEnvelope_NewsGlobalBriefHistoryData_: {
+            data?: components["schemas"]["NewsGlobalBriefHistoryData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
         /** ApiEnvelope[NewsSourcesData] */
         ApiEnvelope_NewsSourcesData_: {
             data?: components["schemas"]["NewsSourcesData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsStoryAnalysisRequestData] */
+        ApiEnvelope_NewsStoryAnalysisRequestData_: {
+            data?: components["schemas"]["NewsStoryAnalysisRequestData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -1101,51 +1182,128 @@ export interface components {
             /** Title */
             title: string;
         };
-        /** NewsArticleData */
-        NewsArticleData: {
+        /** NewsAnalysisAvailabilityData */
+        NewsAnalysisAvailabilityData: {
+            /** Publication Id */
+            publication_id: string | null;
+            /** Published At Ms */
+            published_at_ms: number | null;
+            /** Short Conclusion */
+            short_conclusion: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "unavailable";
+        };
+        /** NewsArticleRevisionData */
+        NewsArticleRevisionData: {
             /** Article Id */
             article_id: string;
             /** Canonical Url */
-            canonical_url: string | null;
+            canonical_url: string;
+            /** Content Byte Count */
+            content_byte_count: number | null;
+            /** Content Extractor Version */
+            content_extractor_version: string | null;
+            /** Content Failure Reason */
+            content_failure_reason: string | null;
+            /** Content Fetched At Ms */
+            content_fetched_at_ms: number | null;
+            /**
+             * Content Form
+             * @enum {string}
+             */
+            content_form: "report" | "analysis" | "opinion" | "live" | "static" | "unknown";
+            /** Content Hash */
+            content_hash: string;
+            /** Content Snapshot Id */
+            content_snapshot_id: string | null;
+            /** Content Snapshot Status */
+            content_snapshot_status: string | null;
+            /** Created At Ms */
+            created_at_ms: number;
+            /**
+             * Development Relation
+             * @enum {string}
+             */
+            development_relation: "initial" | "follow_up" | "correction" | "background" | "retrospective";
+            /**
+             * Epistemic Use
+             * @enum {string}
+             */
+            epistemic_use: "fact_evidence" | "context" | "viewpoint" | "non_evidence";
+            /** First Observation Id */
+            first_observation_id: string;
             /** First Seen At Ms */
             first_seen_at_ms: number;
             /**
-             * Identity Method
+             * Identity Status
              * @enum {string}
              */
-            identity_method: "canonical_url" | "source_guid" | "title_time_bucket";
+            identity_status: "active" | "ended" | "revision_identity_ambiguous";
             /** Identity Version */
             identity_version: string;
+            /** Incarnation Key */
+            incarnation_key: string;
+            /** Is Current */
+            is_current: boolean;
             /** Language */
             language: string;
-            /** Last Seen At Ms */
-            last_seen_at_ms: number;
-            /** Origin Domain */
-            origin_domain: string | null;
-            /** Origin Name */
-            origin_name: string | null;
-            /** Origin Url */
-            origin_url: string | null;
             /**
-             * Provenance Status
+             * Material Change Kind
              * @enum {string}
              */
-            provenance_status: "verified" | "attributed" | "unknown";
-            /** Published At Ms */
-            published_at_ms: number;
+            material_change_kind: "initial" | "title" | "summary" | "source_time" | "content" | "correction" | "url_reuse";
+            /**
+             * Membership Kind
+             * @enum {string}
+             */
+            membership_kind: "primary" | "contextual";
+            /** Observation Id */
+            observation_id: string;
+            /** Observed At Ms */
+            observed_at_ms: number;
+            /** Origin Confidence */
+            origin_confidence: number;
+            /**
+             * Origin Relation
+             * @enum {string}
+             */
+            origin_relation: "originating" | "independent" | "syndicated" | "derived" | "unresolved";
+            /** Publisher Organization Id */
+            publisher_organization_id: string;
+            /** Raw Url */
+            raw_url: string;
+            /** Reporting Origin Id */
+            reporting_origin_id: string | null;
+            /** Revision Id */
+            revision_id: string;
+            /** Revision Number */
+            revision_number: number;
+            /** Snapshot Content Hash */
+            snapshot_content_hash: string | null;
             /** Snippet */
             snippet: string;
             /** Source Chain Id */
             source_chain_id: string;
+            /** Source Domain */
+            source_domain: string;
+            /** Source Entry Key */
+            source_entry_key: string;
             /** Source Id */
             source_id: string;
             /** Source Name */
             source_name: string;
+            /** Source Published At Ms */
+            source_published_at_ms: number;
+            /** Source Publisher Organization Id */
+            source_publisher_organization_id: string;
             /**
              * Source Role
              * @enum {string}
              */
-            source_role: "original_publisher" | "trusted_aggregator";
+            source_role: "original_publisher" | "wire_service" | "official_authority" | "trusted_aggregator";
             /** Title */
             title: string;
             /**
@@ -1153,59 +1311,234 @@ export interface components {
              * @enum {string}
              */
             trust_tier: "authoritative" | "trusted" | "standard" | "low";
+            /** Updated At Ms */
+            updated_at_ms: number;
         };
-        /** NewsPrimaryArticleData */
-        NewsPrimaryArticleData: {
+        /** NewsBriefEligibilityReasonData */
+        NewsBriefEligibilityReasonData: {
+            /** Eligible */
+            eligible: boolean;
+            /** Reasons */
+            reasons: string[];
+            /** Version */
+            version: string;
+        };
+        /** NewsBriefEvidenceBundleData */
+        NewsBriefEvidenceBundleData: {
+            /** Cutoff At Ms */
+            cutoff_at_ms: number;
+            /** Evidence Bundle Hash */
+            evidence_bundle_hash: string;
+            /** Narrative Groups */
+            narrative_groups: {
+                [key: string]: unknown;
+            }[];
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Policy Version */
+            selection_policy_version: string;
+            /** Selection Snapshot Id */
+            selection_snapshot_id: string;
+            /** Stories */
+            stories: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** NewsBriefFailureData */
+        NewsBriefFailureData: {
+            /** Last Error */
+            last_error: string | null;
+            /** Updated At Ms */
+            updated_at_ms: number;
+            /** Validation Errors */
+            validation_errors: string[];
+        };
+        /** NewsBriefFallbackData */
+        NewsBriefFallbackData: {
+            /** Cutoff At Ms */
+            cutoff_at_ms: number;
+            /** Decisions */
+            decisions: {
+                [key: string]: unknown;
+            }[];
+            evidence_bundle: components["schemas"]["NewsBriefEvidenceBundleData"];
+            /** Selected Story Ids */
+            selected_story_ids: string[];
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Snapshot Id */
+            selection_snapshot_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "debounced" | "publishable" | "published" | "superseded";
+        };
+        /** NewsBriefItemPayloadData */
+        NewsBriefItemPayloadData: {
+            /** Story Id */
+            story_id: string;
+            /** Transmission Scenarios */
+            transmission_scenarios: components["schemas"]["NewsConditionalTransmissionData"][];
+            /** Uncertainties */
+            uncertainties: string[];
+            /** Watchpoints */
+            watchpoints: string[];
+            /** What Happened */
+            what_happened: components["schemas"]["NewsEvidenceBackedFactData"][];
+            /** Why It Matters */
+            why_it_matters: string;
+        };
+        /** NewsBriefPayloadData */
+        NewsBriefPayloadData: {
+            /** Executive Summary */
+            executive_summary: string;
+            /** Global Watchpoints */
+            global_watchpoints: string[];
+            /** Headline */
+            headline: string;
+            /** Items */
+            items: components["schemas"]["NewsBriefItemPayloadData"][];
+            /** Narratives */
+            narratives: string[];
+        };
+        /** NewsBriefPublicationData */
+        NewsBriefPublicationData: {
+            contract: components["schemas"]["NewsPublicationContractData"];
+            /** Cutoff At Ms */
+            cutoff_at_ms: number;
+            evidence_bundle: components["schemas"]["NewsBriefEvidenceBundleData"];
+            /** Evidence Bundle Hash */
+            evidence_bundle_hash: string;
+            /** Evidence References */
+            evidence_references: string[];
+            /** Narrative Groups */
+            narrative_groups: {
+                [key: string]: unknown;
+            }[];
+            payload: components["schemas"]["NewsBriefPayloadData"];
+            /** Publication Id */
+            publication_id: string;
+            /** Published At Ms */
+            published_at_ms: number;
+            /** Receipt */
+            receipt: {
+                [key: string]: unknown;
+            };
+            /** Selected Story Ids */
+            selected_story_ids: string[];
+            /** Selection Decisions */
+            selection_decisions: {
+                [key: string]: unknown;
+            }[];
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Snapshot Id */
+            selection_snapshot_id: string;
+        };
+        /** NewsConditionalTransmissionData */
+        NewsConditionalTransmissionData: {
+            /** Condition */
+            condition: string;
+            /**
+             * Confidence
+             * @enum {string}
+             */
+            confidence: "low" | "medium" | "high";
+            /** Mechanism */
+            mechanism: string;
+            /** Possible Effect */
+            possible_effect: string;
+        };
+        /** NewsEventCoreData */
+        NewsEventCoreData: {
+            /** Actions */
+            actions: string[];
+            /** Actor Entities */
+            actor_entities: string[];
+            /** Entities */
+            entities: string[];
+            /** Event Objects */
+            event_objects: string[];
+            /** Locations */
+            locations: string[];
+            /** Named Event Keys */
+            named_event_keys: string[];
+            /** Stages */
+            stages: string[];
+            /** Target Entities */
+            target_entities: string[];
+        };
+        /** NewsEvidenceBackedFactData */
+        NewsEvidenceBackedFactData: {
+            /** Evidence References */
+            evidence_references: string[];
+            /** Text */
+            text: string;
+        };
+        /** NewsGlobalBriefData */
+        NewsGlobalBriefData: {
+            current: components["schemas"]["NewsBriefPublicationData"] | null;
+            fallback: components["schemas"]["NewsBriefFallbackData"] | null;
+            latest_failure: components["schemas"]["NewsBriefFailureData"] | null;
+        };
+        /** NewsGlobalBriefHistoryData */
+        NewsGlobalBriefHistoryData: {
+            /** Items */
+            items: components["schemas"]["NewsBriefPublicationData"][];
+        };
+        /** NewsPublicationContractData */
+        NewsPublicationContractData: {
+            /** Locale */
+            locale: string;
+            /** Model */
+            model: string;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Schema Version */
+            schema_version: string;
+            /** Workflow Version */
+            workflow_version: string;
+        };
+        /** NewsRepresentativeEvidenceData */
+        NewsRepresentativeEvidenceData: {
             /** Article Id */
             article_id: string;
-            /** Canonical Url */
-            canonical_url: string | null;
-            /** Origin Domain */
-            origin_domain: string | null;
-            /** Origin Name */
-            origin_name: string | null;
-            /** Origin Url */
-            origin_url: string | null;
-            /**
-             * Provenance Status
-             * @enum {string}
-             */
-            provenance_status: "verified" | "attributed" | "unknown";
-            /** Published At Ms */
-            published_at_ms: number;
-            /** Snippet */
-            snippet: string;
-            /** Source Chain Id */
-            source_chain_id: string;
+            /** Revision Id */
+            revision_id: string;
+            /** Source Domain */
+            source_domain: string;
             /** Source Id */
             source_id: string;
             /** Source Name */
             source_name: string;
-            /**
-             * Source Role
-             * @enum {string}
-             */
-            source_role: "original_publisher" | "trusted_aggregator";
+            /** Source Published At Ms */
+            source_published_at_ms: number;
             /** Title */
             title: string;
-            /**
-             * Trust Tier
-             * @enum {string}
-             */
-            trust_tier: "authoritative" | "trusted" | "standard" | "low";
         };
         /** NewsSourceData */
         NewsSourceData: {
+            /** Canonical Domains */
+            canonical_domains: string[];
             /** Consecutive Failures */
             consecutive_failures: number;
             /** Coverage Tags */
             coverage_tags: string[];
+            /** Created At Ms */
+            created_at_ms: number;
             /** Default Language */
             default_language: string;
             /** Enabled */
             enabled: boolean;
+            /** Etag */
+            etag: string | null;
             /** Feed Url */
             feed_url: string;
+            /** Known Relationships */
+            known_relationships: {
+                [key: string]: unknown;
+            }[];
             /** Last Error */
             last_error: string | null;
             /** Last Fetch Finished At Ms */
@@ -1214,30 +1547,58 @@ export interface components {
             last_fetch_started_at_ms: number | null;
             /** Last Http Status */
             last_http_status: number | null;
+            /** Last Modified */
+            last_modified: string | null;
             /** Last Success At Ms */
             last_success_at_ms: number | null;
+            /** Latest Duplicate Seen Count */
+            latest_duplicate_seen_count: number | null;
+            /** Latest Entries Admitted */
+            latest_entries_admitted: number | null;
+            /** Latest Entries Seen */
+            latest_entries_seen: number | null;
+            /** Latest Error Code */
+            latest_error_code: string | null;
+            /** Latest Fetch Receipt Id */
+            latest_fetch_receipt_id: string | null;
+            /** Latest Rejection Counts */
+            latest_rejection_counts: {
+                [key: string]: unknown;
+            } | null;
             /** Name */
             name: string;
             /** Next Fetch At Ms */
             next_fetch_at_ms: number;
+            /** Parent Organization Id */
+            parent_organization_id: string | null;
+            /** Publisher Organization Id */
+            publisher_organization_id: string;
             /** Refresh Interval Seconds */
             refresh_interval_seconds: number;
+            /** Registry Version */
+            registry_version: string;
             /** Source Chain Id */
             source_chain_id: string;
             /** Source Domain */
             source_domain: string;
             /** Source Id */
             source_id: string;
+            /** Source Quality Factors */
+            source_quality_factors: {
+                [key: string]: unknown;
+            };
             /**
              * Source Role
              * @enum {string}
              */
-            source_role: "original_publisher" | "trusted_aggregator";
+            source_role: "original_publisher" | "wire_service" | "official_authority" | "trusted_aggregator";
             /**
              * Trust Tier
              * @enum {string}
              */
             trust_tier: "authoritative" | "trusted" | "standard" | "low";
+            /** Updated At Ms */
+            updated_at_ms: number;
         };
         /** NewsSourcesData */
         NewsSourcesData: {
@@ -1246,82 +1607,172 @@ export interface components {
         };
         /** NewsStoryAnalysisData */
         NewsStoryAnalysisData: {
-            /** Analysis Id */
-            analysis_id: string;
-            /** Confirmed Facts */
-            confirmed_facts: string[];
+            current: components["schemas"]["NewsStoryAnalysisPublicationData"] | null;
+            /** History */
+            history: components["schemas"]["NewsStoryAnalysisPublicationData"][];
+            request: components["schemas"]["NewsStoryAnalysisRequestDetailData"] | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "unavailable" | "pending" | "claimed" | "failed" | "insufficient";
+        };
+        /** NewsStoryAnalysisPayloadData */
+        NewsStoryAnalysisPayloadData: {
             /** Disagreements Unknowns */
             disagreements_unknowns: string[];
             /** Economic Market Impact */
             economic_market_impact: string;
-            /** Evidence References */
-            evidence_references: string[];
-            /** Model */
-            model: string;
             /** Next Checkpoint */
             next_checkpoint: string;
             /** Political Impact */
             political_impact: string;
-            /** Prompt Version */
-            prompt_version: string;
-            /** Published At Ms */
-            published_at_ms: number;
-            /** Schema Version */
-            schema_version: string;
+            /** Transmission Scenarios */
+            transmission_scenarios: components["schemas"]["NewsConditionalTransmissionData"][];
             /** What Happened */
-            what_happened: string;
+            what_happened: components["schemas"]["NewsEvidenceBackedFactData"][];
             /** Why It Matters */
             why_it_matters: string;
+        };
+        /** NewsStoryAnalysisPublicationData */
+        NewsStoryAnalysisPublicationData: {
+            /** Evidence References */
+            evidence_references: string[];
+            /** Locale */
+            locale: string;
+            /** Material Evidence Hash */
+            material_evidence_hash: string;
+            /** Model */
+            model: string;
+            payload: components["schemas"]["NewsStoryAnalysisPayloadData"];
+            /** Prompt Version */
+            prompt_version: string;
+            /** Publication Id */
+            publication_id: string;
+            /** Published At Ms */
+            published_at_ms: number;
+            /** Receipt */
+            receipt: {
+                [key: string]: unknown;
+            };
+            /** Schema Version */
+            schema_version: string;
+            /** Story Id */
+            story_id: string;
             /** Workflow Version */
             workflow_version: string;
         };
-        /** NewsStoryDetailData */
-        NewsStoryDetailData: {
-            analysis: components["schemas"]["NewsStoryAnalysisData"] | null;
-            /** Analysis Error */
-            analysis_error: string | null;
-            /**
-             * Analysis Status
-             * @enum {string}
-             */
-            analysis_status: "pending" | "available" | "failed" | "unavailable";
-            /** Anchor Article Id */
-            anchor_article_id: string;
-            /** Article Count */
-            article_count: number;
-            /** Articles */
-            articles: components["schemas"]["NewsArticleData"][];
-            /** Evidence Set Hash */
-            evidence_set_hash: string;
-            /** First Seen At Ms */
-            first_seen_at_ms: number;
-            /** Identity Version */
-            identity_version: string;
-            /** Importance Factors */
-            importance_factors: {
+        /** NewsStoryAnalysisRequestData */
+        NewsStoryAnalysisRequestData: {
+            /** Material Evidence Hash */
+            material_evidence_hash: string;
+            /** Request Id */
+            request_id: string;
+            /** Status */
+            status: string;
+            /** Story Id */
+            story_id: string;
+        };
+        /** NewsStoryAnalysisRequestDetailData */
+        NewsStoryAnalysisRequestDetailData: {
+            /** Material Evidence Hash */
+            material_evidence_hash: string;
+            /** Reason */
+            reason: {
                 [key: string]: unknown;
             };
-            /** Importance Score */
-            importance_score: number;
-            /** Importance Version */
-            importance_version: string;
-            /** Independent Origin Count */
-            independent_origin_count: number;
-            /** Language */
-            language: string;
-            /** Last Seen At Ms */
-            last_seen_at_ms: number;
-            /** Lifecycle Version */
-            lifecycle_version: string;
-            /** Memberships */
-            memberships: components["schemas"]["NewsStoryMembershipData"][];
+            /** Request Id */
+            request_id: string;
             /**
-             * Phase
+             * Request Kind
              * @enum {string}
              */
-            phase: "breaking" | "developing" | "sustained" | "fading";
-            /** Primary Article Id */
-            primary_article_id: string;
+            request_kind: "automatic" | "on_demand";
+            /** Requested At Ms */
+            requested_at_ms: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "claimed" | "published" | "failed" | "insufficient";
+            /** Story Id */
+            story_id: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
+        };
+        /** NewsStoryDetailData */
+        NewsStoryDetailData: {
+            analysis: components["schemas"]["NewsStoryAnalysisData"];
+            /** Articles */
+            articles: components["schemas"]["NewsArticleRevisionData"][];
+            /** Breaking */
+            breaking: boolean;
+            /** Breaking Reason */
+            breaking_reason: string;
+            brief_eligibility_reason: components["schemas"]["NewsBriefEligibilityReasonData"];
+            /** Brief Eligible */
+            brief_eligible: boolean;
+            /** Contextual Member Count */
+            contextual_member_count: number;
+            event_core: components["schemas"]["NewsEventCoreData"];
+            /** Evidence Factors */
+            evidence_factors: {
+                [key: string]: unknown;
+            };
+            /** Evidence Posture */
+            evidence_posture: string;
+            /** First Seen At Ms */
+            first_seen_at_ms: number;
+            /** Identity Decisions */
+            identity_decisions: components["schemas"]["NewsStoryIdentityDecisionData"][];
+            /** Identity Status */
+            identity_status: string;
+            /** Identity Version */
+            identity_version: string;
+            /** Impact Profile */
+            impact_profile: {
+                [key: string]: unknown;
+            };
+            /** Impact Score */
+            impact_score: number;
+            /** Independent Origin Count */
+            independent_origin_count: number;
+            /** Languages */
+            languages: string[];
+            /** Last Material Evidence At Ms */
+            last_material_evidence_at_ms: number;
+            /** Last Presentation At Ms */
+            last_presentation_at_ms: number;
+            /** Lifecycle */
+            lifecycle: string;
+            /** Lifecycle Version */
+            lifecycle_version: string;
+            /** Material Events */
+            material_events: components["schemas"]["NewsStoryMaterialEventData"][];
+            /** Material Evidence Hash */
+            material_evidence_hash: string;
+            /** Material Evolution State */
+            material_evolution_state: string;
+            /** Memberships */
+            memberships: components["schemas"]["NewsStoryMembershipData"][];
+            /** Presentation State Hash */
+            presentation_state_hash: string;
+            /** Primary Member Count */
+            primary_member_count: number;
+            /** Priority Profile */
+            priority_profile: {
+                [key: string]: unknown;
+            };
+            /** Priority Score */
+            priority_score: number;
+            /** Representative Revision Id */
+            representative_revision_id: string;
+            /** Scoring Version */
+            scoring_version: string;
+            /** Seed Article Id */
+            seed_article_id: string;
+            /** Selection Audit */
+            selection_audit: components["schemas"]["NewsStorySelectionAuditData"][];
             /** Snippet */
             snippet: string;
             /** Source Count */
@@ -1330,13 +1781,31 @@ export interface components {
             story_id: string;
             /** Title */
             title: string;
-            /** Trusted Source Count */
-            trusted_source_count: number;
-            /**
-             * Verification Status
-             * @enum {string}
-             */
-            verification_status: "corroborated" | "trusted" | "attributed" | "unverified";
+        };
+        /** NewsStoryIdentityDecisionData */
+        NewsStoryIdentityDecisionData: {
+            /** Article Id */
+            article_id: string;
+            /** Candidates */
+            candidates: {
+                [key: string]: unknown;
+            }[];
+            /** Decided At Ms */
+            decided_at_ms: number;
+            /** Decision Id */
+            decision_id: string;
+            /** Decision Reason */
+            decision_reason: {
+                [key: string]: unknown;
+            };
+            /** Identity Version */
+            identity_version: string;
+            /** Revision Id */
+            revision_id: string;
+            /** Selected Story Id */
+            selected_story_id: string | null;
+            /** Verdict */
+            verdict: string;
         };
         /** NewsStoryListData */
         NewsStoryListData: {
@@ -1345,12 +1814,47 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** NewsStoryMaterialEventData */
+        NewsStoryMaterialEventData: {
+            /** Event Factors */
+            event_factors: {
+                [key: string]: unknown;
+            };
+            /**
+             * Event Kind
+             * @enum {string}
+             */
+            event_kind: "first_report" | "new_independent_origin" | "material_follow_up" | "material_correction" | "conflict_detected" | "conflict_resolved" | "retraction";
+            /** Material Event Id */
+            material_event_id: string;
+            /** Occurred At Ms */
+            occurred_at_ms: number;
+            /** Revision Id */
+            revision_id: string | null;
+            /** Story Id */
+            story_id: string;
+        };
         /** NewsStoryMembershipData */
         NewsStoryMembershipData: {
             /** Admitted At Ms */
             admitted_at_ms: number;
             /** Article Id */
             article_id: string;
+            /**
+             * Content Form
+             * @enum {string}
+             */
+            content_form: "report" | "analysis" | "opinion" | "live" | "static" | "unknown";
+            /**
+             * Development Relation
+             * @enum {string}
+             */
+            development_relation: "initial" | "follow_up" | "correction" | "background" | "retrospective";
+            /**
+             * Epistemic Use
+             * @enum {string}
+             */
+            epistemic_use: "fact_evidence" | "context" | "viewpoint" | "non_evidence";
             /** Identity Version */
             identity_version: string;
             /** Match Method */
@@ -1361,40 +1865,109 @@ export interface components {
             };
             /** Match Score */
             match_score: number;
+            /**
+             * Membership Kind
+             * @enum {string}
+             */
+            membership_kind: "primary" | "contextual";
+            /** Origin Confidence */
+            origin_confidence: number;
+            /**
+             * Origin Relation
+             * @enum {string}
+             */
+            origin_relation: "originating" | "independent" | "syndicated" | "derived" | "unresolved";
+            /** Reporting Origin Id */
+            reporting_origin_id: string | null;
+            /** Revision Id */
+            revision_id: string;
+            /** Runner Up Margin */
+            runner_up_margin: number;
+            /** Semantics Reason */
+            semantics_reason: {
+                [key: string]: unknown;
+            };
+            /** Story Id */
+            story_id: string;
+            /** Updated At Ms */
+            updated_at_ms: number;
+            /** Verdict */
+            verdict: string;
+        };
+        /** NewsStorySelectionAuditData */
+        NewsStorySelectionAuditData: {
+            /** Critical */
+            critical: boolean;
+            /** Cutoff At Ms */
+            cutoff_at_ms: number;
+            /** Decision */
+            decision: {
+                [key: string]: unknown;
+            };
+            /** Policy Version */
+            policy_version: string;
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Snapshot Id */
+            selection_snapshot_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "planned" | "debounced" | "publishable" | "published" | "superseded";
         };
         /** NewsStorySummaryData */
         NewsStorySummaryData: {
-            /** Analysis Published At Ms */
-            analysis_published_at_ms: number | null;
-            /**
-             * Analysis Status
-             * @enum {string}
-             */
-            analysis_status: "pending" | "available" | "failed" | "unavailable";
-            /** Article Count */
-            article_count: number;
-            /** First Seen At Ms */
-            first_seen_at_ms: number;
-            /** Importance Factors */
-            importance_factors: {
+            analysis: components["schemas"]["NewsAnalysisAvailabilityData"];
+            /** Breaking */
+            breaking: boolean;
+            /** Breaking Reason */
+            breaking_reason: string;
+            /** Brief Eligible */
+            brief_eligible: boolean;
+            /** Contextual Member Count */
+            contextual_member_count: number;
+            /** Evidence Factors */
+            evidence_factors: {
                 [key: string]: unknown;
             };
-            /** Importance Score */
-            importance_score: number;
-            /** Independent Origin Count */
-            independent_origin_count: number;
-            /** Language */
-            language: string;
-            /** Last Seen At Ms */
-            last_seen_at_ms: number;
             /**
-             * Phase
+             * Evidence Posture
              * @enum {string}
              */
-            phase: "breaking" | "developing" | "sustained" | "fading";
-            primary_article: components["schemas"]["NewsPrimaryArticleData"];
-            /** Short Conclusion */
-            short_conclusion: string | null;
+            evidence_posture: "single_origin_reported" | "independently_corroborated" | "primary_source_confirmed" | "contested" | "corrected" | "withdrawn";
+            /** First Seen At Ms */
+            first_seen_at_ms: number;
+            /** Impact Profile */
+            impact_profile: {
+                [key: string]: unknown;
+            };
+            /** Impact Score */
+            impact_score: number;
+            /** Independent Origin Count */
+            independent_origin_count: number;
+            /** Languages */
+            languages: string[];
+            /** Last Material Evidence At Ms */
+            last_material_evidence_at_ms: number;
+            /** Last Presentation At Ms */
+            last_presentation_at_ms: number;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "emerging" | "developing" | "stable" | "fading" | "dormant" | "reactivated";
+            /** Material Evolution State */
+            material_evolution_state: string;
+            /** Primary Member Count */
+            primary_member_count: number;
+            /** Priority Profile */
+            priority_profile: {
+                [key: string]: unknown;
+            };
+            /** Priority Score */
+            priority_score: number;
+            representative_evidence: components["schemas"]["NewsRepresentativeEvidenceData"];
             /** Snippet */
             snippet: string;
             /** Source Count */
@@ -1403,13 +1976,6 @@ export interface components {
             story_id: string;
             /** Title */
             title: string;
-            /** Trusted Source Count */
-            trusted_source_count: number;
-            /**
-             * Verification Status
-             * @enum {string}
-             */
-            verification_status: "corroborated" | "trusted" | "attributed" | "unverified";
         };
         /** NotificationDeliveriesData */
         NotificationDeliveriesData: {
@@ -2575,6 +3141,57 @@ export interface operations {
             };
         };
     };
+    get_news_global_brief_api_news_brief_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsGlobalBriefData_"];
+                };
+            };
+        };
+    };
+    list_news_global_brief_history_api_news_brief_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsGlobalBriefHistoryData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_news_sources_api_news_sources_get: {
         parameters: {
             query?: never;
@@ -2601,7 +3218,7 @@ export interface operations {
                 limit?: number;
                 cursor?: string;
                 q?: string;
-                verification_status?: string;
+                evidence_posture?: string;
                 source?: string;
             };
             header?: never;
@@ -2648,6 +3265,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsStoryDetailData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_news_story_analysis_api_news_stories__story_id__analysis_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                story_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsStoryAnalysisRequestData_"];
                 };
             };
             /** @description Validation Error */

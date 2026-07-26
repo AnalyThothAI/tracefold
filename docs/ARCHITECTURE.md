@@ -37,15 +37,16 @@ Material facts include:
   Notifications consumes through an explicit input.
 
 Current read models are `token_radar_current_rows`, `token_profile_current`,
-`market_tick_current`, and the deterministic `news_stories` plus
-`news_story_articles` membership model. Each uses stable product/window/target
+`market_tick_current`, and deterministic `news_stories` plus
+`news_story_memberships`. Each uses stable product/window/target
 identity, has exactly one runtime writer, is rebuildable from facts, and writes
 zero serving rows when its business payload is unchanged.
 
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
 or audit state. They are not alternate business truth.
-`macro_research_publications` and `news_story_analyses` are immutable derived
+`macro_research_publications`, `news_brief_publications`, and
+`news_story_analysis_publications` are immutable derived
 research keyed by frozen evidence; they are not material facts.
 
 ## Package map
@@ -159,9 +160,11 @@ persisted identity, social, and market facts.
 ```text
 configured sources
   -> internal RSS/RSSHub adapter
-  -> normalized news_articles facts
-  -> single-writer deterministic news_story_articles + news_stories
-  -> immutable evidence-keyed news_story_analyses
+  -> fetch receipts + observations + immutable Article revisions
+  -> versioned Article identity features
+  -> single-writer deterministic Event Story memberships + profiles
+  -> deterministic Narrative grouping + frozen Brief selection
+  -> validated immutable Global Brief / Story analysis publications
   -> Story Interface -> HTTP + React
 ```
 

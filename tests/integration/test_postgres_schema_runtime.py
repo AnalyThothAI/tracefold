@@ -50,13 +50,27 @@ RETIRED_BACKEND_TABLES = {
     "news_story_agent_briefs",
     "news_story_agent_runs",
 }
-NEWS_V2_TABLES = {
+PROFESSIONAL_NEWS_TABLES = {
     "news_sources",
+    "news_fetch_receipts",
+    "news_feed_observations",
     "news_articles",
+    "news_article_revisions",
+    "news_article_content_snapshots",
+    "news_article_identity_features",
     "news_stories",
-    "news_story_articles",
-    "news_story_analyses",
-    "news_story_analysis_attempts",
+    "news_story_memberships",
+    "news_story_profiles",
+    "news_story_identity_decisions",
+    "news_story_material_events",
+    "news_narrative_grouping_snapshots",
+    "news_brief_selection_snapshots",
+    "news_story_analysis_requests",
+    "news_ai_attempts",
+    "news_brief_publications",
+    "news_brief_current",
+    "news_story_analysis_publications",
+    "news_story_analysis_current",
 }
 LEGACY_NEWS_TABLES = {
     "news_fetch_runs",
@@ -68,6 +82,9 @@ LEGACY_NEWS_TABLES = {
     "news_item_observation_edges",
     "news_projection_dirty_targets",
     "news_page_rows",
+    "news_story_articles",
+    "news_story_analyses",
+    "news_story_analysis_attempts",
 }
 
 
@@ -150,7 +167,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "checkpoint_writes",
     } <= tables
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
-    assert tables >= NEWS_V2_TABLES
+    assert tables >= PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
     assert macro_research_run_columns == {
         "session_date",
@@ -175,6 +192,12 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "source_role",
         "trust_tier",
         "source_chain_id",
+        "publisher_organization_id",
+        "parent_organization_id",
+        "canonical_domains",
+        "known_relationships",
+        "source_quality_factors",
+        "registry_version",
         "coverage_tags",
         "default_language",
         "enabled",
@@ -204,7 +227,109 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260726_0197"
+    assert version == latest_migration_version() == "20260726_0198"
+
+
+def test_news_professional_hard_cut_preserves_source_config_and_resets_old_facts(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260726_0197")
+        conn.execute(
+            """
+            INSERT INTO news_sources (
+              source_id, name, feed_url, source_domain, source_role, trust_tier,
+              source_chain_id, coverage_tags, default_language, enabled,
+              refresh_interval_seconds, etag, last_modified,
+              last_fetch_started_at_ms, last_fetch_finished_at_ms,
+              last_success_at_ms, last_http_status, consecutive_failures,
+              last_error, next_fetch_at_ms, created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'configured-source', 'Configured Source',
+              'https://source.example/feed.xml', 'source.example',
+              'original_publisher', 'trusted', 'publisher-org',
+              '["macro", "policy"]'::jsonb, 'en', false, 123,
+              'old-etag', 'old-last-modified', 10, 11, 11, 200, 2,
+              'old-runtime-error', 999, 1, 2
+            );
+            INSERT INTO news_articles (
+              article_id, source_id, identity_version, identity_method,
+              identity_key, source_guid, canonical_url, title, snippet,
+              published_at_ms, first_seen_at_ms, last_seen_at_ms, language,
+              origin_url, origin_domain, origin_name, provenance_status,
+              content_hash, source_entry
+            )
+            VALUES (
+              'old-article', 'configured-source', 'old-identity',
+              'canonical_url', 'old-key', 'old-guid',
+              'https://source.example/old', 'Old fact', '', 10, 10, 10, 'en',
+              NULL, NULL, NULL, 'verified', 'old-content-hash', '{}'::jsonb
+            )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        source_row = conn.execute("SELECT * FROM news_sources WHERE source_id = 'configured-source'").fetchone()
+        article_count = conn.execute("SELECT count(*) AS count FROM news_articles").fetchone()["count"]
+        legacy_tables = {
+            row["table_name"]
+            for row in conn.execute(
+                """
+                SELECT table_name
+                  FROM information_schema.tables
+                 WHERE table_schema = 'public'
+                """
+            ).fetchall()
+        } & {
+            "news_story_articles",
+            "news_story_analyses",
+            "news_story_analysis_attempts",
+        }
+    finally:
+        conn.close()
+
+    assert {
+        "name": source_row["name"],
+        "feed_url": source_row["feed_url"],
+        "source_domain": source_row["source_domain"],
+        "source_role": source_row["source_role"],
+        "trust_tier": source_row["trust_tier"],
+        "source_chain_id": source_row["source_chain_id"],
+        "coverage_tags": source_row["coverage_tags"],
+        "default_language": source_row["default_language"],
+        "enabled": source_row["enabled"],
+        "refresh_interval_seconds": source_row["refresh_interval_seconds"],
+    } == {
+        "name": "Configured Source",
+        "feed_url": "https://source.example/feed.xml",
+        "source_domain": "source.example",
+        "source_role": "original_publisher",
+        "trust_tier": "trusted",
+        "source_chain_id": "publisher-org",
+        "coverage_tags": ["macro", "policy"],
+        "default_language": "en",
+        "enabled": False,
+        "refresh_interval_seconds": 123,
+    }
+    assert source_row["publisher_organization_id"] == "publisher-org"
+    assert source_row["canonical_domains"] == ["source.example"]
+    assert source_row["registry_version"] == "news_source_registry_v2"
+    assert source_row["etag"] is None
+    assert source_row["last_error"] is None
+    assert source_row["consecutive_failures"] == 0
+    assert source_row["next_fetch_at_ms"] == 0
+    assert article_count == 0
+    assert legacy_tables == set()
 
 
 def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:
@@ -307,7 +432,7 @@ def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:
     assert queue_row["market_dirty"] is True
     assert queue_row["repair_dirty"] is False
     assert tuple(terminal_row.values()) == ("archive", "queue_retired_by_0185")
-    assert tables >= NEWS_V2_TABLES
+    assert tables >= PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
     assert news_source_count == 0
 

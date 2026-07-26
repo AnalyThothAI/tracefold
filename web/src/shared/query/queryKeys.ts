@@ -27,16 +27,18 @@ export const queryKeys = {
     limit,
     q,
     source,
-    verificationStatus,
+    evidencePosture,
   }: {
     cursor?: string | null;
     limit: number;
     q?: string | null;
     source?: string | null;
-    verificationStatus?: string | null;
+    evidencePosture?: string | null;
   }) =>
-    ["news-stories", limit, cursor ?? "", verificationStatus ?? "", source ?? "", q ?? ""] as const,
+    ["news-stories", limit, cursor ?? "", evidencePosture ?? "", source ?? "", q ?? ""] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
+  newsBrief: () => ["news-brief"] as const,
+  newsBriefHistory: () => ["news-brief-history"] as const,
   targetSocialTimeline: (targetKey: string | null, window: WindowKey, scope: ScopeKey) =>
     ["target-social-timeline", targetKey, window, scope] as const,
   targetPosts: (

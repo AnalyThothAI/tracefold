@@ -509,11 +509,27 @@ def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
                         published_at_ms=2_000,
                     ),
                 ),
-                now_ms=3_000,
+                started_at_ms=3_000,
+                finished_at_ms=3_100,
                 status_code=200,
                 etag="etag-1",
                 last_modified=None,
                 not_modified=False,
+            )
+            repos.news.project_pending_revisions(now_ms=3_200, limit=100)
+            repos.news.conn.execute(
+                """
+                UPDATE news_stories
+                   SET brief_eligible = true,
+                       impact_score = 90,
+                       priority_score = 90
+                """
+            )
+            repos.news.plan_global_brief(
+                now_ms=3_300,
+                candidate_limit=100,
+                debounce_ms=0,
+                critical_debounce_ms=0,
             )
 
         headers = {"Authorization": "Bearer secret"}
@@ -521,6 +537,16 @@ def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
         stories_response = client.get("/api/news/stories", headers=headers)
         story_id = stories_response.json()["data"]["items"][0]["story_id"]
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
+        request_response = client.post(
+            f"/api/news/stories/{story_id}/analysis-requests",
+            headers=headers,
+        )
+        missing_request_response = client.post(
+            "/api/news/stories/missing-story/analysis-requests",
+            headers=headers,
+        )
+        brief_response = client.get("/api/news/brief", headers=headers)
+        brief_history_response = client.get("/api/news/brief/history", headers=headers)
         retired_responses = [
             client.get("/api/news", headers=headers),
             client.get("/api/news/items/news-1", headers=headers),
@@ -530,15 +556,23 @@ def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
     assert sources_response.status_code == 200
     [source] = sources_response.json()["data"]["items"]
     assert source["source_id"] == "source-story-test"
-    assert source["last_success_at_ms"] == 3_000
+    assert source["last_success_at_ms"] == 3_100
     assert source["last_http_status"] == 200
     assert stories_response.status_code == 200
     [story] = stories_response.json()["data"]["items"]
     assert story["title"] == "Global policy response confirmed"
-    assert story["verification_status"] == "trusted"
+    assert story["evidence_posture"] == "single_origin_reported"
     assert story["source_count"] == 1
     assert detail_response.status_code == 200
-    assert detail_response.json()["data"]["articles"][0]["provenance_status"] == "verified"
+    assert detail_response.json()["data"]["memberships"][0]["epistemic_use"] == "fact_evidence"
+    assert request_response.status_code == 202
+    assert request_response.json()["data"]["status"] == "insufficient"
+    assert missing_request_response.status_code == 404
+    assert brief_response.status_code == 200
+    assert brief_response.json()["data"]["current"] is None
+    assert brief_response.json()["data"]["fallback"]["status"] == "publishable"
+    assert brief_history_response.status_code == 200
+    assert brief_history_response.json()["data"]["items"] == []
     assert [response.status_code for response in retired_responses] == [404, 404, 404]
 
 
@@ -582,7 +616,8 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
                         published_at_ms=3_000,
                     ),
                 ),
-                now_ms=4_000,
+                started_at_ms=4_000,
+                finished_at_ms=4_100,
                 status_code=200,
                 etag=None,
                 last_modified=None,
@@ -598,12 +633,14 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
                         published_at_ms=5_000,
                     ),
                 ),
-                now_ms=6_000,
+                started_at_ms=6_000,
+                finished_at_ms=6_100,
                 status_code=200,
                 etag=None,
                 last_modified=None,
                 not_modified=False,
             )
+            repos.news.project_pending_revisions(now_ms=6_200, limit=100)
 
         headers = {"Authorization": "Bearer secret"}
         first = client.get("/api/news/stories", params={"limit": 1}, headers=headers)
@@ -620,12 +657,18 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
         )
         trusted = client.get(
             "/api/news/stories",
-            params={"verification_status": "trusted", "source": "authority"},
+            params={
+                "evidence_posture": "single_origin_reported",
+                "source": "authority",
+            },
             headers=headers,
         )
         unverified = client.get(
             "/api/news/stories",
-            params={"verification_status": "unverified", "source": "standard"},
+            params={
+                "evidence_posture": "single_origin_reported",
+                "source": "standard",
+            },
             headers=headers,
         )
         invalid_cursor = client.get(
@@ -635,7 +678,7 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
         )
         invalid_verification = client.get(
             "/api/news/stories",
-            params={"verification_status": "invented"},
+            params={"evidence_posture": "invented"},
             headers=headers,
         )
 
@@ -644,22 +687,14 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
     first_id = first_data["items"][0]["story_id"]
     second_id = second.json()["data"]["items"][0]["story_id"]
     assert first_id != second_id
-    assert [item["title"] for item in searched.json()["data"]["items"]] == [
-        "Gamma conflict ceasefire announced"
-    ]
-    assert {item["primary_article"]["source_id"] for item in trusted.json()["data"]["items"]} == {
-        "authority"
-    }
-    assert {item["verification_status"] for item in trusted.json()["data"]["items"]} == {
-        "trusted"
-    }
-    assert [item["verification_status"] for item in unverified.json()["data"]["items"]] == [
-        "unverified"
-    ]
+    assert [item["title"] for item in searched.json()["data"]["items"]] == ["Gamma conflict ceasefire announced"]
+    assert {item["representative_evidence"]["source_id"] for item in trusted.json()["data"]["items"]} == {"authority"}
+    assert {item["evidence_posture"] for item in trusted.json()["data"]["items"]} == {"single_origin_reported"}
+    assert [item["evidence_posture"] for item in unverified.json()["data"]["items"]] == ["single_origin_reported"]
     assert invalid_cursor.status_code == 400
     assert invalid_cursor.json()["error"] == "news_story_cursor_invalid"
     assert invalid_verification.status_code == 400
-    assert invalid_verification.json()["error"] == "news_story_verification_status_invalid"
+    assert invalid_verification.json()["error"] == "news_story_evidence_posture_invalid"
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):

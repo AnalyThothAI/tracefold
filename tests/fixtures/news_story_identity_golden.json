@@ -1,0 +1,186 @@
+{
+  "corpus_version": "news_story_identity_golden_v1",
+  "cases": [
+    {
+      "case_id": "same_event_rewrite",
+      "hard_negative": false,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/fed/cut-25",
+          "title": "Federal Reserve cuts interest rates by 25 basis points",
+          "language": "en",
+          "expected_cluster": "fed_cut_25"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/fed-rate-decision",
+          "title": "Fed lowers rates 25 basis points after policy meeting",
+          "language": "en",
+          "expected_cluster": "fed_cut_25"
+        }
+      ]
+    },
+    {
+      "case_id": "cross_language_strong_anchor",
+      "hard_negative": false,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/ecb/rate-cut",
+          "title": "European Central Bank cuts interest rates",
+          "language": "en",
+          "expected_cluster": "ecb_cut"
+        },
+        {
+          "source_id": "xinhua",
+          "url": "https://xinhua.example/欧洲央行降息",
+          "title": "欧洲央行宣布下调利率",
+          "language": "zh",
+          "expected_cluster": "ecb_cut"
+        }
+      ]
+    },
+    {
+      "case_id": "different_country_template",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/argentina/rates",
+          "title": "Argentina central bank cuts interest rates",
+          "language": "en",
+          "expected_cluster": "argentina_cut"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/japan/rates",
+          "title": "Japan central bank cuts interest rates",
+          "language": "en",
+          "expected_cluster": "japan_cut"
+        }
+      ]
+    },
+    {
+      "case_id": "proposal_vs_implementation",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/us/china-tariff-plan",
+          "title": "US proposes new tariffs on China",
+          "language": "en",
+          "expected_cluster": "tariff_proposal"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/us/china-tariffs-effective",
+          "title": "US implements new tariffs on China",
+          "language": "en",
+          "expected_cluster": "tariff_implementation"
+        }
+      ]
+    },
+    {
+      "case_id": "attack_vs_retaliation",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/israel/iran-strike",
+          "title": "Israel attacks Iran in overnight strike",
+          "language": "en",
+          "expected_cluster": "initial_attack"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/iran/retaliation",
+          "title": "Iran retaliates against Israel after overnight strike",
+          "language": "en",
+          "expected_cluster": "retaliation"
+        }
+      ]
+    },
+    {
+      "case_id": "syndication_not_corroboration",
+      "hard_negative": false,
+      "expected_independent_origin_count": 1,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/opec/output",
+          "title": "OPEC confirms oil output reduction",
+          "language": "en",
+          "expected_cluster": "opec_output"
+        },
+        {
+          "source_id": "aggregator",
+          "url": "https://aggregator.example/opec-output",
+          "title": "According to Reuters, OPEC confirms oil output reduction",
+          "language": "en",
+          "expected_cluster": "opec_output"
+        }
+      ]
+    },
+    {
+      "case_id": "expected_vs_actual_quantity",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/china/exports-forecast",
+          "title": "China exports expected to fall 5 percent in June",
+          "language": "en",
+          "expected_cluster": "china_exports_forecast"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/china/exports-actual",
+          "title": "China exports actual data came in down 7 percent in June",
+          "language": "en",
+          "expected_cluster": "china_exports_actual"
+        }
+      ]
+    },
+    {
+      "case_id": "same_actor_action_different_event_object",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/china/exports",
+          "title": "China exports fell 5 percent in June",
+          "language": "en",
+          "expected_cluster": "china_exports"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/china/imports",
+          "title": "China imports fell 5 percent in June",
+          "language": "en",
+          "expected_cluster": "china_imports"
+        }
+      ]
+    },
+    {
+      "case_id": "uncertain_cross_language_stays_separate",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/officials/update",
+          "title": "Officials announce a new measure",
+          "language": "en",
+          "expected_cluster": "generic_english"
+        },
+        {
+          "source_id": "xinhua",
+          "url": "https://xinhua.example/新措施",
+          "title": "有关部门公布一项新措施",
+          "language": "zh",
+          "expected_cluster": "generic_chinese"
+        }
+      ]
+    }
+  ]
+}

@@ -104,19 +104,22 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-news_sources -> isolated RSS fetches -> news_articles
-  -> single-writer Story membership/projection
-  -> independent DeepSeek analysis publication
-  -> /api/news/stories + /api/news/sources
+configured feeds -> fetch receipts -> observations -> Article revisions
+  -> deterministic Event Story projection
+  -> deterministic Global Brief selection
+  -> validated immutable Brief / Story analysis publication
+  -> /api/news/stories + /api/news/brief + /api/news/sources
 ```
 
 `news_ingest` synchronizes the configured source catalog, claims due sources,
 and commits one source at a time. A failed source records its own bounded error
-and does not stop the remaining claimed sources. `news_analysis` claims frozen
-Story evidence independently; retries and terminal failure do not roll back or
-hide Article/Story state. Diagnose acquisition through `/api/news/sources` and
-worker status. There is no legacy News repair, provider-item, page-projection,
-or compatibility command.
+and does not stop the remaining claimed sources. `news_story_project` is the
+sole Story writer, `news_brief_plan` freezes deterministic portfolio
+selections, and `news_ai_publish` validates publications before advancing
+current pointers. Provider retries and terminal failure never roll back or
+hide Article/Story facts. Diagnose acquisition through `/api/news/sources`,
+Brief failure state, and worker status. There is no legacy News repair,
+provider-item, page-projection, or compatibility command.
 
 Macro:
 

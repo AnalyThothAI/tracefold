@@ -24,9 +24,11 @@ describe("useNewsStoriesWithToken", () => {
 
     await waitFor(() => expect(result.current.data?.items[0].story_id).toBe("story-global-policy"));
     expect(result.current.data?.items[0]).toMatchObject({
-      analysis_status: "available",
+      analysis: { status: "available" },
+      evidence_posture: "independently_corroborated",
+      impact_score: 82,
       independent_origin_count: 2,
-      verification_status: "corroborated",
+      priority_score: 88,
     });
   });
 
@@ -37,7 +39,7 @@ describe("useNewsStoriesWithToken", () => {
       http.get(/.*\/api\/news\/stories$/, ({ request }) => {
         const searchParams = new URL(request.url).searchParams;
         observedKeys = [...searchParams.keys()].sort();
-        for (const key of ["limit", "q", "source", "verification_status"]) {
+        for (const key of ["evidence_posture", "limit", "q", "source"]) {
           observedParams[key] = searchParams.get(key);
         }
         return HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } });
@@ -47,21 +49,21 @@ describe("useNewsStoriesWithToken", () => {
     renderHook(
       () =>
         useNewsStoriesWithToken("token", {
+          evidencePosture: "independently_corroborated",
           q: "rates",
           source: "Reuters",
-          verificationStatus: "corroborated",
         }),
       { wrapper: wrapper() },
     );
 
     await waitFor(() => expect(observedParams.q).toBe("rates"));
     expect(observedParams).toEqual({
+      evidence_posture: "independently_corroborated",
       limit: "50",
       q: "rates",
       source: "Reuters",
-      verification_status: "corroborated",
     });
-    expect(observedKeys).toEqual(["limit", "q", "source", "verification_status"]);
+    expect(observedKeys).toEqual(["evidence_posture", "limit", "q", "source"]);
   });
 });
 

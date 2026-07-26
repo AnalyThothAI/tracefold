@@ -19,7 +19,7 @@ Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
 `llm` contains only shared provider credentials (`api_key` and `base_url`).
-They are consumed only when `macro_research` or `news_analysis` is enabled.
+They are consumed only when `macro_research` or `news_ai_publish` is enabled.
 Model, request timeout, token, cadence, lease, and retry settings remain typed
 under the owning worker in `workers.yaml`. The request timeout applies to one
 provider transport call; there is no generic model-policy or capacity surface.
@@ -39,7 +39,9 @@ macro_sync
 token_image_mirror
 token_profile_current
 news_ingest
-news_analysis
+news_story_project
+news_brief_plan
+news_ai_publish
 macro_research
 notification_rule
 notification_delivery
@@ -103,23 +105,29 @@ alternate decision labels.
 
 ### News
 
-`/api/news/stories` is the sole News collection read. It supports bounded
-cursor pagination and `q`, `source`, and `verification_status` filters.
-`/api/news/stories/{story_id}` returns the frozen Story projection, every member
-Article, provenance, deterministic membership audit, and the immutable
-DeepSeek analysis for the current evidence set when available.
+`/api/news/stories` serves the Story Feed with bounded cursor pagination and
+`q`, `source`, and `evidence_posture` filters.
+`/api/news/stories/{story_id}` serves Story Detail with Article/Revision/
+Observation provenance, member semantics, identity decisions, material events,
+and current/history Story analysis. A user can explicitly request analysis
+through `POST /api/news/stories/{story_id}/analysis-requests`; this schedules
+work but never calls a model in the request.
 
-Article identity is source-scoped and deterministic. Story membership is
-deterministic, versioned, and conflict-aware. `source_count` counts acquisition
-feeds; `independent_origin_count` counts verified original publisher domains,
-so aggregator repetition does not become corroboration. `6551News` is an
-authoritative trusted aggregator but its Article provenance remains
-`attributed` unless an external origin URL is extracted. Analyses are Chinese,
-evidence-referenced, and versioned by evidence hash, model, prompt, workflow,
-and schema. Provider/network/model calls never occur on read endpoints.
+`/api/news/brief` returns the current validated Global Brief, the latest
+deterministic selection fallback, and bounded failure state independently.
+`/api/news/brief/history` returns immutable historical publications. The last
+valid Brief remains current when a later attempt fails.
 
-There is no `/api/news`, item/fact detail route, source-status compatibility
-route, write route, News WebSocket payload, webhook, or public provider adapter.
+Article identity is publisher-artifact scoped and deterministic. Story
+membership is versioned, constraint-first, and conflict-aware. Source quality,
+reporting origin, syndication, independent corroboration, corrections, and
+conflict remain separate fields. AI publications are Chinese,
+evidence-referenced, fail-closed, and content-addressed by evidence plus the
+actual model/prompt/workflow/schema/locale contract. Provider/network/model
+calls never occur on read endpoints.
+
+There is no `/api/news` compatibility collection, legacy item/fact detail
+route, News WebSocket payload, webhook, or public provider adapter.
 
 Search inspection and Token Case likewise return resolver, identity, current
 Radar, market, timeline, and source-post facts only. Removed derived prose and

@@ -1,0 +1,99 @@
+{
+  "source": "worldmonitor/tests/story-identity.test.mjs",
+  "positive_pairs": [
+    [
+      "Fed holds interest rates steady amid inflation concerns",
+      "Fed holds rates steady as inflation concerns persist"
+    ],
+    [
+      "Magnitude 6.8 earthquake strikes northern Chile",
+      "6.8-magnitude earthquake hits northern Chile"
+    ],
+    [
+      "EU approves 12th sanctions package against Russia",
+      "European Union approves 12th sanctions package on Russia"
+    ],
+    [
+      "Ukraine drone strike hits Russian oil refinery in Ryazan region",
+      "Ukraine drone strike hits Russian oil refinery"
+    ],
+    [
+      "Iran threatens to close Strait of Hormuz if US blockade continues",
+      "Iran threatens to close Strait of Hormuz — live updates"
+    ],
+    [
+      "Apple unveils new AI features at WWDC keynote",
+      "At WWDC keynote, Apple unveils new AI features"
+    ],
+    [
+      "Iranian officials threaten Hormuz closure over sanctions",
+      "Iran officials threaten Hormuz closure over sanctions"
+    ],
+    [
+      "Nigeria fuel subsidy protests spread to Lagos as unions join",
+      "Nigeria fuel subsidy protests spread to Lagos"
+    ],
+    [
+      "Turkey hikes interest rates to 50% in surprise move",
+      "Turkey hikes rates to 50% in surprise move"
+    ],
+    [
+      "China exports fall 7.5% in June, worse than expected",
+      "Chinese exports fell 7.5% in June, worse than expected"
+    ],
+    [
+      "Nigeria fuel subsidy protests spread to Lagos as unions join nationwide strike over cost of living",
+      "Nigeria fuel subsidy protests spread to Lagos"
+    ],
+    [
+      "Turkey central bank hikes interest rates to 50% in surprise move to combat runaway inflation pressures",
+      "Turkey central bank hikes interest rates"
+    ],
+    [
+      "Iran threatens to close Strait of Hormuz - Reuters",
+      "Iran threatens to close Strait of Hormuz"
+    ]
+  ],
+  "negative_pairs": [
+    [
+      "Iran seizes oil tanker in Strait of Hormuz",
+      "Iran threatens to close Strait of Hormuz"
+    ],
+    [
+      "Fed holds rates steady amid inflation concerns",
+      "Fed cuts rates by 25 basis points amid slowing economy"
+    ],
+    [
+      "Magnitude 6.8 earthquake strikes northern Chile",
+      "Magnitude 5.9 earthquake strikes southern Peru"
+    ],
+    [
+      "Ukraine drone strike hits Russian oil refinery",
+      "Russian drone strike hits Ukrainian energy grid"
+    ],
+    [
+      "Apple unveils new AI features at WWDC keynote",
+      "Google unveils new AI features at I/O keynote"
+    ],
+    [
+      "Turkey hikes interest rates to 50% in surprise move",
+      "Argentina hikes interest rates to 50% in surprise move"
+    ],
+    [
+      "Nigeria fuel subsidy protests spread to Lagos",
+      "Kenya tax protests spread to Nairobi"
+    ],
+    [
+      "US imposes new sanctions on Iranian oil exports",
+      "US lifts sanctions on Venezuelan oil exports"
+    ],
+    [
+      "Israel strikes Hezbollah targets in southern Lebanon",
+      "Hezbollah strikes Israeli positions in northern Israel"
+    ],
+    [
+      "Apple unveils new AI features at WWDC keynote - Reuters",
+      "Google unveils new AI features at I/O keynote - Reuters"
+    ]
+  ]
+}
