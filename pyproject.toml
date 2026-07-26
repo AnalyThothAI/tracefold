@@ -9,7 +9,6 @@ dependencies = [
     "alembic>=1.18.0",
     "apprise>=1.10.0",
     "curl-cffi>=0.15,<0.16",
-    "cryptopanic-cli",
     "deepagents==0.6.12",
     "eth-hash[pycryptodome]>=0.8.0",
     "eth-utils>=5.0.0",
@@ -147,7 +146,7 @@ warn_return_any = false
 disable_error_code = ["arg-type", "attr-defined", "union-attr", "index", "operator", "assignment", "no-untyped-call"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "loguru.*", "psycopg.*", "apprise.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml", "feedparser", "cryptopanic_cli.*"]
+module = ["alembic.*", "loguru.*", "psycopg.*", "apprise.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml", "feedparser"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -155,5 +154,4 @@ module = "jsonref"
 ignore_missing_imports = true
 
 [tool.uv.sources]
-cryptopanic-cli = { git = "https://github.com/AnalyThothAI/cryptopanic-cli.git", rev = "921245022ff30fc027dd7dde7dd59f4a6d94ae7c" }
 macrodata-cli = { git = "https://github.com/AnalyThothAI/macrodata-cli.git", rev = "c7e0627580cbf770b091f1731236990c5d98e0c4" }

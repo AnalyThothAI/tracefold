@@ -23,7 +23,6 @@ from tracefold.market import (
     reprocess_recent_token_intents,
     token_radar_publication_status,
 )
-from tracefold.news import enqueue_projection_dirty_targets
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
@@ -126,19 +125,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
         return 0, {"ok": True, "data": data}
 
     with repositories(settings) as repos:
-        if args.ops_command == "news-dedup-diagnostics":
-            window_hours = float(args.window_hours)
-            return (
-                0,
-                {
-                    "ok": True,
-                    "data": repos.news_pages.news_dedup_diagnostics(
-                        window_ms=int(window_hours * 3_600_000),
-                        now_ms=_now_ms(),
-                    ),
-                },
-            )
-
         if args.ops_command == "queue-inspect":
             return queue_ops.handle_queue_inspect(args, repos)
 
@@ -199,18 +185,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
         if args.ops_command == "validate-projections":
             data = ProjectionValidationAudit(repos.conn).run(sample=args.sample)
             return (0 if data.get("ok") else 1), {"ok": bool(data.get("ok")), "data": data}
-
-        if args.ops_command == "enqueue-projection-dirty-targets":
-            now_ms = _now_ms()
-            since_ms = now_ms - int(float(args.since_hours) * 60 * 60 * 1000) if args.since_hours is not None else None
-            data = enqueue_projection_dirty_targets(
-                repos,
-                execute=bool(args.execute),
-                now_ms=now_ms,
-                projection=args.projection,
-                since_ms=since_ms,
-            )
-            return 0, {"ok": True, "data": data}
 
         if args.ops_command == "audit-token-intent":
             data = _audit_token_intent(repos, event_id=args.event_id or None, intent_id=args.intent_id or None)

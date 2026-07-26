@@ -31,7 +31,6 @@ class RuntimeSnapshot:
     provider_states: dict[str, dict[str, Any]]
     startup_db_status: dict[str, Any]
     composition: dict[str, Any]
-    news_provider_contract: dict[str, Any]
     degradation_reasons: tuple[str, ...]
 
     @classmethod
@@ -40,7 +39,6 @@ class RuntimeSnapshot:
         *,
         startup_db_status: Mapping[str, Any],
         composition: Mapping[str, Any],
-        news_provider_contract: Mapping[str, Any],
     ) -> RuntimeSnapshot:
         return cls(
             workers={},
@@ -48,7 +46,6 @@ class RuntimeSnapshot:
             provider_states={},
             startup_db_status=dict(startup_db_status),
             composition=dict(composition),
-            news_provider_contract=dict(news_provider_contract),
             degradation_reasons=(),
         )
 
@@ -66,17 +63,12 @@ def capture_runtime_snapshot(runtime: Any) -> RuntimeSnapshot:
     }
     reasons = _worker_degradation_reasons(workers, runtime.scheduler.tasks)
     reasons.extend(_provider_degradation_reasons(provider_states))
-    news_reason = _news_contract_degradation(cached.news_provider_contract)
-    if news_reason is not None:
-        reasons.append(news_reason)
-
     return RuntimeSnapshot(
         workers=workers,
         collector=collector,
         provider_states=provider_states,
         startup_db_status=dict(cached.startup_db_status),
         composition=dict(cached.composition),
-        news_provider_contract=dict(cached.news_provider_contract),
         degradation_reasons=tuple(dict.fromkeys(str(reason) for reason in reasons)),
     )
 
@@ -125,10 +117,6 @@ def _provider_connection_state(provider: Any | None) -> dict[str, Any]:
             "error": "provider_connection_state_timestamp_missing",
         }
     return dict(payload)
-
-
-def _news_contract_degradation(contract: Mapping[str, Any]) -> str | None:
-    return None if contract.get("ok") is True else "news_provider_contract_error"
 
 
 def _provider_degradation_reasons(provider_states: Mapping[str, Mapping[str, Any]]) -> list[str]:

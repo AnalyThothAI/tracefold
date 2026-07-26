@@ -12,15 +12,12 @@ from tracefold.macro.research.service import (
     FrozenMacroEvidenceScope,
     MacroEvidenceCatalog,
     MacroEvidenceRecord,
-    MacroNewsQuery,
     MacroObservationQuery,
     MacroPriorResearch,
-    news_is_visible_in_scope,
     require_evidence_in_scope,
     require_prior_research_in_scope,
     resolve_observation_visibility,
 )
-from tracefold.news import NewsResearchEvidence, NewsResearchEvidenceReader
 
 
 class MacroResearchRepository:
@@ -28,7 +25,6 @@ class MacroResearchRepository:
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
-        self._news = NewsResearchEvidenceReader(conn)
 
     def publication_exists(self, session_date: date) -> bool:
         row = self.conn.execute(
@@ -507,10 +503,6 @@ class MacroResearchRepository:
             )
             is not None
         ]
-        news_catalog = self._news.catalog(
-            published_before_ms=int(scope.market_cutoff_ms),
-            fetched_before_ms=int(scope.sealed_at_ms),
-        )
         prior_row = self.conn.execute(
             """
             SELECT COUNT(*)::int AS prior_research_count
@@ -521,14 +513,7 @@ class MacroResearchRepository:
             (scope.session_date, int(scope.sealed_at_ms)),
         ).fetchone()
         concept_keys = tuple(sorted({str(row["concept_key"]) for row in visible_observations}))
-        source_labels = tuple(
-            sorted(
-                {
-                    *(str(row["source_name"]) for row in visible_observations),
-                    *news_catalog.source_labels,
-                }
-            )
-        )
+        source_labels = tuple(sorted({str(row["source_name"]) for row in visible_observations}))
         return MacroEvidenceCatalog(
             session_date=scope.session_date,
             market_cutoff_ms=scope.market_cutoff_ms,
@@ -536,7 +521,6 @@ class MacroResearchRepository:
             concept_keys=concept_keys,
             source_labels=source_labels,
             observation_count=len(visible_observations),
-            news_count=news_catalog.item_count,
             prior_research_count=int(prior_row["prior_research_count"] or 0),
         )
 
@@ -613,31 +597,6 @@ class MacroResearchRepository:
             tuple(selected),
         )
 
-    def search_news(
-        self,
-        *,
-        scope: FrozenMacroEvidenceScope,
-        query: MacroNewsQuery,
-    ) -> tuple[MacroEvidenceRecord, ...]:
-        rows = self._news.search(
-            published_before_ms=int(scope.market_cutoff_ms),
-            fetched_before_ms=int(scope.sealed_at_ms),
-            source_labels=query.source_labels,
-            query=query.query,
-            limit=int(query.limit),
-            offset=int(query.offset),
-        )
-        records = tuple(
-            _news_record(row)
-            for row in rows
-            if news_is_visible_in_scope(
-                scope,
-                published_at_ms=row.published_at_ms,
-                fetched_at_ms=row.fetched_at_ms,
-            )
-        )
-        return require_evidence_in_scope(scope, records)
-
     def read_evidence(
         self,
         *,
@@ -649,7 +608,6 @@ class MacroResearchRepository:
         if len(source_refs) != len(set(source_refs)):
             raise ValueError("macro_research_read_evidence_duplicate_ref")
         observation_ids = [source_ref for source_ref in source_refs if source_ref.startswith("macro-observation:")]
-        news_ids = [source_ref.removeprefix("news:") for source_ref in source_refs if source_ref.startswith("news:")]
         resolved: dict[str, MacroEvidenceRecord] = {}
         if observation_ids:
             rows = self.conn.execute(
@@ -665,15 +623,6 @@ class MacroResearchRepository:
                 ),
             ).fetchall()
             for record in _visible_observation_records(scope, rows):
-                resolved[record.evidence_ref] = record
-        if news_ids:
-            rows = self._news.read(
-                news_item_ids=tuple(news_ids),
-                published_before_ms=int(scope.market_cutoff_ms),
-                fetched_before_ms=int(scope.sealed_at_ms),
-            )
-            for row in rows:
-                record = _news_record(row)
                 resolved[record.evidence_ref] = record
         return require_evidence_in_scope(
             scope,
@@ -779,21 +728,6 @@ class PostgresMacroResearchReadPort:
                 ),
             )
 
-    def search_news(
-        self,
-        *,
-        scope: FrozenMacroEvidenceScope,
-        query: MacroNewsQuery,
-    ) -> tuple[MacroEvidenceRecord, ...]:
-        with self._session() as repos:
-            return cast(
-                "tuple[MacroEvidenceRecord, ...]",
-                repos.macro_research.search_news(
-                    scope=scope,
-                    query=query,
-                ),
-            )
-
     def prior_research(
         self,
         *,
@@ -876,39 +810,6 @@ def _visible_observation_records(
             )
         )
     return tuple(records)
-
-
-def _news_record(row: NewsResearchEvidence) -> MacroEvidenceRecord:
-    title = row.title.strip()
-    summary = row.summary.strip()
-    body = row.body_text.strip()
-    abstract = " — ".join(item for item in (title, summary or body[:2_000]) if item)
-    return MacroEvidenceRecord(
-        evidence_ref=f"news:{row.news_item_id}",
-        evidence_kind="news",
-        source_label=row.source_domain,
-        available_at_ms=row.published_at_ms,
-        persisted_at_ms=row.fetched_at_ms,
-        published_at_ms=row.published_at_ms,
-        url=str(row.canonical_url or "")[:2_048] or None,
-        summary=abstract[:8_000],
-        payload={
-            "news_item_id": row.news_item_id,
-            "source_id": row.source_id,
-            "title": title,
-            "summary": summary,
-            "body_text": body,
-            "language": row.language,
-            "lifecycle_status": row.lifecycle_status,
-        },
-        lineage={
-            "news_item_id": row.news_item_id,
-            "source_id": row.source_id,
-            "source_domain": row.source_domain,
-            "published_at_ms": row.published_at_ms,
-            "fetched_at_ms": row.fetched_at_ms,
-        },
-    )
 
 
 def _observation_ref(value: object) -> str:

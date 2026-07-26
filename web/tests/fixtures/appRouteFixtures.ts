@@ -24,7 +24,6 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
     snapshot_gate: {},
     db: { ok: true },
     provider_states: {},
-    news_provider_contract: { ok: true },
     workers: {
       collector: workerStatusFixture({
         enabled: true,

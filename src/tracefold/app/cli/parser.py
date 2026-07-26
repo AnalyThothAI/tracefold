@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from tracefold.news import PROJECTION_CHOICES
-
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -160,20 +158,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate projection read models against PostgreSQL facts",
     )
     validate_projections.add_argument("--sample", type=_nonnegative_int, default=100)
-    enqueue_projection_dirty_targets = ops_subcommands.add_parser(
-        "enqueue-projection-dirty-targets",
-        help="enqueue dirty targets for rebuildable News projections",
-    )
-    enqueue_projection_dirty_targets.add_argument("--projection", choices=PROJECTION_CHOICES, default="all")
-    enqueue_projection_dirty_targets.add_argument("--since-hours", type=_positive_float, default=None)
-    enqueue_projection_dirty_targets_mode = enqueue_projection_dirty_targets.add_mutually_exclusive_group(required=True)
-    enqueue_projection_dirty_targets_mode.add_argument("--dry-run", action="store_true")
-    enqueue_projection_dirty_targets_mode.add_argument("--execute", action="store_true")
-    news_dedup_diagnostics = ops_subcommands.add_parser(
-        "news-dedup-diagnostics",
-        help="print News canonical dedup and OpenNews sync diagnostics",
-    )
-    news_dedup_diagnostics.add_argument("--window-hours", type=_positive_float, default=8.0)
     sync_binance_universe = ops_subcommands.add_parser(
         "sync-binance-usdt-perp-universe",
         help="sync Binance USD-M USDT perpetual contracts into the CEX registry",

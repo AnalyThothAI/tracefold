@@ -266,13 +266,13 @@
         "title": "ApiEnvelope[MacroResearchReadData]",
         "type": "object"
       },
-      "ApiEnvelope_NewsData_": {
+      "ApiEnvelope_NewsSourcesData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsData"
+                "$ref": "#/components/schemas/NewsSourcesData"
               },
               {
                 "type": "null"
@@ -309,16 +309,16 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[NewsData]",
+        "title": "ApiEnvelope[NewsSourcesData]",
         "type": "object"
       },
-      "ApiEnvelope_NewsFactDetailData_": {
+      "ApiEnvelope_NewsStoryDetailData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsFactDetailData"
+                "$ref": "#/components/schemas/NewsStoryDetailData"
               },
               {
                 "type": "null"
@@ -355,16 +355,16 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[NewsFactDetailData]",
+        "title": "ApiEnvelope[NewsStoryDetailData]",
         "type": "object"
       },
-      "ApiEnvelope_NewsObjectData_": {
+      "ApiEnvelope_NewsStoryListData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NewsObjectData"
+                "$ref": "#/components/schemas/NewsStoryListData"
               },
               {
                 "type": "null"
@@ -401,53 +401,7 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[NewsObjectData]",
-        "type": "object"
-      },
-      "ApiEnvelope_NewsSourceStatusData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsSourceStatusData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[NewsSourceStatusData]",
+        "title": "ApiEnvelope[NewsStoryListData]",
         "type": "object"
       },
       "ApiEnvelope_NotificationDeliveriesData_": {
@@ -2424,12 +2378,710 @@
         "title": "MacroResearchSectionData",
         "type": "object"
       },
-      "NewsData": {
+      "NewsArticleData": {
+        "additionalProperties": false,
+        "properties": {
+          "article_id": {
+            "title": "Article Id",
+            "type": "string"
+          },
+          "canonical_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Url"
+          },
+          "first_seen_at_ms": {
+            "title": "First Seen At Ms",
+            "type": "integer"
+          },
+          "identity_method": {
+            "enum": [
+              "canonical_url",
+              "source_guid",
+              "title_time_bucket"
+            ],
+            "title": "Identity Method",
+            "type": "string"
+          },
+          "identity_version": {
+            "title": "Identity Version",
+            "type": "string"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "last_seen_at_ms": {
+            "title": "Last Seen At Ms",
+            "type": "integer"
+          },
+          "origin_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Domain"
+          },
+          "origin_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Name"
+          },
+          "origin_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Url"
+          },
+          "provenance_status": {
+            "enum": [
+              "verified",
+              "attributed",
+              "unknown"
+            ],
+            "title": "Provenance Status",
+            "type": "string"
+          },
+          "published_at_ms": {
+            "title": "Published At Ms",
+            "type": "integer"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "source_chain_id": {
+            "title": "Source Chain Id",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          },
+          "source_role": {
+            "enum": [
+              "original_publisher",
+              "trusted_aggregator"
+            ],
+            "title": "Source Role",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "authoritative",
+              "trusted",
+              "standard",
+              "low"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "article_id",
+          "title",
+          "snippet",
+          "published_at_ms",
+          "source_id",
+          "source_name",
+          "source_role",
+          "trust_tier",
+          "source_chain_id",
+          "canonical_url",
+          "origin_url",
+          "origin_domain",
+          "origin_name",
+          "provenance_status",
+          "language",
+          "first_seen_at_ms",
+          "last_seen_at_ms",
+          "identity_method",
+          "identity_version"
+        ],
+        "title": "NewsArticleData",
+        "type": "object"
+      },
+      "NewsPrimaryArticleData": {
+        "additionalProperties": false,
+        "properties": {
+          "article_id": {
+            "title": "Article Id",
+            "type": "string"
+          },
+          "canonical_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Url"
+          },
+          "origin_domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Domain"
+          },
+          "origin_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Name"
+          },
+          "origin_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Url"
+          },
+          "provenance_status": {
+            "enum": [
+              "verified",
+              "attributed",
+              "unknown"
+            ],
+            "title": "Provenance Status",
+            "type": "string"
+          },
+          "published_at_ms": {
+            "title": "Published At Ms",
+            "type": "integer"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "source_chain_id": {
+            "title": "Source Chain Id",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          },
+          "source_role": {
+            "enum": [
+              "original_publisher",
+              "trusted_aggregator"
+            ],
+            "title": "Source Role",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "authoritative",
+              "trusted",
+              "standard",
+              "low"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "article_id",
+          "source_id",
+          "source_name",
+          "source_role",
+          "trust_tier",
+          "source_chain_id",
+          "canonical_url",
+          "title",
+          "snippet",
+          "published_at_ms",
+          "origin_url",
+          "origin_domain",
+          "origin_name",
+          "provenance_status"
+        ],
+        "title": "NewsPrimaryArticleData",
+        "type": "object"
+      },
+      "NewsSourceData": {
+        "additionalProperties": false,
+        "properties": {
+          "consecutive_failures": {
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "coverage_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Coverage Tags",
+            "type": "array"
+          },
+          "default_language": {
+            "title": "Default Language",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "feed_url": {
+            "title": "Feed Url",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_fetch_finished_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fetch Finished At Ms"
+          },
+          "last_fetch_started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fetch Started At Ms"
+          },
+          "last_http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Http Status"
+          },
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_fetch_at_ms": {
+            "title": "Next Fetch At Ms",
+            "type": "integer"
+          },
+          "refresh_interval_seconds": {
+            "title": "Refresh Interval Seconds",
+            "type": "integer"
+          },
+          "source_chain_id": {
+            "title": "Source Chain Id",
+            "type": "string"
+          },
+          "source_domain": {
+            "title": "Source Domain",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_role": {
+            "enum": [
+              "original_publisher",
+              "trusted_aggregator"
+            ],
+            "title": "Source Role",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "authoritative",
+              "trusted",
+              "standard",
+              "low"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "name",
+          "feed_url",
+          "source_domain",
+          "source_role",
+          "trust_tier",
+          "source_chain_id",
+          "coverage_tags",
+          "default_language",
+          "enabled",
+          "refresh_interval_seconds",
+          "last_fetch_started_at_ms",
+          "last_fetch_finished_at_ms",
+          "last_success_at_ms",
+          "last_http_status",
+          "consecutive_failures",
+          "last_error",
+          "next_fetch_at_ms"
+        ],
+        "title": "NewsSourceData",
+        "type": "object"
+      },
+      "NewsSourcesData": {
         "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/NewsRow"
+              "$ref": "#/components/schemas/NewsSourceData"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "NewsSourcesData",
+        "type": "object"
+      },
+      "NewsStoryAnalysisData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_id": {
+            "title": "Analysis Id",
+            "type": "string"
+          },
+          "confirmed_facts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Confirmed Facts",
+            "type": "array"
+          },
+          "disagreements_unknowns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disagreements Unknowns",
+            "type": "array"
+          },
+          "economic_market_impact": {
+            "title": "Economic Market Impact",
+            "type": "string"
+          },
+          "evidence_references": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence References",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "next_checkpoint": {
+            "title": "Next Checkpoint",
+            "type": "string"
+          },
+          "political_impact": {
+            "title": "Political Impact",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "published_at_ms": {
+            "title": "Published At Ms",
+            "type": "integer"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "what_happened": {
+            "title": "What Happened",
+            "type": "string"
+          },
+          "why_it_matters": {
+            "title": "Why It Matters",
+            "type": "string"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "analysis_id",
+          "model",
+          "prompt_version",
+          "workflow_version",
+          "schema_version",
+          "what_happened",
+          "why_it_matters",
+          "political_impact",
+          "economic_market_impact",
+          "confirmed_facts",
+          "disagreements_unknowns",
+          "next_checkpoint",
+          "evidence_references",
+          "published_at_ms"
+        ],
+        "title": "NewsStoryAnalysisData",
+        "type": "object"
+      },
+      "NewsStoryDetailData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryAnalysisData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "analysis_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Error"
+          },
+          "analysis_status": {
+            "enum": [
+              "pending",
+              "available",
+              "failed",
+              "unavailable"
+            ],
+            "title": "Analysis Status",
+            "type": "string"
+          },
+          "anchor_article_id": {
+            "title": "Anchor Article Id",
+            "type": "string"
+          },
+          "article_count": {
+            "title": "Article Count",
+            "type": "integer"
+          },
+          "articles": {
+            "items": {
+              "$ref": "#/components/schemas/NewsArticleData"
+            },
+            "title": "Articles",
+            "type": "array"
+          },
+          "evidence_set_hash": {
+            "title": "Evidence Set Hash",
+            "type": "string"
+          },
+          "first_seen_at_ms": {
+            "title": "First Seen At Ms",
+            "type": "integer"
+          },
+          "identity_version": {
+            "title": "Identity Version",
+            "type": "string"
+          },
+          "importance_factors": {
+            "additionalProperties": true,
+            "title": "Importance Factors",
+            "type": "object"
+          },
+          "importance_score": {
+            "title": "Importance Score",
+            "type": "integer"
+          },
+          "importance_version": {
+            "title": "Importance Version",
+            "type": "string"
+          },
+          "independent_origin_count": {
+            "title": "Independent Origin Count",
+            "type": "integer"
+          },
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "last_seen_at_ms": {
+            "title": "Last Seen At Ms",
+            "type": "integer"
+          },
+          "lifecycle_version": {
+            "title": "Lifecycle Version",
+            "type": "string"
+          },
+          "memberships": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStoryMembershipData"
+            },
+            "title": "Memberships",
+            "type": "array"
+          },
+          "phase": {
+            "enum": [
+              "breaking",
+              "developing",
+              "sustained",
+              "fading"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "primary_article_id": {
+            "title": "Primary Article Id",
+            "type": "string"
+          },
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
+          },
+          "source_count": {
+            "title": "Source Count",
+            "type": "integer"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trusted_source_count": {
+            "title": "Trusted Source Count",
+            "type": "integer"
+          },
+          "verification_status": {
+            "enum": [
+              "corroborated",
+              "trusted",
+              "attributed",
+              "unverified"
+            ],
+            "title": "Verification Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "anchor_article_id",
+          "primary_article_id",
+          "title",
+          "snippet",
+          "language",
+          "first_seen_at_ms",
+          "last_seen_at_ms",
+          "source_count",
+          "article_count",
+          "trusted_source_count",
+          "independent_origin_count",
+          "verification_status",
+          "phase",
+          "lifecycle_version",
+          "importance_score",
+          "importance_version",
+          "importance_factors",
+          "identity_version",
+          "evidence_set_hash",
+          "analysis_status",
+          "analysis_error",
+          "analysis",
+          "articles",
+          "memberships"
+        ],
+        "title": "NewsStoryDetailData",
+        "type": "object"
+      },
+      "NewsStoryListData": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStorySummaryData"
             },
             "title": "Items",
             "type": "array"
@@ -2450,342 +3102,116 @@
           "items",
           "next_cursor"
         ],
-        "title": "NewsData",
+        "title": "NewsStoryListData",
         "type": "object"
       },
-      "NewsFactDetailData": {
+      "NewsStoryMembershipData": {
         "additionalProperties": false,
         "properties": {
-          "affected_targets_json": {
-            "items": {},
-            "title": "Affected Targets Json",
-            "type": "array"
-          },
-          "canonical_url": {
-            "title": "Canonical Url",
-            "type": "string"
-          },
-          "claim": {
-            "title": "Claim",
-            "type": "string"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
+          "admitted_at_ms": {
+            "title": "Admitted At Ms",
             "type": "integer"
           },
-          "event_type": {
-            "title": "Event Type",
+          "article_id": {
+            "title": "Article Id",
             "type": "string"
           },
-          "evidence_quote": {
-            "title": "Evidence Quote",
+          "identity_version": {
+            "title": "Identity Version",
             "type": "string"
           },
-          "evidence_span_end": {
-            "title": "Evidence Span End",
-            "type": "integer"
-          },
-          "evidence_span_start": {
-            "title": "Evidence Span Start",
-            "type": "integer"
-          },
-          "extraction_method": {
-            "title": "Extraction Method",
+          "match_method": {
+            "title": "Match Method",
             "type": "string"
           },
-          "fact_candidate_id": {
-            "title": "Fact Candidate Id",
-            "type": "string"
-          },
-          "headline": {
-            "title": "Headline",
-            "type": "string"
-          },
-          "news_item_id": {
-            "title": "News Item Id",
-            "type": "string"
-          },
-          "policy_version": {
-            "title": "Policy Version",
-            "type": "string"
-          },
-          "realis": {
-            "title": "Realis",
-            "type": "string"
-          },
-          "rejection_reasons_json": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Rejection Reasons Json",
-            "type": "array"
-          },
-          "required_slots_json": {
+          "match_reason": {
             "additionalProperties": true,
-            "title": "Required Slots Json",
+            "title": "Match Reason",
             "type": "object"
           },
-          "source_domain": {
-            "title": "Source Domain",
-            "type": "string"
-          },
-          "source_role": {
-            "title": "Source Role",
-            "type": "string"
-          },
-          "updated_at_ms": {
-            "title": "Updated At Ms",
-            "type": "integer"
-          },
-          "validation_status": {
-            "title": "Validation Status",
-            "type": "string"
+          "match_score": {
+            "title": "Match Score",
+            "type": "number"
           }
         },
         "required": [
-          "fact_candidate_id",
-          "news_item_id",
-          "event_type",
-          "claim",
-          "realis",
-          "evidence_quote",
-          "evidence_span_start",
-          "evidence_span_end",
-          "source_role",
-          "required_slots_json",
-          "affected_targets_json",
-          "validation_status",
-          "rejection_reasons_json",
-          "extraction_method",
-          "policy_version",
-          "created_at_ms",
-          "updated_at_ms",
-          "headline",
-          "canonical_url",
-          "source_domain"
+          "article_id",
+          "match_method",
+          "match_score",
+          "identity_version",
+          "admitted_at_ms",
+          "match_reason"
         ],
-        "title": "NewsFactDetailData",
+        "title": "NewsStoryMembershipData",
         "type": "object"
       },
-      "NewsFactLane": {
+      "NewsStorySummaryData": {
         "additionalProperties": false,
         "properties": {
-          "affected_targets": {
-            "items": {},
-            "title": "Affected Targets",
-            "type": "array"
-          },
-          "claim": {
+          "analysis_published_at_ms": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim"
+            "title": "Analysis Published At Ms"
           },
-          "event_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "analysis_status": {
+            "enum": [
+              "pending",
+              "available",
+              "failed",
+              "unavailable"
             ],
-            "title": "Event Type"
-          },
-          "fact_candidate_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Fact Candidate Id"
-          },
-          "realis": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Realis"
-          },
-          "rejection_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Rejection Reasons",
-            "type": "array"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "NewsFactLane",
-        "type": "object"
-      },
-      "NewsMarketScope": {
-        "additionalProperties": false,
-        "properties": {
-          "basis": {
-            "additionalProperties": true,
-            "title": "Basis",
-            "type": "object"
-          },
-          "primary": {
-            "title": "Primary",
+            "title": "Analysis Status",
             "type": "string"
           },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          },
-          "scope": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Scope",
-            "type": "array"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "version": {
-            "title": "Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "scope",
-          "primary",
-          "status",
-          "reason",
-          "basis",
-          "version"
-        ],
-        "title": "NewsMarketScope",
-        "type": "object"
-      },
-      "NewsObjectData": {
-        "additionalProperties": false,
-        "properties": {
-          "body_text": {
-            "title": "Body Text",
-            "type": "string"
-          },
-          "canonical_url": {
-            "title": "Canonical Url",
-            "type": "string"
-          },
-          "content_class": {
-            "title": "Content Class",
-            "type": "string"
-          },
-          "content_classification": {
-            "additionalProperties": true,
-            "title": "Content Classification",
-            "type": "object"
-          },
-          "content_tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Content Tags",
-            "type": "array"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
+          "article_count": {
+            "title": "Article Count",
             "type": "integer"
           },
-          "duplicate_observation_count": {
-            "title": "Duplicate Observation Count",
+          "first_seen_at_ms": {
+            "title": "First Seen At Ms",
             "type": "integer"
           },
-          "entities": {
-            "items": {},
-            "title": "Entities",
-            "type": "array"
+          "importance_factors": {
+            "additionalProperties": true,
+            "title": "Importance Factors",
+            "type": "object"
           },
-          "fact_candidates": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Fact Candidates",
-            "type": "array"
+          "importance_score": {
+            "title": "Importance Score",
+            "type": "integer"
           },
-          "fact_lanes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsFactLane"
-            },
-            "title": "Fact Lanes",
-            "type": "array"
-          },
-          "fetch_run": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Fetch Run"
-          },
-          "fetched_at_ms": {
-            "title": "Fetched At Ms",
+          "independent_origin_count": {
+            "title": "Independent Origin Count",
             "type": "integer"
           },
           "language": {
             "title": "Language",
             "type": "string"
           },
-          "lifecycle_status": {
-            "title": "Lifecycle Status",
-            "type": "string"
+          "last_seen_at_ms": {
+            "title": "Last Seen At Ms",
+            "type": "integer"
           },
-          "market_scope": {
-            "$ref": "#/components/schemas/NewsMarketScope"
-          },
-          "news_item_id": {
-            "title": "News Item Id",
-            "type": "string"
-          },
-          "observation_edges": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Observation Edges",
-            "type": "array"
-          },
-          "processed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "phase": {
+            "enum": [
+              "breaking",
+              "developing",
+              "sustained",
+              "fading"
             ],
-            "title": "Processed At Ms"
+            "title": "Phase",
+            "type": "string"
           },
-          "processing_error": {
+          "primary_article": {
+            "$ref": "#/components/schemas/NewsPrimaryArticleData"
+          },
+          "short_conclusion": {
             "anyOf": [
               {
                 "type": "string"
@@ -2794,816 +3220,60 @@
                 "type": "null"
               }
             ],
-            "title": "Processing Error"
+            "title": "Short Conclusion"
           },
-          "provider_item": {
-            "additionalProperties": true,
-            "title": "Provider Item",
-            "type": "object"
+          "snippet": {
+            "title": "Snippet",
+            "type": "string"
           },
-          "provider_observations": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Provider Observations",
-            "type": "array"
-          },
-          "provider_rating": {
-            "$ref": "#/components/schemas/NewsProviderRating"
-          },
-          "published_at_ms": {
-            "title": "Published At Ms",
+          "source_count": {
+            "title": "Source Count",
             "type": "integer"
           },
-          "representative_news_item_id": {
-            "title": "Representative News Item Id",
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/NewsSourceDetailData"
-          },
-          "source_domain": {
-            "title": "Source Domain",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          },
-          "story": {
-            "$ref": "#/components/schemas/NewsStory"
-          },
-          "story_key": {
-            "title": "Story Key",
-            "type": "string"
-          },
-          "summary": {
-            "title": "Summary",
+          "story_id": {
+            "title": "Story Id",
             "type": "string"
           },
           "title": {
             "title": "Title",
             "type": "string"
           },
-          "token_lanes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsTokenLane"
-            },
-            "title": "Token Lanes",
-            "type": "array"
-          },
-          "token_mentions": {
-            "items": {},
-            "title": "Token Mentions",
-            "type": "array"
-          },
-          "updated_at_ms": {
-            "title": "Updated At Ms",
+          "trusted_source_count": {
+            "title": "Trusted Source Count",
             "type": "integer"
+          },
+          "verification_status": {
+            "enum": [
+              "corroborated",
+              "trusted",
+              "attributed",
+              "unverified"
+            ],
+            "title": "Verification Status",
+            "type": "string"
           }
         },
         "required": [
-          "news_item_id",
-          "source_id",
-          "source_domain",
-          "canonical_url",
+          "story_id",
           "title",
-          "summary",
-          "body_text",
+          "snippet",
           "language",
-          "published_at_ms",
-          "fetched_at_ms",
-          "lifecycle_status",
-          "content_class",
-          "processed_at_ms",
-          "processing_error",
-          "created_at_ms",
-          "updated_at_ms",
-          "duplicate_observation_count",
-          "representative_news_item_id",
-          "story_key",
-          "story",
-          "content_tags",
-          "content_classification",
-          "provider_rating",
-          "market_scope",
-          "token_lanes",
-          "fact_lanes",
-          "source",
-          "provider_item",
-          "fetch_run",
-          "observation_edges",
-          "provider_observations",
-          "entities",
-          "token_mentions",
-          "fact_candidates"
+          "primary_article",
+          "first_seen_at_ms",
+          "last_seen_at_ms",
+          "source_count",
+          "article_count",
+          "trusted_source_count",
+          "independent_origin_count",
+          "verification_status",
+          "phase",
+          "importance_score",
+          "importance_factors",
+          "analysis_status",
+          "short_conclusion",
+          "analysis_published_at_ms"
         ],
-        "title": "NewsObjectData",
-        "type": "object"
-      },
-      "NewsProviderCapabilitiesData": {
-        "additionalProperties": false,
-        "properties": {
-          "configured_provider_types": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Configured Provider Types",
-            "type": "array"
-          },
-          "supported_provider_types": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Supported Provider Types",
-            "type": "array"
-          },
-          "unsupported_configured_provider_types": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Unsupported Configured Provider Types",
-            "type": "array"
-          }
-        },
-        "required": [
-          "supported_provider_types",
-          "configured_provider_types",
-          "unsupported_configured_provider_types"
-        ],
-        "title": "NewsProviderCapabilitiesData",
-        "type": "object"
-      },
-      "NewsProviderRating": {
-        "additionalProperties": false,
-        "properties": {
-          "direction": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Direction"
-          },
-          "grade": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Grade"
-          },
-          "method": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Method"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider"
-          },
-          "score": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Score"
-          },
-          "signal": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Signal"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status"
-          }
-        },
-        "title": "NewsProviderRating",
-        "type": "object"
-      },
-      "NewsRow": {
-        "additionalProperties": false,
-        "properties": {
-          "canonical_item_key": {
-            "title": "Canonical Item Key",
-            "type": "string"
-          },
-          "canonical_url": {
-            "title": "Canonical Url",
-            "type": "string"
-          },
-          "computed_at_ms": {
-            "title": "Computed At Ms",
-            "type": "integer"
-          },
-          "content_class": {
-            "title": "Content Class",
-            "type": "string"
-          },
-          "content_classification": {
-            "additionalProperties": true,
-            "title": "Content Classification",
-            "type": "object"
-          },
-          "content_tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Content Tags",
-            "type": "array"
-          },
-          "duplicate_count": {
-            "title": "Duplicate Count",
-            "type": "integer"
-          },
-          "fact_lanes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsFactLane"
-            },
-            "title": "Fact Lanes",
-            "type": "array"
-          },
-          "headline": {
-            "title": "Headline",
-            "type": "string"
-          },
-          "latest_at_ms": {
-            "title": "Latest At Ms",
-            "type": "integer"
-          },
-          "lifecycle_status": {
-            "title": "Lifecycle Status",
-            "type": "string"
-          },
-          "market_scope": {
-            "$ref": "#/components/schemas/NewsMarketScope"
-          },
-          "news_item_id": {
-            "title": "News Item Id",
-            "type": "string"
-          },
-          "projection_version": {
-            "title": "Projection Version",
-            "type": "string"
-          },
-          "provider_article_keys": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Provider Article Keys",
-            "type": "array"
-          },
-          "provider_rating": {
-            "$ref": "#/components/schemas/NewsProviderRating"
-          },
-          "representative_news_item_id": {
-            "title": "Representative News Item Id",
-            "type": "string"
-          },
-          "row_id": {
-            "title": "Row Id",
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/NewsSourceSummary"
-          },
-          "source_domain": {
-            "title": "Source Domain",
-            "type": "string"
-          },
-          "source_domains": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Domains",
-            "type": "array"
-          },
-          "source_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Ids",
-            "type": "array"
-          },
-          "story": {
-            "$ref": "#/components/schemas/NewsStory"
-          },
-          "story_key": {
-            "title": "Story Key",
-            "type": "string"
-          },
-          "summary": {
-            "title": "Summary",
-            "type": "string"
-          },
-          "token_lanes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsTokenLane"
-            },
-            "title": "Token Lanes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "row_id",
-          "news_item_id",
-          "representative_news_item_id",
-          "story_key",
-          "story",
-          "latest_at_ms",
-          "lifecycle_status",
-          "headline",
-          "summary",
-          "source_domain",
-          "canonical_url",
-          "canonical_item_key",
-          "duplicate_count",
-          "source_ids",
-          "source_domains",
-          "provider_article_keys",
-          "token_lanes",
-          "fact_lanes",
-          "provider_rating",
-          "content_class",
-          "content_tags",
-          "content_classification",
-          "source",
-          "market_scope",
-          "computed_at_ms",
-          "projection_version"
-        ],
-        "title": "NewsRow",
-        "type": "object"
-      },
-      "NewsSourceDetailData": {
-        "additionalProperties": false,
-        "properties": {
-          "asset_universe": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Asset Universe",
-            "type": "array"
-          },
-          "authority_scope": {
-            "additionalProperties": true,
-            "title": "Authority Scope",
-            "type": "object"
-          },
-          "coverage_tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Coverage Tags",
-            "type": "array"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
-            "type": "integer"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "managed_by_config": {
-            "title": "Managed By Config",
-            "type": "boolean"
-          },
-          "provider_type": {
-            "title": "Provider Type",
-            "type": "string"
-          },
-          "refresh_interval_seconds": {
-            "title": "Refresh Interval Seconds",
-            "type": "integer"
-          },
-          "source_domain": {
-            "title": "Source Domain",
-            "type": "string"
-          },
-          "source_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Id"
-          },
-          "source_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Name"
-          },
-          "source_quality_status": {
-            "title": "Source Quality Status",
-            "type": "string"
-          },
-          "source_role": {
-            "title": "Source Role",
-            "type": "string"
-          },
-          "trust_tier": {
-            "title": "Trust Tier",
-            "type": "string"
-          },
-          "updated_at_ms": {
-            "title": "Updated At Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "source_id",
-          "provider_type",
-          "source_domain",
-          "source_name",
-          "source_role",
-          "trust_tier",
-          "coverage_tags",
-          "asset_universe",
-          "authority_scope",
-          "source_quality_status",
-          "enabled",
-          "managed_by_config",
-          "refresh_interval_seconds",
-          "created_at_ms",
-          "updated_at_ms"
-        ],
-        "title": "NewsSourceDetailData",
-        "type": "object"
-      },
-      "NewsSourceHealthData": {
-        "additionalProperties": false,
-        "properties": {
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "status"
-        ],
-        "title": "NewsSourceHealthData",
-        "type": "object"
-      },
-      "NewsSourceHygieneData": {
-        "additionalProperties": false,
-        "properties": {
-          "degraded_sources": {
-            "items": {
-              "$ref": "#/components/schemas/NewsSourceHealthData"
-            },
-            "title": "Degraded Sources",
-            "type": "array"
-          },
-          "sources_missing_coverage_tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Sources Missing Coverage Tags",
-            "type": "array"
-          },
-          "unsupported_sources": {
-            "items": {
-              "$ref": "#/components/schemas/NewsSourceProviderData"
-            },
-            "title": "Unsupported Sources",
-            "type": "array"
-          },
-          "warnings": {
-            "items": {
-              "$ref": "#/components/schemas/NewsSourceWarningData"
-            },
-            "title": "Warnings",
-            "type": "array"
-          }
-        },
-        "required": [
-          "sources_missing_coverage_tags",
-          "unsupported_sources",
-          "degraded_sources",
-          "warnings"
-        ],
-        "title": "NewsSourceHygieneData",
-        "type": "object"
-      },
-      "NewsSourceProviderData": {
-        "additionalProperties": false,
-        "properties": {
-          "provider_type": {
-            "title": "Provider Type",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "provider_type"
-        ],
-        "title": "NewsSourceProviderData",
-        "type": "object"
-      },
-      "NewsSourceStatusData": {
-        "additionalProperties": false,
-        "properties": {
-          "provider_capabilities": {
-            "$ref": "#/components/schemas/NewsProviderCapabilitiesData"
-          },
-          "source_hygiene": {
-            "$ref": "#/components/schemas/NewsSourceHygieneData"
-          },
-          "sources": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Sources",
-            "type": "array"
-          }
-        },
-        "required": [
-          "provider_capabilities",
-          "source_hygiene",
-          "sources"
-        ],
-        "title": "NewsSourceStatusData",
-        "type": "object"
-      },
-      "NewsSourceSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "coverage_tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Coverage Tags",
-            "type": "array"
-          },
-          "provider_type": {
-            "title": "Provider Type",
-            "type": "string"
-          },
-          "source_domain": {
-            "title": "Source Domain",
-            "type": "string"
-          },
-          "source_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Id"
-          },
-          "source_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Name"
-          },
-          "source_quality_status": {
-            "title": "Source Quality Status",
-            "type": "string"
-          },
-          "source_role": {
-            "title": "Source Role",
-            "type": "string"
-          },
-          "trust_tier": {
-            "title": "Trust Tier",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "source_name",
-          "source_domain",
-          "provider_type",
-          "source_role",
-          "trust_tier",
-          "coverage_tags",
-          "source_quality_status"
-        ],
-        "title": "NewsSourceSummary",
-        "type": "object"
-      },
-      "NewsSourceWarningData": {
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "reason"
-        ],
-        "title": "NewsSourceWarningData",
-        "type": "object"
-      },
-      "NewsStory": {
-        "additionalProperties": false,
-        "properties": {
-          "member_count": {
-            "title": "Member Count",
-            "type": "integer"
-          },
-          "member_news_item_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Member News Item Ids",
-            "type": "array"
-          },
-          "provider_article_keys": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Provider Article Keys",
-            "type": "array"
-          },
-          "representative_news_item_id": {
-            "title": "Representative News Item Id",
-            "type": "string"
-          },
-          "source_domains": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Domains",
-            "type": "array"
-          },
-          "source_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Ids",
-            "type": "array"
-          },
-          "story_key": {
-            "title": "Story Key",
-            "type": "string"
-          }
-        },
-        "required": [
-          "story_key",
-          "representative_news_item_id",
-          "member_news_item_ids",
-          "member_count",
-          "source_domains"
-        ],
-        "title": "NewsStory",
-        "type": "object"
-      },
-      "NewsTokenLane": {
-        "additionalProperties": false,
-        "properties": {
-          "candidate_targets": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Candidate Targets",
-            "type": "array"
-          },
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "lane": {
-            "title": "Lane",
-            "type": "string"
-          },
-          "reason_codes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Reason Codes",
-            "type": "array"
-          },
-          "resolution_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolution Status"
-          },
-          "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Id"
-          },
-          "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Type"
-          }
-        },
-        "required": [
-          "lane"
-        ],
-        "title": "NewsTokenLane",
+        "title": "NewsStorySummaryData",
         "type": "object"
       },
       "NotificationDeliveriesData": {
@@ -4399,11 +4069,6 @@
             "title": "Handles",
             "type": "array"
           },
-          "news_provider_contract": {
-            "additionalProperties": true,
-            "title": "News Provider Contract",
-            "type": "object"
-          },
           "ok": {
             "title": "Ok",
             "type": "boolean"
@@ -4449,7 +4114,6 @@
           "snapshot_gate",
           "db",
           "provider_states",
-          "news_provider_contract",
           "workers"
         ],
         "title": "StatusData",
@@ -7148,16 +6812,37 @@
         ]
       }
     },
-    "/api/news": {
+    "/api/news/sources": {
       "get": {
-        "operationId": "list_news_api_news_get",
+        "operationId": "list_news_sources_api_news_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsSourcesData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List News Sources",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/stories": {
+      "get": {
+        "operationId": "list_news_stories_api_news_stories_get",
         "parameters": [
           {
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 50,
               "title": "Limit",
               "type": "integer"
             }
@@ -7174,16 +6859,6 @@
           },
           {
             "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Status",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "q",
             "required": false,
             "schema": {
@@ -7191,46 +6866,24 @@
               "title": "Q",
               "type": "string"
             }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List News",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/news/facts/{fact_candidate_id}": {
-      "get": {
-        "operationId": "get_news_fact_api_news_facts__fact_candidate_id__get",
-        "parameters": [
           {
-            "in": "path",
-            "name": "fact_candidate_id",
-            "required": true,
+            "in": "query",
+            "name": "verification_status",
+            "required": false,
             "schema": {
-              "title": "Fact Candidate Id",
+              "default": "",
+              "title": "Verification Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Source",
               "type": "string"
             }
           }
@@ -7240,7 +6893,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsFactDetailData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsStoryListData_"
                 }
               }
             },
@@ -7257,22 +6910,22 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get News Fact",
+        "summary": "List News Stories",
         "tags": [
           "api"
         ]
       }
     },
-    "/api/news/items/{news_item_id}": {
+    "/api/news/stories/{story_id}": {
       "get": {
-        "operationId": "get_news_item_api_news_items__news_item_id__get",
+        "operationId": "get_news_story_api_news_stories__story_id__get",
         "parameters": [
           {
             "in": "path",
-            "name": "news_item_id",
+            "name": "story_id",
             "required": true,
             "schema": {
-              "title": "News Item Id",
+              "title": "Story Id",
               "type": "string"
             }
           }
@@ -7282,7 +6935,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsObjectData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsStoryDetailData_"
                 }
               }
             },
@@ -7299,28 +6952,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get News Item",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/news/sources/status": {
-      "get": {
-        "operationId": "get_news_source_status_api_news_sources_status_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsSourceStatusData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get News Source Status",
+        "summary": "Get News Story",
         "tags": [
           "api"
         ]

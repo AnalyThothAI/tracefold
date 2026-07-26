@@ -10,7 +10,6 @@ const STATUS_KEYS = [
   "snapshot_gate",
   "db",
   "provider_states",
-  "news_provider_contract",
   "workers",
 ] as const;
 const WORKER_KEYS = [
@@ -34,7 +33,6 @@ export function requireStatusData(value: unknown): OpenApiStatusData {
   requireRecord(status.snapshot_gate, "status.snapshot_gate");
   requireRecord(status.db, "status.db");
   requireRecord(status.provider_states, "status.provider_states");
-  requireRecord(status.news_provider_contract, "status.news_provider_contract");
   const workers = requireRecord(status.workers, "status.workers");
   if (!Object.hasOwn(workers, "collector")) {
     fail("status.workers.collector");

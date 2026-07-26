@@ -60,117 +60,13 @@ providers:
     enabled: true
     fred_api_key_env: "FINANCE_FRED_API_KEY"
 
-news_intel:
+news:
   enabled: true
-  # Worker runtime knobs and bounded catch-up intervals live in workers.yaml.
-  sources:
-    - source_id: coindesk
-      provider_type: rss
-      feed_url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
-      source_domain: coindesk.com
-      source_name: CoinDesk
-      source_role: specialist_media
-      trust_tier: high
-      coverage_tags: ["crypto_market", "crypto_policy", "exchange_listing"]
-      authority_scope:
-        event_types: ["exchange_listing", "regulatory_action", "funding"]
-        domains: ["coindesk.com"]
-      fetch_policy:
-        max_items: 50
-      cost_policy:
-        class: free
-      enabled: true
-      refresh_interval_seconds: 300
-    - source_id: cointelegraph
-      provider_type: rss
-      feed_url: "https://cointelegraph.com/rss"
-      source_domain: cointelegraph.com
-      source_name: CoinTelegraph
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 300
-    - source_id: theblock
-      provider_type: rss
-      feed_url: "https://www.theblock.co/rss.xml"
-      source_domain: theblock.co
-      source_name: The Block
-      source_role: specialist_media
-      trust_tier: high
-      enabled: true
-      refresh_interval_seconds: 300
-    - source_id: bitcoinmagazine
-      provider_type: rss
-      feed_url: "https://bitcoinmagazine.com/feed"
-      source_domain: bitcoinmagazine.com
-      source_name: Bitcoin Magazine
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: decrypt
-      provider_type: rss
-      feed_url: "https://decrypt.co/feed"
-      source_domain: decrypt.co
-      source_name: Decrypt
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 300
-    - source_id: marketwatch-top-stories
-      provider_type: rss
-      feed_url: "http://feeds.marketwatch.com/marketwatch/topstories/"
-      source_domain: marketwatch.com
-      source_name: MarketWatch Top Stories
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: wsj-markets
-      provider_type: rss
-      feed_url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
-      source_domain: wsj.com
-      source_name: WSJ Markets
-      source_role: specialist_media
-      trust_tier: high
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: cnbc-economy
-      provider_type: rss
-      feed_url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"
-      source_domain: cnbc.com
-      source_name: CNBC Economy
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: cnbc-markets
-      provider_type: rss
-      feed_url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069"
-      source_domain: cnbc.com
-      source_name: CNBC Markets
-      source_role: specialist_media
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: yahoo-finance
-      provider_type: rss
-      feed_url: "https://finance.yahoo.com/news/rssindex"
-      source_domain: finance.yahoo.com
-      source_name: Yahoo Finance
-      source_role: aggregator
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 600
-    - source_id: cryptopanic-en
-      provider_type: cryptopanic
-      feed_url: "cryptopanic://posts?regions=en&kind=all&max_items=50&profile_dir=~/.tracefold/cryptopanic-profile&timeout=60"
-      source_domain: cryptopanic.com
-      source_name: CryptoPanic
-      source_role: aggregator
-      trust_tier: standard
-      enabled: true
-      refresh_interval_seconds: 300
+  # Omit `sources` to use the eight built-in global politics/economy feeds:
+  # Reuters World/Business, AP, BBC, Al Jazeera, FT, CNBC, and 6551News.
+  # RSSHub is internal to compose; 6551News resolves through
+  # http://rsshub:1200/telegram/channel/news6551.
+  # Worker timing and DeepSeek model settings live in workers.yaml.
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

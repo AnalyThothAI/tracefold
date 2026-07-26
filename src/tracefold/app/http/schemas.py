@@ -37,7 +37,6 @@ class StatusData(ExactApiSchema):
     snapshot_gate: JsonObject
     db: JsonObject
     provider_states: dict[str, JsonObject]
-    news_provider_contract: JsonObject
     workers: dict[str, WorkerStatusData]
 
 
@@ -578,211 +577,148 @@ class StocksRadarData(ExactApiSchema):
     health: StocksRadarHealthData
 
 
-class NewsStory(ExactApiSchema):
-    story_key: str
-    representative_news_item_id: str
-    member_news_item_ids: list[str]
-    member_count: int
-    source_domains: list[str]
-    source_ids: list[str] = Field(default_factory=list)
-    provider_article_keys: list[str] = Field(default_factory=list)
+class NewsPrimaryArticleData(ExactApiSchema):
+    article_id: str
+    source_id: str
+    source_name: str
+    source_role: Literal["original_publisher", "trusted_aggregator"]
+    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
+    source_chain_id: str
+    canonical_url: str | None
+    title: str
+    snippet: str
+    published_at_ms: int
+    origin_url: str | None
+    origin_domain: str | None
+    origin_name: str | None
+    provenance_status: Literal["verified", "attributed", "unknown"]
 
 
-class NewsMarketScope(ExactApiSchema):
-    scope: list[str]
-    primary: str
-    status: str
-    reason: str
-    basis: JsonObject
-    version: str
+class NewsStorySummaryData(ExactApiSchema):
+    story_id: str
+    title: str
+    snippet: str
+    language: str
+    primary_article: NewsPrimaryArticleData
+    first_seen_at_ms: int
+    last_seen_at_ms: int
+    source_count: int
+    article_count: int
+    trusted_source_count: int
+    independent_origin_count: int
+    verification_status: Literal["corroborated", "trusted", "attributed", "unverified"]
+    phase: Literal["breaking", "developing", "sustained", "fading"]
+    importance_score: int
+    importance_factors: JsonObject
+    analysis_status: Literal["pending", "available", "failed", "unavailable"]
+    short_conclusion: str | None
+    analysis_published_at_ms: int | None
 
 
-class NewsProviderRating(ExactApiSchema):
-    provider: str | None = None
-    status: str | None = None
-    direction: str | None = None
-    signal: str | None = None
-    score: int | None = None
-    grade: str | None = None
-    method: str | None = None
-
-
-class NewsSourceSummary(ExactApiSchema):
-    source_id: str | None
-    source_name: str | None
-    source_domain: str
-    provider_type: str
-    source_role: str
-    trust_tier: str
-    coverage_tags: list[str]
-    source_quality_status: str
-
-
-class NewsTokenLane(ExactApiSchema):
-    lane: str
-    resolution_status: str | None = None
-    symbol: str | None = None
-    target_type: str | None = None
-    target_id: str | None = None
-    display_name: str | None = None
-    reason_codes: list[str] = Field(default_factory=list)
-    candidate_targets: list[JsonObject] = Field(default_factory=list)
-
-
-class NewsFactLane(ExactApiSchema):
-    fact_candidate_id: str | None = None
-    claim: str | None = None
-    event_type: str | None = None
-    realis: str | None = None
-    status: str
-    affected_targets: list[Any] = Field(default_factory=list)
-    rejection_reasons: list[str] = Field(default_factory=list)
-
-
-class NewsRow(ExactApiSchema):
-    row_id: str
-    news_item_id: str
-    representative_news_item_id: str
-    story_key: str
-    story: NewsStory
-    latest_at_ms: int
-    lifecycle_status: str
-    headline: str
-    summary: str
-    source_domain: str
-    canonical_url: str
-    canonical_item_key: str
-    duplicate_count: int
-    source_ids: list[str]
-    source_domains: list[str]
-    provider_article_keys: list[str]
-    token_lanes: list[NewsTokenLane]
-    fact_lanes: list[NewsFactLane]
-    provider_rating: NewsProviderRating
-    content_class: str
-    content_tags: list[str]
-    content_classification: JsonObject
-    source: NewsSourceSummary
-    market_scope: NewsMarketScope
-    computed_at_ms: int
-    projection_version: str
-
-
-class NewsData(ExactApiSchema):
-    items: list[NewsRow]
+class NewsStoryListData(ExactApiSchema):
+    items: list[NewsStorySummaryData]
     next_cursor: str | None
 
 
-class NewsSourceDetailData(ExactApiSchema):
-    source_id: str | None
-    provider_type: str
-    source_domain: str
-    source_name: str | None
-    source_role: str
-    trust_tier: str
-    coverage_tags: list[str]
-    asset_universe: list[str]
-    authority_scope: JsonObject
-    source_quality_status: str
-    enabled: bool
-    managed_by_config: bool
-    refresh_interval_seconds: int
-    created_at_ms: int
-    updated_at_ms: int
-
-
-class NewsObjectData(ExactApiSchema):
-    news_item_id: str
-    source_id: str
-    source_domain: str
-    canonical_url: str
+class NewsArticleData(ExactApiSchema):
+    article_id: str
     title: str
-    summary: str
-    body_text: str
-    language: str
+    snippet: str
     published_at_ms: int
-    fetched_at_ms: int
-    lifecycle_status: str
-    content_class: str
-    processed_at_ms: int | None
-    processing_error: str | None
-    created_at_ms: int
-    updated_at_ms: int
-    duplicate_observation_count: int
-    representative_news_item_id: str
-    story_key: str
-    story: NewsStory
-    content_tags: list[str]
-    content_classification: JsonObject
-    provider_rating: NewsProviderRating
-    market_scope: NewsMarketScope
-    token_lanes: list[NewsTokenLane]
-    fact_lanes: list[NewsFactLane]
-    source: NewsSourceDetailData
-    provider_item: JsonObject
-    fetch_run: JsonObject | None
-    observation_edges: list[JsonObject]
-    provider_observations: list[JsonObject]
-    entities: list[Any]
-    token_mentions: list[Any]
-    fact_candidates: list[JsonObject]
+    source_id: str
+    source_name: str
+    source_role: Literal["original_publisher", "trusted_aggregator"]
+    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
+    source_chain_id: str
+    canonical_url: str | None
+    origin_url: str | None
+    origin_domain: str | None
+    origin_name: str | None
+    provenance_status: Literal["verified", "attributed", "unknown"]
+    language: str
+    first_seen_at_ms: int
+    last_seen_at_ms: int
+    identity_method: Literal["canonical_url", "source_guid", "title_time_bucket"]
+    identity_version: str
 
 
-class NewsFactDetailData(ExactApiSchema):
-    fact_candidate_id: str
-    news_item_id: str
-    event_type: str
-    claim: str
-    realis: str
-    evidence_quote: str
-    evidence_span_start: int
-    evidence_span_end: int
-    source_role: str
-    required_slots_json: JsonObject
-    affected_targets_json: list[Any]
-    validation_status: str
-    rejection_reasons_json: list[str]
-    extraction_method: str
-    policy_version: str
-    created_at_ms: int
-    updated_at_ms: int
-    headline: str
-    canonical_url: str
+class NewsStoryMembershipData(ExactApiSchema):
+    article_id: str
+    match_method: str
+    match_score: float
+    identity_version: str
+    admitted_at_ms: int
+    match_reason: JsonObject
+
+
+class NewsStoryAnalysisData(ExactApiSchema):
+    analysis_id: str
+    model: str
+    prompt_version: str
+    workflow_version: str
+    schema_version: str
+    what_happened: str
+    why_it_matters: str
+    political_impact: str
+    economic_market_impact: str
+    confirmed_facts: list[str]
+    disagreements_unknowns: list[str]
+    next_checkpoint: str
+    evidence_references: list[str]
+    published_at_ms: int
+
+
+class NewsStoryDetailData(ExactApiSchema):
+    story_id: str
+    anchor_article_id: str
+    primary_article_id: str
+    title: str
+    snippet: str
+    language: str
+    first_seen_at_ms: int
+    last_seen_at_ms: int
+    source_count: int
+    article_count: int
+    trusted_source_count: int
+    independent_origin_count: int
+    verification_status: Literal["corroborated", "trusted", "attributed", "unverified"]
+    phase: Literal["breaking", "developing", "sustained", "fading"]
+    lifecycle_version: str
+    importance_score: int
+    importance_version: str
+    importance_factors: JsonObject
+    identity_version: str
+    evidence_set_hash: str
+    analysis_status: Literal["pending", "available", "failed", "unavailable"]
+    analysis_error: str | None
+    analysis: NewsStoryAnalysisData | None
+    articles: list[NewsArticleData]
+    memberships: list[NewsStoryMembershipData]
+
+
+class NewsSourceData(ExactApiSchema):
+    source_id: str
+    name: str
+    feed_url: str
     source_domain: str
+    source_role: Literal["original_publisher", "trusted_aggregator"]
+    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
+    source_chain_id: str
+    coverage_tags: list[str]
+    default_language: str
+    enabled: bool
+    refresh_interval_seconds: int
+    last_fetch_started_at_ms: int | None
+    last_fetch_finished_at_ms: int | None
+    last_success_at_ms: int | None
+    last_http_status: int | None
+    consecutive_failures: int
+    last_error: str | None
+    next_fetch_at_ms: int
 
 
-class NewsProviderCapabilitiesData(ExactApiSchema):
-    supported_provider_types: list[str]
-    configured_provider_types: list[str]
-    unsupported_configured_provider_types: list[str]
-
-
-class NewsSourceProviderData(ExactApiSchema):
-    source_id: str
-    provider_type: str
-
-
-class NewsSourceHealthData(ExactApiSchema):
-    source_id: str
-    status: str
-
-
-class NewsSourceWarningData(ExactApiSchema):
-    source_id: str
-    reason: str
-
-
-class NewsSourceHygieneData(ExactApiSchema):
-    sources_missing_coverage_tags: list[str]
-    unsupported_sources: list[NewsSourceProviderData]
-    degraded_sources: list[NewsSourceHealthData]
-    warnings: list[NewsSourceWarningData]
-
-
-class NewsSourceStatusData(ExactApiSchema):
-    provider_capabilities: NewsProviderCapabilitiesData
-    source_hygiene: NewsSourceHygieneData
-    sources: list[JsonObject]
+class NewsSourcesData(ExactApiSchema):
+    items: list[NewsSourceData]
 
 
 class LiveMarketData(ExactApiSchema):

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from langchain_litellm import ChatLiteLLM
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from tracefold.app.llm import configured_chat_model, llm_is_configured
 from tracefold.integrations.deepagents.macro_research_deepagent import (
     MacroResearchDeepAgent,
 )
@@ -40,7 +40,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
         constructed["macro_sync"] = disabled_worker(ctx, "macro_sync")
     if not workers.macro_research.enabled:
         constructed["macro_research"] = disabled_worker(ctx, "macro_research")
-    elif not ctx.settings.llm.api_key or not ctx.settings.llm.base_url:
+    elif not llm_is_configured(ctx.settings):
         constructed["macro_research"] = unavailable_worker(
             ctx,
             "macro_research",
@@ -49,19 +49,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
     else:
         worker_name = "macro_research"
         research_settings = workers.macro_research
-        effective_model = _litellm_proxy_model_name(
-            research_settings.model,
-            base_url=ctx.settings.llm.base_url,
-        )
-        model = ChatLiteLLM(
-            model=effective_model,
-            api_key=ctx.settings.llm.api_key,
-            api_base=ctx.settings.llm.base_url,
-            temperature=0,
-            max_tokens=research_settings.max_tokens,
-            max_retries=0,
-            request_timeout=research_settings.model_request_timeout_seconds,
-        )
+        model, effective_model = configured_chat_model(ctx.settings, research_settings)
         reader = PostgresMacroResearchReadPort(
             db=ctx.db,
             worker_name=worker_name,
@@ -91,13 +79,6 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
             completed_session_macro=completed_session_macro,
         )
     return constructed
-
-
-def _litellm_proxy_model_name(model_name: str, *, base_url: str) -> str:
-    normalized = str(model_name or "").strip()
-    if "/" in normalized or not str(base_url or "").strip():
-        return normalized
-    return f"openai/{normalized}"
 
 
 def _checkpoint_dsn(ctx: WorkerFactoryContext) -> str:

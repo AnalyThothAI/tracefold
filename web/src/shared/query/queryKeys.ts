@@ -22,31 +22,21 @@ export const queryKeys = {
   macroPage: (pageId: string) => ["macro", "page", pageId] as const,
   macroSeries: (conceptKeys: string[], window: string) =>
     ["macro", "series", [...conceptKeys].sort(), window] as const,
-  newsRows: ({
+  newsStories: ({
     cursor,
     limit,
     q,
-    signal,
-    status,
+    source,
+    verificationStatus,
   }: {
     cursor?: string | null;
     limit: number;
     q?: string | null;
-    signal?: string | null;
-    status?: string | null;
-  }) => ["news", limit, cursor ?? "", signal ?? "", status ?? "", q ?? ""] as const,
-  newsRowsInfinite: ({
-    limit,
-    q,
-    signal,
-    status,
-  }: {
-    limit: number;
-    q?: string | null;
-    signal?: string | null;
-    status?: string | null;
-  }) => ["news", "infinite", limit, signal ?? "", status ?? "", q ?? ""] as const,
-  newsItem: (newsItemId: string) => ["news-item", newsItemId] as const,
+    source?: string | null;
+    verificationStatus?: string | null;
+  }) =>
+    ["news-stories", limit, cursor ?? "", verificationStatus ?? "", source ?? "", q ?? ""] as const,
+  newsStory: (storyId: string) => ["news-story", storyId] as const,
   targetSocialTimeline: (targetKey: string | null, window: WindowKey, scope: ScopeKey) =>
     ["target-social-timeline", targetKey, window, scope] as const,
   targetPosts: (

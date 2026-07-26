@@ -34,7 +34,7 @@ The Python package is deliberately shallow:
 ```text
 src/tracefold/
   market/         capture, identity, pricing, profiles, radar, read views
-  news/           ingest, deterministic projection, read views
+  news/           Article facts, deterministic Stories, immutable analysis
   macro/          observations and completed-session research
   notifications/  durable notification and delivery behavior
   integrations/   provider and external-system adapters

@@ -33,12 +33,20 @@ STATUS_QUEUE_SPECS = {
         due_statuses=("pending",),
         terminal_statuses=("failed", "expired"),
     ),
+    "news_story_analysis_attempts": StatusQueueSpec(
+        table="news_story_analysis_attempts",
+        active_statuses=("running", "failed"),
+        due_statuses=("failed",),
+        running_statuses=("running",),
+        failed_statuses=("failed",),
+        terminal_statuses=("available",),
+        due_column="next_attempt_at_ms",
+    ),
 }
 
 DIRTY_TARGET_TABLES = frozenset(
     {
         "asset_profile_refresh_targets",
-        "news_projection_dirty_targets",
         "token_discovery_dirty_lookup_keys",
         "token_image_source_dirty_targets",
         "token_profile_current_dirty_targets",
@@ -46,9 +54,7 @@ DIRTY_TARGET_TABLES = frozenset(
     }
 )
 
-DIRTY_TARGET_WORKER_FILTERS = {
-    ("news_projection_dirty_targets", "news_page_projection"): ("projection_name", "page"),
-}
+DIRTY_TARGET_WORKER_FILTERS: dict[tuple[str, str], tuple[str, str]] = {}
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 

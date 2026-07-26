@@ -82,18 +82,17 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         current_read_model_identities=(("token_profile_current", ("target_type", "target_id")),),
     ),
     WorkerManifest(
-        name="news_fetch",
+        name="news_ingest",
         start_priority=90,
+        current_read_model_identities=(
+            ("news_stories", ("story_id",)),
+            ("news_story_articles", ("story_id", "article_id")),
+        ),
     ),
     WorkerManifest(
-        name="news_item_process",
-        start_priority=91,
-    ),
-    WorkerManifest(
-        name="news_page_projection",
+        name="news_analysis",
         start_priority=95,
-        queue_tables=("news_projection_dirty_targets",),
-        current_read_model_identities=(("news_page_rows", ("row_id",)),),
+        queue_tables=("news_story_analysis_attempts",),
     ),
     WorkerManifest(
         name="macro_research",

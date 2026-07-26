@@ -9,7 +9,6 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
 
-from tracefold.platform.config.news_provider_types import OPENNEWS_FETCH_POLICY_KEYS
 from tracefold.platform.paths import app_home, app_log_path, config_path, workers_config_path
 
 DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc")
@@ -20,215 +19,118 @@ NOTIFICATION_RULE_IDS = (
     "watched_account_activity",
     "watched_account_token_alert",
 )
-SettingsNewsProviderType = Literal[
-    "rss",
-    "atom",
-    "json_feed",
-    "cryptopanic",
-    "opennews",
-    "openbb",
-    "telegram_public",
-    "twitter_profile",
-    "twitter_thread_context",
-    "reddit",
-    "hackernews",
-    "github",
-    "ossinsight",
-    "manual_api",
-]
-SettingsNewsSourceRole = Literal[
-    "official_exchange",
-    "official_regulator",
-    "official_protocol",
-    "official_issuer",
-    "specialist_media",
-    "aggregator",
-    "social",
-    "community",
-    "developer_signal",
-    "observed_source",
-]
 DEFAULT_NEWS_SOURCE_CONFIGS: tuple[dict[str, object], ...] = (
     {
-        "source_id": "coindesk",
-        "provider_type": "rss",
-        "feed_url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-        "source_domain": "coindesk.com",
-        "source_name": "CoinDesk",
-        "source_role": "specialist_media",
-        "trust_tier": "high",
+        "source_id": "reuters-world",
+        "name": "Reuters World",
+        "feed_url": "https://news.google.com/rss/search?q=site%3Areuters.com%20world&hl=en-US&gl=US&ceid=US%3Aen",
+        "source_domain": "reuters.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "reuters",
+        "coverage_tags": ("politics", "geopolitics", "world"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "cointelegraph",
-        "provider_type": "rss",
-        "feed_url": "https://cointelegraph.com/rss",
-        "source_domain": "cointelegraph.com",
-        "source_name": "CoinTelegraph",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
+        "source_id": "reuters-business",
+        "name": "Reuters Business",
+        "feed_url": "https://news.google.com/rss/search?q=site%3Areuters.com%20business&hl=en-US&gl=US&ceid=US%3Aen",
+        "source_domain": "reuters.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "reuters",
+        "coverage_tags": ("economy", "markets", "business"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "theblock",
-        "provider_type": "rss",
-        "feed_url": "https://www.theblock.co/rss.xml",
-        "source_domain": "theblock.co",
-        "source_name": "The Block",
-        "source_role": "specialist_media",
-        "trust_tier": "high",
+        "source_id": "ap-global",
+        "name": "AP News",
+        "feed_url": (
+            "https://news.google.com/rss/search?"
+            "q=site%3Aapnews.com%20%28politics%20OR%20economy%20OR%20world%29"
+            "&hl=en-US&gl=US&ceid=US%3Aen"
+        ),
+        "source_domain": "apnews.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "ap",
+        "coverage_tags": ("politics", "economy", "world"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "bitcoinmagazine",
-        "provider_type": "rss",
-        "feed_url": "https://bitcoinmagazine.com/feed",
-        "source_domain": "bitcoinmagazine.com",
-        "source_name": "Bitcoin Magazine",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
-        "enabled": True,
-        "refresh_interval_seconds": 600,
-    },
-    {
-        "source_id": "decrypt",
-        "provider_type": "rss",
-        "feed_url": "https://decrypt.co/feed",
-        "source_domain": "decrypt.co",
-        "source_name": "Decrypt",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
+        "source_id": "bbc-world",
+        "name": "BBC World",
+        "feed_url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "source_domain": "bbc.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "bbc",
+        "coverage_tags": ("politics", "geopolitics", "world"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "marketwatch-top-stories",
-        "provider_type": "rss",
-        "feed_url": "http://feeds.marketwatch.com/marketwatch/topstories/",
-        "source_domain": "marketwatch.com",
-        "source_name": "MarketWatch Top Stories",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
+        "source_id": "al-jazeera",
+        "name": "Al Jazeera",
+        "feed_url": "https://www.aljazeera.com/xml/rss/all.xml",
+        "source_domain": "aljazeera.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "al-jazeera",
+        "coverage_tags": ("politics", "geopolitics", "world"),
+        "default_language": "en",
         "enabled": True,
-        "refresh_interval_seconds": 600,
+        "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "wsj-markets",
-        "provider_type": "rss",
-        "feed_url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-        "source_domain": "wsj.com",
-        "source_name": "WSJ Markets",
-        "source_role": "specialist_media",
-        "trust_tier": "high",
+        "source_id": "financial-times",
+        "name": "Financial Times",
+        "feed_url": (
+            "https://news.google.com/rss/search?"
+            "q=site%3Aft.com%20%28world%20OR%20economy%20OR%20markets%29"
+            "&hl=en-US&gl=US&ceid=US%3Aen"
+        ),
+        "source_domain": "ft.com",
+        "source_role": "original_publisher",
+        "trust_tier": "authoritative",
+        "source_chain_id": "financial-times",
+        "coverage_tags": ("economy", "markets", "geopolitics"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 600,
     },
     {
         "source_id": "cnbc-economy",
-        "provider_type": "rss",
+        "name": "CNBC Economy",
         "feed_url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
         "source_domain": "cnbc.com",
-        "source_name": "CNBC Economy",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
-        "enabled": True,
-        "refresh_interval_seconds": 600,
-    },
-    {
-        "source_id": "cnbc-markets",
-        "provider_type": "rss",
-        "feed_url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069",
-        "source_domain": "cnbc.com",
-        "source_name": "CNBC Markets",
-        "source_role": "specialist_media",
-        "trust_tier": "standard",
-        "enabled": True,
-        "refresh_interval_seconds": 600,
-    },
-    {
-        "source_id": "yahoo-finance",
-        "provider_type": "rss",
-        "feed_url": "https://finance.yahoo.com/news/rssindex",
-        "source_domain": "finance.yahoo.com",
-        "source_name": "Yahoo Finance",
-        "source_role": "aggregator",
-        "trust_tier": "standard",
-        "enabled": True,
-        "refresh_interval_seconds": 600,
-    },
-    {
-        "source_id": "cryptopanic-en",
-        "provider_type": "cryptopanic",
-        "feed_url": (
-            "cryptopanic://posts?regions=en&kind=all&max_items=50"
-            "&profile_dir=~/.tracefold/cryptopanic-profile&timeout=60"
-        ),
-        "source_domain": "cryptopanic.com",
-        "source_name": "CryptoPanic",
-        "source_role": "aggregator",
-        "trust_tier": "standard",
+        "source_role": "original_publisher",
+        "trust_tier": "trusted",
+        "source_chain_id": "cnbc",
+        "coverage_tags": ("economy", "markets", "business"),
+        "default_language": "en",
         "enabled": True,
         "refresh_interval_seconds": 300,
     },
     {
-        "source_id": "opennews-news",
-        "provider_type": "opennews",
-        "feed_url": "opennews://subscribe",
-        "source_domain": "6551.io",
-        "source_name": "OpenNews News",
-        "source_role": "aggregator",
-        "trust_tier": "standard",
-        "enabled": False,
-        "refresh_interval_seconds": 10,
-        "coverage_tags": ("crypto", "realtime", "opennews", "news"),
-        "fetch_policy": {
-            "engineTypes": {"news": []},
-            "hasCoin": True,
-            "rest_limit": 100,
-            "max_rest_pages": 5,
-            "rest_overlap_ms": 900_000,
-        },
-    },
-    {
-        "source_id": "opennews-listing",
-        "provider_type": "opennews",
-        "feed_url": "opennews://subscribe",
-        "source_domain": "6551.io",
-        "source_name": "OpenNews Listing",
-        "source_role": "aggregator",
-        "trust_tier": "standard",
-        "enabled": False,
-        "refresh_interval_seconds": 10,
-        "coverage_tags": ("crypto", "realtime", "opennews", "listing"),
-        "fetch_policy": {
-            "engineTypes": {"listing": []},
-            "hasCoin": True,
-            "rest_limit": 100,
-            "max_rest_pages": 5,
-            "rest_overlap_ms": 900_000,
-        },
-    },
-    {
-        "source_id": "opennews-onchain",
-        "provider_type": "opennews",
-        "feed_url": "opennews://subscribe",
-        "source_domain": "6551.io",
-        "source_name": "OpenNews OnChain",
-        "source_role": "aggregator",
-        "trust_tier": "standard",
-        "enabled": False,
-        "refresh_interval_seconds": 10,
-        "coverage_tags": ("crypto", "realtime", "opennews", "onchain"),
-        "fetch_policy": {
-            "engineTypes": {"onchain": []},
-            "hasCoin": True,
-            "rest_limit": 100,
-            "max_rest_pages": 5,
-            "rest_overlap_ms": 900_000,
-        },
+        "source_id": "6551news",
+        "name": "6551News",
+        "feed_url": "http://rsshub:1200/telegram/channel/news6551",
+        "source_domain": "t.me",
+        "source_role": "trusted_aggregator",
+        "trust_tier": "authoritative",
+        "source_chain_id": "6551",
+        "coverage_tags": ("politics", "economy", "markets", "realtime"),
+        "default_language": "zh",
+        "enabled": True,
+        "refresh_interval_seconds": 60,
     },
 )
 
@@ -522,22 +424,26 @@ class NewsSourceSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_id: str
-    provider_type: SettingsNewsProviderType = "rss"
+    name: str
     feed_url: str
     source_domain: str
-    source_name: str
-    source_role: SettingsNewsSourceRole = "observed_source"
-    trust_tier: Literal["official", "high", "standard", "low"] = "standard"
-    managed_by_config: bool = True
+    source_role: Literal["original_publisher", "trusted_aggregator"]
+    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
+    source_chain_id: str
+    coverage_tags: tuple[str, ...] = ()
+    default_language: str = "en"
     enabled: bool = True
     refresh_interval_seconds: int = Field(default=300, ge=1)
-    coverage_tags: tuple[str, ...] = ()
-    asset_universe: tuple[str, ...] = ()
-    authority_scope: dict[str, Any] = Field(default_factory=dict)
-    fetch_policy: dict[str, Any] = Field(default_factory=dict)
-    cost_policy: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("source_id", "feed_url", "source_domain", "source_name", mode="before")
+    @field_validator(
+        "source_id",
+        "name",
+        "feed_url",
+        "source_domain",
+        "source_chain_id",
+        "default_language",
+        mode="before",
+    )
     @classmethod
     def parse_required_string(cls, value: Any) -> str:
         normalized = str(value or "").strip()
@@ -545,39 +451,18 @@ class NewsSourceSettings(BaseModel):
             raise ValueError("news source field must not be empty")
         return normalized
 
-    @field_validator("source_domain", mode="before")
+    @field_validator("source_domain", "default_language", mode="before")
     @classmethod
-    def parse_source_domain(cls, value: Any) -> str:
+    def parse_lower_string(cls, value: Any) -> str:
         normalized = str(value or "").strip().lower()
         if not normalized:
             raise ValueError("news source field must not be empty")
         return normalized
 
-    @field_validator("coverage_tags", "asset_universe", mode="before")
+    @field_validator("coverage_tags", mode="before")
     @classmethod
     def parse_string_tuple(cls, value: Any) -> tuple[str, ...]:
         return _normalize_news_string_tuple(value)
-
-
-class OpenNewsSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    api_token: str | None = None
-    api_base_url: str = "https://ai.6551.io"
-
-    @field_validator("api_token", mode="before")
-    @classmethod
-    def parse_optional_token(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("api_base_url", mode="before")
-    @classmethod
-    def parse_api_base_url(cls, value: Any) -> str:
-        normalized = str(value or "https://ai.6551.io").strip().rstrip("/")
-        return normalized or "https://ai.6551.io"
 
 
 def _default_news_source_settings() -> tuple[NewsSourceSettings, ...]:
@@ -610,11 +495,10 @@ def _normalize_news_string_parts(parts: Iterable[object]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-class NewsIntelSettings(BaseModel):
+class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    opennews: OpenNewsSettings = Field(default_factory=OpenNewsSettings)
     sources: tuple[NewsSourceSettings, ...] = Field(default_factory=_default_news_source_settings)
 
     @field_validator("sources", mode="before")
@@ -626,17 +510,14 @@ class NewsIntelSettings(BaseModel):
             return value
         if isinstance(value, list):
             return tuple(value)
-        raise ValueError("news_intel.sources must be a list")
+        raise ValueError("news.sources must be a list")
 
     @field_validator("sources", mode="after")
     @classmethod
-    def validate_opennews_fetch_policy(cls, sources: tuple[NewsSourceSettings, ...]) -> tuple[NewsSourceSettings, ...]:
-        for source in sources:
-            if source.provider_type != "opennews":
-                continue
-            unknown = sorted(set(source.fetch_policy) - OPENNEWS_FETCH_POLICY_KEYS)
-            if unknown:
-                raise ValueError(f"{source.source_id} has unknown OpenNews fetch policy keys: {', '.join(unknown)}")
+    def validate_source_identity(cls, sources: tuple[NewsSourceSettings, ...]) -> tuple[NewsSourceSettings, ...]:
+        source_ids = [source.source_id for source in sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("news.sources source_id must be unique")
         return sources
 
 
@@ -820,27 +701,23 @@ class NotificationDeliveryWorkerSettings(PerWorkerSettings):
     statement_timeout_seconds: float = Field(default=30.0, ge=0)
 
 
-class NewsFetchWorkerSettings(PerWorkerSettings):
+class NewsIngestWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=5, ge=1)
-    lease_ms: int = Field(default=60_000, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
+    batch_size: int = Field(default=8, ge=1)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+    fetch_timeout_seconds: float = Field(default=30.0, ge=1)
 
 
-class NewsItemProcessWorkerSettings(PerWorkerSettings):
-    batch_size: int = Field(default=10, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
+class NewsAnalysisWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=60.0, ge=0)
+    batch_size: int = Field(default=2, ge=1)
+    lease_ms: int = Field(default=600_000, ge=1)
     max_attempts: int = Field(default=3, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-    retry_delay_ms: int = Field(default=60_000, ge=1)
-
-
-class NewsPageProjectionWorkerSettings(PerWorkerSettings):
-    batch_size: int = Field(default=100, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    retry_ms: int = Field(default=30_000, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
+    retry_ms: int = Field(default=300_000, ge=1)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+    model: str = "deepseek-chat"
+    model_request_timeout_seconds: float = Field(default=240.0, ge=1)
+    max_tokens: int = Field(default=4000, ge=512)
 
 
 class WorkersSettings(BaseModel):
@@ -863,9 +740,8 @@ class WorkersSettings(BaseModel):
     notification_delivery: NotificationDeliveryWorkerSettings = Field(
         default_factory=NotificationDeliveryWorkerSettings
     )
-    news_fetch: NewsFetchWorkerSettings = Field(default_factory=NewsFetchWorkerSettings)
-    news_item_process: NewsItemProcessWorkerSettings = Field(default_factory=NewsItemProcessWorkerSettings)
-    news_page_projection: NewsPageProjectionWorkerSettings = Field(default_factory=NewsPageProjectionWorkerSettings)
+    news_ingest: NewsIngestWorkerSettings = Field(default_factory=NewsIngestWorkerSettings)
+    news_analysis: NewsAnalysisWorkerSettings = Field(default_factory=NewsAnalysisWorkerSettings)
 
 
 class Settings(BaseModel):
@@ -880,7 +756,7 @@ class Settings(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     gmgn: GmgnConfig = Field(default_factory=GmgnConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
-    news_intel: NewsIntelSettings = Field(default_factory=NewsIntelSettings)
+    news: NewsSettings = Field(default_factory=NewsSettings)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     workers: WorkersSettings = Field(default_factory=WorkersSettings)
@@ -1057,7 +933,7 @@ providers:
     fred_api_key_env: "FINANCE_FRED_API_KEY"
     fred_api_key:
 
-{_default_news_intel_yaml()}
+{_default_news_yaml()}
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]
@@ -1084,12 +960,11 @@ notifications:
 """
 
 
-def _default_news_intel_yaml() -> str:
+def _default_news_yaml() -> str:
     rendered = yaml.safe_dump(
         {
-            "news_intel": {
+            "news": {
                 "enabled": True,
-                "opennews": OpenNewsSettings().model_dump(),
                 "sources": [dict(source) for source in DEFAULT_NEWS_SOURCE_CONFIGS],
             }
         },

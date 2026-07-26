@@ -1,57 +1,54 @@
-"""Public news capability interface."""
+"""Tracefold News v2 public interface.
 
-from .ingest.feed_item_normalizer import normalize_feed_entry
-from .ingest.item_repository import NewsItemRepository
-from .ingest.news_provider_contract import (
-    NewsProviderContractError,
-    configured_news_provider_types,
-    validate_news_provider_contract,
+The Story Interface is the only external read seam. RSS and model adapters are
+injected into the two workers and remain private implementation details.
+"""
+
+from .identity import next_story_state_refresh, normalize_feed_entry, story_similarity
+from .interface import StoryInterface
+from .models import (
+    ARTICLE_IDENTITY_VERSION,
+    NEWS_ANALYSIS_PROMPT_VERSION,
+    NEWS_ANALYSIS_SCHEMA_VERSION,
+    NEWS_ANALYSIS_WORKFLOW_VERSION,
+    STORY_IDENTITY_VERSION,
+    STORY_IMPORTANCE_VERSION,
+    STORY_LIFECYCLE_VERSION,
+    NewsAnalysisContract,
+    NewsAnalysisEvidence,
+    NewsFeedEntry,
+    NewsFeedFetch,
+    NewsFeedReader,
+    NewsSourceDefinition,
+    NewsStoryAnalysisDraft,
+    NewsStoryAnalysisResult,
+    NewsStoryAnalyzer,
 )
-from .ingest.opennews_provider_signal import (
-    provider_signal_from_opennews_payload,
-    provider_token_impacts_from_opennews_payload,
-)
-from .ingest.provider_models import (
-    NewsProviderFetchResult,
-    NewsProviderObservation,
-    NewsSourceHttpCache,
-    NewsSourceSnapshot,
-)
-from .ingest.source_repository import NewsSourceRepository
-from .operations import PROJECTION_CHOICES, enqueue_projection_dirty_targets
-from .projection.dirty_target_repository import NewsProjectionDirtyTargetRepository
-from .projection.repository import NewsPageRepository
-from .provider_contracts import NewsSourceProvider, NewsSourceProviderError
-from .views.page_query import NewsPageQuery
-from .views.research_evidence import (
-    NewsResearchCatalog,
-    NewsResearchEvidence,
-    NewsResearchEvidenceReader,
-)
-from .workers import construct_news_workers
+from .repository import NewsRepository
+from .workers import NewsAnalysisWorker, NewsIngestWorker
 
 __all__ = [
-    "PROJECTION_CHOICES",
-    "NewsItemRepository",
-    "NewsPageQuery",
-    "NewsPageRepository",
-    "NewsProjectionDirtyTargetRepository",
-    "NewsProviderContractError",
-    "NewsProviderFetchResult",
-    "NewsProviderObservation",
-    "NewsResearchCatalog",
-    "NewsResearchEvidence",
-    "NewsResearchEvidenceReader",
-    "NewsSourceHttpCache",
-    "NewsSourceProvider",
-    "NewsSourceProviderError",
-    "NewsSourceRepository",
-    "NewsSourceSnapshot",
-    "configured_news_provider_types",
-    "construct_news_workers",
-    "enqueue_projection_dirty_targets",
+    "ARTICLE_IDENTITY_VERSION",
+    "NEWS_ANALYSIS_PROMPT_VERSION",
+    "NEWS_ANALYSIS_SCHEMA_VERSION",
+    "NEWS_ANALYSIS_WORKFLOW_VERSION",
+    "STORY_IDENTITY_VERSION",
+    "STORY_IMPORTANCE_VERSION",
+    "STORY_LIFECYCLE_VERSION",
+    "NewsAnalysisContract",
+    "NewsAnalysisEvidence",
+    "NewsAnalysisWorker",
+    "NewsFeedEntry",
+    "NewsFeedFetch",
+    "NewsFeedReader",
+    "NewsIngestWorker",
+    "NewsRepository",
+    "NewsSourceDefinition",
+    "NewsStoryAnalysisDraft",
+    "NewsStoryAnalysisResult",
+    "NewsStoryAnalyzer",
+    "StoryInterface",
+    "next_story_state_refresh",
     "normalize_feed_entry",
-    "provider_signal_from_opennews_payload",
-    "provider_token_impacts_from_opennews_payload",
-    "validate_news_provider_contract",
+    "story_similarity",
 ]

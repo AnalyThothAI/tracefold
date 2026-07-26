@@ -63,43 +63,30 @@ const routeCases: RouteCase[] = [
     name: "news queue",
     path: "/news",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "News intel" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Global news stories" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.locator("[aria-label='News filters']")).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "News pagination" })).toBeVisible();
-      await expect(page.getByRole("list", { name: "news tape" })).toBeVisible();
-      await expect(page.locator("[aria-label='news inspector']")).toHaveCount(0);
+      await expect(page.locator("[aria-label='News Story filters']")).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "Story pagination" })).toBeVisible();
       await expect(
-        page.getByRole("button", { name: /Open Macro desk flags liquidity rotation/ }),
+        page.getByRole("button", { name: /Macro desk flags liquidity rotation/ }),
       ).toBeVisible();
     },
-    nestedOverflowSelectors: [
-      ".news-panel",
-      ".news-table-wrap",
-      ".news-tape-list",
-      ".news-tape-row",
-    ],
-    lastMeaningfulSelector: ".news-tape-row",
+    nestedOverflowSelectors: [".news-panel", ".news-story-list", ".news-story-row"],
+    lastMeaningfulSelector: ".news-story-row",
   },
   {
     name: "news detail",
-    path: "/news/items/news-row-1",
+    path: "/news/stories/story-global-policy",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "News item evidence" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "News Story detail" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("link", { name: "Queue" })).toBeVisible();
-      await expect(page.getByText("Evidence page", { exact: true })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Story membership" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Content classification" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Market scope" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Token identity lanes" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Fact lanes" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Observation set" })).toBeVisible();
-      await expect(page.locator("[aria-label='source packet']")).toBeVisible();
-      await expect(page.locator("[aria-label='news evidence metadata']")).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Source metadata" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "返回 Story 流" })).toBeVisible();
+      await expect(page.getByText("DeepSeek 中文分析", { exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "来源证据" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Story 状态" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "成员归并审计" })).toBeVisible();
       await expect(
         page.getByRole("heading", {
           exact: true,
@@ -108,8 +95,8 @@ const routeCases: RouteCase[] = [
         }),
       ).toBeVisible();
     },
-    nestedOverflowSelectors: [".news-panel", ".news-evidence-page", ".news-evidence-layout"],
-    lastMeaningfulSelector: ".news-evidence-side",
+    nestedOverflowSelectors: [".news-panel", ".news-story-detail", ".news-detail-grid"],
+    lastMeaningfulSelector: ".news-membership-list",
   },
   {
     name: "watchlist",

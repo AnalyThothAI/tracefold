@@ -39,12 +39,7 @@ from tracefold.market import (
     TokenTargetRepository,
     WatchlistQuery,
 )
-from tracefold.news import (
-    NewsItemRepository,
-    NewsPageRepository,
-    NewsProjectionDirtyTargetRepository,
-    NewsSourceRepository,
-)
+from tracefold.news import NewsRepository
 from tracefold.notifications import NotificationRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
@@ -86,10 +81,7 @@ class RepositorySession:
     token_targets: TokenTargetRepository
     notifications: NotificationRepository
     watchlist: WatchlistQuery
-    news_sources: NewsSourceRepository
-    news_items: NewsItemRepository
-    news_pages: NewsPageRepository
-    news_projection_dirty_targets: NewsProjectionDirtyTargetRepository
+    news: NewsRepository
     macro_intel: MacroIntelRepository
     macro_research: MacroResearchRepository
 
@@ -141,10 +133,7 @@ def repositories_for_connection(
             stale_running_terminalization_batch_size=notification_delivery_stale_running_terminalization_batch_size,
         ),
         watchlist=WatchlistQuery(conn),
-        news_sources=NewsSourceRepository(conn),
-        news_items=NewsItemRepository(conn),
-        news_pages=NewsPageRepository(conn),
-        news_projection_dirty_targets=NewsProjectionDirtyTargetRepository(conn),
+        news=NewsRepository(conn),
         macro_intel=MacroIntelRepository(conn),
         macro_research=MacroResearchRepository(conn),
     )

@@ -46,8 +46,8 @@ export function macroPath(): string {
   return "/macro";
 }
 
-export function newsItemPath(newsItemId: string): string {
-  return `/news/items/${encodeURIComponent(newsItemId)}`;
+export function newsStoryPath(storyId: string): string {
+  return `/news/stories/${encodeURIComponent(storyId)}`;
 }
 
 export function stocksPath({

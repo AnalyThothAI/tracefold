@@ -33,7 +33,7 @@ const notification: NotificationItem = {
   chain: "eth",
   address: "0xpepe",
   event_id: null,
-  source_table: "news_items",
+  source_table: "news_stories",
   source_id: "token:eth:pepe",
   occurrence_count: 1,
   first_seen_at_ms: 1_700_000_000_000,

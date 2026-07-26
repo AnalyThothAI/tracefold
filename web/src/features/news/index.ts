@@ -1,7 +1,2 @@
 export { NewsPage } from "./NewsPage";
-export {
-  NEWS_PAGE_SIZE,
-  useInfiniteNewsPageWithToken,
-  useNewsItemWithToken,
-  useNewsPageWithToken,
-} from "./useNewsPage";
+export { NEWS_PAGE_SIZE, useNewsStoriesWithToken, useNewsStoryWithToken } from "./useNewsPage";

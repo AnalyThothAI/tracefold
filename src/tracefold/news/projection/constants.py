@@ -1,6 +1,0 @@
-NEWS_ENTITY_POLICY_VERSION = "news_entity_extraction_v1"
-NEWS_TOKEN_MENTION_POLICY_VERSION = "news_token_mentions_v1"
-NEWS_FACT_POLICY_VERSION = "news_fact_candidates_v1"
-NEWS_STORY_IDENTITY_VERSION = "news_story_identity_v2"
-NEWS_MARKET_SCOPE_VERSION = "news_market_scope_v1"
-NEWS_PAGE_PROJECTION_VERSION = "news_page_rows_v6_facts_only"

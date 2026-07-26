@@ -23,7 +23,6 @@ from tracefold.macro import (
     MACRO_RESEARCH_MAX_READ_REFS,
     FrozenMacroEvidenceScope,
     MacroEvidenceRecord,
-    MacroNewsQuery,
     MacroObservationQuery,
     MacroResearchAgentResult,
     MacroResearchArtifactDraft,
@@ -43,7 +42,6 @@ MACRO_RESEARCH_TOOL_NAMES = (
     "inspect_macro_evidence_catalog",
     "search_macro_observations",
     "read_macro_evidence",
-    "search_macro_news",
     "read_prior_macro_research",
 )
 _SEARCH_PAYLOAD_TARGET_CHARS = 80_000
@@ -63,7 +61,7 @@ _PARENT_SYSTEM_PROMPT = """你是 Tracefold 的宏观研究主 Agent。你的工
 所有市场事实只能来自当前 scope 绑定的只读工具。DeepAgents 原生文件系统和 execute 可用于计算、
 整理、比较和草稿；计算产物不得冒充新的市场事实，结论仍须回到工具返回的 source_ref。
 不得绕过 scope 直连实时网页、provider 或数据库，也不得构造工具未返回的 source_ref。
-历史研究只提供上下文，不可替代 material fact/news 引用。
+历史研究只提供上下文，不可替代 material fact 引用。
 
 最终 MacroResearchArtifact 的 section、gap、标题和论证结构由你决定；不要套用固定六页、八类 risk lane、
 固定方向、readiness 或 no_call 模板。正文、摘要、section 与 reviewer notes 应使用自然、完整的中文，
@@ -317,40 +315,6 @@ class _EvidenceToolSession:
                 }
             )
 
-        @tool("search_macro_news")
-        def search_macro_news(
-            query: str = "",
-            source_labels: list[str] | None = None,
-            limit: int = 10,
-            offset: int = 0,
-        ) -> str:
-            """Search frozen persisted News; use next_offset to continue."""
-
-            record_call("search_macro_news")
-            resolved_query = MacroNewsQuery(
-                query=query,
-                source_labels=tuple(source_labels or ()),
-                limit=limit,
-                offset=offset,
-            )
-            records = require_evidence_in_scope(
-                scope,
-                tuple(
-                    reader.search_news(
-                        scope=scope,
-                        query=resolved_query,
-                    )
-                )[: resolved_query.limit],
-            )
-            if any(record.evidence_kind != "news" for record in records):
-                raise MacroResearchIntegrityError("macro_research_news_reader_returned_non_news")
-            self._disclose(records)
-            return _bounded_search_payload(
-                scope_id=scope.scope_id,
-                query=resolved_query.model_dump(mode="json"),
-                records=records,
-            )
-
         @tool("read_prior_macro_research")
         def read_prior_macro_research(limit: int = 3, offset: int = 0) -> str:
             """Page prior publications as context, not evidence."""
@@ -384,7 +348,6 @@ class _EvidenceToolSession:
             inspect_macro_evidence_catalog,
             search_macro_observations,
             read_macro_evidence,
-            search_macro_news,
             read_prior_macro_research,
         )
 

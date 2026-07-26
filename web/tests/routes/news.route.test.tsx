@@ -24,7 +24,7 @@ describe("news route", () => {
 
     await waitFor(() => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
-        "/api/news",
+        "/api/news/stories",
         expect.objectContaining({
           params: expect.objectContaining({ q: "ethereum etf" }),
         }),
@@ -34,6 +34,6 @@ describe("news route", () => {
     expect(
       apiMock.readApi.mock.calls.filter(([path]) => path === "/api/search/inspect"),
     ).toHaveLength(0);
-    expect(screen.getByLabelText("Search news")).toHaveValue("ethereum etf");
+    expect(screen.getByLabelText("Search stories")).toHaveValue("ethereum etf");
   }, 10_000);
 });

@@ -28,7 +28,6 @@ FROM python:3.13-slim-bookworm AS python-deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     UV_LINK_MODE=copy
 
 WORKDIR /app
@@ -76,26 +75,13 @@ RUN --mount=type=secret,id=github_token \
 FROM python:3.13-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
 COPY --from=python-deps /app /app
 
 ENV PATH="/app/.venv/bin:${PATH}"
-
-RUN set -eu; \
-    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
-    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries; \
-    for attempt in 1 2 3 4 5; do \
-        /app/.venv/bin/playwright install --with-deps chromium \
-        && rm -rf /var/lib/apt/lists/* \
-        && exit 0; \
-        rm -rf /var/lib/apt/lists/*; \
-        sleep "$((attempt * 5))"; \
-    done; \
-    exit 1
 
 EXPOSE 8765
 

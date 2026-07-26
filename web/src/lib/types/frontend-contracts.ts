@@ -1134,7 +1134,6 @@ export type StatusData = {
   snapshot_gate: Record<string, unknown>;
   db: Record<string, unknown>;
   provider_states: Record<string, unknown>;
-  news_provider_contract: Record<string, unknown>;
   workers: Record<string, WorkerStatusData> & {
     collector: WorkerStatusData;
   };

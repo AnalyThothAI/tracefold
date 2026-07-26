@@ -13,7 +13,6 @@ from tracefold.market import (
     ProviderHealth,
     UpstreamClientProtocol,
 )
-from tracefold.news import NewsSourceProvider
 
 UpstreamClientFactory = Callable[[Callable[[str], Awaitable[None]]], UpstreamClientProtocol | None]
 
@@ -66,29 +65,15 @@ class OkxProviderBundle:
 
 
 @dataclass(frozen=True, slots=True)
-class NewsIntelProviders:
-    feed_client: NewsSourceProvider | None = None
-
-    async def aclose(self) -> None:
-        errors: list[Exception] = []
-        seen: set[int] = set()
-        _close_sync_provider(errors, seen, self.feed_client)
-        if errors:
-            raise ExceptionGroup("news_intel_provider_cleanup_failed", errors)
-
-
-@dataclass(frozen=True, slots=True)
 class WiredProviders:
     ingestion: IngestionProviders
     asset_market: AssetMarketProviders
-    news_intel: NewsIntelProviders
 
     async def aclose(self) -> None:
         errors: list[Exception] = []
         for providers in (
             self.ingestion,
             self.asset_market,
-            self.news_intel,
         ):
             try:
                 await providers.aclose()
@@ -127,7 +112,6 @@ async def _close_async_provider(errors: list[Exception], seen: set[int], provide
 __all__ = [
     "AssetMarketProviders",
     "IngestionProviders",
-    "NewsIntelProviders",
     "OkxProviderBundle",
     "UpstreamClientFactory",
     "WiredProviders",
