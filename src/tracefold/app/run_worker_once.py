@@ -167,7 +167,6 @@ async def _compose_worker(
             db=db,
             telemetry=telemetry,
             asset_market=asset_market,
-            news_intel=None,
             hub=None,
             collector=None,
             collector_enabled=False,

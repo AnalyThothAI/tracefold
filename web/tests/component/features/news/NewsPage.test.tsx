@@ -1,10 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { newsItemFixture, newsRowFixture } from "@tests/fixtures/newsFixture";
+import { newsStoryDetailFixture, newsStoryFixture } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
@@ -14,126 +11,158 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 describe("NewsPage", () => {
   beforeEach(() => {
     server.use(
-      http.get(/.*\/api\/news$/, () =>
+      http.get(/.*\/api\/news\/stories$/, () =>
         HttpResponse.json({
           ok: true,
-          data: { items: [newsRowFixture()], next_cursor: null },
+          data: { items: [newsStoryFixture()], next_cursor: null },
         }),
       ),
-      http.get(/.*\/api\/news\/items\/news-1$/, () =>
-        HttpResponse.json({ ok: true, data: newsItemFixture() }),
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: newsStoryDetailFixture() }),
       ),
     );
   });
 
   afterEach(cleanup);
 
-  it("renders a compact fact tape without an inline inspector", async () => {
+  it("renders one Story row with verification, importance, sources, and AI state", async () => {
     renderNews(<NewsPage token="test-token" />);
 
-    expect((await screen.findAllByText("BTC ETF flows expand")).length).toBeGreaterThan(0);
-    expect(screen.getByText("processed")).toBeInTheDocument();
-    expect(screen.getByText("market_update")).toBeInTheDocument();
-    expect(screen.getByText("BTC")).toBeInTheDocument();
-    expect(screen.queryByLabelText("news inspector")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "loading News stories" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Central banks respond to a new global policy shock"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("多源核验")).toHaveLength(2);
+    expect(screen.getByText("77")).toBeInTheDocument();
+    expect(screen.getByText("AI 已分析")).toBeInTheDocument();
+    expect(screen.getByText("Reuters World")).toBeInTheDocument();
   });
 
-  it("anchors sparse and loading queue content at the top of the scroll surface", () => {
-    const newsCss = readFileSync(join(process.cwd(), "src/features/news/news.css"), "utf8");
-    const tableWrapRule = cssRuleBody(newsCss, ".news-table-wrap");
-
-    expect(tableWrapRule).toContain("align-content: start");
-    expect(tableWrapRule).toContain("grid-auto-rows: max-content");
-  });
-
-  it("requests lifecycle and search filters from the fact controls", async () => {
+  it("requests search, source, and verification filters", async () => {
     const requests: Array<Record<string, string | null>> = [];
     server.use(
-      http.get(/.*\/api\/news$/, ({ request }) => {
+      http.get(/.*\/api\/news\/stories$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        requests.push({ q: params.get("q"), status: params.get("status") });
+        requests.push({
+          q: params.get("q"),
+          source: params.get("source"),
+          verification: params.get("verification_status"),
+        });
         return HttpResponse.json({
           ok: true,
-          data: { items: [newsRowFixture()], next_cursor: null },
+          data: { items: [newsStoryFixture()], next_cursor: null },
         });
       }),
     );
-
     renderNews(<NewsPage token="test-token" />);
+    await screen.findByText("Central banks respond to a new global policy shock");
 
-    expect((await screen.findAllByText("BTC ETF flows expand")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "Accepted" }));
+    fireEvent.click(screen.getByRole("button", { name: "多源核验" }));
+    fireEvent.change(screen.getByLabelText("Search stories"), { target: { value: "rates" } });
+    fireEvent.change(screen.getByLabelText("Filter by source"), {
+      target: { value: "Reuters" },
+    });
+
     await waitFor(() =>
-      expect(requests.some((request) => request.status === "accepted")).toBe(true),
+      expect(
+        requests.some(
+          (request) =>
+            request.q === "rates" &&
+            request.source === "Reuters" &&
+            request.verification === "corroborated",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("opens the Story detail route", async () => {
+    renderNews(<NewsPage token="test-token" />);
+    const story = await screen.findByRole("button", {
+      name: /Central banks respond to a new global policy shock/,
+    });
+    fireEvent.click(story);
+    expect(screen.getByTestId("location")).toHaveTextContent("/news/stories/story-global-policy");
+  });
+
+  it("shows Chinese analysis and article-level provenance on the Story detail", async () => {
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
     );
 
-    fireEvent.change(screen.getByLabelText("Search news"), { target: { value: "eth" } });
-    await waitFor(() =>
-      expect(requests.some((request) => request.q === "eth" && request.status === "accepted")).toBe(
-        true,
+    expect(await screen.findByText("DeepSeek 中文分析")).toBeInTheDocument();
+    expect(screen.getByText("发生了什么")).toBeInTheDocument();
+    expect(screen.getByText("独立原始源")).toBeInTheDocument();
+    expect(screen.getAllByText("AI 引用")).toHaveLength(2);
+    expect(screen.getByText("来源权威度")).toBeInTheDocument();
+    expect(screen.getByText("采集链：reuters")).toBeInTheDocument();
+    expect(screen.getByText(/原始出处：Reuters · reuters.com/)).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "查看原文" })[0]).toHaveAttribute(
+      "href",
+      "https://www.reuters.com/world/story",
+    );
+  });
+
+  it("renders an explicit empty state", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/stories$/, () =>
+        HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } }),
       ),
     );
-    expect(screen.getByTestId("location")).toHaveTextContent("/news?q=eth");
+    renderNews(<NewsPage token="test-token" />);
+    expect(await screen.findByText("暂无 Story")).toBeInTheDocument();
   });
 
-  it("hydrates the news search input from the route query", async () => {
-    renderNews(<NewsPage token="test-token" />, "/news?q=ethereum");
-
-    expect(await screen.findByLabelText("Search news")).toHaveValue("ethereum");
-  });
-
-  it("resets pagination to the first page when the news query changes", async () => {
+  it("renders an explicit request-error state", async () => {
     server.use(
-      http.get(/.*\/api\/news$/, ({ request }) => {
-        const cursor = new URL(request.url).searchParams.get("cursor");
-        return HttpResponse.json({
+      http.get(/.*\/api\/news\/stories$/, () =>
+        HttpResponse.json({ ok: false, error: "feed unavailable" }, { status: 503 }),
+      ),
+    );
+    renderNews(<NewsPage token="test-token" />);
+    expect(await screen.findByText("请求失败")).toBeInTheDocument();
+  });
+
+  it("renders a Story fully when AI is unavailable", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({
           ok: true,
-          data: {
-            items: [newsRowFixture()],
-            next_cursor: cursor ? null : "1779000000000:row-1",
-          },
-        });
-      }),
+          data: newsStoryDetailFixture({
+            analysis: null,
+            analysis_error: null,
+            analysis_status: "unavailable",
+          }),
+        }),
+      ),
     );
-
-    renderNews(<NewsPage token="test-token" />);
-
-    expect((await screen.findAllByText("BTC ETF flows expand")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "Next news page" }));
-    await waitFor(() => expect(screen.getByText("Page 2 · 1/100")).toBeInTheDocument());
-
-    fireEvent.change(screen.getByLabelText("Search news"), { target: { value: "zec" } });
-    await waitFor(() => expect(screen.getByText("Page 1 · 1/100")).toBeInTheDocument());
-    expect(screen.getByTestId("location")).toHaveTextContent("/news?q=zec");
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
+    );
+    expect(await screen.findAllByText("AI 未配置")).toHaveLength(2);
+    expect(screen.queryByText("发生了什么")).not.toBeInTheDocument();
   });
 
-  it("routes the compact tape open action to the news item page", async () => {
-    renderNews(<NewsPage token="test-token" />);
-
-    await screen.findByText("BTC ETF flows expand");
-    fireEvent.click(screen.getByRole("button", { name: "Open news item BTC ETF flows expand" }));
-
-    expect(screen.getByTestId("location")).toHaveTextContent("/news/items/news-1");
-  });
-
-  it("renders the canonical source evidence page", async () => {
-    renderNews(<NewsPage newsItemId="news-1" token="test-token" />);
-
-    await screen.findByText("Evidence page");
-    expect(screen.getByText("Original article")).toBeInTheDocument();
-    expect(screen.getByText("OpenNews source content.")).toBeInTheDocument();
-    expect(screen.getByText("Story membership")).toBeInTheDocument();
-    expect(screen.getByText("Content classification")).toBeInTheDocument();
-    expect(screen.getByText("Market scope")).toBeInTheDocument();
-    expect(screen.getByText("Token identity lanes")).toBeInTheDocument();
-    expect(screen.getByText("Fact lanes")).toBeInTheDocument();
-    expect(screen.getByText("Observation set")).toBeInTheDocument();
-    expect(screen.getByText("Source metadata")).toBeInTheDocument();
-    expect(screen.getByText("BTC · Bitcoin")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /original/i })).toHaveAttribute(
-      "href",
-      "https://example.test/news-1",
+  it("keeps the last successful Story visible when a refresh fails", async () => {
+    const rendered = renderNews(<NewsPage token="test-token" />);
+    expect(
+      await screen.findByText("Central banks respond to a new global policy shock"),
+    ).toBeInTheDocument();
+    server.use(
+      http.get(/.*\/api\/news\/stories$/, () =>
+        HttpResponse.json({ ok: false, error: "refresh failed" }, { status: 503 }),
+      ),
     );
+
+    await rendered.queryClient.invalidateQueries({ queryKey: ["news-stories"] });
+
+    expect(
+      await screen.findByText("最新更新失败，正在显示上一次成功读取的 Story。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Central banks respond to a new global policy shock"),
+    ).toBeInTheDocument();
   });
 });
 
@@ -141,7 +170,7 @@ function renderNews(children: ReactNode, route = "/news") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const rendered = render(
     <MemoryRouter initialEntries={[route]}>
       <QueryClientProvider client={queryClient}>
         {children}
@@ -149,14 +178,10 @@ function renderNews(children: ReactNode, route = "/news") {
       </QueryClientProvider>
     </MemoryRouter>,
   );
+  return { ...rendered, queryClient };
 }
 
 function LocationProbe() {
   const location = useLocation();
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
-}
-
-function cssRuleBody(css: string, selector: string): string {
-  const match = new RegExp(`${selector.replace(".", "\\.")}\\s*\\{(?<body>[^}]*)\\}`).exec(css);
-  return match?.groups?.body ?? "";
 }

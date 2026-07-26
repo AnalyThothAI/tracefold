@@ -1,161 +1,256 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
-from tracefold.market import (
-    DeterministicResolution,
-    DeterministicTokenResolver,
-    MentionKeys,
-    TokenIdentityLookupResult,
+from tracefold.news.models import (
+    NewsFeedReader,
+    NewsSourceDefinition,
+    NewsStoryAnalyzer,
+    source_definition,
 )
-from tracefold.news.ingest.fetch_worker import NewsFetchWorker
-from tracefold.news.ingest.item_process_worker import NewsItemProcessWorker
-from tracefold.news.projection.worker import NewsPageProjectionWorker
-from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_worker, unavailable_worker
 from tracefold.platform.workers.worker_base import WorkerBase
+from tracefold.platform.workers.worker_result import WorkerResult
 
 
-def construct_news_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
-    workers = ctx.settings.workers
-    if not ctx.settings.news_intel.enabled:
-        return {
-            name: disabled_worker(ctx, name)
-            for name in (
-                "news_fetch",
-                "news_item_process",
-                "news_page_projection",
-            )
-        }
-
-    constructed: dict[str, WorkerBase] = {}
-    news_providers = ctx.news_intel
-    feed_client = news_providers.feed_client if news_providers is not None else None
-    if workers.news_fetch.enabled:
-        if feed_client is not None:
-            constructed["news_fetch"] = NewsFetchWorker(
-                name="news_fetch",
-                settings=workers.news_fetch,
-                db=ctx.db,
-                telemetry=ctx.telemetry,
-                news_settings=ctx.settings.news_intel,
-                feed_client=feed_client,
-            )
-        else:
-            constructed["news_fetch"] = unavailable_worker(ctx, "news_fetch", "missing_news_intel_feed_client")
-    else:
-        constructed["news_fetch"] = disabled_worker(ctx, "news_fetch")
-
-    if workers.news_item_process.enabled:
-        worker_name = "news_item_process"
-        constructed["news_item_process"] = NewsItemProcessWorker(
-            name=worker_name,
-            settings=workers.news_item_process,
-            db=ctx.db,
-            telemetry=ctx.telemetry,
-            identity_lookup=_RuntimeTokenIdentityLookup(
-                db=ctx.db,
-                statement_timeout_seconds=workers.news_item_process.statement_timeout_seconds,
-            ),
-        )
-    else:
-        constructed["news_item_process"] = disabled_worker(ctx, "news_item_process")
-
-    if workers.news_page_projection.enabled:
-        worker_name = "news_page_projection"
-        constructed["news_page_projection"] = NewsPageProjectionWorker(
-            name=worker_name,
-            settings=workers.news_page_projection,
-            db=ctx.db,
-            telemetry=ctx.telemetry,
-        )
-    else:
-        constructed["news_page_projection"] = disabled_worker(ctx, "news_page_projection")
-
-    return constructed
-
-
-class _RuntimeTokenIdentityLookup:
-    def __init__(self, *, db: Any, statement_timeout_seconds: float | None) -> None:
-        self.db = db
-        self.statement_timeout_seconds = statement_timeout_seconds
-
-    def resolve_address(self, *, chain_id: str | None, address: str) -> TokenIdentityLookupResult:
-        normalized_chain = _resolver_chain_id(chain_id)
-        return self._resolve(
-            intent_id=f"news-address:{normalized_chain or 'any'}:{address.lower()}",
-            keys=MentionKeys(chain_id=normalized_chain, address=address),
-            observed_symbol=None,
-        )
-
-    def resolve_symbol(self, *, symbol: str) -> TokenIdentityLookupResult:
-        normalized_symbol = str(symbol or "").strip().lstrip("$").upper()
-        return self._resolve(
-            intent_id=f"news-symbol:{normalized_symbol}",
-            keys=MentionKeys(symbol=normalized_symbol),
-            observed_symbol=normalized_symbol or None,
-        )
-
-    def _resolve(
+class NewsIngestWorker(WorkerBase):
+    def __init__(
         self,
         *,
-        intent_id: str,
-        keys: MentionKeys,
-        observed_symbol: str | None,
-    ) -> TokenIdentityLookupResult:
-        decision_time_ms = int(time.time() * 1000)
-        with self.db.worker_session(
-            "news_item_process",
-            statement_timeout_seconds=self.statement_timeout_seconds,
-        ) as repos:
-            resolution = DeterministicTokenResolver(registry=repos.registry).resolve(
-                intent_id=intent_id,
-                event_id="news-intel",
-                keys=keys,
-                decision_time_ms=decision_time_ms,
+        settings: Any,
+        db: Any,
+        telemetry: Any,
+        sources: Sequence[NewsSourceDefinition | Any],
+        feed_reader: NewsFeedReader,
+        name: str = "news_ingest",
+        clock_ms: Any | None = None,
+    ) -> None:
+        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        self.sources = tuple(source_definition(source) for source in sources)
+        self.feed_reader = feed_reader
+        self.clock_ms = clock_ms or _now_ms
+
+    async def run_once(self) -> WorkerResult:
+        return await asyncio.to_thread(self.run_once_sync)
+
+    async def on_close(self) -> None:
+        await asyncio.to_thread(self.feed_reader.close)
+
+    def run_once_sync(self) -> WorkerResult:
+        now_ms = int(self.clock_ms())
+        claimed = self._claim(now_ms=now_ms)
+        if not claimed:
+            refreshed = self._refresh_story_time_state(now_ms=now_ms)
+            return WorkerResult(skipped=1, notes={"sources_claimed": 0, "stories_refreshed": refreshed})
+        processed = 0
+        failed = 0
+        articles_inserted = 0
+        articles_changed = 0
+        stories_created = 0
+        memberships_created = 0
+        for raw_source in claimed:
+            source = NewsSourceDefinition.model_validate(
+                {
+                    field: raw_source[field]
+                    for field in NewsSourceDefinition.model_fields
+                }
             )
-        return _lookup_result(resolution, observed_symbol=observed_symbol)
+            try:
+                result = self.feed_reader.fetch(
+                    source=source,
+                    etag=_optional_text(raw_source.get("etag")),
+                    last_modified=_optional_text(raw_source.get("last_modified")),
+                )
+                summary = self._record_success(
+                    source=source,
+                    result=result,
+                    now_ms=int(self.clock_ms()),
+                )
+            except Exception as exc:
+                failed += 1
+                self._record_failure(source_id=source.source_id, now_ms=int(self.clock_ms()), error=exc)
+                continue
+            processed += 1
+            articles_inserted += summary["articles_inserted"]
+            articles_changed += summary["articles_changed"]
+            stories_created += summary["stories_created"]
+            memberships_created += summary["memberships_created"]
+        refreshed = self._refresh_story_time_state(now_ms=int(self.clock_ms()))
+        return WorkerResult(
+            processed=processed,
+            failed=failed,
+            notes={
+                "sources_claimed": len(claimed),
+                "articles_inserted": articles_inserted,
+                "articles_changed": articles_changed,
+                "stories_created": stories_created,
+                "memberships_created": memberships_created,
+                "stories_refreshed": refreshed,
+            },
+        )
+
+    def _claim(self, *, now_ms: int) -> list[dict[str, Any]]:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            repos.news.sync_sources(self.sources, now_ms=now_ms)
+            return cast(
+                list[dict[str, Any]],
+                repos.news.claim_due_sources(now_ms=now_ms, limit=int(self.settings.batch_size)),
+            )
+
+    def _record_success(self, *, source: NewsSourceDefinition, result: Any, now_ms: int) -> dict[str, int]:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            return cast(
+                dict[str, int],
+                repos.news.record_fetch_success(
+                    source=source,
+                    entries=result.entries,
+                    now_ms=now_ms,
+                    status_code=int(result.status_code),
+                    etag=result.etag,
+                    last_modified=result.last_modified,
+                    not_modified=bool(result.not_modified),
+                ),
+            )
+
+    def _record_failure(self, *, source_id: str, now_ms: int, error: Exception) -> None:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            repos.news.record_fetch_failure(
+                source_id=source_id,
+                now_ms=now_ms,
+                error=f"{type(error).__name__}:{error}",
+                status_code=getattr(getattr(error, "response", None), "status_code", None),
+            )
+
+    def _refresh_story_time_state(self, *, now_ms: int) -> int:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            return cast(int, repos.news.refresh_story_time_state(now_ms=now_ms))
 
 
-def _lookup_result(
-    resolution: DeterministicResolution,
-    *,
-    observed_symbol: str | None,
-) -> TokenIdentityLookupResult:
-    return TokenIdentityLookupResult(
-        resolution_status=resolution.resolution_status,
-        target_type=resolution.target_type,
-        target_id=resolution.target_id,
-        display_symbol=observed_symbol,
-        display_name=None,
-        reason_codes=list(resolution.reason_codes),
-        candidate_targets=_candidate_targets(resolution),
-    )
+class NewsAnalysisWorker(WorkerBase):
+    def __init__(
+        self,
+        *,
+        settings: Any,
+        db: Any,
+        telemetry: Any,
+        analyzer: NewsStoryAnalyzer,
+        model_name: str | None = None,
+        name: str = "news_analysis",
+        clock_ms: Any | None = None,
+    ) -> None:
+        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        self.analyzer = analyzer
+        self.model_name = str(model_name or settings.model).strip()
+        if not self.model_name:
+            raise ValueError("news_analysis_model_name_required")
+        self.clock_ms = clock_ms or _now_ms
+
+    async def run_once(self) -> WorkerResult:
+        claimed = await asyncio.to_thread(self._claim)
+        if not claimed:
+            return WorkerResult(skipped=1, notes={"stories_claimed": 0})
+        processed = 0
+        failed = 0
+        analysis_ids: list[str] = []
+        for analysis_key, evidence in claimed:
+            try:
+                result = await self.analyzer.analyze(evidence)
+                analysis_id = await asyncio.to_thread(
+                    self._complete,
+                    analysis_key,
+                    evidence,
+                    result.draft,
+                    result.receipt,
+                )
+            except Exception as exc:
+                failed += 1
+                await asyncio.to_thread(self._fail, analysis_key, exc)
+                continue
+            processed += 1
+            analysis_ids.append(analysis_id)
+        return WorkerResult(
+            processed=processed,
+            failed=failed,
+            notes={
+                "stories_claimed": len(claimed),
+                "analysis_ids": analysis_ids,
+                "model": self.model_name,
+            },
+        )
+
+    def _claim(self) -> list[tuple[str, Any]]:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            return cast(
+                list[tuple[str, Any]],
+                repos.news.claim_analysis_evidence(
+                    model=self.model_name,
+                    now_ms=int(self.clock_ms()),
+                    limit=int(self.settings.batch_size),
+                    lease_ms=int(self.settings.lease_ms),
+                    max_attempts=int(self.settings.max_attempts),
+                ),
+            )
+
+    def _complete(
+        self,
+        analysis_key: str,
+        evidence: Any,
+        draft: Any,
+        receipt: dict[str, object],
+    ) -> str:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            return cast(
+                str,
+                repos.news.complete_analysis(
+                    analysis_key=analysis_key,
+                    evidence=evidence,
+                    model=self.model_name,
+                    draft=draft,
+                    published_at_ms=int(self.clock_ms()),
+                    receipt=receipt,
+                ),
+            )
+
+    def _fail(self, analysis_key: str, error: Exception) -> None:
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos, repos.transaction():
+            repos.news.fail_analysis(
+                analysis_key=analysis_key,
+                now_ms=int(self.clock_ms()),
+                error=f"{type(error).__name__}:{error}",
+                retry_ms=int(self.settings.retry_ms),
+            )
 
 
-def _candidate_targets(resolution: DeterministicResolution) -> list[dict[str, object]]:
-    targets: list[dict[str, object]] = []
-    for candidate_id in resolution.candidate_ids:
-        target_type = resolution.target_type if candidate_id == resolution.target_id else None
-        targets.append({"target_type": target_type, "target_id": candidate_id})
-    return targets
+def _optional_text(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
-def _resolver_chain_id(chain_id: str | None) -> str | None:
-    normalized = str(chain_id or "").strip().lower()
-    if normalized in {"", "evm", "evm_unknown", "unknown"}:
-        return None
-    if normalized in {"eth", "ethereum", "eip155:1"}:
-        return "eip155:1"
-    if normalized in {"base", "eip155:8453"}:
-        return "eip155:8453"
-    if normalized in {"bsc", "bnb", "bnb chain", "eip155:56"}:
-        return "eip155:56"
-    if normalized in {"sol", "solana"}:
-        return "solana"
-    if normalized in {"ton", "toncoin"}:
-        return "ton"
-    return normalized
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
-__all__ = ["construct_news_workers"]
+__all__ = ["NewsAnalysisWorker", "NewsIngestWorker"]

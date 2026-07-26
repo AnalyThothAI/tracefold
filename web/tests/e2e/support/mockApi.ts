@@ -1,7 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 import { macroLiveEvidenceFixture, macroResearchFixture } from "@tests/fixtures/macroFixture";
 import { marketContextFixture, marketObservationFixture } from "@tests/fixtures/marketFixtures";
-import { newsItemFixture, newsRowFixture } from "@tests/fixtures/newsFixture";
+import { newsStoryDetailFixture, newsStoryFixture } from "@tests/fixtures/newsFixture";
 import { tokenCaseFixture, tokenCasePostsFixture } from "@tests/fixtures/tokenCaseFixture";
 
 const NOW = 1_777_746_300_000;
@@ -46,8 +46,8 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/target-social-timeline") return fulfill(route, timelineData());
     if (path === "/api/target-posts") return fulfill(route, targetPostsData(url));
     if (path === "/api/notifications") return fulfill(route, notificationsData());
-    if (path === "/api/news") return fulfill(route, newsRowsData());
-    if (path.startsWith("/api/news/items/")) return fulfill(route, newsItemDetailData(path));
+    if (path === "/api/news/stories") return fulfill(route, newsStoriesData());
+    if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
     if (path === "/api/notifications/read-all") return fulfill(route, { updated_count: 1 });
     if (path.startsWith("/api/notifications/author/") && path.endsWith("/read")) {
       return fulfill(route, { updated_count: 1 });
@@ -96,34 +96,25 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
   unhandledApiRequests.set(page, requests);
 }
 
-function newsRowsData() {
+function newsStoriesData() {
   return {
     items: [
-      newsRowFixture({
-        row_id: "news-row-1",
-        news_item_id: "news-row-1",
-        representative_news_item_id: "news-row-1",
-        headline: "Macro desk flags liquidity rotation",
-        canonical_url: "https://example.com/macro-liquidity",
-        source_domain: "example.com",
-        summary: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
+      newsStoryFixture({
+        story_id: "story-global-policy",
+        title: "Macro desk flags liquidity rotation",
+        snippet: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
       }),
     ],
     next_cursor: null,
   };
 }
 
-function newsItemDetailData(path: string) {
-  const newsItemId = decodeURIComponent(path.split("/").pop() ?? "news-row-1");
-  return newsItemFixture({
-    news_item_id: newsItemId,
-    representative_news_item_id: newsItemId,
+function newsStoryDetailData(path: string) {
+  const storyId = decodeURIComponent(path.split("/").pop() ?? "story-global-policy");
+  return newsStoryDetailFixture({
+    story_id: storyId,
     title: "Macro desk flags liquidity rotation",
-    canonical_url: "https://example.com/macro-liquidity",
-    source_domain: "example.com",
-    summary: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
-    body_text:
-      "A deterministic e2e article body gives the mobile cold-load route enough detail content.",
+    snippet: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
   });
 }
 
@@ -152,7 +143,6 @@ function statusData() {
     snapshot_gate: {},
     db: { ok: true },
     provider_states: {},
-    news_provider_contract: { ok: true },
     workers: {
       collector: workerStatus({
         enabled: true,

@@ -1,38 +1,52 @@
 import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
-export const NEWS_PAGE_SIZE = 100;
+export const NEWS_PAGE_SIZE = 50;
 
-export type NewsPageQueryParams = {
+export type NewsStoryQueryParams = {
   cursor?: string | null;
   enabled?: boolean;
   limit?: number;
   q?: string | null;
-  status?: string | null;
+  source?: string | null;
+  verificationStatus?: string | null;
 };
 
-type NewsPageData = components["schemas"]["NewsData"];
-type NewsItemData = components["schemas"]["NewsObjectData"];
+type NewsStoryListData = components["schemas"]["NewsStoryListData"];
+type NewsStoryDetailData = components["schemas"]["NewsStoryDetailData"];
 
-export const useNewsPageWithToken = (
+export const useNewsStoriesWithToken = (
   token: string,
   {
     cursor = null,
     enabled = true,
     limit = NEWS_PAGE_SIZE,
     q = null,
-    status = null,
-  }: NewsPageQueryParams = {},
+    source = null,
+    verificationStatus = null,
+  }: NewsStoryQueryParams = {},
 ) =>
   useQuery({
     enabled: Boolean(token) && enabled,
-    queryKey: ["news", limit, cursor ?? "", status ?? "", q ?? ""] as const,
+    queryKey: queryKeys.newsStories({
+      cursor,
+      limit,
+      q,
+      source,
+      verificationStatus,
+    }),
     queryFn: async () =>
       (
-        await getApi<NewsPageData>("/api/news", {
-          params: { cursor, limit, q, status },
+        await getApi<NewsStoryListData>("/api/news/stories", {
+          params: {
+            cursor,
+            limit,
+            q,
+            source,
+            verification_status: verificationStatus,
+          },
           token,
         })
       ).data,
@@ -40,36 +54,17 @@ export const useNewsPageWithToken = (
     staleTime: 0,
   });
 
-export const useInfiniteNewsPageWithToken = (
-  token: string,
-  { limit = NEWS_PAGE_SIZE, q = null, status = null }: Omit<NewsPageQueryParams, "cursor"> = {},
-) =>
-  useInfiniteQuery({
-    enabled: Boolean(token),
-    initialPageParam: null as string | null,
-    queryKey: ["news", "infinite", limit, status ?? "", q ?? ""] as const,
-    queryFn: async ({ pageParam }: { pageParam: string | null }) =>
-      (
-        await getApi<NewsPageData>("/api/news", {
-          params: { cursor: pageParam, limit, q, status },
-          token,
-        })
-      ).data,
-    getNextPageParam: (lastPage) => lastPage.next_cursor || undefined,
-    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : 15_000),
-    staleTime: 15_000,
-  });
-
-export const useNewsItemWithToken = (token: string, newsItemId?: string | null) =>
+export const useNewsStoryWithToken = (token: string, storyId?: string | null) =>
   useQuery({
-    enabled: Boolean(token && newsItemId),
-    queryKey: queryKeys.newsItem(newsItemId ?? ""),
+    enabled: Boolean(token && storyId),
+    queryKey: queryKeys.newsStory(storyId ?? ""),
     queryFn: async () =>
       (
-        await getApi<NewsItemData>(`/api/news/items/${encodeURIComponent(newsItemId ?? "")}`, {
-          token,
-        })
+        await getApi<NewsStoryDetailData>(
+          `/api/news/stories/${encodeURIComponent(storyId ?? "")}`,
+          { token },
+        )
       ).data,
     refetchInterval: 30_000,
-    staleTime: 30_000,
+    staleTime: 15_000,
   });

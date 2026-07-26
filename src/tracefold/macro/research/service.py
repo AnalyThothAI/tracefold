@@ -81,28 +81,6 @@ class MacroObservationVisibility(ExactMacroResearchModel):
     availability: Literal["exact_source_timestamp", "date_only_system_known"]
 
 
-class MacroNewsQuery(ExactMacroResearchModel):
-    query: str = Field(default="", max_length=MACRO_RESEARCH_MAX_QUERY_CHARS)
-    source_labels: tuple[str, ...] = Field(default=(), max_length=20)
-    limit: int = Field(default=10, ge=1, le=MACRO_RESEARCH_MAX_SEARCH_RESULTS)
-    offset: int = Field(default=0, ge=0)
-
-    @field_validator("query")
-    @classmethod
-    def strip_query(cls, value: str) -> str:
-        return value.strip()
-
-    @field_validator("source_labels")
-    @classmethod
-    def validate_source_labels(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(str(item).strip() for item in value)
-        if any(not item for item in normalized):
-            raise ValueError("macro_research_news_query_empty_source")
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("macro_research_news_query_duplicate_source")
-        return normalized
-
-
 class MacroEvidenceCatalog(ExactMacroResearchModel):
     session_date: date
     market_cutoff_ms: int = Field(ge=0)
@@ -110,20 +88,19 @@ class MacroEvidenceCatalog(ExactMacroResearchModel):
     concept_keys: tuple[str, ...] = ()
     source_labels: tuple[str, ...] = ()
     observation_count: int = Field(ge=0)
-    news_count: int = Field(ge=0)
     prior_research_count: int = Field(ge=0)
 
 
 class MacroEvidenceRecord(ExactMacroResearchModel):
     evidence_ref: str = Field(min_length=1, max_length=500)
-    evidence_kind: Literal["observation", "news"]
+    evidence_kind: Literal["observation"]
     source_label: str = Field(min_length=1, max_length=500)
     concept_key: str | None = Field(default=None, max_length=500)
     source_timestamp: str | None = Field(default=None, max_length=500)
     available_at_ms: int = Field(ge=0)
     persisted_at_ms: int = Field(ge=0)
     observed_at: date | None = None
-    published_at_ms: int | None = Field(default=None, ge=0)
+    published_at_ms: None = None
     url: str | None = Field(default=None, max_length=2_048)
     summary: str = Field(min_length=1, max_length=8_000)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -133,8 +110,6 @@ class MacroEvidenceRecord(ExactMacroResearchModel):
     def validate_source_clock_fields(self) -> MacroEvidenceRecord:
         if self.evidence_kind == "observation" and (not self.concept_key or not self.source_timestamp):
             raise ValueError("macro_research_observation_source_clock_fields_required")
-        if self.evidence_kind == "news" and self.published_at_ms is None:
-            raise ValueError("macro_research_news_published_at_required")
         return self
 
 
@@ -298,13 +273,6 @@ class MacroResearchReadPort(Protocol):
         source_refs: tuple[str, ...],
     ) -> Sequence[MacroEvidenceRecord]: ...
 
-    def search_news(
-        self,
-        *,
-        scope: FrozenMacroEvidenceScope,
-        query: MacroNewsQuery,
-    ) -> Sequence[MacroEvidenceRecord]: ...
-
     def prior_research(
         self,
         *,
@@ -351,15 +319,6 @@ def resolve_observation_visibility(
     )
 
 
-def news_is_visible_in_scope(
-    scope: FrozenMacroEvidenceScope,
-    *,
-    published_at_ms: int,
-    fetched_at_ms: int,
-) -> bool:
-    return 0 <= published_at_ms <= scope.market_cutoff_ms and 0 <= fetched_at_ms <= scope.sealed_at_ms
-
-
 def require_catalog_in_scope(
     scope: FrozenMacroEvidenceScope,
     catalog: MacroEvidenceCatalog,
@@ -388,28 +347,17 @@ def require_evidence_in_scope(
             raise MacroResearchIntegrityError(f"macro_research_future_evidence:{record.evidence_ref}")
         if record.persisted_at_ms > scope.sealed_at_ms:
             raise MacroResearchIntegrityError(f"macro_research_post_seal_evidence:{record.evidence_ref}")
-        if record.evidence_kind == "observation":
-            visibility = resolve_observation_visibility(
-                scope,
-                source_timestamp=str(record.source_timestamp),
-                ingested_at_ms=record.persisted_at_ms,
+        visibility = resolve_observation_visibility(
+            scope,
+            source_timestamp=str(record.source_timestamp),
+            ingested_at_ms=record.persisted_at_ms,
+        )
+        if visibility is None:
+            raise MacroResearchIntegrityError(f"macro_research_observation_not_visible:{record.evidence_ref}")
+        if visibility.available_at_ms != record.available_at_ms:
+            raise MacroResearchIntegrityError(
+                "macro_research_observation_availability_mismatch:" + record.evidence_ref
             )
-            if visibility is None:
-                raise MacroResearchIntegrityError(f"macro_research_observation_not_visible:{record.evidence_ref}")
-            if visibility.available_at_ms != record.available_at_ms:
-                raise MacroResearchIntegrityError(
-                    "macro_research_observation_availability_mismatch:" + record.evidence_ref
-                )
-        else:
-            published_at_ms = int(record.published_at_ms) if record.published_at_ms is not None else -1
-            if not news_is_visible_in_scope(
-                scope,
-                published_at_ms=published_at_ms,
-                fetched_at_ms=record.persisted_at_ms,
-            ):
-                raise MacroResearchIntegrityError(f"macro_research_news_not_visible:{record.evidence_ref}")
-            if record.available_at_ms != published_at_ms:
-                raise MacroResearchIntegrityError(f"macro_research_news_availability_mismatch:{record.evidence_ref}")
     return resolved
 
 
@@ -538,7 +486,6 @@ __all__ = [
     "FrozenMacroEvidenceScope",
     "MacroEvidenceCatalog",
     "MacroEvidenceRecord",
-    "MacroNewsQuery",
     "MacroObservationQuery",
     "MacroObservationVisibility",
     "MacroPriorResearch",
@@ -554,7 +501,6 @@ __all__ = [
     "MacroResearchReadPort",
     "MacroResearchSection",
     "canonicalize_macro_research_artifact",
-    "news_is_visible_in_scope",
     "render_macro_research_markdown",
     "require_artifact_integrity",
     "require_catalog_in_scope",

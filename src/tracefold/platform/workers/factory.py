@@ -15,7 +15,6 @@ class WorkerFactoryContext:
     db: Any
     telemetry: Any
     asset_market: Any | None
-    news_intel: Any | None
     hub: Any | None
     collector: WorkerBase | None
     collector_enabled: bool

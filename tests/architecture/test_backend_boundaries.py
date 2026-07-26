@@ -11,8 +11,8 @@ SRC = ROOT / "src" / "tracefold"
 BUSINESS_PACKAGES = ("market", "news", "macro", "notifications")
 ALLOWED_BUSINESS_DEPENDENCIES = {
     "market": {"market", "platform"},
-    "news": {"market", "news", "platform"},
-    "macro": {"macro", "market", "news", "platform"},
+    "news": {"news", "platform"},
+    "macro": {"macro", "market", "platform"},
     "notifications": {"notifications", "platform"},
 }
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {
@@ -37,6 +37,22 @@ PLATFORM_TABLES = {
     "checkpoints",
     "worker_queue_terminal_events",
 }
+RETIRED_NEWS_RUNTIME_MARKERS = (
+    "NewsItem",
+    "newsItem",
+    "news_fetch",
+    "news_item_process",
+    "news_items",
+    "news_page_projection",
+    "news_page_rows",
+    "news_provider_items",
+    "news_projection_dirty_targets",
+    "news_intel",
+    "opennews",
+    "cryptopanic",
+    "/api/news/items",
+    "/news/items",
+)
 
 
 def _python_files(root: Path) -> list[Path]:
@@ -156,6 +172,26 @@ def test_current_read_models_use_stable_product_keys() -> None:
         if set(identity) & FORBIDDEN_CURRENT_IDENTITY_PARTS
     }
     assert violations == {}
+
+
+def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> None:
+    roots = (SRC, ROOT / "web" / "src", ROOT / "docs")
+    suffixes = {".css", ".md", ".py", ".ts", ".tsx", ".yaml", ".yml"}
+    violations: list[str] = []
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            if "alembic/versions/" in relative or relative.startswith("docs/generated/"):
+                continue
+            content = path.read_text(encoding="utf-8").lower()
+            violations.extend(
+                f"{relative}:{marker}"
+                for marker in RETIRED_NEWS_RUNTIME_MARKERS
+                if marker.lower() in content
+            )
+    assert violations == []
 
 
 def _business_table_owner(table: str) -> str:

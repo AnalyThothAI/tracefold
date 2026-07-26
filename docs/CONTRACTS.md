@@ -19,12 +19,10 @@ Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
 `llm` contains only shared provider credentials (`api_key` and `base_url`).
-They are consumed only when the `macro_research` worker is enabled. Its
-`model`, `model_request_timeout_seconds`, `max_tokens`, cadence, settle delay,
-lease, and retry settings remain typed under `workers.macro_research` in
-`workers.yaml`. The request timeout applies to one provider transport call;
-there is no whole-research wall-clock timeout, generic model policy, workflow
-program, semantic gate configuration, or model-capacity status surface.
+They are consumed only when `macro_research` or `news_analysis` is enabled.
+Model, request timeout, token, cadence, lease, and retry settings remain typed
+under the owning worker in `workers.yaml`. The request timeout applies to one
+provider transport call; there is no generic model-policy or capacity surface.
 
 `src/tracefold/app/worker_manifest.py` owns the worker inventory and
 writer/queue declarations. The current keys are:
@@ -40,9 +38,8 @@ token_radar_projection
 macro_sync
 token_image_mirror
 token_profile_current
-news_fetch
-news_item_process
-news_page_projection
+news_ingest
+news_analysis
 macro_research
 notification_rule
 notification_delivery
@@ -59,8 +56,8 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
 - `/api/status` captures one typed in-memory runtime snapshot for worker status,
-  collector details, provider connections, startup/schema state, and the News
-  provider contract. It performs no SQL.
+  collector details, provider connections, and startup/schema state. It
+  performs no SQL.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no model configuration, model policy, capacity counters,
@@ -84,7 +81,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/evidence/{view_id}`, `/api/macro/research` | bounded persisted `macro_observations` views; persisted completed-session DeepAgents research and durable run state |
-| News | `/api/news`, `/api/news/items/{id}`, `/api/news/facts/{id}`, `/api/news/sources/status` | current fact-only News page projection, persisted News evidence, and fetch-source state |
+| News | `/api/news/stories`, `/api/news/stories/{story_id}`, `/api/news/sources` | deterministic Story read model, Article evidence, immutable current-evidence analysis, and source fetch state |
 | Notifications | account alerts, notification list with embedded summary, delivery audit, and read commands under `/api` | notification facts and external-delivery ledger |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
@@ -106,19 +103,23 @@ alternate decision labels.
 
 ### News
 
-`/api/news` serves `news_page_rows`; item and fact detail routes require a
-current projected object. Raw provider items do not synthesize a missing public
-row.
+`/api/news/stories` is the sole News collection read. It supports bounded
+cursor pagination and `q`, `source`, and `verification_status` filters.
+`/api/news/stories/{story_id}` returns the frozen Story projection, every member
+Article, provenance, deterministic membership audit, and the immutable
+DeepSeek analysis for the current evidence set when available.
 
-The projected row contains source-backed headline/summary/time/URL, deterministic
-story membership, token-resolution lanes, fact-candidate lanes, provider
-rating, content classification, source metadata, market scope, dedupe counts,
-and projection metadata. It contains no generated thesis, direction,
-eligibility, or prose layer. Item detail hydrates persisted source observations,
-entities, token mentions, and fact candidates. Source health is derived from
-`news_sources` plus fetch history. A deterministic terminal fetch failure is
-scoped to `config_payload_hash` and becomes eligible again only when that
-configuration identity changes.
+Article identity is source-scoped and deterministic. Story membership is
+deterministic, versioned, and conflict-aware. `source_count` counts acquisition
+feeds; `independent_origin_count` counts verified original publisher domains,
+so aggregator repetition does not become corroboration. `6551News` is an
+authoritative trusted aggregator but its Article provenance remains
+`attributed` unless an external origin URL is extracted. Analyses are Chinese,
+evidence-referenced, and versioned by evidence hash, model, prompt, workflow,
+and schema. Provider/network/model calls never occur on read endpoints.
+
+There is no `/api/news`, item/fact detail route, source-status compatibility
+route, write route, News WebSocket payload, webhook, or public provider adapter.
 
 Search inspection and Token Case likewise return resolver, identity, current
 Radar, market, timeline, and source-post facts only. Removed derived prose and
@@ -210,7 +211,13 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
 
-`ops rebuild-market-current --execute` is the bounded, cursor-based repair for reconstructing `market_tick_current` from persisted `market_ticks`. News projection repair uses the single `ops enqueue-projection-dirty-targets` path; there is no parallel canonical-items rebuild command. Token Radar contract and distribution checks use `projection-status`, `validate-projections`, and `factor-diagnostics`; the CLI does not carry a second copy of the factor contract.
+`ops rebuild-market-current --execute` is the bounded, cursor-based repair for
+reconstructing `market_tick_current` from persisted `market_ticks`. News has no
+public maintenance or compatibility CLI: its two workers recover from
+`news_sources`, `news_articles`, and immutable analysis-attempt state. Token
+Radar contract and distribution checks use `projection-status`,
+`validate-projections`, and `factor-diagnostics`; the CLI does not carry a
+second copy of the factor contract.
 
 One-shot worker commands call the same application composition and `WorkerBase` lifecycle as the service. Their `data` object reports `worker_name`, `processed`, `failed`, `dead`, `skipped`, and `notes`; commands that enqueue repair targets first also include `preparation`. The CLI does not construct workers or own provider/database cleanup.
 

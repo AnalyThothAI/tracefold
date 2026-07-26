@@ -20,12 +20,12 @@ describe("statusCurrentContract", () => {
     );
   });
 
-  it("rejects status without the required news provider contract", () => {
+  it("rejects status without the required provider states", () => {
     const payload = { ...appStatusFixture() } as Record<string, unknown>;
-    delete payload.news_provider_contract;
+    delete payload.provider_states;
 
     expect(() => requireStatusData(payload)).toThrowError(
-      "status_current_contract:status.news_provider_contract",
+      "status_current_contract:status.provider_states",
     );
   });
 

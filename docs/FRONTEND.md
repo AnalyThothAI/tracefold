@@ -46,7 +46,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   type, radius, focus, and shell token contract; production code must not add a
   parallel theme or compatibility alias. Stable routes declare one of four
   information archetypes with `data-page-archetype`: `scan` for Radar, Stocks,
-  and News lists; `case` for Search, Token Case, and News Item; `decision` for
+  and News lists; `case` for Search, Token Case, and News Story; `decision` for
   Macro; and `monitoring` for Watchlist. The archetype
   governs hierarchy and density, never data ownership or business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
@@ -93,18 +93,15 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Watchlist-specific projection. It does not consume `/api/recent` or
   WebSocket replay to reconstruct selected-handle counts, resolved targets,
   candidate mentions, or evidence clusters.
-- **News route.** `/news` is a canonical news-signal tape with filters,
-  pagination, source-backed signal fields, and links into
-  `/news/items/:newsItemId`.
-  On `/news` and `/news/items/:newsItemId`, topbar search is route-local:
-  submit navigates to `/news?q=<query>` and the page calls `/api/news` with
-  `q`; it must not call `/api/search/inspect` or reuse token resolver state.
-  `/news/items/:newsItemId` is the item evidence page rendering story
-  membership, token identity lanes, fact candidates, provider observations,
-  source metadata, content classification, market scope, and dedupe facts
-  directly from `/api/news/items/{news_item_id}`. The list route does not keep
-  an inline selected inspector or infer direction, eligibility, or thesis from
-  headlines, summaries, provider ratings, or keyword heuristics.
+- **News route.** `/news` is the Story-first global politics/economy stream
+  backed only by `/api/news/stories`. It shows importance, lifecycle,
+  verification, acquisition-source count, independent-origin count, and current
+  analysis state. Search, source, and verification filters are URL-owned.
+  `/news/stories/:storyId` is the evidence page backed by
+  `/api/news/stories/{story_id}`. It presents the Chinese analysis separately
+  from every member Article, provenance, and deterministic membership audit.
+  On both News routes, topbar search remains route-local and must not call
+  `/api/search/inspect` or reuse token resolver state.
 - **Macro routes.** `/macro` is the six-category live-fact dashboard;
   `/macro/overview`, `/macro/rates-inflation`, `/macro/growth-labor`,
   `/macro/liquidity-funding`, `/macro/credit`, and `/macro/cross-asset` are
@@ -197,7 +194,7 @@ Production bundles ship inside the same Docker image as the Python service and a
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
 1. Hard-reload `/`, `/search`, `/stocks`, `/news`,
-   `/news/items/:newsItemId`, `/macro`, `/watchlist`, and
+   `/news/stories/:storyId`, `/macro`, `/watchlist`, and
    `/token/:targetType/:targetId?window=1h&scope=all` with representative query
    params.
 2. Submit the topbar search and confirm the URL becomes `/search?q=<submitted-query>`.

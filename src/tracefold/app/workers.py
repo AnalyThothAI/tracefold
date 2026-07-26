@@ -3,7 +3,6 @@ from __future__ import annotations
 from tracefold.app.database import DBPoolBundle
 from tracefold.app.provider_types import (
     AssetMarketProviders,
-    NewsIntelProviders,
     WiredProviders,
 )
 from tracefold.app.worker_manifest import worker_names
@@ -37,7 +36,6 @@ def construct_workers(
         db=db,
         telemetry=telemetry,
         asset_market=providers.asset_market,
-        news_intel=providers.news_intel,
         hub=hub,
         collector=collector,
         collector_enabled=collector_enabled,
@@ -69,7 +67,6 @@ def construct_worker(
     db: DBPoolBundle,
     telemetry: TelemetryRegistry,
     asset_market: AssetMarketProviders | None,
-    news_intel: NewsIntelProviders | None,
     hub: EventPublisherProtocol | None,
     collector: WorkerBase | None,
     collector_enabled: bool,
@@ -81,7 +78,6 @@ def construct_worker(
         db=db,
         telemetry=telemetry,
         asset_market=asset_market,
-        news_intel=news_intel,
         hub=hub,
         collector=collector,
         collector_enabled=collector_enabled,
@@ -95,12 +91,12 @@ def construct_worker(
 
 def worker_factories() -> tuple[WorkerFactory, ...]:
     from tracefold.app.macro_workers import construct_macro_workers
+    from tracefold.app.news_workers import construct_news_workers
     from tracefold.market import (
         construct_ingestion_workers,
         construct_market_workers,
         construct_radar_workers,
     )
-    from tracefold.news import construct_news_workers
     from tracefold.notifications import construct_notification_workers
 
     return (

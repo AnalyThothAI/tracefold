@@ -73,7 +73,7 @@ describe("CockpitTopbar", () => {
             lastSocketMessageAt: 1_700_000_000_000,
             status: appStatusFixture({
               ok: false,
-              reasons: ["news_provider_contract_error"],
+              reasons: ["news_ingest_unavailable"],
             }),
             statusLoading: false,
             statusError: false,
@@ -85,7 +85,7 @@ describe("CockpitTopbar", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("status")).toHaveAttribute("title", "news_provider_contract_error");
-    expect(screen.getByText("news_provider_contract_error")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute("title", "news_ingest_unavailable");
+    expect(screen.getByText("news_ingest_unavailable")).toBeInTheDocument();
   });
 });

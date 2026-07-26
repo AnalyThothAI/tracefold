@@ -23,6 +23,7 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
+from tracefold.news import NewsFeedEntry, NewsSourceDefinition
 from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
@@ -481,67 +482,184 @@ def test_api_status_exposes_flat_worker_status(tmp_path):
     assert workers["event_anchor_backfill"]["enabled"] is True
 
 
-def test_api_news_source_status_preserves_latest_fetch_contract(tmp_path):
+def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    source_definition = NewsSourceDefinition(
+        source_id="source-story-test",
+        name="Example News",
+        feed_url="https://example.test/feed.xml",
+        source_domain="example.test",
+        source_role="original_publisher",
+        trust_tier="authoritative",
+        source_chain_id="example",
+        coverage_tags=("politics", "economy"),
+    )
 
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos:
-            repos.news_sources.upsert_source(
-                source_id="source-status-test",
-                provider_type="rss",
-                feed_url="https://example.test/feed.xml",
-                source_domain="example.test",
-                source_name="Example",
-                now_ms=1_000,
-            )
-            fetch_run_id = repos.news_sources.start_fetch_run(
-                source_id="source-status-test",
-                started_at_ms=2_000,
-            )
-            repos.news_sources.finish_fetch_run(
-                fetch_run_id=fetch_run_id,
-                source_id="source-status-test",
-                status="success",
-                finished_at_ms=3_000,
-                fetched_count=0,
-                inserted_count=0,
-                updated_count=0,
-                duplicate_count=0,
-                http_status=200,
+        with client.app.state.service.repositories() as repos, repos.transaction():
+            repos.news.sync_sources((source_definition,), now_ms=1_000)
+            repos.news.record_fetch_success(
+                source=source_definition,
+                entries=(
+                    NewsFeedEntry(
+                        guid="story-1",
+                        link="https://example.test/story-1",
+                        title="Global policy response confirmed",
+                        summary="Officials published the policy response.",
+                        published_at_ms=2_000,
+                    ),
+                ),
+                now_ms=3_000,
+                status_code=200,
+                etag="etag-1",
+                last_modified=None,
+                not_modified=False,
             )
 
-        response = client.get(
-            "/api/news/sources/status",
-            headers={"Authorization": "Bearer secret"},
+        headers = {"Authorization": "Bearer secret"}
+        sources_response = client.get("/api/news/sources", headers=headers)
+        stories_response = client.get("/api/news/stories", headers=headers)
+        story_id = stories_response.json()["data"]["items"][0]["story_id"]
+        detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
+        retired_responses = [
+            client.get("/api/news", headers=headers),
+            client.get("/api/news/items/news-1", headers=headers),
+            client.get("/api/news/sources/status", headers=headers),
+        ]
+
+    assert sources_response.status_code == 200
+    [source] = sources_response.json()["data"]["items"]
+    assert source["source_id"] == "source-story-test"
+    assert source["last_success_at_ms"] == 3_000
+    assert source["last_http_status"] == 200
+    assert stories_response.status_code == 200
+    [story] = stories_response.json()["data"]["items"]
+    assert story["title"] == "Global policy response confirmed"
+    assert story["verification_status"] == "trusted"
+    assert story["source_count"] == 1
+    assert detail_response.status_code == 200
+    assert detail_response.json()["data"]["articles"][0]["provenance_status"] == "verified"
+    assert [response.status_code for response in retired_responses] == [404, 404, 404]
+
+
+def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
+    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    authoritative = NewsSourceDefinition(
+        source_id="authority",
+        name="Authority News",
+        feed_url="https://authority.test/feed.xml",
+        source_domain="authority.test",
+        source_role="original_publisher",
+        trust_tier="authoritative",
+        source_chain_id="authority",
+    )
+    standard = NewsSourceDefinition(
+        source_id="standard",
+        name="Standard News",
+        feed_url="https://standard.test/feed.xml",
+        source_domain="standard.test",
+        source_role="original_publisher",
+        trust_tier="standard",
+        source_chain_id="standard",
+    )
+
+    with TestClient(app) as client:
+        with client.app.state.service.repositories() as repos, repos.transaction():
+            repos.news.sync_sources((authoritative, standard), now_ms=1_000)
+            repos.news.record_fetch_success(
+                source=authoritative,
+                entries=(
+                    NewsFeedEntry(
+                        guid="alpha",
+                        link="https://authority.test/alpha",
+                        title="Alpha government approves fiscal package",
+                        published_at_ms=2_000,
+                    ),
+                    NewsFeedEntry(
+                        guid="beta",
+                        link="https://authority.test/beta",
+                        title="Beta central bank cuts rates by 25 basis points",
+                        published_at_ms=3_000,
+                    ),
+                ),
+                now_ms=4_000,
+                status_code=200,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+            )
+            repos.news.record_fetch_success(
+                source=standard,
+                entries=(
+                    NewsFeedEntry(
+                        guid="gamma",
+                        link="https://standard.test/gamma",
+                        title="Gamma conflict ceasefire announced",
+                        published_at_ms=5_000,
+                    ),
+                ),
+                now_ms=6_000,
+                status_code=200,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+            )
+
+        headers = {"Authorization": "Bearer secret"}
+        first = client.get("/api/news/stories", params={"limit": 1}, headers=headers)
+        first_data = first.json()["data"]
+        second = client.get(
+            "/api/news/stories",
+            params={"limit": 1, "cursor": first_data["next_cursor"]},
+            headers=headers,
+        )
+        searched = client.get(
+            "/api/news/stories",
+            params={"q": "Gamma"},
+            headers=headers,
+        )
+        trusted = client.get(
+            "/api/news/stories",
+            params={"verification_status": "trusted", "source": "authority"},
+            headers=headers,
+        )
+        unverified = client.get(
+            "/api/news/stories",
+            params={"verification_status": "unverified", "source": "standard"},
+            headers=headers,
+        )
+        invalid_cursor = client.get(
+            "/api/news/stories",
+            params={"cursor": "not-a-cursor"},
+            headers=headers,
+        )
+        invalid_verification = client.get(
+            "/api/news/stories",
+            params={"verification_status": "invented"},
+            headers=headers,
         )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is True
-    [source] = body["data"]["sources"]
-    assert source["source_id"] == "source-status-test"
-    assert source["provider_type"] == "rss"
-    assert source["source_quality_status"] == "healthy"
-    assert source["item_count"] == 0
-    assert source["last_seen_at_ms"] == 3_000
-    assert source["latest_fetch_run"] == {
-        "status": "success",
-        "started_at_ms": 2_000,
-        "finished_at_ms": 3_000,
-        "http_status": 200,
-        "fetched_count": 0,
-        "inserted_count": 0,
-        "updated_count": 0,
-        "duplicate_count": 0,
-        "error": None,
+    assert first.status_code == second.status_code == 200
+    assert first_data["next_cursor"]
+    first_id = first_data["items"][0]["story_id"]
+    second_id = second.json()["data"]["items"][0]["story_id"]
+    assert first_id != second_id
+    assert [item["title"] for item in searched.json()["data"]["items"]] == [
+        "Gamma conflict ceasefire announced"
+    ]
+    assert {item["primary_article"]["source_id"] for item in trusted.json()["data"]["items"]} == {
+        "authority"
     }
-    assert source["dedup_diagnostics"] == {
-        "raw_observation_count": 0,
-        "canonical_item_count": 0,
-        "observation_edge_count": 0,
-        "enabled_serving_row_count": 0,
-        "disabled_serving_row_count": 0,
+    assert {item["verification_status"] for item in trusted.json()["data"]["items"]} == {
+        "trusted"
     }
+    assert [item["verification_status"] for item in unverified.json()["data"]["items"]] == [
+        "unverified"
+    ]
+    assert invalid_cursor.status_code == 400
+    assert invalid_cursor.json()["error"] == "news_story_cursor_invalid"
+    assert invalid_verification.status_code == 400
+    assert invalid_verification.json()["error"] == "news_story_verification_status_invalid"
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):

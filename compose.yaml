@@ -1,6 +1,25 @@
 name: tracefold
 
 services:
+  rsshub:
+    image: diygod/rsshub:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: memory
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:1200/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   postgres:
     build:
       context: .
@@ -104,6 +123,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      rsshub:
+        condition: service_healthy
     ports:
       - "8765:8765"
     environment:

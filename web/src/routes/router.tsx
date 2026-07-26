@@ -33,7 +33,7 @@ export function createAppRouteObjects(): RouteObject[] {
               lazy: () => import("./news.route"),
             },
             {
-              path: "news/items/:newsItemId",
+              path: "news/stories/:storyId",
               lazy: () => import("./news.route"),
             },
             {

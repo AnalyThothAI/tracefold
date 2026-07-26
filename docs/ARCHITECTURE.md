@@ -30,23 +30,23 @@ Material facts include:
   `token_intent_lookup_keys`, `token_intent_resolutions`,
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
 - market: `market_ticks`, `enriched_events`;
-- news: `news_provider_items`, `news_items`, and persisted story/entity/fact
-  edges;
+- news: idempotent normalized Article facts in `news_articles`;
 - macro: `macro_observations`;
 - notifications: `notifications` and the external delivery facts in
   `notification_deliveries`. `account_token_alerts` remains a Market fact that
   Notifications consumes through an explicit input.
 
-Current read models are `token_radar_current_rows`,
-`token_profile_current`, `market_tick_current`, and `news_page_rows`. Each uses
-stable product/window/target identity, has exactly one runtime writer, is
-rebuildable from facts, and writes zero serving rows when its business payload
-is unchanged.
+Current read models are `token_radar_current_rows`, `token_profile_current`,
+`market_tick_current`, and the deterministic `news_stories` plus
+`news_story_articles` membership model. Each uses stable product/window/target
+identity, has exactly one runtime writer, is rebuildable from facts, and writes
+zero serving rows when its business payload is unchanged.
 
-Queues, leases, retries, fetch attempts, sync runs, terminal events, and agent
-checkpoints are control or audit state. They are not alternate business truth.
-`macro_research_publications` is immutable derived research keyed by completed
-U.S. session; it is not a material Macro fact.
+Source configuration/fetch health in `news_sources`, queues, leases, retries,
+fetch attempts, sync runs, terminal events, and agent checkpoints are control
+or audit state. They are not alternate business truth.
+`macro_research_publications` and `news_story_analyses` are immutable derived
+research keyed by frozen evidence; they are not material facts.
 
 ## Package map
 
@@ -60,9 +60,10 @@ tracefold.market
   views/         persisted market read queries
 
 tracefold.news
-  ingest/        provider facts and source health
-  projection/    deterministic item and page projection
-  views/         persisted News reads
+  identity.py    Article identity, provenance, Story matching and projection
+  repository.py PostgreSQL facts, membership, lifecycle and analysis publication
+  interface.py  sole external Story read interface
+  workers.py    bounded RSS ingest and Story-analysis workers
 
 tracefold.macro
   observations/  provider fact import and live evidence reads
@@ -92,8 +93,8 @@ The dependency direction is:
 ```text
 app -> integrations + business packages + platform
 integrations -> business package interfaces + platform
-news -> market + platform
-macro -> market + news + platform
+news -> platform
+macro -> market + platform
 market -> platform
 notifications -> platform
 platform -> Python / third-party libraries only
@@ -108,11 +109,9 @@ with their business owner. These rules are executable in
 SQL ownership follows the same boundary: Market owns the event, token, asset,
 profile, price, Radar, and collector tables; News owns `news_*`; Macro owns
 `macro_*`; Notifications owns `notification*`. Platform owns Alembic,
-checkpoint, and generic terminal-evidence tables. Cross-business reads go
-through the owner package interface—for example, completed-session Macro
-research uses the News-owned bounded research-evidence reader rather than
-querying `news_items` itself. The architecture gate checks SQL table references
-against the generated current schema.
+checkpoint, and generic terminal-evidence tables. Macro has no live or hidden
+dependency on News. The architecture gate checks SQL table references against
+the generated current schema.
 
 ## Transaction ownership
 
@@ -125,6 +124,9 @@ Important atomic units are:
 - fact persistence, identity resolution, market capture, and downstream dirty
   target creation;
 - current read-model write plus acknowledgement of the exact claim;
+- News Article persistence plus deterministic Story membership/projection;
+- immutable Story analysis publication plus completion of its exact
+  evidence/model/version attempt;
 - immutable Macro publication plus transition of its run to `published`;
 - notification creation plus activation of delivery rows;
 - retry or terminal transition plus mutation of its source queue row.
@@ -156,15 +158,21 @@ persisted identity, social, and market facts.
 
 ```text
 configured sources
-  -> fetch ledger + provider items + canonical news facts
-  -> deterministic item processing
-  -> page dirty targets
-  -> news_page_rows
+  -> internal RSS/RSSHub adapter
+  -> normalized news_articles facts
+  -> single-writer deterministic news_story_articles + news_stories
+  -> immutable evidence-keyed news_story_analyses
+  -> Story Interface -> HTTP + React
 ```
 
-`page` is the only News projection target. Rows contain persisted source,
-membership, entity-resolution, fact-candidate, content, and market-scope fields;
-there is no generated thesis or prose product layer.
+Article identity is source-scoped and deterministic. Story identity v1 compares
+only same-language, time-bounded lexical candidates and records every admission
+decision. Source role, trust, acquisition chain, and verified original domain
+remain distinct so aggregator copies cannot manufacture corroboration.
+Lifecycle and importance are deterministic scheduled projection state; model
+output never participates in identity, trust, lifecycle, or ranking. Analysis
+attempts are independent control state, and a failed or unavailable model
+never hides the Story.
 
 ### Macro
 

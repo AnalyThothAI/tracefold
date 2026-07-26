@@ -21,12 +21,6 @@ from tracefold.market import (
     TickLookup,
     require_event_anchor_active_window_ms,
 )
-from tracefold.news import (
-    NewsProviderContractError,
-    configured_news_provider_types,
-    validate_news_provider_contract,
-)
-from tracefold.platform.config.news_provider_types import RUNTIME_SUPPORTED_NEWS_PROVIDER_TYPES
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
@@ -87,8 +81,6 @@ def bootstrap(
             startup_db = postgres_health_check(conn, expected_migration_version=latest_migration_version())
         if not startup_db.get("ok"):
             raise RuntimeError(f"postgres health check failed: {startup_db}")
-        news_provider_contract = _load_news_provider_contract(settings, db)
-
         providers = wire_providers(
             settings,
             start_collector=start_collector,
@@ -100,7 +92,6 @@ def bootstrap(
             providers=providers,
             start_collector=start_collector,
             startup_db_status=startup_db,
-            news_provider_contract=news_provider_contract,
             publisher_factory=publisher_factory,
         )
     except Exception as exc:
@@ -123,7 +114,6 @@ def _assemble_runtime(
     providers: WiredProviders,
     start_collector: bool,
     startup_db_status: dict[str, object],
-    news_provider_contract: dict[str, Any],
     publisher_factory: PublisherFactory | None = None,
 ) -> Runtime:
     workers = settings.workers
@@ -160,7 +150,6 @@ def _assemble_runtime(
     snapshot = RuntimeSnapshot.startup(
         startup_db_status=startup_db_status,
         composition={"ok": True},
-        news_provider_contract=news_provider_contract,
     )
     runtime = Runtime(
         settings=settings,
@@ -178,30 +167,6 @@ def _assemble_runtime(
         collector.upstream_client = factory(collector.handle_frame) if factory is not None else None
     runtime.current_snapshot()
     return runtime
-
-
-def _load_news_provider_contract(settings: Settings, db: DBPoolBundle) -> dict[str, Any]:
-    configured_sources = tuple(settings.news_intel.sources)
-    try:
-        configured_news_provider_types(configured_sources)
-        with db.api_session() as repos:
-            schema_provider_types = repos.news_sources.news_source_provider_constraint_values()
-        return validate_news_provider_contract(
-            configured_sources=configured_sources,
-            supported_provider_types=RUNTIME_SUPPORTED_NEWS_PROVIDER_TYPES,
-            schema_provider_types=schema_provider_types,
-        )
-    except NewsProviderContractError as exc:
-        return exc.to_payload()
-    except Exception as exc:
-        return {
-            "ok": False,
-            "reason": "news_provider_contract_unavailable",
-            "error": type(exc).__name__,
-            "configured_provider_types": list(configured_news_provider_types(configured_sources)),
-            "supported_provider_types": list(RUNTIME_SUPPORTED_NEWS_PROVIDER_TYPES),
-            "schema_provider_types": [],
-        }
 
 
 class _NullEventPublisher:

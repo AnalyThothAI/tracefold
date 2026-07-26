@@ -203,7 +203,6 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
         "store": "postgresql",
         "db": dict(snapshot.startup_db_status),
         "provider_states": snapshot.provider_states,
-        "news_provider_contract": snapshot.news_provider_contract,
         "workers": snapshot.workers,
     }
     return payload

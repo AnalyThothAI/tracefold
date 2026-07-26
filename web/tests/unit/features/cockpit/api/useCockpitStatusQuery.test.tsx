@@ -12,7 +12,7 @@ describe("useCockpitStatusQuery", () => {
 
   it("surfaces a malformed fixed status payload as a query error", async () => {
     const payload = { ...appStatusFixture() } as Record<string, unknown>;
-    delete payload.news_provider_contract;
+    delete payload.provider_states;
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true, data: payload }));
 
     const { result } = renderHook(() => useCockpitStatusQuery({ token: "secret" }), {
@@ -22,7 +22,7 @@ describe("useCockpitStatusQuery", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toHaveProperty(
       "message",
-      "status_current_contract:status.news_provider_contract",
+      "status_current_contract:status.provider_states",
     );
   });
 });

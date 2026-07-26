@@ -1,169 +1,141 @@
-import type { NewsFactItem, NewsFactRow } from "@features/news/model/newsFactViewModel";
+import type { NewsStoryDetail, NewsStorySummary } from "@features/news/model/newsStoryViewModel";
 
 const NOW_MS = 1_779_000_000_000;
 
-export function newsRowFixture(overrides: Partial<NewsFactRow> = {}): NewsFactRow {
+export function newsStoryFixture(overrides: Partial<NewsStorySummary> = {}): NewsStorySummary {
   return {
-    canonical_item_key: "canonical:news-1",
-    canonical_url: "https://example.test/news-1",
-    computed_at_ms: NOW_MS,
-    content_class: "market_update",
-    content_classification: { basis: "provider_content_class" },
-    content_tags: ["etf", "bitcoin"],
-    duplicate_count: 1,
-    fact_lanes: [
-      {
-        fact_candidate_id: "fact-1",
-        event_type: "fund_flow",
-        realis: "actual",
-        status: "accepted",
-        affected_targets: [{ symbol: "BTC" }],
-      },
-    ],
-    headline: "BTC ETF flows expand",
-    latest_at_ms: NOW_MS,
-    lifecycle_status: "processed",
-    market_scope: marketScopeFixture(),
-    news_item_id: "news-1",
-    projection_version: "news_page_projection_v1",
-    provider_article_keys: ["opennews:news-1"],
-    provider_rating: providerRatingFixture(),
-    representative_news_item_id: "news-1",
-    row_id: "row-1",
-    source: sourceSummaryFixture(),
-    source_domain: "6551.io",
-    source_domains: ["6551.io"],
-    source_ids: ["source-opennews"],
-    story: storyFixture(),
-    story_key: "story:btc-etf-flow",
-    summary: "ETF desk activity stays elevated.",
-    token_lanes: [
-      {
-        lane: "resolved",
-        resolution_status: "resolved",
-        symbol: "BTC",
-        display_name: "Bitcoin",
-        target_id: "token:btc",
-        target_type: "CexToken",
-        reason_codes: ["canonical_symbol"],
-      },
-      {
-        lane: "resolved",
-        resolution_status: "resolved",
-        symbol: "ETH",
-        display_name: "Ethereum",
-        target_id: "token:eth",
-        target_type: "CexToken",
-        reason_codes: ["canonical_symbol"],
-      },
-    ],
-    ...overrides,
-  };
-}
-
-export function newsItemFixture(overrides: Partial<NewsFactItem> = {}): NewsFactItem {
-  return {
-    body_text: "OpenNews source content.",
-    canonical_url: "https://example.test/news-1",
-    content_class: "market_update",
-    content_classification: { basis: "provider_content_class" },
-    content_tags: ["etf", "bitcoin"],
-    created_at_ms: NOW_MS - 120_000,
-    duplicate_observation_count: 1,
-    entities: [{ kind: "organization", name: "ETF desk" }],
-    fact_candidates: [{ fact_candidate_id: "fact-1", status: "accepted" }],
-    fact_lanes: newsRowFixture().fact_lanes,
-    fetch_run: { run_id: "fetch-1" },
-    fetched_at_ms: NOW_MS - 30_000,
+    analysis_published_at_ms: NOW_MS,
+    analysis_status: "available",
+    article_count: 2,
+    first_seen_at_ms: NOW_MS - 120_000,
+    importance_factors: {
+      authority: 40,
+      independent_corroboration: 12,
+      recency: 20,
+      score: 77,
+    },
+    importance_score: 77,
+    independent_origin_count: 2,
     language: "en",
-    lifecycle_status: "processed",
-    market_scope: marketScopeFixture(),
-    news_item_id: "news-1",
-    observation_edges: [
-      {
-        observation_id: "observation-1",
-        source_domain: "6551.io",
-        source_id: "source-opennews",
-      },
-    ],
-    processed_at_ms: NOW_MS - 20_000,
-    processing_error: null,
-    provider_item: { article_key: "opennews:news-1" },
-    provider_observations: [{ observation_id: "observation-1" }],
-    provider_rating: providerRatingFixture(),
-    published_at_ms: NOW_MS - 60_000,
-    representative_news_item_id: "news-1",
-    source: sourceDetailFixture(),
-    source_domain: "6551.io",
-    source_id: "source-opennews",
-    story: storyFixture(),
-    story_key: "story:btc-etf-flow",
-    summary: "ETF desk activity stays elevated.",
-    title: "BTC ETF flows expand",
-    token_lanes: newsRowFixture().token_lanes,
-    token_mentions: [{ text: "BTC" }],
-    updated_at_ms: NOW_MS,
+    last_seen_at_ms: NOW_MS,
+    phase: "breaking",
+    primary_article: {
+      article_id: "article-reuters",
+      canonical_url: "https://www.reuters.com/world/story",
+      origin_domain: "reuters.com",
+      origin_name: "Reuters",
+      origin_url: "https://www.reuters.com/world/story",
+      provenance_status: "verified",
+      published_at_ms: NOW_MS - 60_000,
+      snippet: "Central banks respond as the policy outlook changes.",
+      source_chain_id: "reuters",
+      source_id: "reuters-world",
+      source_name: "Reuters World",
+      source_role: "original_publisher",
+      title: "Central banks respond to a new global policy shock",
+      trust_tier: "authoritative",
+    },
+    short_conclusion: "政策冲击正在跨市场扩散，下一步取决于央行与财政部门的正式回应。",
+    snippet: "Central banks respond as the policy outlook changes.",
+    source_count: 2,
+    story_id: "story-global-policy",
+    title: "Central banks respond to a new global policy shock",
+    trusted_source_count: 2,
+    verification_status: "corroborated",
     ...overrides,
   };
 }
 
-function marketScopeFixture() {
+export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {}): NewsStoryDetail {
+  const summary = newsStoryFixture();
   return {
-    basis: { subject: "crypto" },
-    primary: "crypto",
-    reason: "resolved_crypto_target",
-    scope: ["crypto"],
-    status: "classified",
-    version: "news_market_scope_v1",
-  };
-}
-
-function providerRatingFixture() {
-  return {
-    direction: "bullish",
-    grade: "A",
-    method: "provider_rating",
-    provider: "opennews",
-    score: 82,
-    signal: "long",
-    status: "ready",
-  };
-}
-
-function storyFixture() {
-  return {
-    member_count: 2,
-    member_news_item_ids: ["news-1", "news-2"],
-    provider_article_keys: ["opennews:news-1", "opennews:news-2"],
-    representative_news_item_id: "news-1",
-    source_domains: ["6551.io"],
-    source_ids: ["source-opennews"],
-    story_key: "story:btc-etf-flow",
-  };
-}
-
-function sourceSummaryFixture() {
-  return {
-    coverage_tags: ["crypto"],
-    provider_type: "opennews",
-    source_domain: "6551.io",
-    source_id: "source-opennews",
-    source_name: "OpenNews",
-    source_quality_status: "healthy",
-    source_role: "aggregator",
-    trust_tier: "standard",
-  };
-}
-
-function sourceDetailFixture() {
-  return {
-    ...sourceSummaryFixture(),
-    asset_universe: ["crypto"],
-    authority_scope: { markets: ["crypto"] },
-    created_at_ms: NOW_MS - 1_000_000,
-    enabled: true,
-    managed_by_config: true,
-    refresh_interval_seconds: 60,
-    updated_at_ms: NOW_MS,
+    analysis: {
+      analysis_id: "analysis-global-policy",
+      confirmed_facts: ["Reuters 与 AP 均报道了正式政策回应。"],
+      disagreements_unknowns: ["政策持续时间尚未确定。"],
+      economic_market_impact: "利率和汇率预期可能重新定价。",
+      evidence_references: ["article-reuters", "article-ap"],
+      model: "deepseek-chat",
+      next_checkpoint: "观察央行公告与下一轮财政表态。",
+      political_impact: "主要经济体之间的政策协调压力上升。",
+      prompt_version: "news_story_analysis_v1",
+      published_at_ms: NOW_MS,
+      schema_version: "news_story_analysis_schema_v1",
+      what_happened: "两家独立权威媒体确认主要央行已回应新的政策冲击。",
+      why_it_matters: "事件同时影响政策路径、资本流动和全球风险偏好。",
+      workflow_version: "news_story_analysis_workflow_v1",
+    },
+    analysis_error: null,
+    analysis_status: summary.analysis_status,
+    anchor_article_id: "article-reuters",
+    article_count: summary.article_count,
+    articles: [
+      {
+        ...summary.primary_article,
+        first_seen_at_ms: NOW_MS - 120_000,
+        identity_method: "canonical_url",
+        identity_version: "news_article_identity_v1",
+        language: "en",
+        last_seen_at_ms: NOW_MS,
+      },
+      {
+        article_id: "article-ap",
+        canonical_url: "https://apnews.com/article/story",
+        first_seen_at_ms: NOW_MS - 90_000,
+        identity_method: "canonical_url",
+        identity_version: "news_article_identity_v1",
+        language: "en",
+        last_seen_at_ms: NOW_MS,
+        origin_domain: "apnews.com",
+        origin_name: "AP News",
+        origin_url: "https://apnews.com/article/story",
+        provenance_status: "verified",
+        published_at_ms: NOW_MS - 30_000,
+        snippet: "Officials published a second confirmation.",
+        source_chain_id: "ap",
+        source_id: "ap-global",
+        source_name: "AP News",
+        source_role: "original_publisher",
+        title: "Officials confirm response to global policy shock",
+        trust_tier: "authoritative",
+      },
+    ],
+    evidence_set_hash: "evidence-hash",
+    first_seen_at_ms: summary.first_seen_at_ms,
+    identity_version: "news_story_identity_v1",
+    importance_factors: summary.importance_factors,
+    importance_score: summary.importance_score,
+    importance_version: "news_story_importance_v1",
+    independent_origin_count: summary.independent_origin_count,
+    language: summary.language,
+    last_seen_at_ms: summary.last_seen_at_ms,
+    lifecycle_version: "news_story_lifecycle_v1",
+    memberships: [
+      {
+        admitted_at_ms: NOW_MS - 120_000,
+        article_id: "article-reuters",
+        identity_version: "news_story_identity_v1",
+        match_method: "anchor",
+        match_reason: { anchor_article_id: "article-reuters" },
+        match_score: 1,
+      },
+      {
+        admitted_at_ms: NOW_MS - 30_000,
+        article_id: "article-ap",
+        identity_version: "news_story_identity_v1",
+        match_method: "lexical_v1",
+        match_reason: { score: 0.82 },
+        match_score: 0.82,
+      },
+    ],
+    phase: summary.phase,
+    primary_article_id: "article-reuters",
+    snippet: summary.snippet,
+    source_count: summary.source_count,
+    story_id: summary.story_id,
+    title: summary.title,
+    trusted_source_count: summary.trusted_source_count,
+    verification_status: summary.verification_status,
+    ...overrides,
   };
 }

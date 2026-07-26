@@ -102,10 +102,9 @@ describe("data router architecture", () => {
 
   it("does not keep the retired news item route", () => {
     const routerSource = readSource("routes/router.tsx");
-    const retiredNewsItemRoute = 'path: "news/' + ':newsItemId"';
 
-    expect(routerSource).toContain('path: "news/items/:newsItemId"');
-    expect(routerSource).not.toContain(retiredNewsItemRoute);
+    expect(routerSource).toContain('path: "news/stories/:storyId"');
+    expect(routerSource).not.toContain('path: "news/items/:newsItemId"');
   });
 
   it("does not keep the retired Signal Lab page routes or navigation target", () => {

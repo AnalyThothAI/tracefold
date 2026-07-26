@@ -102,11 +102,7 @@ describe("Tracefold design-system hard cut", () => {
 
   it("assigns every supported route family to one of four page archetypes", () => {
     const owners = {
-      case: [
-        "features/search/ui/SearchIntelPage.tsx",
-        "features/news/ui/NewsItemEvidencePage.tsx",
-        "shared/ui/case-file/TokenCasePanel.tsx",
-      ],
+      case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
       decision: ["features/macro/ui/MacroResearchPage.tsx"],
       monitoring: ["features/watchlist/ui/WatchlistPage.tsx"],
       scan: [
@@ -121,6 +117,7 @@ describe("Tracefold design-system hard cut", () => {
         expect(readSource(path)).toContain(`data-page-archetype="${archetype}"`);
       }
     }
+    expect(readSource("features/news/NewsPage.tsx")).toContain('data-page-archetype="case"');
   });
 
   it("keeps shell geometry centralized and route content scrollable", () => {

@@ -50,6 +50,25 @@ RETIRED_BACKEND_TABLES = {
     "news_story_agent_briefs",
     "news_story_agent_runs",
 }
+NEWS_V2_TABLES = {
+    "news_sources",
+    "news_articles",
+    "news_stories",
+    "news_story_articles",
+    "news_story_analyses",
+    "news_story_analysis_attempts",
+}
+LEGACY_NEWS_TABLES = {
+    "news_fetch_runs",
+    "news_provider_items",
+    "news_items",
+    "news_item_entities",
+    "news_token_mentions",
+    "news_fact_candidates",
+    "news_item_observation_edges",
+    "news_projection_dirty_targets",
+    "news_page_rows",
+}
 
 
 def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(tmp_path) -> None:
@@ -106,22 +125,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
                 """
             ).fetchall()
         }
-        news_fetch_run_fk_index = conn.execute(
-            """
-            SELECT index_state.indisvalid, index_state.indisready
-            FROM pg_index AS index_state
-            JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
-            WHERE index_class.relname = 'idx_news_provider_items_fetch_run_id'
-            """
-        ).fetchone()
-        news_source_status_index = conn.execute(
-            """
-            SELECT index_state.indisvalid, index_state.indisready
-            FROM pg_index AS index_state
-            JOIN pg_class AS index_class ON index_class.oid = index_state.indexrelid
-            WHERE index_class.relname = 'ix_news_items_source_status_cover'
-            """
-        ).fetchone()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     finally:
         conn.close()
@@ -147,6 +150,8 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "checkpoint_writes",
     } <= tables
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
+    assert tables >= NEWS_V2_TABLES
+    assert LEGACY_NEWS_TABLES.isdisjoint(tables)
     assert macro_research_run_columns == {
         "session_date",
         "market_cutoff_ms",
@@ -162,7 +167,30 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "created_at_ms",
         "updated_at_ms",
     }
-    assert {"config_payload_hash", "terminal_config_payload_hash"} <= news_source_columns
+    assert news_source_columns == {
+        "source_id",
+        "name",
+        "feed_url",
+        "source_domain",
+        "source_role",
+        "trust_tier",
+        "source_chain_id",
+        "coverage_tags",
+        "default_language",
+        "enabled",
+        "refresh_interval_seconds",
+        "etag",
+        "last_modified",
+        "last_fetch_started_at_ms",
+        "last_fetch_finished_at_ms",
+        "last_success_at_ms",
+        "last_http_status",
+        "consecutive_failures",
+        "last_error",
+        "next_fetch_at_ms",
+        "created_at_ms",
+        "updated_at_ms",
+    }
     assert macro_research_publication_columns == {
         "session_date",
         "market_cutoff_ms",
@@ -176,9 +204,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert news_fetch_run_fk_index == {"indisvalid": True, "indisready": True}
-    assert news_source_status_index == {"indisvalid": True, "indisready": True}
-    assert version == latest_migration_version() == "20260724_0196"
+    assert version == latest_migration_version() == "20260726_0197"
 
 
 def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:
@@ -268,20 +294,7 @@ def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:
             WHERE terminal_id = 'terminal-source-queue'
             """
         ).fetchone()
-        news_source = conn.execute(
-            """
-            SELECT config_payload_hash, terminal_config_payload_hash
-            FROM news_sources WHERE source_id = 'source-1'
-            """
-        ).fetchone()
-        old_fetch = conn.execute("SELECT fetch_run_id FROM news_fetch_runs WHERE fetch_run_id = 'fetch-old'").fetchone()
-        retained_provider_item = conn.execute(
-            """
-            SELECT fetch_run_id
-            FROM news_provider_items
-            WHERE provider_item_id = 'provider-item-old'
-            """
-        ).fetchone()
+        news_source_count = conn.execute("SELECT COUNT(*) AS count FROM news_sources").fetchone()["count"]
     finally:
         conn.close()
 
@@ -294,10 +307,9 @@ def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:
     assert queue_row["market_dirty"] is True
     assert queue_row["repair_dirty"] is False
     assert tuple(terminal_row.values()) == ("archive", "queue_retired_by_0185")
-    assert news_source["config_payload_hash"].startswith("sha256:")
-    assert news_source["terminal_config_payload_hash"] is None
-    assert old_fetch is None
-    assert retained_provider_item == {"fetch_run_id": None}
+    assert tables >= NEWS_V2_TABLES
+    assert LEGACY_NEWS_TABLES.isdisjoint(tables)
+    assert news_source_count == 0
 
 
 def test_runtime_hard_cut_reconciles_nonempty_0185_backlog(tmp_path) -> None:
