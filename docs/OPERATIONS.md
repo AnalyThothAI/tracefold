@@ -165,57 +165,23 @@ reason returns its measured lag/value and threshold.
 Migration `20260727_0199` preserves Source Registry, FetchReceipt,
 FeedObservation, Article, ArticleRevision, and Article content snapshots. It
 destructively removes all old identity/Story/Brief/analysis derived products.
-When material facts exist, the migration fails closed unless the operator has
-recorded a verified backup receipt.
+For this cutover the operator explicitly accepted an irreversible migration
+without a backup. There is no backup-receipt table, compatibility path,
+downgrade, or database restore point.
 
-1. Stop the application workers and create a recoverable PostgreSQL custom
-   archive. Keep it outside the database volume.
-2. Verify the archive can be listed with `pg_restore --list`, compute its
-   lowercase SHA-256, and record the absolute operator backup location.
-3. Before migration, create `schema_migration_backup_receipts` with the schema
-   below and insert the `20260727_0199` receipt. The row is durable audit
-   evidence; it is never a runtime fallback.
-
-```sql
-CREATE TABLE IF NOT EXISTS schema_migration_backup_receipts (
-  migration_revision text PRIMARY KEY CHECK (btrim(migration_revision) <> ''),
-  backup_sha256 text NOT NULL CHECK (backup_sha256 ~ '^[0-9a-f]{64}$'),
-  backup_location text NOT NULL CHECK (btrim(backup_location) <> ''),
-  backup_created_at_ms bigint NOT NULL CHECK (backup_created_at_ms >= 0),
-  recorded_at_ms bigint NOT NULL CHECK (recorded_at_ms >= 0)
-);
-
-INSERT INTO schema_migration_backup_receipts (
-  migration_revision,
-  backup_sha256,
-  backup_location,
-  backup_created_at_ms,
-  recorded_at_ms
-)
-VALUES (
-  '20260727_0199',
-  '<verified-lowercase-sha256>',
-  '<absolute-operator-backup-path>',
-  <backup-created-at-epoch-ms>,
-  <receipt-recorded-at-epoch-ms>
-)
-ON CONFLICT (migration_revision) DO UPDATE SET
-  backup_sha256 = EXCLUDED.backup_sha256,
-  backup_location = EXCLUDED.backup_location,
-  backup_created_at_ms = EXCLUDED.backup_created_at_ms,
-  recorded_at_ms = EXCLUDED.recorded_at_ms;
-```
-
-4. Run `uv run tracefold db migrate`. A missing receipt aborts before any
-   derived News table is dropped.
+1. Stop all application workers so no 0198 writer can run during migration.
+2. Record the Alembic head and non-empty material-fact counts.
+3. Run `uv run tracefold db migrate`.
+4. Verify that the Alembic head is `20260727_0199` and the preserved
+   material-fact identities/counts are unchanged.
 5. Run
    `uv run tracefold ops rebuild-news-stories --batch-size 100 --execute`.
    This replays every preserved ArticleRevision through the same sequential
    projector used by live catch-up.
 6. Start the four News workers, then verify migration head, zero projection
    backlog, Story count/membership closure, Latest/Priority order, Active Brief,
-   AI provenance, and all five News health layers. Restore from the archive
-   rather than attempting a downgrade if cutover validation fails.
+   AI provenance, and all five News health layers. If validation fails, keep
+   writers stopped and repair forward from the preserved material facts.
 
 Macro:
 

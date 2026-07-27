@@ -15,45 +15,6 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout = '30min'")
     op.execute(
         """
-        CREATE TABLE IF NOT EXISTS schema_migration_backup_receipts (
-          migration_revision text PRIMARY KEY CHECK (btrim(migration_revision) <> ''),
-          backup_sha256 text NOT NULL
-            CHECK (backup_sha256 ~ '^[0-9a-f]{64}$'),
-          backup_location text NOT NULL CHECK (btrim(backup_location) <> ''),
-          backup_created_at_ms bigint NOT NULL CHECK (backup_created_at_ms >= 0),
-          recorded_at_ms bigint NOT NULL CHECK (recorded_at_ms >= 0)
-        )
-        """
-    )
-    op.execute(
-        """
-        DO $$
-        BEGIN
-          IF EXISTS (SELECT 1 FROM news_feed_observations LIMIT 1)
-             OR EXISTS (SELECT 1 FROM news_articles LIMIT 1)
-             OR EXISTS (SELECT 1 FROM news_stories LIMIT 1)
-          THEN
-            IF NOT EXISTS (
-              SELECT 1
-                FROM schema_migration_backup_receipts
-               WHERE migration_revision = '20260727_0199'
-                 AND backup_sha256 ~ '^[0-9a-f]{64}$'
-                 AND btrim(backup_location) <> ''
-                 AND backup_created_at_ms >= 0
-                 AND recorded_at_ms >= backup_created_at_ms
-            )
-            THEN
-              RAISE EXCEPTION USING MESSAGE =
-                'news_0199_backup_receipt_required'
-                || ': verify a recoverable backup before the derived-state hard cut';
-            END IF;
-          END IF;
-        END
-        $$;
-        """
-    )
-    op.execute(
-        """
         DROP TABLE
           news_brief_current,
           news_brief_publications,

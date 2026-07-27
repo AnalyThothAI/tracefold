@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from alembic import command
 
 from tests.postgres_test_utils import connect_postgres_test
@@ -480,28 +479,6 @@ def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identit
             VALUES (true, 'legacy-publication', 200)
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE schema_migration_backup_receipts (
-              migration_revision text PRIMARY KEY,
-              backup_sha256 text NOT NULL,
-              backup_location text NOT NULL,
-              backup_created_at_ms bigint NOT NULL,
-              recorded_at_ms bigint NOT NULL
-            );
-            INSERT INTO schema_migration_backup_receipts (
-              migration_revision, backup_sha256, backup_location,
-              backup_created_at_ms, recorded_at_ms
-            )
-            VALUES (
-              '20260727_0199',
-              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-              '/verified/backups/tracefold-before-0199.dump',
-              250,
-              260
-            )
-            """
-        )
         material_counts_before = {
             table: int(conn.execute(f"SELECT count(*) AS count FROM {table}").fetchone()["count"])
             for table in (
@@ -540,8 +517,8 @@ def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identit
             "news_brief_active",
             "news_brief_activation_analysis",
             "news_ai_current_targets",
-            "schema_migration_backup_receipts",
         } <= tables
+        assert "schema_migration_backup_receipts" not in tables
         attachment_columns = {
             str(row["column_name"]): str(row["is_nullable"])
             for row in conn.execute(
@@ -587,91 +564,6 @@ def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identit
 
         command.upgrade(config, "head")
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0199"
-    finally:
-        conn.close()
-
-
-def test_news_correctness_hard_cut_fails_closed_without_verified_backup_receipt(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
-        conn.execute("CREATE SCHEMA public")
-        conn.execute("GRANT ALL ON SCHEMA public TO public")
-        conn.commit()
-        config = alembic_config()
-        config.attributes["database_url"] = _test_postgres_dsn()
-        command.upgrade(config, "20260726_0198")
-        repository = NewsRepository(conn)
-        source = NewsSourceDefinition(
-            source_id="unbacked-source",
-            name="Unbacked Source",
-            feed_url="https://unbacked.example/feed.xml",
-            source_domain="unbacked.example",
-            source_role="original_publisher",
-            trust_tier="trusted",
-            source_chain_id="unbacked-publisher",
-            publisher_organization_id="unbacked-publisher",
-            default_language="en",
-            refresh_interval_seconds=60,
-        )
-        repository.sync_sources((source,), now_ms=100)
-        repository.record_fetch_success(
-            source=source,
-            entries=(
-                NewsFeedEntry(
-                    guid="unbacked-guid",
-                    link="https://unbacked.example/fact",
-                    title="A material fact requiring backup",
-                    published_at_ms=100,
-                    language="en",
-                ),
-            ),
-            started_at_ms=100,
-            finished_at_ms=101,
-            status_code=200,
-            etag=None,
-            last_modified=None,
-            not_modified=False,
-        )
-        conn.commit()
-
-        with pytest.raises(
-            Exception,
-            match="news_0199_backup_receipt_required",
-        ):
-            command.upgrade(config, "head")
-
-        conn.rollback()
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260726_0198"
-
-        conn.execute(
-            """
-            CREATE TABLE schema_migration_backup_receipts (
-              migration_revision text PRIMARY KEY,
-              backup_sha256 text NOT NULL,
-              backup_location text NOT NULL,
-              backup_created_at_ms bigint NOT NULL,
-              recorded_at_ms bigint NOT NULL
-            );
-            INSERT INTO schema_migration_backup_receipts (
-              migration_revision, backup_sha256, backup_location,
-              backup_created_at_ms, recorded_at_ms
-            )
-            VALUES ('20260727_0199', 'not-a-sha256', '', 200, 100)
-            """
-        )
-        conn.commit()
-
-        with pytest.raises(
-            Exception,
-            match="news_0199_backup_receipt_required",
-        ):
-            command.upgrade(config, "head")
-
-        conn.rollback()
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260726_0198"
     finally:
         conn.close()
 
