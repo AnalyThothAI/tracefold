@@ -25,6 +25,12 @@ Do not introduce a third config path, shadow config in environment
 variables, or duplicate worker runtime knobs under `config.yaml`.
 Schemas and public config contracts live in `CONTRACTS.md`.
 
+`~/.tracefold/rsshub.env` is an optional infrastructure credential injection
+file consumed only by the pinned RSSHub Compose sidecar. It is not a third
+Tracefold application configuration source: application code must not read,
+log, validate, copy, or report it. Never commit that file or its cookie/token
+values.
+
 ## Macro Research Agent capability boundary
 
 `macro_research` and the separately published `news_world_brief` are the only

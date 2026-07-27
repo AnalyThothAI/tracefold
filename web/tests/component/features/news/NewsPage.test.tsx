@@ -44,6 +44,80 @@ describe("NewsPage", () => {
     expect(screen.queryByText(/AI 分析/)).not.toBeInTheDocument();
   });
 
+  it("renders WallStEngine through the ordinary Feed, Story, and Brief presentation", async () => {
+    const feed = newsFeedFixture();
+    feed.stories = [
+      {
+        ...feed.stories[0],
+        source_id: "news-wallstengine-eeeec11d",
+        source_name: "WallStEngine",
+        url: "https://x.com/wallstengine/status/201",
+      },
+    ];
+    feed.facets.sources = [
+      {
+        count: 1,
+        label: "WallStEngine",
+        value: "news-wallstengine-eeeec11d",
+      },
+    ];
+
+    const detail = newsStoryDetailFixture({
+      source_id: "news-wallstengine-eeeec11d",
+      source_name: "WallStEngine",
+      url: "https://x.com/wallstengine/status/201",
+    });
+    detail.members = [
+      {
+        ...detail.members[0],
+        reporting_origin: "x.com",
+        source_id: "news-wallstengine-eeeec11d",
+        source_name: "WallStEngine",
+        tier: 4,
+        url: "https://x.com/wallstengine/status/201",
+      },
+    ];
+
+    const brief = newsGlobalBriefFixture();
+    if (!brief.publication) throw new Error("fixture publication required");
+    brief.publication.sources = [
+      {
+        ...brief.publication.sources[0],
+        source: "WallStEngine",
+        url: "https://x.com/wallstengine/status/201",
+      },
+    ];
+
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })),
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
+    );
+
+    renderNews(<NewsPage token="test-token" />);
+    expect((await screen.findAllByText("WallStEngine")).length).toBeGreaterThan(0);
+    cleanup();
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
+    );
+    expect((await screen.findAllByText("WallStEngine")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /阅读原文/ })).toHaveAttribute(
+      "href",
+      "https://x.com/wallstengine/status/201",
+    );
+    cleanup();
+
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+    expect(await screen.findByRole("link", { name: /WallStEngine/ })).toHaveAttribute(
+      "href",
+      "https://x.com/wallstengine/status/201",
+    );
+  });
+
   it("keeps category as URL state and sends it to the Feed endpoint", async () => {
     let observedCategory: string | null = null;
     server.use(
@@ -206,8 +280,11 @@ describe("NewsPage", () => {
     renderNews(<NewsPage sources token="test-token" />, "/news/sources");
     expect(await screen.findByText("新闻来源状态")).toBeInTheDocument();
     expect(await screen.findByText("Reuters World")).toBeInTheDocument();
+    expect(await screen.findByText("WallStEngine")).toBeInTheDocument();
+    expect(screen.getByText("Tier 4 · en · finance")).toBeInTheDocument();
+    expect(screen.getByText("2 个来源")).toBeInTheDocument();
     expect(screen.getByText(/duplicate 3/)).toBeInTheDocument();
-    expect(screen.getByText("成功")).toBeInTheDocument();
+    expect(screen.getAllByText("成功")).toHaveLength(2);
   });
 });
 

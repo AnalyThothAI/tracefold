@@ -100,7 +100,7 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-117 physical sources / 120 logical memberships
+118 physical sources / 121 logical memberships
   -> NewsPipelineWorker
   -> FetchReceipt + immutable FeedObservation + NewsItem
   -> full active-window cluster + Story/member/alias projection
@@ -119,8 +119,11 @@ database, and closes each source independently. One source failure records a
 failed receipt, increments its failure count, and cannot block another source.
 A successful response retains ETag and Last-Modified; a `304` still permits
 the deterministic 96-hour expiry/recluster pass. Direct transport/403/429/5xx/
-HTML/non-RSS failure can use the configured relay only for an enabled source
-URL; the winning path and bounded diagnostics are persisted without secrets.
+HTML/non-RSS failure can use the configured relay only for a code-owned public
+HTTPS source URL; the winning path and bounded diagnostics are persisted
+without secrets. HTTP, localhost, Docker service names, link-local, loopback,
+private, and other non-public destinations never use the relay. The internal
+6551NEWS and WallStEngine RSSHub sources therefore record failures directly.
 
 The same worker is the only NewsItem, Story, membership, and alias writer.
 There is no News dirty queue or repair command: restart recovery is the normal
@@ -180,8 +183,8 @@ dual writer, and no compatibility read.
    latest head.
 5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
    service.
-6. Verify exactly eleven `news_*` tables, 117 synchronized physical sources,
-   120 memberships, a terminal attempt for every source, fresh receipts and
+6. Verify exactly eleven `news_*` tables, 118 synchronized physical sources,
+   121 memberships, a terminal attempt for every source, fresh receipts and
    observations, non-empty NewsItems and Stories, membership closure, the five
    HTTP routes, ETag `304`, a truthful Brief state, and zero old routes.
 7. Leave the deployment stopped and repair forward if any acceptance check
@@ -370,12 +373,15 @@ not scan broad facts merely to prove that no work is due. Current models remain
 bounded by stable product keys; a latest-generation pointer is not a retention
 policy.
 
-Compose loads `pg_stat_statements`, PoWA, `pg_stat_kcache`, `pg_qualstats`, and
-`pg_wait_sampling`. Use `./scripts/pgbadger_report.sh` for log history and
-`./scripts/powa_configure.sh` for bounded PoWA snapshots. The read-only
-`./scripts/runtime_performance_root_fix_check.sh` reports readiness, migration
-head, top SQL, worker state, and relation-size lifecycle evidence without
-resetting statistics or mutating queues.
+Compose uses the official PostgreSQL 18 Bookworm image and preloads only
+`pg_stat_statements` for query diagnosis. `compute_query_id` remains enabled.
+Use Compose logs for container output and the supported Tracefold database
+health, audit, query-audit, status, metrics, and `ops` commands for diagnosis
+and repair. There is no repository `ops/` infrastructure tree, auxiliary
+observability service, host log collector, or persistent diagnostic script.
+The runtime hard-cut migration also resets the retired `powa.coalesce` and
+`powa.frequency` `ALTER SYSTEM` entries before the official image takes over
+the existing PostgreSQL volume.
 
 For a migration or production cutover:
 

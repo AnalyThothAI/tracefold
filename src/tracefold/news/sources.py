@@ -1,4 +1,4 @@
-"""Frozen WorldMonitor ``full/en`` inventory plus Tracefold crypto sources."""
+"""Frozen WorldMonitor inventory plus code-owned Tracefold RSS sources."""
 
 from __future__ import annotations
 
@@ -295,6 +295,16 @@ _CRYPTO: Final[tuple[tuple[str, str, str, int], ...]] = (
     ("crypto", "6551NEWS", "http://rsshub:1200/telegram/channel/news6551", 2),
 )
 
+_TRACEFOLD_RSSHUB: Final[tuple[tuple[str, str, str, int], ...]] = (
+    (
+        "finance",
+        "WallStEngine",
+        "http://rsshub:1200/twitter/user/wallstengine/"
+        "includeReplies=0&includeRts=0&showRetweetTextInTitle=1&showQuotedInTitle=0",
+        4,
+    ),
+)
+
 
 class _SourceAccumulator(TypedDict):
     name: str
@@ -311,7 +321,12 @@ def _source_id(name: str, url: str) -> str:
 
 def default_sources() -> tuple[NewsSourceDefinition, ...]:
     physical: dict[tuple[str, str], _SourceAccumulator] = {}
-    for membership, name, url, tier in (*_WM_FULL_EN, *_WM_INTEL, *_CRYPTO):
+    for membership, name, url, tier in (
+        *_WM_FULL_EN,
+        *_WM_INTEL,
+        *_CRYPTO,
+        *_TRACEFOLD_RSSHUB,
+    ):
         key = (name, url)
         row = physical.setdefault(
             key,

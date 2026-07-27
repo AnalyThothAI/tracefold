@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import html
+import ipaddress
 import re
 import time
 from collections.abc import Collection, Mapping
@@ -18,6 +19,19 @@ from tracefold.news import (
     NewsSourceDefinition,
 )
 from tracefold.platform.validation import require_positive_float, require_positive_int
+
+_NON_PUBLIC_HOST_SUFFIXES = (
+    ".arpa",
+    ".example",
+    ".home",
+    ".internal",
+    ".invalid",
+    ".lan",
+    ".local",
+    ".localhost",
+    ".test",
+)
+_PUBLIC_HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class RssFeedReader(NewsFeedReader):
@@ -165,7 +179,7 @@ class RssFeedReader(NewsFeedReader):
                 fetch_path="direct",
                 direct_error_code=direct_error_code,
             )
-        if source.feed_url not in self._relay_allowed_urls:
+        if source.feed_url not in self._relay_allowed_urls or not is_public_https_feed_url(source.feed_url):
             raise NewsFeedAcquisitionError(
                 "news_rss_relay_source_not_allowed",
                 status_code=(int(direct.status_code) if "direct" in locals() and direct is not None else None),
@@ -206,6 +220,41 @@ class RssFeedReader(NewsFeedReader):
                 fetch_path="relay",
                 direct_error_code=direct_error_code,
             ) from exc
+
+
+def is_public_https_feed_url(value: object) -> bool:
+    """Return whether a code-owned feed URL is safe to send to an external relay."""
+
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.netloc
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or hostname.endswith(".")
+    ):
+        return False
+
+    normalized = hostname.casefold()
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        try:
+            normalized = normalized.encode("idna").decode("ascii")
+        except UnicodeError:
+            return False
+        if "." not in normalized or normalized == "localhost":
+            return False
+        if normalized.endswith(_NON_PUBLIC_HOST_SUFFIXES):
+            return False
+        return all(_PUBLIC_HOST_LABEL.fullmatch(label) for label in normalized.split("."))
+    return address.is_global
 
 
 class NewsFeedAcquisitionError(RuntimeError):
@@ -348,4 +397,8 @@ def _looks_like_rss(value: str) -> bool:
     return bool(re.search(r"<rss[\s>]|<feed[\s>]|<rdf:rdf[\s>]", head))
 
 
-__all__ = ["NewsFeedAcquisitionError", "RssFeedReader"]
+__all__ = [
+    "NewsFeedAcquisitionError",
+    "RssFeedReader",
+    "is_public_https_feed_url",
+]

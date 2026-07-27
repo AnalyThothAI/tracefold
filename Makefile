@@ -93,21 +93,21 @@ docker-check: ## verify Docker CLI, Compose plugin, and daemon access
 		exit 1; \
 	}
 
-docker-up: docker-check init ## build and start container service
+docker-up: docker-check init ## build and start the full container stack
 	@if [ -n "$${GITHUB_TOKEN:-}" ]; then \
-		docker compose up -d --build app; \
+		docker compose up -d --build; \
 	elif command -v gh >/dev/null 2>&1 && GITHUB_TOKEN=$$(gh auth token 2>/dev/null); then \
-		GITHUB_TOKEN="$$GITHUB_TOKEN" docker compose up -d --build app; \
+		GITHUB_TOKEN="$$GITHUB_TOKEN" docker compose up -d --build; \
 	else \
-		docker compose up -d --build app; \
+		docker compose up -d --build; \
 	fi
 
 docker-status: ## show container and readiness
 	@docker compose ps
 	@curl -fsS http://127.0.0.1:8765/readyz || true
 
-docker-logs: ## tail container logs
-	@docker compose logs -f --tail=100 app
+docker-logs: ## tail application, PostgreSQL, and RSSHub logs
+	@docker compose logs -f --tail=100 app postgres rsshub
 
 docker-down: ## stop container service
 	@docker compose down

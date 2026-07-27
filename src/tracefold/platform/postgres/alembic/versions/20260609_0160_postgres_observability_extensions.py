@@ -1,4 +1,4 @@
-"""Install PostgreSQL runtime observability extensions."""
+"""Install the supported PostgreSQL query-statistics extension."""
 
 from __future__ import annotations
 
@@ -12,9 +12,6 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_kcache")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_qualstats")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_wait_sampling")
 
     op.execute("ANALYZE events")
     op.execute("ANALYZE enriched_events")

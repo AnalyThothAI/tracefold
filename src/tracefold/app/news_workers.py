@@ -3,7 +3,10 @@ from __future__ import annotations
 from tracefold.integrations.news_ai import (
     ProviderChainNewsBriefPublisher,
 )
-from tracefold.integrations.news_feeds import RssFeedReader
+from tracefold.integrations.news_feeds import (
+    RssFeedReader,
+    is_public_https_feed_url,
+)
 from tracefold.news import NewsPipelineWorker, NewsWorldBriefWorker, default_sources
 from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_worker
 from tracefold.platform.workers.worker_base import WorkerBase
@@ -30,7 +33,7 @@ def construct_news_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
                 relay_base_url=settings.news.relay.base_url,
                 relay_auth_header=settings.news.relay.auth_header,
                 relay_auth_token=settings.news.relay.auth_token,
-                relay_allowed_urls={source.feed_url for source in sources},
+                relay_allowed_urls={source.feed_url for source in sources if is_public_https_feed_url(source.feed_url)},
             ),
         )
     else:
