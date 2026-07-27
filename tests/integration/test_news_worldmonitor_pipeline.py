@@ -133,6 +133,48 @@ def source(source_id: str, name: str, origin: str) -> NewsSourceDefinition:
     )
 
 
+def test_pipeline_persists_the_current_claim_time_for_each_fetch_cycle(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        clock = SimpleNamespace(now_ms=NOW_MS)
+        pipeline = NewsPipelineWorker(
+            settings=SimpleNamespace(
+                batch_size=20,
+                fetch_concurrency=1,
+                statement_timeout_seconds=30.0,
+            ),
+            db=SingleConnectionDB(conn),
+            telemetry=SimpleNamespace(),
+            sources=(source("reuters", "Reuters", "reuters"),),
+            feed_reader=TwoSourceReader(),
+            clock_ms=lambda: clock.now_ms,
+        )
+
+        first = asyncio.run(pipeline.run_once())
+        clock.now_ms = NOW_MS + 120_000
+        second = asyncio.run(pipeline.run_once())
+
+        assert first.processed == 1
+        assert second.processed == 1
+        fetches = conn.execute(
+            """
+            SELECT started_at_ms, finished_at_ms
+              FROM news_source_fetches
+             ORDER BY started_at_ms
+            """
+        ).fetchall()
+        assert fetches == [
+            {"started_at_ms": NOW_MS, "finished_at_ms": NOW_MS},
+            {
+                "started_at_ms": NOW_MS + 120_000,
+                "finished_at_ms": NOW_MS + 120_000,
+            },
+        ]
+    finally:
+        conn.close()
+
+
 def test_rss_to_postgres_to_story_to_brief_and_interface(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:

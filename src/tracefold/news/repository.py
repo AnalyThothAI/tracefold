@@ -178,9 +178,11 @@ class NewsRepository:
             """,
             (now_ms, limit),
         ).fetchall()
+        claimed: list[dict[str, Any]] = []
         for row in rows:
             failures = int(row["consecutive_failures"])
             backoff_ms = min(3_600_000, int(row["refresh_interval_seconds"]) * 1000 * (2**failures))
+            next_fetch_at_ms = now_ms + backoff_ms
             self.conn.execute(
                 """
                 UPDATE news_sources
@@ -189,9 +191,14 @@ class NewsRepository:
                        updated_at_ms = %s
                  WHERE source_id = %s
                 """,
-                (now_ms, now_ms + backoff_ms, now_ms, row["source_id"]),
+                (now_ms, next_fetch_at_ms, now_ms, row["source_id"]),
             )
-        return [dict(row) for row in rows]
+            claimed_row = dict(row)
+            claimed_row["last_fetch_started_at_ms"] = now_ms
+            claimed_row["next_fetch_at_ms"] = next_fetch_at_ms
+            claimed_row["updated_at_ms"] = now_ms
+            claimed.append(claimed_row)
+        return claimed
 
     def record_fetch_success(
         self,
