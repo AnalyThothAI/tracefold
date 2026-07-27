@@ -160,6 +160,13 @@ critical, and rectification SLO thresholds even though a mature unactivated
 Proposal already raises the stricter `planner_active_mismatch`. Every health
 reason returns its measured lag/value and threshold.
 
+Material closure treats a FeedObservation as closed when it either introduced
+an ArticleRevision directly or exactly matches an existing Revision of the
+same publisher artifact. Repeated acquisition evidence is therefore retained
+without being misreported as a missing material revision. Primary membership
+is counted once per Article even when that Article has multiple revisions, and
+equal-millisecond MaterialEvents use the projector's revision order.
+
 #### News Identity v2 hard-cut runbook
 
 Migration `20260727_0199` preserves Source Registry, FetchReceipt,
