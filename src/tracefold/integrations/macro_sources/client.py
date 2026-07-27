@@ -12,6 +12,7 @@ from typing import Any
 from xml.etree.ElementTree import Element
 
 import httpx
+import requests
 from defusedxml import ElementTree
 
 from tracefold.macro import (
@@ -44,12 +45,18 @@ class MacroSourceClient:
         nasdaq_public_enabled: bool = True,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        headers = {"User-Agent": user_agent, "Accept": "text/csv,application/json"}
         self._client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=True,
-            headers={"User-Agent": user_agent, "Accept": "text/csv,application/json"},
+            headers=headers,
             transport=transport,
         )
+        self._timeout_seconds = float(timeout_seconds)
+        self._fred_session: requests.Session | None = None
+        if transport is None:
+            self._fred_session = requests.Session()
+            self._fred_session.headers.update(headers)
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
@@ -57,6 +64,8 @@ class MacroSourceClient:
 
     def close(self) -> None:
         self._client.close()
+        if self._fred_session is not None:
+            self._fred_session.close()
 
     def fetch(
         self,
@@ -109,7 +118,18 @@ class MacroSourceClient:
             params["cosd"] = str(cursor_date if start_date else cursor_date - timedelta(days=7))
         if end_date is not None:
             params["coed"] = str(end_date)
-        response = self._client.get("https://fred.stlouisfed.org/graph/fredgraph.csv", params=params)
+        response: httpx.Response | requests.Response
+        if self._fred_session is None:
+            response = self._client.get(
+                "https://fred.stlouisfed.org/graph/fredgraph.csv",
+                params=params,
+            )
+        else:
+            response = self._fred_session.get(
+                "https://fred.stlouisfed.org/graph/fredgraph.csv",
+                params=params,
+                timeout=self._timeout_seconds,
+            )
         _require_success(response, source_id=spec.source_id)
         rows = list(csv.DictReader(io.StringIO(response.text)))
         facts: list[SeriesFact] = []
@@ -610,10 +630,11 @@ def _batch(
         | ReleaseFact
         | DocumentFact
         | MarketObservationFact
+        | MarketPositionFact
         | MarketSettlementFact,
         ...,
     ],
-    response: httpx.Response,
+    response: httpx.Response | requests.Response,
     *,
     cursor: dict[str, Any],
 ) -> FetchBatch:
@@ -641,10 +662,14 @@ def _series_cursor(
     }
 
 
-def _require_success(response: httpx.Response, *, source_id: str) -> None:
+def _require_success(
+    response: httpx.Response | requests.Response,
+    *,
+    source_id: str,
+) -> None:
     try:
         response.raise_for_status()
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, requests.RequestException) as exc:
         raise MacroSourceError(f"{source_id}_http_error:{response.status_code}") from exc
 
 
