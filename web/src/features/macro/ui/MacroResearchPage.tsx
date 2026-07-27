@@ -183,6 +183,14 @@ function ResearchDocument({
             <dt>文档版本</dt>
             <dd>{publication.schema_version}</dd>
           </div>
+          <div>
+            <dt>Evidence Pack</dt>
+            <dd>{publication.evidence_pack_id}</dd>
+          </div>
+          <div>
+            <dt>Reviewer</dt>
+            <dd>{publication.reviewer_disposition}</dd>
+          </div>
         </dl>
       </header>
 

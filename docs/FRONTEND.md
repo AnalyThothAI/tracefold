@@ -109,27 +109,28 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   from every member Article, provenance, and deterministic membership audit.
   On both News routes, topbar search remains route-local and must not call
   `/api/search/inspect` or reuse token resolver state.
-- **Macro routes.** `/macro` is the six-category live-fact dashboard;
-  `/macro/overview`, `/macro/rates-inflation`, `/macro/growth-labor`,
-  `/macro/liquidity-funding`, `/macro/credit`, and `/macro/cross-asset` are
-  complete data detail pages backed by `/api/macro/evidence/{view_id}`.
-  `window=30d|90d|1y|5y` is URL-owned and survives refresh and sharing.
+- **Macro routes.** `/macro` and `/macro/overview` are the daily decision
+  overview. `/macro/rates-fed`, `/macro/economy-inflation`,
+  `/macro/liquidity-funding`, `/macro/credit`, `/macro/volatility`, and
+  `/macro/cross-asset` are the six typed decision modules backed by matching
+  `/api/macro/*` routes. They do not accept a generic window parameter.
   `/macro/research` is the separate completed-session research workbench backed
   by `/api/macro/research`; its optional `session_date=YYYY-MM-DD` likewise
   survives hard reload and sharing.
 
-  Live pages render only descriptive facts, row-local missing states,
-  source-native history, source/observation time, received time, current
-  content age, HTTP read health, last successful read, and disclosed formulas.
-  The six-category/108-concept catalog is presentation metadata. It does not
-  hide uncatalogued facts, constrain DeepAgents, or recreate direction,
-  confidence, risk, sufficiency, readiness, or gate labels. Detail pages show a
-  link to research, never Agent prose.
+  The overview leads with the 08:50 New York judgment: six macro dimensions,
+  dominant pressures, top three changes, fixed asset directions, conflicts,
+  invalidations, confidence, gaps, citations, next checkpoints, and research
+  state. Each module answers current state, what changed, why it matters,
+  contradictions, falsifiers, next checkpoints, charts, formulas, exact
+  dataset quality, and raw fact lineage. `ready`, `degraded`, and `blocked`
+  describe decision evidence and are never inferred in the browser.
 
   The research page is a Chinese workbench, not a frontend-authored decision
   model. It renders the publication title, executive summary, Agent-ordered
-  sections, evidence gaps, citations, reviewer notes, audit metadata, session,
-  and market cutoff exactly from the API. The browser does not prescribe
+  sections, Evidence Pack ID, evidence gaps, citations, reviewer disposition
+  and notes, audit metadata, session, and market cutoff exactly from the API.
+  The browser does not prescribe
   sections, classify evidence sufficiency, infer direction/confidence, score
   assets, or recompute conclusions.
 
@@ -213,7 +214,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the
-   title, summary, Agent-ordered sections, gaps, citations, session metadata,
-   and run state readable without horizontal overflow; the audit disclosure is
-   keyboard reachable, and the selected historical session survives reload.
+9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the daily
+   judgment, six module cards, readiness/gaps, changes, asset directions, and
+   research state readable without horizontal overflow. Verify each module
+   keeps charts, formulas, falsifiers, checkpoints, and source clocks readable.
+   On `/macro/research`, the audit disclosure is keyboard reachable and the
+   selected historical session survives reload.

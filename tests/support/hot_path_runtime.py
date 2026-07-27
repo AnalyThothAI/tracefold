@@ -30,7 +30,7 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
                 "dex_ws_url": "",
             },
             "binance": {"enabled": False},
-            "macrodata": {"enabled": False},
+            "macro_sources": {"enabled": False},
         },
         notifications={
             "enabled": True,

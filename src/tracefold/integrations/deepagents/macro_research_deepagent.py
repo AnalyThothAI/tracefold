@@ -22,8 +22,8 @@ from tracefold.macro import (
     MACRO_RESEARCH_MAX_PRIOR_PUBLICATIONS_PER_PAGE,
     MACRO_RESEARCH_MAX_READ_REFS,
     FrozenMacroEvidenceScope,
+    MacroEvidenceQuery,
     MacroEvidenceRecord,
-    MacroObservationQuery,
     MacroResearchAgentResult,
     MacroResearchArtifactDraft,
     MacroResearchAudit,
@@ -36,11 +36,11 @@ from tracefold.macro import (
     require_prior_research_in_scope,
 )
 
-MACRO_RESEARCH_PROMPT_VERSION = "macro_research_parent_v4"
-MACRO_RESEARCH_WORKFLOW_VERSION = "deepagents_macro_research_v3"
+MACRO_RESEARCH_PROMPT_VERSION = "macro_research_parent_v5"
+MACRO_RESEARCH_WORKFLOW_VERSION = "deepagents_macro_research_v4_evidence_pack"
 MACRO_RESEARCH_TOOL_NAMES = (
     "inspect_macro_evidence_catalog",
-    "search_macro_observations",
+    "search_macro_evidence",
     "read_macro_evidence",
     "read_prior_macro_research",
 )
@@ -64,7 +64,9 @@ _PARENT_SYSTEM_PROMPT = """你是 Tracefold 的宏观研究主 Agent。你的工
 历史研究只提供上下文，不可替代 material fact 引用。
 
 最终 MacroResearchArtifact 的 section、gap、标题和论证结构由你决定；不要套用固定六页、八类 risk lane、
-固定方向、readiness 或 no_call 模板。正文、摘要、section 与 reviewer notes 应使用自然、完整的中文，
+固定方向、readiness 或 no_call 模板。定稿前必须委派 skeptical-editor 审阅，并根据意见修订；
+只有完成修订且事实与引用闭合时 reviewer_disposition 才能为 pass，否则必须为 revise 或 block。
+正文、摘要、section 与 reviewer notes 应使用自然、完整的中文，
 但应用代码不会通过关键词或语言比例替你做语义判断。引用 citation_id 必须在 citations 中定义，
 每个 citations[] 只提交 citation_id 与 source_ref；source_ref 必须逐字复制自证据工具返回值。
 source type、label、时间、URL 与 lineage 由应用层从已披露记录机械补齐，不得自行填写。
@@ -92,7 +94,7 @@ _SPECIALISTS = (
         "description": "审阅草稿的事实闭合、因果跳跃、遗漏反证和中文表达，并提出可执行修订。",
         "system_prompt": (
             "你是怀疑主义宏观编辑。审查父 Agent 提供的草稿与任务上下文，按需复查冻结证据，"
-            "指出事实错配、未知引用、因果跳跃、遗漏反证和表达问题。你只给审阅意见，不设 pass/block 门槛。"
+            "指出事实错配、未知引用、因果跳跃、遗漏反证和表达问题，并明确建议 pass、revise 或 block。"
         ),
     },
 )
@@ -170,7 +172,8 @@ class MacroResearchDeepAgent:
                         "content": (
                             f"自主研究 completed session={scope.session_date.isoformat()}，"
                             f"market_cutoff_ms={scope.market_cutoff_ms}，"
-                            f"sealed_at_ms={scope.sealed_at_ms}，scope_id={scope.scope_id}。"
+                            f"sealed_at_ms={scope.sealed_at_ms}，"
+                            f"evidence_pack_id={scope.evidence_pack_id}，scope_id={scope.scope_id}。"
                             "请先规划，再按需检索、委派、寻找反证和审阅，最终返回结构化研究 artifact。"
                         ),
                     }
@@ -249,8 +252,8 @@ class _EvidenceToolSession:
                 }
             )
 
-        @tool("search_macro_observations")
-        def search_macro_observations(
+        @tool("search_macro_evidence")
+        def search_macro_evidence(
             query: str = "",
             concept_keys: list[str] | None = None,
             start_date: str | None = None,
@@ -258,10 +261,10 @@ class _EvidenceToolSession:
             limit: int = 20,
             offset: int = 0,
         ) -> str:
-            """Search frozen observations; use next_offset to continue a broad query."""
+            """Search the frozen Evidence Pack; use next_offset to continue a broad query."""
 
-            record_call("search_macro_observations")
-            resolved_query = MacroObservationQuery(
+            record_call("search_macro_evidence")
+            resolved_query = MacroEvidenceQuery(
                 query=query,
                 concept_keys=tuple(concept_keys or ()),
                 start_date=_optional_date(start_date),
@@ -272,7 +275,7 @@ class _EvidenceToolSession:
             records = require_evidence_in_scope(
                 scope,
                 tuple(
-                    reader.search_observations(
+                    reader.search_evidence(
                         scope=scope,
                         query=resolved_query,
                     )
@@ -346,7 +349,7 @@ class _EvidenceToolSession:
 
         return (
             inspect_macro_evidence_catalog,
-            search_macro_observations,
+            search_macro_evidence,
             read_macro_evidence,
             read_prior_macro_research,
         )

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 import secrets
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from tracefold.platform.paths import app_home, app_log_path, config_path, workers_config_path
 
@@ -388,28 +387,16 @@ class BinanceProviderConfig(BaseModel):
         return str(value or "").strip().upper()
 
 
-class MacrodataProviderConfig(BaseModel):
+class MacroSourcesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    fred_api_key_env: str | None = "FINANCE_FRED_API_KEY"
-    fred_api_key: SecretStr | None = None
-
-    @field_validator("fred_api_key_env", mode="before")
-    @classmethod
-    def parse_optional_string(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("fred_api_key", mode="before")
-    @classmethod
-    def parse_optional_secret(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
+    fred_enabled: bool = True
+    cboe_enabled: bool = True
+    cftc_enabled: bool = True
+    nasdaq_public_enabled: bool = True
+    request_timeout_seconds: float = Field(default=60.0, ge=1)
+    user_agent: str = "TracefoldMacro/1.0 research@localhost"
 
 
 class ProvidersConfig(BaseModel):
@@ -417,7 +404,7 @@ class ProvidersConfig(BaseModel):
 
     okx: OkxProviderConfig = Field(default_factory=OkxProviderConfig)
     binance: BinanceProviderConfig = Field(default_factory=BinanceProviderConfig)
-    macrodata: MacrodataProviderConfig = Field(default_factory=MacrodataProviderConfig)
+    macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
 class NewsSourceSettings(BaseModel):
@@ -654,36 +641,23 @@ class MacroResearchWorkerSettings(PerWorkerSettings):
         return normalized
 
 
-class MacroSyncWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=900.0, ge=0)
-    batch_size: int = Field(default=3, ge=1)
+class MacroAcquisitionWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=300.0, ge=0)
+    batch_size: int = Field(default=2, ge=1)
     statement_timeout_seconds: float = Field(default=30.0, ge=0)
-    bundle_names: tuple[str, ...] = (
-        "macro-core",
-        "macro-calendar-core",
-        "treasury-auction-core",
-        "fed-text-core",
-        "crypto-derivatives-core",
-    )
-    source_name: str = "macrodata-cli"
-    bootstrap_lookback_days: int = Field(default=1095, ge=1)
-    max_window_days: int = Field(default=31, ge=1)
-    steady_overlap_days: int = Field(default=7, ge=1)
-    max_bootstrap_windows_per_cycle: int = Field(default=1, ge=1)
     lease_ms: int = Field(default=300_000, ge=1)
-    retry_delay_ms: int = Field(default=900_000, ge=1)
-    max_attempts: int = Field(default=8, ge=1)
-    macrodata_timeout_seconds: float = Field(default=240.0, ge=1)
+    retry_ms: int = Field(default=900_000, ge=1)
+    max_attempts: int = Field(default=5, ge=1)
 
-    @field_validator("bundle_names", mode="before")
-    @classmethod
-    def parse_bundle_names(cls, value: Any) -> tuple[str, ...]:
-        parsed = tuple(_split_values(value))
-        if not parsed:
-            raise ValueError("macro_sync.bundle_names must not be empty")
-        if len(set(parsed)) != len(parsed):
-            raise ValueError("macro_sync.bundle_names must be unique")
-        return parsed
+
+class MacroProjectionWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=300.0, ge=0)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+
+
+class MacroJudgmentWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=300.0, ge=0)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
 
 class NotificationRuleWorkerSettings(PerWorkerSettings):
@@ -757,7 +731,26 @@ class WorkersSettings(BaseModel):
     token_radar_projection: TokenRadarProjectionWorkerSettings = Field(
         default_factory=TokenRadarProjectionWorkerSettings
     )
-    macro_sync: MacroSyncWorkerSettings = Field(default_factory=MacroSyncWorkerSettings)
+    macro_market_intraday: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=4)
+    )
+    macro_settlements: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=2)
+    )
+    macro_economic_releases: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=4)
+    )
+    macro_official_state: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=10_800.0, batch_size=4)
+    )
+    macro_official_documents: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=2)
+    )
+    macro_backfill: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(enabled=False, interval_seconds=5.0, batch_size=1)
+    )
+    macro_projection: MacroProjectionWorkerSettings = Field(default_factory=MacroProjectionWorkerSettings)
+    macro_judgment: MacroJudgmentWorkerSettings = Field(default_factory=MacroJudgmentWorkerSettings)
     macro_research: MacroResearchWorkerSettings = Field(default_factory=MacroResearchWorkerSettings)
     notification_rule: NotificationRuleWorkerSettings = Field(default_factory=NotificationRuleWorkerSettings)
     notification_delivery: NotificationDeliveryWorkerSettings = Field(
@@ -823,23 +816,6 @@ class Settings(BaseModel):
             and self.providers.okx.dex_secret_key
             and self.providers.okx.dex_passphrase
         )
-
-    @property
-    def macrodata_fred_api_key(self) -> str | None:
-        secret = self.providers.macrodata.fred_api_key
-        if secret is None:
-            return None
-        value = secret.get_secret_value().strip()
-        return value or None
-
-    @property
-    def macrodata_fred_api_key_configured(self) -> bool:
-        if self.macrodata_fred_api_key:
-            return True
-        env_name = self.providers.macrodata.fred_api_key_env
-        if not env_name:
-            return False
-        return bool(os.environ.get(env_name, "").strip())
 
     @field_validator("handles", mode="before")
     @classmethod
@@ -953,10 +929,14 @@ providers:
     cex_universe_quote_symbol: "USDT"
     cex_universe_contract_type: "PERPETUAL"
     timeout_seconds: 15
-  macrodata:
+  macro_sources:
     enabled: true
-    fred_api_key_env: "FINANCE_FRED_API_KEY"
-    fred_api_key:
+    fred_enabled: true
+    cboe_enabled: true
+    cftc_enabled: true
+    nasdaq_public_enabled: true
+    request_timeout_seconds: 60
+    user_agent: "TracefoldMacro/1.0 research@localhost"
 
 {_default_news_yaml()}
 

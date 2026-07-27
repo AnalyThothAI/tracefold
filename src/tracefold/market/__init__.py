@@ -68,6 +68,14 @@ from .identity.token_intent_repository import TokenIntentRepository
 from .identity.token_intent_resolver import TokenIntentResolutionDecision, TokenIntentResolver
 from .identity.token_resolution_refresh import TOKEN_REPROCESS_WINDOW, reprocess_recent_token_intents
 from .identity.us_equity_symbol_sync import NasdaqTraderSymbolClient, sync_us_equity_symbols
+from .macro_market_domain import (
+    GeneralMarketInstrumentSpec,
+    MarketObservationFact,
+    MarketPositionFact,
+    MarketSettlementFact,
+    MarketTrustTier,
+)
+from .macro_market_repository import GeneralMarketRepository
 from .pricing.enriched_event_repository import EnrichedEventRepository
 from .pricing.event_anchor_backfill_job_repository import EventAnchorBackfillJobRepository
 from .pricing.event_anchor_backfill_worker import EventAnchorBackfillWorker
@@ -227,6 +235,8 @@ __all__ = [
     "EventTokenProjectionQuery",
     "EvidenceRepository",
     "ExtractedEntity",
+    "GeneralMarketInstrumentSpec",
+    "GeneralMarketRepository",
     "IdentityEvidenceRepository",
     "IngestService",
     "IngestStoreProtocol",
@@ -234,11 +244,15 @@ __all__ = [
     "IntentResolutionRepository",
     "MarketCandlesService",
     "MarketCapability",
+    "MarketObservationFact",
+    "MarketPositionFact",
+    "MarketSettlementFact",
     "MarketTick",
     "MarketTickCurrentRepository",
     "MarketTickPersistenceService",
     "MarketTickRepository",
     "MarketTickSourceProvider",
+    "MarketTrustTier",
     "Media",
     "MentionKeys",
     "NasdaqTraderSymbolClient",

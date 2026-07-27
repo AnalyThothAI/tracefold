@@ -48,10 +48,11 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
             for path in (
                 "/macro/research",
                 "/macro/cross-asset",
-                "/macro/rates-inflation",
-                "/macro/growth-labor",
+                "/macro/rates-fed",
+                "/macro/economy-inflation",
                 "/macro/liquidity-funding",
                 "/macro/credit",
+                "/macro/volatility",
                 "/macro/overview",
             )
         ]
@@ -109,10 +110,11 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path):
             for path in (
                 "/macro/research",
                 "/macro/cross-asset",
-                "/macro/rates-inflation",
-                "/macro/growth-labor",
+                "/macro/rates-fed",
+                "/macro/economy-inflation",
                 "/macro/liquidity-funding",
                 "/macro/credit",
+                "/macro/volatility",
                 "/macro/overview",
             )
         ]

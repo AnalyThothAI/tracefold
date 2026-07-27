@@ -14,7 +14,7 @@ positional arguments:
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
-    macro               Macro Intelligence commands
+    macro               daily Macro decision-system commands
     recent              print recent stored events
     search              search stored tweets by query text
     asset-flow          rank resolved assets and unresolved attention

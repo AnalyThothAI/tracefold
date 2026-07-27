@@ -85,52 +85,55 @@ Macro live-data debugging starts the same way: first run
 booleans, and diagnostic command status; do not paste WebSocket tokens, API
 keys, provider passwords, or full config payloads into docs or chat.
 
-Macro freshness is normally owned by the `macro_sync` worker. Docker/runtime
-always invokes the installed `macrodata` package entrypoint with the current
-Python interpreter. It does not probe `PATH`, inspect console-script shebangs,
-run `uv run macrodata`, or depend on a host-local macrodata checkout.
-The worker reads the formal `workers.macro_sync.bundle_names` list; the default
-set is `macro-core`, `macro-calendar-core`, `treasury-auction-core`, and
-`fed-text-core`.
-Provide a FRED API key either as `providers.macrodata.fred_api_key` in the
-operator-owned `~/.tracefold/config.yaml`, or through the environment /
-deployment secret manager named by `providers.macrodata.fred_api_key_env`
-(default `FINANCE_FRED_API_KEY`). `uv run tracefold config` and macro sync
-diagnostics report only whether a key is configured, never the key value. Tune
-`workers.macro_sync.macrodata_timeout_seconds` to bound the provider subprocess;
-a stuck macrodata child process is killed at that boundary and recorded as a
-source-health failure.
+Macro acquisition uses free, keyless sources first: FRED public CSV and BLS
+Public Data API for official series/releases, Federal Reserve RSS for official
+policy documents, CFTC TFF Futures Only for rates/credit/cross-asset positioning,
+Cboe CFE settlement files for VIX futures, Binance public spot klines for BTC,
+and explicitly labelled Nasdaq public previous-close history for the remaining
+cross-asset prices.
+`providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
+and Nasdaq public history independently and owns only request timeout/user-agent transport
+settings. It does not own dataset membership, formulas, freshness, or
+scheduling. Licensed CME rates futures prices/curves remain an explicit
+`unavailable` dataset until an authorized provider is configured; the service
+never fills that gap with a fake proxy.
 
-For an operator-triggered repair of one bounded window, use the same sync
-service as the worker:
+Five automatic acquisition workers own distinct clocks:
+`macro_market_intraday`, `macro_settlements`, `macro_economic_releases`,
+`macro_official_state`, and `macro_official_documents`. `macro_backfill` is
+disabled by default and processes only operator-created bounded targets.
+`macro_projection` rebuilds six stable current rows from persisted facts;
+`macro_judgment` seals the 08:50 New York Evidence Pack and daily decision.
+
+For an operator-triggered repair of one bounded dataset window:
 
 ```bash
-uv run tracefold macro sync --bundle macro-core --start YYYY-MM-DD --end YYYY-MM-DD
+uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YYYY-MM-DD
 uv run tracefold macro status
 ```
 
-A good macro status has a recent `latest_sync_run`,
-`facts_max_observed_at` near the expected upstream date, no expired running
-sync window, and a bounded due/retry backlog. The `macrodata_cli` block must
-show the expected package version and
-`required_bundle_series_available=true`; otherwise the runtime is using an old
-packaged `macrodata-cli` bundle and sync cannot import all required source
-series. The installed macrodata runtime must also expose history commands for
-the configured event bundles before the default worker cadence can refresh
-official-event evidence. FRED public CSV timeouts or a missing optional FRED
-API key are source-health gaps; they are not frontend defects.
+A good macro status reports Alembic `20260727_0201`, bounded acquisition target
+states, recent source receipts, all six module rows, and the latest daily
+judgment/research states. Diagnose a missing value by dataset ID through its
+target, last receipt, fact family, and module gap. A public-source timeout,
+weekend settlement lag, unavailable licensed CME dataset, or delayed Nasdaq
+public history is a visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
-`macro_research_runs`, immutable `macro_research_publications`, and the
-LangGraph PostgreSQL checkpoint tables. Runtime startup does not create or
-upgrade those tables. Enable `workers.macro_research` only after the migration
-is current. A healthy completed-session run transitions
+typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
+immutable Evidence Packs and daily judgments, `macro_research_runs`, immutable
+`macro_research_publications`, and the LangGraph PostgreSQL checkpoint tables.
+Migration `20260727_0200` irreversibly drops legacy Macro tables and data
+without migration or backup. Runtime startup does not create or upgrade those
+tables. Migration `20260727_0201` removes the unusable Stooq lane and invalidates
+all derived Macro state before the Nasdaq/Cboe source correction rebuild.
+Enable the Macro workers only after the migration is current.
+
+A healthy completed-session research run transitions
 `pending -> running -> published`; transient model/tool failures transition to
-`retryable`, and exhausted attempts to `failed`. The authenticated
-`GET /api/macro/evidence/{view_id}` live read queries bounded persisted
-`macro_observations`; `/macro` and its six detail routes never trigger a
-provider, model, or write. `GET /api/macro/research` and `/macro/research`
-remain persisted-only and never trigger the model.
+`retryable`, and exhausted attempts to `failed`. The overview, six typed module
+reads, and `/api/macro/research` are persisted-only and never trigger a
+provider, model, target advance, projection rebuild, or write.
 
 The enabled worker creates per-scope native DeepAgents calculation directories
 under `~/.tracefold/macro-agent-workspaces/`. Docker Compose already mounts the

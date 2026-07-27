@@ -27,9 +27,21 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
         session_date = date(2026, 7, 23)
         with repository_session_for_connection(conn) as repos:
             with repos.transaction():
+                repos.macro.insert_evidence_pack(
+                    evidence_pack_id="mep_integration",
+                    session_date=session_date,
+                    judgment_cutoff_ms=100,
+                    latest_fact_at_ms=100,
+                    schema_version="macro_evidence_pack_v1",
+                    compiler_version="integration-test",
+                    payload={"schema_version": "macro_evidence_pack_v1", "modules": {}},
+                    payload_hash="sha256:evidence-pack",
+                    created_at_ms=100,
+                )
                 inserted = repos.macro_research.ensure_run(
                     session_date=session_date,
                     market_cutoff_ms=100,
+                    evidence_pack_id="mep_integration",
                     sealed_at_ms=110,
                     max_attempts=3,
                     due_at_ms=110,
@@ -59,9 +71,10 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
                     session_date=session_date,
                     lease_owner="integration-test",
                     artifact={
-                        "schema_version": "macro_research_artifact_v2",
+                        "schema_version": "macro_research_artifact_v3",
                         "session_date": "2026-07-23",
                         "market_cutoff_ms": 100,
+                        "evidence_pack_id": "mep_integration",
                         "title": "宏观研究",
                         "executive_summary": "证据仍有分歧。",
                         "sections": [
@@ -72,8 +85,9 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
                                 "citation_ids": [],
                             }
                         ],
-                        "gaps": [],
+                        "evidence_gaps": [],
                         "citations": [],
+                        "reviewer_disposition": "pass",
                         "reviewer_notes": [],
                     },
                     report_markdown="# 宏观研究",
@@ -88,7 +102,7 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
                 replay_published = repos.macro_research.publish(
                     session_date=session_date,
                     lease_owner="integration-test",
-                    artifact={"title": "must-not-write"},
+                    artifact={"title": "must-not-write", "reviewer_disposition": "pass"},
                     report_markdown="# must not write",
                     audit={},
                     model_name="fake-model",
@@ -124,7 +138,7 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
     finally:
         conn.close()
 
-    assert inserted is True
+    assert inserted == 1
     assert claimed is not None
     assert stale_owner_renewed is False
     assert owner_renewed is True
@@ -133,6 +147,8 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
     assert publication_count == 1
     assert state is not None
     assert state["run_status"] == "published"
+    assert state["evidence_pack_id"] == "mep_integration"
+    assert state["reviewer_disposition"] == "pass"
     assert state["artifact_hash"] == "sha256:artifact"
     assert immutable is True
     assert checkpoint_roundtrip is True

@@ -36,20 +36,21 @@ challenger, and skeptical editor as its research requires; Tracefold does not
 force a fixed tool or review sequence.
 
 Every evidence tool is bound to one frozen completed-session scope. It may read
-only eligible persisted `macro_observations` and prior immutable Macro
-publications. Macro Research has no live or hidden News dependency. Tracefold
-does not add tool exclusions, permissions, approval middleware, or a semantic
-safety layer. A native composite backend provides `execute` and a shared
+only the immutable Evidence Pack selected by `evidence_pack_id` and prior
+immutable Macro publications. The pack itself was compiled from cutoff-bounded
+persisted Market/Macro facts. Macro Research has no live or hidden News
+dependency. A native composite backend provides `execute` and a shared
 `/workspace/` for calculation while keeping ordinary files and large results
 in checkpoint state. Direct provider, live web, arbitrary SQL, and the News
 Story Interface are not alternative Macro fact sources. Planning, evidence
 sufficiency, gaps, professional judgment, section structure, counterevidence,
-review, and Chinese expression remain Agent-owned.
+and Chinese expression remain Agent-owned; the explicit reviewer may return
+`pass`, `revise`, or `block`.
 
-The separate live evidence pages are read-only views over persisted
-`macro_observations`. Their six-category catalog affects presentation only and
-cannot restrict Agent tools or define evidence sufficiency. They expose no
-credentials and make no provider/model call.
+The overview and six decision-module pages are read-only views over persisted
+module, judgment, and research state. Dataset quality and module readiness are
+transparent decision metadata, not permission middleware or a process health
+gate. They expose no credentials and make no provider/model call.
 
 The graph uses the frozen scope ID as its durable PostgreSQL checkpoint
 `thread_id`. Checkpoints may contain model messages, todo state, and virtual

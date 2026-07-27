@@ -136,13 +136,16 @@ class MacroResearchPublicationData(ExactApiSchema):
     sections: list[MacroResearchSectionData]
     evidence_gaps: list[MacroResearchEvidenceGapData]
     citations: list[MacroResearchCitationData]
+    reviewer_disposition: Literal["pass", "revise", "block"]
     reviewer_notes: list[str]
     audit: JsonObject
     published_at_ms: int | None = None
+    evidence_pack_id: str
 
 
 class MacroResearchRunData(ExactApiSchema):
     session_date: date
+    evidence_pack_id: str
     status: str
     attempt_count: int
     max_attempts: int
@@ -158,108 +161,53 @@ class MacroResearchReadData(ExactApiSchema):
     run: MacroResearchRunData | None
 
 
-class MacroLiveCalculationData(ExactApiSchema):
-    formula_id: str
-    formula: str
-    operands: list[str]
-    window: Literal["30d", "90d", "1y", "5y"]
-    sample_size: int
-    result: float | None
-    unit: str
-
-
-class MacroLiveHistoryPointData(ExactApiSchema):
-    observed_at: date
-    value_numeric: float | None
-    source_timestamp: str | None
-    received_at_ms: int | None
-    source_name: str | None
-    series_key: str | None
-    source_priority: int | None
-    frequency: str | None
-    data_quality: str | None
-    source_url: str | None
-
-
-class MacroLiveMetricData(ExactApiSchema):
-    concept_key: str
-    page_id: (
-        Literal[
-            "overview",
-            "rates-inflation",
-            "growth-labor",
-            "liquidity-funding",
-            "credit",
-            "cross-asset",
-        ]
-        | None
-    )
-    section_id: str
-    section_label: str
-    display_label: str
-    display_order: int
-    summary: bool
-    kind: Literal["material", "derived"]
-    availability: Literal["available", "missing"]
-    value_numeric: float | None
-    unit: str | None
-    frequency: str | None
-    observed_at: date | None
-    source_timestamp: str | None
-    received_at_ms: int | None
-    source_name: str | None
-    series_key: str | None
-    source_priority: int | None
-    data_quality: str | None
-    source_url: str | None
-    history: list[MacroLiveHistoryPointData]
-    calculation: MacroLiveCalculationData | None
-
-
-class MacroLiveViewData(ExactApiSchema):
-    view_id: Literal[
-        "overview",
-        "rates-inflation",
-        "growth-labor",
-        "liquidity-funding",
+class MacroModuleReadData(ExactApiSchema):
+    schema_version: Literal["macro_module_v1"]
+    module_id: Literal[
+        "rates_fed",
+        "economy_inflation",
+        "liquidity_funding",
         "credit",
-        "cross-asset",
+        "volatility",
+        "cross_asset",
     ]
-    title: str
-    description: str
-    metrics: list[MacroLiveMetricData]
-    total_metric_count: int
-    available_count: int
-    latest_observed_at: date | None
-    max_received_at_ms: int | None
+    label: str
+    readiness: Literal["ready", "degraded", "blocked"]
+    judgment_cutoff_ms: int | None
+    latest_fact_at_ms: int
+    current_state: JsonObject
+    top_changes: list[JsonObject]
+    features: list[JsonObject]
+    charts: list[JsonObject]
+    contradictions: list[str]
+    falsifiers: list[str]
+    next_checkpoints: list[JsonObject]
+    gaps: list[JsonObject]
+    dataset_states: list[JsonObject]
+    raw_evidence: list[JsonObject]
 
 
-class MacroLiveResearchLinkData(ExactApiSchema):
-    state: Literal["current", "generating", "failed", "missing"]
-    session_date: date
-    market_cutoff_ms: int | None
-    title: str | None
-    executive_summary: str | None
-    evidence_gap_summaries: list[str]
-    href: Literal["/macro/research"]
+class MacroModuleSummaryData(ExactApiSchema):
+    module_id: str
+    label: str
+    readiness: Literal["ready", "degraded", "blocked", "missing"]
+    latest_fact_at_ms: int
+    current_state: JsonObject | None
+    top_changes: list[JsonObject]
+    gap_count: int
+    href: str
 
 
-class MacroLiveEvidenceReadData(ExactApiSchema):
-    schema_version: Literal["macro_live_evidence_v1"]
-    view_id: Literal[
-        "dashboard",
-        "overview",
-        "rates-inflation",
-        "growth-labor",
-        "liquidity-funding",
-        "credit",
-        "cross-asset",
-    ]
-    window: Literal["30d", "90d", "1y", "5y"]
+class MacroOverviewReadData(ExactApiSchema):
+    schema_version: Literal["macro_overview_v1"]
     read_at_ms: int
-    views: list[MacroLiveViewData]
-    unclassified: list[MacroLiveMetricData]
-    research: MacroLiveResearchLinkData | None
+    judgment_cutoff_ms: int | None
+    latest_fact_at_ms: int
+    overall_readiness: Literal["ready", "degraded", "blocked"]
+    daily_judgment: JsonObject | None
+    modules: list[MacroModuleSummaryData]
+    changes_since_judgment: list[JsonObject]
+    research: JsonObject
 
 
 class RecentData(ExactApiSchema):

@@ -21,7 +21,7 @@ const archetypes = [
 ] as const;
 
 const macroPages = [
-  ["live", "/macro?window=90d", "宏观实时数据"],
+  ["decision", "/macro", "每日宏观决策台"],
   ["research", "/macro/research", "宏观研究工作台"],
 ] as const;
 
@@ -54,7 +54,7 @@ test("freezes representative scan, case, and monitoring archetypes", async ({ pa
   await expectNoUnhandledApiRequests(page);
 });
 
-test("freezes the live Macro dashboard and completed-session research workbench", async ({
+test("freezes the Macro decision dashboard and completed-session research workbench", async ({
   page,
 }) => {
   for (const [name, path, title] of macroPages) {

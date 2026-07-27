@@ -1,3 +1,144 @@
+export type MacroModuleId =
+  | "rates_fed"
+  | "economy_inflation"
+  | "liquidity_funding"
+  | "credit"
+  | "volatility"
+  | "cross_asset";
+
+export type MacroReadiness = "ready" | "degraded" | "blocked";
+export type JsonObject = Record<string, unknown>;
+
+export type MacroChange = {
+  dataset_id: string;
+  label: string;
+  as_of: string;
+  value: number;
+  unit: string;
+  short_window: string;
+  short_change: number | null;
+  medium_window: string;
+  medium_change: number | null;
+  magnitude: number;
+  source_url: string;
+};
+
+export type MacroChartPoint = {
+  dataset_id: string;
+  label?: string;
+  x: string;
+  y: number;
+  unit: string;
+};
+
+export type MacroChart = {
+  chart_id: string;
+  title: string;
+  series: string[];
+  points: MacroChartPoint[];
+};
+
+export type MacroDatasetState = {
+  dataset_id: string;
+  label: string;
+  state: string;
+  reason: string;
+  critical: boolean;
+  trust_tier: "official" | "exchange" | "untrusted_proxy";
+  source_url: string;
+  latest_reference: string | null;
+  latest_received_at_ms: number | null;
+};
+
+export type MacroModuleReadData = {
+  schema_version: "macro_module_v1";
+  module_id: MacroModuleId;
+  label: string;
+  readiness: MacroReadiness;
+  judgment_cutoff_ms: number | null;
+  latest_fact_at_ms: number;
+  current_state: {
+    headline: string;
+    dominant_change: MacroChange | null;
+    feature_count: number;
+    interpretation: string;
+  };
+  top_changes: MacroChange[];
+  features: JsonObject[];
+  charts: MacroChart[];
+  contradictions: string[];
+  falsifiers: string[];
+  next_checkpoints: JsonObject[];
+  gaps: JsonObject[];
+  dataset_states: MacroDatasetState[];
+  raw_evidence: JsonObject[];
+};
+
+export type MacroModuleSummary = {
+  module_id: MacroModuleId;
+  label: string;
+  readiness: MacroReadiness | "missing";
+  latest_fact_at_ms: number;
+  current_state: JsonObject | null;
+  top_changes: MacroChange[];
+  gap_count: number;
+  href: string;
+};
+
+export type MacroDimension = {
+  state: string;
+  driver: string;
+};
+
+export type MacroAssetDirection = {
+  "1w": "up" | "down" | "range" | "no_call";
+  "1m": "up" | "down" | "range" | "no_call";
+  drivers: string[];
+  conflicts: string[];
+  invalidation: string;
+  confidence: "low" | "medium" | "high";
+  dataset_id: string;
+};
+
+export type MacroDailyJudgment = {
+  schema_version: "macro_daily_judgment_v1";
+  session_date: string;
+  judgment_cutoff_ms: number;
+  latest_fact_at_ms: number;
+  overall_state: string;
+  dominant_pressures: JsonObject[];
+  top_3_changes: JsonObject[];
+  dimensions: Record<string, MacroDimension>;
+  module_judgments: JsonObject[];
+  asset_directions: Record<string, MacroAssetDirection>;
+  contradictions: JsonObject[];
+  falsifiers: JsonObject[];
+  next_checkpoints: JsonObject[];
+  gaps: JsonObject[];
+  citations: JsonObject[];
+};
+
+export type MacroOverviewReadData = {
+  schema_version: "macro_overview_v1";
+  read_at_ms: number;
+  judgment_cutoff_ms: number | null;
+  latest_fact_at_ms: number;
+  overall_readiness: MacroReadiness;
+  daily_judgment: MacroDailyJudgment | null;
+  modules: MacroModuleSummary[];
+  changes_since_judgment: JsonObject[];
+  research: {
+    state: "current" | "generating" | "failed" | "missing";
+    session_date: string | null;
+    evidence_pack_id: string | null;
+    market_cutoff_ms: number | null;
+    title: string | null;
+    executive_summary: string | null;
+    reviewer_disposition: "pass" | "revise" | "block" | null;
+    href: "/macro/research";
+  };
+};
+
 export type MacroResearchSectionData = {
   section_id: string;
   title: string;
@@ -28,11 +169,13 @@ export type MacroResearchPublicationData = {
   schema_version: string;
   session_date: string;
   market_cutoff_ms: number;
+  evidence_pack_id: string;
   title: string;
   executive_summary: string;
   sections: MacroResearchSectionData[];
   evidence_gaps: MacroResearchEvidenceGapData[];
   citations: MacroResearchCitationData[];
+  reviewer_disposition: "pass" | "revise" | "block";
   reviewer_notes: string[];
   audit: Record<string, unknown>;
   published_at_ms: number | null;
@@ -40,6 +183,7 @@ export type MacroResearchPublicationData = {
 
 export type MacroResearchRunData = {
   session_date: string;
+  evidence_pack_id: string;
   status: string;
   attempt_count: number;
   max_attempts: number;
@@ -53,94 +197,4 @@ export type MacroResearchReadData = {
   current_session_date: string;
   publication: MacroResearchPublicationData | null;
   run: MacroResearchRunData | null;
-};
-
-export type MacroLiveViewId =
-  | "overview"
-  | "rates-inflation"
-  | "growth-labor"
-  | "liquidity-funding"
-  | "credit"
-  | "cross-asset";
-
-export type MacroLiveReadViewId = "dashboard" | MacroLiveViewId;
-export type MacroLiveWindow = "30d" | "90d" | "1y" | "5y";
-
-export type MacroLiveCalculationData = {
-  formula_id: string;
-  formula: string;
-  operands: string[];
-  window: MacroLiveWindow;
-  sample_size: number;
-  result: number | null;
-  unit: string;
-};
-
-export type MacroLiveHistoryPointData = {
-  observed_at: string;
-  value_numeric: number | null;
-  source_timestamp: string | null;
-  received_at_ms: number | null;
-  source_name: string | null;
-  series_key: string | null;
-  source_priority: number | null;
-  frequency: string | null;
-  data_quality: string | null;
-  source_url: string | null;
-};
-
-export type MacroLiveMetricData = {
-  concept_key: string;
-  page_id: MacroLiveViewId | null;
-  section_id: string;
-  section_label: string;
-  display_label: string;
-  display_order: number;
-  summary: boolean;
-  kind: "material" | "derived";
-  availability: "available" | "missing";
-  value_numeric: number | null;
-  unit: string | null;
-  frequency: string | null;
-  observed_at: string | null;
-  source_timestamp: string | null;
-  received_at_ms: number | null;
-  source_name: string | null;
-  series_key: string | null;
-  source_priority: number | null;
-  data_quality: string | null;
-  source_url: string | null;
-  history: MacroLiveHistoryPointData[];
-  calculation: MacroLiveCalculationData | null;
-};
-
-export type MacroLiveViewData = {
-  view_id: MacroLiveViewId;
-  title: string;
-  description: string;
-  metrics: MacroLiveMetricData[];
-  total_metric_count: number;
-  available_count: number;
-  latest_observed_at: string | null;
-  max_received_at_ms: number | null;
-};
-
-export type MacroLiveResearchLinkData = {
-  state: "current" | "generating" | "failed" | "missing";
-  session_date: string;
-  market_cutoff_ms: number | null;
-  title: string | null;
-  executive_summary: string | null;
-  evidence_gap_summaries: string[];
-  href: "/macro/research";
-};
-
-export type MacroLiveEvidenceReadData = {
-  schema_version: "macro_live_evidence_v1";
-  view_id: MacroLiveReadViewId;
-  window: MacroLiveWindow;
-  read_at_ms: number;
-  views: MacroLiveViewData[];
-  unclassified: MacroLiveMetricData[];
-  research: MacroLiveResearchLinkData | null;
 };

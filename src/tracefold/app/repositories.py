@@ -5,10 +5,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.macro import (
-    MacroIntelRepository,
-    MacroResearchRepository,
-)
+from tracefold.macro import MacroRepository, MacroResearchRepository
 from tracefold.market import (
     AssetProfileRefreshTargetRepository,
     AssetProfileRepository,
@@ -19,6 +16,7 @@ from tracefold.market import (
     EventAnchorBackfillJobRepository,
     EventTokenProjectionQuery,
     EvidenceRepository,
+    GeneralMarketRepository,
     IdentityEvidenceRepository,
     IntentResolutionRepository,
     MarketTickCurrentRepository,
@@ -82,7 +80,8 @@ class RepositorySession:
     notifications: NotificationRepository
     watchlist: WatchlistQuery
     news: NewsRepository
-    macro_intel: MacroIntelRepository
+    macro: MacroRepository
+    macro_market: GeneralMarketRepository
     macro_research: MacroResearchRepository
 
     def transaction(self) -> AbstractContextManager[None]:
@@ -134,7 +133,8 @@ def repositories_for_connection(
         ),
         watchlist=WatchlistQuery(conn),
         news=NewsRepository(conn),
-        macro_intel=MacroIntelRepository(conn),
+        macro=MacroRepository(conn),
+        macro_market=GeneralMarketRepository(conn),
         macro_research=MacroResearchRepository(conn),
     )
 

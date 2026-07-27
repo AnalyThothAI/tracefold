@@ -10,6 +10,7 @@ dependencies = [
     "apprise>=1.10.0",
     "curl-cffi>=0.15,<0.16",
     "deepagents==0.6.12",
+    "defusedxml>=0.7.1",
     "eth-hash[pycryptodome]>=0.8.0",
     "eth-utils>=5.0.0",
     "fastapi>=0.115.0",
@@ -19,7 +20,6 @@ dependencies = [
     "langgraph-checkpoint-postgres==3.1.0",
     "langchain-litellm==0.7.0",
     "loguru>=0.7.2",
-    "macrodata-cli",
     "prometheus-client>=0.22.0",
     "psycopg[binary,pool]>=3.2.0",
     "pydantic>=2.8.0",
@@ -37,6 +37,7 @@ dev = [
     "pre-commit>=3.7",
     "mypy==1.17.1",
     "testcontainers[postgres]>=4.8",
+    "types-defusedxml>=0.7.0",
 ]
 
 [project.scripts]
@@ -154,4 +155,3 @@ module = "jsonref"
 ignore_missing_imports = true
 
 [tool.uv.sources]
-macrodata-cli = { git = "https://github.com/AnalyThothAI/macrodata-cli.git", rev = "c7e0627580cbf770b091f1731236990c5d98e0c4" }

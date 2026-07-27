@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, cast
 
 from psycopg.types.json import Jsonb
@@ -11,123 +11,59 @@ from tracefold.macro.research.service import (
     MACRO_RESEARCH_MAX_READ_REFS,
     FrozenMacroEvidenceScope,
     MacroEvidenceCatalog,
+    MacroEvidenceQuery,
     MacroEvidenceRecord,
-    MacroObservationQuery,
     MacroPriorResearch,
     require_evidence_in_scope,
     require_prior_research_in_scope,
-    resolve_observation_visibility,
 )
 
 
 class MacroResearchRepository:
-    """PostgreSQL adapter for one immutable research publication per session."""
+    """Durable research lifecycle and frozen Evidence Pack read adapter."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
     def publication_exists(self, session_date: date) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 AS present FROM macro_research_publications WHERE session_date = %s",
-            (session_date,),
-        ).fetchone()
-        return row is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM macro_research_publications WHERE session_date = %s",
+                (session_date,),
+            ).fetchone()
+            is not None
+        )
 
-    def retry_failed_run(
-        self,
-        *,
-        session_date: date,
-        now_ms: int,
-    ) -> dict[str, Any]:
-        """Atomically grant at most one additional attempt to one failed run."""
+    def retry_failed_run(self, *, session_date: date, now_ms: int) -> dict[str, Any]:
         row = self.conn.execute(
             """
-            WITH target AS MATERIALIZED (
-              SELECT
-                runs.*,
-                EXISTS (
-                  SELECT 1
-                  FROM macro_research_publications AS publications
-                  WHERE publications.session_date = runs.session_date
-                ) AS publication_exists
-              FROM macro_research_runs AS runs
-              WHERE runs.session_date = %s
-              FOR UPDATE
-            ),
-            updated AS (
-              UPDATE macro_research_runs AS runs
-              SET status = 'retryable',
-                  max_attempts = GREATEST(runs.max_attempts, runs.attempt_count + 1),
-                  due_at_ms = %s,
-                  leased_until_ms = NULL,
-                  lease_owner = NULL,
-                  last_error_code = NULL,
-                  last_error_message = NULL,
-                  updated_at_ms = %s
-              FROM target
-              WHERE runs.session_date = target.session_date
-                AND target.status = 'failed'
-                AND NOT target.publication_exists
-              RETURNING
-                TRUE AS applied,
-                'retry_granted'::text AS reason,
-                runs.session_date,
-                target.status AS previous_status,
-                runs.status,
-                runs.attempt_count,
-                target.max_attempts AS previous_max_attempts,
-                runs.max_attempts,
-                runs.due_at_ms,
-                runs.leased_until_ms,
-                runs.lease_owner,
-                runs.last_error_code,
-                runs.last_error_message
-            )
-            SELECT * FROM updated
-            UNION ALL
-            SELECT
-              FALSE AS applied,
-              CASE
-                WHEN target.publication_exists THEN 'publication_exists'
-                ELSE 'run_not_failed'
-              END AS reason,
-              target.session_date,
-              target.status AS previous_status,
-              target.status AS status,
-              target.attempt_count,
-              target.max_attempts AS previous_max_attempts,
-              target.max_attempts,
-              target.due_at_ms,
-              target.leased_until_ms,
-              target.lease_owner,
-              target.last_error_code,
-              target.last_error_message
-            FROM target
-            WHERE NOT EXISTS (SELECT 1 FROM updated)
+            UPDATE macro_research_runs
+            SET status = 'retryable',
+                max_attempts = GREATEST(max_attempts, attempt_count + 1),
+                due_at_ms = %s,
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                last_error_code = NULL,
+                last_error_message = NULL,
+                updated_at_ms = %s
+            WHERE session_date = %s
+              AND status = 'failed'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM macro_research_publications
+                WHERE macro_research_publications.session_date = macro_research_runs.session_date
+              )
+            RETURNING *
             """,
-            (session_date, int(now_ms), int(now_ms)),
+            (int(now_ms), int(now_ms), session_date),
         ).fetchone()
-        if row is not None:
-            return dict(row)
-        return {
-            "applied": False,
-            "reason": "run_not_found",
-            "session_date": session_date,
-            "previous_status": None,
-            "status": None,
-            "attempt_count": None,
-            "previous_max_attempts": None,
-            "max_attempts": None,
-            "due_at_ms": None,
-            "leased_until_ms": None,
-            "lease_owner": None,
-            "last_error_code": None,
-            "last_error_message": None,
-        }
+        if row is None:
+            raise ValueError("macro_research_failed_run_not_retryable")
+        return dict(row)
 
     def latest_run_session(self) -> date | None:
         row = self.conn.execute(
-            "SELECT session_date FROM macro_research_runs ORDER BY session_date DESC LIMIT 1"
+            "SELECT MAX(session_date) AS session_date FROM macro_research_runs"
         ).fetchone()
         return row["session_date"] if row is not None else None
 
@@ -135,25 +71,18 @@ class MacroResearchRepository:
         row = self.conn.execute(
             """
             SELECT
-              (
-                SELECT session_date
-                FROM macro_research_runs
-                WHERE session_date <= %s
-                  AND status IN ('pending', 'running', 'retryable')
-                ORDER BY session_date ASC
-                LIMIT 1
-              ) AS open_session,
-              (
-                SELECT MAX(session_date)
-                FROM macro_research_runs
-              ) AS latest_session
+              MAX(session_date) AS latest_session,
+              MAX(session_date) FILTER (
+                WHERE status IN ('pending', 'running', 'retryable', 'failed')
+                  AND session_date <= %s
+              ) AS open_session
+            FROM macro_research_runs
             """,
             (through_date,),
         ).fetchone()
-        payload = dict(row or {})
         return {
-            "open_session": payload.get("open_session"),
-            "latest_session": payload.get("latest_session"),
+            "latest_session": row["latest_session"] if row is not None else None,
+            "open_session": row["open_session"] if row is not None else None,
         }
 
     def ensure_run(
@@ -161,38 +90,33 @@ class MacroResearchRepository:
         *,
         session_date: date,
         market_cutoff_ms: int,
+        evidence_pack_id: str,
         sealed_at_ms: int,
         max_attempts: int,
         due_at_ms: int,
         now_ms: int,
-    ) -> bool:
-        row = self.conn.execute(
+    ) -> int:
+        cursor = self.conn.execute(
             """
             INSERT INTO macro_research_runs(
-              session_date,
-              market_cutoff_ms,
-              status,
-              sealed_at_ms,
-              max_attempts,
-              due_at_ms,
-              created_at_ms,
-              updated_at_ms
+              session_date, market_cutoff_ms, evidence_pack_id, status, sealed_at_ms,
+              attempt_count, max_attempts, due_at_ms, created_at_ms, updated_at_ms
             )
-            VALUES (%s, %s, 'pending', %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, 'pending', %s, 0, %s, %s, %s, %s)
             ON CONFLICT(session_date) DO NOTHING
-            RETURNING session_date
             """,
             (
                 session_date,
                 int(market_cutoff_ms),
+                _required_text(evidence_pack_id, "evidence_pack_id"),
                 int(sealed_at_ms),
                 int(max_attempts),
                 int(due_at_ms),
                 int(now_ms),
                 int(now_ms),
             ),
-        ).fetchone()
-        return row is not None
+        )
+        return int(cursor.rowcount)
 
     def claim_run(
         self,
@@ -209,28 +133,21 @@ class MacroResearchRepository:
               SET status = 'failed',
                   leased_until_ms = NULL,
                   lease_owner = NULL,
-                  last_error_code = 'macro_research_lease_expired_attempt_budget_exhausted',
-                  last_error_message = 'macro research lease expired after max attempts',
+                  last_error_code = 'macro_research_lease_expired',
+                  last_error_message = 'research lease expired after attempt budget',
                   updated_at_ms = %s
               WHERE session_date = %s
                 AND status = 'running'
                 AND leased_until_ms <= %s
                 AND attempt_count >= max_attempts
               RETURNING session_date
-            ),
-            candidate AS (
+            ), candidate AS (
               SELECT session_date
               FROM macro_research_runs
               WHERE session_date = %s
                 AND (
-                  (
-                    status IN ('pending', 'retryable')
-                    AND due_at_ms <= %s
-                  )
-                  OR (
-                    status = 'running'
-                    AND leased_until_ms <= %s
-                  )
+                  (status IN ('pending', 'retryable') AND due_at_ms <= %s)
+                  OR (status = 'running' AND leased_until_ms <= %s)
                 )
                 AND attempt_count < max_attempts
               FOR UPDATE SKIP LOCKED
@@ -241,6 +158,7 @@ class MacroResearchRepository:
                 attempt_count = runs.attempt_count + 1,
                 leased_until_ms = %s,
                 lease_owner = %s,
+                reviewer_disposition = NULL,
                 last_error_code = NULL,
                 last_error_message = NULL,
                 updated_at_ms = %s
@@ -270,24 +188,26 @@ class MacroResearchRepository:
         lease_ms: int,
         now_ms: int,
     ) -> bool:
-        row = self.conn.execute(
-            """
-            UPDATE macro_research_runs
-            SET leased_until_ms = GREATEST(leased_until_ms, %s),
-                updated_at_ms = %s
-            WHERE session_date = %s
-              AND status = 'running'
-              AND lease_owner = %s
-            RETURNING session_date
-            """,
-            (
-                int(now_ms) + int(lease_ms),
-                int(now_ms),
-                session_date,
-                _required_text(lease_owner, "lease_owner"),
-            ),
-        ).fetchone()
-        return row is not None
+        return (
+            self.conn.execute(
+                """
+                UPDATE macro_research_runs
+                SET leased_until_ms = GREATEST(leased_until_ms, %s),
+                    updated_at_ms = %s
+                WHERE session_date = %s
+                  AND status = 'running'
+                  AND lease_owner = %s
+                RETURNING session_date
+                """,
+                (
+                    int(now_ms) + int(lease_ms),
+                    int(now_ms),
+                    session_date,
+                    _required_text(lease_owner, "lease_owner"),
+                ),
+            ).fetchone()
+            is not None
+        )
 
     def mark_run_error(
         self,
@@ -302,16 +222,18 @@ class MacroResearchRepository:
         row = self.conn.execute(
             """
             UPDATE macro_research_runs
-            SET status = CASE
-                  WHEN attempt_count >= max_attempts THEN 'failed'
-                  ELSE 'retryable'
-                END,
+            SET status = CASE WHEN attempt_count >= max_attempts THEN 'failed' ELSE 'retryable' END,
                 due_at_ms = CASE
                   WHEN attempt_count >= max_attempts THEN due_at_ms
                   ELSE %s
                 END,
                 leased_until_ms = NULL,
                 lease_owner = NULL,
+                reviewer_disposition = CASE
+                  WHEN %s LIKE 'macro_research_reviewer_%%'
+                  THEN split_part(%s, 'macro_research_reviewer_', 2)
+                  ELSE reviewer_disposition
+                END,
                 last_error_code = %s,
                 last_error_message = %s,
                 updated_at_ms = %s
@@ -322,6 +244,8 @@ class MacroResearchRepository:
             """,
             (
                 int(now_ms) + int(retry_ms),
+                error_code,
+                error_code,
                 _safe_error_code(error_code),
                 _safe_error_message(error_message),
                 int(now_ms),
@@ -347,31 +271,19 @@ class MacroResearchRepository:
         artifact_hash: str,
         now_ms: int,
     ) -> bool:
+        reviewer_disposition = str(artifact.get("reviewer_disposition") or "")
+        if reviewer_disposition != "pass":
+            raise ValueError("macro_research_publication_requires_reviewer_pass")
         inserted = self.conn.execute(
             """
             INSERT INTO macro_research_publications(
-              session_date,
-              market_cutoff_ms,
-              artifact_json,
-              report_markdown,
-              audit_json,
-              model_name,
-              prompt_version,
-              workflow_version,
-              artifact_hash,
-              published_at_ms
+              session_date, market_cutoff_ms, evidence_pack_id, artifact_json,
+              report_markdown, audit_json, reviewer_disposition, model_name,
+              prompt_version, workflow_version, artifact_hash, published_at_ms
             )
             SELECT
-              runs.session_date,
-              runs.market_cutoff_ms,
-              %s,
-              %s,
-              %s,
-              %s,
-              %s,
-              %s,
-              %s,
-              %s
+              runs.session_date, runs.market_cutoff_ms, runs.evidence_pack_id,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s
             FROM macro_research_runs AS runs
             WHERE runs.session_date = %s
               AND runs.status = 'running'
@@ -383,6 +295,7 @@ class MacroResearchRepository:
                 Jsonb(dict(artifact)),
                 _required_text(report_markdown, "report_markdown"),
                 Jsonb(dict(audit)),
+                reviewer_disposition,
                 _required_text(model_name, "model_name"),
                 _required_text(prompt_version, "prompt_version"),
                 _required_text(workflow_version, "workflow_version"),
@@ -400,6 +313,7 @@ class MacroResearchRepository:
             SET status = 'published',
                 leased_until_ms = NULL,
                 lease_owner = NULL,
+                reviewer_disposition = 'pass',
                 last_error_code = NULL,
                 last_error_message = NULL,
                 updated_at_ms = %s
@@ -424,9 +338,7 @@ class MacroResearchRepository:
     def publication_record(self, session_date: date) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT
-              publications.*,
-              runs.sealed_at_ms
+            SELECT publications.*, runs.sealed_at_ms
             FROM macro_research_publications AS publications
             JOIN macro_research_runs AS runs USING (session_date)
             WHERE publications.session_date = %s
@@ -437,17 +349,18 @@ class MacroResearchRepository:
 
     def research_state(self, session_date: date | None = None) -> dict[str, Any] | None:
         if session_date is None:
-            target = self.conn.execute(
-                "SELECT session_date FROM macro_research_runs ORDER BY session_date DESC LIMIT 1"
+            row = self.conn.execute(
+                "SELECT MAX(session_date) AS session_date FROM macro_research_runs"
             ).fetchone()
-            if target is None:
-                return None
-            session_date = target["session_date"]
+            session_date = row["session_date"] if row is not None else None
+        if session_date is None:
+            return None
         row = self.conn.execute(
             """
             SELECT
               runs.session_date,
               runs.market_cutoff_ms,
+              runs.evidence_pack_id,
               runs.status AS run_status,
               runs.sealed_at_ms,
               runs.attempt_count,
@@ -455,6 +368,7 @@ class MacroResearchRepository:
               runs.due_at_ms,
               runs.leased_until_ms,
               runs.lease_owner,
+              runs.reviewer_disposition AS run_reviewer_disposition,
               runs.last_error_code,
               runs.last_error_message,
               runs.created_at_ms,
@@ -462,6 +376,7 @@ class MacroResearchRepository:
               publications.artifact_json,
               publications.report_markdown,
               publications.audit_json,
+              publications.reviewer_disposition,
               publications.model_name,
               publications.prompt_version,
               publications.workflow_version,
@@ -476,126 +391,61 @@ class MacroResearchRepository:
         return dict(row) if row is not None else None
 
     def catalog(self, *, scope: FrozenMacroEvidenceScope) -> MacroEvidenceCatalog:
-        observation_rows = self.conn.execute(
-            """
-            SELECT
-              concept_key,
-              source_name,
-              observed_at,
-              source_ts,
-              ingested_at_ms
-            FROM macro_observations
-            WHERE ingested_at_ms <= %s
-              AND (
-                observed_at <= %s
-                OR concept_key LIKE 'event:%%'
-              )
-            """,
-            (int(scope.sealed_at_ms), scope.session_date),
-        ).fetchall()
-        visible_observations = [
-            row
-            for row in observation_rows
-            if resolve_observation_visibility(
-                scope,
-                source_timestamp=str(row["source_ts"] or row["observed_at"]),
-                ingested_at_ms=int(row["ingested_at_ms"]),
-            )
-            is not None
-        ]
+        pack = self._scope_pack(scope)
+        records = _pack_records(pack)
         prior_row = self.conn.execute(
             """
-            SELECT COUNT(*)::int AS prior_research_count
+            SELECT COUNT(*)::int AS count
             FROM macro_research_publications
             WHERE session_date < %s
               AND published_at_ms <= %s
             """,
             (scope.session_date, int(scope.sealed_at_ms)),
         ).fetchone()
-        concept_keys = tuple(sorted({str(row["concept_key"]) for row in visible_observations}))
-        source_labels = tuple(sorted({str(row["source_name"]) for row in visible_observations}))
         return MacroEvidenceCatalog(
             session_date=scope.session_date,
             market_cutoff_ms=scope.market_cutoff_ms,
             sealed_at_ms=scope.sealed_at_ms,
-            concept_keys=concept_keys,
-            source_labels=source_labels,
-            observation_count=len(visible_observations),
-            prior_research_count=int(prior_row["prior_research_count"] or 0),
+            concept_keys=tuple(sorted({str(record.concept_key) for record in records if record.concept_key})),
+            source_labels=tuple(sorted({record.source_label for record in records})),
+            observation_count=len(records),
+            prior_research_count=int(prior_row["count"] or 0),
         )
 
-    def search_observations(
+    def search_evidence(
         self,
         *,
         scope: FrozenMacroEvidenceScope,
-        query: MacroObservationQuery,
+        query: MacroEvidenceQuery,
     ) -> tuple[MacroEvidenceRecord, ...]:
-        batch_size = min(
-            10_000,
-            max(250, (int(query.offset) + int(query.limit)) * 20),
-        )
-        raw_offset = 0
-        visible_seen = 0
-        selected: list[MacroEvidenceRecord] = []
-        while len(selected) < query.limit:
-            rows = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_observations
-                WHERE ingested_at_ms <= %s
-                  AND (%s::date IS NULL OR observed_at >= %s::date)
-                  AND (%s::date IS NULL OR observed_at <= %s::date)
-                  AND (
-                    cardinality(%s::text[]) = 0
-                    OR concept_key = ANY(%s::text[])
-                  )
-                  AND (
-                    %s = ''
-                    OR concept_key ILIKE %s
-                    OR source_name ILIKE %s
-                    OR series_key ILIKE %s
-                    OR COALESCE(source_ts, '') ILIKE %s
-                    OR raw_payload_json::text ILIKE %s
-                  )
-                ORDER BY observed_at DESC, source_priority DESC, ingested_at_ms DESC,
-                         observation_id ASC
-                LIMIT %s
-                OFFSET %s
-                """,
-                (
-                    int(scope.sealed_at_ms),
-                    query.start_date,
-                    query.start_date,
-                    query.end_date,
-                    query.end_date,
-                    list(query.concept_keys),
-                    list(query.concept_keys),
-                    query.query,
-                    _like(query.query),
-                    _like(query.query),
-                    _like(query.query),
-                    _like(query.query),
-                    _like(query.query),
-                    batch_size,
-                    raw_offset,
-                ),
-            ).fetchall()
-            if not rows:
-                break
-            for record in _visible_observation_records(scope, rows):
-                if visible_seen < query.offset:
-                    visible_seen += 1
+        records = _pack_records(self._scope_pack(scope))
+        query_text = query.query.lower()
+        selected = []
+        for record in records:
+            if query.concept_keys and record.concept_key not in query.concept_keys:
+                continue
+            if (
+                query.start_date is not None
+                and record.observed_at is not None
+                and record.observed_at < query.start_date
+            ):
+                continue
+            if (
+                query.end_date is not None
+                and record.observed_at is not None
+                and record.observed_at > query.end_date
+            ):
+                continue
+            if query_text:
+                searchable = (
+                    f"{record.concept_key} {record.source_label} {record.summary} "
+                    f"{record.payload}"
+                ).lower()
+                if query_text not in searchable:
                     continue
-                selected.append(record)
-                if len(selected) >= query.limit:
-                    break
-            raw_offset += len(rows)
-            if len(rows) < batch_size:
-                break
-        return require_evidence_in_scope(
-            scope,
-            tuple(selected),
-        )
+            selected.append(record)
+        page = tuple(selected[query.offset : query.offset + query.limit])
+        return require_evidence_in_scope(scope, page)
 
     def read_evidence(
         self,
@@ -607,26 +457,13 @@ class MacroResearchRepository:
             raise ValueError("macro_research_read_evidence_limit")
         if len(source_refs) != len(set(source_refs)):
             raise ValueError("macro_research_read_evidence_duplicate_ref")
-        observation_ids = [source_ref for source_ref in source_refs if source_ref.startswith("macro-observation:")]
-        resolved: dict[str, MacroEvidenceRecord] = {}
-        if observation_ids:
-            rows = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_observations
-                WHERE observation_id = ANY(%s::text[])
-                  AND ingested_at_ms <= %s
-                """,
-                (
-                    observation_ids,
-                    int(scope.sealed_at_ms),
-                ),
-            ).fetchall()
-            for record in _visible_observation_records(scope, rows):
-                resolved[record.evidence_ref] = record
+        by_ref = {
+            record.evidence_ref: record
+            for record in _pack_records(self._scope_pack(scope))
+        }
         return require_evidence_in_scope(
             scope,
-            tuple(resolved[source_ref] for source_ref in source_refs if source_ref in resolved),
+            tuple(by_ref[source_ref] for source_ref in source_refs if source_ref in by_ref),
         )
 
     def prior_research(
@@ -636,29 +473,21 @@ class MacroResearchRepository:
         limit: int,
         offset: int,
     ) -> tuple[MacroPriorResearch, ...]:
-        bounded_limit = min(
-            max(int(limit), 1),
-            MACRO_RESEARCH_MAX_PRIOR_PUBLICATIONS_PER_PAGE,
-        )
-        bounded_offset = max(int(offset), 0)
+        bounded_limit = min(max(int(limit), 1), MACRO_RESEARCH_MAX_PRIOR_PUBLICATIONS_PER_PAGE)
         rows = self.conn.execute(
             """
-            SELECT
-              session_date,
-              artifact_json,
-              published_at_ms
+            SELECT session_date, artifact_json, published_at_ms
             FROM macro_research_publications
             WHERE session_date < %s
               AND published_at_ms <= %s
             ORDER BY session_date DESC
-            LIMIT %s
-            OFFSET %s
+            LIMIT %s OFFSET %s
             """,
             (
                 scope.session_date,
                 int(scope.sealed_at_ms),
                 bounded_limit,
-                bounded_offset,
+                max(int(offset), 0),
             ),
         ).fetchall()
         records = tuple(
@@ -666,20 +495,36 @@ class MacroResearchRepository:
                 publication_ref=f"macro-research:{row['session_date'].isoformat()}",
                 session_date=row["session_date"],
                 title=_artifact_text(row["artifact_json"], "title"),
-                executive_summary=_artifact_text(
-                    row["artifact_json"],
-                    "executive_summary",
-                ),
+                executive_summary=_artifact_text(row["artifact_json"], "executive_summary"),
                 published_at_ms=int(row["published_at_ms"]),
             )
             for row in rows
         )
         return require_prior_research_in_scope(scope, records)
 
+    def _scope_pack(self, scope: FrozenMacroEvidenceScope) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_evidence_packs
+            WHERE evidence_pack_id = %s
+              AND session_date = %s
+              AND judgment_cutoff_ms <= %s
+              AND created_at_ms <= %s
+            """,
+            (
+                scope.evidence_pack_id,
+                scope.session_date,
+                int(scope.market_cutoff_ms),
+                int(scope.sealed_at_ms),
+            ),
+        ).fetchone()
+        if row is None:
+            raise ValueError("macro_research_evidence_pack_out_of_scope")
+        return dict(row)
+
 
 class PostgresMacroResearchReadPort:
-    """Short-lived worker connections for DeepAgents read-only evidence tools."""
-
     def __init__(
         self,
         *,
@@ -693,24 +538,18 @@ class PostgresMacroResearchReadPort:
 
     def catalog(self, *, scope: FrozenMacroEvidenceScope) -> MacroEvidenceCatalog:
         with self._session() as repos:
-            return cast(
-                "MacroEvidenceCatalog",
-                repos.macro_research.catalog(scope=scope),
-            )
+            return cast("MacroEvidenceCatalog", repos.macro_research.catalog(scope=scope))
 
-    def search_observations(
+    def search_evidence(
         self,
         *,
         scope: FrozenMacroEvidenceScope,
-        query: MacroObservationQuery,
+        query: MacroEvidenceQuery,
     ) -> tuple[MacroEvidenceRecord, ...]:
         with self._session() as repos:
             return cast(
                 "tuple[MacroEvidenceRecord, ...]",
-                repos.macro_research.search_observations(
-                    scope=scope,
-                    query=query,
-                ),
+                repos.macro_research.search_evidence(scope=scope, query=query),
             )
 
     def read_evidence(
@@ -722,10 +561,7 @@ class PostgresMacroResearchReadPort:
         with self._session() as repos:
             return cast(
                 "tuple[MacroEvidenceRecord, ...]",
-                repos.macro_research.read_evidence(
-                    scope=scope,
-                    source_refs=source_refs,
-                ),
+                repos.macro_research.read_evidence(scope=scope, source_refs=source_refs),
             )
 
     def prior_research(
@@ -752,100 +588,138 @@ class PostgresMacroResearchReadPort:
         )
 
 
-def _visible_observation_records(
-    scope: FrozenMacroEvidenceScope,
-    rows: Any,
-) -> tuple[MacroEvidenceRecord, ...]:
+def _pack_records(pack: dict[str, Any]) -> tuple[MacroEvidenceRecord, ...]:
+    payload = pack["payload_json"]
+    if not isinstance(payload, Mapping):
+        raise ValueError("macro_evidence_pack_payload_invalid")
+    pack_id = str(pack["evidence_pack_id"])
+    cutoff_ms = int(pack["judgment_cutoff_ms"])
+    persisted_at_ms = int(pack["created_at_ms"])
+    session_date = pack["session_date"]
+    cutoff_timestamp = datetime.fromtimestamp(cutoff_ms / 1_000, tz=UTC).isoformat()
     records: list[MacroEvidenceRecord] = []
-    for row in rows:
-        visibility = resolve_observation_visibility(
-            scope,
-            source_timestamp=str(row["source_ts"] or row["observed_at"]),
-            ingested_at_ms=int(row["ingested_at_ms"]),
-        )
-        if visibility is None:
+    for module in payload.get("modules", ()):
+        if not isinstance(module, Mapping):
             continue
-        value = row["value_numeric"]
-        value_text = "unavailable" if value is None else str(value)
-        unit = str(row["unit"] or "").strip()
-        summary = (
-            f"{row['concept_key']}={value_text}"
-            f"{f' {unit}' if unit else ''}; observed_at={row['observed_at']}; "
-            f"quality={row['data_quality']}"
-        )
+        module_id = str(module.get("module_id") or "")
+        if not module_id:
+            continue
         records.append(
             MacroEvidenceRecord(
-                evidence_ref=_observation_ref(row["observation_id"]),
-                evidence_kind="observation",
-                source_label=str(row["source_name"]),
-                concept_key=str(row["concept_key"]),
-                source_timestamp=str(row["source_ts"] or row["observed_at"]),
-                available_at_ms=visibility.available_at_ms,
-                persisted_at_ms=int(row["ingested_at_ms"]),
-                observed_at=row["observed_at"],
-                summary=summary,
-                payload={
-                    "observation_id": str(row["observation_id"]),
-                    "concept_key": str(row["concept_key"]),
-                    "series_key": str(row["series_key"]),
-                    "source_priority": int(row["source_priority"]),
-                    "value_numeric": None if value is None else str(value),
-                    "unit": row["unit"],
-                    "frequency": row["frequency"],
-                    "data_quality": str(row["data_quality"]),
-                    "source_ts": row["source_ts"],
-                    "availability": visibility.availability,
-                    "raw_payload": dict(row["raw_payload_json"] or {}),
-                    "fact_payload_hash": str(row["fact_payload_hash"] or ""),
-                },
+                evidence_ref=f"macro-pack:{pack_id}:module:{module_id}",
+                evidence_kind="module",
+                source_label=f"Evidence Pack / {module.get('label') or module_id}",
+                concept_key=module_id,
+                source_timestamp=cutoff_timestamp,
+                available_at_ms=cutoff_ms,
+                persisted_at_ms=persisted_at_ms,
+                observed_at=session_date,
+                published_at_ms=cutoff_ms,
+                url=None,
+                summary=(
+                    f"{module.get('label') or module_id}; readiness={module.get('readiness')}; "
+                    f"top_changes={len(module.get('top_changes') or ())}; "
+                    f"gaps={len(module.get('gaps') or ())}"
+                ),
+                payload=dict(module),
                 lineage={
-                    "observation_id": str(row["observation_id"]),
-                    "concept_key": str(row["concept_key"]),
-                    "series_key": str(row["series_key"]),
-                    "source_name": str(row["source_name"]),
-                    "source_ts": str(row["source_ts"] or row["observed_at"]),
-                    "fact_payload_hash": str(row["fact_payload_hash"] or ""),
-                    "availability": visibility.availability,
+                    "evidence_pack_id": pack_id,
+                    "compiler_version": pack["compiler_version"],
+                    "payload_hash": pack["payload_hash"],
                 },
             )
         )
-    return tuple(records)
-
-
-def _observation_ref(value: object) -> str:
-    observation_id = str(value)
-    if observation_id.startswith("macro-observation:"):
-        return observation_id
-    return f"macro-observation:{observation_id}"
+        for fact in module.get("raw_evidence", ()):
+            if not isinstance(fact, Mapping) or not fact.get("fact_ref"):
+                continue
+            available_at_ms = int(
+                fact.get("published_at_ms")
+                or fact.get("received_at_ms")
+                or cutoff_ms
+            )
+            reference = _optional_date(fact.get("reference")) or session_date
+            records.append(
+                MacroEvidenceRecord(
+                    evidence_ref=str(fact["fact_ref"]),
+                    evidence_kind="observation",
+                    source_label=str(fact.get("dataset_id") or "macro fact"),
+                    concept_key=str(fact.get("dataset_id") or module_id),
+                    source_timestamp=datetime.fromtimestamp(
+                        available_at_ms / 1_000,
+                        tz=UTC,
+                    ).isoformat(),
+                    available_at_ms=available_at_ms,
+                    persisted_at_ms=persisted_at_ms,
+                    observed_at=reference,
+                    published_at_ms=(
+                        int(fact["published_at_ms"])
+                        if fact.get("published_at_ms") is not None
+                        else None
+                    ),
+                    url=str(fact["source_url"]) if fact.get("source_url") else None,
+                    summary=(
+                        f"{fact.get('dataset_id')}={fact.get('value')} {fact.get('unit')}; "
+                        f"reference={fact.get('reference')}"
+                    ),
+                    payload=dict(fact),
+                    lineage={"evidence_pack_id": pack_id, "module_id": module_id},
+                )
+            )
+        for feature in module.get("features", ()):
+            if not isinstance(feature, Mapping) or not feature.get("feature_id"):
+                continue
+            records.append(
+                MacroEvidenceRecord(
+                    evidence_ref=f"macro-pack:{pack_id}:feature:{feature['feature_id']}",
+                    evidence_kind="feature",
+                    source_label=f"Calculation Registry / {feature['feature_id']}",
+                    concept_key=str(feature["feature_id"]),
+                    source_timestamp=cutoff_timestamp,
+                    available_at_ms=cutoff_ms,
+                    persisted_at_ms=persisted_at_ms,
+                    observed_at=_optional_date(feature.get("as_of_date")) or session_date,
+                    published_at_ms=cutoff_ms,
+                    url=None,
+                    summary=(
+                        f"{feature['feature_id']}={feature.get('value_numeric')} "
+                        f"{feature.get('unit')}; formula={feature.get('formula_version')}"
+                    ),
+                    payload=dict(feature),
+                    lineage={"evidence_pack_id": pack_id, "module_id": module_id},
+                )
+            )
+    by_ref = {record.evidence_ref: record for record in records}
+    return tuple(by_ref.values())
 
 
 def _artifact_text(value: object, field_name: str) -> str:
-    payload = value if isinstance(value, Mapping) else {}
-    normalized = str(payload.get(field_name) or "").strip()
-    if not normalized:
-        raise RuntimeError(f"macro_research_prior_{field_name}_missing")
-    return normalized
-
-
-def _like(value: str) -> str:
-    return f"%{value}%"
+    if not isinstance(value, Mapping):
+        raise ValueError("macro_research_artifact_invalid")
+    return _required_text(value.get(field_name), field_name)
 
 
 def _required_text(value: object, field_name: str) -> str:
-    normalized = str(value or "").strip()
-    if not normalized:
+    text = str(value or "").strip()
+    if not text:
         raise ValueError(f"macro_research_{field_name}_required")
-    return normalized
+    return text
 
 
 def _safe_error_code(value: object) -> str:
-    normalized = str(value or "macro_research_unknown_error").strip().lower()
-    safe = "".join(char if char.isalnum() or char == "_" else "_" for char in normalized)
-    return (safe.strip("_") or "macro_research_unknown_error")[:120]
+    return _required_text(value, "error_code")[:120]
 
 
 def _safe_error_message(value: object) -> str:
-    return str(value or "macro research failed").replace("\n", " ")[:2_000]
+    return _required_text(value, "error_message").replace("\n", " ")[:2_000]
+
+
+def _optional_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
 
 
 __all__ = ["MacroResearchRepository", "PostgresMacroResearchReadPort"]

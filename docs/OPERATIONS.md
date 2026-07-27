@@ -179,7 +179,7 @@ downgrade, or database restore point.
 1. Stop all application workers so no 0198 writer can run during migration.
 2. Record the Alembic head and non-empty material-fact counts.
 3. Run `uv run tracefold db migrate`.
-4. Verify that the Alembic head is `20260727_0199` and the preserved
+4. Verify that the Alembic head is `20260727_0201` and the preserved
    material-fact identities/counts are unchanged.
 5. Run
    `uv run tracefold ops rebuild-news-stories --batch-size 100 --execute`.
@@ -193,30 +193,48 @@ downgrade, or database restore point.
 Macro:
 
 ```text
-sync window -> macro_observations
-  -> bounded persisted-only live evidence read -> /macro + six detail pages
-  -> completed-session macro_research_runs claim
-  -> frozen-scope DeepAgents graph with durable PostgreSQL checkpoint
+clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
+  -> macro_projection -> six macro_module_current rows
+  -> 08:50 New York Evidence Pack -> immutable daily judgment
+  -> completed-session macro_research_runs claim bound to that pack
+  -> DeepAgents graph + reviewer with durable PostgreSQL checkpoint
   -> immutable macro_research_publications row
 ```
 
-`macro_sync` owns provider catch-up and fact persistence. One failed sync
-window is isolated; the worker continues its bounded batch so an unhealthy
-bundle cannot head-of-line block unrelated due windows.
+The five automatic acquisition workers claim only their own clock family from
+`macro_acquisition_targets` with `SKIP LOCKED`; `macro_backfill` claims only
+explicit bounded backfills. Provider I/O happens after claim commit. One
+completion transaction appends normalized facts and
+`macro_source_receipts`, advances the cursor, and compare-and-set completes the
+target. An unchanged replay writes zero fact rows and a receipt; a changed
+value appends a revision. One failed source cannot head-of-line block another
+clock or target.
 
-The live evidence API reads `macro_observations` directly with bounded
-per-series history and the existing concept/date index. It has no queue,
-projection worker, snapshot table, or semantic readiness state. Diagnose a
-missing metric from its exact concept/source/series facts and sync health;
-never repair it by adding a page-level evidence gate.
+Diagnose a missing metric in this order: Dataset Registry identity, acquisition
+target state/lease, last receipt/error, persisted fact clocks
+(reference/published/received), module dataset state/gap, then current-row
+hash. Do not repair source or calculation errors with a frontend fallback.
+`unavailable` licensed futures and `untrusted_proxy` Nasdaq public cross-asset
+history must stay
+visible.
+
+`macro_projection` deterministically recomputes the Calculation Registry and
+six stable module rows; unchanged payloads write zero serving rows.
+`macro_judgment` runs after 08:50 `America/New_York` on U.S. trading days,
+compiles only facts received by that cutoff, and does nothing if any critical
+module is blocked. Evidence Pack and daily judgment insertion are immutable
+and replay-safe. They remain readable when DeepAgents is delayed or failed.
 
 `macro_research` waits for its configured settle delay, creates or re-reads one
 stable completed-session run, and claims at most one due run per iteration.
-The run freezes `session_date`, market cutoff, and seal time before model work.
+The run freezes `session_date`, Evidence Pack ID, pack cutoff, and seal time
+before model work. The later completed-session schedule never widens the
+Evidence Pack's morning fact cutoff.
 All model and evidence-tool I/O occurs outside a database write transaction.
 The Agent decides its research plan, evidence selection, subagent delegation,
-counterevidence, gaps, review, and final Chinese narrative; there is no
-application-owned semantic readiness or conclusion gate.
+counterevidence, gaps, and final Chinese narrative. A separate reviewer returns
+`pass`, `revise`, or `block`; revise permits one corrected artifact pass and
+block prevents publication without hiding the daily judgment or modules.
 
 The production `AsyncPostgresSaver` is opened through an async context factory
 for each graph invocation and uses the run's frozen scope ID as the stable
@@ -238,13 +256,15 @@ publishes or records failure as the stale owner. Expired leases are reclaimed
 while attempts remain. External/runtime failures become `retryable`; exhaustion
 becomes `failed` with a sanitized error.
 Publication insertion and the transition to `published` are atomic. The
-session-keyed publication rejects update and delete; replaying a published
-session performs zero model calls and zero publication writes.
+session-keyed publication rejects update and delete; it closes to the exact
+Evidence Pack, cutoff, citations, and reviewer disposition. Replaying a
+published session performs zero model calls and zero publication writes.
 
 `uv run tracefold macro retry-research --session-date YYYY-MM-DD` is the only
 manual recovery from `failed`. It atomically grants one immediately due
 attempt, clears the old lease/error, and returns an auditable JSON receipt.
-Missing, non-failed, or already-published sessions are explicit no-ops.
+Missing, non-failed, or already-published sessions are explicit errors rather
+than hidden state changes.
 
 Notifications create/aggregate the notification and activate delivery rows in
 one transaction. Sending happens later outside the transaction.

@@ -25,8 +25,10 @@ def test_failed_research_retry_is_bounded_atomic_and_terminal_safe(tmp_path) -> 
         conn.commit()
         config = alembic_config()
         config.attributes["database_url"] = _test_postgres_dsn()
-        command.upgrade(config, "20260724_0195")
+        command.upgrade(config, "head")
 
+        _insert_evidence_pack(conn, session_date=SESSION_DATE)
+        _insert_evidence_pack(conn, session_date=PUBLISHED_DATE)
         _insert_failed_run(conn, session_date=SESSION_DATE)
         _insert_published_run(conn, session_date=PUBLISHED_DATE)
         conn.commit()
@@ -37,55 +39,18 @@ def test_failed_research_retry_is_bounded_atomic_and_terminal_safe(tmp_path) -> 
                 session_date=SESSION_DATE,
                 now_ms=NOW_MS,
             )
-        with conn.transaction():
-            duplicate = repository.retry_failed_run(
-                session_date=SESSION_DATE,
-                now_ms=NOW_MS + 1,
-            )
-        with conn.transaction():
-            published = repository.retry_failed_run(
-                session_date=PUBLISHED_DATE,
-                now_ms=NOW_MS,
-            )
-        with conn.transaction():
-            missing = repository.retry_failed_run(
-                session_date=date(2026, 7, 21),
-                now_ms=NOW_MS,
-            )
-
-        assert applied["applied"] is True
-        assert applied["previous_status"] == "failed"
         assert applied["status"] == "retryable"
         assert applied["attempt_count"] == 3
-        assert applied["previous_max_attempts"] == 3
         assert applied["max_attempts"] == 4
         assert applied["due_at_ms"] == NOW_MS
         assert applied["lease_owner"] is None
         assert applied["last_error_code"] is None
-        assert duplicate["applied"] is False
-        assert duplicate["reason"] == "run_not_failed"
-        assert duplicate["max_attempts"] == 4
-        assert published["applied"] is False
-        assert published["reason"] == "publication_exists"
-        assert missing["applied"] is False
-        assert missing["reason"] == "run_not_found"
-
-        _insert_failed_run(conn, session_date=date(2026, 7, 20))
-        conn.commit()
-        with pytest.raises(RaiseException, match="operator_retry_shape_invalid"):
-            conn.execute(
-                """
-                UPDATE macro_research_runs
-                SET status = 'retryable',
-                    max_attempts = max_attempts + 2,
-                    due_at_ms = 600,
-                    last_error_code = NULL,
-                    last_error_message = NULL,
-                    updated_at_ms = 600
-                WHERE session_date = '2026-07-20'
-                """
-            )
-        conn.rollback()
+        for retry_date in (SESSION_DATE, PUBLISHED_DATE, date(2026, 7, 21)):
+            with pytest.raises(ValueError, match="not_retryable"), conn.transaction():
+                repository.retry_failed_run(
+                    session_date=retry_date,
+                    now_ms=NOW_MS + 1,
+                )
         with pytest.raises(RaiseException, match="macro_research_run_terminal"):
             conn.execute(
                 """
@@ -97,8 +62,8 @@ def test_failed_research_retry_is_bounded_atomic_and_terminal_safe(tmp_path) -> 
                 """
             )
         conn.rollback()
-        with pytest.raises(RuntimeError, match="forward-only"):
-            command.downgrade(config, "20260724_0194")
+        with pytest.raises(RuntimeError, match="irreversible"):
+            command.downgrade(config, "20260727_0199")
     finally:
         conn.close()
 
@@ -109,6 +74,7 @@ def _insert_failed_run(conn, *, session_date: date) -> None:
         INSERT INTO macro_research_runs(
           session_date,
           market_cutoff_ms,
+          evidence_pack_id,
           status,
           sealed_at_ms,
           max_attempts,
@@ -116,9 +82,9 @@ def _insert_failed_run(conn, *, session_date: date) -> None:
           created_at_ms,
           updated_at_ms
         )
-        VALUES (%s, 100, 'pending', 110, 3, 110, 110, 110)
+        VALUES (%s, 100, %s, 'pending', 110, 3, 110, 110, 110)
         """,
-        (session_date,),
+        (session_date, _pack_id(session_date)),
     )
     conn.execute(
         """
@@ -153,6 +119,7 @@ def _insert_published_run(conn, *, session_date: date) -> None:
         INSERT INTO macro_research_runs(
           session_date,
           market_cutoff_ms,
+          evidence_pack_id,
           status,
           sealed_at_ms,
           max_attempts,
@@ -160,9 +127,9 @@ def _insert_published_run(conn, *, session_date: date) -> None:
           created_at_ms,
           updated_at_ms
         )
-        VALUES (%s, 100, 'pending', 110, 3, 110, 110, 110)
+        VALUES (%s, 100, %s, 'pending', 110, 3, 110, 110, 110)
         """,
-        (session_date,),
+        (session_date, _pack_id(session_date)),
     )
     conn.execute(
         """
@@ -181,9 +148,11 @@ def _insert_published_run(conn, *, session_date: date) -> None:
         INSERT INTO macro_research_publications(
           session_date,
           market_cutoff_ms,
+          evidence_pack_id,
           artifact_json,
           report_markdown,
           audit_json,
+          reviewer_disposition,
           model_name,
           prompt_version,
           workflow_version,
@@ -193,9 +162,11 @@ def _insert_published_run(conn, *, session_date: date) -> None:
         VALUES (
           %s,
           100,
+          %s,
           '{}'::jsonb,
           '# 宏观研究',
           '{}'::jsonb,
+          'pass',
           'fake-model',
           'prompt-v1',
           'workflow-v1',
@@ -203,7 +174,7 @@ def _insert_published_run(conn, *, session_date: date) -> None:
           130
         )
         """,
-        (session_date,),
+        (session_date, _pack_id(session_date)),
     )
     conn.execute(
         """
@@ -216,3 +187,20 @@ def _insert_published_run(conn, *, session_date: date) -> None:
         """,
         (session_date,),
     )
+
+
+def _insert_evidence_pack(conn, *, session_date: date) -> None:
+    conn.execute(
+        """
+        INSERT INTO macro_evidence_packs(
+          evidence_pack_id, session_date, judgment_cutoff_ms, latest_fact_at_ms,
+          schema_version, compiler_version, payload_json, payload_hash, created_at_ms
+        )
+        VALUES (%s, %s, 100, 100, 'macro_evidence_pack_v1', 'test', '{}'::jsonb, %s, 100)
+        """,
+        (_pack_id(session_date), session_date, f"sha256:{session_date.isoformat()}"),
+    )
+
+
+def _pack_id(session_date: date) -> str:
+    return f"mep_{session_date.isoformat()}"

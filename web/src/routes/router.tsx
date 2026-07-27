@@ -43,11 +43,11 @@ export function createAppRouteObjects(): RouteObject[] {
             {
               path: "macro",
               lazy: async () => {
-                const { MacroLiveEvidencePage } = await import("@features/macro");
+                const { MacroOverviewPage } = await import("@features/macro");
                 return {
-                  Component: function MacroLiveDashboardRoute() {
+                  Component: function MacroOverviewRoute() {
                     const { token } = useShellRouteContext();
-                    return <MacroLiveEvidencePage token={token} viewId="dashboard" />;
+                    return <MacroOverviewPage token={token} />;
                   },
                 };
               },
@@ -66,21 +66,21 @@ export function createAppRouteObjects(): RouteObject[] {
             },
             ...(
               [
-                ["overview", "overview"],
-                ["rates-inflation", "rates-inflation"],
-                ["growth-labor", "growth-labor"],
-                ["liquidity-funding", "liquidity-funding"],
+                ["rates-fed", "rates_fed"],
+                ["economy-inflation", "economy_inflation"],
+                ["liquidity-funding", "liquidity_funding"],
                 ["credit", "credit"],
-                ["cross-asset", "cross-asset"],
+                ["volatility", "volatility"],
+                ["cross-asset", "cross_asset"],
               ] as const
-            ).map(([path, viewId]) => ({
+            ).map(([path, moduleId]) => ({
               path: `macro/${path}`,
               lazy: async () => {
-                const { MacroLiveEvidencePage } = await import("@features/macro");
+                const { MacroModulePage } = await import("@features/macro");
                 return {
-                  Component: function MacroLiveDetailRoute() {
+                  Component: function MacroModuleRoute() {
                     const { token } = useShellRouteContext();
-                    return <MacroLiveEvidencePage token={token} viewId={viewId} />;
+                    return <MacroModulePage moduleId={moduleId} token={token} />;
                   },
                 };
               },

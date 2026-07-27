@@ -7,8 +7,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-MACRO_RESEARCH_ARTIFACT_SCHEMA_VERSION: Literal["macro_research_artifact_v2"] = "macro_research_artifact_v2"
-MACRO_RESEARCH_SCOPE_SCHEMA_VERSION: Literal["macro_research_scope_v2"] = "macro_research_scope_v2"
+MACRO_RESEARCH_ARTIFACT_SCHEMA_VERSION: Literal["macro_research_artifact_v3"] = "macro_research_artifact_v3"
+MACRO_RESEARCH_SCOPE_SCHEMA_VERSION: Literal["macro_research_scope_v3"] = "macro_research_scope_v3"
 MACRO_RESEARCH_MAX_SEARCH_RESULTS = 50
 MACRO_RESEARCH_MAX_READ_REFS = 20
 MACRO_RESEARCH_MAX_CONCEPT_KEYS = 20
@@ -25,10 +25,11 @@ class MacroResearchIntegrityError(ValueError):
 
 
 class FrozenMacroEvidenceScope(ExactMacroResearchModel):
-    schema_version: Literal["macro_research_scope_v2"] = MACRO_RESEARCH_SCOPE_SCHEMA_VERSION
+    schema_version: Literal["macro_research_scope_v3"] = MACRO_RESEARCH_SCOPE_SCHEMA_VERSION
     session_date: date
     market_cutoff_ms: int = Field(ge=0)
     sealed_at_ms: int = Field(ge=0)
+    evidence_pack_id: str = Field(min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def validate_seal(self) -> FrozenMacroEvidenceScope:
@@ -38,12 +39,15 @@ class FrozenMacroEvidenceScope(ExactMacroResearchModel):
 
     @property
     def scope_id(self) -> str:
-        identity = f"{self.schema_version}|{self.session_date.isoformat()}|{self.market_cutoff_ms}|{self.sealed_at_ms}"
+        identity = (
+            f"{self.schema_version}|{self.session_date.isoformat()}|{self.market_cutoff_ms}|"
+            f"{self.sealed_at_ms}|{self.evidence_pack_id}"
+        )
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         return f"macro-scope:{self.session_date.isoformat()}:{digest[:20]}"
 
 
-class MacroObservationQuery(ExactMacroResearchModel):
+class MacroEvidenceQuery(ExactMacroResearchModel):
     query: str = Field(default="", max_length=MACRO_RESEARCH_MAX_QUERY_CHARS)
     concept_keys: tuple[str, ...] = Field(
         default=(),
@@ -70,7 +74,7 @@ class MacroObservationQuery(ExactMacroResearchModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_dates(self) -> MacroObservationQuery:
+    def validate_dates(self) -> MacroEvidenceQuery:
         if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
             raise ValueError("macro_research_observation_query_date_range")
         return self
@@ -93,14 +97,14 @@ class MacroEvidenceCatalog(ExactMacroResearchModel):
 
 class MacroEvidenceRecord(ExactMacroResearchModel):
     evidence_ref: str = Field(min_length=1, max_length=500)
-    evidence_kind: Literal["observation"]
+    evidence_kind: Literal["observation", "feature", "module"]
     source_label: str = Field(min_length=1, max_length=500)
     concept_key: str | None = Field(default=None, max_length=500)
     source_timestamp: str | None = Field(default=None, max_length=500)
     available_at_ms: int = Field(ge=0)
     persisted_at_ms: int = Field(ge=0)
     observed_at: date | None = None
-    published_at_ms: None = None
+    published_at_ms: int | None = Field(default=None, ge=0)
     url: str | None = Field(default=None, max_length=2_048)
     summary: str = Field(min_length=1, max_length=8_000)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -137,7 +141,7 @@ class MacroResearchGap(ExactMacroResearchModel):
 
 class MacroResearchCitation(ExactMacroResearchModel):
     citation_id: str = Field(min_length=1, max_length=100)
-    source_type: Literal["observation", "news"]
+    source_type: Literal["observation", "feature", "module", "news"]
     source_ref: str = Field(min_length=1, max_length=500)
     source_label: str = Field(min_length=1, max_length=500)
     available_at_ms: int = Field(ge=0)
@@ -153,13 +157,14 @@ class MacroResearchCitationSelection(ExactMacroResearchModel):
 
 
 class _MacroResearchArtifactBody(ExactMacroResearchModel):
-    schema_version: Literal["macro_research_artifact_v2"] = MACRO_RESEARCH_ARTIFACT_SCHEMA_VERSION
+    schema_version: Literal["macro_research_artifact_v3"] = MACRO_RESEARCH_ARTIFACT_SCHEMA_VERSION
     session_date: date
     market_cutoff_ms: int = Field(ge=0)
     title: str = Field(min_length=1, max_length=500)
     executive_summary: str = Field(min_length=1, max_length=8_000)
     sections: tuple[MacroResearchSection, ...] = Field(min_length=1)
     gaps: tuple[MacroResearchGap, ...] = ()
+    reviewer_disposition: Literal["pass", "revise", "block"]
     reviewer_notes: tuple[str, ...] = ()
 
     @field_validator("reviewer_notes")
@@ -259,11 +264,11 @@ class MacroResearchAgentResult(ExactMacroResearchModel):
 class MacroResearchReadPort(Protocol):
     def catalog(self, *, scope: FrozenMacroEvidenceScope) -> MacroEvidenceCatalog: ...
 
-    def search_observations(
+    def search_evidence(
         self,
         *,
         scope: FrozenMacroEvidenceScope,
-        query: MacroObservationQuery,
+        query: MacroEvidenceQuery,
     ) -> Sequence[MacroEvidenceRecord]: ...
 
     def read_evidence(
@@ -440,6 +445,10 @@ def require_artifact_integrity(
         raise MacroResearchIntegrityError("macro_research_artifact_session_mismatch")
     if artifact.market_cutoff_ms != scope.market_cutoff_ms:
         raise MacroResearchIntegrityError("macro_research_artifact_cutoff_mismatch")
+    if artifact.reviewer_disposition != "pass":
+        raise MacroResearchIntegrityError(
+            f"macro_research_reviewer_{artifact.reviewer_disposition}"
+        )
     missing = sorted(artifact.source_refs - frozenset(verified_evidence_refs))
     if missing:
         raise MacroResearchIntegrityError("macro_research_artifact_unknown_citations:" + ",".join(missing))
@@ -483,8 +492,8 @@ __all__ = [
     "MACRO_RESEARCH_SCOPE_SCHEMA_VERSION",
     "FrozenMacroEvidenceScope",
     "MacroEvidenceCatalog",
+    "MacroEvidenceQuery",
     "MacroEvidenceRecord",
-    "MacroObservationQuery",
     "MacroObservationVisibility",
     "MacroPriorResearch",
     "MacroResearchAgent",

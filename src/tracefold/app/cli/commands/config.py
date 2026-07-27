@@ -80,10 +80,12 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "cex_universe_contract_type": settings.providers.binance.cex_universe_contract_type,
                         "timeout_seconds": settings.providers.binance.timeout_seconds,
                     },
-                    "macrodata": {
-                        "enabled": settings.providers.macrodata.enabled,
-                        "fred_api_key_env": settings.providers.macrodata.fred_api_key_env,
-                        "fred_api_key_configured": settings.macrodata_fred_api_key_configured,
+                    "macro_sources": {
+                        "enabled": settings.providers.macro_sources.enabled,
+                        "fred_enabled": settings.providers.macro_sources.fred_enabled,
+                        "cboe_enabled": settings.providers.macro_sources.cboe_enabled,
+                        "cftc_enabled": settings.providers.macro_sources.cftc_enabled,
+                        "nasdaq_public_enabled": settings.providers.macro_sources.nasdaq_public_enabled,
                     },
                 },
                 "notifications": {
