@@ -219,6 +219,9 @@ are inexpensive and materially improve regime context. The durable target
 cursor records `required_for_judgment`; only those required targets gate module
 health and publication. An operator-created repair or optional deep-history
 target remains observable but non-blocking.
+Required five-year targets also have a lower numeric queue priority than
+optional deep history, so a large enrichment crawl cannot sit ahead of current
+professional readiness.
 Provider I/O happens after claim commit. One
 completion transaction appends normalized facts and
 `macro_source_receipts`, advances the cursor, and compare-and-set completes the

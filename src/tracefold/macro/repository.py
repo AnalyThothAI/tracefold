@@ -77,6 +77,7 @@ class MacroRepository:
         max_attempts: int,
         history_class: str | None = None,
         required_for_judgment: bool = False,
+        priority: int = 50,
     ) -> dict[str, Any]:
         if start_date > end_date:
             raise ValueError("macro_backfill_invalid_range")
@@ -93,12 +94,13 @@ class MacroRepository:
             )
             VALUES (
               %s, %s, %s, 'backfill', %s::jsonb,
-              'backfilling', %s, 50, 0, %s, %s, %s
+              'backfilling', %s, %s, 0, %s, %s, %s
             )
             ON CONFLICT(dataset_id, partition_key) DO UPDATE SET
               cursor_json = EXCLUDED.cursor_json,
               status = 'backfilling',
               next_due_at_ms = EXCLUDED.next_due_at_ms,
+              priority = EXCLUDED.priority,
               leased_until_ms = NULL,
               lease_owner = NULL,
               attempt_count = 0,
@@ -121,6 +123,7 @@ class MacroRepository:
                     sort_keys=True,
                 ),
                 int(now_ms),
+                int(priority),
                 int(max_attempts),
                 int(now_ms),
                 int(now_ms),

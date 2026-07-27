@@ -204,6 +204,7 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
                 max_attempts=3,
                 history_class="optional_maximum_public_history",
                 required_for_judgment=False,
+                priority=75,
             )
         service = MacroAcquisitionService(
             db=_TestDb(conn),
@@ -222,7 +223,7 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
         result = service.run_once()
         stored = conn.execute(
             """
-            SELECT status, cursor_json, last_receipt_id
+            SELECT status, priority, cursor_json, last_receipt_id
             FROM macro_acquisition_targets
             WHERE target_key = %s
             """,
@@ -246,6 +247,7 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
         "rows_inserted": 0,
     }
     assert stored["status"] == "current"
+    assert stored["priority"] == 75
     assert stored["cursor_json"]["backfill_complete"] is True
     assert stored["cursor_json"]["history_class"] == "optional_maximum_public_history"
     assert stored["cursor_json"]["required_for_judgment"] is False

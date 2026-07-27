@@ -12,6 +12,7 @@ class MacroBackfillPolicy:
     history_class: str
     start_date: date
     required_for_judgment: bool
+    priority: int
 
 
 def _years_before(value: date, years: int) -> date:
@@ -39,6 +40,7 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
             history_class=history_class,
             start_date=min(start_date, through_date),
             required_for_judgment=required_for_judgment,
+            priority=25 if required_for_judgment else 75,
         )
 
     recent_history_start = _years_before(through_date, 5)

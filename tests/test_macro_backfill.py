@@ -43,6 +43,7 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
     assert expected_etfs <= policies.keys()
     assert all(policies[dataset_id].history_class == "required_trailing_five_years" for dataset_id in expected_etfs)
     assert all(policies[dataset_id].required_for_judgment for dataset_id in expected_etfs)
+    assert all(policies[dataset_id].priority == 25 for dataset_id in expected_etfs)
 
 
 def test_professional_backfill_five_year_boundary_handles_leap_day() -> None:
@@ -74,6 +75,7 @@ def test_professional_backfill_includes_every_public_credit_series_and_no_placeh
     assert all(
         not policy.required_for_judgment for policy in policies.values() if policy.history_class.startswith("optional_")
     )
+    assert all(policy.priority == 75 for policy in policies.values() if policy.history_class.startswith("optional_"))
 
 
 def test_macro_cli_exposes_one_professional_backfill_command() -> None:
