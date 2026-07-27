@@ -265,9 +265,9 @@ completed-session macro_research_runs bound to that Evidence Pack
   -> persisted-only research read
 ```
 
-The acquisition clock families are `intraday_market`, `daily_settlement`,
-`scheduled_release`, `official_state`, `official_document`, and explicit
-`backfill`. They are separate workers over one target table, not a uniform
+The acquisition clock families are `daily_settlement`, `scheduled_release`,
+`official_state`, `official_document`, and explicit `backfill`. They are
+separate workers over one target table, not a uniform
 bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
 transactions; completion atomically writes facts, receipt, cursor, and target
 state. Unchanged source content writes zero fact rows while every attempt

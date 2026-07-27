@@ -21,7 +21,6 @@ from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_wo
 from tracefold.platform.workers.worker_base import WorkerBase
 
 _ACQUISITION_WORKERS = {
-    "macro_market_intraday": "intraday_market",
     "macro_settlements": "daily_settlement",
     "macro_economic_releases": "scheduled_release",
     "macro_official_state": "official_state",

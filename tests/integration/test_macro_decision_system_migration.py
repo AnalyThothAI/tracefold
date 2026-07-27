@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from alembic import command
-from psycopg.errors import RaiseException
+from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
@@ -335,7 +335,7 @@ def test_0202_removes_open_binance_candles_and_wrong_unit_fred_facts(tmp_path) -
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260727_0202")
 
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         observations = conn.execute(
@@ -386,3 +386,89 @@ def test_0202_removes_open_binance_candles_and_wrong_unit_fred_facts(tmp_path) -
         for row in targets
     )
     assert module_count == 0
+
+
+def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260727_0202")
+        conn.execute(
+            """
+            INSERT INTO market_instruments(
+              instrument_id, symbol, name, asset_class, instrument_type, venue,
+              currency, price_unit, created_at_ms
+            )
+            VALUES ('btc', 'BTC', 'Bitcoin', 'crypto', 'spot', 'binance', 'USD', 'usdt', 1);
+            INSERT INTO market_observations(
+              observation_id, instrument_id, dataset_id, source_id, field_name,
+              value_numeric, unit, observed_at_ms, published_at_ms, received_at_ms,
+              trust_tier, source_url, fact_hash, raw_data_json
+            )
+            VALUES (
+              'btc-legacy-daily', 'btc', 'binance.btcusdt.spot', 'binance', 'close',
+              65000, 'usdt', 100, 100, 200, 'exchange',
+              'https://api.binance.com/', 'btc-legacy-hash', '{}'::jsonb
+            );
+            INSERT INTO macro_acquisition_targets(
+              target_key, dataset_id, partition_key, clock_kind, cursor_json,
+              status, next_due_at_ms, priority, attempt_count, max_attempts,
+              created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'binance.btcusdt.spot:latest', 'binance.btcusdt.spot', 'latest',
+              'intraday_market', '{"observed_at_ms":100}', 'current',
+              300, 100, 1, 5, 1, 200
+            )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
+        observation_count = conn.execute(
+            """
+            SELECT count(*) AS count
+              FROM market_observations
+             WHERE dataset_id = 'binance.btcusdt.spot'
+            """
+        ).fetchone()["count"]
+        target = conn.execute(
+            """
+            SELECT clock_kind, status, cursor_json, attempt_count
+              FROM macro_acquisition_targets
+             WHERE dataset_id = 'binance.btcusdt.spot'
+            """
+        ).fetchone()
+        with pytest.raises(CheckViolation, match="clock_kind_check"):
+            conn.execute(
+                """
+                INSERT INTO macro_acquisition_targets(
+                  target_key, dataset_id, partition_key, clock_kind, cursor_json,
+                  status, next_due_at_ms, priority, attempt_count, max_attempts,
+                  created_at_ms, updated_at_ms
+                )
+                VALUES (
+                  'retired-intraday', 'retired.intraday', 'latest',
+                  'intraday_market', '{}', 'pending', 0, 100, 0, 5, 1, 1
+                )
+                """
+            )
+        conn.rollback()
+    finally:
+        conn.close()
+
+    assert version == "20260727_0203"
+    assert observation_count == 0
+    assert target == {
+        "clock_kind": "daily_settlement",
+        "status": "pending",
+        "cursor_json": {},
+        "attempt_count": 0,
+    }

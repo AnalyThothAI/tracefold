@@ -98,9 +98,9 @@ scheduling. Licensed CME rates futures prices/curves remain an explicit
 `unavailable` dataset until an authorized provider is configured; the service
 never fills that gap with a fake proxy.
 
-Five automatic acquisition workers own distinct clocks:
-`macro_market_intraday`, `macro_settlements`, `macro_economic_releases`,
-`macro_official_state`, and `macro_official_documents`. `macro_backfill` is
+Four automatic acquisition workers own distinct clocks:
+`macro_settlements`, `macro_economic_releases`, `macro_official_state`, and
+`macro_official_documents`. `macro_backfill` is
 disabled by default and processes only operator-created bounded targets.
 `macro_projection` rebuilds six stable current rows from persisted facts;
 `macro_judgment` seals the 08:50 New York Evidence Pack and daily decision.
@@ -112,7 +112,7 @@ uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YY
 uv run tracefold macro status
 ```
 
-A good macro status reports Alembic `20260727_0202`, bounded acquisition target
+A good macro status reports Alembic `20260727_0203`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -130,6 +130,8 @@ all derived Macro state before the Nasdaq/Cboe source correction rebuild.
 Migration `20260727_0202` removes still-open Binance daily candles and the two
 FRED liquidity series ingested with incorrect units, resets those targets, and
 invalidates derived Macro state before a clean rebuild.
+Migration `20260727_0203` removes the redundant intraday clock and rebuilds the
+Binance dataset as a UTC daily close under the settlement worker.
 Enable the Macro workers only after the migration is current.
 
 A healthy completed-session research run transitions

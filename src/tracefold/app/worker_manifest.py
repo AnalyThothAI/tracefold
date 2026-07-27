@@ -67,28 +67,23 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         ),
     ),
     WorkerManifest(
-        name="macro_market_intraday",
+        name="macro_settlements",
         start_priority=75,
         queue_tables=("macro_acquisition_targets",),
     ),
     WorkerManifest(
-        name="macro_settlements",
+        name="macro_economic_releases",
         start_priority=76,
         queue_tables=("macro_acquisition_targets",),
     ),
     WorkerManifest(
-        name="macro_economic_releases",
+        name="macro_official_state",
         start_priority=77,
         queue_tables=("macro_acquisition_targets",),
     ),
     WorkerManifest(
-        name="macro_official_state",
-        start_priority=78,
-        queue_tables=("macro_acquisition_targets",),
-    ),
-    WorkerManifest(
         name="macro_official_documents",
-        start_priority=79,
+        start_priority=78,
         queue_tables=("macro_acquisition_targets",),
     ),
     WorkerManifest(

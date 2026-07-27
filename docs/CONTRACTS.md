@@ -35,7 +35,6 @@ event_anchor_backfill
 resolution_refresh
 asset_profile_refresh
 token_radar_projection
-macro_market_intraday
 macro_settlements
 macro_economic_releases
 macro_official_state

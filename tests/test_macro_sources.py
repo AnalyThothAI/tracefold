@@ -202,6 +202,8 @@ def test_binance_spot_ignores_the_still_open_daily_candle() -> None:
     assert fact.observed_at_ms == closed_at_ms
     assert fact.received_at_ms == NOW_MS
     assert batch.cursor["observed_at_ms"] == closed_at_ms
+    assert require_dataset("binance.btcusdt.spot").clock_kind == "daily_settlement"
+    assert require_dataset("binance.btcusdt.spot").frequency == "daily"
 
 
 def test_fred_liquidity_series_preserve_their_published_units() -> None:

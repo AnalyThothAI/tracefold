@@ -731,9 +731,6 @@ class WorkersSettings(BaseModel):
     token_radar_projection: TokenRadarProjectionWorkerSettings = Field(
         default_factory=TokenRadarProjectionWorkerSettings
     )
-    macro_market_intraday: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=4)
-    )
     macro_settlements: MacroAcquisitionWorkerSettings = Field(
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=2)
     )

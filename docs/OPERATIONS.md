@@ -179,7 +179,7 @@ downgrade, or database restore point.
 1. Stop all application workers so no 0198 writer can run during migration.
 2. Record the Alembic head and non-empty material-fact counts.
 3. Run `uv run tracefold db migrate`.
-4. Verify that the Alembic head is `20260727_0202` and the preserved
+4. Verify that the Alembic head is `20260727_0203` and the preserved
    material-fact identities/counts are unchanged.
 5. Run
    `uv run tracefold ops rebuild-news-stories --batch-size 100 --execute`.
