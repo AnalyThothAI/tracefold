@@ -379,6 +379,9 @@ Use Compose logs for container output and the supported Tracefold database
 health, audit, query-audit, status, metrics, and `ops` commands for diagnosis
 and repair. There is no repository `ops/` infrastructure tree, auxiliary
 observability service, host log collector, or persistent diagnostic script.
+The runtime hard-cut migration also resets the retired `powa.coalesce` and
+`powa.frequency` `ALTER SYSTEM` entries before the official image takes over
+the existing PostgreSQL volume.
 
 For a migration or production cutover:
 

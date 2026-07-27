@@ -15,6 +15,10 @@ _RETIRED_EXTENSIONS = (
     "pg_qualstats",
     "pg_wait_sampling",
 )
+_RETIRED_SYSTEM_SETTINGS = (
+    "powa.coalesce",
+    "powa.frequency",
+)
 
 
 def upgrade() -> None:
@@ -38,8 +42,11 @@ def upgrade() -> None:
     powa_database_exists = bind.execute(
         sa.text("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'powa')")
     ).scalar_one()
-    if powa_database_exists:
-        with op.get_context().autocommit_block():
+    with op.get_context().autocommit_block():
+        for setting_name in _RETIRED_SYSTEM_SETTINGS:
+            op.execute(f'ALTER SYSTEM RESET "{setting_name}"')
+        op.execute("SELECT pg_reload_conf()")
+        if powa_database_exists:
             op.execute('DROP DATABASE "powa" WITH (FORCE)')
 
 

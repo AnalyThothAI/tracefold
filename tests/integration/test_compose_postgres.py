@@ -78,6 +78,13 @@ def test_postgres_keeps_supported_extensions_and_removes_retired_ones() -> None:
     conn = connect_postgres_test(read_only=True)
     try:
         installed = {row["extname"] for row in conn.execute("SELECT extname FROM pg_extension").fetchall()}
+        retired_setting_files = conn.execute(
+            """
+            SELECT name
+              FROM pg_file_settings
+             WHERE name IN ('powa.coalesce', 'powa.frequency')
+            """
+        ).fetchall()
     finally:
         conn.close()
 
@@ -88,3 +95,4 @@ def test_postgres_keeps_supported_extensions_and_removes_retired_ones() -> None:
         "pg_qualstats",
         "pg_wait_sampling",
     }.isdisjoint(installed)
+    assert retired_setting_files == []

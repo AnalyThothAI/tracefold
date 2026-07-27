@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from alembic import command
 
@@ -13,6 +14,7 @@ from tests.postgres_test_utils import (
 )
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.integrations.news_feeds import RssFeedReader
 from tracefold.news import (
     NewsBriefDraft,
     NewsFeedEntry,
@@ -189,6 +191,174 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
             {"started_at_ms": NOW_MS + 120_000},
         ]
     finally:
+        conn.close()
+
+
+def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
+    tmp_path,
+) -> None:
+    rss_body = b"""
+    <rss version="2.0"><channel>
+      <item>
+        <guid>wall-quote</guid>
+        <link>https://x.com/wallstengine/status/301</link>
+        <title>Fed pricing now implies two cuts before year end</title>
+        <description><![CDATA[
+          Fed pricing now implies two cuts before year end
+          <hr>
+          Federal Reserve: The committee will remain data dependent
+          while monitoring inflation and employment risks.
+        ]]></description>
+        <pubDate>Sun, 17 May 2026 06:35:00 GMT</pubDate>
+      </item>
+      <item>
+        <guid>wall-302</guid>
+        <link>https://x.com/wallstengine/status/302</link>
+        <title>Government announces emergency tariff package</title>
+        <pubDate>Sun, 17 May 2026 06:34:00 GMT</pubDate>
+      </item>
+      <item>
+        <guid>wall-303</guid>
+        <link>https://x.com/wallstengine/status/303</link>
+        <title>Oil markets brace for a volatile opening</title>
+        <pubDate>Sun, 17 May 2026 06:33:00 GMT</pubDate>
+      </item>
+      <item>
+        <guid>wall-304</guid>
+        <link>https://x.com/wallstengine/status/304</link>
+        <title>Equity futures hold near the overnight range</title>
+        <pubDate>Sun, 17 May 2026 06:32:00 GMT</pubDate>
+      </item>
+      <item>
+        <guid>wall-305</guid>
+        <link>https://x.com/wallstengine/status/305</link>
+        <title>Treasury yields edge lower before the open</title>
+        <pubDate>Sun, 17 May 2026 06:31:00 GMT</pubDate>
+      </item>
+      <item>
+        <guid>wall-older-than-cap</guid>
+        <link>https://x.com/wallstengine/status/300</link>
+        <title>This sixth entry must not enter the pipeline</title>
+        <pubDate>Sun, 17 May 2026 06:30:00 GMT</pubDate>
+      </item>
+    </channel></rss>
+    """
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.host == "rsshub"
+        assert request.url.path.endswith(
+            "/twitter/user/wallstengine/includeReplies=0&includeRts=0&showRetweetTextInTitle=1&showQuotedInTitle=0"
+        )
+        if len(requests) == 2:
+            assert request.headers["if-none-match"] == '"wall-etag-1"'
+            return httpx.Response(304, headers={"etag": '"wall-etag-1"'})
+        assert len(requests) in {1, 3}
+        if len(requests) == 3:
+            assert request.headers["if-none-match"] == '"wall-etag-1"'
+        return httpx.Response(
+            200,
+            content=rss_body,
+            headers={"etag": f'"wall-etag-{1 if len(requests) == 1 else 2}"'},
+        )
+
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    reader = RssFeedReader(
+        transport=httpx.MockTransport(handler),
+        max_attempts=1,
+    )
+    try:
+        migrate(conn)
+        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
+        clock = SimpleNamespace(now_ms=NOW_MS)
+        pipeline = NewsPipelineWorker(
+            settings=SimpleNamespace(
+                batch_size=1,
+                fetch_concurrency=1,
+                statement_timeout_seconds=30.0,
+            ),
+            db=SingleConnectionDB(conn),
+            telemetry=SimpleNamespace(),
+            sources=(wallstengine,),
+            feed_reader=reader,
+            clock_ms=lambda: clock.now_ms,
+        )
+
+        first = asyncio.run(pipeline.run_once())
+        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+        not_modified = asyncio.run(pipeline.run_once())
+        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+        duplicate = asyncio.run(pipeline.run_once())
+
+        assert first.notes["entries_seen"] == 6
+        assert first.notes["observations_inserted"] == 5
+        assert first.notes["items_inserted"] == 5
+        assert first.notes["story_writes"] == 5
+        assert not_modified.notes["entries_seen"] == 0
+        assert not_modified.notes["observations_inserted"] == 0
+        assert not_modified.notes["items_inserted"] == 0
+        assert not_modified.notes["story_writes"] == 0
+        assert duplicate.notes["entries_seen"] == 6
+        assert duplicate.notes["observations_inserted"] == 5
+        assert duplicate.notes["items_inserted"] == 0
+        assert duplicate.notes["items_updated"] == 0
+        assert duplicate.notes["story_writes"] == 0
+
+        fetches = conn.execute(
+            """
+            SELECT status, entries_seen, observations_inserted,
+                   items_inserted, items_updated, rejection_counts
+              FROM news_source_fetches
+             WHERE source_id = %s
+             ORDER BY started_at_ms
+            """,
+            (wallstengine.source_id,),
+        ).fetchall()
+        assert [row["status"] for row in fetches] == [
+            "success",
+            "not_modified",
+            "success",
+        ]
+        assert fetches[0]["rejection_counts"] == {"per_feed_cap": 1}
+        assert fetches[2]["rejection_counts"] == {
+            "duplicate": 5,
+            "per_feed_cap": 1,
+        }
+        assert conn.execute(
+            "SELECT count(*) AS count FROM news_feed_observations WHERE source_id = %s",
+            (wallstengine.source_id,),
+        ).fetchone() == {"count": 10}
+        assert conn.execute(
+            "SELECT count(*) AS count FROM news_items WHERE source_id = %s",
+            (wallstengine.source_id,),
+        ).fetchone() == {"count": 5}
+        assert conn.execute(
+            """
+            SELECT source_count, count(*) AS story_count
+              FROM news_stories
+             WHERE representative_source_id = %s
+             GROUP BY source_count
+            """,
+            (wallstengine.source_id,),
+        ).fetchone() == {"source_count": 1, "story_count": 5}
+
+        quote = conn.execute(
+            """
+            SELECT title, description
+              FROM news_items
+             WHERE source_id = %s AND source_item_key = 'wall-quote'
+            """,
+            (wallstengine.source_id,),
+        ).fetchone()
+        assert quote["title"] == "Fed pricing now implies two cuts before year end"
+        assert "Federal Reserve" in quote["description"]
+        assert all(
+            candidate["representative_source_id"] == wallstengine.source_id
+            for candidate in NewsRepository(conn).brief_candidates()
+        )
+    finally:
+        reader.close()
         conn.close()
 
 
