@@ -40,7 +40,9 @@
 
   .macro-decision__raw-evidence [role="row"] {
     display: grid;
-    grid-template-columns: minmax(14rem, 1.5fr) minmax(6rem, 0.6fr) minmax(7rem, 0.7fr) minmax(8rem, 0.8fr) auto;
+    grid-template-columns:
+      minmax(14rem, 1.5fr) minmax(6rem, 0.6fr) minmax(7rem, 0.7fr) minmax(8rem, 0.8fr)
+      auto;
     align-items: center;
     gap: 0.65rem;
     min-width: 49rem;

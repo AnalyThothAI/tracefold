@@ -195,12 +195,12 @@ class MacroRepository:
             "published_at_ms": fact.published_at_ms,
         }
         fact_hash = _payload_hash(payload)
-        fact_id = "macro_" + hashlib.sha256(
-            (
-                f"{fact.dataset_id}|{fact.series_id}|{fact.reference_date}|"
-                f"{fact_hash}"
-            ).encode()
-        ).hexdigest()
+        fact_id = (
+            "macro_"
+            + hashlib.sha256(
+                (f"{fact.dataset_id}|{fact.series_id}|{fact.reference_date}|{fact_hash}").encode()
+            ).hexdigest()
+        )
         cursor = self.conn.execute(
             """
             INSERT INTO macro_series_facts(
@@ -246,9 +246,12 @@ class MacroRepository:
             "importance_tier": fact.importance_tier,
         }
         fact_hash = _payload_hash(payload)
-        release_fact_id = "macrorel_" + hashlib.sha256(
-            f"{fact.dataset_id}|{fact.release_id}|{fact.reference_period}|{fact_hash}".encode()
-        ).hexdigest()
+        release_fact_id = (
+            "macrorel_"
+            + hashlib.sha256(
+                f"{fact.dataset_id}|{fact.release_id}|{fact.reference_period}|{fact_hash}".encode()
+            ).hexdigest()
+        )
         cursor = self.conn.execute(
             """
             INSERT INTO macro_release_facts(
@@ -673,9 +676,7 @@ class MacroRepository:
         return dict(row) if row is not None else None
 
     def all_modules_current(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM macro_module_current ORDER BY module_id"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM macro_module_current ORDER BY module_id").fetchall()
         return [dict(row) for row in rows]
 
     def insert_evidence_pack(
@@ -793,9 +794,7 @@ class MacroRepository:
                 (session_date,),
             ).fetchone()
         else:
-            row = self.conn.execute(
-                "SELECT * FROM macro_daily_judgments ORDER BY session_date DESC LIMIT 1"
-            ).fetchone()
+            row = self.conn.execute("SELECT * FROM macro_daily_judgments ORDER BY session_date DESC LIMIT 1").fetchone()
         return dict(row) if row is not None else None
 
 

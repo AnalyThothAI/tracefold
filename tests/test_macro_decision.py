@@ -178,18 +178,12 @@ def test_rates_module_keeps_each_cftc_futures_contract_as_a_visible_series() -> 
         features=[],
     )
 
-    chart = next(
-        item
-        for item in module["charts"]
-        if item["title"] == "利率期货杠杆资金净仓位（占OI）"
-    )
+    chart = next(item for item in module["charts"] if item["title"] == "利率期货杠杆资金净仓位（占OI）")
     assert chart["series"] == [
         "cftc.tff.rates_positions:042601",
         "cftc.tff.rates_positions:043602",
     ]
     assert [point["y"] for point in chart["points"]] == [-12.5, -39.1]
     assert {
-        item["fact_ref"]
-        for item in module["raw_evidence"]
-        if item["dataset_id"] == "cftc.tff.rates_positions"
+        item["fact_ref"] for item in module["raw_evidence"] if item["dataset_id"] == "cftc.tff.rates_positions"
     } == {"position:2y", "position:10y"}

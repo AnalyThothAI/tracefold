@@ -165,9 +165,7 @@ def build_module_payload(
     module_settlements = [row for row in settlement_rows if row["dataset_id"] in dataset_ids]
     module_releases = [row for row in release_rows if row["dataset_id"] in dataset_ids]
     module_documents = [row for row in document_rows if row["dataset_id"] in dataset_ids]
-    states_by_dataset = {
-        str(row["dataset_id"]): row for row in target_states if row["dataset_id"] in dataset_ids
-    }
+    states_by_dataset = {str(row["dataset_id"]): row for row in target_states if row["dataset_id"] in dataset_ids}
     latest_by_dataset = _latest_by_dataset(
         module_series,
         module_market,
@@ -200,15 +198,10 @@ def build_module_payload(
     raw_latest = list(latest_by_dataset.values())
     seen_fact_refs = {_fact_identity(row) for row in raw_latest}
     raw_latest.extend(
-        row
-        for row in _latest_positions_by_contract(module_positions)
-        if _fact_identity(row) not in seen_fact_refs
+        row for row in _latest_positions_by_contract(module_positions) if _fact_identity(row) not in seen_fact_refs
     )
     module_features = [
-        {
-            key: (str(value) if isinstance(value, date) else value)
-            for key, value in feature.items()
-        }
+        {key: (str(value) if isinstance(value, date) else value) for key, value in feature.items()}
         for feature in features
         if feature["module_id"] == module_id
     ]
@@ -401,8 +394,7 @@ def _contradictions(
     changes: list[dict[str, Any]],
 ) -> list[str]:
     if module_id == "rates_fed" and any(
-        feature["feature_id"] == "rates.curve_10y2y" and feature["value_numeric"] < 0
-        for feature in features
+        feature["feature_id"] == "rates.curve_10y2y" and feature["value_numeric"] < 0 for feature in features
     ):
         return ["收益率曲线仍倒挂；与软着陆定价之间存在张力。"]
     if module_id == "cross_asset" and len(changes) >= 2:
@@ -500,10 +492,14 @@ def _fact_clock_ms(row: dict[str, Any]) -> int:
 def _freshness_age_ms(spec: Any, row: dict[str, Any], now_ms: int) -> int:
     reference = row.get("reference_date") or row.get("trade_date")
     if reference is None and row.get("observed_at_ms") is not None:
-        reference = datetime.fromtimestamp(
-            int(row["observed_at_ms"]) / 1_000,
-            tz=UTC,
-        ).astimezone(_NEW_YORK).date()
+        reference = (
+            datetime.fromtimestamp(
+                int(row["observed_at_ms"]) / 1_000,
+                tz=UTC,
+            )
+            .astimezone(_NEW_YORK)
+            .date()
+        )
     if spec.frequency != "daily" or not isinstance(reference, date):
         return max(0, now_ms - _fact_clock_ms(row))
     current_date = datetime.fromtimestamp(now_ms / 1_000, tz=UTC).astimezone(_NEW_YORK).date()

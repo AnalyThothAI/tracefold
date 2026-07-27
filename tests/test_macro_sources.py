@@ -147,9 +147,7 @@ def test_cfe_settlement_uses_current_official_csv_endpoint() -> None:
         return httpx.Response(
             200,
             text=(
-                "Product,Symbol,Expiration Date,Price\n"
-                "VX,VX30/N6,2026-07-29,19.231\n"
-                "IBHY,IBHY/U6,2026-09-18,98.625\n"
+                "Product,Symbol,Expiration Date,Price\nVX,VX30/N6,2026-07-29,19.231\nIBHY,IBHY/U6,2026-09-18,98.625\n"
             ),
             request=request,
         )
@@ -264,9 +262,7 @@ def test_nasdaq_public_history_emits_previous_close_facts() -> None:
 def test_disabled_nasdaq_public_source_is_explicitly_unavailable() -> None:
     client = MacroSourceClient(
         nasdaq_public_enabled=False,
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(500, request=request)
-        ),
+        transport=httpx.MockTransport(lambda request: httpx.Response(500, request=request)),
     )
     try:
         with pytest.raises(MacroSourceUnavailable, match="nasdaq_public_disabled"):

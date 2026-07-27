@@ -1,9 +1,6 @@
 import { MacroModulePage, MacroOverviewPage } from "@features/macro";
 import { cleanup, screen } from "@testing-library/react";
-import {
-  macroModuleFixture,
-  macroOverviewFixture,
-} from "@tests/fixtures/macroFixture";
+import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import { server } from "@tests/msw/server";
 import { renderWithProviders } from "@tests/render/renderWithProviders";
 import { http, HttpResponse } from "msw";
@@ -35,10 +32,9 @@ describe("Macro decision workbench", () => {
         HttpResponse.json({ ok: true, data: macroModuleFixture("cross_asset") }),
       ),
     );
-    renderWithProviders(
-      <MacroModulePage moduleId="cross_asset" token="test-token" />,
-      { route: "/macro/cross-asset" },
-    );
+    renderWithProviders(<MacroModulePage moduleId="cross_asset" token="test-token" />, {
+      route: "/macro/cross-asset",
+    });
 
     expect(await screen.findByRole("heading", { name: "大类资产与期货" })).toBeVisible();
     expect(screen.getByText("CFE VIX期货官方结算")).toBeVisible();

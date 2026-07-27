@@ -31,8 +31,5 @@ def runtime_workers_settings() -> WorkersSettings:
         "macro_research",
     )
     return workers.model_copy(
-        update={
-            name: getattr(workers, name).model_copy(update={"enabled": False})
-            for name in disabled_macro_workers
-        }
+        update={name: getattr(workers, name).model_copy(update={"enabled": False}) for name in disabled_macro_workers}
     )

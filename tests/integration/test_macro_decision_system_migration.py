@@ -89,9 +89,7 @@ def test_0200_destroys_legacy_macro_state_and_starts_new_fact_model_empty(
             ).fetchall()
         }
         new_counts = {
-            table_name: conn.execute(
-                f"SELECT COUNT(*)::int AS count FROM {table_name}"
-            ).fetchone()["count"]
+            table_name: conn.execute(f"SELECT COUNT(*)::int AS count FROM {table_name}").fetchone()["count"]
             for table_name in (
                 "market_observations",
                 "market_settlements",
@@ -103,8 +101,7 @@ def test_0200_destroys_legacy_macro_state_and_starts_new_fact_model_empty(
             )
         }
         remaining_checkpoint_threads = {
-            row["thread_id"]
-            for row in conn.execute("SELECT thread_id FROM checkpoints").fetchall()
+            row["thread_id"] for row in conn.execute("SELECT thread_id FROM checkpoints").fetchall()
         }
         conn.execute(
             """

@@ -24,9 +24,9 @@ test("renders the daily judgment, six modules and asynchronous research", async 
   await page.goto("/macro");
 
   await expect(page.getByRole("heading", { level: 1, name: "每日宏观决策台" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "宏观决策模块" }).getByRole("link")).toHaveCount(
-    8,
-  );
+  await expect(
+    page.getByRole("navigation", { name: "宏观决策模块" }).getByRole("link"),
+  ).toHaveCount(8);
   await expect(page.getByRole("region", { name: "六个宏观模块" })).toBeVisible();
   await expect(page.getByText("固定资产方向")).toBeVisible();
   await expect(page.getByText("mep_fixture")).toBeVisible();

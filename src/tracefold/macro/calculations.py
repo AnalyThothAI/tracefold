@@ -206,10 +206,7 @@ def _multi_series(
     spec: CalculationSpec,
     inputs: list[list[dict[str, Any]]],
 ) -> dict[str, Any] | None:
-    by_date = [
-        {row["reference_date"]: row for row in rows if _numeric(row) is not None}
-        for rows in inputs
-    ]
+    by_date = [{row["reference_date"]: row for row in rows if _numeric(row) is not None} for rows in inputs]
     if spec.gap_policy == "intersection":
         common_dates = set(by_date[0])
         for rows_by_date in by_date[1:]:

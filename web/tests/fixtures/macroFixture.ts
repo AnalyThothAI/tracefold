@@ -145,15 +145,35 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroModuleReadData
         title: `${labels[moduleId]}历史`,
         series: [datasetId],
         points: [
-          { dataset_id: datasetId, label: labels[moduleId], x: "2026-07-24", y: 4.2, unit: "percent" },
-          { dataset_id: datasetId, label: labels[moduleId], x: "2026-07-25", y: 4.25, unit: "percent" },
-          { dataset_id: datasetId, label: labels[moduleId], x: "2026-07-26", y: 4.32, unit: "percent" },
+          {
+            dataset_id: datasetId,
+            label: labels[moduleId],
+            x: "2026-07-24",
+            y: 4.2,
+            unit: "percent",
+          },
+          {
+            dataset_id: datasetId,
+            label: labels[moduleId],
+            x: "2026-07-25",
+            y: 4.25,
+            unit: "percent",
+          },
+          {
+            dataset_id: datasetId,
+            label: labels[moduleId],
+            x: "2026-07-26",
+            y: 4.32,
+            unit: "percent",
+          },
         ],
       },
     ],
     contradictions: ["短窗口与中窗口方向不一致。"],
     falsifiers: ["对应窗口事实方向反转。"],
-    next_checkpoints: [{ dataset_id: datasetId, label: labels[moduleId], next_check: "按数据时钟检查" }],
+    next_checkpoints: [
+      { dataset_id: datasetId, label: labels[moduleId], next_check: "按数据时钟检查" },
+    ],
     gaps:
       moduleId === "cross_asset"
         ? [

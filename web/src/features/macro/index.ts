@@ -1,7 +1,4 @@
-export {
-  useMacroModuleQuery,
-  useMacroOverviewQuery,
-} from "./api/useMacroDecisionQuery";
+export { useMacroModuleQuery, useMacroOverviewQuery } from "./api/useMacroDecisionQuery";
 export { useMacroResearchQuery } from "./api/useMacroResearchQuery";
 export type {
   MacroAssetDirection,
@@ -16,8 +13,5 @@ export type {
   MacroResearchRunData,
   MacroResearchSectionData,
 } from "./model/macroTypes";
-export {
-  MacroModulePage,
-  MacroOverviewPage,
-} from "./ui/MacroDecisionPage";
+export { MacroModulePage, MacroOverviewPage } from "./ui/MacroDecisionPage";
 export { MacroResearchPage } from "./ui/MacroResearchPage";

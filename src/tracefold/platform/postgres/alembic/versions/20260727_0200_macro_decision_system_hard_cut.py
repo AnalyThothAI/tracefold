@@ -23,9 +23,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
-        "20260727_0200 is an irreversible Macro fact-model hard cut; apply a forward fix"
-    )
+    raise RuntimeError("20260727_0200 is an irreversible Macro fact-model hard cut; apply a forward fix")
 
 
 def _drop_legacy_macro() -> None:

@@ -155,12 +155,7 @@ class MacroAcquisitionService:
                 receipt_id=receipt_id,
                 cursor=batch.cursor,
                 next_due_at_ms=(
-                    completed_at_ms
-                    + (
-                        spec.refresh_seconds * 1_000
-                        if batch.facts
-                        else int(self.settings.retry_ms)
-                    )
+                    completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else int(self.settings.retry_ms))
                     if self.clock_kind != "backfill"
                     else (253_402_300_799_000 if backfill_complete else completed_at_ms)
                 ),
@@ -195,10 +190,7 @@ def _receipt_id(
     completed_at_ms: int,
     result_key: str,
 ) -> str:
-    identity = (
-        f"{target['target_key']}|{started_at_ms}|{completed_at_ms}|"
-        f"{target['attempt_count']}|{result_key}"
-    )
+    identity = f"{target['target_key']}|{started_at_ms}|{completed_at_ms}|{target['attempt_count']}|{result_key}"
     return "macrorcpt_" + hashlib.sha256(identity.encode()).hexdigest()
 
 

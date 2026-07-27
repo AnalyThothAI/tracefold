@@ -179,9 +179,7 @@ class MacroSourceClient:
         end_date = _optional_date(cursor.get("end_date"))
         cursor_date = _optional_date(cursor.get("reference_date")) or start_date
         lower_bound = start_date or (
-            cursor_date - timedelta(days=7)
-            if cursor_date is not None
-            else received_date - timedelta(days=1_825)
+            cursor_date - timedelta(days=7) if cursor_date is not None else received_date - timedelta(days=1_825)
         )
         upper_bound = end_date or received_date
         response = self._client.get(
@@ -397,9 +395,7 @@ class MacroSourceClient:
         cursor_date = _optional_date(cursor.get("reference_date"))
         received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
         lower_bound = start_date or (
-            cursor_date - timedelta(days=35)
-            if cursor_date is not None
-            else received_date - timedelta(days=730)
+            cursor_date - timedelta(days=35) if cursor_date is not None else received_date - timedelta(days=730)
         )
         contract_clause = ",".join(f"'{code}'" for code in contract_labels)
         where = [f"cftc_contract_market_code in ({contract_clause})"]
@@ -511,11 +507,7 @@ class MacroSourceClient:
         )
         _require_success(response, source_id=spec.source_id)
         payload = response.json()
-        series = (
-            payload.get("Results", {}).get("series", [])
-            if isinstance(payload, dict)
-            else []
-        )
+        series = payload.get("Results", {}).get("series", []) if isinstance(payload, dict) else []
         raw_rows = series[0].get("data", []) if series and isinstance(series[0], dict) else []
         rows = [
             row
@@ -594,9 +586,7 @@ class MacroSourceClient:
                 continue
             guid = _xml_text(item, "guid") or url
             content_hash = hashlib.sha256(content_text.encode()).hexdigest()
-            document_id = "macrodoc_" + hashlib.sha256(
-                f"{spec.dataset_id}|{guid}|{content_hash}".encode()
-            ).hexdigest()
+            document_id = "macrodoc_" + hashlib.sha256(f"{spec.dataset_id}|{guid}|{content_hash}".encode()).hexdigest()
             effective_date = datetime.fromtimestamp(published_at_ms / 1_000, tz=UTC).date()
             documents.append(
                 DocumentFact(
@@ -626,12 +616,7 @@ def _batch(
     spec: DatasetSpec,
     partition_key: str,
     facts: tuple[
-        SeriesFact
-        | ReleaseFact
-        | DocumentFact
-        | MarketObservationFact
-        | MarketPositionFact
-        | MarketSettlementFact,
+        SeriesFact | ReleaseFact | DocumentFact | MarketObservationFact | MarketPositionFact | MarketSettlementFact,
         ...,
     ],
     response: httpx.Response | requests.Response,

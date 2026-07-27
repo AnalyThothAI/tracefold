@@ -37,10 +37,7 @@ def macro_overview(request: Request) -> JSONResponse:
         module_rows = {row["module_id"]: row for row in repos.macro.all_modules_current()}
         judgment_row = repos.macro.daily_judgment()
         research_row = repos.macro_research.research_state()
-    modules = [
-        _module_summary(module_id, module_rows.get(module_id))
-        for module_id in MACRO_MODULE_IDS
-    ]
+    modules = [_module_summary(module_id, module_rows.get(module_id)) for module_id in MACRO_MODULE_IDS]
     readiness_values = {module["readiness"] for module in modules}
     if "blocked" in readiness_values or "missing" in readiness_values:
         overall_readiness = "blocked"
@@ -56,9 +53,7 @@ def macro_overview(request: Request) -> JSONResponse:
     payload = {
         "schema_version": "macro_overview_v1",
         "read_at_ms": read_at_ms,
-        "judgment_cutoff_ms": (
-            int(judgment_row["judgment_cutoff_ms"]) if judgment_row is not None else None
-        ),
+        "judgment_cutoff_ms": (int(judgment_row["judgment_cutoff_ms"]) if judgment_row is not None else None),
         "latest_fact_at_ms": max(
             (int(module["latest_fact_at_ms"]) for module in modules),
             default=0,
@@ -67,8 +62,7 @@ def macro_overview(request: Request) -> JSONResponse:
         "daily_judgment": judgment,
         "modules": modules,
         "changes_since_judgment": [
-            {"module_id": module["module_id"], "changes": module["top_changes"][:3]}
-            for module in modules
+            {"module_id": module["module_id"], "changes": module["top_changes"][:3]} for module in modules
         ],
         "research": _compact_research_payload(research_row),
     }
@@ -205,11 +199,7 @@ def _module_payload(
 
 
 def _module_summary(module_id: str, row: dict[str, Any] | None) -> dict[str, Any]:
-    payload = (
-        dict(row["payload_json"])
-        if row is not None and isinstance(row.get("payload_json"), dict)
-        else None
-    )
+    payload = dict(row["payload_json"]) if row is not None and isinstance(row.get("payload_json"), dict) else None
     return {
         "module_id": module_id,
         "label": MACRO_MODULE_LABELS[module_id],
@@ -236,13 +226,7 @@ def _compact_research_payload(row: dict[str, Any] | None) -> dict[str, Any]:
             "href": "/macro/research",
         }
     run_status = str(row.get("run_status") or "") if row is not None else ""
-    state = (
-        "generating"
-        if run_status in _GENERATING_RUN_STATES
-        else "failed"
-        if run_status == "failed"
-        else "missing"
-    )
+    state = "generating" if run_status in _GENERATING_RUN_STATES else "failed" if run_status == "failed" else "missing"
     return {
         "state": state,
         "session_date": row.get("session_date") if row is not None else None,

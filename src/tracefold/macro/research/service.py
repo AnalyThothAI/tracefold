@@ -446,9 +446,7 @@ def require_artifact_integrity(
     if artifact.market_cutoff_ms != scope.market_cutoff_ms:
         raise MacroResearchIntegrityError("macro_research_artifact_cutoff_mismatch")
     if artifact.reviewer_disposition != "pass":
-        raise MacroResearchIntegrityError(
-            f"macro_research_reviewer_{artifact.reviewer_disposition}"
-        )
+        raise MacroResearchIntegrityError(f"macro_research_reviewer_{artifact.reviewer_disposition}")
     missing = sorted(artifact.source_refs - frozenset(verified_evidence_refs))
     if missing:
         raise MacroResearchIntegrityError("macro_research_artifact_unknown_citations:" + ",".join(missing))

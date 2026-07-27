@@ -70,6 +70,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
-        "20260727_0201 irreversibly removes the unsupported Stooq source lane"
-    )
+    raise RuntimeError("20260727_0201 is irreversible and removes the unsupported Stooq source lane")

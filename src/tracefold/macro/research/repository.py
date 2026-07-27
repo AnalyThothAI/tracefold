@@ -62,9 +62,7 @@ class MacroResearchRepository:
         return dict(row)
 
     def latest_run_session(self) -> date | None:
-        row = self.conn.execute(
-            "SELECT MAX(session_date) AS session_date FROM macro_research_runs"
-        ).fetchone()
+        row = self.conn.execute("SELECT MAX(session_date) AS session_date FROM macro_research_runs").fetchone()
         return row["session_date"] if row is not None else None
 
     def scheduling_state(self, *, through_date: date) -> dict[str, date | None]:
@@ -349,9 +347,7 @@ class MacroResearchRepository:
 
     def research_state(self, session_date: date | None = None) -> dict[str, Any] | None:
         if session_date is None:
-            row = self.conn.execute(
-                "SELECT MAX(session_date) AS session_date FROM macro_research_runs"
-            ).fetchone()
+            row = self.conn.execute("SELECT MAX(session_date) AS session_date FROM macro_research_runs").fetchone()
             session_date = row["session_date"] if row is not None else None
         if session_date is None:
             return None
@@ -430,17 +426,10 @@ class MacroResearchRepository:
                 and record.observed_at < query.start_date
             ):
                 continue
-            if (
-                query.end_date is not None
-                and record.observed_at is not None
-                and record.observed_at > query.end_date
-            ):
+            if query.end_date is not None and record.observed_at is not None and record.observed_at > query.end_date:
                 continue
             if query_text:
-                searchable = (
-                    f"{record.concept_key} {record.source_label} {record.summary} "
-                    f"{record.payload}"
-                ).lower()
+                searchable = (f"{record.concept_key} {record.source_label} {record.summary} {record.payload}").lower()
                 if query_text not in searchable:
                     continue
             selected.append(record)
@@ -457,10 +446,7 @@ class MacroResearchRepository:
             raise ValueError("macro_research_read_evidence_limit")
         if len(source_refs) != len(set(source_refs)):
             raise ValueError("macro_research_read_evidence_duplicate_ref")
-        by_ref = {
-            record.evidence_ref: record
-            for record in _pack_records(self._scope_pack(scope))
-        }
+        by_ref = {record.evidence_ref: record for record in _pack_records(self._scope_pack(scope))}
         return require_evidence_in_scope(
             scope,
             tuple(by_ref[source_ref] for source_ref in source_refs if source_ref in by_ref),
@@ -632,11 +618,7 @@ def _pack_records(pack: dict[str, Any]) -> tuple[MacroEvidenceRecord, ...]:
         for fact in module.get("raw_evidence", ()):
             if not isinstance(fact, Mapping) or not fact.get("fact_ref"):
                 continue
-            available_at_ms = int(
-                fact.get("published_at_ms")
-                or fact.get("received_at_ms")
-                or cutoff_ms
-            )
+            available_at_ms = int(fact.get("published_at_ms") or fact.get("received_at_ms") or cutoff_ms)
             reference = _optional_date(fact.get("reference")) or session_date
             records.append(
                 MacroEvidenceRecord(
@@ -651,11 +633,7 @@ def _pack_records(pack: dict[str, Any]) -> tuple[MacroEvidenceRecord, ...]:
                     available_at_ms=available_at_ms,
                     persisted_at_ms=persisted_at_ms,
                     observed_at=reference,
-                    published_at_ms=(
-                        int(fact["published_at_ms"])
-                        if fact.get("published_at_ms") is not None
-                        else None
-                    ),
+                    published_at_ms=(int(fact["published_at_ms"]) if fact.get("published_at_ms") is not None else None),
                     url=str(fact["source_url"]) if fact.get("source_url") else None,
                     summary=(
                         f"{fact.get('dataset_id')}={fact.get('value')} {fact.get('unit')}; "

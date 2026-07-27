@@ -102,8 +102,7 @@ class MacroJudgmentService:
                 for spec in CALCULATION_REGISTRY.values()
             ],
             "changes_since_judgment": [
-                {"module_id": module["module_id"], "changes": module["top_changes"][:3]}
-                for module in modules
+                {"module_id": module["module_id"], "changes": module["top_changes"][:3]} for module in modules
             ],
         }
         pack_hash = _payload_hash(pack_payload)
@@ -234,11 +233,7 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
         for module in evidence_pack["modules"]
         for text in module["contradictions"]
     ]
-    gaps = [
-        {"module_id": module["module_id"], **gap}
-        for module in evidence_pack["modules"]
-        for gap in module["gaps"]
-    ]
+    gaps = [{"module_id": module["module_id"], **gap} for module in evidence_pack["modules"] for gap in module["gaps"]]
     citations = [
         {
             "citation_id": f"cite_{index + 1}",
@@ -248,10 +243,7 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
             "source_url": fact["source_url"],
         }
         for index, fact in enumerate(
-            fact
-            for module in evidence_pack["modules"]
-            for fact in module["raw_evidence"]
-            if fact["fact_ref"]
+            fact for module in evidence_pack["modules"] for fact in module["raw_evidence"] if fact["fact_ref"]
         )
     ]
     return {
@@ -275,8 +267,7 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
         "asset_directions": directions,
         "contradictions": contradictions,
         "falsifiers": [
-            {"module_id": module["module_id"], "items": module["falsifiers"]}
-            for module in evidence_pack["modules"]
+            {"module_id": module["module_id"], "items": module["falsifiers"]} for module in evidence_pack["modules"]
         ],
         "next_checkpoints": [
             {"module_id": module["module_id"], **checkpoint}
@@ -303,16 +294,10 @@ def render_daily_memo(judgment: dict[str, Any]) -> str:
         lines.append(f"- {name}: {payload['state']}｜{payload['driver']}")
     lines.extend(["", "## 固定资产方向", ""])
     for asset, payload in judgment["asset_directions"].items():
-        lines.append(
-            f"- {asset}: 1周 {payload['1w']}；1月 {payload['1m']}；"
-            f"置信度 {payload['confidence']}。"
-        )
+        lines.append(f"- {asset}: 1周 {payload['1w']}；1月 {payload['1m']}；置信度 {payload['confidence']}。")
     if judgment["gaps"]:
         lines.extend(["", "## 数据缺口", ""])
-        lines.extend(
-            f"- {gap['module_id']} / {gap['label']}: {gap['reason']}"
-            for gap in judgment["gaps"]
-        )
+        lines.extend(f"- {gap['module_id']} / {gap['label']}: {gap['reason']}" for gap in judgment["gaps"])
     return "\n".join(lines)
 
 
@@ -333,9 +318,7 @@ def _inflation_state(module: dict[str, Any]) -> dict[str, str]:
     pce = _feature(module, "inflation.core_pce_yoy")
     if cpi is None and pce is None:
         return _state("sticky", "通胀同比特征不足")
-    average = sum(value for value in (cpi, pce) if value is not None) / sum(
-        value is not None for value in (cpi, pce)
-    )
+    average = sum(value for value in (cpi, pce) if value is not None) / sum(value is not None for value in (cpi, pce))
     if average > 3.0:
         return _state("sticky", "主要通胀同比仍高于2%目标")
     if average < 1.5:
@@ -393,11 +376,7 @@ def _volatility_state(module: dict[str, Any]) -> dict[str, str]:
 
 
 def _asset_directions(modules: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    changes = {
-        item["dataset_id"]: item
-        for module in modules.values()
-        for item in module["top_changes"]
-    }
+    changes = {item["dataset_id"]: item for module in modules.values() for item in module["top_changes"]}
     result = {}
     for asset, dataset_id in _FIXED_ASSETS.items():
         change = changes.get(dataset_id)

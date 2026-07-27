@@ -107,9 +107,7 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
     WorkerManifest(
         name="macro_judgment",
         start_priority=82,
-        current_read_model_identities=(
-            ("macro_daily_judgments", ("session_date",)),
-        ),
+        current_read_model_identities=(("macro_daily_judgments", ("session_date",)),),
     ),
     WorkerManifest(
         name="token_image_mirror",

@@ -58,6 +58,7 @@ class MacroSourceClientProtocol(Protocol):
 
     def close(self) -> None: ...
 
+
 MACRO_MODULE_IDS: tuple[MacroModuleId, ...] = (
     "rates_fed",
     "economy_inflation",
@@ -169,12 +170,7 @@ class FetchBatch:
     dataset_id: str
     partition_key: str
     facts: tuple[
-        SeriesFact
-        | ReleaseFact
-        | DocumentFact
-        | MarketObservationFact
-        | MarketPositionFact
-        | MarketSettlementFact,
+        SeriesFact | ReleaseFact | DocumentFact | MarketObservationFact | MarketPositionFact | MarketSettlementFact,
         ...,
     ]
     cursor: dict[str, Any]

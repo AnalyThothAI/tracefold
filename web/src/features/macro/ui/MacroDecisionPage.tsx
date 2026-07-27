@@ -12,10 +12,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import {
-  useMacroModuleQuery,
-  useMacroOverviewQuery,
-} from "../api/useMacroDecisionQuery";
+import { useMacroModuleQuery, useMacroOverviewQuery } from "../api/useMacroDecisionQuery";
 import type {
   MacroAssetDirection,
   MacroChart,
@@ -71,13 +68,7 @@ export function MacroOverviewPage({ token }: { token: string }) {
   );
 }
 
-export function MacroModulePage({
-  token,
-  moduleId,
-}: {
-  token: string;
-  moduleId: MacroModuleId;
-}) {
+export function MacroModulePage({ token, moduleId }: { token: string; moduleId: MacroModuleId }) {
   const query = useMacroModuleQuery(token, moduleId);
   if (query.isError && !query.data) {
     return <PageState.Error error={query.error} onRetry={() => void query.refetch()} />;
@@ -87,11 +78,7 @@ export function MacroModulePage({
   }
   return (
     <PageState.Stale updating={query.isFetching && !query.isLoading}>
-      <main
-        aria-label={query.data.label}
-        className="macro-decision"
-        data-page-archetype="decision"
-      >
+      <main aria-label={query.data.label} className="macro-decision" data-page-archetype="decision">
         <DecisionHeader
           isFetching={query.isFetching}
           latestFactAtMs={query.data.latest_fact_at_ms}
@@ -187,7 +174,9 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
         {data.modules.map((module) => (
           <article className="macro-decision__module-card" key={module.module_id}>
             <header>
-              <ReadinessBadge readiness={module.readiness === "missing" ? "blocked" : module.readiness} />
+              <ReadinessBadge
+                readiness={module.readiness === "missing" ? "blocked" : module.readiness}
+              />
               <small>{module.gap_count} 个缺口</small>
             </header>
             <h2>{module.label}</h2>
@@ -269,11 +258,7 @@ function JudgmentEvidence({ judgment }: { judgment: MacroDailyJudgment }) {
         )}
         title="矛盾与反证"
       />
-      <JudgmentEvidenceCard
-        empty="暂无预设失效条件。"
-        items={falsifiers}
-        title="判断失效条件"
-      />
+      <JudgmentEvidenceCard empty="暂无预设失效条件。" items={falsifiers} title="判断失效条件" />
       <JudgmentEvidenceCard
         empty="当前没有待补检查点。"
         items={judgment.next_checkpoints.map(
@@ -306,7 +291,13 @@ function JudgmentEvidenceCard({
   return (
     <article>
       <h3>{title}</h3>
-      <ul>{items.length ? items.slice(0, 6).map((item) => <li key={item}>{item}</li>) : <li>{empty}</li>}</ul>
+      <ul>
+        {items.length ? (
+          items.slice(0, 6).map((item) => <li key={item}>{item}</li>)
+        ) : (
+          <li>{empty}</li>
+        )}
+      </ul>
     </article>
   );
 }
@@ -438,7 +429,9 @@ function MacroChartFigure({ chart }: { chart: MacroChart }) {
         <span>各序列独立刻度；窗口由数据频率定义</span>
       </figcaption>
       {rows.length ? (
-        rows.map((row) => <Sparkline datasetId={row.datasetId} key={row.datasetId} points={row.points} />)
+        rows.map((row) => (
+          <Sparkline datasetId={row.datasetId} key={row.datasetId} points={row.points} />
+        ))
       ) : (
         <p>等待有效历史数据。</p>
       )}
@@ -465,9 +458,7 @@ function Sparkline({ datasetId, points }: { datasetId: string; points: MacroChar
     <div className="macro-decision__sparkline">
       <div>
         <strong>{label}</strong>
-        <span>
-          {latest ? `${formatNumber(latest.y)} ${unitLabel(latest.unit)}` : "—"}
-        </span>
+        <span>{latest ? `${formatNumber(latest.y)} ${unitLabel(latest.unit)}` : "—"}</span>
       </div>
       <svg aria-label={`${label} 历史走势`} preserveAspectRatio="none" viewBox="0 0 100 40">
         <path d={path} />
@@ -510,7 +501,7 @@ function RawEvidence({ module }: { module: MacroModuleReadData }) {
                 <span role="cell">
                   {typeof value === "number"
                     ? `${formatNumber(value)} ${unitLabel(unit)}`
-                    : textValue(value) ?? "—"}
+                    : (textValue(value) ?? "—")}
                 </span>
                 <time role="cell">{formatInstant(receivedAt)}</time>
                 <span role="cell">
@@ -621,20 +612,25 @@ function readinessLabel(readiness: MacroReadiness) {
 }
 
 function researchStateLabel(state: MacroOverviewReadData["research"]["state"]) {
-  return { current: "研究已发布", generating: "研究生成中", failed: "研究失败", missing: "尚无研究" }[
-    state
-  ];
+  return {
+    current: "研究已发布",
+    generating: "研究生成中",
+    failed: "研究失败",
+    missing: "尚无研究",
+  }[state];
 }
 
 function dimensionLabel(value: string) {
-  return {
-    growth: "增长",
-    inflation: "通胀",
-    policy: "政策",
-    liquidity: "流动性",
-    credit: "信用",
-    volatility: "波动率",
-  }[value] ?? value;
+  return (
+    {
+      growth: "增长",
+      inflation: "通胀",
+      policy: "政策",
+      liquidity: "流动性",
+      credit: "信用",
+      volatility: "波动率",
+    }[value] ?? value
+  );
 }
 
 function gapReason(value: string | null) {
@@ -660,7 +656,9 @@ function numberValue(value: unknown): number | null {
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function moduleLabel(value: string | null): string {
@@ -672,7 +670,9 @@ function moduleLabel(value: string | null): string {
       credit: "信用市场",
       volatility: "波动率",
       cross_asset: "大类资产与期货",
-    }[value ?? ""] ?? value ?? "宏观模块"
+    }[value ?? ""] ??
+    value ??
+    "宏观模块"
   );
 }
 
@@ -697,19 +697,21 @@ function formatSigned(value: number | null): string {
 }
 
 function unitLabel(unit: string) {
-  return {
-    percent: "%",
-    basis_points: "bp",
-    billions_usd: "十亿美元",
-    millions_usd: "百万美元",
-    index: "点",
-    index_points: "点",
-    percent_open_interest: "% OI",
-    price: "",
-    usdt: "USDT",
-    persons: "人",
-    thousands_persons: "千人",
-  }[unit] ?? unit;
+  return (
+    {
+      percent: "%",
+      basis_points: "bp",
+      billions_usd: "十亿美元",
+      millions_usd: "百万美元",
+      index: "点",
+      index_points: "点",
+      percent_open_interest: "% OI",
+      price: "",
+      usdt: "USDT",
+      persons: "人",
+      thousands_persons: "千人",
+    }[unit] ?? unit
+  );
 }
 
 function downsample(points: MacroChartPoint[], maximum: number): MacroChartPoint[] {

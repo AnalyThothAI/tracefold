@@ -48,12 +48,12 @@ class GeneralMarketRepository:
     def insert_observation(self, fact: MarketObservationFact) -> int:
         payload = _observation_payload(fact)
         fact_hash = _payload_hash(payload)
-        observation_id = "mktobs_" + hashlib.sha256(
-            (
-                f"{fact.dataset_id}|{fact.instrument_id}|{fact.field_name}|"
-                f"{fact.observed_at_ms}|{fact_hash}"
-            ).encode()
-        ).hexdigest()
+        observation_id = (
+            "mktobs_"
+            + hashlib.sha256(
+                (f"{fact.dataset_id}|{fact.instrument_id}|{fact.field_name}|{fact.observed_at_ms}|{fact_hash}").encode()
+            ).hexdigest()
+        )
         cursor = self.conn.execute(
             """
             INSERT INTO market_observations(
@@ -88,12 +88,12 @@ class GeneralMarketRepository:
     def insert_settlement(self, fact: MarketSettlementFact) -> int:
         payload = _settlement_payload(fact)
         fact_hash = _payload_hash(payload)
-        settlement_id = "mktset_" + hashlib.sha256(
-            (
-                f"{fact.dataset_id}|{fact.instrument_id}|{fact.trade_date}|"
-                f"{fact.contract_code}|{fact_hash}"
-            ).encode()
-        ).hexdigest()
+        settlement_id = (
+            "mktset_"
+            + hashlib.sha256(
+                (f"{fact.dataset_id}|{fact.instrument_id}|{fact.trade_date}|{fact.contract_code}|{fact_hash}").encode()
+            ).hexdigest()
+        )
         cursor = self.conn.execute(
             """
             INSERT INTO market_settlements(
@@ -140,12 +140,12 @@ class GeneralMarketRepository:
             "dealer_net_pct_oi": fact.dealer_net_pct_oi,
         }
         fact_hash = _payload_hash(payload)
-        position_fact_id = "mktpos_" + hashlib.sha256(
-            (
-                f"{fact.dataset_id}|{fact.contract_code}|{fact.report_date}|"
-                f"{fact_hash}"
-            ).encode()
-        ).hexdigest()
+        position_fact_id = (
+            "mktpos_"
+            + hashlib.sha256(
+                (f"{fact.dataset_id}|{fact.contract_code}|{fact.report_date}|{fact_hash}").encode()
+            ).hexdigest()
+        )
         cursor = self.conn.execute(
             """
             INSERT INTO market_position_facts(
