@@ -97,7 +97,6 @@ def worker_factories() -> tuple[WorkerFactory, ...]:
         construct_market_workers,
         construct_radar_workers,
     )
-    from tracefold.notifications import construct_notification_workers
 
     return (
         construct_ingestion_workers,
@@ -105,7 +104,6 @@ def worker_factories() -> tuple[WorkerFactory, ...]:
         construct_market_workers,
         construct_macro_workers,
         construct_news_workers,
-        construct_notification_workers,
     )
 
 

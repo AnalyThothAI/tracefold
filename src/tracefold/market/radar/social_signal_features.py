@@ -41,28 +41,20 @@ def time_to_nth_independent_author_ms(rows: Sequence[Mapping[str, Any]], n: int)
     return None
 
 
-def public_followup_author_count(rows: Sequence[Mapping[str, Any]]) -> int:
+def followup_author_count(rows: Sequence[Mapping[str, Any]]) -> int:
     ordered_rows = _ordered_rows(rows)
-    seed_seen = False
-    seed_authors: set[str] = set()
-    public_authors: set[str] = set()
+    seed_author: str | None = None
+    followup_authors: set[str] = set()
     for row in ordered_rows:
-        if not seed_seen:
-            seed_seen = _is_watched(row)
-            if seed_seen:
-                handle = _handle(row)
-                if handle is not None:
-                    seed_authors.add(handle)
-            continue
-        if _is_watched(row):
-            handle = _handle(row)
-            if handle is not None:
-                seed_authors.add(handle)
-            continue
         handle = _handle(row)
-        if handle is not None and handle not in seed_authors:
-            public_authors.add(handle)
-    return len(public_authors)
+        if handle is None:
+            continue
+        if seed_author is None:
+            seed_author = handle
+            continue
+        if handle != seed_author:
+            followup_authors.add(handle)
+    return len(followup_authors)
 
 
 def author_entropy(rows: Sequence[Mapping[str, Any]]) -> float:
@@ -146,7 +138,3 @@ def _source_weight(row: Mapping[str, Any]) -> float:
     if not math.isfinite(weight) or weight < 0:
         return 0.0
     return weight
-
-
-def _is_watched(row: Mapping[str, Any]) -> bool:
-    return bool(row.get("is_watched"))

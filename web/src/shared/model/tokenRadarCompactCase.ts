@@ -35,8 +35,8 @@ export function buildTokenRadarCompactCase(item: TokenFlowItem) {
       value: `${compactNumber(item.propagation.score)} / 100`,
     },
     score: tokenCase.score,
-    socialDetail: `关注源 ${compactNumber(item.flow.watched_mentions)} · 较前窗 ${signedCompactNumber(
-      item.flow.mention_delta,
+    socialDetail: `较前窗 ${signedCompactNumber(item.flow.mention_delta)} · top share ${formatPercentShare(
+      item.propagation.top_author_share,
     )}`,
     socialFact: `${compactNumber(item.flow.mentions)} 帖 · ${compactNumber(
       item.propagation.independent_authors,

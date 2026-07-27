@@ -10,13 +10,8 @@ const archetypes = [
   },
   {
     name: "case",
-    path: "/search?q=HANSA&window=24h&scope=all",
+    path: "/search?q=HANSA&window=24h",
     ready: (page: Page) => page.getByRole("region", { name: "Token case" }),
-  },
-  {
-    name: "monitoring",
-    path: "/watchlist",
-    ready: (page: Page) => page.getByRole("region", { name: "Twitter source monitor" }),
   },
 ] as const;
 
@@ -39,7 +34,7 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-test("freezes representative scan, case, and monitoring archetypes", async ({ page }) => {
+test("freezes representative scan and case archetypes", async ({ page }) => {
   for (const route of archetypes) {
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();

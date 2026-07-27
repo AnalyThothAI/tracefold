@@ -9,11 +9,10 @@ export function Component() {
   const context = useShellRouteContext();
   const liveRadar = useLiveRadarRouteData({
     enabled: true,
-    scope: context.scope,
     token: context.token,
     window: context.windowKey,
   });
-  const selection = useLiveSelection({ scope: context.scope });
+  const selection = useLiveSelection();
 
   return (
     <LivePage>
@@ -23,12 +22,10 @@ export function Component() {
           isAssetFlowLoading={liveRadar.isAssetFlowLoading}
           isAssetFlowRefreshing={liveRadar.isAssetFlowRefreshing}
           radarStatus={liveRadar.radarStatus}
-          scope={context.scope}
           selectedTokenKey={null}
           tokenItems={liveRadar.tokenItems}
           venueFilter={liveRadar.venueFilter}
           windowKey={context.windowKey}
-          onScopeChange={context.updateScope}
           onSelectToken={selection.selectToken}
           onVenueChange={liveRadar.setVenueFilter}
           onWindowChange={context.updateWindow}

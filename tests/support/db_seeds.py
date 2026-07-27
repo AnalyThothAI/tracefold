@@ -15,12 +15,7 @@ HOT_PATH_COUNT_QUERIES: dict[str, str] = {
     ),
     "event_anchor_jobs": "SELECT count(*) AS value FROM event_anchor_backfill_jobs WHERE event_id = %(event_id)s",
     "market_ticks": "SELECT count(*) AS value FROM market_ticks",
-    "token_radar_current_rows": (
-        "SELECT count(*) AS value FROM token_radar_current_rows WHERE \"window\" = '1h' AND scope = 'all'"
-    ),
-    "notifications": "SELECT count(*) AS value FROM notifications",
-    "notification_deliveries": "SELECT count(*) AS value FROM notification_deliveries",
-    "delivered_notifications": "SELECT count(*) AS value FROM notification_deliveries WHERE status = 'delivered'",
+    "token_radar_current_rows": ("SELECT count(*) AS value FROM token_radar_current_rows WHERE \"window\" = '1h'"),
 }
 
 

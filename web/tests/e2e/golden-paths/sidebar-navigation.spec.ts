@@ -34,10 +34,10 @@ test.describe("desktop sidebar navigation", () => {
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
 
-    for (const routeName of ["Radar", "Stocks", "News", "Macro", "Watchlist"]) {
+    for (const routeName of ["Radar", "Stocks", "News", "Macro"]) {
       await expect(primaryNavigation.getByRole("link", { name: routeName })).toBeVisible();
     }
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(5);
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
     const sidebarRoot = page.locator('[data-slot="sidebar"]');
@@ -63,7 +63,6 @@ test.describe("desktop sidebar navigation", () => {
     await expectSidebarRouteClickFast(page, "Stocks", "/stocks");
     await expectSidebarRouteClickFast(page, "Radar", "/");
     await expectSidebarRouteClickFast(page, "Macro", "/macro");
-    await expectSidebarRouteClickFast(page, "Watchlist", "/watchlist");
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);
@@ -84,7 +83,6 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/");
 
     await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Watchlist", "/watchlist");
     await expectSidebarRouteClickFast(page, "Radar", "/");
   });
 });

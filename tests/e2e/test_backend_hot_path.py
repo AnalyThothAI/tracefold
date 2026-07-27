@@ -18,7 +18,6 @@ from tests.support.fake_providers import (
     FakeGmgnUpstreamClient,
 )
 from tests.support.hot_path_runtime import (
-    AUTHOR_HANDLE,
     EVENT_ID,
     FIXED_NOW_MS,
     MARKET_TARGET_ID,
@@ -128,21 +127,17 @@ def _assert_http_surfaces(client: TestClient) -> None:
     assert recent.status_code == 200, recent.text
     assert EVENT_ID in json.dumps(recent.json(), default=str)
 
-    radar = client.get("/api/token-radar", params={"window": "1h", "scope": "all", "limit": 10}, headers=auth_headers())
+    radar = client.get("/api/token-radar", params={"window": "1h", "limit": 10}, headers=auth_headers())
     assert radar.status_code == 200, radar.text
     radar_text = json.dumps(radar.json(), default=str)
     assert SYMBOL in radar_text
-
-    notifications = client.get("/api/notifications", params={"limit": 10}, headers=auth_headers())
-    assert notifications.status_code == 200, notifications.text
-    assert notifications.json()["data"]["items"] == []
 
 
 def _assert_websocket_surfaces(client: TestClient, runtime: Any) -> None:
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": WS_TOKEN})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_json({"type": "subscribe", "handles": [AUTHOR_HANDLE], "replay": 10})
+        ws.send_json({"type": "subscribe", "symbols": [SYMBOL], "replay": 10})
         replay = _receive_matching(ws, lambda msg: msg.get("type") == "event")
         assert replay["event"]["event_id"] == EVENT_ID
 

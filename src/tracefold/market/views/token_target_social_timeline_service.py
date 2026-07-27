@@ -12,10 +12,6 @@ from .token_target_post_serializer import token_target_post_payload
 from .token_target_stage_builder import build_token_target_stages
 
 
-class TokenTargetSocialTimelineScopeError(ValueError):
-    pass
-
-
 class TokenTargetSocialTimelineWindowError(ValueError):
     pass
 
@@ -31,7 +27,6 @@ class TokenTargetSocialTimelineService:
         target_type: str,
         target_id: str,
         window: str,
-        scope: str,
         limit: int,
         cursor: str | None = None,
         now_ms: int | None = None,
@@ -42,13 +37,11 @@ class TokenTargetSocialTimelineService:
         )
         resolved_now_ms = int(now_ms or time.time() * 1000)
         window_ms = _window_ms(window)
-        watched_only = _watched_only(scope)
         fetch_limit = row_limit + 1
         rows = self.targets.timeline_rows(
             target_type=target_type,
             target_id=target_id,
             since_ms=resolved_now_ms - window_ms,
-            watched_only=watched_only,
             limit=fetch_limit,
             cursor=decode_target_cursor(cursor),
         )
@@ -65,7 +58,6 @@ class TokenTargetSocialTimelineService:
                 "target_type": target_type,
                 "target_id": target_id,
                 "window": window,
-                "scope": scope,
                 "bucket": bucket_label,
             },
             "summary": _summary(page_rows),
@@ -101,14 +93,6 @@ def _window_ms(window: str) -> int:
         raise TokenTargetSocialTimelineWindowError(window) from exc
 
 
-def _watched_only(scope: str) -> bool:
-    if scope == "matched":
-        return True
-    if scope == "all":
-        return False
-    raise TokenTargetSocialTimelineScopeError(scope)
-
-
 def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     authors = {str(row.get("author_handle") or "") for row in rows if row.get("author_handle")}
     times = [int(row.get("received_at_ms") or 0) for row in rows]
@@ -118,7 +102,6 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "effective_authors": len(authors),
         "first_seen_ms": min(times) if times else None,
         "latest_seen_ms": max(times) if times else None,
-        "watched_posts": sum(1 for row in rows if row.get("is_watched")),
         "phase": _phase(len(rows), len(authors)),
         "top_author_share": _top_author_share(rows),
         "duplicate_text_share": 0.0,
@@ -179,7 +162,6 @@ def _buckets(rows: list[dict[str, Any]], *, bucket_ms: int, since_ms: int, now_m
                 "posts": 0,
                 "authors": set(),
                 "new_authors": 0,
-                "watched_posts": 0,
                 "duplicate_text_share": 0.0,
                 "price": None,
                 "price_change_from_start_pct": None,
@@ -188,8 +170,6 @@ def _buckets(rows: list[dict[str, Any]], *, bucket_ms: int, since_ms: int, now_m
         bucket["posts"] += 1
         if row.get("author_handle"):
             bucket["authors"].add(str(row["author_handle"]))
-        if row.get("is_watched"):
-            bucket["watched_posts"] += 1
         price = message_price_payload(row)
         if price["observation_id"]:
             bucket["price"] = price
@@ -225,15 +205,13 @@ def _authors(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "latest_seen_ms": received_at_ms,
                 "posts": 0,
                 "followers": None,
-                "role": "watched" if row.get("is_watched") else "amplifier",
+                "role": "amplifier",
                 "quality_score": None,
             },
         )
         item["posts"] += 1
         item["first_seen_ms"] = min(int(item["first_seen_ms"]), received_at_ms)
         item["latest_seen_ms"] = max(int(item["latest_seen_ms"]), received_at_ms)
-        if row.get("is_watched"):
-            item["role"] = "watched"
     return sorted(grouped.values(), key=lambda item: (-int(item["posts"]), int(item["first_seen_ms"])))
 
 

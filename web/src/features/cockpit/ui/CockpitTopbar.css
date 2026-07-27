@@ -3,7 +3,7 @@
     position: relative;
     z-index: 20;
     display: grid;
-    grid-template-columns: minmax(78px, auto) minmax(260px, 1fr) auto 32px 32px;
+    grid-template-columns: minmax(78px, auto) minmax(260px, 1fr) auto 32px;
     align-items: center;
     gap: 9px;
     min-height: var(--shell-topbar-height);
@@ -153,15 +153,8 @@
     white-space: nowrap;
   }
 
-  .topbar-notification-slot {
-    display: grid;
-    grid-column: 4;
-    grid-row: 1;
-    place-items: center;
-  }
-
   .topbar-refresh-button {
-    grid-column: 5;
+    grid-column: 4;
     grid-row: 1;
   }
 
@@ -217,10 +210,6 @@
       grid-column: 3;
       width: 32px;
       padding: 0;
-    }
-
-    .topbar-notification-slot {
-      grid-column: 4;
     }
 
     .topbar-refresh-button {

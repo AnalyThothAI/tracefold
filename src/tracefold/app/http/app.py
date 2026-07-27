@@ -63,10 +63,7 @@ def create_app(
             await runtime.scheduler.start()
             app.state.service = runtime
             logger.info(
-                "Starting Tracefold | "
-                f"handles={','.join(resolved_settings.handles) or 'all'} "
-                f"channels={','.join(resolved_settings.upstream.channels)} "
-                "storage=postgresql"
+                f"Starting Tracefold | channels={','.join(resolved_settings.upstream.channels)} storage=postgresql"
             )
             yield
         except BaseException as exc:
@@ -160,8 +157,6 @@ def _mount_frontend(app: FastAPI, *, frontend_dist: str | Path | None) -> None:
     app.add_api_route("/stocks/{path:path}", frontend_index, include_in_schema=False)
     app.add_api_route("/token", frontend_index, include_in_schema=False)
     app.add_api_route("/token/{path:path}", frontend_index, include_in_schema=False)
-    app.add_api_route("/watchlist", frontend_index, include_in_schema=False)
-    app.add_api_route("/watchlist/{path:path}", frontend_index, include_in_schema=False)
 
 
 def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:
@@ -187,7 +182,6 @@ def _readiness_payload(runtime: Runtime) -> tuple[dict[str, Any], int]:
     payload = {
         "ok": not reasons,
         "reasons": reasons,
-        "handles": list(runtime.settings.handles),
         "store": "postgresql",
         "db": db_status,
         "composition": composition,
@@ -222,7 +216,6 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
         "ok": not reasons,
         "reasons": reasons,
         "snapshot_gate": snapshot.collector.get("snapshot_gate_outcomes", {}),
-        "handles": list(runtime.settings.handles),
         "store": "postgresql",
         "db": dict(snapshot.startup_db_status),
         "provider_states": snapshot.provider_states,

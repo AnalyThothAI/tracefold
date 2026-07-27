@@ -24,7 +24,6 @@ def make_event(
     author_handle: str = "toly",
     text: str = "$PEPE mainnet 0x6982508145454ce325ddbe47a25d4ec3d2311933",
     received_at_ms: int | None = None,
-    is_watched: bool = True,
 ) -> TwitterEvent:
     received_at_ms = received_at_ms if received_at_ms is not None else int(time.time() * 1000)
     return TwitterEvent(
@@ -47,7 +46,6 @@ def make_event(
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[author_handle] if is_watched else [],
         raw={"id": event_id},
     )
 
@@ -59,7 +57,6 @@ def make_token_event(
     address: str,
     received_at_ms: int,
     author_handle: str = "toly",
-    is_watched: bool = True,
 ) -> TwitterEvent:
     snapshot = parse_gmgn_token_payload(
         {
@@ -83,7 +80,6 @@ def make_token_event(
             author_handle=author_handle,
             text=f"${symbol} rotation",
             received_at_ms=received_at_ms,
-            is_watched=is_watched,
         ),
         source=Source(
             provider="gmgn",
@@ -98,15 +94,10 @@ def make_token_event(
 def open_runtime(tmp_path):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     migrate(conn)
-    repos = repositories_for_connection(
-        conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
-    )
+    repos = repositories_for_connection(conn)
     ingest = IngestService(
         evidence=repos.evidence,
         entities=repos.entities,
-        signals=repos.signals,
         registry=repos.registry,
         identity_evidence=repos.identity_evidence,
         token_intent_lookup=repos.token_intent_lookup,
@@ -122,7 +113,7 @@ def open_runtime(tmp_path):
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,
     )
-    return conn, ingest, repos.signals, repos.registry
+    return conn, ingest, repos.registry
 
 
 def token_event(

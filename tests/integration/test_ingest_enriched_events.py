@@ -47,7 +47,7 @@ def test_ingest_chain_event_writes_pending_backfill_without_inline_provider_call
         now_ms=lambda: event.received_at_ms + 500,
     )
     try:
-        result = store.ingest_event(event, is_watched=True)
+        result = store.ingest_event(event)
         event_row = conn.execute("SELECT * FROM events WHERE event_id = %s", (event.event_id,)).fetchone()
         enriched_rows = conn.execute("SELECT * FROM enriched_events WHERE event_id = %s", (event.event_id,)).fetchall()
         market_rows = conn.execute("SELECT * FROM market_ticks").fetchall()
@@ -102,7 +102,7 @@ def test_ingest_chain_event_with_provider_no_quote_still_writes_pending_backfill
         now_ms=lambda: event.received_at_ms + 500,
     )
     try:
-        result = store.ingest_event(event, is_watched=True)
+        result = store.ingest_event(event)
         enriched_rows = conn.execute("SELECT * FROM enriched_events WHERE event_id = %s", (event.event_id,)).fetchall()
         market_rows = conn.execute("SELECT * FROM market_ticks").fetchall()
     finally:
@@ -156,8 +156,6 @@ def test_ingest_chain_event_with_existing_tick_writes_composite_tick_capture(tmp
     )
     repos = repositories_for_connection(
         conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
     with repos.transaction():
         MarketTickPersistenceService(repos).persist_ticks([tick], now_ms=observed_at_ms)
@@ -168,7 +166,7 @@ def test_ingest_chain_event_with_existing_tick_writes_composite_tick_capture(tmp
         now_ms=lambda: event.received_at_ms + 500,
     )
     try:
-        result = store.ingest_event(event, is_watched=True)
+        result = store.ingest_event(event)
         enriched_rows = conn.execute("SELECT * FROM enriched_events WHERE event_id = %s", (event.event_id,)).fetchall()
         market_rows = conn.execute(
             "SELECT * FROM market_ticks WHERE target_type = %s AND target_id = %s",
@@ -204,6 +202,4 @@ class _SingleConnectionDB:
     def worker_session(self, name: str) -> Iterator:
         yield repositories_for_connection(
             self.conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )

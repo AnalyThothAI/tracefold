@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from pydantic import ValidationError
 
-from tests.notification_helpers import insert_notification_row
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
@@ -27,8 +27,7 @@ from tracefold.market import (
     TwitterEvent,
     parse_gmgn_token_payload,
 )
-from tracefold.notifications import NotificationRepository
-from tracefold.platform.config.settings import default_workers_yaml
+from tracefold.platform.config.settings import Settings, WorkersSettings, default_workers_yaml
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 
@@ -59,7 +58,6 @@ def make_event(
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=["toly"],
         raw=None,
     )
 
@@ -68,15 +66,10 @@ def seed_postgres(db_path: Path) -> None:
     conn = connect_postgres_test(db_path, read_only=False)
     try:
         migrate(conn)
-        repos = repositories_for_connection(
-            conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
-        )
+        repos = repositories_for_connection(conn)
         ingest = IngestService(
             evidence=repos.evidence,
             entities=repos.entities,
-            signals=repos.signals,
             registry=repos.registry,
             identity_evidence=repos.identity_evidence,
             token_intent_lookup=repos.token_intent_lookup,
@@ -115,7 +108,7 @@ def seed_postgres(db_path: Path) -> None:
             token_snapshot=snapshot,
         )
         with repos.transaction():
-            ingest.ingest_event(token_event, is_watched=True)
+            ingest.ingest_event(token_event)
             now_ms = token_event.received_at_ms + 1
             repos.token_radar_dirty_targets.enqueue_recent_resolved_targets(
                 since_ms=max(0, token_event.received_at_ms - 5 * 60 * 1000),
@@ -128,7 +121,6 @@ def seed_postgres(db_path: Path) -> None:
                 retry_ms=30_000,
                 max_attempts=3,
                 windows=("5m",),
-                scopes=("all",),
                 now_ms=now_ms,
                 limit=20,
                 rank_limit=20,
@@ -142,7 +134,6 @@ def write_runtime_config(home: Path, *, db_path: Path, ws_token: str | None = No
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True, exist_ok=True)
     payload = {
-        "handles": ["toly", "traderpow"],
         "storage": {"postgres": {"dsn": postgres_test_dsn(), "password_file": None}},
     }
     if ws_token is not None:
@@ -165,7 +156,7 @@ class CliTests(unittest.TestCase):
             ["db", "audit"],
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
-            ["asset-flow", "--window", "1h", "--limit", "5", "--scope", "all"],
+            ["asset-flow", "--window", "1h", "--limit", "5"],
             ["ops", "projection-status"],
             ["ops", "validate-projections", "--sample", "5"],
             ["ops", "sync-binance-usdt-perp-universe", "--dry-run"],
@@ -179,7 +170,7 @@ class CliTests(unittest.TestCase):
             ["ops", "rebuild-token-intents", "--window", "5m", "--limit", "5"],
             ["ops", "audit-token-intent", "--event-id", "event-1"],
             ["ops", "rebuild-token-radar", "--window", "1h"],
-            ["ops", "factor-diagnostics", "--window", "1h", "--scope", "all", "--limit", "200"],
+            ["ops", "factor-diagnostics", "--window", "1h", "--limit", "200"],
             ["ops", "sync-us-equity-symbols"],
             ["ops", "rebuild-token-profiles", "--limit", "5"],
             ["ops", "enqueue-token-radar-dirty-targets", "--source", "events", "--since-ms", "0", "--dry-run"],
@@ -263,8 +254,8 @@ class CliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["data"]["handles"], ["toly", "traderpow"])
-        self.assertEqual(payload["data"]["handle_count"], 2)
+        self.assertNotIn("handles", payload["data"])
+        self.assertNotIn("handle_count", payload["data"])
         self.assertTrue(payload["data"]["api"]["ws_token_configured"])
         self.assertEqual(
             payload["data"]["config_path"],
@@ -292,45 +283,51 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["workers"]["collector"]["mode"], "continuous")
         self.assertTrue(payload["data"]["workers"]["collector"]["enabled"])
 
-    def test_config_redacts_notification_channel_urls(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            home = Path(tmpdir)
-            app_home = home / ".tracefold"
-            app_home.mkdir(parents=True, exist_ok=True)
-            (app_home / "config.yaml").write_text(
-                yaml.safe_dump(
-                    {
-                        "ws_token": "secret",
-                        "handles": ["toly"],
-                        "storage": {"postgres": {"dsn": postgres_test_dsn(), "password_file": None}},
-                        "notifications": {
-                            "channels": {
-                                "pushdeer": {
-                                    "enabled": True,
-                                    "provider": "apprise",
-                                    "url": "pushdeer://pushKey",
-                                    "min_severity": "high",
-                                },
-                            },
-                        },
-                    },
-                    sort_keys=False,
-                ),
-                encoding="utf-8",
-            )
-            (app_home / "workers.yaml").write_text(default_workers_yaml(), encoding="utf-8")
-            stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                exit_code = main(["config"], stdout=stdout)
+    def test_config_example_matches_the_current_hard_cut_schema(self):
+        example_path = Path(__file__).resolve().parents[2] / "config.example.yaml"
+        payload = yaml.safe_load(example_path.read_text(encoding="utf-8"))
 
-        raw_output = stdout.getvalue()
-        payload = json.loads(raw_output)
-        self.assertEqual(exit_code, 0)
-        self.assertNotIn("pushdeer://pushKey", raw_output)
-        self.assertTrue(payload["data"]["notifications"]["channels"]["pushdeer"]["url_configured"])
-        self.assertEqual(payload["data"]["notifications"]["channels"]["pushdeer"]["provider"], "apprise")
+        settings = Settings.model_validate(payload)
 
-    def test_recent_search_asset_flow_and_alerts_use_postgres_runtime_store(self):
+        self.assertTrue(settings.news.enabled)
+        self.assertTrue(settings.providers.macro_sources.enabled)
+
+    def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
+        retired_payloads = {
+            "watchlist handles": {"handles": ["wallstengine"]},
+            "notifications": {"notifications": {"enabled": True}},
+            "configured news sources": {
+                "news": {
+                    "sources": [
+                        {
+                            "source_id": "wallstengine",
+                            "feed_url": "https://example.invalid/rss",
+                        }
+                    ]
+                }
+            },
+        }
+
+        for label, payload in retired_payloads.items():
+            with self.subTest(label=label), self.assertRaises(ValidationError):
+                Settings.model_validate(payload)
+
+    def test_workers_settings_reject_retired_notification_and_radar_scope_config(self):
+        retired_payloads = {
+            "notification rule worker": {"notification_rule": {"enabled": True}},
+            "notification delivery worker": {"notification_delivery": {"enabled": True}},
+            "radar scopes": {
+                "token_radar_projection": {
+                    "scopes": ["all", "matched"],
+                }
+            },
+        }
+
+        for label, payload in retired_payloads.items():
+            with self.subTest(label=label), self.assertRaises(ValidationError):
+                WorkersSettings.model_validate(payload)
+
+    def test_recent_search_and_asset_flow_use_postgres_runtime_store(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             db_path = home / ".tracefold" / "postgres_test_db"
@@ -341,10 +338,9 @@ class CliTests(unittest.TestCase):
                 recent_code = main(["recent", "--limit", "5"], stdout=stdout)
                 search_code = main(["search", "$PEPE", "--limit", "5"], stdout=stdout)
                 asset_flow_code = main(
-                    ["asset-flow", "--window", "5m", "--limit", "5", "--scope", "all"],
+                    ["asset-flow", "--window", "5m", "--limit", "5"],
                     stdout=stdout,
                 )
-                alerts_code = main(["account-alerts", "--window", "24h", "--limit", "5"], stdout=stdout)
 
         lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual(
@@ -352,66 +348,15 @@ class CliTests(unittest.TestCase):
                 recent_code,
                 search_code,
                 asset_flow_code,
-                alerts_code,
             ],
-            [0, 0, 0, 0],
+            [0, 0, 0],
         )
         self.assertEqual(lines[0]["data"]["events"][0]["event_id"], "event-1")
         self.assertEqual(lines[1]["data"]["items"][0]["event"]["event_id"], "event-1")
-        self.assertEqual(lines[2]["data"]["scope"], "all")
+        self.assertNotIn("scope", lines[2]["data"])
         factor_snapshot = lines[2]["data"]["targets"][0]["factor_snapshot"]
         self.assertEqual(factor_snapshot["subject"]["symbol"], "PEPE")
         self.assertEqual(factor_snapshot["families"]["social_heat"]["facts"]["mentions_5m"], 1)
-        self.assertEqual(
-            {item["alert_type"] for item in lines[3]["data"]["items"]},
-            {"account_token"},
-        )
-
-    def test_notification_deliveries_command_reads_delivery_audit(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            home = Path(tmpdir)
-            db_path = home / ".tracefold" / "postgres_test_db"
-            write_runtime_config(home, db_path=db_path)
-            conn = connect_postgres_test(db_path, read_only=False)
-            try:
-                migrate(conn)
-                notifications = NotificationRepository(
-                    conn, running_timeout_ms=300_000, stale_running_terminalization_batch_size=100
-                )
-                notification = insert_notification_row(
-                    notifications,
-                    dedup_key="watched-account:pepe",
-                    rule_id="watched_account_activity",
-                    severity="high",
-                    title="Watched account activity",
-                    body="PEPE mentioned by watched account",
-                    entity_type="token",
-                    entity_key="token:eth:pepe",
-                    symbol="PEPE",
-                    source_table="events",
-                    source_id="token:eth:pepe",
-                    occurrence_at_ms=1_700_000_060_000,
-                    payload={"handle": "watched_account"},
-                    channels=["in_app", "pushdeer"],
-                )
-                self.assertIsNotNone(notification)
-                notifications.enqueue_delivery(
-                    notification_id=notification["notification_id"],
-                    channel_id="pushdeer",
-                    provider="apprise",
-                    max_attempts=5,
-                    next_run_at_ms=1_700_000_060_000,
-                )
-            finally:
-                conn.close()
-            stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                exit_code = main(["notification-deliveries", "--limit", "5"], stdout=stdout)
-
-        payload = json.loads(stdout.getvalue())
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["data"]["items"][0]["channel_id"], "pushdeer")
-        self.assertEqual(payload["data"]["items"][0]["status"], "pending")
 
     def test_db_audit_query_audit_and_token_radar_projection_ops_use_postgres_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -514,7 +459,7 @@ def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkey
     stdout = io.StringIO()
 
     code = main(
-        ["ops", "factor-diagnostics", "--window", "1h", "--scope", "all", "--limit", "7"],
+        ["ops", "factor-diagnostics", "--window", "1h", "--limit", "7"],
         stdout=stdout,
     )
 
@@ -522,7 +467,6 @@ def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkey
     assert code == 0
     assert captured == {
         "window": "1h",
-        "scope": "all",
         "venue": "all",
         "limit": 7,
         "projection_version": TOKEN_RADAR_PROJECTION_VERSION,

@@ -24,7 +24,6 @@ describe("CockpitTopbar", () => {
             statusError: false,
             configReady: true,
           }}
-          notifications={{ summary: null, drawerOpen: false, onToggleDrawer: vi.fn() }}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,
@@ -34,7 +33,7 @@ describe("CockpitTopbar", () => {
     expect(screen.getByText("Tracefold")).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: /WebSocket/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "notifications" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "notifications" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
@@ -52,7 +51,6 @@ describe("CockpitTopbar", () => {
             statusError: false,
             configReady: true,
           }}
-          notifications={{ summary: null, drawerOpen: false, onToggleDrawer: vi.fn() }}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,
@@ -79,7 +77,6 @@ describe("CockpitTopbar", () => {
             statusError: false,
             configReady: true,
           }}
-          notifications={{ summary: null, drawerOpen: false, onToggleDrawer: vi.fn() }}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,

@@ -13,7 +13,6 @@ from tracefold.market.capture.provider_contracts import (
     IngestStoreProtocol,
     UpstreamClientProtocol,
 )
-from tracefold.market.capture.subscriptions import event_matches_handles, normalize_handles
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -23,13 +22,10 @@ class CollectorStatus:
     started_at_ms: int
     last_frame_at_ms: int | None = None
     last_event_at_ms: int | None = None
-    last_matched_event_at_ms: int | None = None
     frames_received: int = 0
     twitter_events: int = 0
-    matched_twitter_events: int = 0
     events_published: int = 0
     duplicate_twitter_events: int = 0
-    duplicate_matched_twitter_events: int = 0
     parse_errors: int = 0
     snapshot_gate_outcomes: dict[str, int] = field(
         default_factory=lambda: {
@@ -52,13 +48,11 @@ class CollectorService(WorkerBase):
         settings: Any,
         db: Any,
         telemetry: Any,
-        handles: tuple[str, ...],
         store: IngestStoreProtocol,
         publisher: EventPublisherProtocol,
         upstream_client: UpstreamClientProtocol | None,
     ):
         super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
-        self.handles = normalize_handles(handles)
         self.store = store
         self.publisher = publisher
         self.upstream_client = upstream_client
@@ -191,28 +185,20 @@ class CollectorService(WorkerBase):
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
         payload = {"channel": channel, "data": [item]}
         for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
-            is_watched = event_matches_handles(event, self.handles)
-            ingested = await asyncio.to_thread(self.store.ingest_event, event, is_watched=is_watched)
+            ingested = await asyncio.to_thread(self.store.ingest_event, event)
             if ingested.inserted:
                 self.status.twitter_events += 1
                 self.status.last_event_at_ms = received_at_ms
             else:
                 self.status.duplicate_twitter_events += 1
-
-            if not is_watched:
-                continue
             if not ingested.inserted:
-                self.status.duplicate_matched_twitter_events += 1
                 continue
-            self.status.last_matched_event_at_ms = received_at_ms
-            self.status.matched_twitter_events += 1
             self.status.events_published += 1
             await self.publisher.publish(
                 {
                     "type": "event",
                     "event": ingested.event,
                     "entities": ingested.entities,
-                    "alerts": ingested.alerts,
                     "token_intents": ingested.token_intents,
                     "token_resolutions": ingested.token_resolutions,
                 }

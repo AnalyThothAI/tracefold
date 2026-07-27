@@ -24,8 +24,6 @@ def test_market_tick_persistence_is_idempotent_and_updates_current_in_same_trans
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         with repos.transaction():
             asset = repos.registry.upsert_chain_asset(
@@ -75,8 +73,6 @@ def test_older_tick_fact_cannot_regress_market_tick_current(tmp_path) -> None:
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         newer = _tick(source_provider="okx_dex_ws")
         older_observed_at_ms = NOW_MS - 1_000
@@ -117,8 +113,6 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         with repos.transaction():
             asset = repos.registry.upsert_chain_asset(
@@ -173,8 +167,6 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         with repos.transaction():
             asset = repos.registry.upsert_chain_asset(
@@ -234,8 +226,6 @@ def test_market_tick_rebuild_cursor_seeks_one_stable_target_page_at_a_time(tmp_p
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         first = _tick(source_provider="okx_dex_ws")
         second = replace(

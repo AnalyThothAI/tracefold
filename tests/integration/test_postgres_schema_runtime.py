@@ -50,7 +50,11 @@ RETIRED_BACKEND_TABLES = {
     "cex_detail_snapshots",
     "account_profiles",
     "account_token_call_stats",
+    "account_token_alerts",
     "account_quality_snapshots",
+    "notification_deliveries",
+    "notification_reads",
+    "notifications",
     "news_item_agent_briefs",
     "news_item_agent_runs",
     "news_source_quality_rows",
@@ -161,6 +165,83 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
                 """
             ).fetchall()
         }
+        event_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'events'
+                """
+            ).fetchall()
+        }
+        event_entity_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'event_entities'
+                """
+            ).fetchall()
+        }
+        radar_feature_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'token_radar_target_features'
+                """
+            ).fetchall()
+        }
+        radar_current_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'token_radar_current_rows'
+                """
+            ).fetchall()
+        }
+        radar_publication_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'token_radar_publication_state'
+                """
+            ).fetchall()
+        }
+        radar_first_seen_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'token_radar_target_first_seen'
+                """
+            ).fetchall()
+        }
+        radar_rank_source_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'token_radar_rank_source_events'
+                """
+            ).fetchall()
+        }
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     finally:
         conn.close()
@@ -174,7 +255,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "enriched_events",
         "token_radar_current_rows",
         "token_radar_publication_state",
-        "account_token_alerts",
         "market_instruments",
         "market_observations",
         "market_settlements",
@@ -251,7 +331,15 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260727_0205"
+    assert {"matched_handles_json", "is_watched", "matched_at_ms"}.isdisjoint(event_columns)
+    assert "is_watched" not in event_entity_columns
+    assert {"scope", "social_heat_watched_mentions", "cohort_public_followup_authors"}.isdisjoint(radar_feature_columns)
+    assert "cohort_followup_authors" in radar_feature_columns
+    assert "scope" not in radar_current_columns
+    assert "scope" not in radar_publication_columns
+    assert "scope" not in radar_first_seen_columns
+    assert "is_watched" not in radar_rank_source_columns
+    assert version == latest_migration_version() == "20260727_0206"
 
 
 @pytest.mark.skip(reason="superseded historical migration contract")
@@ -1007,3 +1095,85 @@ def test_token_radar_factor_cache_hard_cut_requeues_and_clears_private_cache(tmp
         "last_error": None,
     }
     assert rank_source_count == {"count": 1}
+
+
+def test_watchlist_hard_cut_requeues_radar_targets_before_clearing_read_models(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260727_0205")
+
+        conn.execute(
+            """
+            INSERT INTO token_radar_rank_source_events(
+              projection_version, target_type_key, identity_id, source_kind, source_id,
+              event_received_at_ms, projected_at_ms, source_payload_hash, is_watched
+            ) VALUES
+              (
+                'token-radar-v14-social-attention', 'Asset', 'asset:existing-dirty',
+                'resolution', 'resolution-existing', 100, 100, 'existing-hash', true
+              ),
+              (
+                'token-radar-v14-social-attention', 'CexToken', 'cex_token:REQUEUE',
+                'resolution', 'resolution-requeue', 110, 110, 'requeue-hash', false
+              );
+            INSERT INTO token_radar_dirty_targets(
+              target_type_key, identity_id, dirty_reason, market_dirty, repair_dirty,
+              payload_hash, due_at_ms, leased_until_ms, lease_owner, attempt_count,
+              last_error, first_dirty_at_ms, updated_at_ms
+            ) VALUES (
+              'Asset', 'asset:existing-dirty', 'market_tick_written', true, false,
+              'old-dirty-hash', 50, 999, 'old-worker', 7, 'old-error', 10, 20
+            );
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        rank_source_count = conn.execute("SELECT count(*) AS count FROM token_radar_rank_source_events").fetchone()
+        dirty_rows = conn.execute(
+            """
+            SELECT target_type_key, identity_id, dirty_reason, market_dirty, repair_dirty,
+                   due_at_ms, leased_until_ms, lease_owner, attempt_count, last_error
+            FROM token_radar_dirty_targets
+            WHERE (target_type_key, identity_id) IN (
+              ('Asset', 'asset:existing-dirty'), ('CexToken', 'cex_token:REQUEUE')
+            )
+            ORDER BY target_type_key, identity_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rank_source_count == {"count": 0}
+    assert dirty_rows[0] == {
+        "target_type_key": "Asset",
+        "identity_id": "asset:existing-dirty",
+        "dirty_reason": "mixed",
+        "market_dirty": True,
+        "repair_dirty": True,
+        "due_at_ms": 50,
+        "leased_until_ms": None,
+        "lease_owner": None,
+        "attempt_count": 0,
+        "last_error": None,
+    }
+    requeue_due_at_ms = dirty_rows[1].pop("due_at_ms")
+    assert requeue_due_at_ms > 110
+    assert dirty_rows[1] == {
+        "target_type_key": "CexToken",
+        "identity_id": "cex_token:REQUEUE",
+        "dirty_reason": "schema_hard_cut_0206",
+        "market_dirty": False,
+        "repair_dirty": True,
+        "leased_until_ms": None,
+        "lease_owner": None,
+        "attempt_count": 0,
+        "last_error": None,
+    }

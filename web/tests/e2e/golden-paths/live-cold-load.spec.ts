@@ -33,17 +33,12 @@ test("cold live load renders one full-height Radar with local content age", asyn
   } else {
     await expect(page.getByRole("button", { name: /sort by market/i })).toHaveCount(0);
   }
-  await expect(page.getByText("$UPEG watched account evidence")).toHaveCount(0);
   const radarWindowControls = page.getByLabel("radar window");
-  const radarScopeControls = page.getByLabel("token flow scope");
   await expect(radarWindowControls.getByRole("radio", { name: "1h" })).toHaveAttribute(
     "data-state",
     "on",
   );
-  await expect(radarScopeControls.getByRole("radio", { name: "all" })).toHaveAttribute(
-    "data-state",
-    "on",
-  );
+  await expect(page.getByLabel("token flow scope")).toHaveCount(0);
   await expect(page).toHaveURL(/\/$/);
 
   const shellBox = await page.locator(".cockpit-shell").boundingBox();
@@ -147,7 +142,7 @@ test("radar row click reaches token detail without hit-test interception", async
 
 test("full-height Radar keeps the final row reachable without a task bar", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/?window=24h&scope=matched");
+  await page.goto("/?window=24h");
 
   await expect(page.locator(".token-radar-row")).toHaveCount(8);
   await expect(page.locator(".live-task-nav")).toHaveCount(0);

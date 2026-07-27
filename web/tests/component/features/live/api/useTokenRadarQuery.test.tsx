@@ -18,7 +18,6 @@ describe("useTokenRadarQuery", () => {
         ok: true,
         data: {
           window: "4h",
-          scope: "all",
           targets: [],
           attention: [],
         },
@@ -30,7 +29,6 @@ describe("useTokenRadarQuery", () => {
         useTokenRadarQuery({
           enabled: true,
           limit: 48,
-          scope: "all",
           token: "secret",
           venue: "bsc",
           window: "4h",
@@ -39,7 +37,7 @@ describe("useTokenRadarQuery", () => {
     );
 
     await waitFor(() =>
-      expect(requests).toEqual(["/api/token-radar?window=4h&limit=48&scope=all&venue=bsc"]),
+      expect(requests).toEqual(["/api/token-radar?window=4h&limit=48&venue=bsc"]),
     );
   });
 });

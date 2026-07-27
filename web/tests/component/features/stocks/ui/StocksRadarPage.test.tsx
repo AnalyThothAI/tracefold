@@ -19,18 +19,11 @@ afterEach(() => cleanup());
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const controls = {
-    onScopeChange: vi.fn(),
     onWindowChange: vi.fn(),
   };
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <StocksRadarPage
-        token="secret"
-        windowKey="1h"
-        scope="all"
-        onScopeChange={controls.onScopeChange}
-        onWindowChange={controls.onWindowChange}
-      />
+      <StocksRadarPage token="secret" windowKey="1h" onWindowChange={controls.onWindowChange} />
     </QueryClientProvider>,
   );
   return { ...view, ...controls };
@@ -61,10 +54,8 @@ describe("StocksRadarPage", () => {
     apiMock.readApiImpl = async () =>
       ok({
         window: "1h",
-        scope: "all",
         query: {
           window: "1h",
-          scope: "all",
           limit: 48,
           window_start_ms: 1,
           window_end_ms: 2,
@@ -83,7 +74,6 @@ describe("StocksRadarPage", () => {
             attention: {
               mentions: 3,
               unique_authors: 2,
-              watched_mentions: 1,
               latest_seen_ms: Date.now(),
             },
             latest_event: {
@@ -120,7 +110,6 @@ describe("StocksRadarPage", () => {
             attention: {
               mentions: 1,
               unique_authors: 1,
-              watched_mentions: 0,
               latest_seen_ms: Date.now(),
             },
             latest_event: {
@@ -152,7 +141,7 @@ describe("StocksRadarPage", () => {
         },
       } as any);
 
-    const { container, onScopeChange, onWindowChange } = renderPage();
+    const { container, onWindowChange } = renderPage();
 
     expect(await screen.findByRole("heading", { name: "US Stocks" })).toBeInTheDocument();
     expect(await screen.findByLabelText("stock AAPL")).toBeInTheDocument();
@@ -161,26 +150,19 @@ describe("StocksRadarPage", () => {
     expect(screen.getByText("RuntimeError")).toBeInTheDocument();
     const controls = screen.getByLabelText("stocks radar controls");
     const windowGroup = within(controls).getByLabelText("radar window");
-    const scopeGroup = within(controls).getByLabelText("token flow scope");
     expect(within(windowGroup).getByRole("radio", { name: "1h" })).toHaveAttribute(
       "data-state",
       "on",
     );
-    expect(within(scopeGroup).getByRole("radio", { name: "all" })).toHaveAttribute(
-      "data-state",
-      "on",
-    );
+    expect(within(controls).queryByLabelText("token flow scope")).not.toBeInTheDocument();
     fireEvent.click(within(windowGroup).getByRole("radio", { name: "24h" }));
     expect(onWindowChange).toHaveBeenCalledWith("24h");
-    fireEvent.click(within(scopeGroup).getByRole("radio", { name: "watched" }));
-    expect(onScopeChange).toHaveBeenCalledWith("matched");
-
     await waitFor(() => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/stocks-radar",
         expect.objectContaining({
           token: "secret",
-          params: { window: "1h", scope: "all", limit: 48 },
+          params: { window: "1h", limit: 48 },
         }),
       );
     });
@@ -191,10 +173,8 @@ describe("StocksRadarPage", () => {
 function emptyStocksRadarResponse() {
   return {
     window: "1h",
-    scope: "all",
     query: {
       window: "1h",
-      scope: "all",
       limit: 48,
       window_start_ms: 1,
       window_end_ms: 2,

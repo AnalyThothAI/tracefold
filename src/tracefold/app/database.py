@@ -24,8 +24,6 @@ class _SyncClosePool(Protocol):
 class DBPoolBundle:
     api_pool: Any
     worker_pool: Any
-    notification_delivery_running_timeout_ms: int
-    notification_delivery_stale_running_terminalization_batch_size: int
     telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
 
     @classmethod
@@ -62,23 +60,13 @@ class DBPoolBundle:
         return cls(
             api_pool=api_pool,
             worker_pool=worker_pool,
-            notification_delivery_running_timeout_ms=int(settings.workers.notification_delivery.running_timeout_ms),
-            notification_delivery_stale_running_terminalization_batch_size=int(
-                settings.workers.notification_delivery.stale_running_terminalization_batch_size
-            ),
             telemetry=telemetry if telemetry is not None else TelemetryRegistry(),
         )
 
     @contextmanager
     def api_session(self) -> Iterator[RepositorySession]:
         with self._checkout(self.api_pool, pool_name="api") as conn:
-            yield repositories_for_connection(
-                conn,
-                notification_delivery_running_timeout_ms=self.notification_delivery_running_timeout_ms,
-                notification_delivery_stale_running_terminalization_batch_size=(
-                    self.notification_delivery_stale_running_terminalization_batch_size
-                ),
-            )
+            yield repositories_for_connection(conn)
 
     @contextmanager
     def worker_session(
@@ -95,13 +83,7 @@ class DBPoolBundle:
             if statement_timeout_seconds is not None:
                 _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
             try:
-                yield repositories_for_connection(
-                    conn,
-                    notification_delivery_running_timeout_ms=self.notification_delivery_running_timeout_ms,
-                    notification_delivery_stale_running_terminalization_batch_size=(
-                        self.notification_delivery_stale_running_terminalization_batch_size
-                    ),
-                )
+                yield repositories_for_connection(conn)
             except BaseException:
                 try:
                     _reset_worker_connection(conn, statement_timeout_seconds=statement_timeout_seconds)

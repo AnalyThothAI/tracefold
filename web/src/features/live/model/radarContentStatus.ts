@@ -1,10 +1,9 @@
-import type { AssetFlowData, ScopeKey, WindowKey } from "@lib/types";
+import type { AssetFlowData, WindowKey } from "@lib/types";
 import type { TokenRadarVenueFilter } from "@lib/venue";
 
 export const RADAR_HTTP_UNAVAILABLE_AFTER_MS = 30_000;
 
 export type RadarQueryIdentity = {
-  scope: ScopeKey;
   venue: TokenRadarVenueFilter;
   window: WindowKey;
 };
@@ -26,7 +25,7 @@ export type RadarStatusView = {
 };
 
 export function radarIdentityKey(identity: RadarQueryIdentity): string {
-  return `${identity.window}:${identity.scope}:${identity.venue}`;
+  return `${identity.window}:${identity.venue}`;
 }
 
 export function radarResponseMatchesIdentity(
@@ -36,7 +35,6 @@ export function radarResponseMatchesIdentity(
   return Boolean(
     data &&
     data.window === identity.window &&
-    data.scope === identity.scope &&
     data.venue === identity.venue &&
     data.projection?.venue === identity.venue,
   );

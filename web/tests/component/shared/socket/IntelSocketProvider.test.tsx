@@ -64,19 +64,19 @@ describe("IntelSocketProvider", () => {
     ]);
   });
 
-  it("subscribes without replay or event storage while preserving notification and market updates", async () => {
+  it("subscribes only to explicit market targets and patches live market updates", async () => {
     const row = tokenRadarRowFixture();
     const target = {
       target_id: row.resolution.target_id!,
       target_type: row.resolution.target_type!,
     };
     const view = renderWithProviders(
-      <IntelSocketProvider handles="@Toly" notifications token="secret">
+      <IntelSocketProvider token="secret">
         <SocketProbe target={target} />
       </IntelSocketProvider>,
     );
     view.queryClient.setQueryData<ApiResponse<AssetFlowData>>(
-      queryKeys.tokenRadar("1h", "all", "all", 48),
+      queryKeys.tokenRadar("1h", "all", 48),
       {
         ok: true,
         data: tokenRadarFixture({ targets: [row] }),
@@ -93,9 +93,7 @@ describe("IntelSocketProvider", () => {
     await waitFor(() => {
       expect(sentMessages(socket)).toContainEqual({
         type: "subscribe",
-        handles: ["toly"],
         market_targets: [target],
-        notifications: true,
         replay: 0,
       });
     });
@@ -109,19 +107,6 @@ describe("IntelSocketProvider", () => {
       });
     });
     expect(screen.getByTestId("socket-snapshot-keys")).not.toHaveTextContent("eventItems");
-    expect(screen.getByTestId("notification-count")).toHaveTextContent("0");
-
-    act(() => {
-      socket.emit("message", {
-        data: JSON.stringify({
-          type: "notification",
-          notification: { notification_id: "notification-1" },
-        }),
-      });
-    });
-    expect(
-      await screen.findByText("1", { selector: '[data-testid="notification-count"]' }),
-    ).toBeInTheDocument();
 
     const update: LiveMarketUpdatePayload = {
       type: "live_market_update",
@@ -145,7 +130,7 @@ describe("IntelSocketProvider", () => {
     });
 
     const cached = view.queryClient.getQueryData<ApiResponse<AssetFlowData>>(
-      queryKeys.tokenRadar("1h", "all", "all", 48),
+      queryKeys.tokenRadar("1h", "all", 48),
     );
     expect(cached?.data.targets[0]?.factor_snapshot.market?.decision_latest?.price_usd).toBe(42);
   });
@@ -154,12 +139,7 @@ describe("IntelSocketProvider", () => {
 function SocketProbe({ target }: { target: { target_id: string; target_type: string } }) {
   useMarketSubscription([target]);
   const snapshot = useSocketSnapshot();
-  return (
-    <>
-      <span data-testid="socket-snapshot-keys">{Object.keys(snapshot).sort().join(",")}</span>
-      <span data-testid="notification-count">{snapshot.notificationItems.length}</span>
-    </>
-  );
+  return <span data-testid="socket-snapshot-keys">{Object.keys(snapshot).sort().join(",")}</span>;
 }
 
 function sentMessages(socket: { send: ReturnType<typeof vi.fn> }) {

@@ -1,5 +1,4 @@
-import { NotificationBell } from "@features/notifications";
-import type { NotificationSummary, OpenApiStatusData } from "@lib/types";
+import type { OpenApiStatusData } from "@lib/types";
 import { IconButton } from "@shared/ui/IconButton";
 import { Home, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode, type RefObject } from "react";
@@ -24,11 +23,6 @@ export type CockpitTopbarProps = {
     statusError: boolean;
     configReady: boolean;
   };
-  notifications: {
-    summary: NotificationSummary | null;
-    drawerOpen: boolean;
-    onToggleDrawer: () => void;
-  };
   onRefresh: () => void;
 };
 
@@ -36,7 +30,6 @@ export function CockpitTopbar({
   navigationTrigger,
   search,
   status,
-  notifications,
   onRefresh,
 }: CockpitTopbarProps) {
   const navigate = useNavigate();
@@ -85,14 +78,6 @@ export function CockpitTopbar({
           <span>{anomaly}</span>
         </span>
       ) : null}
-      <div className="topbar-notification-slot">
-        <NotificationBell
-          open={notifications.drawerOpen}
-          summary={notifications.summary}
-          onClick={notifications.onToggleDrawer}
-        />
-      </div>
-
       <IconButton
         aria-label="刷新"
         className="topbar-refresh-button"

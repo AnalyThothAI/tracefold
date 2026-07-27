@@ -98,7 +98,6 @@ function sampleToken(): TokenFlowItem {
     flow: {
       window: "5m",
       mentions: 1,
-      watched_mentions: 1,
       previous_mentions: 0,
       mention_delta: 1,
       stream_dominance: 1,
@@ -106,7 +105,7 @@ function sampleToken(): TokenFlowItem {
       baseline_sample_count: 0,
     },
     social_heat: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:social_heat",
+      score_version: "token_factor_snapshot_v5_provider_neutral:social_heat",
       score: 50,
       reasons: [],
       risks: [],
@@ -122,11 +121,10 @@ function sampleToken(): TokenFlowItem {
       previous_mentions: 0,
       mention_delta: 1,
       stream_share: 1,
-      watched_share: 1,
       status: "new_burst",
     },
     discussion_quality: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:discussion_quality",
+      score_version: "token_factor_snapshot_v5_provider_neutral:discussion_quality",
       score: 50,
       reasons: [],
       risks: [],
@@ -137,10 +135,9 @@ function sampleToken(): TokenFlowItem {
       avg_attribution_confidence: 1,
       duplicate_text_share: 0,
       informative_post_count: 1,
-      watched_source_count: 1,
     },
     propagation: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:propagation",
+      score_version: "token_factor_snapshot_v5_provider_neutral:propagation",
       score: 50,
       reasons: [],
       risks: [],
@@ -156,7 +153,7 @@ function sampleToken(): TokenFlowItem {
       top_authors: [],
     },
     tradeability: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:gates",
+      score_version: "token_factor_snapshot_v5_provider_neutral:gates",
       score: 50,
       reasons: [],
       risks: [],
@@ -169,7 +166,7 @@ function sampleToken(): TokenFlowItem {
       pool_present: false,
     },
     timing: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:timing",
+      score_version: "token_factor_snapshot_v5_provider_neutral:timing",
       score: 50,
       status: "neutral",
       chase_risk: false,
@@ -177,7 +174,7 @@ function sampleToken(): TokenFlowItem {
       risks: [],
     },
     opportunity: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:composite",
+      score_version: "token_factor_snapshot_v5_provider_neutral:composite",
       score: 50,
       decision: "watch",
       reasons: [],
@@ -190,28 +187,17 @@ function sampleToken(): TokenFlowItem {
         timing: 50,
       },
     },
-    watch: {
-      status: "direct_watch",
-      direct_mentions: 1,
-      direct_authors: 1,
-      seed_link_count: 0,
-      top_seed: null,
-      reasons: [],
-      risks: [],
-    },
     evidence_total_count: 0,
     posts_query: {
       target_type: "Asset",
       target_id: "asset:eip155:1:erc20:0x6982508145454ce325ddbe47a25d4ec3d2311933",
       window: "5m",
-      scope: "all",
       range: "current_window",
     },
     timeline_query: {
       target_type: "Asset",
       target_id: "asset:eip155:1:erc20:0x6982508145454ce325ddbe47a25d4ec3d2311933",
       window: "5m",
-      scope: "all",
     },
   };
 }

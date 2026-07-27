@@ -11,18 +11,9 @@ from tracefold.market import (
     SearchService,
     TokenProfileReadModel,
 )
-from tracefold.notifications import AccountAlertService
 from tracefold.platform.config.settings import load_settings
 
-READ_MODEL_COMMANDS = frozenset(
-    {
-        "recent",
-        "search",
-        "asset-flow",
-        "account-alerts",
-        "notification-deliveries",
-    }
-)
+READ_MODEL_COMMANDS = frozenset({"recent", "search", "asset-flow"})
 
 
 def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
@@ -30,8 +21,6 @@ def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     with repositories(settings) as repos:
         evidence = repos.evidence
-        signals = repos.signals
-        notifications = repos.notifications
 
         if command == "recent":
             handles = _handle_set(args.handles)
@@ -41,7 +30,6 @@ def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
                 ca=args.ca or None,
                 chain=args.chain or None,
                 symbol=args.symbol or None,
-                watched_only=args.scope == "matched",
             )
             return 0, {"ok": True, "data": {"events": events}}
 
@@ -50,7 +38,6 @@ def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
                 results = SearchService(search_query=SearchEventsQuery(repos.conn)).search(
                     args.query,
                     limit=args.limit,
-                    scope=args.scope,
                     window=args.window,
                     cursor=args.cursor or None,
                 )
@@ -77,32 +64,10 @@ def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
             ).asset_flow(
                 window=args.window,
                 limit=args.limit,
-                scope=args.scope,
                 venue=TOKEN_RADAR_DEFAULT_VENUE,
                 now_ms=_now_ms(),
             )
-            return 0, {"ok": True, "data": {"window": args.window, "scope": args.scope, **data}}
-
-        if command == "account-alerts":
-            items = AccountAlertService(signals).account_alerts(
-                window=args.window,
-                limit=args.limit,
-                now_ms=_now_ms(),
-                handles=_handle_set(args.handles),
-                alert_type=args.alert_type,
-            )
-            return 0, {"ok": True, "data": {"window": args.window, "items": items}}
-
-        if command == "notification-deliveries":
-            return (
-                0,
-                {
-                    "ok": True,
-                    "data": {
-                        "items": notifications.list_deliveries(limit=args.limit, status=args.status),
-                    },
-                },
-            )
+            return 0, {"ok": True, "data": {"window": args.window, **data}}
 
     return 2, {"ok": False, "error": f"unknown read model command: {command}"}
 

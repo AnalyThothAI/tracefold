@@ -12,11 +12,6 @@ export type OpenApiStocksRadarData = components["schemas"]["StocksRadarData"];
 export type OpenApiLiveMarketData = components["schemas"]["LiveMarketData"];
 export type OpenApiTargetPostsData = components["schemas"]["TargetPostsData"];
 export type OpenApiTargetSocialTimelineData = components["schemas"]["TargetSocialTimelineData"];
-export type OpenApiAccountAlertsData = components["schemas"]["AccountAlertsData"];
-export type OpenApiNotificationSummary = components["schemas"]["NotificationSummary"];
-export type OpenApiNotificationsData = components["schemas"]["NotificationsData"];
-export type OpenApiNotificationReadData = components["schemas"]["NotificationReadData"];
-export type OpenApiNotificationReadAllData = components["schemas"]["NotificationReadAllData"];
 
 // frontend-contracts: these UI/domain shapes still encode frontend-specific view models
 // that are richer than the current extensible OpenAPI response schemas.
@@ -36,13 +31,7 @@ export type {
   MarketCandle,
   MarketContext,
   MarketObservationSnapshot,
-  NotificationItem,
-  NotificationLivePayload,
-  NotificationSummary,
-  NotificationsData,
-  RadarSortMode,
   RecentData,
-  ScopeKey,
   SearchAmbiguousResult,
   SearchData,
   SearchInspectData,
@@ -62,7 +51,6 @@ export type {
   TimingBlock,
   TokenDetailMode,
   TokenCaseDossier,
-  TokenCaseApiScope,
   TokenCasePostsData,
   TokenCasePostsQuery,
   TokenCaseSocialTimelineData,
@@ -75,7 +63,6 @@ export type {
   TokenMarketBlock,
   TokenPostItem,
   TokenPostRange,
-  TokenPostSortMode,
   TokenPostsData,
   TokenProfileBlock,
   TokenRadarFactRow,
@@ -86,11 +73,5 @@ export type {
   TokenTimelineStage,
   TokenTimelinePost,
   TradeabilityBlock,
-  WatchlistHandleOverviewData,
-  WatchlistHandleRowOverview,
-  WatchlistHandlesOverviewData,
-  WatchlistOverviewCluster,
-  WatchlistHandleTimelineData,
-  WatchlistTimelineItem,
   WindowKey,
 } from "./frontend-contracts";

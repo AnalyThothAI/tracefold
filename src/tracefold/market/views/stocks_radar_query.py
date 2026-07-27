@@ -11,21 +11,19 @@ class StocksRadarQuery:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
-    def stock_rows(self, *, since_ms: int, now_ms: int, scope: str, limit: int) -> list[dict[str, Any]]:
-        watched_clause = "AND e.is_watched = true" if scope == "matched" else ""
+    def stock_rows(self, *, since_ms: int, now_ms: int, limit: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            f"""
+            """
             WITH recent_intents AS MATERIALIZED (
               SELECT
                 ti.intent_id,
                 e.event_id,
                 e.author_handle,
-                e.is_watched,
                 e.received_at_ms
               FROM events e
               JOIN token_intents ti ON ti.event_id = e.event_id
               WHERE e.received_at_ms >= %s
-                AND e.received_at_ms <= %s {watched_clause}
+                AND e.received_at_ms <= %s
             ),
             stock_mentions AS MATERIALIZED (
               SELECT
@@ -36,7 +34,6 @@ class StocksRadarQuery:
                 ues.instrument_type,
                 recent_intents.event_id,
                 recent_intents.author_handle,
-                recent_intents.is_watched,
                 recent_intents.received_at_ms
               FROM recent_intents
               JOIN token_intent_resolutions tir
@@ -68,7 +65,6 @@ class StocksRadarQuery:
                 instrument_type,
                 COUNT(*)::int AS mentions,
                 COUNT(DISTINCT NULLIF(LOWER(author_handle), ''))::int AS unique_authors,
-                SUM(CASE WHEN is_watched THEN 1 ELSE 0 END)::int AS watched_mentions,
                 MAX(received_at_ms)::bigint AS latest_seen_ms,
                 MAX(CASE WHEN event_rank = 1 THEN event_id END) AS latest_event_id,
                 MAX(CASE WHEN event_rank = 1 THEN author_handle END) AS latest_author_handle,
@@ -78,7 +74,7 @@ class StocksRadarQuery:
                 ) AS source_event_ids
               FROM ranked_mentions
               GROUP BY target_id, symbol, security_name, exchange, instrument_type
-              ORDER BY mentions DESC, watched_mentions DESC, latest_seen_ms DESC, symbol ASC
+              ORDER BY mentions DESC, latest_seen_ms DESC, symbol ASC
               LIMIT %s
             )
             SELECT
@@ -89,7 +85,6 @@ class StocksRadarQuery:
               ranked.instrument_type,
               ranked.mentions,
               ranked.unique_authors,
-              ranked.watched_mentions,
               ranked.latest_seen_ms,
               ranked.latest_event_id,
               ranked.latest_author_handle,
@@ -97,7 +92,7 @@ class StocksRadarQuery:
               ranked.source_event_ids
             FROM ranked
             LEFT JOIN events e ON e.event_id = ranked.latest_event_id
-            ORDER BY mentions DESC, watched_mentions DESC, latest_seen_ms DESC, symbol ASC
+            ORDER BY mentions DESC, latest_seen_ms DESC, symbol ASC
             """,
             (
                 int(since_ms),

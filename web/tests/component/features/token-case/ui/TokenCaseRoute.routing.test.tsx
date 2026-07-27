@@ -32,7 +32,6 @@ function routeTokenCaseFixture(): TokenCaseDossier {
       query: {
         ...dossier.timeline.query,
         window: "24h",
-        scope: "watched",
       },
     },
     posts: {
@@ -40,7 +39,6 @@ function routeTokenCaseFixture(): TokenCaseDossier {
       query: {
         ...dossier.posts.query,
         window: "24h",
-        scope: "watched",
       },
     },
   };
@@ -66,7 +64,7 @@ function renderAt(url: string) {
 
 describe("TokenCaseRoute", () => {
   it("loads the token-case dossier for the route target without token-radar", async () => {
-    renderAt(`/token/Asset/${encodeURIComponent(targetId)}?window=24h&scope=watched`);
+    renderAt(`/token/Asset/${encodeURIComponent(targetId)}?window=24h`);
 
     expect(await screen.findByRole("region", { name: /Token case/i })).toBeInTheDocument();
     expect(screen.getByText("#3")).toBeInTheDocument();
@@ -81,7 +79,6 @@ describe("TokenCaseRoute", () => {
             target_type: "Asset",
             target_id: targetId,
             window: "24h",
-            scope: "watched",
             posts_limit: "24",
           }),
         }),

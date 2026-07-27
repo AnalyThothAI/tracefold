@@ -115,15 +115,11 @@ def _people(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "posts": len(rows),
         "authors": len(set(authors)),
         "new_authors": len(set(authors)),
-        "watched_posts": sum(1 for row in rows if row.get("is_watched")),
-        "watched_authors": len({_author(row) for row in rows if row.get("is_watched") and _author(row)}),
         "top_author_share": _top_author_share(rows),
     }
 
 
 def _author_role(row: dict[str, Any], *, index: int, author_counts: dict[str, int]) -> str:
-    if row.get("is_watched"):
-        return "watched"
     author = _author(row)
     if author and author_counts.get(author, 0) > 0:
         return "repeater"
@@ -135,10 +131,7 @@ def _author_role(row: dict[str, Any], *, index: int, author_counts: dict[str, in
 
 
 def _representative_event_ids(rows: list[dict[str, Any]]) -> list[str]:
-    watched = [str(row.get("event_id")) for row in rows if row.get("is_watched") and row.get("event_id")]
-    if watched:
-        return watched[:3]
-    return [str(rows[0].get("event_id"))] if rows and rows[0].get("event_id") else []
+    return [str(row["event_id"]) for row in rows[:3] if row.get("event_id")]
 
 
 def _stage_risks(rows: list[dict[str, Any]], phase: str) -> list[str]:

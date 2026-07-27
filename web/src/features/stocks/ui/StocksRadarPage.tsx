@@ -5,7 +5,7 @@ import {
   formatSignedPercent,
   formatTokenPriceUsd,
 } from "@lib/format";
-import type { ScopeKey, StockRadarRow, WindowKey } from "@lib/types";
+import type { StockRadarRow, WindowKey } from "@lib/types";
 import * as PageState from "@shared/ui/PageState";
 import { RadarControls } from "@shared/ui/RadarControls";
 import clsx from "clsx";
@@ -17,19 +17,11 @@ import "./stocks.css";
 type StocksRadarPageProps = {
   token: string;
   windowKey: WindowKey;
-  scope: ScopeKey;
   onWindowChange: (window: WindowKey) => void;
-  onScopeChange: (scope: ScopeKey) => void;
 };
 
-export function StocksRadarPage({
-  token,
-  windowKey,
-  scope,
-  onWindowChange,
-  onScopeChange,
-}: StocksRadarPageProps) {
-  const query = useStocksRadarQuery({ token, window: windowKey, scope });
+export function StocksRadarPage({ token, windowKey, onWindowChange }: StocksRadarPageProps) {
+  const query = useStocksRadarQuery({ token, window: windowKey });
   const data = query.data;
   const rows = data?.rows ?? [];
   return (
@@ -42,9 +34,7 @@ export function StocksRadarPage({
           </span>
         </div>
         <div className="stocks-health" aria-label="stocks radar health">
-          <span>
-            {windowKey} · {scope}
-          </span>
+          <span>{windowKey}</span>
           <span>
             quotes <b>{compactNumber(data?.health.quote_ready_count ?? 0)}</b>
           </span>
@@ -53,12 +43,7 @@ export function StocksRadarPage({
           </span>
         </div>
         <div className="stocks-radar-controls" aria-label="stocks radar controls">
-          <RadarControls
-            scope={scope}
-            windowKey={windowKey}
-            onScopeChange={onScopeChange}
-            onWindowChange={onWindowChange}
-          />
+          <RadarControls windowKey={windowKey} onWindowChange={onWindowChange} />
         </div>
       </header>
 
@@ -114,10 +99,10 @@ function StockRow({ row }: { row: StockRadarRow }) {
       </span>
 
       <span className="stock-mentions-cell" data-radar-metric="heat">
-        <b className={row.attention.watched_mentions > 0 ? "stock-score-hot" : "stock-score-warn"}>
+        <b className={row.attention.mentions > 0 ? "stock-score-hot" : "stock-score-warn"}>
           {compactNumber(row.attention.mentions)}
         </b>
-        <small>{compactNumber(row.attention.watched_mentions)} watched</small>
+        <small>all source posts</small>
       </span>
 
       <span className="stock-authors-cell" data-radar-metric="quality">

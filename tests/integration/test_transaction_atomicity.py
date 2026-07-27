@@ -24,8 +24,6 @@ def _worker_pool_bundle(pool: Any) -> DBPoolBundle:
     return DBPoolBundle(
         api_pool=None,
         worker_pool=pool,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
 
 
@@ -103,8 +101,6 @@ def test_repository_session_transaction_owns_database_transaction() -> None:
     conn = FakeTransactionConnection()
     repos = repositories_for_connection(
         conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
 
     with repos.transaction():

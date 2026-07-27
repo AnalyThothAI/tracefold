@@ -5,18 +5,13 @@ export type ApiResponse<T> = {
 };
 
 export type WindowKey = "5m" | "1h" | "4h" | "24h";
-export type ScopeKey = "matched" | "all";
-export type TokenCaseApiScope = ScopeKey | "watched";
 export type Decision = "driver" | "watch" | "investigate" | "discard";
-export type RadarSortMode = "opportunity" | "heat" | "quality" | "propagation" | "timing";
 export type TimelineBucket = "30s" | "5m" | "15m" | "1h";
 export type TokenPostRange = "current_window" | "since_ignition" | "all_history";
-export type TokenPostSortMode = "recent" | "watched";
 export type TokenDetailMode = "compact" | "replay";
 
 export type BootstrapData = {
   ws_token: string;
-  handles: string[];
   replay_limit: number;
 };
 
@@ -33,7 +28,6 @@ export type EventRecord = {
   hashtags?: string[];
   mentions?: string[];
   urls?: string[];
-  is_watched?: number | boolean | null;
   source?: {
     provider?: string | null;
     transport?: string | null;
@@ -107,57 +101,9 @@ export type LivePayload = {
   type: "event";
   event: EventRecord;
   entities: EntityRecord[];
-  alerts: AlertRecord[];
   token_intents?: TokenIntentRecord[];
   token_resolutions?: TokenResolutionRecord[];
   harness?: unknown | null;
-};
-
-export type NotificationSeverity = "info" | "warning" | "high" | "critical";
-
-export type NotificationItem = {
-  notification_id: string;
-  dedup_key: string;
-  rule_id: string;
-  severity: NotificationSeverity | string;
-  title: string;
-  body: string;
-  entity_type?: string | null;
-  entity_key?: string | null;
-  author_handle?: string | null;
-  symbol?: string | null;
-  chain?: string | null;
-  address?: string | null;
-  event_id?: string | null;
-  source_table: string;
-  source_id: string;
-  occurrence_count: number;
-  first_seen_at_ms: number;
-  last_seen_at_ms: number;
-  created_at_ms: number;
-  updated_at_ms: number;
-  read_at_ms?: number | null;
-  payload: Record<string, unknown>;
-  channels: string[];
-};
-
-export type NotificationSummary = {
-  subscriber_key: string;
-  unread_count: number;
-  high_unread_count: number;
-  critical_unread_count: number;
-  highest_unread_severity?: NotificationSeverity | string | null;
-  account_unread_counts: Record<string, number>;
-};
-
-export type NotificationsData = {
-  items: NotificationItem[];
-  summary: NotificationSummary;
-};
-
-export type NotificationLivePayload = {
-  type: "notification";
-  notification: NotificationItem;
 };
 
 export type LiveMarketUpdatePayload = {
@@ -172,71 +118,8 @@ export type LiveMarketUpdatePayload = {
 };
 
 export type RecentData = {
-  scope: ScopeKey;
   events: EventRecord[];
   items: LivePayload[];
-};
-
-export type WatchlistHandleRowOverview = {
-  handle: string;
-  last_source_event_at_ms: number | null;
-  recent_source_event_count: number;
-};
-
-export type WatchlistHandlesOverviewData = {
-  window: string;
-  items: WatchlistHandleRowOverview[];
-};
-
-export type WatchlistOverviewCluster = {
-  label: string;
-  count: number;
-  query: string;
-  kind: "resolved_token" | "candidate_mention" | "hashtag";
-  source: string;
-  symbol: string | null;
-  target_id: string | null;
-  target_type: string | null;
-};
-
-export type WatchlistHandleOverviewData = {
-  query: { handle: string; window: string };
-  metrics: {
-    source_event_count: number;
-    resolved_token_count: number;
-    candidate_mention_count: number;
-    hashtag_count: number;
-    last_source_event_at_ms: number | null;
-  };
-  resolved_token_clusters: WatchlistOverviewCluster[];
-  candidate_mention_clusters: WatchlistOverviewCluster[];
-  hashtag_clusters: WatchlistOverviewCluster[];
-  clusters_truncated: boolean;
-  risk_notes: string[];
-};
-
-export type WatchlistTimelineItem = {
-  event_id: string;
-  received_at_ms: number;
-  author_handle: string | null;
-  action: string | null;
-  text_clean: string | null;
-  canonical_url: string | null;
-  cashtags: string[];
-  hashtags: string[];
-  mentions: string[];
-  event: EventRecord;
-  token_resolutions: TokenResolutionRecord[];
-};
-
-export type WatchlistHandleTimelineData = {
-  query: {
-    handle: string;
-    limit: number;
-  };
-  items: WatchlistTimelineItem[];
-  has_more: boolean;
-  next_cursor: string | null;
 };
 
 export type SearchItem = {
@@ -314,17 +197,13 @@ export type LiveMarketSnapshot = MarketObservationSnapshot & {
   [key: string]: unknown;
 };
 
-export type TokenCasePostsQuery = Omit<TokenPostsQuery, "scope"> & {
-  scope: TokenCaseApiScope;
-};
+export type TokenCasePostsQuery = TokenPostsQuery;
 
 export type TokenCasePostsData = Omit<TokenPostsData, "query"> & {
   query: TokenCasePostsQuery;
 };
 
-export type TokenCaseSocialTimelineQuery = Omit<TokenSocialTimelineQuery, "scope"> & {
-  scope: TokenCaseApiScope;
-};
+export type TokenCaseSocialTimelineQuery = TokenSocialTimelineQuery;
 
 export type TokenCaseSocialTimelineData = Omit<TokenSocialTimelineData, "query"> & {
   query: TokenCaseSocialTimelineQuery;
@@ -363,7 +242,6 @@ export type SearchInspectData = {
     q: string;
     normalized_q: string;
     window: WindowKey;
-    scope: ScopeKey;
     result_kind: SearchInspectResultKind;
   };
   resolver: {
@@ -465,7 +343,6 @@ export type TokenDiscoveryAudit = {
 
 export type AssetFlowData = {
   window: WindowKey;
-  scope: ScopeKey;
   venue: string;
   targets: AssetFlowRow[];
   attention: AssetFlowRow[];
@@ -525,7 +402,6 @@ export type StockRadarRow = {
   attention: {
     mentions: number;
     unique_authors: number;
-    watched_mentions: number;
     latest_seen_ms?: number | null;
   };
   latest_event: {
@@ -541,10 +417,8 @@ export type StockRadarRow = {
 
 export type StocksRadarData = {
   window: WindowKey;
-  scope: ScopeKey;
   query: {
     window: WindowKey;
-    scope: ScopeKey;
     limit: number;
     window_start_ms: number;
     window_end_ms: number;
@@ -659,7 +533,6 @@ export type TokenFlowBlock = {
   symbol_mentions?: number;
   weighted_mentions?: number;
   avg_attribution_confidence?: number;
-  watched_mentions: number;
   previous_mentions: number;
   mention_delta: number;
   mention_delta_pct?: number | null;
@@ -684,7 +557,6 @@ export type SocialHeatBlock = ScoreBlock & {
   z_score?: number | null;
   new_burst_score?: number | null;
   stream_share: number;
-  watched_share: number;
   status: "cold" | "rising" | "burst" | "new_burst" | "insufficient_history" | string;
 };
 
@@ -694,7 +566,6 @@ export type DiscussionQualityBlock = ScoreBlock & {
   avg_attribution_confidence: number;
   duplicate_text_share: number;
   informative_post_count: number;
-  watched_source_count: number;
 };
 
 export type PropagationBlock = ScoreBlock & {
@@ -711,7 +582,6 @@ export type PropagationBlock = ScoreBlock & {
     count?: number;
     posts?: number;
     followers?: number | null;
-    watched_count?: number;
     role?: string | null;
   }>;
 };
@@ -751,21 +621,10 @@ export type OpportunityBlock = ScoreBlock & {
   };
 };
 
-export type WatchBlock = {
-  status: "direct_watch" | "seed_linked" | "public_only" | string;
-  direct_mentions: number;
-  direct_authors: number;
-  seed_link_count: number;
-  top_seed?: Record<string, unknown> | null;
-  reasons: string[];
-  risks: string[];
-};
-
 export type TokenPostsQuery = {
   target_type?: string | null;
   target_id?: string | null;
   window: WindowKey;
-  scope: TokenCaseApiScope;
   range: TokenPostRange;
 };
 
@@ -773,7 +632,6 @@ export type TokenSocialTimelineParams = {
   target_type?: string | null;
   target_id?: string | null;
   window: WindowKey;
-  scope: TokenCaseApiScope;
 };
 
 export type TokenSocialTimelineQuery = TokenSocialTimelineParams & {
@@ -790,7 +648,6 @@ export type TokenFlowItem = {
   tradeability: TradeabilityBlock;
   timing: TimingBlock;
   opportunity: OpportunityBlock;
-  watch: WatchBlock;
   profile?: TokenProfileBlock | null;
   factor_data_health?: TokenFactorSnapshot["data_health"];
   factor_gates?: TokenFactorSnapshot["gates"];
@@ -815,8 +672,6 @@ export type TokenPostItem = {
   attribution_status?: string | null;
   attribution_confidence?: number | null;
   attribution_weight?: number | null;
-  is_watched?: boolean | number | null;
-  is_first_seen_by_watched_for_token?: boolean | number | null;
   event_type?: string | null;
   reference?: TokenReference | null;
   price?: TokenMessagePrice | null;
@@ -853,7 +708,6 @@ export type TokenPostsData = {
 
 export type TokenFlowData = {
   window: WindowKey;
-  scope?: ScopeKey;
   items: TokenFlowItem[];
 };
 
@@ -863,7 +717,6 @@ export type TokenTimelineBucket = {
   posts: number;
   authors?: number;
   new_authors: number;
-  watched_posts: number;
   duplicate_text_share: number;
   price?: TokenMessagePrice | null;
   price_change_from_start_pct?: number | null;
@@ -875,7 +728,7 @@ export type TokenTimelineAuthor = {
   latest_seen_ms?: number | null;
   posts: number;
   followers?: number | null;
-  role?: "seed" | "early_amplifier" | "amplifier" | "repeater" | "watched" | string | null;
+  role?: "seed" | "early_amplifier" | "amplifier" | "repeater" | string | null;
   quality_score?: number | null;
 };
 
@@ -890,8 +743,6 @@ export type TokenTimelinePost = {
   target_type?: string | null;
   target_id?: string | null;
   attribution_status?: string | null;
-  is_watched?: boolean | number | null;
-  is_first_seen_by_watched_for_token?: boolean | number | null;
   event_type?: string | null;
   reference?: TokenReference | null;
   price?: TokenMessagePrice | null;
@@ -979,8 +830,6 @@ export type TokenTimelineStage = {
     posts: number;
     authors: number;
     new_authors: number;
-    watched_posts: number;
-    watched_authors: number;
     top_author_share: number;
   };
   representative_event_ids: string[];
@@ -1003,7 +852,6 @@ export type TokenSocialTimelineData = {
     effective_authors: number;
     first_seen_ms?: number | null;
     latest_seen_ms?: number | null;
-    watched_posts?: number | null;
     phase: string;
     top_author_share: number;
     duplicate_text_share: number;
@@ -1046,7 +894,7 @@ export type TokenFactorFamily = {
 };
 
 export type TokenFactorSnapshot = {
-  schema_version: "token_factor_snapshot_v4_transparent_factors";
+  schema_version: "token_factor_snapshot_v5_provider_neutral";
   subject: {
     target_type: string | null;
     target_id: string | null;
@@ -1099,7 +947,6 @@ export type SourceEventDetail = {
   author_handle: string | null;
   author_name: string | null;
   author_followers: number | null;
-  author_watched: boolean;
   text_clean: string | null;
   canonical_url: string | null;
 };
@@ -1129,7 +976,6 @@ export type WorkerStatusData = {
 export type StatusData = {
   ok: boolean;
   reasons: string[];
-  handles: string[];
   store: string;
   snapshot_gate: Record<string, unknown>;
   db: Record<string, unknown>;

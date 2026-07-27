@@ -13,7 +13,6 @@ class SearchIntent:
     kind: str
     text: str
     normalized_text: str
-    scope: str
     ca: str | None = None
     chain: str | None = None
     symbol: str | None = None
@@ -21,17 +20,16 @@ class SearchIntent:
     lexical_query: str | None = None
 
 
-def parse_search_query(text: str, *, scope: str) -> SearchIntent:
+def parse_search_query(text: str) -> SearchIntent:
     query = text.strip()
     normalized = _normalize_spaces(query)
     if not query:
-        return SearchIntent(kind="empty", text="", normalized_text="", scope=scope, lexical_query="")
+        return SearchIntent(kind="empty", text="", normalized_text="", lexical_query="")
     if query.startswith("@") and len(query) > 1:
         return SearchIntent(
             kind="handle",
             text=query,
             normalized_text=normalized,
-            scope=scope,
             handle=query.lstrip("@").lower(),
             lexical_query=query,
         )
@@ -42,7 +40,6 @@ def parse_search_query(text: str, *, scope: str) -> SearchIntent:
                 kind="symbol",
                 text=query,
                 normalized_text=normalized,
-                scope=scope,
                 symbol=symbol.upper(),
                 lexical_query=normalized,
             )
@@ -53,7 +50,6 @@ def parse_search_query(text: str, *, scope: str) -> SearchIntent:
             kind="ca",
             text=query,
             normalized_text=normalized,
-            scope=scope,
             ca=prefixed_ca,
             chain=prefixed_chain,
             lexical_query=prefixed_ca,
@@ -69,7 +65,6 @@ def parse_search_query(text: str, *, scope: str) -> SearchIntent:
             kind="ca",
             text=query,
             normalized_text=normalized,
-            scope=scope,
             ca=fallback_ca,
             chain=fallback_chain,
             lexical_query=fallback_ca,
@@ -79,11 +74,10 @@ def parse_search_query(text: str, *, scope: str) -> SearchIntent:
             kind="symbol",
             text=query,
             normalized_text=normalized,
-            scope=scope,
             symbol=query.upper(),
             lexical_query=normalized,
         )
-    return SearchIntent(kind="text", text=query, normalized_text=normalized, scope=scope, lexical_query=normalized)
+    return SearchIntent(kind="text", text=query, normalized_text=normalized, lexical_query=normalized)
 
 
 def _parse_chain_prefixed_ca(query: str) -> tuple[str, str] | None:

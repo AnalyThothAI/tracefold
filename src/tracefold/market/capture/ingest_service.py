@@ -13,7 +13,6 @@ from tracefold.market.capture.entity_repository import EntityRepository
 from tracefold.market.capture.event_contracts import EventRead, materialize_event
 from tracefold.market.capture.evidence_repository import EvidenceRepository
 from tracefold.market.capture.ingest_contracts import IngestedEvent
-from tracefold.market.capture.signal_repository import SignalRepository
 from tracefold.market.capture.twitter_event import TwitterEvent
 from tracefold.market.identity.discovery_repository import DiscoveryRepository
 from tracefold.market.identity.identity_evidence_policy import (
@@ -54,7 +53,6 @@ class PreparedIngest:
     entities: list[Any]
     evidence_inputs: list[Any]
     intents: list[TokenIntentInput]
-    is_watched: bool
 
 
 IngestCaptureInput = CaptureResult | EnrichedEventCapture
@@ -66,7 +64,6 @@ class IngestService:
         *,
         evidence: EvidenceRepository,
         entities: EntityRepository,
-        signals: SignalRepository,
         registry: RegistryRepository,
         identity_evidence: IdentityEvidenceRepository,
         token_intent_lookup: TokenIntentLookupRepository,
@@ -85,7 +82,6 @@ class IngestService:
         self.conn = evidence.conn
         self.evidence = evidence
         self.entities = entities
-        self.signals = signals
         self.registry = registry
         self.identity_evidence = identity_evidence
         self.token_intent_lookup = token_intent_lookup
@@ -109,8 +105,8 @@ class IngestService:
             result: bool = self.evidence.insert_raw_frame(**kwargs)
             return result
 
-    def ingest_event(self, event: TwitterEvent, *, is_watched: bool) -> IngestedEvent:
-        prepared = self.prepare_event(event, is_watched=is_watched)
+    def ingest_event(self, event: TwitterEvent) -> IngestedEvent:
+        prepared = self.prepare_event(event)
         # Registry preparation participates in the same application transaction
         # as the material event facts, so a later failure cannot leave orphan assets.
         with self.transaction():
@@ -126,7 +122,7 @@ class IngestService:
             return self.commit_prepared_event(prepared, resolutions=decisions, captures=captures)
 
     @staticmethod
-    def prepare_event(event: TwitterEvent, *, is_watched: bool) -> PreparedIngest:
+    def prepare_event(event: TwitterEvent) -> PreparedIngest:
         extracted = extract_entities_from_surfaces(_event_surfaces(event))
         evidence_inputs = build_token_evidence(
             event_id=event.event_id,
@@ -139,7 +135,7 @@ class IngestService:
             evidence=evidence_inputs,
             created_at_ms=event.received_at_ms,
         )
-        event_row, event_read = materialize_event(event, is_watched=is_watched, now_ms=_now_ms())
+        event_row, event_read = materialize_event(event, now_ms=_now_ms())
         return PreparedIngest(
             raw_event=event,
             event_read=event_read,
@@ -149,7 +145,6 @@ class IngestService:
             entities=extracted,
             evidence_inputs=evidence_inputs,
             intents=intent_inputs,
-            is_watched=is_watched,
         )
 
     def event_already_exists(self, prepared: PreparedIngest) -> bool:
@@ -162,7 +157,6 @@ class IngestService:
         return IngestedEvent(
             event=prepared.event_read,
             entities=[],
-            alerts=[],
             token_intents=[],
             token_resolutions=[],
             inserted=False,
@@ -204,11 +198,7 @@ class IngestService:
         inserted = self.evidence.insert_event_row(prepared.event_row)
         if not inserted:
             return self.duplicate_result(prepared)
-        self.entities.insert_event_entities(
-            prepared.raw_event,
-            prepared.entities,
-            is_watched=prepared.is_watched,
-        )
+        self.entities.insert_event_entities(prepared.raw_event, prepared.entities)
         self.token_evidence.insert_many(prepared.evidence_inputs)
         token_intents = self.token_intents.insert_many(prepared.intents)
         self._upsert_gmgn_payload_registry(prepared.raw_event)
@@ -252,17 +242,9 @@ class IngestService:
                 active_window_ms=self.event_anchor_active_window_ms,
             )
         token_resolutions = self.intent_resolutions.resolutions_for_event(prepared.event_id)
-        alerts = self._insert_token_alerts(
-            prepared.raw_event,
-            resolutions,
-            resolutions=self.intent_resolutions,
-            intents_by_id={item.intent_id: item for item in prepared.intents},
-            is_watched=prepared.is_watched,
-        )
         return IngestedEvent(
             event=prepared.event_read,
             entities=[_entity_payload(entity) for entity in prepared.entities],
-            alerts=alerts,
             token_intents=token_intents,
             token_resolutions=token_resolutions,
             inserted=True,
@@ -406,59 +388,6 @@ class IngestService:
                 now_ms=event.received_at_ms,
             )
 
-    def _insert_token_alerts(
-        self,
-        event: TwitterEvent,
-        decisions: list[TokenIntentResolutionDecision],
-        *,
-        resolutions: Any,
-        intents_by_id: dict[str, TokenIntentInput],
-        is_watched: bool,
-    ) -> list[dict[str, Any]]:
-        if not is_watched or not event.author.handle:
-            return []
-        alerts: list[dict[str, Any]] = []
-        author_handle = event.author.handle.lower()
-        for decision in decisions:
-            if decision.target_type is None or decision.target_id is None:
-                continue
-            intent = _token_intent_by_id_map(intents_by_id, decision.intent_id)
-            seen_global, seen_author = resolutions.target_seen_before(
-                target_type=decision.target_type,
-                target_id=decision.target_id,
-                author_handle=author_handle,
-                before_ms=event.received_at_ms,
-            )
-            alert = self.signals.insert_account_token_alert(
-                event_id=event.event_id,
-                author_handle=author_handle,
-                entity_key=decision.target_id,
-                entity_type=decision.target_type,
-                normalized_value=_alert_value(intent, decision),
-                chain=None,
-                token_resolution_status=decision.resolution_status,
-                is_first_seen_global=not seen_global,
-                is_first_seen_by_author=not seen_author,
-                received_at_ms=event.received_at_ms,
-            )
-            if alert:
-                alerts.append(
-                    {
-                        "alert_type": alert.alert_type,
-                        "event_id": alert.event_id,
-                        "author_handle": alert.author_handle,
-                        "entity_key": alert.entity_key,
-                        "entity_type": decision.target_type,
-                        "normalized_value": alert.normalized_value,
-                        "chain": None,
-                        "token_resolution_status": decision.resolution_status,
-                        "is_first_seen_global": alert.is_first_seen_global,
-                        "is_first_seen_by_author": alert.is_first_seen_by_author,
-                        "received_at_ms": alert.received_at_ms,
-                    }
-                )
-        return alerts
-
 
 def _event_surfaces(event: TwitterEvent) -> list[TextSurface]:
     surfaces = []
@@ -496,13 +425,6 @@ def require_event_anchor_active_window_ms(value: Any) -> int:
     return int(value)
 
 
-def _alert_value(intent: TokenIntentInput, decision: TokenIntentResolutionDecision) -> str:
-    formal_intent = _require_token_intent(intent)
-    value = formal_intent.display_symbol or formal_intent.address_hint
-    _require_resolution_decision(decision)
-    return str(value or decision.target_id)
-
-
 def _payload_hash(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -526,13 +448,6 @@ def _token_intent_by_id(intents: list[TokenIntentInput], intent_id: str) -> Toke
         if formal_intent.intent_id == intent_id:
             return formal_intent
     raise RuntimeError("ingest_token_intent_contract_required")
-
-
-def _token_intent_by_id_map(intents_by_id: dict[str, TokenIntentInput], intent_id: str) -> TokenIntentInput:
-    intent = intents_by_id.get(intent_id)
-    if intent is None:
-        raise RuntimeError("ingest_token_intent_contract_required")
-    return _require_token_intent(intent)
 
 
 def _require_capture_result(item: Any) -> CaptureResult:

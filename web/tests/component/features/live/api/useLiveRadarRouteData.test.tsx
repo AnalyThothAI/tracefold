@@ -15,7 +15,6 @@ describe("useLiveRadarRouteData", () => {
         ok: true,
         data: {
           window: "1h",
-          scope: "all",
           venue: "all",
           targets: [],
           attention: [],
@@ -46,10 +45,9 @@ describe("useLiveRadarRouteData", () => {
       }),
     );
 
-    const { result } = renderHook(
-      () => useLiveRadarRouteData({ scope: "all", token: "secret", window: "1h" }),
-      { wrapper: wrapper() },
-    );
+    const { result } = renderHook(() => useLiveRadarRouteData({ token: "secret", window: "1h" }), {
+      wrapper: wrapper(),
+    });
 
     await waitFor(() => expect(result.current.projectionStatus).toBe("pending"), {
       timeout: 1_000,

@@ -32,8 +32,6 @@ def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tm
 
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         projection = TokenRadarPublisher(repos=repos, projector=TokenRadarProjector(repos=repos))
         first_enqueued = _enqueue_radar_repair_targets(conn, now_ms=FIXED_NOW_MS)
@@ -42,7 +40,6 @@ def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tm
             retry_ms=30_000,
             max_attempts=3,
             windows=("1h",),
-            scopes=("all",),
             now_ms=FIXED_NOW_MS,
             limit=10,
             rank_limit=10,
@@ -56,7 +53,6 @@ def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tm
             retry_ms=30_000,
             max_attempts=3,
             windows=("1h",),
-            scopes=("all",),
             now_ms=FIXED_NOW_MS,
             limit=10,
             rank_limit=10,
@@ -79,8 +75,6 @@ def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tm
 def _enqueue_radar_repair_targets(conn: Any, *, now_ms: int) -> int:
     repos = repositories_for_connection(
         conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
     with repos.transaction():
         return int(
@@ -110,7 +104,6 @@ def _radar_rows(conn: Any) -> list[dict[str, Any]]:
         FROM token_radar_current_rows
         WHERE projection_version = %s
           AND "window" = '1h'
-          AND scope = 'all'
         ORDER BY lane, rank, target_type, target_id, intent_id
         """,
         (TOKEN_RADAR_PROJECTION_VERSION,),
@@ -138,9 +131,7 @@ def _seed_resolved_radar_source(conn: Any) -> None:
                 author_handle="signal_builder",
                 text="$IDEMP fresh onchain momentum",
                 received_at_ms=EVENT_MS,
-                is_watched=True,
             ),
-            is_watched=True,
         )
     _insert_intent(conn, intent_id=intent_id, event_id=event_id, observed_at_ms=EVENT_MS)
     asset_id = _insert_asset(conn, observed_at_ms=EVENT_MS)

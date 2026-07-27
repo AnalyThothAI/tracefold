@@ -22,7 +22,6 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
     workers = _disabled_workers()
     settings = Settings(
         ws_token=WS_TOKEN,
-        handles=(AUTHOR_HANDLE,),
         storage=postgres_settings_storage(),
         providers={
             "okx": {
@@ -31,21 +30,6 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
             },
             "binance": {"enabled": False},
             "macro_sources": {"enabled": False},
-        },
-        notifications={
-            "enabled": True,
-            "candidate_limit": 50,
-            "rules": {
-                "watched_account_activity": {"enabled": False},
-                "watched_account_token_alert": {"enabled": False},
-            },
-            "channels": {
-                "log": {
-                    "enabled": True,
-                    "provider": "log",
-                    "min_severity": "info",
-                }
-            },
         },
         workers=workers,
     )
@@ -73,17 +57,8 @@ def _disabled_workers() -> dict[str, dict[str, Any]]:
                 "enabled": False,
                 "batch_size": 20,
                 "windows": ("1h",),
-                "scopes": ("all",),
                 "hot_windows": ("1h",),
                 "cold_interval_seconds": 0,
-            },
-            "notification_rule": {
-                "enabled": False,
-                "batch_size": 10,
-            },
-            "notification_delivery": {
-                "enabled": False,
-                "batch_size": 10,
             },
         }
     )

@@ -108,7 +108,6 @@ def _social_heat_family(*, attention: dict[str, Any]) -> dict[str, Any]:
     mentions_4h = _optional_int(attention.get("mentions_4h"))
     mentions_24h = _optional_int(attention.get("mentions_24h"))
     unique_authors = _optional_int(attention.get("unique_authors"))
-    watched_mentions = _optional_int(attention.get("watched_mentions"))
     weighted_mentions = _optional_float(attention.get("weighted_mentions"))
     attention_acceleration = _optional_float(attention.get("attention_acceleration"))
     z_score = _optional_float(attention.get("z_score"))
@@ -128,7 +127,6 @@ def _social_heat_family(*, attention: dict[str, Any]) -> dict[str, Any]:
         "stream_share": _optional_float(attention.get("stream_share")),
         "weighted_mentions": weighted_mentions,
         "unique_authors": _count_int(unique_authors),
-        "watched_mentions": _count_int(watched_mentions),
         "attention_surprise": attention_surprise,
         "attention_acceleration": attention_acceleration,
         "z_score": z_score,
@@ -148,7 +146,6 @@ def _social_heat_family(*, attention: dict[str, Any]) -> dict[str, Any]:
             _z_or_new_burst_factor(z_value=attention_surprise, new_burst_score=new_burst_score),
             _count_factor("social_heat", "source_weighted_mentions", weighted_mentions, scale=3),
             _acceleration_factor(attention_acceleration),
-            _count_factor("social_heat", "watched_seed_strength", watched_mentions, scale=2),
         ],
     )
 
@@ -165,10 +162,9 @@ def _social_propagation_family(*, social_quality: dict[str, Any]) -> dict[str, A
     )
     time_to_second_author_ms = _optional_int(social_quality.get("time_to_second_author_ms"))
     time_to_third_author_ms = _optional_int(social_quality.get("time_to_third_author_ms"))
-    public_followup_author_count = _optional_int(social_quality.get("public_followup_author_count"))
+    followup_author_count = _optional_int(social_quality.get("followup_author_count"))
     informative_post_count = _optional_int(social_quality.get("informative_post_count"))
     new_authors = _optional_int(social_quality.get("new_authors"))
-    watched_author_count = _optional_int(social_quality.get("watched_author_count"))
     reproduction_rate = _optional_float(social_quality.get("reproduction_rate"))
     facts = {
         "duplicate_text_share": duplicate_text_share,
@@ -178,12 +174,11 @@ def _social_propagation_family(*, social_quality: dict[str, Any]) -> dict[str, A
         "informative_post_count": _count_int(informative_post_count),
         "effective_authors": _optional_float(social_quality.get("effective_authors")),
         "new_authors": _count_int(new_authors),
-        "watched_author_count": _count_int(watched_author_count),
         "reproduction_rate": reproduction_rate,
         "source_weighted_effective_authors": source_weighted_effective_authors,
         "time_to_second_author_ms": time_to_second_author_ms,
         "time_to_third_author_ms": time_to_third_author_ms,
-        "public_followup_author_count": _count_int(public_followup_author_count),
+        "followup_author_count": _count_int(followup_author_count),
         "author_entropy": _optional_float(social_quality.get("author_entropy")),
     }
     return _family(
@@ -200,8 +195,8 @@ def _social_propagation_family(*, social_quality: dict[str, Any]) -> dict[str, A
             _propagation_speed_factor(time_to_second_author_ms, time_to_third_author_ms),
             _count_factor(
                 "social_propagation",
-                "watched_to_public_followup",
-                public_followup_author_count,
+                "followup_authors",
+                followup_author_count,
                 scale=2,
             ),
             _penalty_factor(
@@ -324,11 +319,10 @@ def _gates(
     credible_sources = _optional_float(social_quality.get("source_weighted_effective_authors"))
     if credible_sources is None:
         credible_sources = _optional_float(social_quality.get("effective_authors"))
-    watched_mentions = _count_int(attention.get("watched_mentions"))
-    if independent_sources < 2 and watched_mentions <= 0:
+    if independent_sources < 2:
         blocked_reasons.append("insufficient_independent_social_sources")
         risk_reasons.append("thin_author_set")
-    if credible_sources is not None and credible_sources < 1.5 and watched_mentions <= 0:
+    if credible_sources is not None and credible_sources < 1.5:
         blocked_reasons.append("insufficient_credible_social_sources")
         risk_reasons.append("thin_credible_author_set")
     if _is_at_or_above(_optional_float(social_quality.get("duplicate_text_share")), "duplicate_text_share"):
@@ -633,7 +627,7 @@ def _market_health(*, subject: dict[str, Any], market: dict[str, Any]) -> str:
 def _social_health(*, attention: dict[str, Any], social_quality: dict[str, Any]) -> str:
     attention_health = _count_fields_health(
         attention,
-        keys=("mentions_5m", "mentions_1h", "mentions_4h", "mentions_24h", "unique_authors", "watched_mentions"),
+        keys=("mentions_5m", "mentions_1h", "mentions_4h", "mentions_24h", "unique_authors"),
     )
     diffusion_health = _count_fields_health(
         social_quality,
@@ -655,7 +649,7 @@ def _alpha_health(
 ) -> str:
     if any(
         _count_int(attention.get(key)) > 0
-        for key in ("mentions_5m", "mentions_1h", "mentions_4h", "mentions_24h", "unique_authors", "watched_mentions")
+        for key in ("mentions_5m", "mentions_1h", "mentions_4h", "mentions_24h", "unique_authors")
     ):
         return "ready"
     if any(

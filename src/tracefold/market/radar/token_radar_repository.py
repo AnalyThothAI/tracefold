@@ -24,7 +24,6 @@ RADAR_ROW_COLUMNS = (
     "row_id",
     "projection_version",
     "window",
-    "scope",
     "venue",
     "computed_at_ms",
     "source_max_received_at_ms",
@@ -56,7 +55,7 @@ RADAR_ROW_COLUMNS = (
 )
 TARGET_FEATURE_PAYLOAD_LANES = frozenset({"attention", "resolved"})
 RADAR_ROW_INSERT_COLUMNS_SQL = """
-  row_id, projection_version, "window", scope, venue, computed_at_ms, source_max_received_at_ms,
+  row_id, projection_version, "window", venue, computed_at_ms, source_max_received_at_ms,
   generation_id, published_at_ms, source_frontier_ms,
   lane, target_type_key, identity_id, rank, rank_score, intent_id, event_id, target_type, target_id,
   pricefeed_id, intent_json, resolution_json, factor_snapshot_json,
@@ -65,7 +64,7 @@ RADAR_ROW_INSERT_COLUMNS_SQL = """
   listed_at_ms, created_at_ms
 """
 RADAR_ROW_INSERT_VALUES_SQL = """
-  %(row_id)s, %(projection_version)s, %(window)s, %(scope)s, %(venue)s, %(computed_at_ms)s,
+  %(row_id)s, %(projection_version)s, %(window)s, %(venue)s, %(computed_at_ms)s,
   %(source_max_received_at_ms)s, %(generation_id)s, %(published_at_ms)s,
   %(source_frontier_ms)s, %(lane)s, %(target_type_key)s, %(identity_id)s,
   %(rank)s, %(rank_score)s, %(intent_id)s, %(event_id)s, %(target_type)s, %(target_id)s,
@@ -92,7 +91,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         generation_id: str,
         published_at_ms: int,
@@ -108,7 +106,7 @@ class TokenRadarRepository:
             """
             SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))
             """,
-            (projection_version, f"{window}:{scope}:{venue}"),
+            (projection_version, f"{window}:{venue}"),
         )
         latest = self.conn.execute(
             """
@@ -116,10 +114,9 @@ class TokenRadarRepository:
             FROM token_radar_publication_state
             WHERE projection_version = %s
               AND "window" = %s
-              AND scope = %s
               AND venue = %s
             """,
-            (projection_version, window, scope, venue),
+            (projection_version, window, venue),
         ).fetchone()
         latest_current_generation_id = (
             str(latest["current_generation_id"]) if latest and latest.get("current_generation_id") is not None else None
@@ -137,13 +134,11 @@ class TokenRadarRepository:
         existing_current = self._current_rows_for_projection_set(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
         )
         listed_at_by_key = self.first_seen_by_identity(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
             rows=rows,
         )
@@ -152,7 +147,6 @@ class TokenRadarRepository:
                 row,
                 projection_version=projection_version,
                 window=window,
-                scope=scope,
                 venue=venue,
                 generation_id=generation_id,
                 published_at_ms=int(published_at_ms),
@@ -165,14 +159,12 @@ class TokenRadarRepository:
         existing_signature = stable_generation_id(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
             rows=existing_current,
         )
         incoming_signature = stable_generation_id(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
             rows=rows_to_insert,
         )
@@ -180,7 +172,6 @@ class TokenRadarRepository:
             self._upsert_ready_publication_state(
                 projection_version=projection_version,
                 window=window,
-                scope=scope,
                 venue=venue,
                 generation_id=existing_generation_id,
                 published_at_ms=published_at_ms,
@@ -202,13 +193,12 @@ class TokenRadarRepository:
                 DELETE FROM token_radar_current_rows
                 WHERE projection_version = %s
                   AND "window" = %s
-                  AND scope = %s
                   AND venue = %s
                   AND lane = %s
                   AND target_type_key = %s
                   AND identity_id = %s
                 """,
-                (projection_version, window, scope, venue, *_current_key(row)),
+                (projection_version, window, venue, *_current_key(row)),
             )
             rows_written += mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
         for row in rows_to_insert:
@@ -216,7 +206,7 @@ class TokenRadarRepository:
                 f"""
                 INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
                 VALUES ({RADAR_ROW_INSERT_VALUES_SQL})
-                ON CONFLICT(projection_version, "window", scope, venue, lane, target_type_key, identity_id)
+                ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
                 DO UPDATE SET
                   row_id = excluded.row_id,
                   computed_at_ms = excluded.computed_at_ms,
@@ -253,7 +243,6 @@ class TokenRadarRepository:
         self.upsert_first_seen_batch(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
             rows=rows_to_insert,
             computed_at_ms=int(published_at_ms),
@@ -261,7 +250,6 @@ class TokenRadarRepository:
         self._upsert_ready_publication_state(
             projection_version=projection_version,
             window=window,
-            scope=scope,
             venue=venue,
             generation_id=generation_id,
             published_at_ms=published_at_ms,
@@ -274,7 +262,6 @@ class TokenRadarRepository:
         if on_current_changes is not None:
             on_current_changes(
                 window=window,
-                scope=scope,
                 venue=venue,
                 rows=rows_to_insert,
                 exited_rows=exited_rows,
@@ -288,7 +275,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         generation_id: str,
         published_at_ms: int,
@@ -301,19 +287,19 @@ class TokenRadarRepository:
         self.conn.execute(
             """
             INSERT INTO token_radar_publication_state(
-              projection_version, "window", scope, venue, current_generation_id, current_published_at_ms,
+              projection_version, "window", venue, current_generation_id, current_published_at_ms,
               current_source_frontier_ms, current_row_count, current_source_rows,
               latest_attempt_generation_id, latest_attempt_status, latest_attempt_started_at_ms,
               latest_attempt_finished_at_ms, latest_attempt_error, updated_at_ms
             )
             VALUES (
-              %(projection_version)s, %(window)s, %(scope)s, %(venue)s, %(current_generation_id)s,
+              %(projection_version)s, %(window)s, %(venue)s, %(current_generation_id)s,
               %(current_published_at_ms)s, %(current_source_frontier_ms)s, %(current_row_count)s,
               %(current_source_rows)s, %(latest_attempt_generation_id)s, %(latest_attempt_status)s,
               %(latest_attempt_started_at_ms)s, %(latest_attempt_finished_at_ms)s,
               %(latest_attempt_error)s, %(updated_at_ms)s
             )
-            ON CONFLICT(projection_version, "window", scope, venue) DO UPDATE SET
+            ON CONFLICT(projection_version, "window", venue) DO UPDATE SET
               current_generation_id = excluded.current_generation_id,
               current_published_at_ms = excluded.current_published_at_ms,
               current_source_frontier_ms = excluded.current_source_frontier_ms,
@@ -331,7 +317,6 @@ class TokenRadarRepository:
             {
                 "projection_version": projection_version,
                 "window": window,
-                "scope": scope,
                 "venue": venue,
                 "current_generation_id": str(generation_id),
                 "current_published_at_ms": int(published_at_ms),
@@ -354,7 +339,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -363,10 +347,9 @@ class TokenRadarRepository:
             FROM token_radar_current_rows
             WHERE projection_version = %s
               AND "window" = %s
-              AND scope = %s
               AND venue = %s
             """,
-            (projection_version, window, scope, venue),
+            (projection_version, window, venue),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -374,7 +357,6 @@ class TokenRadarRepository:
         self,
         *,
         window: str,
-        scope: str,
         venue: str,
         limit: int,
         projection_version: str,
@@ -393,13 +375,11 @@ class TokenRadarRepository:
                   row_number() OVER (PARTITION BY lane ORDER BY rank ASC) AS lane_rank
                 FROM token_radar_current_rows current_rows
                 JOIN token_radar_publication_state state
-                  ON state.projection_version = current_rows.projection_version
+                 ON state.projection_version = current_rows.projection_version
                  AND state."window" = current_rows."window"
-                 AND state.scope = current_rows.scope
                  AND state.venue = current_rows.venue
                 WHERE current_rows.projection_version = %s
                   AND current_rows."window" = %s
-                  AND current_rows.scope = %s
                   AND current_rows.venue = %s
                   AND state.current_generation_id IS NOT NULL
               ) latest_ranked
@@ -413,7 +393,6 @@ class TokenRadarRepository:
             (
                 projection_version,
                 window,
-                scope,
                 venue,
                 row_limit,
                 row_limit * 2,
@@ -426,7 +405,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         target_type: str,
         target_id: str,
@@ -436,13 +414,11 @@ class TokenRadarRepository:
             SELECT current_rows.*
             FROM token_radar_current_rows current_rows
             JOIN token_radar_publication_state state
-              ON state.projection_version = current_rows.projection_version
+             ON state.projection_version = current_rows.projection_version
              AND state."window" = current_rows."window"
-             AND state.scope = current_rows.scope
              AND state.venue = current_rows.venue
             WHERE current_rows.projection_version = %s
               AND current_rows."window" = %s
-              AND current_rows.scope = %s
               AND current_rows.venue = %s
               AND current_rows.target_type = %s
               AND current_rows.target_id = %s
@@ -450,7 +426,7 @@ class TokenRadarRepository:
             ORDER BY current_rows.lane DESC, current_rows.rank ASC
             LIMIT 1
             """,
-            (projection_version, window, scope, venue, target_type, target_id),
+            (projection_version, window, venue, target_type, target_id),
         ).fetchone()
         return dict(row) if row is not None else None
 
@@ -459,7 +435,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         row: dict[str, Any],
         computed_at_ms: int,
     ) -> int:
@@ -469,13 +444,12 @@ class TokenRadarRepository:
             row,
             projection_version=projection_version,
             window=window,
-            scope=scope,
             computed_at_ms=int(computed_at_ms),
         )
         cursor = self.conn.execute(
             """
             INSERT INTO token_radar_target_features(
-              projection_version, "window", scope, lane, target_type_key, identity_id,
+              projection_version, "window", lane, target_type_key, identity_id,
               target_type, target_id, pricefeed_id, latest_event_received_at_ms,
               latest_market_observed_at_ms, attention_score, market_score, credibility_score,
               rank_score, factor_snapshot_json, intent_json, resolution_json,
@@ -484,13 +458,13 @@ class TokenRadarRepository:
               social_heat_raw_score, social_heat_weight, social_propagation_raw_score,
               social_propagation_weight, timing_risk_raw_score, timing_risk_weight,
               cohort_high_confidence_mentions,
-              cohort_kol_mentions, cohort_public_followup_authors, cohort_first_seen_global_24h,
-              cohort_symbol, social_heat_watched_mentions, social_heat_mentions_1h,
+              cohort_kol_mentions, cohort_followup_authors, cohort_first_seen_global_24h,
+              cohort_symbol, social_heat_mentions_1h,
               social_propagation_mentions, social_heat_latest_seen_ms, raw_composite_score,
               recommended_decision, gates_max_decision
             )
             VALUES (
-              %(projection_version)s, %(window)s, %(scope)s, %(lane)s, %(target_type_key)s, %(identity_id)s,
+              %(projection_version)s, %(window)s, %(lane)s, %(target_type_key)s, %(identity_id)s,
               %(target_type)s, %(target_id)s, %(pricefeed_id)s, %(latest_event_received_at_ms)s,
               %(latest_market_observed_at_ms)s, %(attention_score)s, %(market_score)s, %(credibility_score)s,
               %(rank_score)s, %(factor_snapshot_json)s, %(intent_json)s, %(resolution_json)s,
@@ -500,12 +474,12 @@ class TokenRadarRepository:
               %(social_propagation_raw_score)s, %(social_propagation_weight)s,
               %(timing_risk_raw_score)s, %(timing_risk_weight)s,
               %(cohort_high_confidence_mentions)s, %(cohort_kol_mentions)s,
-              %(cohort_public_followup_authors)s, %(cohort_first_seen_global_24h)s,
-              %(cohort_symbol)s, %(social_heat_watched_mentions)s, %(social_heat_mentions_1h)s,
+              %(cohort_followup_authors)s, %(cohort_first_seen_global_24h)s,
+              %(cohort_symbol)s, %(social_heat_mentions_1h)s,
               %(social_propagation_mentions)s, %(social_heat_latest_seen_ms)s,
               %(raw_composite_score)s, %(recommended_decision)s, %(gates_max_decision)s
             )
-            ON CONFLICT(projection_version, "window", scope, lane, target_type_key, identity_id)
+            ON CONFLICT(projection_version, "window", lane, target_type_key, identity_id)
             DO UPDATE SET
               target_type = excluded.target_type,
               target_id = excluded.target_id,
@@ -533,10 +507,9 @@ class TokenRadarRepository:
               timing_risk_weight = excluded.timing_risk_weight,
               cohort_high_confidence_mentions = excluded.cohort_high_confidence_mentions,
               cohort_kol_mentions = excluded.cohort_kol_mentions,
-              cohort_public_followup_authors = excluded.cohort_public_followup_authors,
+              cohort_followup_authors = excluded.cohort_followup_authors,
               cohort_first_seen_global_24h = excluded.cohort_first_seen_global_24h,
               cohort_symbol = excluded.cohort_symbol,
-              social_heat_watched_mentions = excluded.social_heat_watched_mentions,
               social_heat_mentions_1h = excluded.social_heat_mentions_1h,
               social_propagation_mentions = excluded.social_propagation_mentions,
               social_heat_latest_seen_ms = excluded.social_heat_latest_seen_ms,
@@ -554,7 +527,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         lane: str,
         target_type_key: str,
         identity_id: str,
@@ -565,12 +537,11 @@ class TokenRadarRepository:
             DELETE FROM token_radar_target_features
             WHERE projection_version = %s
               AND "window" = %s
-              AND scope = %s
               AND lane = %s
               AND target_type_key = %s
               AND identity_id = %s
             """,
-            (projection_version, window, scope, lane, target_type_key, identity_id),
+            (projection_version, window, lane, target_type_key, identity_id),
         )
         return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
@@ -579,7 +550,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         latest_event_before_ms: int,
         limit: int,
     ) -> int:
@@ -596,13 +566,12 @@ class TokenRadarRepository:
               FROM token_radar_target_features
               WHERE projection_version = %s
                 AND "window" = %s
-                AND scope = %s
                 AND latest_event_received_at_ms < %s
               ORDER BY latest_event_received_at_ms ASC
               LIMIT %s
             )
             """,
-            (projection_version, window, scope, int(latest_event_before_ms), row_limit),
+            (projection_version, window, int(latest_event_before_ms), row_limit),
         )
         return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
@@ -611,7 +580,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         min_latest_event_received_at_ms: int,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -619,7 +587,6 @@ class TokenRadarRepository:
             SELECT
               projection_version,
               "window",
-              scope,
               lane,
               target_type_key,
               identity_id,
@@ -636,10 +603,9 @@ class TokenRadarRepository:
               timing_risk_weight,
               cohort_high_confidence_mentions,
               cohort_kol_mentions,
-              cohort_public_followup_authors,
+              cohort_followup_authors,
               cohort_first_seen_global_24h,
               cohort_symbol,
-              social_heat_watched_mentions,
               social_heat_mentions_1h,
               social_propagation_mentions,
               social_heat_latest_seen_ms,
@@ -658,11 +624,10 @@ class TokenRadarRepository:
             FROM token_radar_target_features
             WHERE projection_version = %s
               AND "window" = %s
-              AND scope = %s
               AND latest_event_received_at_ms >= %s
             ORDER BY lane DESC, rank_score DESC, latest_event_received_at_ms DESC, identity_id ASC
             """,
-            (projection_version, window, scope, int(min_latest_event_received_at_ms)),
+            (projection_version, window, int(min_latest_event_received_at_ms)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -671,7 +636,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         rows: list[dict[str, Any]],
     ) -> dict[tuple[str, str], int]:
@@ -696,10 +660,9 @@ class TokenRadarRepository:
              AND requested.identity_id = first_seen.identity_id
             WHERE first_seen.projection_version = %s
               AND first_seen."window" = %s
-              AND first_seen.scope = %s
               AND first_seen.venue = %s
             """,
-            (target_type_keys, identity_ids, projection_version, window, scope, venue),
+            (target_type_keys, identity_ids, projection_version, window, venue),
         ).fetchall()
         return {
             (str(row["target_type_key"]), str(row["identity_id"])): int(row["first_seen_ms"])
@@ -712,7 +675,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         rows: list[dict[str, Any]],
         computed_at_ms: int,
@@ -733,7 +695,6 @@ class TokenRadarRepository:
                 (
                     projection_version,
                     window,
-                    scope,
                     venue,
                     target_type_key,
                     identity_id,
@@ -747,16 +708,16 @@ class TokenRadarRepository:
             )
         if not records:
             return 0
-        values_sql = ",".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(records))
+        values_sql = ",".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(records))
         params = [value for record in records for value in record]
         cursor = self.conn.execute(
             f"""
             INSERT INTO token_radar_target_first_seen(
-              projection_version, "window", scope, venue, target_type_key, identity_id,
+              projection_version, "window", venue, target_type_key, identity_id,
               first_seen_ms, last_seen_ms, first_row_id, latest_row_id, created_at_ms, updated_at_ms
             )
             VALUES {values_sql}
-            ON CONFLICT(projection_version, "window", scope, venue, target_type_key, identity_id)
+            ON CONFLICT(projection_version, "window", venue, target_type_key, identity_id)
             DO UPDATE SET
               first_seen_ms = LEAST(token_radar_target_first_seen.first_seen_ms, excluded.first_seen_ms),
               last_seen_ms = GREATEST(token_radar_target_first_seen.last_seen_ms, excluded.last_seen_ms),
@@ -781,7 +742,6 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         window: str,
-        scope: str,
         venue: str,
         generation_id: str,
         started_at_ms: int | None = None,
@@ -793,12 +753,12 @@ class TokenRadarRepository:
         self.conn.execute(
             """
             INSERT INTO token_radar_publication_state(
-              projection_version, "window", scope, venue, latest_attempt_generation_id, latest_attempt_status,
+              projection_version, "window", venue, latest_attempt_generation_id, latest_attempt_status,
               latest_attempt_started_at_ms, latest_attempt_finished_at_ms, latest_attempt_error,
               updated_at_ms
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT(projection_version, "window", scope, venue) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(projection_version, "window", venue) DO UPDATE SET
               latest_attempt_generation_id = excluded.latest_attempt_generation_id,
               latest_attempt_status = excluded.latest_attempt_status,
               latest_attempt_started_at_ms = excluded.latest_attempt_started_at_ms,
@@ -809,7 +769,6 @@ class TokenRadarRepository:
             (
                 projection_version,
                 window,
-                scope,
                 venue,
                 str(generation_id),
                 "failed",
@@ -825,31 +784,29 @@ class TokenRadarRepository:
         *,
         projection_version: str,
         windows: tuple[str, ...],
-        scopes: tuple[str, ...],
         venues: tuple[str, ...],
-    ) -> dict[tuple[str, str, str], dict[str, Any]]:
-        requested = [(window, scope, venue) for window in windows for scope in scopes for venue in venues]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        requested = [(window, venue) for window in windows for venue in venues]
         if not requested:
             return {}
-        values_sql = ",".join(["(%s, %s, %s)"] * len(requested))
+        values_sql = ",".join(["(%s, %s)"] * len(requested))
         params: list[Any] = []
-        for window, scope, venue in requested:
-            params.extend([window, scope, venue])
+        for window, venue in requested:
+            params.extend([window, venue])
         rows = self.conn.execute(
             f"""
-            WITH requested("window", scope, venue) AS (VALUES {values_sql})
+            WITH requested("window", venue) AS (VALUES {values_sql})
             SELECT state.*
             FROM requested
             JOIN token_radar_publication_state state
               ON state."window" = requested."window"
-             AND state.scope = requested.scope
              AND state.venue = requested.venue
             WHERE state.projection_version = %s
             """,
             [*params, projection_version],
         ).fetchall()
         return {
-            (str(row["window"]), str(row["scope"]), str(row["venue"])): {
+            (str(row["window"]), str(row["venue"])): {
                 "current_generation_id": row.get("current_generation_id"),
                 "current_published_at_ms": (
                     int(row["current_published_at_ms"]) if row.get("current_published_at_ms") is not None else None
@@ -885,7 +842,6 @@ def _runtime_row_payload(
     *,
     projection_version: str,
     window: str,
-    scope: str,
     venue: str,
     generation_id: str,
     published_at_ms: int,
@@ -898,7 +854,6 @@ def _runtime_row_payload(
         {
             "projection_version": projection_version,
             "window": window,
-            "scope": scope,
             "venue": venue,
             "computed_at_ms": int(published_at_ms),
             "generation_id": str(generation_id),
@@ -918,7 +873,6 @@ def _target_feature_payload(
     *,
     projection_version: str,
     window: str,
-    scope: str,
     computed_at_ms: int,
 ) -> dict[str, Any]:
     target_type_key, identity_id = _identity_key(row)
@@ -956,7 +910,6 @@ def _target_feature_payload(
     payload = {
         "projection_version": projection_version,
         "window": window,
-        "scope": scope,
         "lane": lane,
         "target_type_key": target_type_key,
         "identity_id": identity_id,
@@ -986,7 +939,7 @@ def _target_feature_payload(
         "timing_risk_weight": _family_weight(timing_risk),
         "cohort_high_confidence_mentions": int(row.get("_cohort_high_conf_count") or 0),
         "cohort_kol_mentions": int(row.get("_cohort_kol_count") or 0),
-        "cohort_public_followup_authors": int(row.get("_cohort_public_followup_count") or 0),
+        "cohort_followup_authors": int(row.get("_cohort_followup_count") or 0),
         "cohort_first_seen_global_24h": row.get("_cohort_first_seen_global_24h") is True
         or row.get("first_seen_global_24h") is True,
         "cohort_symbol": str(
@@ -994,9 +947,6 @@ def _target_feature_payload(
             or (row.get("intent_json") or {}).get("display_symbol")
             or ""
         ).upper(),
-        "social_heat_watched_mentions": _int_value(
-            social_heat_facts.get("watched_mentions") if isinstance(social_heat_facts, dict) else None
-        ),
         "social_heat_mentions_1h": _int_value(
             social_heat_facts.get("mentions_1h") if isinstance(social_heat_facts, dict) else None
         ),
@@ -1199,7 +1149,6 @@ def stable_generation_id(
     *,
     projection_version: str,
     window: str,
-    scope: str,
     venue: str,
     rows: list[dict[str, Any]],
 ) -> str:
@@ -1223,7 +1172,6 @@ def stable_generation_id(
         {
             "projection_version": projection_version,
             "window": window,
-            "scope": scope,
             "venue": venue,
             "rows": stable_rows,
         }

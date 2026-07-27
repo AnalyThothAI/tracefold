@@ -1,5 +1,5 @@
 import { tokenKey } from "@lib/format";
-import type { ScopeKey, TokenFlowItem, WindowKey } from "@lib/types";
+import type { TokenFlowItem, WindowKey } from "@lib/types";
 import {
   TOKEN_RADAR_VENUE_FILTERS,
   tokenVenueDisplayLabel,
@@ -38,14 +38,12 @@ import "./TokenRadarTable.css";
 type TokenRadarTableProps = {
   items: TokenFlowItem[];
   selectedKey: string | null;
-  scope: ScopeKey;
   windowKey: WindowKey;
   isLoading: boolean;
   isRefreshing?: boolean;
   error?: Error | null;
   radarStatus?: RadarStatusInput;
   onSelect?: (item: TokenFlowItem) => void;
-  onScopeChange: (scope: ScopeKey) => void;
   onVenueChange?: (venue: TokenRadarVenueFilter) => void;
   onWindowChange: (window: WindowKey) => void;
   venueFilter?: TokenRadarVenueFilter;
@@ -55,14 +53,12 @@ export function TokenRadarTable(props: TokenRadarTableProps) {
   const {
     items,
     selectedKey,
-    scope,
     windowKey,
     isLoading,
     isRefreshing = false,
     error,
     radarStatus,
     onSelect,
-    onScopeChange,
     onVenueChange = () => undefined,
     onWindowChange,
     venueFilter = "all",
@@ -77,8 +73,8 @@ export function TokenRadarTable(props: TokenRadarTableProps) {
         }`
       : "no live cases";
   const columns = useMemo<ColumnDef<TokenFlowItem>[]>(
-    () => tokenRadarColumns({ onSelect, scope, selectedKey }),
-    [onSelect, scope, selectedKey],
+    () => tokenRadarColumns({ onSelect, selectedKey }),
+    [onSelect, selectedKey],
   );
   const [sorting, setSorting] = useState<SortingState>([]);
   const table = useReactTable({
@@ -104,12 +100,7 @@ export function TokenRadarTable(props: TokenRadarTableProps) {
         </div>
         <div className="toolbar-controls" aria-label="token radar scan controls">
           <VenueFilter value={venueFilter} onChange={onVenueChange} />
-          <RadarControls
-            scope={scope}
-            windowKey={windowKey}
-            onScopeChange={onScopeChange}
-            onWindowChange={onWindowChange}
-          />
+          <RadarControls windowKey={windowKey} onWindowChange={onWindowChange} />
         </div>
       </header>
 
@@ -182,7 +173,6 @@ export function TokenRadarTable(props: TokenRadarTableProps) {
 
 type TokenRadarColumnDeps = {
   onSelect: TokenRadarTableProps["onSelect"];
-  scope: ScopeKey;
   selectedKey: string | null;
 };
 
@@ -212,7 +202,6 @@ function VenueFilter({
 
 function tokenRadarColumns({
   onSelect,
-  scope,
   selectedKey,
 }: TokenRadarColumnDeps): ColumnDef<TokenFlowItem>[] {
   return [
@@ -222,7 +211,7 @@ function tokenRadarColumns({
       accessorFn: (item) => item.identity.symbol ?? tokenKey(item),
       cell: ({ row }) => (
         <TokenCaseCell
-          detailHref={tokenRadarDetailHref(row.original, scope)}
+          detailHref={tokenRadarDetailHref(row.original)}
           item={row.original}
           onSelect={onSelect}
           selected={selectedKey === tokenKey(row.original)}

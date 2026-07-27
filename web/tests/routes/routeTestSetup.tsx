@@ -21,7 +21,6 @@ vi.mock("@shared/socket/IntelSocketProvider", async () => {
 vi.mock("@shared/socket/socketContext", () => ({
   useSocketSnapshot: () => ({
     lastMessageAt: socketScenario.lastMessageAt,
-    notificationItems: socketScenario.notifications,
     status: socketScenario.status,
   }),
 }));

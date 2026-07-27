@@ -29,7 +29,6 @@ def make_token_event(
     text: str,
     received_at_ms: int = 1_777_800_000_000,
     author_handle: str = "toly",
-    is_watched: bool = True,
 ) -> TwitterEvent:
     return TwitterEvent(
         event_id=event_id,
@@ -51,7 +50,6 @@ def make_token_event(
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[author_handle] if is_watched else [],
         raw={"id": event_id},
     )
 
@@ -93,15 +91,10 @@ def make_gmgn_payload_event(
 def open_token_radar_runtime(tmp_path):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     migrate(conn)
-    repos = repositories_for_connection(
-        conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
-    )
+    repos = repositories_for_connection(conn)
     ingest = IngestService(
         evidence=repos.evidence,
         entities=repos.entities,
-        signals=repos.signals,
         registry=repos.registry,
         identity_evidence=repos.identity_evidence,
         token_evidence=repos.token_evidence,

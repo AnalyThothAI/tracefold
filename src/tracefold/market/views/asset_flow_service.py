@@ -37,7 +37,6 @@ class AssetFlowService:
         *,
         window: str,
         limit: int,
-        scope: str,
         venue: str,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
@@ -45,14 +44,12 @@ class AssetFlowService:
         publication_state = self.token_radar.latest_publication_state(
             projection_version=TOKEN_RADAR_PROJECTION_VERSION,
             windows=(window,),
-            scopes=(scope,),
             venues=(venue,),
-        ).get((window, scope, venue))
+        ).get((window, venue))
         row_limit = parsed_limit * 2
         publication_status = str((publication_state or {}).get("latest_attempt_status") or "")
         rows = self.token_radar.latest_current_rows(
             window=window,
-            scope=scope,
             venue=venue,
             limit=row_limit,
             projection_version=TOKEN_RADAR_PROJECTION_VERSION,

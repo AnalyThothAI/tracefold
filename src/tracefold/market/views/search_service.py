@@ -40,10 +40,6 @@ class SearchCursorError(Exception):
     pass
 
 
-class SearchScopeError(ValueError):
-    pass
-
-
 class SearchWindowError(ValueError):
     pass
 
@@ -64,15 +60,13 @@ class SearchService:
         query: str,
         *,
         limit: int,
-        scope: str,
         window: str,
         cursor: str | None = None,
         now_ms: int | None = None,
     ) -> SearchPage:
         requested_limit = require_nonnegative_int(limit, error_code="search_limit_required")
-        watched_only = _watched_only(scope)
         since_ms = _since_ms(window=window, now_ms=now_ms)
-        intent = parse_search_query(query, scope=scope)
+        intent = parse_search_query(query)
         query_payload = _query_payload(intent) | {"window": window, "since_ms": since_ms}
         if intent.kind == "empty":
             return SearchPage(
@@ -90,7 +84,6 @@ class SearchService:
             return self._target_page(
                 query_payload=query_payload | {"lexical_query": lexical_query},
                 target_candidates=target_candidates,
-                watched_only=watched_only,
                 limit=requested_limit,
                 cursor_state=cursor_state,
                 since_ms=since_ms,
@@ -98,7 +91,6 @@ class SearchService:
         route_hits = self.search_query.route_hits(
             intent=route_intent,
             target_candidates=target_candidates,
-            watched_only=watched_only,
             route_limit=_route_limit(lexical_query=lexical_query, requested_limit=requested_limit),
             since_ms=since_ms,
         )
@@ -123,7 +115,6 @@ class SearchService:
         *,
         query_payload: dict[str, Any],
         target_candidates: list[dict[str, Any]],
-        watched_only: bool,
         limit: int,
         cursor_state: _CursorState | None,
         since_ms: int,
@@ -131,7 +122,6 @@ class SearchService:
         after = cursor_state.target_after if cursor_state else None
         hits = self.search_query.target_hits_page(
             target_candidates,
-            watched_only=watched_only,
             limit=limit + 1,
             after=after,
             since_ms=since_ms,
@@ -178,14 +168,6 @@ def _since_ms(*, window: str, now_ms: int | None) -> int:
     except KeyError as exc:
         raise SearchWindowError(window) from exc
     return resolved_now_ms - window_ms
-
-
-def _watched_only(scope: str) -> bool:
-    if scope == "matched":
-        return True
-    if scope == "all":
-        return False
-    raise SearchScopeError(scope)
 
 
 def _resolved_targets(target_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

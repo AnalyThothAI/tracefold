@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/api/account-alerts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Account Alerts */
-        get: operations["account_alerts_api_account_alerts_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/bootstrap": {
         parameters: {
             query?: never;
@@ -293,91 +276,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/notification-deliveries": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Notification Deliveries */
-        get: operations["notification_deliveries_api_notification_deliveries_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Notifications */
-        get: operations["notifications_api_notifications_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications/author/{author_handle}/read": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Mark Author Notifications Read */
-        post: operations["mark_author_notifications_read_api_notifications_author__author_handle__read_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications/read-all": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Mark All Notifications Read */
-        post: operations["mark_all_notifications_read_api_notifications_read_all_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications/{notification_id}/read": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Mark Notification Read */
-        post: operations["mark_notification_read_api_notifications__notification_id__read_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/recent": {
         parameters: {
             query?: never;
@@ -531,57 +429,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/watchlist/handle/{handle}/overview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Watchlist Handle Overview */
-        get: operations["watchlist_handle_overview_api_watchlist_handle__handle__overview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/watchlist/handle/{handle}/timeline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Watchlist Handle Timeline */
-        get: operations["watchlist_handle_timeline_api_watchlist_handle__handle__timeline_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/watchlist/handles/overview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Watchlist Handles Overview */
-        get: operations["watchlist_handles_overview_api_watchlist_handles_overview_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -637,27 +484,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AccountAlertsData */
-        AccountAlertsData: {
-            /** Alert Type */
-            alert_type: string | null;
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            /** Window */
-            window: string;
-        };
-        /** ApiEnvelope[AccountAlertsData] */
-        ApiEnvelope_AccountAlertsData_: {
-            data?: components["schemas"]["AccountAlertsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[BootstrapData] */
         ApiEnvelope_BootstrapData_: {
             data?: components["schemas"]["BootstrapData"] | null;
@@ -701,46 +527,6 @@ export interface components {
         /** ApiEnvelope[MacroResearchReadData] */
         ApiEnvelope_MacroResearchReadData_: {
             data?: components["schemas"]["MacroResearchReadData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NotificationDeliveriesData] */
-        ApiEnvelope_NotificationDeliveriesData_: {
-            data?: components["schemas"]["NotificationDeliveriesData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NotificationReadAllData] */
-        ApiEnvelope_NotificationReadAllData_: {
-            data?: components["schemas"]["NotificationReadAllData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NotificationReadData] */
-        ApiEnvelope_NotificationReadData_: {
-            data?: components["schemas"]["NotificationReadData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NotificationsData] */
-        ApiEnvelope_NotificationsData_: {
-            data?: components["schemas"]["NotificationsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -848,36 +634,6 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[WatchlistHandleOverviewData] */
-        ApiEnvelope_WatchlistHandleOverviewData_: {
-            data?: components["schemas"]["WatchlistHandleOverviewData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[WatchlistHandleTimelineData] */
-        ApiEnvelope_WatchlistHandleTimelineData_: {
-            data?: components["schemas"]["WatchlistHandleTimelineData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[WatchlistHandlesOverviewData] */
-        ApiEnvelope_WatchlistHandlesOverviewData_: {
-            data?: components["schemas"]["WatchlistHandlesOverviewData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[dict[str, Any]] */
         ApiEnvelope_dict_str__Any__: {
             /** Data */
@@ -893,8 +649,6 @@ export interface components {
         };
         /** BootstrapData */
         BootstrapData: {
-            /** Handles */
-            handles: string[];
             /** Replay Limit */
             replay_limit: number;
             /** Ws Token */
@@ -1216,99 +970,6 @@ export interface components {
             ingest: components["schemas"]["NewsHealthLayerData"];
             story: components["schemas"]["NewsHealthLayerData"];
         };
-        /** NotificationDeliveriesData */
-        NotificationDeliveriesData: {
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-        };
-        /** NotificationItemData */
-        NotificationItemData: {
-            /** Address */
-            address: string | null;
-            /** Author Handle */
-            author_handle: string | null;
-            /** Body */
-            body: string;
-            /** Chain */
-            chain: string | null;
-            /** Channels */
-            channels: string[];
-            /** Created At Ms */
-            created_at_ms: number;
-            /** Dedup Key */
-            dedup_key: string;
-            /** Entity Key */
-            entity_key: string | null;
-            /** Entity Type */
-            entity_type: string | null;
-            /** Event Id */
-            event_id: string | null;
-            /** First Seen At Ms */
-            first_seen_at_ms: number;
-            /** Last Seen At Ms */
-            last_seen_at_ms: number;
-            /** Notification Id */
-            notification_id: string;
-            /** Occurrence Count */
-            occurrence_count: number;
-            /** Payload */
-            payload: {
-                [key: string]: unknown;
-            };
-            /** Read At Ms */
-            read_at_ms: number | null;
-            /** Rule Id */
-            rule_id: string;
-            /** Severity */
-            severity: string;
-            /** Source Id */
-            source_id: string;
-            /** Source Table */
-            source_table: string;
-            /** Symbol */
-            symbol: string | null;
-            /** Title */
-            title: string;
-            /** Updated At Ms */
-            updated_at_ms: number;
-        };
-        /** NotificationReadAllData */
-        NotificationReadAllData: {
-            /** Updated Count */
-            updated_count: number;
-        };
-        /** NotificationReadData */
-        NotificationReadData: {
-            /** Notification Id */
-            notification_id: string;
-            /** Updated */
-            updated: boolean;
-        };
-        /** NotificationSummary */
-        NotificationSummary: {
-            /** Account Unread Counts */
-            account_unread_counts: {
-                [key: string]: number;
-            };
-            /** Critical Unread Count */
-            critical_unread_count: number;
-            /** High Unread Count */
-            high_unread_count: number;
-            /** Highest Unread Severity */
-            highest_unread_severity: string | null;
-            /** Subscriber Key */
-            subscriber_key: string;
-            /** Unread Count */
-            unread_count: number;
-        };
-        /** NotificationsData */
-        NotificationsData: {
-            /** Items */
-            items: components["schemas"]["NotificationItemData"][];
-            summary: components["schemas"]["NotificationSummary"];
-        };
         /** ReadinessData */
         ReadinessData: {
             /** Composition */
@@ -1319,8 +980,6 @@ export interface components {
             db: {
                 [key: string]: unknown;
             };
-            /** Handles */
-            handles: string[];
             /** Ok */
             ok: boolean;
             /** Reasons */
@@ -1341,8 +1000,6 @@ export interface components {
             items: {
                 [key: string]: unknown;
             }[];
-            /** Scope */
-            scope: string;
         };
         /** SearchData */
         SearchData: {
@@ -1391,8 +1048,6 @@ export interface components {
              * @enum {string}
              */
             result_kind: "token_result" | "topic_result" | "ambiguous_result" | "empty_result";
-            /** Scope */
-            scope: string;
             /** Window */
             window: string;
         };
@@ -1443,8 +1098,6 @@ export interface components {
             author_handle: string | null;
             /** Author Name */
             author_name: string | null;
-            /** Author Watched */
-            author_watched: boolean;
             /** Canonical Url */
             canonical_url: string | null;
             /** Channel */
@@ -1471,8 +1124,6 @@ export interface components {
             db: {
                 [key: string]: unknown;
             };
-            /** Handles */
-            handles: string[];
             news: components["schemas"]["NewsHealthData"];
             /** Ok */
             ok: boolean;
@@ -1506,8 +1157,6 @@ export interface components {
             mentions: number;
             /** Unique Authors */
             unique_authors: number;
-            /** Watched Mentions */
-            watched_mentions: number;
         };
         /** StocksRadarData */
         StocksRadarData: {
@@ -1515,8 +1164,6 @@ export interface components {
             query: components["schemas"]["StocksRadarQueryData"];
             /** Rows */
             rows: components["schemas"]["StocksRadarRowData"][];
-            /** Scope */
-            scope: string;
             /** Window */
             window: string;
         };
@@ -1544,8 +1191,6 @@ export interface components {
         StocksRadarQueryData: {
             /** Limit */
             limit: number;
-            /** Scope */
-            scope: string;
             /** Window */
             window: string;
             /** Window End Ms */
@@ -1634,8 +1279,6 @@ export interface components {
         TargetPostsQueryData: {
             /** Range */
             range: string;
-            /** Scope */
-            scope: string;
             /** Target Id */
             target_id: string;
             /** Target Type */
@@ -1690,8 +1333,6 @@ export interface components {
         TargetSocialTimelineQueryData: {
             /** Bucket */
             bucket: string;
-            /** Scope */
-            scope: string;
             /** Target Id */
             target_id: string;
             /** Target Type */
@@ -1861,7 +1502,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "token_factor_snapshot_v4_transparent_factors";
+            schema_version: "token_factor_snapshot_v5_provider_neutral";
             subject: components["schemas"]["TokenFactorSubjectData"];
         };
         /** TokenFactorSubjectData */
@@ -1897,8 +1538,6 @@ export interface components {
             /** Attention */
             attention: components["schemas"]["TokenRadarRowData"][];
             projection: components["schemas"]["TokenRadarProjectionData"];
-            /** Scope */
-            scope: string;
             /** Targets */
             targets: components["schemas"]["TokenRadarRowData"][];
             /** Venue */
@@ -2046,125 +1685,6 @@ export interface components {
             /** Error Type */
             type: string;
         };
-        /** WatchlistHandleOverviewData */
-        WatchlistHandleOverviewData: {
-            /** Candidate Mention Clusters */
-            candidate_mention_clusters: components["schemas"]["WatchlistOverviewCluster"][];
-            /** Clusters Truncated */
-            clusters_truncated: boolean;
-            /** Hashtag Clusters */
-            hashtag_clusters: components["schemas"]["WatchlistOverviewCluster"][];
-            metrics: components["schemas"]["WatchlistOverviewMetrics"];
-            query: components["schemas"]["WatchlistOverviewQuery"];
-            /** Resolved Token Clusters */
-            resolved_token_clusters: components["schemas"]["WatchlistOverviewCluster"][];
-            /** Risk Notes */
-            risk_notes: string[];
-        };
-        /** WatchlistHandleRowOverview */
-        WatchlistHandleRowOverview: {
-            /** Handle */
-            handle: string;
-            /** Last Source Event At Ms */
-            last_source_event_at_ms: number | null;
-            /** Recent Source Event Count */
-            recent_source_event_count: number;
-        };
-        /** WatchlistHandleTimelineData */
-        WatchlistHandleTimelineData: {
-            /** Has More */
-            has_more: boolean;
-            /** Items */
-            items: components["schemas"]["WatchlistTimelineItem"][];
-            /** Next Cursor */
-            next_cursor: string | null;
-            query: components["schemas"]["WatchlistTimelineQuery"];
-        };
-        /** WatchlistHandlesOverviewData */
-        WatchlistHandlesOverviewData: {
-            /** Items */
-            items: components["schemas"]["WatchlistHandleRowOverview"][];
-            /** Window */
-            window: string;
-        };
-        /** WatchlistOverviewCluster */
-        WatchlistOverviewCluster: {
-            /** Count */
-            count: number;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "resolved_token" | "candidate_mention" | "hashtag";
-            /** Label */
-            label: string;
-            /** Query */
-            query: string;
-            /** Source */
-            source: string;
-            /** Symbol */
-            symbol: string | null;
-            /** Target Id */
-            target_id: string | null;
-            /** Target Type */
-            target_type: string | null;
-        };
-        /** WatchlistOverviewMetrics */
-        WatchlistOverviewMetrics: {
-            /** Candidate Mention Count */
-            candidate_mention_count: number;
-            /** Hashtag Count */
-            hashtag_count: number;
-            /** Last Source Event At Ms */
-            last_source_event_at_ms: number | null;
-            /** Resolved Token Count */
-            resolved_token_count: number;
-            /** Source Event Count */
-            source_event_count: number;
-        };
-        /** WatchlistOverviewQuery */
-        WatchlistOverviewQuery: {
-            /** Handle */
-            handle: string;
-            /** Window */
-            window: string;
-        };
-        /** WatchlistTimelineItem */
-        WatchlistTimelineItem: {
-            /** Action */
-            action: string;
-            /** Author Handle */
-            author_handle: string | null;
-            /** Canonical Url */
-            canonical_url: string | null;
-            /** Cashtags */
-            cashtags: string[];
-            /** Event */
-            event: {
-                [key: string]: unknown;
-            };
-            /** Event Id */
-            event_id: string;
-            /** Hashtags */
-            hashtags: string[];
-            /** Mentions */
-            mentions: string[];
-            /** Received At Ms */
-            received_at_ms: number;
-            /** Text Clean */
-            text_clean: string | null;
-            /** Token Resolutions */
-            token_resolutions: {
-                [key: string]: unknown;
-            }[];
-        };
-        /** WatchlistTimelineQuery */
-        WatchlistTimelineQuery: {
-            /** Handle */
-            handle: string;
-            /** Limit */
-            limit: number;
-        };
         /** WorkerStatusData */
         WorkerStatusData: {
             /**
@@ -2200,40 +1720,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    account_alerts_api_account_alerts_get: {
-        parameters: {
-            query?: {
-                window?: string;
-                limit?: number;
-                handles?: string;
-                alert_type?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AccountAlertsData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     bootstrap_api_bootstrap_get: {
         parameters: {
             query?: never;
@@ -2615,153 +2101,6 @@ export interface operations {
             };
         };
     };
-    notification_deliveries_api_notification_deliveries_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                status?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NotificationDeliveriesData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    notifications_api_notifications_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                unread_only?: boolean;
-                rule_id?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NotificationsData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mark_author_notifications_read_api_notifications_author__author_handle__read_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                author_handle: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NotificationReadAllData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mark_all_notifications_read_api_notifications_read_all_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NotificationReadAllData_"];
-                };
-            };
-        };
-    };
-    mark_notification_read_api_notifications__notification_id__read_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                notification_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NotificationReadData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     recent_api_recent_get: {
         parameters: {
             query?: {
@@ -2770,7 +2109,6 @@ export interface operations {
                 ca?: string;
                 chain?: string;
                 symbol?: string;
-                scope?: string;
             };
             header?: never;
             path?: never;
@@ -2803,7 +2141,6 @@ export interface operations {
             query?: {
                 q?: string;
                 limit?: number;
-                scope?: string;
                 cursor?: string;
                 window?: string;
             };
@@ -2838,7 +2175,6 @@ export interface operations {
             query?: {
                 q?: string;
                 window?: string;
-                scope?: string;
                 limit?: number;
             };
             header?: never;
@@ -2892,7 +2228,6 @@ export interface operations {
             query?: {
                 window?: string;
                 limit?: number;
-                scope?: string;
             };
             header?: never;
             path?: never;
@@ -2928,7 +2263,6 @@ export interface operations {
                 window?: string;
                 range?: string;
                 limit?: number;
-                scope?: string;
                 cursor?: string;
             };
             header?: never;
@@ -2963,7 +2297,6 @@ export interface operations {
                 target_type?: string;
                 target_id?: string;
                 window?: string;
-                scope?: string;
                 limit?: number;
                 cursor?: string;
             };
@@ -2999,7 +2332,6 @@ export interface operations {
                 target_type?: string;
                 target_id?: string;
                 window?: string;
-                scope?: string;
                 posts_limit?: number;
             };
             header?: never;
@@ -3033,7 +2365,6 @@ export interface operations {
             query?: {
                 window?: string;
                 limit?: number;
-                scope?: string;
                 venue?: string;
             };
             header?: never;
@@ -3058,91 +2389,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    watchlist_handle_overview_api_watchlist_handle__handle__overview_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                handle: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_WatchlistHandleOverviewData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    watchlist_handle_timeline_api_watchlist_handle__handle__timeline_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path: {
-                handle: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_WatchlistHandleTimelineData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    watchlist_handles_overview_api_watchlist_handles_overview_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_WatchlistHandlesOverviewData_"];
                 };
             };
         };

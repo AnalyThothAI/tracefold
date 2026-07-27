@@ -34,10 +34,7 @@ Material facts include:
 - news: immutable acquisition observations in `news_feed_observations` and
   idempotent normalized current `news_items`;
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
-  `macro_documents`;
-- notifications: `notifications` and the external delivery facts in
-  `notification_deliveries`. `account_token_alerts` remains a Market fact that
-  Notifications consumes through an explicit input.
+  `macro_documents`.
 
 Current read models are `token_radar_current_rows`, `token_profile_current`,
 `market_tick_current`, deterministic `news_items`, `news_stories`, and
@@ -81,9 +78,6 @@ tracefold.macro
   judgment.py    08:50 New York Evidence Pack and deterministic daily judgment
   research/      Evidence-Pack-bound immutable DeepAgents research lifecycle
 
-tracefold.notifications
-  durable notification creation, rules, and delivery state
-
 tracefold.integrations
   provider and external-system adapters, including DeepAgents
 
@@ -94,11 +88,10 @@ tracefold.app
   composition, repositories/providers, worker registry, HTTP/WS, and CLI
 ```
 
-The four business package roots are their public Python interfaces:
-`tracefold.market`, `tracefold.news`, `tracefold.macro`, and
-`tracefold.notifications`. Consumers outside an owning package import from the
-root only. Internal subpackages may change without creating a repository-wide
-import graph.
+The three business package roots are their public Python interfaces:
+`tracefold.market`, `tracefold.news`, and `tracefold.macro`. Consumers outside
+an owning package import from the root only. Internal subpackages may change
+without creating a repository-wide import graph.
 
 The dependency direction is:
 
@@ -108,7 +101,6 @@ integrations -> business package interfaces + platform
 news -> platform
 macro -> market + platform
 market -> platform
-notifications -> platform
 platform -> Python / third-party libraries only
 ```
 
@@ -120,9 +112,8 @@ with their business owner. These rules are executable in
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
 profile, price, Radar, collector, general cross-asset observation, and
-settlement tables; News owns `news_*`; Macro owns `macro_*`; Notifications owns
-`notification*`. Platform owns Alembic, checkpoint, and generic
-terminal-evidence tables. Macro imports Market only through
+settlement tables; News owns `news_*`; Macro owns `macro_*`. Platform owns
+Alembic, checkpoint, and generic terminal-evidence tables. Macro imports Market only through
 `tracefold.market`, has no live or hidden dependency on News, and never
 duplicates general market facts into Macro storage. The architecture gate
 checks SQL table references against the generated current schema.
@@ -146,12 +137,10 @@ Important atomic units are:
   evidence/model/version attempt;
 - immutable Macro Evidence Pack, daily judgment, or research publication plus
   the corresponding stable session transition;
-- notification creation plus activation of delivery rows;
 - retry or terminal transition plus mutation of its source queue row.
 
 Provider, model, subprocess, filesystem, and network I/O occurs outside
-database transactions. External delivery follows claim, commit, I/O, then a
-compare-and-set completion or retry.
+database transactions.
 
 ## Product flows
 
@@ -166,7 +155,7 @@ events + intents + resolutions + market facts
   -> token_radar_dirty_targets
   -> source edges + target features
   -> token_radar_current_rows + publication state
-  -> Radar, Search, Token Case, notifications
+  -> Radar, Search, Token Case
 ```
 
 The public Radar row is a transparent `factor_snapshot` built only from

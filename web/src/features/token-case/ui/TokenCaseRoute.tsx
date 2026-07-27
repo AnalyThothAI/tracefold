@@ -24,7 +24,6 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
     token,
     target,
     window: routeState.window,
-    scope: routeState.scope,
     postsLimit: 24,
   });
   const dossier = dossierQuery.data?.data ?? null;
@@ -33,7 +32,6 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
     token,
     target,
     window: routeState.window,
-    scope: routeState.scope,
     postsLimit: 24,
     initialPosts,
   });
@@ -78,8 +76,6 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
     <TokenCasePanel
       vm={vm}
       onWindowChange={(window) => updateRoute({ window })}
-      onScopeChange={(scope) => updateRoute({ scope })}
-      onTimelineSortChange={(postSort) => updateRoute({ postSort })}
       onLoadMorePosts={() => {
         if (postsQuery.hasNextPage) {
           void postsQuery.fetchNextPage();

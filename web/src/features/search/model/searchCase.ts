@@ -114,12 +114,10 @@ function tokenSearchCase(data: SearchInspectData, result: TokenCaseDossier): Sea
 
   return {
     community: {
-      detail: `watched ${compactNumber(result.timeline.summary.watched_posts ?? 0)} · top ${formatPercentShare(
-        result.timeline.summary.top_author_share,
-      )}`,
+      detail: `top author ${formatPercentShare(result.timeline.summary.top_author_share)}`,
       label: "Community",
       source: "social",
-      tone: result.timeline.summary.watched_posts ? "health" : "neutral",
+      tone: result.timeline.summary.posts ? "health" : "neutral",
       value: `${compactNumber(result.timeline.summary.posts)} posts · ${compactNumber(
         result.timeline.summary.authors,
       )} authors`,

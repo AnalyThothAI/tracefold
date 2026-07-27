@@ -16,18 +16,6 @@ class TokenCaseTargetNotFound(Exception):
     pass
 
 
-class TokenCaseInvalidScope(Exception):
-    pass
-
-
-def normalize_token_case_scope(scope: str) -> tuple[str, str]:
-    if scope == "all":
-        return ("all", "all")
-    if scope in {"matched", "watched"}:
-        return ("matched", "watched")
-    raise TokenCaseInvalidScope(scope)
-
-
 class TokenCaseService:
     def __init__(
         self,
@@ -48,14 +36,12 @@ class TokenCaseService:
         target_type: str,
         target_id: str,
         window: str,
-        scope: str,
         posts_limit: int,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         target = self.targets.target_identity(target_type=target_type, target_id=target_id)
         if target is None:
             raise TokenCaseTargetNotFound(target_id)
-        service_scope, response_scope = normalize_token_case_scope(scope)
         timeline = TokenTargetSocialTimelineService(
             targets=self.targets,
             market_candles=self.market_candles,
@@ -63,7 +49,6 @@ class TokenCaseService:
             target_type=target_type,
             target_id=target_id,
             window=window,
-            scope=service_scope,
             limit=max(posts_limit, 24),
             now_ms=now_ms,
         )
@@ -71,19 +56,15 @@ class TokenCaseService:
             target_type=target_type,
             target_id=target_id,
             window=window,
-            scope=service_scope,
             post_range="current_window",
             limit=posts_limit,
             now_ms=now_ms,
         )
-        timeline["query"]["scope"] = response_scope
-        posts["query"]["scope"] = response_scope
         profile = self.profiles.profile_for_target(target_type=target_type, target_id=target_id)
         market_live = self._market_live(target=target, now_ms=now_ms)
         current_radar_row = self.token_radar.current_row_for_target(
             projection_version=TOKEN_RADAR_PROJECTION_VERSION,
             window=window,
-            scope=service_scope,
             venue=TOKEN_RADAR_DEFAULT_VENUE,
             target_type=target_type,
             target_id=target_id,

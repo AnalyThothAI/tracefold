@@ -21,11 +21,10 @@ export function useAppSession() {
   return useMemo(
     () => ({
       bootstrapError: bootstrapQuery.isError,
-      bootstrapHandles: bootstrapQuery.data?.data.handles ?? [],
       bootstrapLoading: bootstrapQuery.isPending,
       token,
     }),
-    [bootstrapQuery.data?.data.handles, bootstrapQuery.isError, bootstrapQuery.isPending, token],
+    [bootstrapQuery.isError, bootstrapQuery.isPending, token],
   );
 }
 

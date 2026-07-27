@@ -62,40 +62,16 @@ def build_parser() -> argparse.ArgumentParser:
     recent.add_argument("--ca", default="", help="filter by token contract address")
     recent.add_argument("--chain", default="", help="chain for contract address filters")
     recent.add_argument("--symbol", default="", help="filter by cashtag symbol")
-    recent.add_argument("--scope", choices=("all", "matched"), default="matched")
 
     search = subcommands.add_parser("search", help="search stored tweets by query text")
     search.add_argument("query", nargs="?", default="")
     search.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="24h")
     search.add_argument("--limit", type=_positive_int, default=20)
-    search.add_argument("--scope", choices=("all", "matched"), default="all")
     search.add_argument("--cursor", default="", help="opaque cursor returned by a prior search page")
 
     asset_flow = subcommands.add_parser("asset-flow", help="rank resolved assets and unresolved attention candidates")
     asset_flow.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
     asset_flow.add_argument("--limit", type=_positive_int, default=20)
-    asset_flow.add_argument("--scope", choices=("all", "matched"), default="all")
-
-    account_alerts = subcommands.add_parser("account-alerts", help="print watched-account token alerts")
-    account_alerts.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="24h")
-    account_alerts.add_argument("--limit", type=_positive_int, default=50)
-    account_alerts.add_argument("--handles", default="")
-    account_alerts.add_argument(
-        "--alert-type",
-        choices=("account_token", "token"),
-        default=None,
-    )
-
-    notification_deliveries = subcommands.add_parser(
-        "notification-deliveries",
-        help="inspect notification external delivery audit rows",
-    )
-    notification_deliveries.add_argument(
-        "--status",
-        choices=("pending", "running", "failed", "dead", "delivered"),
-        default=None,
-    )
-    notification_deliveries.add_argument("--limit", type=_positive_int, default=50)
 
     ops = subcommands.add_parser("ops", help="maintenance commands")
     ops_subcommands = ops.add_subparsers(dest="ops_command", required=True)
@@ -218,12 +194,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rebuild_token_radar.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
     rebuild_token_radar.add_argument("--limit", type=_positive_int, default=50)
-    rebuild_token_radar.add_argument("--scope", choices=("all", "matched"), default="all")
     factor_diagnostics = ops_subcommands.add_parser(
         "factor-diagnostics",
         help="inspect token factor distribution health for latest radar rows",
     )
     factor_diagnostics.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
-    factor_diagnostics.add_argument("--scope", choices=("all", "matched"), default="all")
     factor_diagnostics.add_argument("--limit", type=_positive_int, default=200)
     return parser

@@ -9,14 +9,13 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.app.http.validators import _limit, _positive_limit, _post_range, _scope, _target_type, _window
+from tracefold.app.http.validators import _limit, _positive_limit, _post_range, _target_type, _window
 from tracefold.market import (
     MarketCandlesService,
     SearchCursorError,
     SearchEventsQuery,
     SearchInspectService,
     SearchService,
-    TokenCaseInvalidScope,
     TokenCaseService,
     TokenCaseTargetNotFound,
     TokenProfileReadModel,
@@ -25,7 +24,6 @@ from tracefold.market import (
     TokenTargetPostsRangeError,
     TokenTargetPostsService,
     TokenTargetSocialTimelineService,
-    normalize_token_case_scope,
 )
 
 router = APIRouter()
@@ -36,7 +34,6 @@ def search(
     request: Request,
     q: Annotated[str, Query()] = "",
     limit: Annotated[int, Query()] = 20,
-    scope: Annotated[str, Query()] = "all",
     cursor: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "24h",
 ) -> JSONResponse:
@@ -44,13 +41,13 @@ def search(
     for removed in ("symbol", "ca", "chain", "handle"):
         if removed in request.query_params:
             raise ApiBadRequest("unsupported_query_param", field=removed)
+    _reject_removed_scope(request)
     parsed_window = _window(window)
     try:
         with runtime.repositories() as repos:
             results = SearchService(search_query=SearchEventsQuery(repos.conn)).search(
                 q,
                 limit=_limit(limit, maximum=200),
-                scope=_scope(scope),
                 cursor=cursor or None,
                 window=parsed_window,
                 now_ms=_now_ms(),
@@ -84,12 +81,11 @@ def search_inspect(
     request: Request,
     q: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "24h",
-    scope: Annotated[str, Query()] = "all",
     limit: Annotated[int, Query()] = 200,
 ) -> JSONResponse:
+    _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
-    parsed_scope = _scope(scope)
     with runtime.repositories() as repos:
         profiles = TokenProfileReadModel(token_profiles=repos.token_profiles)
         data = SearchInspectService(
@@ -101,7 +97,6 @@ def search_inspect(
         ).inspect(
             q,
             window=parsed_window,
-            scope=parsed_scope,
             limit=_limit(limit, maximum=200),
             now_ms=_now_ms(),
         )
@@ -117,9 +112,9 @@ def token_case(
     target_type: Annotated[str, Query()] = "",
     target_id: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "1h",
-    scope: Annotated[str, Query()] = "all",
     posts_limit: Annotated[int, Query()] = 24,
 ) -> JSONResponse:
+    _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     parsed_target_type = _target_type(target_type)
     if not parsed_target_type:
@@ -127,10 +122,6 @@ def token_case(
     if not target_id:
         raise ApiBadRequest("invalid_target", field="target_id")
     parsed_window = _window(window)
-    try:
-        normalize_token_case_scope(scope)
-    except TokenCaseInvalidScope as exc:
-        raise ApiBadRequest("invalid_scope", field="scope") from exc
     try:
         with runtime.repositories() as repos:
             data = TokenCaseService(
@@ -142,7 +133,6 @@ def token_case(
                 target_type=parsed_target_type,
                 target_id=target_id,
                 window=parsed_window,
-                scope=scope,
                 posts_limit=_positive_limit(posts_limit, maximum=50, field="posts_limit"),
                 now_ms=_now_ms(),
             )
@@ -166,9 +156,9 @@ def target_posts(
     window: Annotated[str, Query()] = "5m",
     post_range: Annotated[str, Query(alias="range")] = "current_window",
     limit: Annotated[int, Query()] = 50,
-    scope: Annotated[str, Query()] = "all",
     cursor: Annotated[str, Query()] = "",
 ) -> JSONResponse:
+    _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     if "sort" in request.query_params:
         raise ApiBadRequest("unsupported_query_param", field="sort")
@@ -176,14 +166,12 @@ def target_posts(
     if not parsed_target_type or not target_id:
         raise ApiBadRequest("target_required", field="target_id")
     parsed_window = _window(window)
-    parsed_scope = _scope(scope)
     try:
         with runtime.repositories() as repos:
             data = TokenTargetPostsService(targets=repos.token_targets).target_posts(
                 target_type=parsed_target_type,
                 target_id=target_id,
                 window=parsed_window,
-                scope=parsed_scope,
                 post_range=_post_range(post_range),
                 limit=_limit(limit, maximum=200),
                 cursor=cursor or None,
@@ -215,18 +203,17 @@ def target_social_timeline(
     target_type: Annotated[str, Query()] = "",
     target_id: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "1h",
-    scope: Annotated[str, Query()] = "all",
     limit: Annotated[int, Query()] = 200,
     cursor: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     if "bucket" in request.query_params:
         raise ApiBadRequest("unsupported_query_param", field="bucket")
+    _reject_removed_scope(request)
     parsed_target_type = _target_type(target_type)
     if not parsed_target_type or not target_id:
         raise ApiBadRequest("target_required", field="target_id")
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
-    parsed_scope = _scope(scope)
     try:
         with runtime.repositories() as repos:
             data = TokenTargetSocialTimelineService(
@@ -236,7 +223,6 @@ def target_social_timeline(
                 target_type=parsed_target_type,
                 target_id=target_id,
                 window=parsed_window,
-                scope=parsed_scope,
                 limit=_limit(limit),
                 cursor=cursor or None,
             )
@@ -254,3 +240,8 @@ def target_social_timeline(
 
 def _market_candles_service() -> MarketCandlesService:
     return MarketCandlesService()
+
+
+def _reject_removed_scope(request: Request) -> None:
+    if "scope" in request.query_params:
+        raise ApiBadRequest("unsupported_query_param", field="scope")

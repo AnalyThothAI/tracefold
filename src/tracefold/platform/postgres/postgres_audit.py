@@ -23,7 +23,6 @@ CORE_TABLES = (
     "token_radar_current_rows",
     "token_radar_publication_state",
     "token_radar_target_first_seen",
-    "notifications",
 )
 
 PROJECTION_TABLES = (
@@ -78,17 +77,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "params": (),
     },
     {
-        "name": "recent_watched",
-        "sql": """
-            SELECT event_id
-            FROM events
-            WHERE is_watched = true
-            ORDER BY received_at_ms DESC, event_id DESC
-            LIMIT 50
-        """,
-        "params": (),
-    },
-    {
         "name": "search_v2_lexical",
         "sql": """
             WITH query AS (
@@ -129,7 +117,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             FROM token_radar_current_rows
             WHERE projection_version = %(token_radar_projection_version)s
               AND "window" = '5m'
-              AND scope = 'all'
               AND venue = 'all'
             ORDER BY computed_at_ms DESC, lane DESC, rank ASC
             LIMIT 50
