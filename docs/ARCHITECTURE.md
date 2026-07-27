@@ -183,6 +183,12 @@ near-complete containment, high same-language member similarity, deterministic
 event anchors, and the stricter cross-language anchor path are then evaluated
 in order. Runner-up ambiguity creates a separate Story. There is no union-find,
 embedding, translation, LLM, or browser clustering path.
+Every admitted FeedObservation either introduces an ArticleRevision or resolves
+by exact content to an existing Revision of the same publisher artifact. A
+repeat Observation remains immutable acquisition evidence but does not invent a
+material Revision. Revision projection and MaterialEvent closure share the
+total order `(observed_at_ms, revision_id)` so equal-millisecond arrivals cannot
+make event hashes depend on unrelated deterministic IDs.
 The frozen production-derived and WorldMonitor-reference evaluation, red/green
 metrics, release floors, and remaining limits are owned by
 `docs/DEVELOPMENT.md`; the executable labels live in

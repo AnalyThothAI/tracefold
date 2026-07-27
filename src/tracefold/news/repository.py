@@ -2439,7 +2439,9 @@ class NewsRepository:
                 SELECT *
                   FROM news_story_material_events
                  WHERE story_id = %s
-                 ORDER BY occurred_at_ms, material_event_id
+                 ORDER BY occurred_at_ms,
+                          revision_id NULLS FIRST,
+                          material_event_id
                 """,
                 (story_id,),
             ).fetchall()
@@ -2670,11 +2672,40 @@ class NewsRepository:
         orphan_count = int(
             self.conn.execute(
                 """
-                SELECT count(*) AS count
+                WITH observations_without_revision AS MATERIALIZED (
+                  SELECT
+                    observations.observation_id,
+                    observations.source_id,
+                    observations.normalized_url,
+                    observations.title,
+                    observations.summary,
+                    observations.source_published_at_ms,
+                    observations.language
                   FROM news_feed_observations AS observations
-                  LEFT JOIN news_article_revisions AS revisions
-                    ON revisions.observation_id = observations.observation_id
-                 WHERE revisions.revision_id IS NULL
+                  LEFT JOIN news_article_revisions AS direct_revisions
+                    ON direct_revisions.observation_id = observations.observation_id
+                 WHERE direct_revisions.revision_id IS NULL
+                )
+                SELECT count(*) AS count
+                  FROM observations_without_revision AS observations
+                  JOIN news_sources AS sources
+                    ON sources.source_id = observations.source_id
+                 WHERE NOT EXISTS (
+                         SELECT 1
+                           FROM news_articles AS articles
+                           JOIN news_article_revisions AS revisions
+                             ON revisions.article_id = articles.article_id
+                            AND revisions.title = observations.title
+                            AND revisions.snippet = observations.summary
+                            AND revisions.source_published_at_ms =
+                                observations.source_published_at_ms
+                            AND revisions.language = observations.language
+                          WHERE articles.publisher_organization_id = COALESCE(
+                                  sources.publisher_organization_id,
+                                  sources.source_chain_id
+                                )
+                            AND articles.canonical_url = observations.normalized_url
+                       )
                 """
             ).fetchone()["count"]
         )
@@ -2752,13 +2783,16 @@ class NewsRepository:
                 """
                 SELECT count(*) AS count
                   FROM (
-                    SELECT features.article_id
-                      FROM news_article_identity_features AS features
+                    SELECT feature_articles.article_id
+                      FROM (
+                        SELECT DISTINCT article_id
+                          FROM news_article_identity_features
+                         WHERE identity_version = %s
+                      ) AS feature_articles
                       LEFT JOIN news_story_memberships AS memberships
-                        ON memberships.article_id = features.article_id
+                        ON memberships.article_id = feature_articles.article_id
                        AND memberships.membership_kind = 'primary'
-                     WHERE features.identity_version = %s
-                     GROUP BY features.article_id
+                     GROUP BY feature_articles.article_id
                     HAVING count(memberships.story_id) <> 1
                   ) AS violations
                 """,
@@ -2818,6 +2852,7 @@ class NewsRepository:
                       FROM news_story_material_events AS events
                      WHERE events.story_id = stories.story_id
                      ORDER BY events.occurred_at_ms DESC,
+                              events.revision_id DESC NULLS LAST,
                               events.material_event_id DESC
                      LIMIT 1
                   ) AS latest_event ON true
