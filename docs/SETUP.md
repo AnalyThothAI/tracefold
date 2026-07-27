@@ -125,7 +125,7 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Projection and judgment intentionally remain blocked while required
 history or document analysis is incomplete.
 
-A good macro status reports Alembic `20260727_0205`, bounded acquisition target
+A good macro status reports Alembic `20260727_0206`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -145,7 +145,7 @@ FRED liquidity series ingested with incorrect units, resets those targets, and
 invalidates derived Macro state before a clean rebuild.
 Migration `20260727_0203` removes the redundant intraday clock and rebuilds the
 Binance dataset as a UTC daily close under the settlement worker.
-Migration `20260727_0205` archives v1 Macro publication tables, hard-cuts the
+Migration `20260727_0206` archives v1 Macro publication tables, hard-cuts the
 active lane to v2 Evidence Pack/judgment/research schemas, adds Fed role and
 immutable document-analysis storage, and requires six module-specific payloads.
 Enable the Macro workers only after the migration is current.

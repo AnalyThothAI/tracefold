@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "20260727_0205"
-down_revision = "20260727_0204"
+revision = "20260727_0206"
+down_revision = "20260727_0205"
 branch_labels = None
 depends_on = None
 
@@ -22,7 +22,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260727_0205 is an irreversible Macro contract hard cut; apply a forward fix")
+    raise RuntimeError("20260727_0206 is an irreversible Macro contract hard cut; apply a forward fix")
 
 
 def _hard_cut_module_current() -> None:

@@ -464,7 +464,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     finally:
         conn.close()
 
-    assert version == "20260727_0205"
+    assert version == "20260727_0206"
     assert observation_count == 0
     assert target == {
         "clock_kind": "daily_settlement",
@@ -474,7 +474,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     }
 
 
-def test_0205_archives_v1_publications_and_enforces_typed_v2_contracts(
+def test_0206_archives_v1_publications_and_enforces_typed_v2_contracts(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -523,7 +523,7 @@ def test_0205_archives_v1_publications_and_enforces_typed_v2_contracts(
         )
         conn.commit()
 
-        command.upgrade(config, "20260727_0205")
+        command.upgrade(config, "20260727_0206")
 
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         active_counts = {
@@ -582,7 +582,7 @@ def test_0205_archives_v1_publications_and_enforces_typed_v2_contracts(
     finally:
         conn.close()
 
-    assert version == "20260727_0205"
+    assert version == "20260727_0206"
     assert set(active_counts.values()) == {0}
     assert archived_pack == {"schema_version": "macro_evidence_pack_v1"}
     assert archived_judgment == {"schema_version": "macro_daily_judgment_v1"}

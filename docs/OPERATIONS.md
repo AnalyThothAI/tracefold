@@ -193,6 +193,11 @@ dual writer, and no compatibility read.
 
 Macro:
 
+Migration `20260727_0206` is the irreversible Macro professional-coverage hard
+cut layered after the News production cut. It archives v1 Macro publications,
+creates the typed v2 publication lane and Fed evidence tables, and clears the
+generic module read model for a deterministic rebuild.
+
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
   -> macro_projection -> six macro_module_current rows

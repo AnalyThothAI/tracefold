@@ -895,7 +895,7 @@ def test_destructive_migration_clears_old_news_only_and_preserves_non_news_state
         ).fetchone()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
         assert sentinel == {"payload": "non-news-domain-state"}
-        assert version == {"version_num": "20260727_0205"}
+        assert version == {"version_num": "20260727_0206"}
         assert conn.execute("SELECT count(*) AS count FROM news_sources").fetchone() == {"count": 0}
         assert conn.execute(
             """
