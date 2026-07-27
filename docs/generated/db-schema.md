@@ -1029,16 +1029,6 @@
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `schema_migration_backup_receipts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `migration_revision` | `TEXT` | False | `None` |
-| `backup_sha256` | `TEXT` | False | `None` |
-| `backup_location` | `TEXT` | False | `None` |
-| `backup_created_at_ms` | `BIGINT` | False | `None` |
-| `recorded_at_ms` | `BIGINT` | False | `None` |
-
 ## `token_discovery_dirty_lookup_keys`
 
 | Column | Type | Nullable | Default |

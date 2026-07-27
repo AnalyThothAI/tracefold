@@ -119,11 +119,12 @@ GMGN_TEST_POSTGRES_DSN=<isolated-test-dsn> \
 
 This labeled pair corpus is necessary but not complete ground truth and does
 not exhaust multi-member transitive shapes. Production cutover must therefore
-also prove a verified backup receipt, material-fact preservation, sequential
-Identity-v2 rebuild, zero backlog and hard-conflict violations, post-rebuild
-distribution/candidate audit, both Story views, Active Brief hash closure,
-Chinese provider or exact-cache provenance, and all five News health layers.
-The pre-cut 0198 Stories are not considered corrected.
+also have explicit operator approval of the irreversible cutover and prove
+material-fact preservation, sequential Identity-v2 rebuild, zero backlog and
+hard-conflict violations, post-rebuild distribution/candidate audit, both Story
+views, Active Brief hash closure, Chinese provider or exact-cache provenance,
+and all five News health layers. The pre-cut 0198 Stories are not considered
+corrected.
 
 ## Generated contracts
 
