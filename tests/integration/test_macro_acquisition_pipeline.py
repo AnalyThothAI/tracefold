@@ -272,6 +272,65 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
     assert promoted["cursor_json"]["required_for_judgment"] is True
 
 
+def test_promoting_covering_backfill_removes_redundant_unclaimed_targets(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        clock = _Clock()
+        spec = require_dataset("fred.demcc")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            covering = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2021, 7, 23),
+                end_date=date(2026, 7, 27),
+                now_ms=clock(),
+                max_attempts=3,
+            )
+            redundant = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2021, 7, 27),
+                end_date=date(2026, 7, 27),
+                now_ms=clock(),
+                max_attempts=3,
+            )
+            conn.execute(
+                """
+                UPDATE macro_acquisition_targets
+                SET status = 'current',
+                    cursor_json = cursor_json || '{"backfill_complete": true}'::jsonb,
+                    next_due_at_ms = 253402300799000
+                WHERE target_key = %s
+                """,
+                (covering["target_key"],),
+            )
+            promoted = repos.macro.promote_covering_backfill_target(
+                spec,
+                start_date=date(2021, 7, 27),
+                end_date=date(2026, 7, 27),
+                history_class="required_trailing_five_years",
+                required_for_judgment=True,
+                priority=25,
+                now_ms=clock(),
+            )
+        targets = conn.execute(
+            """
+            SELECT target_key, status
+            FROM macro_acquisition_targets
+            WHERE dataset_id = %s
+              AND clock_kind = 'backfill'
+            ORDER BY target_key
+            """,
+            (spec.dataset_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert promoted is not None
+    assert promoted["target_key"] == covering["target_key"]
+    assert redundant["target_key"] != covering["target_key"]
+    assert [dict(row) for row in targets] == [{"target_key": covering["target_key"], "status": "current"}]
+
+
 def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:

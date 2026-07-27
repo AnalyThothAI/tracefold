@@ -184,7 +184,27 @@ class MacroRepository:
                 int(now_ms),
             ),
         ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        self.conn.execute(
+            """
+            DELETE FROM macro_acquisition_targets AS redundant
+            USING macro_acquisition_targets AS covering
+            WHERE covering.target_key = %s
+              AND redundant.dataset_id = covering.dataset_id
+              AND redundant.clock_kind = 'backfill'
+              AND redundant.target_key <> covering.target_key
+              AND redundant.status <> 'claimed'
+              AND redundant.cursor_json ? 'start_date'
+              AND redundant.cursor_json ? 'end_date'
+              AND (redundant.cursor_json ->> 'start_date')::date
+                    >= (covering.cursor_json ->> 'start_date')::date
+              AND (redundant.cursor_json ->> 'end_date')::date
+                    <= (covering.cursor_json ->> 'end_date')::date
+            """,
+            (row["target_key"],),
+        )
+        return dict(row)
 
     def claim_target(
         self,
