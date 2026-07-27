@@ -1380,19 +1380,27 @@ def _extract_fomc_role_records(value: str) -> list[dict[str, Any]]:
         (
             index
             for index, paragraph in enumerate(parser.paragraphs)
-            if paragraph.splitlines()[0].strip().lower() == "attendance"
+            if paragraph.splitlines()[0].strip().lower() in {"attendance", "present:"}
         ),
         None,
     )
     if attendance_index is None:
         return []
-    paragraphs = parser.paragraphs[attendance_index : attendance_index + 3]
-    member_lines = paragraphs[0].splitlines()[1:]
+    heading_lines = parser.paragraphs[attendance_index].splitlines()
+    if len(heading_lines) > 1:
+        member_lines = heading_lines[1:]
+        group_start = attendance_index + 1
+    else:
+        if attendance_index + 1 >= len(parser.paragraphs):
+            return []
+        member_lines = parser.paragraphs[attendance_index + 1].splitlines()
+        group_start = attendance_index + 2
+    groups = parser.paragraphs[group_start : group_start + 2]
     records = [_member_role_record(line) for line in member_lines]
-    if len(paragraphs) > 1 and "alternate members of the committee" in paragraphs[1].lower():
+    if groups and "alternate members of the committee" in groups[0].lower():
         names = re.split(
             r",?\s+Alternate Members of the Committee",
-            paragraphs[1],
+            groups[0],
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]
@@ -1405,10 +1413,10 @@ def _extract_fomc_role_records(value: str) -> list[dict[str, Any]]:
             }
             for name in _split_official_names(names)
         )
-    if len(paragraphs) > 2 and "presidents of the federal reserve banks" in paragraphs[2].lower():
+    if len(groups) > 1 and "presidents of the federal reserve banks" in groups[1].lower():
         names = re.split(
             r",?\s+Presidents of the Federal Reserve Banks",
-            paragraphs[2],
+            groups[1],
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]

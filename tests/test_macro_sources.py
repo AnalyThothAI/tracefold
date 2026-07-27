@@ -301,6 +301,55 @@ def test_fomc_minutes_capture_effective_meeting_role_and_voting_records() -> Non
     ]
 
 
+def test_fomc_minutes_capture_legacy_present_role_and_voting_records() -> None:
+    calendar = """
+    <html><main>
+      <a href="/monetarypolicy/fomcminutes20210728.htm">Minutes</a>
+    </main></html>
+    """
+    minutes = """
+    <html><title>Minutes</title><main>
+      <p>Release Date: August 18, 2021</p>
+      <p>Official policy body. Official policy body. Official policy body.</p>
+      <p><strong>PRESENT:</strong></p>
+      <p>
+      Example Chair, Chair<br />
+      2 Example Voter<br />
+      3</p>
+      <p>Example Alternate, Alternate Members of the Committee</p>
+      <p>Example President, Presidents of the Federal Reserve Banks of Example, respectively</p>
+    </main></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=calendar if request.url.path.endswith("fomccalendars.htm") else minutes,
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.fomc.documents"),
+            partition_key="2021-07-27..2021-07-28",
+            cursor={"start_date": "2021-07-27", "end_date": "2021-07-28"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    document = batch.facts[0]
+    assert isinstance(document, DocumentFact)
+    roles = document.metadata["fomc_role_records"]
+    assert [(role["official_name"], role["fomc_voter"]) for role in roles] == [
+        ("Example Chair", True),
+        ("Example Voter", True),
+        ("Example Alternate", False),
+        ("Example President", False),
+    ]
+
+
 def test_reserve_bank_sitemap_adapter_accepts_only_official_full_speech_pages() -> None:
     sitemap = """<?xml version="1.0" encoding="UTF-8"?>
     <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
