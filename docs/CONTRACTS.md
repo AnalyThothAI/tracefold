@@ -118,8 +118,10 @@ The News public surface is exactly four read-only routes:
 - `GET /api/news/feed?category={category}&sort={importance|latest}` returns
   globally clustered Stories grouped by deterministic category, at most 20
   per group. `importance` is the default. Without `category`, all non-empty
-  groups are returned. Both sorts contain the same Story identities; the
-  server order is authoritative and the browser does not cluster or score.
+  groups are returned. Both sorts use the same persisted Story identity; the
+  per-category cap is applied after the requested sort, so their returned
+  subsets may differ. The server order is authoritative and the browser does
+  not cluster or score.
 - `GET /api/news/stories/{story_id}` returns one persistent Story and its
   current NewsItem members. It exposes title/source/time, classification,
   independent reporting-origin count, importance score, and the transparent
