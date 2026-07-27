@@ -44,6 +44,15 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
     assert expected_etfs <= DATASET_REGISTRY.keys()
 
 
+def test_wti_daily_observations_use_the_official_weekly_release_freshness() -> None:
+    spec = DATASET_REGISTRY["fred.dcoilwtico"]
+
+    assert spec.frequency == "daily"
+    assert spec.refresh_seconds == 21_600
+    assert spec.freshness_seconds == 950_400
+    assert spec.critical is True
+
+
 def test_professional_backfill_five_year_boundary_handles_leap_day() -> None:
     policies = {policy.dataset_id: policy for policy in professional_backfill_policies(through_date=date(2024, 2, 29))}
 

@@ -668,6 +668,7 @@ _DATASETS = (
         label="WTI Cushing 原油现货",
         unit="usd_per_barrel",
         frequency="daily",
+        freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
         critical=True,
     ),
     DatasetSpec(
