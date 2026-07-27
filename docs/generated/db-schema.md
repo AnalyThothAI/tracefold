@@ -942,13 +942,6 @@
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `release_non_news_sentinel`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `sentinel_id` | `TEXT` | False | `None` |
-| `payload` | `TEXT` | False | `None` |
-
 ## `token_discovery_dirty_lookup_keys`
 
 | Column | Type | Nullable | Default |
