@@ -719,54 +719,25 @@ class MacroSourceClient:
             document_links[absolute_url] = label
         documents: list[DocumentFact] = []
         latest_published_at_ms = _optional_int(cursor.get("published_at_ms")) or 0
-        for url, link_label in sorted(document_links.items()):
-            is_pdf = url.lower().endswith(".pdf")
-            document_response = self._client.get(
-                url,
-                headers={"Accept": ("application/pdf" if is_pdf else "text/html,application/xhtml+xml")},
+        document_items = sorted(document_links.items())
+        with ThreadPoolExecutor(max_workers=min(8, len(document_items) or 1)) as executor:
+            fetched_documents = executor.map(
+                partial(
+                    self._fetch_fomc_document,
+                    spec,
+                    calendar_url=calendar_url,
+                    received_at_ms=received_at_ms,
+                ),
+                document_items,
             )
-            _require_success(document_response, source_id=spec.source_id)
-            content_text = (
-                _extract_pdf_text(document_response.content)
-                if is_pdf
-                else _extract_official_body(document_response.text)
-            )
-            if not content_text:
-                continue
-            effective_date = _date_from_fed_url(url)
-            if effective_date is None:
-                continue
-            published_date = _release_date_from_body(content_text) or effective_date
-            published_at_ms = _date_release_ms(published_date)
-            published_at_ms = min(published_at_ms, received_at_ms)
-            title = (
-                link_label or _document_label(url)
-                if is_pdf
-                else _official_page_title(document_response.text) or link_label or _document_label(url)
-            )
-            content_hash = hashlib.sha256(content_text.encode()).hexdigest()
-            document_id = "macrodoc_" + hashlib.sha256(f"{spec.dataset_id}|{url}|{content_hash}".encode()).hexdigest()
-            documents.append(
-                DocumentFact(
-                    document_id=document_id,
-                    dataset_id=spec.dataset_id,
-                    document_type=_document_type(f"{title} {url}"),
-                    title=title,
-                    effective_date=effective_date,
-                    published_at_ms=published_at_ms,
-                    received_at_ms=max(received_at_ms, published_at_ms),
-                    source_url=url,
-                    content_text=content_text[:100_000],
-                    metadata={
-                        "calendar_url": calendar_url,
-                        "link_label": link_label,
-                        "content_hash": f"sha256:{content_hash}",
-                        "body_source": "official_pdf" if is_pdf else "official_page",
-                        "fomc_role_records": ([] if is_pdf else _extract_fomc_role_records(document_response.text)),
-                    },
+            for document in fetched_documents:
+                if document is None:
+                    continue
+                documents.append(document)
+                latest_published_at_ms = max(
+                    latest_published_at_ms,
+                    document.published_at_ms,
                 )
-            )
-            latest_published_at_ms = max(latest_published_at_ms, published_at_ms)
         documents.sort(key=lambda item: (item.published_at_ms, item.document_id))
         completed = year >= last_year
         return _batch(
@@ -780,6 +751,57 @@ class MacroSourceClient:
                 **({"backfill_complete": completed} if start_date is not None and end_date is not None else {}),
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
+            },
+        )
+
+    def _fetch_fomc_document(
+        self,
+        spec: DatasetSpec,
+        document_item: tuple[str, str],
+        *,
+        calendar_url: str,
+        received_at_ms: int,
+    ) -> DocumentFact | None:
+        url, link_label = document_item
+        is_pdf = url.lower().endswith(".pdf")
+        document_response = self._client.get(
+            url,
+            headers={"Accept": ("application/pdf" if is_pdf else "text/html,application/xhtml+xml")},
+        )
+        _require_success(document_response, source_id=spec.source_id)
+        content_text = (
+            _extract_pdf_text(document_response.content) if is_pdf else _extract_official_body(document_response.text)
+        )
+        if not content_text:
+            return None
+        effective_date = _date_from_fed_url(url)
+        if effective_date is None:
+            return None
+        published_date = _release_date_from_body(content_text) or effective_date
+        published_at_ms = min(_date_release_ms(published_date), received_at_ms)
+        title = (
+            link_label or _document_label(url)
+            if is_pdf
+            else _official_page_title(document_response.text) or link_label or _document_label(url)
+        )
+        content_hash = hashlib.sha256(content_text.encode()).hexdigest()
+        document_id = "macrodoc_" + hashlib.sha256(f"{spec.dataset_id}|{url}|{content_hash}".encode()).hexdigest()
+        return DocumentFact(
+            document_id=document_id,
+            dataset_id=spec.dataset_id,
+            document_type=_document_type(f"{title} {url}"),
+            title=title,
+            effective_date=effective_date,
+            published_at_ms=published_at_ms,
+            received_at_ms=max(received_at_ms, published_at_ms),
+            source_url=url,
+            content_text=content_text[:100_000],
+            metadata={
+                "calendar_url": calendar_url,
+                "link_label": link_label,
+                "content_hash": f"sha256:{content_hash}",
+                "body_source": "official_pdf" if is_pdf else "official_page",
+                "fomc_role_records": ([] if is_pdf else _extract_fomc_role_records(document_response.text)),
             },
         )
 
