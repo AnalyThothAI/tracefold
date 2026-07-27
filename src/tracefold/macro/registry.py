@@ -6,6 +6,16 @@ from tracefold.macro.domain import DatasetSpec, MacroModuleId
 
 _FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
+_DAILY_FRESHNESS_SECONDS = 172_800
+_WEEKLY_FRESHNESS_SECONDS = 950_400
+_MONTHLY_FRESHNESS_SECONDS = 7_948_800
+_QUARTERLY_FRESHNESS_SECONDS = 20_736_000
+_DEFAULT_FRESHNESS_SECONDS = {
+    "daily": _DAILY_FRESHNESS_SECONDS,
+    "weekly": _WEEKLY_FRESHNESS_SECONDS,
+    "monthly": _MONTHLY_FRESHNESS_SECONDS,
+    "quarterly": _QUARTERLY_FRESHNESS_SECONDS,
+}
 
 
 def _fred(
@@ -16,7 +26,7 @@ def _fred(
     unit: str,
     frequency: str,
     clock: str = "official_state",
-    freshness_seconds: int = 172_800,
+    freshness_seconds: int | None = None,
     refresh_seconds: int = 21_600,
     critical: bool = False,
 ) -> DatasetSpec:
@@ -32,7 +42,11 @@ def _fred(
         series_id=series_id,
         unit=unit,
         frequency=frequency,
-        freshness_seconds=freshness_seconds,
+        freshness_seconds=(
+            freshness_seconds
+            if freshness_seconds is not None
+            else _DEFAULT_FRESHNESS_SECONDS.get(frequency, _DAILY_FRESHNESS_SECONDS)
+        ),
         refresh_seconds=refresh_seconds,
         critical=critical,
         metadata={"official_owner": "Federal Reserve Bank of St. Louis"},
@@ -58,7 +72,7 @@ def _nasdaq_history(
         series_id=symbol,
         unit="price",
         frequency="daily",
-        freshness_seconds=172_800,
+        freshness_seconds=_DAILY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
         trust_tier="untrusted_proxy",
         instrument_id=instrument_id,
@@ -95,7 +109,7 @@ def _bls_release(
         series_id=series_id,
         unit=unit,
         frequency="monthly",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
         critical=False,
         metadata={
@@ -125,7 +139,7 @@ def _cftc_tff(
         series_id=dataset_id.upper().replace(".", "_"),
         unit="percent_open_interest",
         frequency="weekly",
-        freshness_seconds=950_400,
+        freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
         trust_tier="official",
         critical=False,
@@ -154,7 +168,7 @@ _DATASETS = (
         unit="index",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
     ),
     _fred(
@@ -164,7 +178,7 @@ _DATASETS = (
         unit="index",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
     ),
     _fred(
         "PCEPI",
@@ -173,7 +187,7 @@ _DATASETS = (
         unit="index",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
     ),
     _fred(
@@ -183,7 +197,7 @@ _DATASETS = (
         unit="index",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
     ),
     _fred(
         "GDPC1",
@@ -192,7 +206,7 @@ _DATASETS = (
         unit="billions_chained_2017_usd",
         frequency="quarterly",
         clock="scheduled_release",
-        freshness_seconds=10_368_000,
+        freshness_seconds=_QUARTERLY_FRESHNESS_SECONDS,
     ),
     _fred(
         "UNRATE",
@@ -201,7 +215,7 @@ _DATASETS = (
         unit="percent",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
     ),
     _fred(
@@ -211,7 +225,7 @@ _DATASETS = (
         unit="thousands_persons",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
     ),
     _fred(
@@ -221,7 +235,7 @@ _DATASETS = (
         unit="persons",
         frequency="weekly",
         clock="scheduled_release",
-        freshness_seconds=950_400,
+        freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
     ),
     _fred(
         "RSAFS",
@@ -230,7 +244,7 @@ _DATASETS = (
         unit="millions_usd",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
     ),
     _fred(
         "INDPRO",
@@ -239,7 +253,7 @@ _DATASETS = (
         unit="index",
         frequency="monthly",
         clock="scheduled_release",
-        freshness_seconds=3_974_400,
+        freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
     ),
     _bls_release(
         "CUUR0000SA0",
@@ -331,7 +345,7 @@ _DATASETS = (
         label="大型企业贷款标准净收紧比例",
         unit="percent",
         frequency="quarterly",
-        freshness_seconds=10_368_000,
+        freshness_seconds=_QUARTERLY_FRESHNESS_SECONDS,
     ),
     _cftc_tff(
         "cftc.tff.credit_positions",

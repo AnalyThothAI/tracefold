@@ -4,6 +4,7 @@ from typing import Any
 
 from tracefold.macro.research.completed_session import (
     CompletedSessionMacro,
+    MacroResearchNotReady,
     MacroSessionView,
 )
 from tracefold.platform.config.settings import MacroResearchWorkerSettings
@@ -32,7 +33,17 @@ class MacroResearchWorker(WorkerBase):
         self._completed_session_macro = completed_session_macro
 
     async def run_once(self) -> WorkerResult:
-        result = await self._completed_session_macro.run()
+        try:
+            result = await self._completed_session_macro.run()
+        except MacroResearchNotReady as exc:
+            return WorkerResult(
+                skipped=1,
+                notes={
+                    "session_date": exc.session_date.isoformat(),
+                    "status": "not_ready",
+                    "reason": exc.reason,
+                },
+            )
         return _worker_result(result)
 
 

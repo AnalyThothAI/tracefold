@@ -4,12 +4,16 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from tracefold.macro.calculations import calculate_features
 from tracefold.macro.domain import MACRO_MODULE_IDS, MACRO_MODULE_LABELS, MacroModuleId
 from tracefold.macro.registry import datasets_for_module
+
+_NEW_YORK = ZoneInfo("America/New_York")
+_DAY_MS = 86_400_000
 
 MODULE_CHARTS: dict[MacroModuleId, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "rates_fed": (
@@ -258,8 +262,7 @@ def _dataset_state(
         state = "backfilling" if target["status"] == "backfilling" else str(target["status"])
         reason = "no_valid_fact"
     else:
-        fact_clock = _fact_clock_ms(latest)
-        age_ms = max(0, now_ms - fact_clock)
+        age_ms = _freshness_age_ms(spec, latest, now_ms)
         if age_ms > spec.freshness_seconds * 2_000:
             state = "stale"
             reason = "fact_past_freshness_budget"
@@ -492,6 +495,25 @@ def _fact_clock_ms(row: dict[str, Any]) -> int:
     if isinstance(reference, date):
         return int(datetime(reference.year, reference.month, reference.day, tzinfo=UTC).timestamp() * 1_000)
     return int(row["received_at_ms"])
+
+
+def _freshness_age_ms(spec: Any, row: dict[str, Any], now_ms: int) -> int:
+    reference = row.get("reference_date") or row.get("trade_date")
+    if reference is None and row.get("observed_at_ms") is not None:
+        reference = datetime.fromtimestamp(
+            int(row["observed_at_ms"]) / 1_000,
+            tz=UTC,
+        ).astimezone(_NEW_YORK).date()
+    if spec.frequency != "daily" or not isinstance(reference, date):
+        return max(0, now_ms - _fact_clock_ms(row))
+    current_date = datetime.fromtimestamp(now_ms / 1_000, tz=UTC).astimezone(_NEW_YORK).date()
+    completed_weekdays = 0
+    candidate = reference + timedelta(days=1)
+    while candidate < current_date:
+        if candidate.weekday() < 5:
+            completed_weekdays += 1
+        candidate += timedelta(days=1)
+    return completed_weekdays * _DAY_MS
 
 
 def _fact_order(row: dict[str, Any]) -> tuple[str, int]:

@@ -74,6 +74,13 @@ class _MacroResearchLeaseLost(RuntimeError):
     pass
 
 
+class MacroResearchNotReady(RuntimeError):
+    def __init__(self, *, session_date: date, reason: str) -> None:
+        self.session_date = session_date
+        self.reason = _required_text(reason, "reason")
+        super().__init__(f"macro_research_not_ready:{session_date.isoformat()}:{self.reason}")
+
+
 class CompletedSessionMacro:
     """Own one completed-session research lifecycle around one DeepAgent call."""
 
@@ -291,7 +298,10 @@ class CompletedSessionMacro:
                 )
             evidence_pack = repos.macro.evidence_pack(session_date=session_date)
             if evidence_pack is None:
-                raise MacroResearchIntegrityError("macro_research_evidence_pack_missing")
+                raise MacroResearchNotReady(
+                    session_date=session_date,
+                    reason="evidence_pack_missing",
+                )
             evidence_cutoff_ms = int(evidence_pack["judgment_cutoff_ms"])
             inserted = repos.macro_research.ensure_run(
                 session_date=session_date,
@@ -627,6 +637,7 @@ def _now_ms() -> int:
 
 __all__ = [
     "CompletedSessionMacro",
+    "MacroResearchNotReady",
     "MacroSessionView",
     "completed_session_close_ms",
     "is_us_market_session",
