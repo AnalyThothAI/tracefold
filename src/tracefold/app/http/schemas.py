@@ -29,6 +29,37 @@ class BootstrapData(ExactApiSchema):
     replay_limit: int
 
 
+class NewsHealthReasonData(ExactApiSchema):
+    code: str
+    status: Literal["running", "degraded", "failed"]
+    measured_ms: int | None
+    threshold_ms: int | None
+    measured: int | None
+    threshold: int | None
+    details: JsonObject
+
+
+class NewsHealthLayerData(ExactApiSchema):
+    status: Literal["running", "degraded", "failed"]
+    reasons: list[NewsHealthReasonData]
+    measurements: JsonObject
+
+
+class NewsHealthLayersData(ExactApiSchema):
+    source: NewsHealthLayerData
+    material: NewsHealthLayerData
+    brief: NewsHealthLayerData
+    public: NewsHealthLayerData
+    ai: NewsHealthLayerData
+
+
+class NewsHealthData(ExactApiSchema):
+    status: Literal["running", "degraded", "failed"]
+    reasons: list[NewsHealthReasonData]
+    layers: NewsHealthLayersData
+    measured_at_ms: int
+
+
 class StatusData(ExactApiSchema):
     ok: bool
     reasons: list[str]
@@ -38,6 +69,7 @@ class StatusData(ExactApiSchema):
     db: JsonObject
     provider_states: dict[str, JsonObject]
     workers: dict[str, WorkerStatusData]
+    news: NewsHealthData
 
 
 class ReadinessData(ExactApiSchema):
@@ -603,6 +635,8 @@ class NewsEventCoreData(ExactApiSchema):
     locations: list[str]
     stages: list[str]
     named_event_keys: list[str]
+    temporal_episode_keys: list[str]
+    numeric_constraints: list[JsonObject]
 
 
 class NewsBriefEligibilityReasonData(ExactApiSchema):
@@ -648,6 +682,7 @@ class NewsStorySummaryData(ExactApiSchema):
 class NewsStoryListData(ExactApiSchema):
     items: list[NewsStorySummaryData]
     next_cursor: str | None
+    view: Literal["latest", "priority"]
 
 
 class NewsStoryMembershipData(ExactApiSchema):
@@ -749,12 +784,14 @@ class NewsStoryMaterialEventData(ExactApiSchema):
 
 
 class NewsStorySelectionAuditData(ExactApiSchema):
-    selection_snapshot_id: str
+    selection_id: str
     selection_fingerprint: str
     policy_version: str
-    cutoff_at_ms: int
-    status: Literal["planned", "debounced", "publishable", "published", "superseded"]
+    evidence_cutoff_at_ms: int
     critical: bool
+    verified_critical: bool
+    activation_id: str | None
+    activated_at_ms: int | None
     decision: JsonObject
 
 
@@ -888,10 +925,10 @@ class NewsBriefPayloadData(ExactApiSchema):
 
 class NewsBriefPublicationData(ExactApiSchema):
     publication_id: str
-    selection_snapshot_id: str
+    selection_id: str
     selection_fingerprint: str
-    evidence_bundle_hash: str
-    cutoff_at_ms: int
+    synthesis_input_hash: str
+    evidence_cutoff_at_ms: int
     published_at_ms: int
     contract: NewsPublicationContractData
     payload: NewsBriefPayloadData
@@ -901,37 +938,66 @@ class NewsBriefPublicationData(ExactApiSchema):
     narrative_groups: list[JsonObject]
     evidence_bundle: NewsBriefEvidenceBundleData
     receipt: JsonObject
+    activation_id: str | None
+    activation_sequence: int | None
+    activated_at_ms: int | None
+    attachment_kind: Literal["generated", "reused"] | None
+    attached_at_ms: int | None
 
 
 class NewsBriefEvidenceBundleData(ExactApiSchema):
-    selection_snapshot_id: str
+    selection_id: str
     selection_fingerprint: str
-    evidence_bundle_hash: str
-    cutoff_at_ms: int
+    synthesis_input_hash: str
+    evidence_cutoff_at_ms: int
+    locale: str
     stories: list[JsonObject]
     narrative_groups: list[JsonObject]
     selection_policy_version: str
 
 
-class NewsBriefFallbackData(ExactApiSchema):
-    selection_snapshot_id: str
+class NewsBriefActiveSelectionData(ExactApiSchema):
+    activation_id: str
+    activation_sequence: int
+    activated_at_ms: int
+    activation_lane: Literal["ordinary", "verified_critical", "rectification"]
+    selection_id: str
     selection_fingerprint: str
-    cutoff_at_ms: int
-    status: Literal["planned", "debounced", "publishable", "published", "superseded"]
+    selection_policy_version: str
+    synthesis_input_hash: str
+    evidence_cutoff_at_ms: int
     selected_story_ids: list[str]
-    decisions: list[JsonObject]
+    selection_decisions: list[JsonObject]
+    narrative_groups: list[JsonObject]
     evidence_bundle: NewsBriefEvidenceBundleData
 
 
+class NewsBriefPendingProposalData(ExactApiSchema):
+    proposal_id: str
+    selection_id: str
+    selection_fingerprint: str
+    selected_story_ids: list[str]
+    lane: Literal["ordinary", "verified_critical", "rectification"]
+    first_proposed_at_ms: int
+    last_observed_at_ms: int
+    activation_due_at_ms: int
+
+
 class NewsBriefFailureData(ExactApiSchema):
+    activation_id: str
+    attempt_count: int
     last_error: str | None
     validation_errors: list[str]
+    requested_at_ms: int
     updated_at_ms: int
 
 
 class NewsGlobalBriefData(ExactApiSchema):
-    current: NewsBriefPublicationData | None
-    fallback: NewsBriefFallbackData | None
+    active_selection: NewsBriefActiveSelectionData | None
+    analysis: NewsBriefPublicationData | None
+    analysis_status: Literal["unavailable", "pending", "available", "failed", "reused"]
+    previous_publication: NewsBriefPublicationData | None
+    pending_proposal: NewsBriefPendingProposalData | None
     latest_failure: NewsBriefFailureData | None
 
 

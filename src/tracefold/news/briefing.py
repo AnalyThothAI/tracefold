@@ -8,6 +8,7 @@ from tracefold.news.identity import deterministic_id, sha256_json
 from tracefold.news.models import (
     BRIEF_GROUPING_VERSION,
     BRIEF_SELECTION_VERSION,
+    NEWS_LOCALE,
     BriefEvidenceBundle,
 )
 
@@ -194,39 +195,48 @@ def plan_brief_selection(
         ],
     }
     selection_fingerprint = sha256_json(fingerprint_payload)
-    bundle_payload = {
-        "selection_fingerprint": selection_fingerprint,
-        "cutoff_at_ms": cutoff_at_ms,
+    evidence_cutoff_at_ms = max(
+        (int(row["last_material_evidence_at_ms"]) for row in selected),
+        default=cutoff_at_ms,
+    )
+    synthesis_input = {
+        "evidence_cutoff_at_ms": evidence_cutoff_at_ms,
+        "locale": NEWS_LOCALE,
         "stories": selected_rows,
         "narrative_groups": material_groups,
         "selection_policy_version": BRIEF_SELECTION_VERSION,
     }
-    evidence_bundle_hash = sha256_json(bundle_payload)
-    selection_snapshot_id = deterministic_id(
+    synthesis_input_hash = sha256_json(synthesis_input)
+    selection_id = deterministic_id(
         "news-brief-selection",
         BRIEF_SELECTION_VERSION,
         selection_fingerprint,
-        evidence_bundle_hash,
     )
     bundle = BriefEvidenceBundle(
-        selection_snapshot_id=selection_snapshot_id,
+        selection_id=selection_id,
         selection_fingerprint=selection_fingerprint,
-        evidence_bundle_hash=evidence_bundle_hash,
-        cutoff_at_ms=cutoff_at_ms,
+        synthesis_input_hash=synthesis_input_hash,
+        evidence_cutoff_at_ms=evidence_cutoff_at_ms,
+        locale=NEWS_LOCALE,
         stories=selected_rows,
         narrative_groups=material_groups,
         selection_policy_version=BRIEF_SELECTION_VERSION,
     )
     selection = {
-        "selection_snapshot_id": selection_snapshot_id,
+        "selection_id": selection_id,
         "selection_fingerprint": selection_fingerprint,
         "grouping_snapshot_id": grouping_snapshot_id,
         "policy_version": BRIEF_SELECTION_VERSION,
-        "cutoff_at_ms": cutoff_at_ms,
+        "evidence_cutoff_at_ms": evidence_cutoff_at_ms,
         "selected_story_ids": [row["story_id"] for row in selected_rows],
         "decisions": decisions,
         "critical": any(int(row["impact_score"]) >= CRITICAL_IMPACT for row in selected),
-        "evidence_bundle_hash": evidence_bundle_hash,
+        "verified_critical": any(
+            int(row["impact_score"]) >= CRITICAL_IMPACT
+            and str(row["evidence_posture"]) in {"primary_source_confirmed", "independently_corroborated"}
+            for row in selected
+        ),
+        "synthesis_input_hash": synthesis_input_hash,
         "evidence_bundle": bundle.model_dump(mode="json"),
     }
     return grouping, selection, bundle

@@ -15,6 +15,7 @@ def wire_providers(
 ) -> WiredProviders:
     from tracefold.app import market_providers
     from tracefold.integrations.gmgn import providers as gmgn
+
     return WiredProviders(
         ingestion=IngestionProviders(
             upstream_client_factory=gmgn.gmgn_upstream_factory(settings) if start_collector else None,

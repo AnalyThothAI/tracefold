@@ -96,14 +96,19 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
     WorkerManifest(
         name="news_brief_plan",
         start_priority=94,
-        current_read_model_identities=(("news_brief_selection_snapshots", ("selection_snapshot_id",)),),
+        current_read_model_identities=(
+            ("news_brief_selections", ("selection_id",)),
+            ("news_brief_proposals", ("proposal_id",)),
+            ("news_brief_activations", ("activation_id",)),
+            ("news_brief_active", ("singleton_key",)),
+        ),
     ),
     WorkerManifest(
         name="news_ai_publish",
         start_priority=95,
         queue_tables=("news_ai_attempts", "news_story_analysis_requests"),
         current_read_model_identities=(
-            ("news_brief_current", ("singleton_key",)),
+            ("news_brief_activation_analysis", ("activation_id", "publication_id")),
             ("news_story_analysis_current", ("story_id",)),
         ),
     ),

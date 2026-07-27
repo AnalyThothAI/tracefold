@@ -23,6 +23,18 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
     store: "postgresql",
     snapshot_gate: {},
     db: { ok: true },
+    news: {
+      status: "running",
+      reasons: [],
+      layers: {
+        source: { status: "running", reasons: [], measurements: {} },
+        material: { status: "running", reasons: [], measurements: {} },
+        brief: { status: "running", reasons: [], measurements: {} },
+        public: { status: "running", reasons: [], measurements: {} },
+        ai: { status: "running", reasons: [], measurements: {} },
+      },
+      measured_at_ms: NOW,
+    },
     provider_states: {},
     workers: {
       collector: workerStatusFixture({

@@ -143,10 +143,10 @@ def test_brief_validation_enforces_exact_story_order_and_cited_correction() -> N
         ],
     }
     evidence = BriefEvidenceBundle(
-        selection_snapshot_id="selection-1",
+        selection_id="selection-1",
         selection_fingerprint="selection-fingerprint",
-        evidence_bundle_hash="bundle-hash",
-        cutoff_at_ms=100,
+        synthesis_input_hash="synthesis-input-hash",
+        evidence_cutoff_at_ms=100,
         stories=(corrected, second),
         narrative_groups=(),
         selection_policy_version="selection-v1",

@@ -39,14 +39,18 @@ class StructuredNewsPublisher(NewsAiPublisher):
                 "每个 Story 恰好一次，不得合并、拆分或添加。"
             ),
             schema=GlobalBriefDraft.model_json_schema(),
-            evidence=evidence.model_dump(mode="json"),
+            evidence=evidence.synthesis_input(),
         )
 
     async def analyze_story(self, evidence: StoryAnalysisEvidence) -> AiPublicationResult:
         return await self._invoke(
             instruction="对单个 Story 生成深入但证据受限的中文分析。",
             schema=StoryAnalysisDraft.model_json_schema(),
-            evidence=evidence.model_dump(mode="json"),
+            evidence=(
+                evidence.synthesis_input()
+                if isinstance(evidence, BriefEvidenceBundle)
+                else evidence.model_dump(mode="json")
+            ),
         )
 
     async def repair(

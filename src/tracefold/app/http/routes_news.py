@@ -24,13 +24,14 @@ def list_news_stories(
     request: Request,
     limit: Annotated[int, Query()] = 50,
     cursor: Annotated[str, Query()] = "",
+    view: Annotated[str, Query()] = "latest",
     q: Annotated[str, Query()] = "",
     evidence_posture: Annotated[str, Query()] = "",
     source: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     _validate_query_params(
         request,
-        supported={"limit", "cursor", "q", "evidence_posture", "source", "token"},
+        supported={"limit", "cursor", "view", "q", "evidence_posture", "source", "token"},
     )
     runtime = _authenticated_runtime(request)
     try:
@@ -38,6 +39,7 @@ def list_news_stories(
             data = _news_interface(repos).list_stories(
                 limit=_limit(limit, maximum=200),
                 cursor=cursor or None,
+                view=view,
                 q=q or None,
                 evidence_posture=evidence_posture or None,
                 source=source or None,

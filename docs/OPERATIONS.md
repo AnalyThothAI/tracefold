@@ -105,21 +105,117 @@ News:
 
 ```text
 configured feeds -> fetch receipts -> observations -> Article revisions
-  -> deterministic Event Story projection
-  -> deterministic Global Brief selection
-  -> validated immutable Brief / Story analysis publication
+  -> Identity v2 candidate recall + proof-ladder Event Story projection
+  -> Latest / Priority Story views
+  -> Brief Selection -> Proposal -> Activation -> Active
+  -> content-addressed immutable Brief / Story analysis publication
   -> /api/news/stories + /api/news/brief + /api/news/sources
 ```
 
 `news_ingest` synchronizes the configured source catalog, claims due sources,
 and commits one source at a time. A failed source records its own bounded error
 and does not stop the remaining claimed sources. `news_story_project` is the
-sole Story writer, `news_brief_plan` freezes deterministic portfolio
-selections, and `news_ai_publish` validates publications before advancing
-current pointers. Provider retries and terminal failure never roll back or
-hide Article/Story facts. Diagnose acquisition through `/api/news/sources`,
-Brief failure state, and worker status. There is no legacy News repair,
-provider-item, page-projection, or compatibility command.
+sole Identity-feature, Story membership/profile/material-event writer.
+`news_brief_plan` alone writes Narrative grouping, Selection, Proposal,
+Activation, and Active. Ordinary candidate transitions must remain stable for
+120 seconds, verified critical additions for 10 seconds, and rectifications
+activate on the next planner cycle. `news_ai_publish` only claims activated
+work, validates immutable Publications, and attaches generated or exactly
+reused analysis; it cannot advance Active. A qualified publication-contract
+change supersedes the incompatible current attachment in the claim transaction,
+then exposes pending/failed until generation finishes or an exact cache hit is
+reattached. `news_ai_current_targets` is the durable intent fence used to reject
+an older in-flight contract after rolling deploys or contract reversions.
+Superseded and late Publications remain immutable history, not current state.
+
+Provider retries and terminal failure never roll back or hide Article/Story
+facts. Diagnose acquisition through `/api/news/sources`, deterministic Brief
+state through `/api/news/brief`, and all five correctness layers through
+`/api/status`. There is no legacy News repair, provider-item, page-projection,
+current/fallback Brief, or compatibility command.
+
+News health uses due work and persisted invariants rather than arbitrary
+headline age:
+
+| Layer | Target | Degraded | Failed |
+|---|---:|---:|---:|
+| Source fetch | each source refresh interval | 2 overdue cycles | 5 overdue cycles |
+| Revision → Story | ≤15s | >30s | >120s |
+| Story → public read | ≤30s | >60s | >180s |
+| Ordinary Proposal → Activation | ≤150s | >180s | >300s |
+| Verified critical → Activation | ≤40s | >60s | >120s |
+| Rectification → Activation | next cycle, ≤30s | >45s | >90s |
+| Activation → Brief read | ≤30s | >45s | >90s |
+| AI queue | never blocks facts | >5m | terminal validation, exhausted attempts, or stuck lease |
+
+`planner_active_mismatch` is degraded as soon as a Proposal is mature and
+failed after more than two 30-second planner cycles. Pointer closure, exact
+Selection bundle identity, Story counters/profile/material-hash closure, and
+attached Publication synthesis identity have zero tolerance. Story/public and
+Activation/Brief reads are PostgreSQL transaction-closed rather than queued
+projections: a closed pointer reports zero visibility lag, while any closure
+violation fails the layer instead of waiting out a freshness budget. Lane-
+specific `proposal_activation_lag` reasons retain the ordinary, verified-
+critical, and rectification SLO thresholds even though a mature unactivated
+Proposal already raises the stricter `planner_active_mismatch`. Every health
+reason returns its measured lag/value and threshold.
+
+#### News Identity v2 hard-cut runbook
+
+Migration `20260727_0199` preserves Source Registry, FetchReceipt,
+FeedObservation, Article, ArticleRevision, and Article content snapshots. It
+destructively removes all old identity/Story/Brief/analysis derived products.
+When material facts exist, the migration fails closed unless the operator has
+recorded a verified backup receipt.
+
+1. Stop the application workers and create a recoverable PostgreSQL custom
+   archive. Keep it outside the database volume.
+2. Verify the archive can be listed with `pg_restore --list`, compute its
+   lowercase SHA-256, and record the absolute operator backup location.
+3. Before migration, create `schema_migration_backup_receipts` with the schema
+   below and insert the `20260727_0199` receipt. The row is durable audit
+   evidence; it is never a runtime fallback.
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_migration_backup_receipts (
+  migration_revision text PRIMARY KEY CHECK (btrim(migration_revision) <> ''),
+  backup_sha256 text NOT NULL CHECK (backup_sha256 ~ '^[0-9a-f]{64}$'),
+  backup_location text NOT NULL CHECK (btrim(backup_location) <> ''),
+  backup_created_at_ms bigint NOT NULL CHECK (backup_created_at_ms >= 0),
+  recorded_at_ms bigint NOT NULL CHECK (recorded_at_ms >= 0)
+);
+
+INSERT INTO schema_migration_backup_receipts (
+  migration_revision,
+  backup_sha256,
+  backup_location,
+  backup_created_at_ms,
+  recorded_at_ms
+)
+VALUES (
+  '20260727_0199',
+  '<verified-lowercase-sha256>',
+  '<absolute-operator-backup-path>',
+  <backup-created-at-epoch-ms>,
+  <receipt-recorded-at-epoch-ms>
+)
+ON CONFLICT (migration_revision) DO UPDATE SET
+  backup_sha256 = EXCLUDED.backup_sha256,
+  backup_location = EXCLUDED.backup_location,
+  backup_created_at_ms = EXCLUDED.backup_created_at_ms,
+  recorded_at_ms = EXCLUDED.recorded_at_ms;
+```
+
+4. Run `uv run tracefold db migrate`. A missing receipt aborts before any
+   derived News table is dropped.
+5. Run
+   `uv run tracefold ops rebuild-news-stories --batch-size 100 --execute`.
+   This replays every preserved ArticleRevision through the same sequential
+   projector used by live catch-up.
+6. Start the four News workers, then verify migration head, zero projection
+   backlog, Story count/membership closure, Latest/Priority order, Active Brief,
+   AI provenance, and all five News health layers. Restore from the archive
+   rather than attempting a downgrade if cutover validation fails.
 
 Macro:
 

@@ -148,7 +148,13 @@ _ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
         "中方",
         "北京",
     ),
-    "russia": ("russian federation", "russian", "俄罗斯", "俄方", "莫斯科"),
+    "russia": (
+        "russian federation",
+        "russian",
+        "俄罗斯",
+        "俄方",
+        "莫斯科",
+    ),
     "ukraine": ("ukrainian", "乌克兰", "基辅"),
     "israel": ("以色列",),
     "iran": ("iranian", "伊朗", "德黑兰"),
@@ -160,6 +166,17 @@ _ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
     "venezuela": ("委内瑞拉",),
     "turkey": ("türkiye", "turkiye", "土耳其"),
     "argentina": ("阿根廷",),
+    "brazil": (
+        "brazilian",
+        "巴西",
+    ),
+    "mexico": ("mexican", "墨西哥"),
+    "kazakhstan": ("kazakh", "哈萨克斯坦"),
+    "saudi_arabia": (
+        "saudi",
+        "沙特阿拉伯",
+        "沙特",
+    ),
     "japan": ("日本", "东京"),
     "eu": ("european union", "欧盟", "brussels", "布鲁塞尔"),
     "uk": ("united kingdom", "britain", "英国", "伦敦"),
@@ -179,6 +196,7 @@ _ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
     "openai": ("open ai",),
     "opec": ("opec+", "欧佩克"),
     "hezbollah": ("真主党",),
+    "houthis": ("houthi", "胡塞武装", "胡塞"),
 }
 
 _ACTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -267,7 +285,50 @@ _ACTION_ALIASES: dict[str, tuple[str, ...]] = {
     "close": ("close", "closes", "closed", "closure", "封锁", "关闭"),
     "seize": ("seize", "seizes", "seized", "扣押", "夺取"),
     "impose": ("impose", "imposes", "imposed", "加征", "施加"),
-    "lift": ("lift", "lifts", "lifted", "remove", "removes", "解除", "取消"),
+    "lift": (
+        "lift",
+        "lifts",
+        "lifted",
+        "lifting",
+        "remove",
+        "removes",
+        "解除",
+        "取消",
+    ),
+    "recall": ("recall", "recalls", "recalled", "召回"),
+    "allow": ("allow", "allows", "allowed", "permit", "permits", "允许"),
+    "kill": ("kill", "kills", "killed", "致死", "击毙"),
+    "order": ("order", "orders", "ordered", "下令"),
+    "sell_off": ("sell-off", "sell off", "selloff", "抛售"),
+    "react": ("reaction", "react", "reacts", "responds to", "回应"),
+    "deny": ("deny", "denies", "denied", "拒发", "拒绝"),
+    "freeze": ("freeze", "freezes", "frozen", "冻结"),
+    "investigate": (
+        "investigate",
+        "investigates",
+        "investigated",
+        "under investigation",
+        "调查",
+    ),
+    "fine": (
+        "fine",
+        "fines",
+        "fined",
+        "penalty",
+        "penalties",
+        "罚款",
+        "处罚",
+    ),
+    "transfer": (
+        "transfer",
+        "move to",
+        "agrees move",
+        "join",
+        "joins",
+        "to join",
+        "转会",
+    ),
+    "end": ("end", "ends", "ended", "终止", "结束"),
     "earthquake": ("earthquake", "earthquakes", "quake", "地震"),
     "unveil": ("unveil", "unveils", "unveiled", "发布", "推出"),
     "protest": ("protest", "protests", "protested", "抗议"),
@@ -315,6 +376,30 @@ _EVENT_OBJECT_ALIASES: dict[str, tuple[str, ...]] = {
     "airspace": ("airspace", "领空"),
     "border": ("border", "边境"),
     "embassy": ("embassy", "consulate", "大使馆", "领事馆"),
+    "ambassador": ("ambassador", "envoy", "大使"),
+    "bonds": ("bond", "bonds", "债券"),
+    "museum_exhibits": ("smithsonian", "museum exhibit", "museum exhibits", "博物馆展品"),
+    "visas": ("visa", "visas", "签证"),
+    "military_expansion": (
+        "army expansion",
+        "military expansion",
+        "expand the army",
+        "扩军",
+    ),
+    "football_transfer": (
+        "transfer",
+        "move to",
+        "agrees move",
+        "join",
+        "to join",
+        "转会",
+    ),
+    "securities_regulator": (
+        "securities regulator",
+        "securities regulatory",
+        "证券监管",
+    ),
+    "monopoly": ("monopoly", "monopoly abuses", "垄断"),
 }
 
 _STAGE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -348,6 +433,8 @@ _ACTION_CONFLICTS = {
     frozenset(("seize", "threaten")),
     frozenset(("seize", "close")),
     frozenset(("impose", "lift")),
+    frozenset(("impose", "react")),
+    frozenset(("allow", "kill")),
 }
 _EVENT_OBJECT_CONFLICTS = {
     frozenset(("exports", "imports")),
@@ -614,6 +701,10 @@ def extract_identity_features(
             "iran",
             "turkey",
             "argentina",
+            "brazil",
+            "mexico",
+            "kazakhstan",
+            "saudi_arabia",
             "japan",
             "chile",
             "peru",
@@ -627,6 +718,7 @@ def extract_identity_features(
     )
     quantities = tuple(_quantities(combined))
     named_event_keys = tuple(sorted(_named_event_keys(combined)))
+    temporal_episode_keys = tuple(sorted(_temporal_episode_keys(cleaned_title)))
     event_parts = (
         *actor_entities[:2],
         *actions[:2],
@@ -635,6 +727,7 @@ def extract_identity_features(
         *locations[:2],
         *stages[:1],
         *named_event_keys[:2],
+        *temporal_episode_keys[:1],
     )
     event_key = "|".join(event_parts)
     if not event_key:
@@ -657,6 +750,7 @@ def extract_identity_features(
         "bigrams": bigrams,
         "chargrams": chargrams,
         "named_event_keys": named_event_keys,
+        "temporal_episode_keys": temporal_episode_keys,
         "event_key": event_key,
     }
     return ArticleIdentityFeatures(
@@ -669,6 +763,7 @@ def extract_identity_features(
         lexical_signature=lexical_signature,
         event_key=event_key,
         named_event_keys=named_event_keys,
+        temporal_episode_keys=temporal_episode_keys,
         entities=entities,
         actor_entities=actor_entities,
         target_entities=target_entities,
@@ -748,6 +843,7 @@ def build_story_profile(
     locations = _supported_values(features, "locations")
     stages = _supported_values(features, "stages")
     named_event_keys = _supported_values(features, "named_event_keys")
+    temporal_episode_keys = _supported_values(features, "temporal_episode_keys")
     fingerprints = sorted(
         {
             str(feature.get("content_fingerprint", ""))
@@ -774,6 +870,8 @@ def build_story_profile(
             "locations": locations,
             "stages": stages,
             "named_event_keys": named_event_keys,
+            "temporal_episode_keys": temporal_episode_keys,
+            "numeric_constraints": quantities,
         },
         "numeric_constraints": quantities,
         "content_fingerprints": fingerprints,
@@ -817,7 +915,7 @@ def decide_story(
     best = viable[0]
     runner_up_score = viable[1].final_score if len(viable) > 1 else 0.0
     margin = max(0.0, min(1.0, best.final_score - runner_up_score))
-    if best.strong_proofs and best.final_score >= STORY_STRONG_THRESHOLD:
+    if best.strong_proofs and best.final_score >= STORY_STRONG_THRESHOLD and margin >= STORY_RUNNER_UP_MARGIN:
         return StoryIdentityDecision(
             verdict="accept_strong",
             selected_story_id=best.story_id,
@@ -1352,19 +1450,20 @@ def _score_candidate(
     core_score = _core_similarity(article, core)
     channel_hits = tuple(sorted(str(item) for item in _sequence(candidate.get("channel_hits"))))
     strong_proofs: list[str] = []
+    proof_scores: list[float] = []
     fingerprints = {str(item) for item in _sequence(profile.get("content_fingerprints"))}
     if article.content_fingerprint in fingerprints:
         strong_proofs.append("content_fingerprint")
-    if (
-        article.event_key
-        and article.event_key == str(candidate.get("event_key") or "")
-        and article.entities
-        and article.actions
-    ):
-        strong_proofs.append("event_key")
+        proof_scores.append(0.99)
+    member_proofs = [_member_proof(article, member) for member in members]
+    for proof in member_proofs:
+        path = str(proof["path"])
+        if path and path not in strong_proofs:
+            strong_proofs.append(path)
+            proof_scores.append(_float(proof["score"]))
     final_score = min(1.0, member_score * 0.65 + core_score * 0.35)
-    if strong_proofs:
-        final_score = max(final_score, 0.9)
+    if proof_scores:
+        final_score = max(final_score, *proof_scores)
     if conflicts:
         final_score = 0.0
     return StoryCandidate(
@@ -1378,8 +1477,141 @@ def _score_candidate(
         reason={
             "member_count": len(members),
             "identity_version": STORY_IDENTITY_VERSION,
+            "proof_ladder": member_proofs,
+            "hard_conflict_veto": bool(conflicts),
         },
     )
+
+
+def _member_proof(
+    article: ArticleIdentityFeatures,
+    member: Mapping[str, object],
+) -> dict[str, object]:
+    member_language = normalize_language(member.get("language"))
+    same_language = normalize_language(article.language) == member_language
+    member_title = str(member.get("normalized_title") or "")
+    article_title_tokens = _tokens(article.normalized_title)
+    member_title_tokens = _tokens(member_title)
+    title_containment = _containment(article_title_tokens, member_title_tokens)
+    similarity = _feature_similarity(article, member)
+    shared = _shared_anchor_families(article, member)
+    event_key_equal = bool(article.event_key and article.event_key == str(member.get("event_key") or ""))
+    path = ""
+    score = 0.0
+    if same_language and article.normalized_title and article.normalized_title == member_title:
+        path, score = "normalized_title_exact", 0.97
+    elif (
+        same_language
+        and min(len(article_title_tokens), len(member_title_tokens)) >= 4
+        and (
+            title_containment >= 0.9
+            or (
+                title_containment >= 0.82
+                and bool(
+                    {
+                        "entities",
+                        "actor_entities",
+                        "actions",
+                        "event_objects",
+                        "named_event_keys",
+                        "temporal_episode_keys",
+                        "quantities",
+                    }
+                    & shared
+                )
+            )
+        )
+    ):
+        path, score = "normalized_title_containment", 0.93
+    elif same_language and similarity >= 0.83 and (shared or title_containment >= 0.8):
+        path, score = "same_language_member_similarity", 0.88
+    elif (
+        same_language
+        and "named_event_keys" in shared
+        and bool({"entities", "locations", "actions", "event_objects"} & shared)
+    ):
+        path, score = "named_event_anchors", 0.91
+    elif same_language and title_containment >= 0.65 and {"actions", "event_objects"} <= shared:
+        path, score = "action_object_containment", 0.88
+    elif (
+        same_language
+        and event_key_equal
+        and "actions" in shared
+        and bool(
+            {"event_objects", "named_event_keys", "temporal_episode_keys", "quantities", "stages"} & shared
+            or {"actor_entities", "target_entities"} <= shared
+        )
+    ):
+        path, score = "deterministic_event_anchors", 0.86
+    elif (
+        not same_language
+        and event_key_equal
+        and "actions" in shared
+        and len(shared) >= 3
+        and bool(
+            {"actor_entities", "entities"} & shared
+            and {"event_objects", "locations", "named_event_keys", "quantities"} & shared
+        )
+    ):
+        path, score = "cross_language_deterministic_anchors", 0.95
+    return {
+        "revision_id": str(member.get("revision_id") or ""),
+        "same_language": same_language,
+        "path": path,
+        "score": round(score, 6),
+        "member_similarity": round(similarity, 6),
+        "title_containment": round(title_containment, 6),
+        "shared_anchor_families": sorted(shared),
+        "event_key_equal": event_key_equal,
+    }
+
+
+def _shared_anchor_families(
+    article: ArticleIdentityFeatures,
+    member: Mapping[str, object],
+) -> set[str]:
+    families: dict[str, tuple[set[str], set[str]]] = {
+        "entities": (set(article.entities), _string_set(member.get("entities"))),
+        "actor_entities": (
+            set(article.actor_entities),
+            _string_set(member.get("actor_entities")),
+        ),
+        "target_entities": (
+            set(article.target_entities),
+            _string_set(member.get("target_entities")),
+        ),
+        "actions": (set(article.actions), _string_set(member.get("actions"))),
+        "event_objects": (
+            set(article.event_objects),
+            _string_set(member.get("event_objects")),
+        ),
+        "locations": (set(article.locations), _string_set(member.get("locations"))),
+        "stages": (set(article.stages), _string_set(member.get("stages"))),
+        "named_event_keys": (
+            set(article.named_event_keys),
+            _string_set(member.get("named_event_keys")),
+        ),
+        "temporal_episode_keys": (
+            set(article.temporal_episode_keys),
+            _string_set(member.get("temporal_episode_keys")),
+        ),
+    }
+    shared = {family for family, (left, right) in families.items() if left and right and not left.isdisjoint(right)}
+    article_quantities = _material_quantities(article.quantities)
+    member_quantities = _material_quantities(member.get("quantities"))
+    if any(
+        not article_quantities[kind].isdisjoint(member_quantities[kind])
+        for kind in article_quantities.keys() & member_quantities.keys()
+    ):
+        shared.add("quantities")
+    article_identity_quantities = _identity_quantities(article.quantities)
+    member_identity_quantities = _identity_quantities(member.get("quantities"))
+    if any(
+        not article_identity_quantities[kind].isdisjoint(member_identity_quantities[kind])
+        for kind in article_identity_quantities.keys() & member_identity_quantities.keys()
+    ):
+        shared.add("quantities")
+    return shared
 
 
 def _feature_similarity(
@@ -1439,6 +1671,10 @@ def _core_similarity(
         set(article.named_event_keys),
         _string_set(core.get("named_event_keys")),
     )
+    temporal = _jaccard(
+        set(article.temporal_episode_keys),
+        _string_set(core.get("temporal_episode_keys")),
+    )
     return min(
         1.0,
         entity * 0.25
@@ -1448,7 +1684,8 @@ def _core_similarity(
         + event_object * 0.1
         + location * 0.05
         + stage * 0.05
-        + named * 0.1,
+        + named * 0.1
+        + temporal * 0.05,
     )
 
 
@@ -1463,6 +1700,8 @@ def _hard_conflicts(
     core_actions = _string_set(core.get("actions"))
     core_event_objects = _string_set(core.get("event_objects"))
     core_stages = _string_set(core.get("stages"))
+    core_named_events = _string_set(core.get("named_event_keys"))
+    core_temporal_episodes = _string_set(core.get("temporal_episode_keys"))
     if article.locations and core_locations and set(article.locations).isdisjoint(core_locations):
         conflicts.append("location_conflict")
     if article.entities and core_entities and set(article.entities).isdisjoint(core_entities):
@@ -1487,6 +1726,21 @@ def _hard_conflicts(
         core_stage = max((_STAGE_ORDER.get(stage, -1) for stage in core_stages), default=-1)
         if article_stage >= 0 and core_stage >= 0 and abs(article_stage - core_stage) >= 2:
             conflicts.append("event_stage_conflict")
+    if article.named_event_keys and core_named_events and set(article.named_event_keys).isdisjoint(core_named_events):
+        conflicts.append("named_event_conflict")
+    if (
+        article.temporal_episode_keys
+        and core_temporal_episodes
+        and set(article.temporal_episode_keys).isdisjoint(core_temporal_episodes)
+    ):
+        conflicts.append("temporal_episode_conflict")
+    article_quantities = _identity_quantities(article.quantities)
+    core_quantities = _identity_quantities(core.get("numeric_constraints"))
+    conflicts.extend(
+        f"identity_quantity_conflict:{kind}"
+        for kind in sorted(article_quantities.keys() & core_quantities.keys())
+        if article_quantities[kind].isdisjoint(core_quantities[kind])
+    )
     return sorted(set(conflicts))
 
 
@@ -1671,7 +1925,11 @@ def _identity_actions(text: str) -> tuple[str, ...]:
 
     actions = _canonical_matches(text, _ACTION_ALIASES)
     if len(actions) > 1 and "confirm" in actions:
-        return tuple(action for action in actions if action != "confirm")
+        actions = tuple(action for action in actions if action != "confirm")
+    if "recall" in actions and "attack" in actions:
+        actions = tuple(action for action in actions if action != "attack")
+    if "order" in actions:
+        actions = tuple(action for action in actions if action not in {"correct", "sign"})
     return actions
 
 
@@ -1707,8 +1965,52 @@ def _quantities(text: str) -> list[dict[str, object]]:
                 "value": float(raw_value),
                 "unit": unit,
                 "kind": kind,
+                "identity_defining": False,
             }
         )
+    identity_patterns = (
+        ("flight", re.compile(r"\b(?:flight|航班)\s*[-#]?\s*(\d{1,6})\b", re.IGNORECASE)),
+        (
+            "resolution",
+            re.compile(r"\b(?:resolution|决议)\s*[-#]?\s*(\d{1,6})\b", re.IGNORECASE),
+        ),
+        (
+            "phase",
+            re.compile(r"\b(?:phase|阶段)\s*[-#]?\s*(\d{1,3})\b", re.IGNORECASE),
+        ),
+        (
+            "round",
+            re.compile(r"\b(?:round|第)\s*[-#]?\s*(\d{1,3})(?:\s*轮)?\b", re.IGNORECASE),
+        ),
+        (
+            "tranche",
+            re.compile(r"\b(?:tranche|批次)\s*[-#]?\s*(\d{1,3})\b", re.IGNORECASE),
+        ),
+        (
+            "magnitude",
+            re.compile(
+                r"\b(?:magnitude|震级)\s*[-#]?\s*(\d+(?:\.\d+)?)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "magnitude",
+            re.compile(
+                r"\b(\d+(?:\.\d+)?)[-\s]*magnitude\b",
+                re.IGNORECASE,
+            ),
+        ),
+    )
+    for identity_kind, identity_pattern in identity_patterns:
+        for match in identity_pattern.finditer(text):
+            identity_quantity = {
+                "value": float(match.group(1)),
+                "unit": identity_kind,
+                "kind": f"identity_{identity_kind}",
+                "identity_defining": True,
+            }
+            if identity_quantity not in values:
+                values.append(identity_quantity)
     return values[:12]
 
 
@@ -1736,6 +2038,18 @@ def _material_quantities(value: object) -> dict[str, set[float]]:
     return material
 
 
+def _identity_quantities(value: object) -> dict[str, set[float]]:
+    identity: dict[str, set[float]] = defaultdict(set)
+    for quantity in _dict_sequence(value):
+        if not bool(quantity.get("identity_defining")):
+            continue
+        kind = str(quantity.get("kind") or "")
+        if not kind:
+            continue
+        identity[kind].add(_float(quantity.get("value")))
+    return identity
+
+
 def _named_event_keys(text: str) -> set[str]:
     matches = set()
     patterns = (
@@ -1747,6 +2061,35 @@ def _named_event_keys(text: str) -> set[str]:
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
+            matches.add(normalize_match_text(match.group(0)))
+    return matches
+
+
+def _temporal_episode_keys(title: str) -> set[str]:
+    matches: set[str] = set()
+    month_names = (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    )
+    patterns = (
+        r"\b20\d{2}[-/.](?:0?[1-9]|1[0-2])(?:[-/.](?:0?[1-9]|[12]\d|3[01]))?\b",
+        rf"\b(?:{'|'.join(month_names)})\s+(?:[0-3]?\d(?:st|nd|rd|th)?(?:,\s*)?)?20\d{{2}}\b",
+        rf"\b(?:{'|'.join(month_names)})\s+[0-3]?\d(?:st|nd|rd|th)?\b",
+        r"\b20\d{2}年(?:1[0-2]|0?[1-9])月(?:[0-3]?\d日)?",
+        r"(?<!\d)(?:1[0-2]|0?[1-9])月(?:[0-3]?\d日)?",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, title, re.IGNORECASE):
             matches.add(normalize_match_text(match.group(0)))
     return matches
 
@@ -1815,6 +2158,8 @@ def _feature_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
             "revision_id",
             "article_id",
             "language",
+            "normalized_title",
+            "normalized_lead",
             "content_fingerprint",
             "lexical_signature",
             "event_key",

@@ -30,18 +30,23 @@ class NewsInterface:
         *,
         limit: int,
         cursor: str | None = None,
+        view: str = "latest",
         q: str | None = None,
         evidence_posture: str | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
         if not 1 <= limit <= 200:
             raise ValueError("news_story_limit_out_of_bounds")
+        normalized_view = str(view or "").strip().lower()
+        if normalized_view not in {"latest", "priority"}:
+            raise ValueError("news_story_view_invalid")
         posture = str(evidence_posture or "").strip().lower() or None
         if posture is not None and posture not in _EVIDENCE_POSTURES:
             raise ValueError("news_story_evidence_posture_invalid")
         rows = self._repository.list_story_rows(
             limit=limit + 1,
-            cursor=_decode_cursor(cursor),
+            cursor=_decode_cursor(cursor, expected_view=normalized_view),
+            view=normalized_view,
             q=str(q or "").strip() or None,
             evidence_posture=posture,
             source=str(source or "").strip() or None,
@@ -51,11 +56,16 @@ class NewsInterface:
         if len(rows) > limit and visible:
             last = visible[-1]
             next_cursor = _encode_cursor(
-                int(last["priority_score"]),
-                int(last["last_material_evidence_at_ms"]),
-                str(last["story_id"]),
+                view=normalized_view,
+                priority_score=int(last["priority_score"]),
+                last_material_at_ms=int(last["last_material_evidence_at_ms"]),
+                story_id=str(last["story_id"]),
             )
-        return {"items": [_story_summary(row) for row in visible], "next_cursor": next_cursor}
+        return {
+            "items": [_story_summary(row) for row in visible],
+            "next_cursor": next_cursor,
+            "view": normalized_view,
+        }
 
     def get_story(self, *, story_id: str) -> dict[str, Any] | None:
         normalized = str(story_id or "").strip()
@@ -72,11 +82,25 @@ class NewsInterface:
 
     def get_global_brief(self) -> dict[str, Any]:
         row = self._repository.get_current_brief()
-        publication = row["publication"]
-        fallback = row["fallback_selection"]
+        active = row["active_selection"]
+        analysis = row["analysis"]
+        active_attempt = row["active_attempt"]
+        if analysis is not None:
+            analysis_status = "reused" if str(analysis["attachment_kind"]) == "reused" else "available"
+        elif active is None or not list(active["selected_story_ids"]):
+            analysis_status = "unavailable"
+        elif active_attempt is not None and str(active_attempt["status"]) == "failed":
+            analysis_status = "failed"
+        else:
+            analysis_status = "pending"
         return {
-            "current": _brief_publication(publication) if publication else None,
-            "fallback": _brief_fallback(fallback) if fallback else None,
+            "active_selection": _brief_active_selection(active) if active else None,
+            "analysis": _brief_publication(analysis) if analysis else None,
+            "analysis_status": analysis_status,
+            "previous_publication": (
+                _brief_publication(row["previous_publication"]) if row["previous_publication"] else None
+            ),
+            "pending_proposal": (_brief_pending_proposal(row["pending_proposal"]) if row["pending_proposal"] else None),
             "latest_failure": row["latest_failure"],
         }
 
@@ -87,6 +111,9 @@ class NewsInterface:
 
     def list_sources(self) -> dict[str, Any]:
         return {"items": self._repository.list_sources()}
+
+    def health(self, *, now_ms: int) -> dict[str, Any]:
+        return self._repository.health_snapshot(now_ms=now_ms)
 
     def reset_story_projection(self) -> dict[str, int]:
         return self._repository.reset_story_projection()
@@ -207,12 +234,11 @@ def _story_detail(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _brief_publication(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    publication = {
         "publication_id": str(row["publication_id"]),
-        "selection_snapshot_id": str(row["selection_snapshot_id"]),
-        "selection_fingerprint": str(row["selection_fingerprint"]),
-        "evidence_bundle_hash": str(row["evidence_bundle_hash"]),
-        "cutoff_at_ms": int(row["cutoff_at_ms"]),
+        "selection_id": str(row["selection_id"]),
+        "synthesis_input_hash": str(row["synthesis_input_hash"]),
+        "evidence_cutoff_at_ms": int(row["evidence_cutoff_at_ms"]),
         "published_at_ms": int(row["published_at_ms"]),
         "contract": {
             "model": str(row["model"]),
@@ -223,23 +249,51 @@ def _brief_publication(row: dict[str, Any]) -> dict[str, Any]:
         },
         "payload": dict(row["payload"]),
         "evidence_references": list(row["evidence_references"]),
+        "selection_fingerprint": str(row["selection_fingerprint"]),
         "selected_story_ids": list(row["selected_story_ids"]),
         "selection_decisions": list(row["decisions"]),
         "narrative_groups": list(row["narrative_groups"]),
         "evidence_bundle": dict(row["evidence_bundle"]),
         "receipt": dict(row["receipt"]),
+        "activation_id": (str(row["activation_id"]) if row.get("activation_id") is not None else None),
+        "activation_sequence": (
+            int(row["activation_sequence"]) if row.get("activation_sequence") is not None else None
+        ),
+        "activated_at_ms": (int(row["activated_at_ms"]) if row.get("activated_at_ms") is not None else None),
+        "attachment_kind": (str(row["attachment_kind"]) if row.get("attachment_kind") is not None else None),
+        "attached_at_ms": (int(row["attached_at_ms"]) if row.get("attached_at_ms") is not None else None),
+    }
+    return publication
+
+
+def _brief_active_selection(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "activation_id": str(row["activation_id"]),
+        "activation_sequence": int(row["activation_sequence"]),
+        "activated_at_ms": int(row["activated_at_ms"]),
+        "activation_lane": str(row["lane"]),
+        "selection_id": str(row["selection_id"]),
+        "selection_fingerprint": str(row["selection_fingerprint"]),
+        "selection_policy_version": str(row["policy_version"]),
+        "synthesis_input_hash": str(row["synthesis_input_hash"]),
+        "evidence_cutoff_at_ms": int(row["evidence_cutoff_at_ms"]),
+        "selected_story_ids": list(row["selected_story_ids"]),
+        "selection_decisions": list(row["decisions"]),
+        "narrative_groups": list(row["narrative_groups"]),
+        "evidence_bundle": dict(row["evidence_bundle"]),
     }
 
 
-def _brief_fallback(row: dict[str, Any]) -> dict[str, Any]:
+def _brief_pending_proposal(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "selection_snapshot_id": str(row["selection_snapshot_id"]),
+        "proposal_id": str(row["proposal_id"]),
+        "selection_id": str(row["selection_id"]),
         "selection_fingerprint": str(row["selection_fingerprint"]),
-        "cutoff_at_ms": int(row["cutoff_at_ms"]),
-        "status": str(row["status"]),
         "selected_story_ids": list(row["selected_story_ids"]),
-        "decisions": list(row["decisions"]),
-        "evidence_bundle": dict(row["evidence_bundle"]),
+        "lane": str(row["lane"]),
+        "first_proposed_at_ms": int(row["first_proposed_at_ms"]),
+        "last_observed_at_ms": int(row["last_observed_at_ms"]),
+        "activation_due_at_ms": int(row["activation_due_at_ms"]),
     }
 
 
@@ -255,15 +309,30 @@ def _breaking_reason(row: Mapping[str, Any]) -> str:
     return "outside_30_minute_material_window"
 
 
-def _encode_cursor(priority_score: int, last_material_at_ms: int, story_id: str) -> str:
+def _encode_cursor(
+    *,
+    view: str,
+    priority_score: int,
+    last_material_at_ms: int,
+    story_id: str,
+) -> str:
+    values: list[object] = (
+        [view, last_material_at_ms, story_id]
+        if view == "latest"
+        else [view, priority_score, last_material_at_ms, story_id]
+    )
     payload = json.dumps(
-        [priority_score, last_material_at_ms, story_id],
+        values,
         separators=(",", ":"),
     ).encode()
     return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
-def _decode_cursor(value: str | None) -> tuple[int, int, str] | None:
+def _decode_cursor(
+    value: str | None,
+    *,
+    expected_view: str,
+) -> tuple[int, int, str] | tuple[int, str] | None:
     normalized = str(value or "").strip()
     if not normalized:
         return None
@@ -272,18 +341,31 @@ def _decode_cursor(value: str | None) -> tuple[int, int, str] | None:
         decoded = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("news_story_cursor_invalid") from exc
+    if not isinstance(decoded, list) or not decoded or decoded[0] not in {"latest", "priority"}:
+        raise ValueError("news_story_cursor_invalid")
+    if decoded[0] != expected_view:
+        raise ValueError("news_story_cursor_view_mismatch")
+    if expected_view == "latest":
+        if (
+            len(decoded) != 3
+            or isinstance(decoded[1], bool)
+            or not isinstance(decoded[1], int)
+            or not isinstance(decoded[2], str)
+            or not decoded[2]
+        ):
+            raise ValueError("news_story_cursor_invalid")
+        return decoded[1], decoded[2]
     if (
-        not isinstance(decoded, list)
-        or len(decoded) != 3
-        or isinstance(decoded[0], bool)
-        or not isinstance(decoded[0], int)
+        len(decoded) != 4
         or isinstance(decoded[1], bool)
         or not isinstance(decoded[1], int)
-        or not isinstance(decoded[2], str)
-        or not decoded[2]
+        or isinstance(decoded[2], bool)
+        or not isinstance(decoded[2], int)
+        or not isinstance(decoded[3], str)
+        or not decoded[3]
     ):
         raise ValueError("news_story_cursor_invalid")
-    return decoded[0], decoded[1], decoded[2]
+    return decoded[1], decoded[2], decoded[3]
 
 
 __all__ = ["NewsInterface"]

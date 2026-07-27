@@ -521,7 +521,22 @@
 | `next_attempt_at_ms` | `BIGINT` | False | `0` |
 | `validation_errors` | `JSONB` | False | `'[]'::jsonb` |
 | `last_error` | `TEXT` | True | `None` |
+| `requested_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_ai_current_targets`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `publication_kind` | `TEXT` | False | `None` |
+| `target_id` | `TEXT` | False | `None` |
+| `evidence_hash` | `TEXT` | False | `None` |
+| `model` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `workflow_version` | `TEXT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `locale` | `TEXT` | False | `None` |
+| `desired_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_article_content_snapshots`
 
@@ -602,12 +617,49 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_brief_current`
+## `news_brief_activation_analysis`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `activation_id` | `TEXT` | False | `None` |
+| `publication_id` | `TEXT` | False | `None` |
+| `attachment_kind` | `TEXT` | False | `None` |
+| `attached_at_ms` | `BIGINT` | False | `None` |
+| `superseded_at_ms` | `BIGINT` | True | `None` |
+
+## `news_brief_activations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `activation_id` | `TEXT` | False | `None` |
+| `activation_sequence` | `BIGINT` | False | `None` |
+| `selection_id` | `TEXT` | False | `None` |
+| `proposal_id` | `TEXT` | False | `None` |
+| `lane` | `TEXT` | False | `None` |
+| `activated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_brief_active`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `singleton_key` | `BOOLEAN` | False | `true` |
-| `publication_id` | `TEXT` | False | `None` |
+| `activation_id` | `TEXT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_brief_proposals`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `proposal_id` | `TEXT` | False | `None` |
+| `selection_id` | `TEXT` | False | `None` |
+| `lane` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_proposed_at_ms` | `BIGINT` | False | `None` |
+| `last_observed_at_ms` | `BIGINT` | False | `None` |
+| `activation_due_at_ms` | `BIGINT` | False | `None` |
+| `resolved_at_ms` | `BIGINT` | True | `None` |
+| `reason` | `JSONB` | False | `'{}'::jsonb` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_brief_publications`
@@ -615,9 +667,9 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `publication_id` | `TEXT` | False | `None` |
-| `selection_snapshot_id` | `TEXT` | False | `None` |
-| `selection_fingerprint` | `TEXT` | False | `None` |
-| `evidence_bundle_hash` | `TEXT` | False | `None` |
+| `selection_id` | `TEXT` | False | `None` |
+| `synthesis_input_hash` | `TEXT` | False | `None` |
+| `evidence_cutoff_at_ms` | `BIGINT` | False | `None` |
 | `model` | `TEXT` | False | `None` |
 | `prompt_version` | `TEXT` | False | `None` |
 | `workflow_version` | `TEXT` | False | `None` |
@@ -628,24 +680,22 @@
 | `receipt` | `JSONB` | False | `'{}'::jsonb` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 
-## `news_brief_selection_snapshots`
+## `news_brief_selections`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `selection_snapshot_id` | `TEXT` | False | `None` |
+| `selection_id` | `TEXT` | False | `None` |
 | `selection_fingerprint` | `TEXT` | False | `None` |
 | `grouping_snapshot_id` | `TEXT` | False | `None` |
 | `policy_version` | `TEXT` | False | `None` |
-| `cutoff_at_ms` | `BIGINT` | False | `None` |
+| `evidence_cutoff_at_ms` | `BIGINT` | False | `None` |
 | `selected_story_ids` | `JSONB` | False | `'[]'::jsonb` |
 | `decisions` | `JSONB` | False | `'[]'::jsonb` |
 | `critical` | `BOOLEAN` | False | `false` |
-| `evidence_bundle_hash` | `TEXT` | False | `None` |
-| `evidence_bundle` | `JSONB` | False | `'{}'::jsonb` |
-| `status` | `TEXT` | False | `None` |
-| `publish_after_ms` | `BIGINT` | False | `None` |
+| `verified_critical` | `BOOLEAN` | False | `false` |
+| `synthesis_input_hash` | `TEXT` | False | `None` |
+| `evidence_bundle` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_feed_observations`
 
@@ -978,6 +1028,16 @@
 | `status` | `TEXT` | False | `None` |
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `schema_migration_backup_receipts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `migration_revision` | `TEXT` | False | `None` |
+| `backup_sha256` | `TEXT` | False | `None` |
+| `backup_location` | `TEXT` | False | `None` |
+| `backup_created_at_ms` | `BIGINT` | False | `None` |
+| `recorded_at_ms` | `BIGINT` | False | `None` |
 
 ## `token_discovery_dirty_lookup_keys`
 

@@ -105,26 +105,54 @@ alternate decision labels.
 
 ### News
 
-`/api/news/stories` serves the Story Feed with bounded cursor pagination and
-`q`, `source`, and `evidence_posture` filters.
+`/api/news/stories` serves the Story Feed with bounded cursor pagination,
+`view=latest|priority`, and `q`, `source`, and `evidence_posture` filters.
+`latest` is the default and orders by last material-evidence time; `priority`
+orders by deterministic Priority and then material time. Cursors are
+view-bound and fail closed with `news_story_cursor_view_mismatch` when reused
+across views.
 `/api/news/stories/{story_id}` serves Story Detail with Article/Revision/
 Observation provenance, member semantics, identity decisions, material events,
 and current/history Story analysis. A user can explicitly request analysis
 through `POST /api/news/stories/{story_id}/analysis-requests`; this schedules
 work but never calls a model in the request.
 
-`/api/news/brief` returns the current validated Global Brief, the latest
-deterministic selection fallback, and bounded failure state independently.
-`/api/news/brief/history` returns immutable historical publications. The last
-valid Brief remains current when a later attempt fails.
+`/api/news/brief` returns one composite with:
+
+- `active_selection`: the deterministic current Activation and required Story
+  cards;
+- nullable `analysis`: only an immutable Publication attached to that
+  Activation;
+- `analysis_status`: `unavailable`, `pending`, `available`, `failed`, or
+  `reused`;
+- optional `previous_publication`, always historical rather than current;
+- optional `pending_proposal` and bounded `latest_failure`.
+
+Activation time, evidence cutoff, Publication time, and cache attachment are
+separate fields. Pending or failed AI never replaces `active_selection` with an
+older Publication. `/api/news/brief/history` returns immutable Publications,
+including valid late completions that were ineligible to attach.
+Changing any qualified model/prompt/workflow/schema/locale field immediately
+withdraws an incompatible current attachment. Reads then expose the
+deterministic `active_selection` with `analysis_status=pending|failed` until the
+new Publication completes or an exact cached Publication is reattached.
 
 Article identity is publisher-artifact scoped and deterministic. Story
-membership is versioned, constraint-first, and conflict-aware. Source quality,
+membership is versioned, candidate-channel audited, proof-ladder,
+constraint-first, and conflict-aware. Source quality,
 reporting origin, syndication, independent corroboration, corrections, and
 conflict remain separate fields. AI publications are Chinese,
 evidence-referenced, fail-closed, and content-addressed by evidence plus the
 actual model/prompt/workflow/schema/locale contract. Provider/network/model
 calls never occur on read endpoints.
+
+`/api/status` includes a structured `news` health object with independent
+`source`, `material`, `brief`, `public`, and `ai` layers. Each breach carries
+an exact reason code, measured value or lag, threshold, and bounded details.
+Business-invariant failures such as `planner_active_mismatch`,
+`active_publication_mismatch`, `story_projection_lag`, or
+`public_active_contract_mismatch` can degrade global readiness without making
+deterministic Story reads unavailable.
 
 There is no `/api/news` compatibility collection, legacy item/fact detail
 route, News WebSocket payload, webhook, or public provider adapter.
@@ -220,9 +248,12 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
-reconstructing `market_tick_current` from persisted `market_ticks`. News has no
-public maintenance or compatibility CLI: its two workers recover from
-`news_sources`, `news_articles`, and immutable analysis-attempt state. Token
+reconstructing `market_tick_current` from persisted `market_ticks`.
+`ops rebuild-news-stories --execute` is the destructive, explicit Identity-v2
+replay from preserved ArticleRevision facts; it invokes the same sequential
+projection seam as `news_story_project` and does not preserve or redirect old
+Story IDs. Normal recovery remains bounded PostgreSQL catch-up across the four
+News workers, with no compatibility CLI or alternate clustering path. Token
 Radar contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.

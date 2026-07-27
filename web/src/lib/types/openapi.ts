@@ -1314,6 +1314,41 @@ export interface components {
             /** Updated At Ms */
             updated_at_ms: number;
         };
+        /** NewsBriefActiveSelectionData */
+        NewsBriefActiveSelectionData: {
+            /** Activated At Ms */
+            activated_at_ms: number;
+            /** Activation Id */
+            activation_id: string;
+            /**
+             * Activation Lane
+             * @enum {string}
+             */
+            activation_lane: "ordinary" | "verified_critical" | "rectification";
+            /** Activation Sequence */
+            activation_sequence: number;
+            evidence_bundle: components["schemas"]["NewsBriefEvidenceBundleData"];
+            /** Evidence Cutoff At Ms */
+            evidence_cutoff_at_ms: number;
+            /** Narrative Groups */
+            narrative_groups: {
+                [key: string]: unknown;
+            }[];
+            /** Selected Story Ids */
+            selected_story_ids: string[];
+            /** Selection Decisions */
+            selection_decisions: {
+                [key: string]: unknown;
+            }[];
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Id */
+            selection_id: string;
+            /** Selection Policy Version */
+            selection_policy_version: string;
+            /** Synthesis Input Hash */
+            synthesis_input_hash: string;
+        };
         /** NewsBriefEligibilityReasonData */
         NewsBriefEligibilityReasonData: {
             /** Eligible */
@@ -1325,54 +1360,41 @@ export interface components {
         };
         /** NewsBriefEvidenceBundleData */
         NewsBriefEvidenceBundleData: {
-            /** Cutoff At Ms */
-            cutoff_at_ms: number;
-            /** Evidence Bundle Hash */
-            evidence_bundle_hash: string;
+            /** Evidence Cutoff At Ms */
+            evidence_cutoff_at_ms: number;
+            /** Locale */
+            locale: string;
             /** Narrative Groups */
             narrative_groups: {
                 [key: string]: unknown;
             }[];
             /** Selection Fingerprint */
             selection_fingerprint: string;
+            /** Selection Id */
+            selection_id: string;
             /** Selection Policy Version */
             selection_policy_version: string;
-            /** Selection Snapshot Id */
-            selection_snapshot_id: string;
             /** Stories */
             stories: {
                 [key: string]: unknown;
             }[];
+            /** Synthesis Input Hash */
+            synthesis_input_hash: string;
         };
         /** NewsBriefFailureData */
         NewsBriefFailureData: {
+            /** Activation Id */
+            activation_id: string;
+            /** Attempt Count */
+            attempt_count: number;
             /** Last Error */
             last_error: string | null;
+            /** Requested At Ms */
+            requested_at_ms: number;
             /** Updated At Ms */
             updated_at_ms: number;
             /** Validation Errors */
             validation_errors: string[];
-        };
-        /** NewsBriefFallbackData */
-        NewsBriefFallbackData: {
-            /** Cutoff At Ms */
-            cutoff_at_ms: number;
-            /** Decisions */
-            decisions: {
-                [key: string]: unknown;
-            }[];
-            evidence_bundle: components["schemas"]["NewsBriefEvidenceBundleData"];
-            /** Selected Story Ids */
-            selected_story_ids: string[];
-            /** Selection Fingerprint */
-            selection_fingerprint: string;
-            /** Selection Snapshot Id */
-            selection_snapshot_id: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "planned" | "debounced" | "publishable" | "published" | "superseded";
         };
         /** NewsBriefItemPayloadData */
         NewsBriefItemPayloadData: {
@@ -1402,14 +1424,44 @@ export interface components {
             /** Narratives */
             narratives: string[];
         };
+        /** NewsBriefPendingProposalData */
+        NewsBriefPendingProposalData: {
+            /** Activation Due At Ms */
+            activation_due_at_ms: number;
+            /** First Proposed At Ms */
+            first_proposed_at_ms: number;
+            /**
+             * Lane
+             * @enum {string}
+             */
+            lane: "ordinary" | "verified_critical" | "rectification";
+            /** Last Observed At Ms */
+            last_observed_at_ms: number;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Selected Story Ids */
+            selected_story_ids: string[];
+            /** Selection Fingerprint */
+            selection_fingerprint: string;
+            /** Selection Id */
+            selection_id: string;
+        };
         /** NewsBriefPublicationData */
         NewsBriefPublicationData: {
+            /** Activated At Ms */
+            activated_at_ms: number | null;
+            /** Activation Id */
+            activation_id: string | null;
+            /** Activation Sequence */
+            activation_sequence: number | null;
+            /** Attached At Ms */
+            attached_at_ms: number | null;
+            /** Attachment Kind */
+            attachment_kind: ("generated" | "reused") | null;
             contract: components["schemas"]["NewsPublicationContractData"];
-            /** Cutoff At Ms */
-            cutoff_at_ms: number;
             evidence_bundle: components["schemas"]["NewsBriefEvidenceBundleData"];
-            /** Evidence Bundle Hash */
-            evidence_bundle_hash: string;
+            /** Evidence Cutoff At Ms */
+            evidence_cutoff_at_ms: number;
             /** Evidence References */
             evidence_references: string[];
             /** Narrative Groups */
@@ -1433,8 +1485,10 @@ export interface components {
             }[];
             /** Selection Fingerprint */
             selection_fingerprint: string;
-            /** Selection Snapshot Id */
-            selection_snapshot_id: string;
+            /** Selection Id */
+            selection_id: string;
+            /** Synthesis Input Hash */
+            synthesis_input_hash: string;
         };
         /** NewsConditionalTransmissionData */
         NewsConditionalTransmissionData: {
@@ -1464,10 +1518,16 @@ export interface components {
             locations: string[];
             /** Named Event Keys */
             named_event_keys: string[];
+            /** Numeric Constraints */
+            numeric_constraints: {
+                [key: string]: unknown;
+            }[];
             /** Stages */
             stages: string[];
             /** Target Entities */
             target_entities: string[];
+            /** Temporal Episode Keys */
+            temporal_episode_keys: string[];
         };
         /** NewsEvidenceBackedFactData */
         NewsEvidenceBackedFactData: {
@@ -1478,14 +1538,78 @@ export interface components {
         };
         /** NewsGlobalBriefData */
         NewsGlobalBriefData: {
-            current: components["schemas"]["NewsBriefPublicationData"] | null;
-            fallback: components["schemas"]["NewsBriefFallbackData"] | null;
+            active_selection: components["schemas"]["NewsBriefActiveSelectionData"] | null;
+            analysis: components["schemas"]["NewsBriefPublicationData"] | null;
+            /**
+             * Analysis Status
+             * @enum {string}
+             */
+            analysis_status: "unavailable" | "pending" | "available" | "failed" | "reused";
             latest_failure: components["schemas"]["NewsBriefFailureData"] | null;
+            pending_proposal: components["schemas"]["NewsBriefPendingProposalData"] | null;
+            previous_publication: components["schemas"]["NewsBriefPublicationData"] | null;
         };
         /** NewsGlobalBriefHistoryData */
         NewsGlobalBriefHistoryData: {
             /** Items */
             items: components["schemas"]["NewsBriefPublicationData"][];
+        };
+        /** NewsHealthData */
+        NewsHealthData: {
+            layers: components["schemas"]["NewsHealthLayersData"];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Reasons */
+            reasons: components["schemas"]["NewsHealthReasonData"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "degraded" | "failed";
+        };
+        /** NewsHealthLayerData */
+        NewsHealthLayerData: {
+            /** Measurements */
+            measurements: {
+                [key: string]: unknown;
+            };
+            /** Reasons */
+            reasons: components["schemas"]["NewsHealthReasonData"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "degraded" | "failed";
+        };
+        /** NewsHealthLayersData */
+        NewsHealthLayersData: {
+            ai: components["schemas"]["NewsHealthLayerData"];
+            brief: components["schemas"]["NewsHealthLayerData"];
+            material: components["schemas"]["NewsHealthLayerData"];
+            public: components["schemas"]["NewsHealthLayerData"];
+            source: components["schemas"]["NewsHealthLayerData"];
+        };
+        /** NewsHealthReasonData */
+        NewsHealthReasonData: {
+            /** Code */
+            code: string;
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
+            /** Measured */
+            measured: number | null;
+            /** Measured Ms */
+            measured_ms: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "degraded" | "failed";
+            /** Threshold */
+            threshold: number | null;
+            /** Threshold Ms */
+            threshold_ms: number | null;
         };
         /** NewsPublicationContractData */
         NewsPublicationContractData: {
@@ -1813,6 +1937,11 @@ export interface components {
             items: components["schemas"]["NewsStorySummaryData"][];
             /** Next Cursor */
             next_cursor: string | null;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "latest" | "priority";
         };
         /** NewsStoryMaterialEventData */
         NewsStoryMaterialEventData: {
@@ -1896,25 +2025,26 @@ export interface components {
         };
         /** NewsStorySelectionAuditData */
         NewsStorySelectionAuditData: {
+            /** Activated At Ms */
+            activated_at_ms: number | null;
+            /** Activation Id */
+            activation_id: string | null;
             /** Critical */
             critical: boolean;
-            /** Cutoff At Ms */
-            cutoff_at_ms: number;
             /** Decision */
             decision: {
                 [key: string]: unknown;
             };
+            /** Evidence Cutoff At Ms */
+            evidence_cutoff_at_ms: number;
             /** Policy Version */
             policy_version: string;
             /** Selection Fingerprint */
             selection_fingerprint: string;
-            /** Selection Snapshot Id */
-            selection_snapshot_id: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "planned" | "debounced" | "publishable" | "published" | "superseded";
+            /** Selection Id */
+            selection_id: string;
+            /** Verified Critical */
+            verified_critical: boolean;
         };
         /** NewsStorySummaryData */
         NewsStorySummaryData: {
@@ -2234,6 +2364,7 @@ export interface components {
             };
             /** Handles */
             handles: string[];
+            news: components["schemas"]["NewsHealthData"];
             /** Ok */
             ok: boolean;
             /** Provider States */
@@ -3217,6 +3348,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string;
+                view?: string;
                 q?: string;
                 evidence_posture?: string;
                 source?: string;

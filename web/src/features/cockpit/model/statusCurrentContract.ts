@@ -9,8 +9,21 @@ const STATUS_KEYS = [
   "store",
   "snapshot_gate",
   "db",
+  "news",
   "provider_states",
   "workers",
+] as const;
+const NEWS_KEYS = ["status", "reasons", "layers", "measured_at_ms"] as const;
+const NEWS_LAYER_NAMES = ["source", "material", "brief", "public", "ai"] as const;
+const NEWS_LAYER_KEYS = ["status", "reasons", "measurements"] as const;
+const NEWS_REASON_KEYS = [
+  "code",
+  "status",
+  "measured_ms",
+  "threshold_ms",
+  "measured",
+  "threshold",
+  "details",
 ] as const;
 const WORKER_KEYS = [
   "enabled",
@@ -32,6 +45,7 @@ export function requireStatusData(value: unknown): OpenApiStatusData {
   requireString(status.store, "status.store");
   requireRecord(status.snapshot_gate, "status.snapshot_gate");
   requireRecord(status.db, "status.db");
+  requireNewsHealth(status.news);
   requireRecord(status.provider_states, "status.provider_states");
   const workers = requireRecord(status.workers, "status.workers");
   if (!Object.hasOwn(workers, "collector")) {
@@ -41,6 +55,44 @@ export function requireStatusData(value: unknown): OpenApiStatusData {
     requireWorkerStatusData(workerValue, `status.workers.${workerName}`);
   }
   return status as OpenApiStatusData;
+}
+
+function requireNewsHealth(value: unknown): void {
+  const news = requireRecord(value, "status.news");
+  requireExactKeys(news, NEWS_KEYS, "status.news");
+  requireHealthStatus(news.status, "status.news.status");
+  requireFiniteNumber(news.measured_at_ms, "status.news.measured_at_ms");
+  requireHealthReasons(news.reasons, "status.news.reasons");
+  const layers = requireRecord(news.layers, "status.news.layers");
+  requireExactKeys(layers, NEWS_LAYER_NAMES, "status.news.layers");
+  for (const layerName of NEWS_LAYER_NAMES) {
+    const path = `status.news.layers.${layerName}`;
+    const layer = requireRecord(layers[layerName], path);
+    requireExactKeys(layer, NEWS_LAYER_KEYS, path);
+    requireHealthStatus(layer.status, `${path}.status`);
+    requireHealthReasons(layer.reasons, `${path}.reasons`);
+    requireRecord(layer.measurements, `${path}.measurements`);
+  }
+}
+
+function requireHealthReasons(value: unknown, path: string): void {
+  if (!Array.isArray(value)) fail(path);
+  value.forEach((item, index) => {
+    const reasonPath = `${path}.${index}`;
+    const reason = requireRecord(item, reasonPath);
+    requireExactKeys(reason, NEWS_REASON_KEYS, reasonPath);
+    requireString(reason.code, `${reasonPath}.code`);
+    requireHealthStatus(reason.status, `${reasonPath}.status`);
+    requireNullableFiniteNumber(reason.measured_ms, `${reasonPath}.measured_ms`);
+    requireNullableFiniteNumber(reason.threshold_ms, `${reasonPath}.threshold_ms`);
+    requireNullableFiniteNumber(reason.measured, `${reasonPath}.measured`);
+    requireNullableFiniteNumber(reason.threshold, `${reasonPath}.threshold`);
+    requireRecord(reason.details, `${reasonPath}.details`);
+  });
+}
+
+function requireHealthStatus(value: unknown, path: string): void {
+  if (value !== "running" && value !== "degraded" && value !== "failed") fail(path);
 }
 
 export function requireWorkerStatusData(value: unknown, path = "worker"): WorkerStatusData {
@@ -95,6 +147,11 @@ function requireNullableString(value: unknown, path: string): string | null {
 
 function requireNullableFiniteNumber(value: unknown, path: string): number | null {
   if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) fail(path);
+  return value;
+}
+
+function requireFiniteNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) fail(path);
   return value;
 }
 

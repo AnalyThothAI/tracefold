@@ -569,8 +569,12 @@ def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
     assert request_response.json()["data"]["status"] == "insufficient"
     assert missing_request_response.status_code == 404
     assert brief_response.status_code == 200
-    assert brief_response.json()["data"]["current"] is None
-    assert brief_response.json()["data"]["fallback"]["status"] == "publishable"
+    brief_data = brief_response.json()["data"]
+    assert brief_data["active_selection"]["selected_story_ids"] == [story_id]
+    assert brief_data["analysis"] is None
+    assert brief_data["analysis_status"] == "pending"
+    assert "current" not in brief_data
+    assert "fallback" not in brief_data
     assert brief_history_response.status_code == 200
     assert brief_history_response.json()["data"]["items"] == []
     assert [response.status_code for response in retired_responses] == [404, 404, 404]
@@ -641,6 +645,16 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
                 not_modified=False,
             )
             repos.news.project_pending_revisions(now_ms=6_200, limit=100)
+            repos.news.conn.execute(
+                """
+                UPDATE news_stories
+                   SET priority_score = CASE title
+                     WHEN 'Alpha government approves fiscal package' THEN 99
+                     WHEN 'Beta central bank cuts rates by 25 basis points' THEN 50
+                     ELSE 10
+                   END
+                """
+            )
 
         headers = {"Authorization": "Bearer secret"}
         first = client.get("/api/news/stories", params={"limit": 1}, headers=headers)
@@ -681,8 +695,19 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
             params={"evidence_posture": "invented"},
             headers=headers,
         )
+        priority = client.get(
+            "/api/news/stories",
+            params={"view": "priority"},
+            headers=headers,
+        )
+        mismatched_cursor = client.get(
+            "/api/news/stories",
+            params={"view": "priority", "cursor": first_data["next_cursor"]},
+            headers=headers,
+        )
 
     assert first.status_code == second.status_code == 200
+    assert first_data["view"] == "latest"
     assert first_data["next_cursor"]
     first_id = first_data["items"][0]["story_id"]
     second_id = second.json()["data"]["items"][0]["story_id"]
@@ -695,6 +720,10 @@ def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
     assert invalid_cursor.json()["error"] == "news_story_cursor_invalid"
     assert invalid_verification.status_code == 400
     assert invalid_verification.json()["error"] == "news_story_evidence_posture_invalid"
+    assert priority.json()["data"]["view"] == "priority"
+    assert priority.json()["data"]["items"][0]["title"] == "Alpha government approves fiscal package"
+    assert mismatched_cursor.status_code == 400
+    assert mismatched_cursor.json()["error"] == "news_story_cursor_view_mismatch"
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):
@@ -1578,7 +1607,17 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     assert body["ok"] is True
     assert body["data"]["ok"] is False
     assert "database_unhealthy" not in body["data"]["reasons"]
+    assert "news:news_health_query_failed" in body["data"]["reasons"]
     assert body["data"]["db"]["ok"] is True
+    assert body["data"]["news"]["status"] == "failed"
+    assert set(body["data"]["news"]["layers"]) == {
+        "source",
+        "material",
+        "brief",
+        "public",
+        "ai",
+    }
+    assert all(layer["status"] == "failed" for layer in body["data"]["news"]["layers"].values())
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

@@ -39,7 +39,7 @@ describe("useNewsStoriesWithToken", () => {
       http.get(/.*\/api\/news\/stories$/, ({ request }) => {
         const searchParams = new URL(request.url).searchParams;
         observedKeys = [...searchParams.keys()].sort();
-        for (const key of ["evidence_posture", "limit", "q", "source"]) {
+        for (const key of ["evidence_posture", "limit", "q", "source", "view"]) {
           observedParams[key] = searchParams.get(key);
         }
         return HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } });
@@ -62,8 +62,9 @@ describe("useNewsStoriesWithToken", () => {
       limit: "50",
       q: "rates",
       source: "Reuters",
+      view: "latest",
     });
-    expect(observedKeys).toEqual(["evidence_posture", "limit", "q", "source"]);
+    expect(observedKeys).toEqual(["evidence_posture", "limit", "q", "source", "view"]);
   });
 });
 
