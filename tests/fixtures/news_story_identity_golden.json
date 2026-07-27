@@ -1,5 +1,5 @@
 {
-  "corpus_version": "news_story_identity_golden_v1",
+  "corpus_version": "news_story_identity_golden_v2_production_failures",
   "cases": [
     {
       "case_id": "same_event_rewrite",
@@ -179,6 +179,550 @@
           "title": "有关部门公布一项新措施",
           "language": "zh",
           "expected_cluster": "generic_chinese"
+        }
+      ]
+    },
+    {
+      "case_id": "production_exact_title_different_summaries",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/berlin-pride-ramming",
+          "title": "What we know so far about the Berlin Pride ramming attack",
+          "summary": "Police published the initial casualty count.",
+          "language": "en",
+          "expected_cluster": "berlin_pride_ramming"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/berlin-pride-ramming",
+          "title": "What we know so far about the Berlin Pride ramming attack",
+          "summary": "Witnesses described the vehicle and festival response.",
+          "language": "en",
+          "expected_cluster": "berlin_pride_ramming"
+        }
+      ]
+    },
+    {
+      "case_id": "production_high_title_containment_verizon_google",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/verizon-google-cloud-agreement",
+          "title": "Verizon and Google sign a 20 billion dollar cloud computing agreement",
+          "language": "en",
+          "expected_cluster": "verizon_google_agreement"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/verizon-google-cloud-agreement",
+          "title": "Verizon and Google sign cloud computing agreement",
+          "language": "en",
+          "expected_cluster": "verizon_google_agreement"
+        }
+      ]
+    },
+    {
+      "case_id": "production_truncated_title_nato_espionage",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/nato-espionage-investigation",
+          "title": "NATO investigates alleged espionage case involving a senior official",
+          "language": "en",
+          "expected_cluster": "nato_espionage_case"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/nato-espionage-investigation",
+          "title": "NATO investigates alleged espionage case",
+          "language": "en",
+          "expected_cluster": "nato_espionage_case"
+        }
+      ]
+    },
+    {
+      "case_id": "production_truncated_title_brazil_visa_decision",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/brazil-visa-decision",
+          "title": "Brazil ends visa exemption for United States travelers",
+          "language": "en",
+          "expected_cluster": "brazil_visa_decision"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/brazil-visa-decision",
+          "title": "Brazil ends visa exemption for US travelers after review",
+          "language": "en",
+          "expected_cluster": "brazil_visa_decision"
+        }
+      ]
+    },
+    {
+      "case_id": "named_event_collision_cop29_cop30",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/cop29-finance-package",
+          "title": "COP29 summit agrees a new climate finance package",
+          "language": "en",
+          "expected_cluster": "cop29_finance"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/cop30-finance-package",
+          "title": "COP30 summit agrees a new climate finance package",
+          "language": "en",
+          "expected_cluster": "cop30_finance"
+        }
+      ]
+    },
+    {
+      "case_id": "temporal_episode_june_july",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/china-exports-june",
+          "title": "China exports fell in June 2026",
+          "language": "en",
+          "expected_cluster": "china_exports_june"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/china-exports-july",
+          "title": "China exports fell in July 2026",
+          "language": "en",
+          "expected_cluster": "china_exports_july"
+        }
+      ]
+    },
+    {
+      "case_id": "identity_number_flight_collision",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/flight-123-investigation",
+          "title": "Authorities investigate Flight 123 after emergency landing",
+          "language": "en",
+          "expected_cluster": "flight_123"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/flight-456-investigation",
+          "title": "Authorities investigate Flight 456 after emergency landing",
+          "language": "en",
+          "expected_cluster": "flight_456"
+        }
+      ]
+    },
+    {
+      "case_id": "actor_direction_reversal",
+      "hard_negative": true,
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/israel-attacks-iran",
+          "title": "Israel attacks Iran in an overnight strike",
+          "language": "en",
+          "expected_cluster": "israel_attacks_iran"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/iran-attacks-israel",
+          "title": "Iran attacks Israel in an overnight strike",
+          "language": "en",
+          "expected_cluster": "iran_attacks_israel"
+        }
+      ]
+    },
+    {
+      "case_id": "production_mexican_cattle_import_resumption",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/us-lifts-mexican-cattle-ban",
+          "title": "US says it will lift ban on imports of Mexican cattle - Reuters",
+          "language": "en",
+          "expected_cluster": "mexican_cattle_import_resumption"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/us-resumes-mexican-cattle-imports",
+          "title": "US says it will begin lifting a suspension of Mexican cattle imports starting in August - AP News",
+          "language": "en",
+          "expected_cluster": "mexican_cattle_import_resumption"
+        }
+      ]
+    },
+    {
+      "case_id": "production_nigeria_army_expansion",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/nigeria-army-expansion",
+          "title": "Nigeria's Tinubu approves army expansion to 12 divisions with 28,000 new recruits - Reuters",
+          "language": "en",
+          "expected_cluster": "nigeria_army_expansion"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/nigeria-military-expansion",
+          "title": "Nigeria's president approves largest military expansion in recent times",
+          "language": "en",
+          "expected_cluster": "nigeria_army_expansion"
+        }
+      ]
+    },
+    {
+      "case_id": "production_nato_intern_spying",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/nato-intern-spying",
+          "title": "Intern arrested in Belgium on suspicion of spying inside NATO military headquarters - AP News",
+          "language": "en",
+          "expected_cluster": "nato_intern_spying"
+        },
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/nato-intern-spying",
+          "title": "Intern arrested on suspicion of spying at Nato military HQ - Financial Times",
+          "language": "en",
+          "expected_cluster": "nato_intern_spying"
+        }
+      ]
+    },
+    {
+      "case_id": "production_brazil_us_official_visas",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/brazil-us-official-visas",
+          "title": "Brazil’s government denies visas to US officials over upcoming elections - AP News",
+          "language": "en",
+          "expected_cluster": "brazil_us_official_visas"
+        },
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/brazil-us-official-visas",
+          "title": "Brazil denies visas to US officials over alleged election interference - Financial Times",
+          "language": "en",
+          "expected_cluster": "brazil_us_official_visas"
+        }
+      ]
+    },
+    {
+      "case_id": "production_typhoon_noul_landfall",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/typhoon-noul-landfall",
+          "title": "Southern China faces torrential rain, floods after Typhoon Noul makes landfall - Reuters",
+          "language": "en",
+          "expected_cluster": "typhoon_noul_landfall"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/typhoon-noul-landfall",
+          "title": "Typhoon Noul makes landfall in southern China, with over 700,000 evacuated and flights canceled - AP News",
+          "language": "en",
+          "expected_cluster": "typhoon_noul_landfall"
+        }
+      ]
+    },
+    {
+      "case_id": "production_vozinha_colo_colo_transfer",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/vozinho-colo-colo",
+          "title": "Cape Verde World Cup hero Vozinha agrees move to Chile's Colo Colo - Reuters",
+          "language": "en",
+          "expected_cluster": "vozinha_colo_colo_transfer"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/vozinho-colo-colo",
+          "title": "Cape Verde’s World Cup sensation Vozinha to join Chile club Colo Colo - AP News",
+          "language": "en",
+          "expected_cluster": "vozinha_colo_colo_transfer"
+        }
+      ]
+    },
+    {
+      "case_id": "production_brazil_recalls_argentina_ambassador",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/brazil-recalls-ambassador",
+          "title": "Brazil recalls ambassador after Argentina’s President Milei insults government officials - AP News",
+          "language": "en",
+          "expected_cluster": "brazil_recalls_argentina_ambassador"
+        },
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/brazil-recalls-ambassador",
+          "title": "Brazil recalls ambassador to Argentina after Milei attacks Lula, sources say - Reuters",
+          "language": "en",
+          "expected_cluster": "brazil_recalls_argentina_ambassador"
+        }
+      ]
+    },
+    {
+      "case_id": "production_oil_bond_selloff",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/oil-bond-selloff-a",
+          "title": "Oil price surge drives global bond sell-off - Financial Times",
+          "language": "en",
+          "expected_cluster": "oil_bond_selloff"
+        },
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/oil-bond-selloff-b",
+          "title": "Oil hits $100 and drives global bond sell-off - Financial Times",
+          "language": "en",
+          "expected_cluster": "oil_bond_selloff"
+        }
+      ]
+    },
+    {
+      "case_id": "production_kazakhstan_freeze_ukraine_war",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/kazakhstan-freeze-ukraine",
+          "title": "Speaking alongside Putin, Kazakh president calls for freeze of Ukraine war - Reuters",
+          "language": "en",
+          "expected_cluster": "kazakhstan_freeze_ukraine"
+        },
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/kazakhstan-freeze-ukraine",
+          "title": "Kazakhstan’s president urges Putin to ‘freeze’ the war in Ukraine - Financial Times",
+          "language": "en",
+          "expected_cluster": "kazakhstan_freeze_ukraine"
+        }
+      ]
+    },
+    {
+      "case_id": "production_china_securities_regulator_investigation",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/china-regulator-investigation",
+          "title": "China places former deputy chief of securities regulator under investigation - Reuters",
+          "language": "en",
+          "expected_cluster": "china_regulator_investigation"
+        },
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/china-regulator-investigation",
+          "title": "China investigates former securities regulator Fang Xinghai - Financial Times",
+          "language": "en",
+          "expected_cluster": "china_regulator_investigation"
+        }
+      ]
+    },
+    {
+      "case_id": "production_trip_com_monopoly_fine",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/trip-com-fine",
+          "title": "China fines Trip.com $770 million over online hotel-booking monopoly - Reuters",
+          "language": "en",
+          "expected_cluster": "trip_com_monopoly_fine"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/trip-com-fine",
+          "title": "China hits travel platform Trip.com with $765M in penalties over monopoly abuses - AP News",
+          "language": "en",
+          "expected_cluster": "trip_com_monopoly_fine"
+        }
+      ]
+    },
+    {
+      "case_id": "production_smithsonian_accuracy_signs",
+      "hard_negative": false,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/smithsonian-signs",
+          "title": "Trump orders new signs outside Smithsonian saying some exhibits are inaccurate - AP News",
+          "language": "en",
+          "expected_cluster": "smithsonian_accuracy_signs"
+        },
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/smithsonian-signs",
+          "title": "Trump orders signs outside Smithsonian history museum to correct what he calls 'inaccurate information' - Reuters",
+          "language": "en",
+          "expected_cluster": "smithsonian_accuracy_signs"
+        }
+      ]
+    },
+    {
+      "case_id": "production_tariff_action_vs_reaction",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/us-imposes-tariffs",
+          "title": "US hits dozens of countries with new wave of tariffs",
+          "language": "en",
+          "expected_cluster": "us_tariff_action"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/tariff-reaction",
+          "title": "Reaction to US imposing new tariffs on 60 trading partners - Reuters",
+          "language": "en",
+          "expected_cluster": "trading_partner_reaction"
+        }
+      ]
+    },
+    {
+      "case_id": "production_roundup_vs_lawsuit",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/tariff-lawsuit",
+          "title": "US small businesses file lawsuit challenging Trump's new 'forced labor' tariffs - Reuters",
+          "language": "en",
+          "expected_cluster": "tariff_lawsuit"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/tariff-podcast-roundup",
+          "title": "PODCAST: New US tariffs, Trump's Saudi Arabia demand and AI ‘kill switch’ - Reuters",
+          "language": "en",
+          "expected_cluster": "tariff_roundup"
+        }
+      ]
+    },
+    {
+      "case_id": "production_upbit_listing_asset_collision",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "upbit",
+          "url": "https://upbit.example/listing-eul",
+          "title": "📢 UPBIT LISTING:[거래] 오일러(EUL) KRW 마켓 디지털 자산 추가",
+          "language": "ko",
+          "expected_cluster": "upbit_eul_listing"
+        },
+        {
+          "source_id": "upbit-news",
+          "url": "https://upbit-news.example/listing-morpho",
+          "title": "📢 UPBIT LISTING:[거래] 모포(MORPHO) KRW 마켓 디지털 자산 추가",
+          "language": "ko",
+          "expected_cluster": "upbit_morpho_listing"
+        }
+      ]
+    },
+    {
+      "case_id": "production_gaza_force_vs_hamas_killing",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/gaza-international-force",
+          "title": "Israel to allow international force into Gaza, Israeli official says - Reuters",
+          "language": "en",
+          "expected_cluster": "gaza_international_force"
+        },
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/gaza-hamas-police-killing",
+          "title": "Israel kills senior Hamas-led police official in Gaza, medics say - Reuters",
+          "language": "en",
+          "expected_cluster": "gaza_hamas_police_killing"
+        }
+      ]
+    },
+    {
+      "case_id": "production_appeals_court_object_collision",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ap",
+          "url": "https://ap.example/voter-list-injunction",
+          "title": "US appeals court upholds injunction that blocks Trump’s order to create a federal voter list - AP News",
+          "language": "en",
+          "expected_cluster": "federal_voter_list_injunction"
+        },
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/texas-online-safety-law",
+          "title": "US appeals court blocks part of Texas children's online safety law - Reuters",
+          "language": "en",
+          "expected_cluster": "texas_online_safety_law"
+        }
+      ]
+    },
+    {
+      "case_id": "production_houthi_attack_vs_saudi_retaliation",
+      "hard_negative": true,
+      "provenance": "2026-07-27 production ambiguous-decision audit",
+      "reports": [
+        {
+          "source_id": "ft",
+          "url": "https://ft.example/houthi-attack-saudi",
+          "title": "Iran-backed Houthis claim missile attack on Saudi Arabia",
+          "language": "en",
+          "expected_cluster": "houthi_attack_saudi"
+        },
+        {
+          "source_id": "reuters",
+          "url": "https://reuters.example/saudi-retaliates-houthis",
+          "title": "Saudi Arabia strikes Houthis after Iran-backed rebels target energy sites - Financial Times",
+          "language": "en",
+          "expected_cluster": "saudi_retaliation_houthis"
         }
       ]
     }

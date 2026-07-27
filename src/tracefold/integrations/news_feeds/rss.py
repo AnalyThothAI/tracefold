@@ -107,11 +107,7 @@ def _entry(entry: Any, *, feed_language: str | None) -> NewsFeedEntry:
         raise ValueError("news_rss_entry_title_required")
     link = _optional_text(_mapping_get(entry, "link"))
     guid = _optional_text(_mapping_get(entry, "id")) or _optional_text(_mapping_get(entry, "guid"))
-    summary = (
-        _optional_text(_mapping_get(entry, "summary"))
-        or _optional_text(_mapping_get(entry, "description"))
-        or ""
-    )
+    summary = _optional_text(_mapping_get(entry, "summary")) or _optional_text(_mapping_get(entry, "description")) or ""
     published_at_ms = _published_at_ms(entry)
     language = _optional_text(_mapping_get(entry, "language")) or feed_language
     return NewsFeedEntry(

@@ -161,21 +161,68 @@ persisted identity, social, and market facts.
 configured sources
   -> internal RSS/RSSHub adapter
   -> fetch receipts + observations + immutable Article revisions
-  -> versioned Article identity features
-  -> single-writer deterministic Event Story memberships + profiles
-  -> deterministic Narrative grouping + frozen Brief selection
-  -> validated immutable Global Brief / Story analysis publications
+  -> versioned Article identity features v2
+  -> multi-channel candidate recall
+  -> constraint-first proof-ladder Event Story admission
+  -> single-writer deterministic Story memberships + profiles + material events
+  -> Latest / Priority Story views
+  -> Narrative grouping + Brief Selection + Proposal
+  -> immutable Brief Activation + singleton Active pointer
+  -> content-addressed validated AI Publication
   -> Story Interface -> HTTP + React
 ```
 
-Article identity is source-scoped and deterministic. Story identity v1 compares
-only same-language, time-bounded lexical candidates and records every admission
-decision. Source role, trust, acquisition chain, and verified original domain
-remain distinct so aggregator copies cannot manufacture corroboration.
-Lifecycle and importance are deterministic scheduled projection state; model
-output never participates in identity, trust, lifecycle, or ranking. Analysis
-attempts are independent control state, and a failed or unavailable model
-never hides the Story.
+Article identity is publisher-artifact scoped and deterministic. Story identity
+v2 first recalls bounded candidates through content fingerprint, normalized
+exact title, high title containment, same-language lexical similarity,
+deterministic event anchors, and named events. Admission is a separate ordered
+proof ladder. Place, actor direction, action/state transition, event object,
+policy stage, named event, temporal episode, and explicitly
+identity-defining-number conflicts veto every positive proof. Exact title,
+near-complete containment, high same-language member similarity, deterministic
+event anchors, and the stricter cross-language anchor path are then evaluated
+in order. Runner-up ambiguity creates a separate Story. There is no union-find,
+embedding, translation, LLM, or browser clustering path.
+The frozen production-derived and WorldMonitor-reference evaluation, red/green
+metrics, release floors, and remaining limits are owned by
+`docs/DEVELOPMENT.md`; the executable labels live in
+`tests/fixtures/news_story_identity_golden.json`.
+
+Source role, trust, acquisition chain, publisher organization, and reporting
+origin remain separate so syndication cannot manufacture corroboration.
+Lifecycle, Impact, Priority, evidence posture, and Brief eligibility are
+deterministic scheduled projection state. `latest` and `priority` are two
+ordered views over the same Story identities; they never create a second
+projection.
+
+Global Brief separates content identity from temporal currentness:
+
+- `news_brief_selections` stores the content-addressed deterministic editorial
+  portfolio and exact synthesis input hash.
+- `news_brief_proposals` stores the one candidate transition being observed
+  through ordinary, verified-critical, or rectification debounce.
+- `news_brief_activations` records each immutable transition that became
+  current; `news_brief_active` points to exactly one Activation.
+- `news_brief_publications` stores immutable AI analysis by synthesis input plus
+  the qualified model/prompt/workflow/schema/locale contract.
+- `news_ai_current_targets` is the transactionally replaced intent for the
+  evidence and qualified contract that may currently attach for each Activation
+  or Story; an older in-flight result can enter immutable history but cannot
+  regain the current pointer.
+- `news_brief_activation_analysis` attaches a generated or exactly reused
+  Publication without allowing AI to advance Active. Each Activation has at
+  most one unsuperseded attachment: requesting a different qualified
+  model/prompt/workflow/schema/locale contract first withdraws the incompatible
+  current attachment, so the public state is honestly pending or failed until
+  the new contract publishes or an exact cached Publication is reattached.
+
+Consequently A → A is a no-op, while A → B → A produces A₁, B₁, and A₂ even
+when A₂ reuses A₁'s Publication. Activation time, evidence cutoff, Publication
+time, and attachment time are distinct. A late or invalid model result can be
+retained as immutable history/cache but cannot overwrite a newer Activation.
+Superseded attachments likewise remain immutable provenance and cache, never
+the current analysis.
+A pending or failed model never hides deterministic Story cards.
 
 ### Macro
 

@@ -145,7 +145,9 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
       event_objects: [],
       locations: [],
       named_event_keys: [],
+      numeric_constraints: [],
       stages: [],
+      temporal_episode_keys: [],
       target_entities: ["ecb"],
     },
     evidence_factors: summary.evidence_factors,
@@ -257,8 +259,12 @@ export function newsBriefPublicationFixture(
       schema_version: "news_global_brief_schema_v1",
       workflow_version: "news_global_brief_workflow_v1",
     },
-    cutoff_at_ms: NEWS_NOW_MS,
-    evidence_bundle_hash: "brief-evidence-hash",
+    activated_at_ms: NEWS_NOW_MS,
+    activation_id: "brief-activation-1",
+    activation_sequence: 1,
+    attached_at_ms: NEWS_NOW_MS + 1_000,
+    attachment_kind: "generated",
+    evidence_cutoff_at_ms: NEWS_NOW_MS,
     evidence_references: ["revision-reuters-2", "revision-ap-1"],
     payload: {
       executive_summary: "全球政策冲击正在跨市场传导，当前证据来自两个独立原始来源。",
@@ -292,19 +298,21 @@ export function newsBriefPublicationFixture(
     published_at_ms: NEWS_NOW_MS + 1_000,
     receipt: { attempt_id: "brief-attempt-1", validator: "passed" },
     evidence_bundle: {
-      cutoff_at_ms: NEWS_NOW_MS,
-      evidence_bundle_hash: "brief-evidence-hash",
+      evidence_cutoff_at_ms: NEWS_NOW_MS,
+      locale: "zh-CN",
       narrative_groups: [],
       selection_fingerprint: "brief-selection-fingerprint",
-      selection_policy_version: "news_brief_selection_v1",
-      selection_snapshot_id: "brief-selection-1",
+      selection_id: "brief-selection-1",
+      selection_policy_version: "news_brief_selection_v2",
       stories: [{ story_id: "story-global-policy", title: "Frozen selection title" }],
+      synthesis_input_hash: "brief-synthesis-input-hash",
     },
     narrative_groups: [],
     selection_decisions: [{ reason: "selected", selected: true, story_id: "story-global-policy" }],
     selected_story_ids: ["story-global-policy"],
     selection_fingerprint: "brief-selection-fingerprint",
-    selection_snapshot_id: "brief-selection-1",
+    selection_id: "brief-selection-1",
+    synthesis_input_hash: "brief-synthesis-input-hash",
     ...overrides,
   };
 }
@@ -361,13 +369,30 @@ function newsArticleRevisionFixture(
   };
 }
 
-export function newsGlobalBriefFixture(
-  overrides: Partial<NewsGlobalBrief> = {},
-): NewsGlobalBrief {
+export function newsGlobalBriefFixture(overrides: Partial<NewsGlobalBrief> = {}): NewsGlobalBrief {
   return {
-    current: newsBriefPublicationFixture(),
-    fallback: null,
+    active_selection: {
+      activated_at_ms: NEWS_NOW_MS,
+      activation_id: "brief-activation-1",
+      activation_lane: "ordinary",
+      activation_sequence: 1,
+      evidence_bundle: newsBriefPublicationFixture().evidence_bundle,
+      evidence_cutoff_at_ms: NEWS_NOW_MS,
+      narrative_groups: [],
+      selected_story_ids: ["story-global-policy"],
+      selection_decisions: [
+        { reason: "selected", selected: true, story_id: "story-global-policy" },
+      ],
+      selection_fingerprint: "brief-selection-fingerprint",
+      selection_id: "brief-selection-1",
+      selection_policy_version: "news_brief_selection_v2",
+      synthesis_input_hash: "brief-synthesis-input-hash",
+    },
+    analysis: newsBriefPublicationFixture(),
+    analysis_status: "available",
     latest_failure: null,
+    pending_proposal: null,
+    previous_publication: null,
     ...overrides,
   };
 }

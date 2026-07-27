@@ -62,7 +62,8 @@ function NewsStoryListRoute({ token }: { token: string }) {
   const searchQuery = searchParams.get("q") ?? "";
   const sourceQuery = searchParams.get("source") ?? "";
   const posture = normalizePosture(searchParams.get("posture"));
-  const queryKey = `${searchQuery}\n${sourceQuery}\n${posture}`;
+  const view = searchParams.get("view") === "priority" ? "priority" : "latest";
+  const queryKey = `${view}\n${searchQuery}\n${sourceQuery}\n${posture}`;
   const [cursorState, setCursorState] = useState<CursorState>(() => ({
     queryKey,
     stack: [null],
@@ -74,6 +75,7 @@ function NewsStoryListRoute({ token }: { token: string }) {
     evidencePosture: posture === "all" ? null : posture,
     q: searchQuery.trim() || null,
     source: sourceQuery.trim() || null,
+    view,
   });
   const stories = query.data?.items ?? EMPTY_STORIES;
 
@@ -135,6 +137,22 @@ function NewsStoryListRoute({ token }: { token: string }) {
       </header>
 
       <div className="news-story-filters" aria-label="News Story filters">
+        <div className="news-verification-filters" aria-label="Story view">
+          <button
+            aria-pressed={view === "latest"}
+            onClick={() => updateParam("view", "")}
+            type="button"
+          >
+            最新进展
+          </button>
+          <button
+            aria-pressed={view === "priority"}
+            onClick={() => updateParam("view", "priority")}
+            type="button"
+          >
+            当前优先级
+          </button>
+        </div>
         <label>
           <span>搜索事件</span>
           <input
@@ -357,11 +375,13 @@ function GlobalBriefRoute({ token }: { token: string }) {
   const query = useNewsBriefWithToken(token);
   const history = useNewsBriefHistoryWithToken(token);
   const data = query.data;
-  const publication = data?.current ?? null;
+  const active = data?.active_selection ?? null;
+  const publication = data?.analysis ?? null;
   const payload = record(publication?.payload);
-  const fallback = record(data?.fallback);
-  const fallbackBundle = record(fallback.evidence_bundle);
-  const fallbackStories = records(fallbackBundle.stories);
+  const activeBundle = record(active?.evidence_bundle);
+  const activeStories = records(activeBundle.stories);
+  const previous = data?.previous_publication ?? null;
+  const previousPayload = record(previous?.payload);
   return (
     <section
       aria-label="Global Brief"
@@ -373,47 +393,93 @@ function GlobalBriefRoute({ token }: { token: string }) {
           <ArrowLeft aria-hidden />
           返回 Story 流
         </Link>
-        <span className="news-live-state">{query.isFetching ? "更新中" : "已验证发布"}</span>
+        <span className="news-live-state">
+          {query.isFetching ? "更新中" : analysisLabel(data?.analysis_status ?? "unavailable")}
+        </span>
       </header>
       {query.isLoading ? (
         <PageState.Loading layout="panel" rows={8} label="loading Global Brief" />
       ) : null}
       {query.isError ? <PageState.Error error={query.error ?? "Global Brief unavailable"} /> : null}
-      {publication ? (
+      {active ? (
         <article className="news-story-detail">
           <header className="news-story-hero">
             <div>
               <span className="news-eyebrow">
                 <Newspaper aria-hidden />
-                Global Brief · {absoluteTime(publication.cutoff_at_ms)}
+                当前选材激活于 {absoluteTime(active.activated_at_ms)}
               </span>
-              <h2>{text(payload.headline, "全球政治经济简报")}</h2>
-              <p>{text(payload.executive_summary)}</p>
+              <h2>{text(payload.headline, "Global Brief 当前确定性选材")}</h2>
+              <p>
+                材料截止 {absoluteTime(active.evidence_cutoff_at_ms)} ·{" "}
+                {active.selected_story_ids.length} 个 Story
+              </p>
             </div>
           </header>
           <section className="news-article-list">
-            {records(payload.items).map((item, index) => (
-              <BriefItem item={item} key={`${text(item.story_id)}-${index}`} />
+            {activeStories.map((story) => (
+              <article className="news-article-evidence" key={text(story.story_id)}>
+                <header>
+                  <b>{text(story.title)}</b>
+                  <span>{evidencePostureLabel(text(story.evidence_posture))}</span>
+                </header>
+                <p>{text(story.snippet, "暂无摘要")}</p>
+                <footer>
+                  <Link to={newsStoryPath(text(story.story_id))}>查看 Story 证据</Link>
+                </footer>
+              </article>
             ))}
           </section>
+          {publication ? (
+            <section className="news-detail-card">
+              <SectionTitle icon={Sparkles} title="当前选材的 AI 分析" />
+              <p>{text(payload.executive_summary)}</p>
+              {publication.attachment_kind === "reused" ? (
+                <p className="news-degraded-state" role="status">
+                  复用完全相同输入的历史分析；原发布时间为{" "}
+                  {absoluteTime(publication.published_at_ms)}。
+                </p>
+              ) : null}
+              <div className="news-article-list">
+                {records(payload.items).map((item, index) => (
+                  <BriefItem item={item} key={`${text(item.story_id)}-${index}`} />
+                ))}
+              </div>
+            </section>
+          ) : (
+            <section className="news-detail-card news-analysis-empty">
+              <SectionTitle icon={ShieldCheck} title="AI 分析尚未附着" />
+              <p>
+                {data?.analysis_status === "failed"
+                  ? "生成失败，但当前确定性选材保持有效。"
+                  : "AI 正在处理；事实卡片无需等待模型即可阅读。"}
+              </p>
+            </section>
+          )}
         </article>
-      ) : fallbackStories.length ? (
-        <section className="news-detail-card news-analysis-empty">
-          <SectionTitle icon={ShieldCheck} title="确定性 Brief 选材" />
-          <p>尚无通过校验的 AI Brief。以下是冻结选材，不使用生成文本补位。</p>
-          {fallbackStories.map((story) => (
-            <Link key={text(story.story_id)} to={newsStoryPath(text(story.story_id))}>
-              {text(story.title)}
-            </Link>
-          ))}
-        </section>
       ) : (
         <PageState.Empty title="暂无 Global Brief" hint="尚没有达到选材门槛的 Story。" />
       )}
+      {data?.pending_proposal ? (
+        <p className="news-degraded-state" role="status">
+          新选材正在稳定观察，将于 {absoluteTime(data.pending_proposal.activation_due_at_ms)}{" "}
+          后决定是否激活。
+        </p>
+      ) : null}
       {data?.latest_failure ? (
         <p className="news-degraded-state" role="status">
-          最近一次生成失败；当前页面保留上一份有效发布或确定性选材。
+          最近一次生成失败；当前确定性选材不受影响。
         </p>
+      ) : null}
+      {previous ? (
+        <section className="news-detail-card">
+          <h3>上一份历史分析</h3>
+          <p>{text(previousPayload.executive_summary)}</p>
+          <small>
+            材料截止 {absoluteTime(previous.evidence_cutoff_at_ms)} · 发布于{" "}
+            {absoluteTime(previous.published_at_ms)}
+          </small>
+        </section>
       ) : null}
       {history.data?.items.length ? (
         <section className="news-detail-card">
@@ -421,7 +487,8 @@ function GlobalBriefRoute({ token }: { token: string }) {
           <ul>
             {history.data.items.map((item) => (
               <li key={item.publication_id}>
-                {absoluteTime(item.cutoff_at_ms)} · {text(item.contract.model, "unknown model")}
+                {absoluteTime(item.evidence_cutoff_at_ms)} ·{" "}
+                {text(item.contract.model, "unknown model")}
               </li>
             ))}
           </ul>
@@ -571,7 +638,11 @@ function StringList({ title, values }: { title: string; values: string[] }) {
     <div className="news-analysis-section">
       <h4>{title}</h4>
       {values.length ? (
-        <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul>
+        <ul>
+          {values.map((value) => (
+            <li key={value}>{value}</li>
+          ))}
+        </ul>
       ) : (
         <p>无</p>
       )}

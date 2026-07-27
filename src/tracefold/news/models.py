@@ -65,15 +65,15 @@ NewsPageFetchStatus = Literal[
 
 SOURCE_REGISTRY_VERSION = "news_source_registry_v2"
 ARTICLE_IDENTITY_VERSION = "news_article_identity_v2"
-STORY_IDENTITY_VERSION = "news_story_identity_v2"
+STORY_IDENTITY_VERSION = "news_story_identity_v2_proof_ladder"
 STORY_LIFECYCLE_VERSION = "news_story_lifecycle_v2"
 STORY_SCORING_VERSION = "news_story_scoring_v2"
 STORY_MEMBER_SEMANTICS_VERSION = "news_story_member_semantics_v2"
 BRIEF_GROUPING_VERSION = "news_brief_grouping_v1"
-BRIEF_SELECTION_VERSION = "news_brief_selection_v1"
-BRIEF_PROMPT_VERSION = "news_global_brief_v2"
-BRIEF_WORKFLOW_VERSION = "news_global_brief_workflow_v1"
-BRIEF_SCHEMA_VERSION = "news_global_brief_schema_v1"
+BRIEF_SELECTION_VERSION = "news_brief_selection_v2"
+BRIEF_PROMPT_VERSION = "news_global_brief_v3"
+BRIEF_WORKFLOW_VERSION = "news_global_brief_workflow_v2"
+BRIEF_SCHEMA_VERSION = "news_global_brief_schema_v2"
 STORY_ANALYSIS_PROMPT_VERSION = "news_story_analysis_v5"
 STORY_ANALYSIS_WORKFLOW_VERSION = "news_story_analysis_workflow_v3"
 STORY_ANALYSIS_SCHEMA_VERSION = "news_story_analysis_schema_v2"
@@ -246,6 +246,7 @@ class ArticleIdentityFeatures(ExactNewsModel):
     lexical_signature: str
     event_key: str
     named_event_keys: tuple[str, ...] = ()
+    temporal_episode_keys: tuple[str, ...] = ()
     entities: tuple[str, ...] = ()
     actor_entities: tuple[str, ...] = ()
     target_entities: tuple[str, ...] = ()
@@ -269,6 +270,7 @@ class ArticleIdentityFeatures(ExactNewsModel):
             "event_objects": list(self.event_objects),
             "locations": list(self.locations),
             "stages": list(self.stages),
+            "temporal_episode_keys": list(self.temporal_episode_keys),
             "quantities": list(self.quantities),
             "tokens": list(self.tokens),
             "bigrams": list(self.bigrams),
@@ -321,13 +323,25 @@ class StoryAnalysisEvidence(ExactNewsModel):
 
 
 class BriefEvidenceBundle(ExactNewsModel):
-    selection_snapshot_id: str
+    selection_id: str
     selection_fingerprint: str
-    evidence_bundle_hash: str
-    cutoff_at_ms: int
+    synthesis_input_hash: str
+    evidence_cutoff_at_ms: int
+    locale: str = NEWS_LOCALE
     stories: tuple[dict[str, Any], ...]
     narrative_groups: tuple[dict[str, Any], ...]
     selection_policy_version: str
+
+    def synthesis_input(self) -> dict[str, Any]:
+        """Return the exact normalized payload supplied to the model."""
+
+        return {
+            "evidence_cutoff_at_ms": self.evidence_cutoff_at_ms,
+            "locale": self.locale,
+            "stories": list(self.stories),
+            "narrative_groups": list(self.narrative_groups),
+            "selection_policy_version": self.selection_policy_version,
+        }
 
 
 class EvidenceBackedFact(ExactNewsModel):

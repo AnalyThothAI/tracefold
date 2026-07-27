@@ -27,6 +27,7 @@ export const lifecycleLabel = (value: NewsLifecycle | string): string => {
 
 export const analysisLabel = (status: string): string => {
   if (status === "available") return "AI 分析可用";
+  if (status === "reused") return "复用已验证 AI 分析";
   if (status === "pending" || status === "claimed") return "AI 分析处理中";
   if (status === "failed") return "AI 分析失败";
   if (status === "insufficient") return "证据不足";

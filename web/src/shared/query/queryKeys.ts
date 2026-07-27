@@ -28,14 +28,24 @@ export const queryKeys = {
     q,
     source,
     evidencePosture,
+    view,
   }: {
     cursor?: string | null;
     limit: number;
     q?: string | null;
     source?: string | null;
     evidencePosture?: string | null;
+    view: "latest" | "priority";
   }) =>
-    ["news-stories", limit, cursor ?? "", evidencePosture ?? "", source ?? "", q ?? ""] as const,
+    [
+      "news-stories",
+      view,
+      limit,
+      cursor ?? "",
+      evidencePosture ?? "",
+      source ?? "",
+      q ?? "",
+    ] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
   newsBrief: () => ["news-brief"] as const,
   newsBriefHistory: () => ["news-brief-history"] as const,

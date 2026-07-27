@@ -2,6 +2,7 @@ import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
+  NEWS_NOW_MS,
   newsBriefPublicationFixture,
   newsGlobalBriefFixture,
   newsStoryDetailFixture,
@@ -19,7 +20,7 @@ describe("NewsPage", () => {
       http.get(/.*\/api\/news\/stories$/, () =>
         HttpResponse.json({
           ok: true,
-          data: { items: [newsStoryFixture()], next_cursor: null },
+          data: { items: [newsStoryFixture()], next_cursor: null, view: "latest" },
         }),
       ),
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
@@ -53,7 +54,7 @@ describe("NewsPage", () => {
     expect(screen.getByText("Reuters World")).toBeInTheDocument();
   });
 
-  it("requests only search, source, and evidence-posture filters", async () => {
+  it("keeps the latest or priority view in the URL and server query", async () => {
     const requests: Array<Record<string, string | null>> = [];
     server.use(
       http.get(/.*\/api\/news\/stories$/, ({ request }) => {
@@ -62,10 +63,15 @@ describe("NewsPage", () => {
           evidence_posture: params.get("evidence_posture"),
           q: params.get("q"),
           source: params.get("source"),
+          view: params.get("view"),
         });
         return HttpResponse.json({
           ok: true,
-          data: { items: [newsStoryFixture()], next_cursor: null },
+          data: {
+            items: [newsStoryFixture()],
+            next_cursor: null,
+            view: params.get("view") === "priority" ? "priority" : "latest",
+          },
         });
       }),
     );
@@ -73,6 +79,7 @@ describe("NewsPage", () => {
     await screen.findByText("Central banks respond to a new global policy shock");
 
     fireEvent.click(screen.getByRole("button", { name: "独立多源佐证" }));
+    fireEvent.click(screen.getByRole("button", { name: "当前优先级" }));
     fireEvent.change(screen.getByLabelText("Search stories"), { target: { value: "rates" } });
     fireEvent.change(screen.getByLabelText("Filter by source"), {
       target: { value: "Reuters" },
@@ -84,10 +91,12 @@ describe("NewsPage", () => {
           (request) =>
             request.q === "rates" &&
             request.source === "Reuters" &&
-            request.evidence_posture === "independently_corroborated",
+            request.evidence_posture === "independently_corroborated" &&
+            request.view === "priority",
         ),
       ).toBe(true),
     );
+    expect(screen.getByTestId("location")).toHaveTextContent("view=priority");
   });
 
   it("opens the Story detail route", async () => {
@@ -154,25 +163,37 @@ describe("NewsPage", () => {
   });
 
   it("falls back to frozen deterministic selection without synthesized prose", async () => {
+    const current = newsGlobalBriefFixture();
+    const active = current.active_selection;
+    if (!active) throw new Error("active selection fixture required");
     server.use(
       http.get(/.*\/api\/news\/brief$/, () =>
         HttpResponse.json({
           ok: true,
-          data: {
-            current: null,
-            fallback: {
-              cutoff_at_ms: 1_779_000_000_000,
-              decisions: [],
+          data: newsGlobalBriefFixture({
+            active_selection: {
+              ...active,
               evidence_bundle: {
-                stories: [{ story_id: "story-global-policy", title: "Frozen selection title" }],
+                ...active.evidence_bundle,
+                stories: [
+                  {
+                    story_id: "story-global-policy",
+                    title: "Frozen selection title",
+                  },
+                ],
               },
-              selected_story_ids: ["story-global-policy"],
-              selection_fingerprint: "selection-fingerprint",
-              selection_snapshot_id: "selection-snapshot",
-              status: "selected",
             },
-            latest_failure: { error_code: "provider_unavailable" },
-          },
+            analysis: null,
+            analysis_status: "failed",
+            latest_failure: {
+              activation_id: active.activation_id,
+              attempt_count: 1,
+              last_error: "provider_unavailable",
+              requested_at_ms: 1_779_000_000_000,
+              updated_at_ms: 1_779_000_001_000,
+              validation_errors: [],
+            },
+          }),
         }),
       ),
       http.get(/.*\/api\/news\/brief\/history$/, () =>
@@ -181,16 +202,70 @@ describe("NewsPage", () => {
     );
     renderNews(<NewsPage brief token="test-token" />, "/news/brief");
 
-    expect(await screen.findByText("确定性 Brief 选材")).toBeInTheDocument();
+    expect(await screen.findByText("Global Brief 当前确定性选材")).toBeInTheDocument();
     expect(screen.getByText("Frozen selection title")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("最近一次生成失败");
+    expect(
+      screen.getAllByRole("status").some((node) => node.textContent?.includes("最近一次生成失败")),
+    ).toBe(true);
     expect(screen.queryByText("全球政策冲击正在跨市场传导")).not.toBeInTheDocument();
+  });
+
+  it("separates cached analysis provenance, pending selection, and prior history", async () => {
+    const current = newsGlobalBriefFixture();
+    const active = current.active_selection;
+    const analysis = current.analysis;
+    if (!active || !analysis) throw new Error("complete brief fixture required");
+    server.use(
+      http.get(/.*\/api\/news\/brief$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsGlobalBriefFixture({
+            analysis: {
+              ...analysis,
+              attachment_kind: "reused",
+              published_at_ms: NEWS_NOW_MS - 300_000,
+            },
+            analysis_status: "reused",
+            pending_proposal: {
+              activation_due_at_ms: NEWS_NOW_MS + 120_000,
+              first_proposed_at_ms: NEWS_NOW_MS,
+              lane: "ordinary",
+              last_observed_at_ms: NEWS_NOW_MS + 30_000,
+              proposal_id: "proposal-next",
+              selected_story_ids: ["story-next"],
+              selection_fingerprint: "selection-next-fingerprint",
+              selection_id: "selection-next",
+            },
+            previous_publication: {
+              ...analysis,
+              activation_id: "brief-activation-previous",
+              activation_sequence: 0,
+              payload: {
+                ...analysis.payload,
+                executive_summary: "这是明确标记为历史参考的上一份分析。",
+              },
+              publication_id: "brief-publication-previous",
+              published_at_ms: NEWS_NOW_MS - 600_000,
+            },
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/news\/brief\/history$/, () =>
+        HttpResponse.json({ ok: true, data: { items: [] } }),
+      ),
+    );
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+
+    expect(await screen.findByText(/复用完全相同输入的历史分析/)).toBeInTheDocument();
+    expect(screen.getByText(/新选材正在稳定观察/)).toBeInTheDocument();
+    expect(screen.getByText("上一份历史分析")).toBeInTheDocument();
+    expect(screen.getByText("这是明确标记为历史参考的上一份分析。")).toBeInTheDocument();
   });
 
   it("renders explicit empty and request-error states", async () => {
     server.use(
       http.get(/.*\/api\/news\/stories$/, () =>
-        HttpResponse.json({ ok: true, data: { items: [], next_cursor: null } }),
+        HttpResponse.json({ ok: true, data: { items: [], next_cursor: null, view: "latest" } }),
       ),
     );
     const empty = renderNews(<NewsPage token="test-token" />);

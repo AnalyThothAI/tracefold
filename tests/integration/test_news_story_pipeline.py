@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tests.postgres_test_utils import connect_postgres_test, repository_session_for_connection
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.news import (
@@ -182,6 +184,7 @@ def test_professional_news_pipeline_admits_facts_then_projects_event_stories(tmp
             repository.list_story_rows(
                 limit=10,
                 cursor=None,
+                view="latest",
                 q=None,
                 evidence_posture=None,
                 source=None,
@@ -347,9 +350,244 @@ def test_brief_planning_is_deterministic_and_does_not_call_ai_for_same_fingerpri
         assert second["changed"] is False
         assert first["selection_fingerprint"] == second["selection_fingerprint"]
         brief = NewsInterface(repository).get_global_brief()
-        assert brief["current"] is None
-        assert brief["fallback"]["status"] == "publishable"
-        assert len(brief["fallback"]["evidence_bundle"]["stories"]) == 1
+        assert brief["active_selection"] is not None
+        assert brief["analysis"] is None
+        assert brief["analysis_status"] == "pending"
+        assert len(brief["active_selection"]["evidence_bundle"]["stories"]) == 1
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_brief_reactivates_recurring_selection_after_an_intervening_activation(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        first_source = source(
+            "first-official",
+            "First Official",
+            "first.example",
+            "first",
+            role="official_authority",
+        )
+        second_source = source(
+            "second-official",
+            "Second Official",
+            "second.example",
+            "second",
+            role="official_authority",
+        )
+        repository.sync_sources((first_source, second_source), now_ms=NOW_MS)
+        repository.record_fetch_success(
+            source=first_source,
+            entries=(
+                entry(
+                    "first-decision",
+                    "https://first.example/policy/decision",
+                    "Central bank implements emergency rate reduction",
+                    summary="The central bank implemented an emergency reduction in its policy rate.",
+                ),
+            ),
+            started_at_ms=NOW_MS,
+            finished_at_ms=NOW_MS,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.project_pending_revisions(now_ms=NOW_MS + 1_000, limit=100)
+        conn.execute("UPDATE news_stories SET brief_eligible = true, impact_score = 95, priority_score = 95")
+
+        first_plan = repository.plan_global_brief(
+            now_ms=NOW_MS + 2_000,
+            candidate_limit=100,
+            debounce_ms=0,
+            critical_debounce_ms=0,
+        )
+        first_active = NewsInterface(repository).get_global_brief()["active_selection"]
+        assert first_active is not None
+        assert first_active["selection_fingerprint"] == first_plan["selection_fingerprint"]
+        assert len(first_active["selected_story_ids"]) == 1
+
+        repository.record_fetch_success(
+            source=second_source,
+            entries=(
+                entry(
+                    "second-decision",
+                    "https://second.example/trade/decision",
+                    "Government implements emergency semiconductor export controls",
+                    summary="The government implemented new semiconductor export controls.",
+                    published_at_ms=NOW_MS + 2_000,
+                ),
+            ),
+            started_at_ms=NOW_MS + 3_000,
+            finished_at_ms=NOW_MS + 3_000,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.project_pending_revisions(now_ms=NOW_MS + 4_000, limit=100)
+        conn.execute("UPDATE news_stories SET brief_eligible = true, impact_score = 95, priority_score = 95")
+        second_plan = repository.plan_global_brief(
+            now_ms=NOW_MS + 5_000,
+            candidate_limit=100,
+            debounce_ms=0,
+            critical_debounce_ms=0,
+        )
+        second_active = NewsInterface(repository).get_global_brief()["active_selection"]
+        assert second_active is not None
+        assert second_active["selection_fingerprint"] == second_plan["selection_fingerprint"]
+        assert len(second_active["selected_story_ids"]) == 2
+
+        second_story_id = conn.execute(
+            """
+            SELECT story_id
+              FROM news_stories
+             WHERE title = 'Government implements emergency semiconductor export controls'
+            """
+        ).fetchone()["story_id"]
+        conn.execute(
+            "UPDATE news_stories SET brief_eligible = false WHERE story_id = %s",
+            (second_story_id,),
+        )
+        recurring_plan = repository.plan_global_brief(
+            now_ms=NOW_MS + 6_000,
+            candidate_limit=100,
+            debounce_ms=0,
+            critical_debounce_ms=0,
+        )
+        recurring_active = NewsInterface(repository).get_global_brief()["active_selection"]
+
+        assert recurring_active is not None
+        assert recurring_plan["selection_fingerprint"] == first_plan["selection_fingerprint"]
+        assert recurring_active["selection_fingerprint"] == first_active["selection_fingerprint"]
+        assert recurring_active["activation_id"] != first_active["activation_id"]
+        assert len(recurring_active["selected_story_ids"]) == 1
+        assert NewsInterface(repository).get_global_brief()["analysis"] is None
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_story_identity_merges_exact_titles_when_summaries_have_weak_core_overlap(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        first_source = source("wire-a", "Wire A", "wire-a.example", "wire-a")
+        second_source = source("wire-b", "Wire B", "wire-b.example", "wire-b")
+        repository.sync_sources((first_source, second_source), now_ms=NOW_MS)
+        title = "What we know so far about the Berlin Pride ramming attack"
+        repository.record_fetch_success(
+            source=first_source,
+            entries=(
+                entry(
+                    "wire-a-berlin",
+                    "https://wire-a.example/berlin-pride",
+                    title,
+                    summary="Police published the initial casualty count.",
+                ),
+            ),
+            started_at_ms=NOW_MS,
+            finished_at_ms=NOW_MS,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.record_fetch_success(
+            source=second_source,
+            entries=(
+                entry(
+                    "wire-b-berlin",
+                    "https://wire-b.example/berlin-pride",
+                    title,
+                    summary="Witnesses described the vehicle and the festival response.",
+                ),
+            ),
+            started_at_ms=NOW_MS + 1_000,
+            finished_at_ms=NOW_MS + 1_000,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+
+        repository.project_pending_revisions(now_ms=NOW_MS + 2_000, limit=100)
+
+        stories = NewsInterface(repository).list_stories(limit=10)["items"]
+        assert len(stories) == 1
+        assert stories[0]["primary_member_count"] == 2
+        assert stories[0]["independent_origin_count"] == 2
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_story_feed_exposes_latest_and_priority_views_with_view_bound_cursors(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        source_row = source("wire", "Wire", "wire.example", "wire")
+        repository.sync_sources((source_row,), now_ms=NOW_MS)
+        repository.record_fetch_success(
+            source=source_row,
+            entries=(
+                entry(
+                    "older-high-priority",
+                    "https://wire.example/older-high-priority",
+                    "Government launches systemic bank rescue",
+                    published_at_ms=NOW_MS - 60_000,
+                ),
+            ),
+            started_at_ms=NOW_MS,
+            finished_at_ms=NOW_MS,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.record_fetch_success(
+            source=source_row,
+            entries=(
+                entry(
+                    "newer-low-priority",
+                    "https://wire.example/newer-low-priority",
+                    "Minister schedules routine bilateral meeting",
+                    published_at_ms=NOW_MS + 1_000,
+                ),
+            ),
+            started_at_ms=NOW_MS + 2_000,
+            finished_at_ms=NOW_MS + 2_000,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.project_pending_revisions(now_ms=NOW_MS + 3_000, limit=100)
+        conn.execute(
+            """
+            UPDATE news_stories
+               SET priority_score = CASE
+                 WHEN title = 'Government launches systemic bank rescue' THEN 99
+                 ELSE 10
+               END
+            """
+        )
+        interface = NewsInterface(repository)
+
+        latest = interface.list_stories(limit=1, view="latest")
+        priority = interface.list_stories(limit=1, view="priority")
+
+        assert latest["items"][0]["title"] == "Minister schedules routine bilateral meeting"
+        assert priority["items"][0]["title"] == "Government launches systemic bank rescue"
+        assert latest["next_cursor"]
+        assert priority["next_cursor"]
+        with pytest.raises(ValueError, match="news_story_cursor_view_mismatch"):
+            interface.list_stories(limit=1, view="priority", cursor=latest["next_cursor"])
         conn.commit()
     finally:
         conn.close()
@@ -624,6 +862,83 @@ def test_story_rebuild_replays_the_same_runtime_seam_across_batch_sizes(tmp_path
         rebuilt = projection_snapshot(conn)
         assert rebuilt == live
         conn.commit()
+    finally:
+        conn.close()
+
+
+def test_story_projection_restart_retry_and_rollback_are_byte_equivalent(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        reuters = source("restart-reuters", "Reuters", "reuters.example", "reuters")
+        ap = source("restart-ap", "Associated Press", "ap.example", "ap")
+        repository.sync_sources((reuters, ap), now_ms=NOW_MS)
+        repository.record_fetch_success(
+            source=reuters,
+            entries=(
+                entry(
+                    "restart-r1",
+                    "https://reuters.example/restart/fed-cut",
+                    "Federal Reserve cuts interest rates by 25 basis points",
+                ),
+            ),
+            started_at_ms=NOW_MS,
+            finished_at_ms=NOW_MS,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.record_fetch_success(
+            source=ap,
+            entries=(
+                entry(
+                    "restart-a1",
+                    "https://ap.example/restart/fed-cut",
+                    "Federal Reserve lowers rates by 25 basis points",
+                ),
+            ),
+            started_at_ms=NOW_MS + 100,
+            finished_at_ms=NOW_MS + 100,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        conn.commit()
+
+        with (
+            pytest.raises(RuntimeError, match="simulated_projector_crash"),
+            conn.transaction(),
+        ):
+            first_attempt = repository.project_pending_revisions(
+                now_ms=NOW_MS + 1_000,
+                limit=100,
+            )
+            before_crash = projection_snapshot(conn)
+            assert first_attempt["processed"] == 2
+            raise RuntimeError("simulated_projector_crash")
+
+        restarted = NewsRepository(conn)
+        with conn.transaction():
+            replay = restarted.project_pending_revisions(
+                now_ms=NOW_MS + 1_000,
+                limit=100,
+            )
+            after_restart = projection_snapshot(conn)
+        assert replay == first_attempt
+        assert after_restart == before_crash
+
+        with conn.transaction():
+            retry = NewsRepository(conn).project_pending_revisions(
+                now_ms=NOW_MS + 1_000,
+                limit=100,
+            )
+        assert retry["processed"] == 0
+        assert projection_snapshot(conn) == after_restart
     finally:
         conn.close()
 

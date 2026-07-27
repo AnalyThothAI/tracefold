@@ -65,6 +65,66 @@ Select commands by risk:
 universal completion mandate. Run only the additional lanes that cross the
 changed seam and report omitted evidence honestly.
 
+### News Story Identity v2 frozen evaluation
+
+`news_story_identity_v2_proof_ladder` is released against the actual
+`NewsRepository` → PostgreSQL → `NewsInterface` seam, not a second clustering
+implementation. The primary fixture
+`tests/fixtures/news_story_identity_golden.json` has 35 isolated cases and 70
+reports: 19 same-event positive pairs, 16 hard-negative pairs, and 22 cases
+adjudicated from the 2026-07-27 production ambiguity audit. It covers exact
+title, truncation, containment, paraphrase, cross-language reports, compatible
+numeric revisions, syndication, stage, temporal episode, named event,
+actor-direction, identity number, roundup, reaction, and distinct action. A
+secondary WorldMonitor-reference fixture adds 13 positive and 10 negative
+pairs through the same seam.
+
+The read-only pre-cut production snapshot was Alembic `20260726_0198`, 581
+Articles, 564 Stories, and 226 `ambiguous_new_story` decisions. Expanding the
+old fixture first produced candidate recall `1.0` but five false merges and five
+false splits: pairwise precision/recall `0.736842`, B-cubed
+precision/recall/purity `0.928571`. The false merges came from treating
+correlated sparse anchors as independent event proof; false splits exposed
+missing or under-normalized event actions and objects.
+
+The correction keeps the admission threshold fixed and instead:
+
+1. requires an action plus an independent event object, named event, temporal
+   episode, identity quantity, stage, or actor/target discriminator for
+   deterministic event-key proof;
+2. retains hard-conflict vetoes ahead of exact-title and containment proof;
+3. adds bounded production-derived aliases for event-defining actions,
+   institutions, objects, locations, and actor direction;
+4. treats earthquake magnitude as identity-defining;
+5. preserves runner-up ambiguity rather than forcing a merge.
+
+| Metric | Frozen result | Release floor |
+|---|---:|---:|
+| Candidate recall | 1.000 | ≥0.97 |
+| Pairwise precision | 1.000 | ≥0.995 |
+| Pairwise recall | 1.000 | ≥0.95 |
+| B-cubed precision | 1.000 | ≥0.995 |
+| B-cubed recall | 1.000 | ≥0.95 |
+| Cluster purity | 1.000 | ≥0.995 |
+| Hard-negative false merges | 0 | 0 |
+| False splits | 0 | ≤1% of positive pairs |
+
+The frozen distribution is 32 singleton clusters and 19 two-report clusters;
+all 23 WorldMonitor-reference pairs pass. Reproduce with:
+
+```bash
+GMGN_TEST_POSTGRES_DSN=<isolated-test-dsn> \
+  uv run pytest -q tests/integration/test_news_story_evaluation.py
+```
+
+This labeled pair corpus is necessary but not complete ground truth and does
+not exhaust multi-member transitive shapes. Production cutover must therefore
+also prove a verified backup receipt, material-fact preservation, sequential
+Identity-v2 rebuild, zero backlog and hard-conflict violations, post-rebuild
+distribution/candidate audit, both Story views, Active Brief hash closure,
+Chinese provider or exact-cache provenance, and all five News health layers.
+The pre-cut 0198 Stories are not considered corrected.
+
 ## Generated contracts
 
 `docs/generated/` contains only reproducible outputs:

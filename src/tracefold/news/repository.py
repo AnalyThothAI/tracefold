@@ -41,6 +41,7 @@ from tracefold.news.models import (
 )
 
 _PROJECTOR_LOCK_KEY = 727_301_982
+_BRIEF_PLANNER_LOCK_KEY = 727_301_983
 
 
 class NewsRepository:
@@ -881,13 +882,17 @@ class NewsRepository:
         """Delete rebuildable News products while preserving material facts."""
 
         ordered_tables = (
-            "news_brief_current",
+            "news_brief_activation_analysis",
+            "news_brief_active",
+            "news_brief_activations",
+            "news_brief_proposals",
             "news_story_analysis_current",
             "news_brief_publications",
             "news_story_analysis_publications",
+            "news_ai_current_targets",
             "news_ai_attempts",
             "news_story_analysis_requests",
-            "news_brief_selection_snapshots",
+            "news_brief_selections",
             "news_narrative_grouping_snapshots",
             "news_story_material_events",
             "news_story_identity_decisions",
@@ -1151,7 +1156,10 @@ class NewsRepository:
                 story_id=story_id,
                 revision_id=str(row["revision_id"]),
                 event_kind="first_report",
-                factors={"identity_verdict": decision.verdict},
+                factors={
+                    "identity_verdict": decision.verdict,
+                    "material_evidence_hash": projection.material_evidence_hash,
+                },
                 occurred_at_ms=_int(row["observed_at_ms"]),
             )
             self._maybe_request_automatic_analysis(
@@ -1357,8 +1365,47 @@ class NewsRepository:
                  AND memberships.membership_kind = 'primary'
                WHERE candidate_features.identity_version = %s
                  AND candidate_features.content_fingerprint = %s
+                 AND revisions.observed_at_ms BETWEEN %s AND %s
                ORDER BY revisions.observed_at_ms DESC, candidate_features.revision_id
                LIMIT 50
+            ),
+            exact_title_candidates AS (
+              SELECT memberships.story_id, 'normalized_exact_title'::text AS channel
+                FROM news_article_identity_features AS candidate_features
+                JOIN news_article_revisions AS revisions
+                  ON revisions.revision_id = candidate_features.revision_id
+                JOIN news_story_memberships AS memberships
+                  ON memberships.revision_id = candidate_features.revision_id
+                 AND memberships.membership_kind = 'primary'
+               WHERE candidate_features.identity_version = %s
+                 AND candidate_features.language = %s
+                 AND candidate_features.normalized_title = %s
+                 AND candidate_features.normalized_title <> ''
+                 AND revisions.observed_at_ms BETWEEN %s AND %s
+               ORDER BY revisions.observed_at_ms DESC, candidate_features.revision_id
+               LIMIT 100
+            ),
+            title_containment_candidates AS (
+              SELECT memberships.story_id, 'title_containment'::text AS channel
+                FROM news_article_identity_features AS candidate_features
+                JOIN news_article_revisions AS revisions
+                  ON revisions.revision_id = candidate_features.revision_id
+                JOIN news_story_memberships AS memberships
+                  ON memberships.revision_id = candidate_features.revision_id
+                 AND memberships.membership_kind = 'primary'
+               WHERE candidate_features.identity_version = %s
+                 AND candidate_features.language = %s
+                 AND least(
+                       length(candidate_features.normalized_title),
+                       length(%s)
+                     ) >= 20
+                 AND (
+                   candidate_features.normalized_title LIKE '%%' || %s || '%%'
+                   OR %s LIKE '%%' || candidate_features.normalized_title || '%%'
+                 )
+                 AND revisions.observed_at_ms BETWEEN %s AND %s
+               ORDER BY revisions.observed_at_ms DESC, candidate_features.revision_id
+               LIMIT 100
             ),
             event_candidates AS (
               SELECT memberships.story_id, 'event_anchor'::text AS channel
@@ -1410,6 +1457,10 @@ class NewsRepository:
             combined AS (
               SELECT * FROM content_candidates
               UNION ALL
+              SELECT * FROM exact_title_candidates
+              UNION ALL
+              SELECT * FROM title_containment_candidates
+              UNION ALL
               SELECT * FROM event_candidates
               UNION ALL
               SELECT * FROM lexical_candidates
@@ -1425,6 +1476,20 @@ class NewsRepository:
             (
                 ARTICLE_IDENTITY_VERSION,
                 features.content_fingerprint,
+                observed_at_ms - ANCHORED_CANDIDATE_WINDOW_MS,
+                observed_at_ms + ANCHORED_CANDIDATE_WINDOW_MS,
+                ARTICLE_IDENTITY_VERSION,
+                features.language,
+                features.normalized_title,
+                observed_at_ms - LEXICAL_CANDIDATE_WINDOW_MS,
+                observed_at_ms + LEXICAL_CANDIDATE_WINDOW_MS,
+                ARTICLE_IDENTITY_VERSION,
+                features.language,
+                features.normalized_title,
+                features.normalized_title,
+                features.normalized_title,
+                observed_at_ms - LEXICAL_CANDIDATE_WINDOW_MS,
+                observed_at_ms + LEXICAL_CANDIDATE_WINDOW_MS,
                 ARTICLE_IDENTITY_VERSION,
                 features.event_key,
                 observed_at_ms - ANCHORED_CANDIDATE_WINDOW_MS,
@@ -2227,7 +2292,8 @@ class NewsRepository:
         self,
         *,
         limit: int,
-        cursor: tuple[int, int, str] | None,
+        cursor: tuple[int, int, str] | tuple[int, str] | None,
+        view: str,
         q: str | None,
         evidence_posture: str | None,
         source: str | None,
@@ -2235,9 +2301,12 @@ class NewsRepository:
         where = ["true"]
         params: list[object] = []
         if cursor is not None:
-            where.append(
-                "(stories.priority_score, stories.last_material_evidence_at_ms, stories.story_id) < (%s, %s, %s)"
-            )
+            if view == "latest":
+                where.append("(stories.last_material_evidence_at_ms, stories.story_id) < (%s, %s)")
+            else:
+                where.append(
+                    "(stories.priority_score, stories.last_material_evidence_at_ms, stories.story_id) < (%s, %s, %s)"
+                )
             params.extend(cursor)
         if q:
             where.append(
@@ -2284,6 +2353,11 @@ class NewsRepository:
             )
             params.extend((source, f"%{source}%", f"%{source}%"))
         params.append(limit)
+        order_by = (
+            "stories.last_material_evidence_at_ms DESC, stories.story_id DESC"
+            if view == "latest"
+            else ("stories.priority_score DESC, stories.last_material_evidence_at_ms DESC, stories.story_id DESC")
+        )
         rows = self.conn.execute(
             f"""
             SELECT
@@ -2324,10 +2398,7 @@ class NewsRepository:
               LIMIT 1
             ) AS current_analysis ON true
             WHERE {" AND ".join(where)}
-            ORDER BY
-              stories.priority_score DESC,
-              stories.last_material_evidence_at_ms DESC,
-              stories.story_id DESC
+            ORDER BY {order_by}
             LIMIT %s
             """,
             tuple(params),
@@ -2378,17 +2449,23 @@ class NewsRepository:
             for row in self.conn.execute(
                 """
                 SELECT
-                  selections.selection_snapshot_id,
+                  selections.selection_id,
                   selections.selection_fingerprint,
                   selections.policy_version,
-                  selections.cutoff_at_ms,
-                  selections.status,
+                  selections.evidence_cutoff_at_ms,
                   selections.critical,
+                  selections.verified_critical,
+                  activations.activation_id,
+                  activations.activated_at_ms,
                   decision.value AS decision
-                FROM news_brief_selection_snapshots AS selections
+                FROM news_brief_selections AS selections
                 CROSS JOIN LATERAL jsonb_array_elements(selections.decisions) AS decision(value)
+                LEFT JOIN news_brief_activations AS activations
+                  ON activations.selection_id = selections.selection_id
                 WHERE decision.value ->> 'story_id' = %s
-                ORDER BY selections.cutoff_at_ms DESC, selections.selection_snapshot_id DESC
+                ORDER BY activations.activation_sequence DESC NULLS LAST,
+                         selections.created_at_ms DESC,
+                         selections.selection_id DESC
                 LIMIT 50
                 """,
                 (story_id,),
@@ -2531,6 +2608,545 @@ class NewsRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
+        """Measure News business invariants independently from worker heartbeat."""
+
+        source_reasons: list[dict[str, Any]] = []
+        source_rows = self.conn.execute(
+            """
+            SELECT source_id, refresh_interval_seconds, next_fetch_at_ms,
+                   consecutive_failures, last_success_at_ms
+              FROM news_sources
+             WHERE enabled
+             ORDER BY source_id
+            """
+        ).fetchall()
+        for row in source_rows:
+            interval_ms = int(row["refresh_interval_seconds"]) * 1_000
+            overdue_ms = max(0, now_ms - int(row["next_fetch_at_ms"]))
+            overdue_cycles = overdue_ms / interval_ms if interval_ms else 0.0
+            if overdue_cycles >= 5:
+                source_reasons.append(
+                    _health_reason(
+                        code="source_fetch_overdue",
+                        status="failed",
+                        measured_ms=overdue_ms,
+                        threshold_ms=interval_ms * 5,
+                        source_id=str(row["source_id"]),
+                    )
+                )
+            elif overdue_cycles >= 2:
+                source_reasons.append(
+                    _health_reason(
+                        code="source_fetch_overdue",
+                        status="degraded",
+                        measured_ms=overdue_ms,
+                        threshold_ms=interval_ms * 2,
+                        source_id=str(row["source_id"]),
+                    )
+                )
+            if int(row["consecutive_failures"]) >= 5:
+                source_reasons.append(
+                    _health_reason(
+                        code="source_consecutive_failures",
+                        status="failed",
+                        measured=int(row["consecutive_failures"]),
+                        threshold=5,
+                        source_id=str(row["source_id"]),
+                    )
+                )
+            elif int(row["consecutive_failures"]) >= 2:
+                source_reasons.append(
+                    _health_reason(
+                        code="source_consecutive_failures",
+                        status="degraded",
+                        measured=int(row["consecutive_failures"]),
+                        threshold=2,
+                        source_id=str(row["source_id"]),
+                    )
+                )
+
+        material_reasons: list[dict[str, Any]] = []
+        orphan_count = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM news_feed_observations AS observations
+                  LEFT JOIN news_article_revisions AS revisions
+                    ON revisions.observation_id = observations.observation_id
+                 WHERE revisions.revision_id IS NULL
+                """
+            ).fetchone()["count"]
+        )
+        if orphan_count:
+            material_reasons.append(
+                _health_reason(
+                    code="observation_revision_orphan",
+                    status="degraded",
+                    measured=orphan_count,
+                    threshold=0,
+                )
+            )
+        current_revision_violations = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM (
+                    SELECT articles.article_id
+                      FROM news_articles AS articles
+                      LEFT JOIN news_article_revisions AS revisions
+                        ON revisions.article_id = articles.article_id
+                       AND revisions.is_current
+                     GROUP BY articles.article_id
+                    HAVING count(revisions.revision_id) <> 1
+                  ) AS violations
+                """
+            ).fetchone()["count"]
+        )
+        if current_revision_violations:
+            material_reasons.append(
+                _health_reason(
+                    code="article_current_revision_invariant",
+                    status="failed",
+                    measured=current_revision_violations,
+                    threshold=0,
+                )
+            )
+        unprojected = self.conn.execute(
+            """
+            SELECT count(*) AS count, min(revisions.observed_at_ms) AS oldest_at_ms
+              FROM news_article_revisions AS revisions
+              LEFT JOIN news_article_identity_features AS features
+                ON features.revision_id = revisions.revision_id
+               AND features.identity_version = %s
+             WHERE features.revision_id IS NULL
+            """,
+            (ARTICLE_IDENTITY_VERSION,),
+        ).fetchone()
+        projection_backlog = int(unprojected["count"])
+        projection_lag_ms = (
+            max(0, now_ms - int(unprojected["oldest_at_ms"])) if unprojected["oldest_at_ms"] is not None else 0
+        )
+        if projection_lag_ms > 120_000:
+            material_reasons.append(
+                _health_reason(
+                    code="story_projection_lag",
+                    status="failed",
+                    measured_ms=projection_lag_ms,
+                    threshold_ms=120_000,
+                    backlog=projection_backlog,
+                )
+            )
+        elif projection_lag_ms > 30_000:
+            material_reasons.append(
+                _health_reason(
+                    code="story_projection_lag",
+                    status="degraded",
+                    measured_ms=projection_lag_ms,
+                    threshold_ms=30_000,
+                    backlog=projection_backlog,
+                )
+            )
+        membership_violations = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM (
+                    SELECT features.article_id
+                      FROM news_article_identity_features AS features
+                      LEFT JOIN news_story_memberships AS memberships
+                        ON memberships.article_id = features.article_id
+                       AND memberships.membership_kind = 'primary'
+                     WHERE features.identity_version = %s
+                     GROUP BY features.article_id
+                    HAVING count(memberships.story_id) <> 1
+                  ) AS violations
+                """,
+                (ARTICLE_IDENTITY_VERSION,),
+            ).fetchone()["count"]
+        )
+        if membership_violations:
+            material_reasons.append(
+                _health_reason(
+                    code="primary_membership_invariant",
+                    status="failed",
+                    measured=membership_violations,
+                    threshold=0,
+                )
+            )
+        story_counter_violations = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM (
+                    SELECT stories.story_id
+                      FROM news_stories AS stories
+                      LEFT JOIN news_story_memberships AS memberships
+                        ON memberships.story_id = stories.story_id
+                     GROUP BY stories.story_id, stories.article_count,
+                              stories.primary_member_count,
+                              stories.contextual_member_count
+                    HAVING stories.article_count <> count(DISTINCT memberships.article_id)
+                       OR stories.primary_member_count
+                          <> count(*) FILTER (
+                               WHERE memberships.membership_kind = 'primary'
+                             )
+                       OR stories.contextual_member_count
+                          <> count(*) FILTER (
+                               WHERE memberships.membership_kind = 'contextual'
+                             )
+                  ) AS violations
+                """
+            ).fetchone()["count"]
+        )
+        if story_counter_violations:
+            material_reasons.append(
+                _health_reason(
+                    code="story_counter_invariant",
+                    status="failed",
+                    measured=story_counter_violations,
+                    threshold=0,
+                )
+            )
+        story_material_hash_violations = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM news_stories AS stories
+                  LEFT JOIN LATERAL (
+                    SELECT events.event_factors
+                      FROM news_story_material_events AS events
+                     WHERE events.story_id = stories.story_id
+                     ORDER BY events.occurred_at_ms DESC,
+                              events.material_event_id DESC
+                     LIMIT 1
+                  ) AS latest_event ON true
+                 WHERE latest_event.event_factors IS NULL
+                    OR COALESCE(
+                         latest_event.event_factors->>'material_evidence_hash',
+                         ''
+                       ) <> stories.material_evidence_hash
+                """
+            ).fetchone()["count"]
+        )
+        if story_material_hash_violations:
+            material_reasons.append(
+                _health_reason(
+                    code="story_material_hash_closure",
+                    status="failed",
+                    measured=story_material_hash_violations,
+                    threshold=0,
+                )
+            )
+        story_projection_closure_violations = int(
+            self.conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM news_stories AS stories
+                  LEFT JOIN news_story_profiles AS profiles
+                    ON profiles.story_id = stories.story_id
+                   AND profiles.identity_version = stories.identity_version
+                  LEFT JOIN news_story_memberships AS representative
+                    ON representative.story_id = stories.story_id
+                   AND representative.revision_id = stories.representative_revision_id
+                   AND representative.membership_kind = 'primary'
+                 WHERE profiles.story_id IS NULL
+                    OR representative.story_id IS NULL
+                """
+            ).fetchone()["count"]
+        )
+        if story_projection_closure_violations:
+            material_reasons.append(
+                _health_reason(
+                    code="story_projection_closure",
+                    status="failed",
+                    measured=story_projection_closure_violations,
+                    threshold=0,
+                )
+            )
+
+        brief_reasons: list[dict[str, Any]] = []
+        matured = self.conn.execute(
+            """
+            SELECT proposal_id, lane, first_proposed_at_ms, activation_due_at_ms
+              FROM news_brief_proposals
+             WHERE status = 'pending' AND activation_due_at_ms <= %s
+             ORDER BY activation_due_at_ms, proposal_id
+             LIMIT 1
+            """,
+            (now_ms,),
+        ).fetchone()
+        if matured is not None:
+            mismatch_ms = max(0, now_ms - int(matured["activation_due_at_ms"]))
+            proposal_age_ms = max(0, now_ms - int(matured["first_proposed_at_ms"]))
+            brief_reasons.append(
+                _health_reason(
+                    code="planner_active_mismatch",
+                    status="failed" if mismatch_ms > 60_000 else "degraded",
+                    measured_ms=mismatch_ms,
+                    threshold_ms=60_000 if mismatch_ms > 60_000 else 0,
+                    proposal_id=str(matured["proposal_id"]),
+                    lane=str(matured["lane"]),
+                    proposal_age_ms=proposal_age_ms,
+                )
+            )
+            proposal_slo_ms = {
+                "ordinary": (180_000, 300_000),
+                "verified_critical": (60_000, 120_000),
+                "rectification": (45_000, 90_000),
+            }
+            degraded_after_ms, failed_after_ms = proposal_slo_ms[str(matured["lane"])]
+            if proposal_age_ms > failed_after_ms:
+                brief_reasons.append(
+                    _health_reason(
+                        code="proposal_activation_lag",
+                        status="failed",
+                        measured_ms=proposal_age_ms,
+                        threshold_ms=failed_after_ms,
+                        proposal_id=str(matured["proposal_id"]),
+                        lane=str(matured["lane"]),
+                    )
+                )
+            elif proposal_age_ms > degraded_after_ms:
+                brief_reasons.append(
+                    _health_reason(
+                        code="proposal_activation_lag",
+                        status="degraded",
+                        measured_ms=proposal_age_ms,
+                        threshold_ms=degraded_after_ms,
+                        proposal_id=str(matured["proposal_id"]),
+                        lane=str(matured["lane"]),
+                    )
+                )
+        publication_mismatch = self.conn.execute(
+            """
+            SELECT activations.activation_id
+              FROM news_brief_active AS active_rows
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = active_rows.activation_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
+              JOIN news_brief_activation_analysis AS attached
+                ON attached.activation_id = activations.activation_id
+              JOIN news_brief_publications AS publications
+                ON publications.publication_id = attached.publication_id
+             WHERE active_rows.singleton_key
+               AND attached.superseded_at_ms IS NULL
+               AND (
+                 publications.selection_id <> activations.selection_id
+                 OR publications.synthesis_input_hash <> selections.synthesis_input_hash
+                 OR NOT EXISTS (
+                   SELECT 1
+                     FROM news_ai_current_targets AS current_targets
+                    WHERE current_targets.publication_kind = 'brief'
+                      AND current_targets.target_id = activations.activation_id
+                      AND current_targets.evidence_hash =
+                          publications.synthesis_input_hash
+                      AND current_targets.model = publications.model
+                      AND current_targets.prompt_version =
+                          publications.prompt_version
+                      AND current_targets.workflow_version =
+                          publications.workflow_version
+                      AND current_targets.schema_version =
+                          publications.schema_version
+                      AND current_targets.locale = publications.locale
+                 )
+               )
+             LIMIT 1
+            """
+        ).fetchone()
+        if publication_mismatch is not None:
+            brief_reasons.append(
+                _health_reason(
+                    code="active_publication_mismatch",
+                    status="failed",
+                    measured=1,
+                    threshold=0,
+                    activation_id=str(publication_mismatch["activation_id"]),
+                )
+            )
+
+        public_reasons: list[dict[str, Any]] = []
+        active_closure = self.conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM news_brief_active) AS active_rows,
+              (
+                SELECT count(*)
+                  FROM news_brief_active AS active_rows
+                  JOIN news_brief_activations AS activations
+                    ON activations.activation_id = active_rows.activation_id
+                  JOIN news_brief_selections AS selections
+                    ON selections.selection_id = activations.selection_id
+              ) AS closed_rows
+            """
+        ).fetchone()
+        if int(active_closure["active_rows"]) != int(active_closure["closed_rows"]):
+            public_reasons.append(
+                _health_reason(
+                    code="public_active_pointer_unclosed",
+                    status="failed",
+                    measured=int(active_closure["active_rows"]) - int(active_closure["closed_rows"]),
+                    threshold=0,
+                )
+            )
+        active_contract = self.conn.execute(
+            """
+            SELECT activations.activation_id, activations.selection_id,
+                   selections.selection_fingerprint,
+                   selections.synthesis_input_hash,
+                   selections.selected_story_ids,
+                   selections.evidence_bundle
+              FROM news_brief_active AS active_rows
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = active_rows.activation_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
+             WHERE active_rows.singleton_key
+            """
+        ).fetchone()
+        if active_contract is not None:
+            try:
+                active_bundle = BriefEvidenceBundle.model_validate(active_contract["evidence_bundle"])
+                active_mismatch = (
+                    active_bundle.selection_id != str(active_contract["selection_id"])
+                    or active_bundle.selection_fingerprint != str(active_contract["selection_fingerprint"])
+                    or active_bundle.synthesis_input_hash != str(active_contract["synthesis_input_hash"])
+                    or sha256_json(active_bundle.synthesis_input()) != str(active_contract["synthesis_input_hash"])
+                    or [str(story.get("story_id") or "") for story in active_bundle.stories]
+                    != list(active_contract["selected_story_ids"])
+                )
+            except ValueError:
+                active_mismatch = True
+            if active_mismatch:
+                public_reasons.append(
+                    _health_reason(
+                        code="public_active_contract_mismatch",
+                        status="failed",
+                        measured=1,
+                        threshold=0,
+                        activation_id=str(active_contract["activation_id"]),
+                    )
+                )
+
+        ai_reasons: list[dict[str, Any]] = []
+        active_ai = self.conn.execute(
+            """
+            SELECT attempts.*, current_targets.desired_at_ms
+              FROM news_brief_active AS active_rows
+              JOIN news_ai_current_targets AS current_targets
+                ON current_targets.publication_kind = 'brief'
+               AND current_targets.target_id = active_rows.activation_id
+              JOIN news_ai_attempts AS attempts
+                ON attempts.publication_kind = current_targets.publication_kind
+               AND attempts.target_id = current_targets.target_id
+               AND attempts.evidence_hash = current_targets.evidence_hash
+               AND attempts.model = current_targets.model
+               AND attempts.prompt_version = current_targets.prompt_version
+               AND attempts.workflow_version = current_targets.workflow_version
+               AND attempts.schema_version = current_targets.schema_version
+               AND attempts.locale = current_targets.locale
+             LIMIT 1
+            """
+        ).fetchone()
+        if active_ai is not None:
+            queue_age_ms = max(0, now_ms - int(active_ai["desired_at_ms"]))
+            if (
+                str(active_ai["status"]) == "failed"
+                and int(active_ai["next_attempt_at_ms"]) >= 9_000_000_000_000_000_000
+            ):
+                ai_reasons.append(
+                    _health_reason(
+                        code="ai_terminal_failure",
+                        status="failed",
+                        measured=int(active_ai["attempt_count"]),
+                        threshold=int(active_ai["attempt_count"]),
+                    )
+                )
+            elif str(active_ai["status"]) == "running" and int(active_ai["lease_expires_at_ms"]) < now_ms:
+                lease_overdue_ms = now_ms - int(active_ai["lease_expires_at_ms"])
+                ai_reasons.append(
+                    _health_reason(
+                        code="ai_lease_expired",
+                        status="failed" if lease_overdue_ms > 300_000 else "degraded",
+                        measured_ms=lease_overdue_ms,
+                        threshold_ms=300_000 if lease_overdue_ms > 300_000 else 0,
+                    )
+                )
+            elif str(active_ai["status"]) != "available" and queue_age_ms > 300_000:
+                ai_reasons.append(
+                    _health_reason(
+                        code="ai_queue_age",
+                        status="degraded",
+                        measured_ms=queue_age_ms,
+                        threshold_ms=300_000,
+                    )
+                )
+        else:
+            unattached_active = self.conn.execute(
+                """
+                SELECT activations.activation_id, activations.activated_at_ms
+                  FROM news_brief_active AS active_rows
+                  JOIN news_brief_activations AS activations
+                    ON activations.activation_id = active_rows.activation_id
+                  JOIN news_brief_selections AS selections
+                    ON selections.selection_id = activations.selection_id
+                 WHERE active_rows.singleton_key
+                   AND jsonb_array_length(selections.selected_story_ids) > 0
+                   AND NOT EXISTS (
+                     SELECT 1
+                      FROM news_brief_activation_analysis AS attached
+                      WHERE attached.activation_id = activations.activation_id
+                        AND attached.superseded_at_ms IS NULL
+                   )
+                """
+            ).fetchone()
+            if unattached_active is not None:
+                queue_age_ms = max(
+                    0,
+                    now_ms - int(unattached_active["activated_at_ms"]),
+                )
+                if queue_age_ms > 300_000:
+                    ai_reasons.append(
+                        _health_reason(
+                            code="ai_queue_age",
+                            status="degraded",
+                            measured_ms=queue_age_ms,
+                            threshold_ms=300_000,
+                            activation_id=str(unattached_active["activation_id"]),
+                        )
+                    )
+
+        layers = {
+            "source": _health_layer(source_reasons, enabled_source_count=len(source_rows)),
+            "material": _health_layer(
+                material_reasons,
+                observation_orphan_count=orphan_count,
+                current_revision_violation_count=current_revision_violations,
+                projection_backlog=projection_backlog,
+                projection_lag_ms=projection_lag_ms,
+                primary_membership_violation_count=membership_violations,
+                story_counter_violation_count=story_counter_violations,
+                story_material_hash_violation_count=story_material_hash_violations,
+                story_projection_closure_violation_count=story_projection_closure_violations,
+                story_api_visibility_lag_ms=0 if not story_projection_closure_violations else None,
+            ),
+            "brief": _health_layer(brief_reasons),
+            "public": _health_layer(
+                public_reasons,
+                active_api_visibility_lag_ms=0 if not public_reasons else None,
+            ),
+            "ai": _health_layer(ai_reasons),
+        }
+        statuses = {str(layer["status"]) for layer in layers.values()}
+        status = "failed" if "failed" in statuses else "degraded" if "degraded" in statuses else "running"
+        return {
+            "status": status,
+            "reasons": [reason for layer in layers.values() for reason in _sequence(layer["reasons"])],
+            "layers": layers,
+            "measured_at_ms": now_ms,
+        }
+
     # Story analysis evidence and on-demand request ----------------------------------
 
     def request_story_analysis(
@@ -2634,6 +3250,16 @@ class NewsRepository:
         debounce_ms: int,
         critical_debounce_ms: int,
     ) -> dict[str, Any]:
+        lock = self.conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s) AS locked",
+            (_BRIEF_PLANNER_LOCK_KEY,),
+        ).fetchone()
+        if lock is None or not bool(lock["locked"]):
+            return {
+                "status": "planner_busy",
+                "selected_story_count": 0,
+                "changed": False,
+            }
         stories = self.eligible_story_rows(limit=candidate_limit)
         for story in stories:
             last_brief_at_ms = int(story.get("last_brief_published_at_ms") or 0)
@@ -2670,80 +3296,271 @@ class NewsRepository:
                 now_ms,
             ),
         )
-        existing = self.conn.execute(
+        self.conn.execute(
             """
-            SELECT selection_snapshot_id, status
-              FROM news_brief_selection_snapshots
+            INSERT INTO news_brief_selections (
+              selection_id, selection_fingerprint, grouping_snapshot_id,
+              policy_version, evidence_cutoff_at_ms, selected_story_ids,
+              decisions, critical, verified_critical, synthesis_input_hash,
+              evidence_bundle, created_at_ms
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (selection_fingerprint) DO NOTHING
+            """,
+            (
+                selection["selection_id"],
+                selection["selection_fingerprint"],
+                selection["grouping_snapshot_id"],
+                selection["policy_version"],
+                selection["evidence_cutoff_at_ms"],
+                Jsonb(selection["selected_story_ids"]),
+                Jsonb(selection["decisions"]),
+                selection["critical"],
+                selection["verified_critical"],
+                selection["synthesis_input_hash"],
+                Jsonb(bundle.model_dump(mode="json")),
+                now_ms,
+            ),
+        )
+        persisted_selection = self.conn.execute(
+            """
+            SELECT *
+              FROM news_brief_selections
              WHERE selection_fingerprint = %s
             """,
             (selection["selection_fingerprint"],),
         ).fetchone()
-        if existing is not None:
+        if persisted_selection is None:
+            raise RuntimeError("news_brief_selection_missing_after_insert")
+        selection_id = str(persisted_selection["selection_id"])
+        active = self.conn.execute(
+            """
+            SELECT activations.*, selections.selection_fingerprint,
+                   selections.evidence_bundle
+              FROM news_brief_active AS active_rows
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = active_rows.activation_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
+             WHERE active_rows.singleton_key
+             FOR UPDATE OF active_rows
+            """
+        ).fetchone()
+        pending = self.conn.execute(
+            """
+            SELECT *
+              FROM news_brief_proposals
+             WHERE status = 'pending'
+             FOR UPDATE
+            """
+        ).fetchone()
+        if active is not None and str(active["selection_id"]) == selection_id:
+            if pending is not None:
+                self.conn.execute(
+                    """
+                    UPDATE news_brief_proposals
+                       SET status = 'cancelled',
+                           resolved_at_ms = %s,
+                           updated_at_ms = %s,
+                           reason = reason || %s
+                     WHERE proposal_id = %s
+                    """,
+                    (
+                        now_ms,
+                        now_ms,
+                        Jsonb({"resolution": "planner_returned_to_active"}),
+                        pending["proposal_id"],
+                    ),
+                )
             return {
-                "selection_snapshot_id": str(existing["selection_snapshot_id"]),
+                "selection_id": selection_id,
                 "selection_fingerprint": selection["selection_fingerprint"],
-                "status": str(existing["status"]),
+                "activation_id": str(active["activation_id"]),
+                "status": "active",
                 "selected_story_count": len(bundle.stories),
                 "changed": False,
             }
-        delay = critical_debounce_ms if selection["critical"] else debounce_ms
-        status = "publishable" if delay <= 0 else "debounced"
-        self.conn.execute(
-            """
-            UPDATE news_brief_selection_snapshots
-               SET status = 'superseded',
-                   updated_at_ms = %s
-             WHERE status IN ('planned', 'debounced', 'publishable')
-            """,
-            (now_ms,),
-        )
-        self.conn.execute(
-            """
-            INSERT INTO news_brief_selection_snapshots (
-              selection_snapshot_id, selection_fingerprint, grouping_snapshot_id,
-              policy_version, cutoff_at_ms, selected_story_ids, decisions, critical,
-              evidence_bundle_hash, evidence_bundle, status, publish_after_ms,
-              created_at_ms, updated_at_ms
+        if pending is not None and str(pending["selection_id"]) != selection_id:
+            self.conn.execute(
+                """
+                UPDATE news_brief_proposals
+                   SET status = 'superseded',
+                       resolved_at_ms = %s,
+                       updated_at_ms = %s,
+                       reason = reason || %s
+                 WHERE proposal_id = %s
+                """,
+                (
+                    now_ms,
+                    now_ms,
+                    Jsonb({"resolution": "different_candidate_observed"}),
+                    pending["proposal_id"],
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                selection["selection_snapshot_id"],
-                selection["selection_fingerprint"],
-                selection["grouping_snapshot_id"],
-                selection["policy_version"],
-                selection["cutoff_at_ms"],
-                Jsonb(selection["selected_story_ids"]),
-                Jsonb(selection["decisions"]),
-                selection["critical"],
-                selection["evidence_bundle_hash"],
-                Jsonb(bundle.model_dump(mode="json")),
-                status,
-                now_ms + delay,
+            pending = None
+        if pending is None:
+            lane = _brief_proposal_lane(
+                active_bundle=(dict(_mapping(active["evidence_bundle"])) if active is not None else None),
+                candidate_bundle=bundle.model_dump(mode="json"),
+                verified_critical=bool(selection["verified_critical"]),
+                rectification=(
+                    self._active_brief_requires_rectification(dict(_mapping(active["evidence_bundle"])))
+                    if active is not None
+                    else False
+                ),
+            )
+            delay = (
+                0 if lane == "rectification" else critical_debounce_ms if lane == "verified_critical" else debounce_ms
+            )
+            proposal_id = deterministic_id(
+                "news-brief-proposal",
+                selection_id,
                 now_ms,
-                now_ms,
-            ),
-        )
+            )
+            pending = self.conn.execute(
+                """
+                INSERT INTO news_brief_proposals (
+                  proposal_id, selection_id, lane, status,
+                  first_proposed_at_ms, last_observed_at_ms,
+                  activation_due_at_ms, reason, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    proposal_id,
+                    selection_id,
+                    lane,
+                    now_ms,
+                    now_ms,
+                    now_ms + delay,
+                    Jsonb({"planner_selection_fingerprint": selection["selection_fingerprint"]}),
+                    now_ms,
+                    now_ms,
+                ),
+            ).fetchone()
+        else:
+            pending = self.conn.execute(
+                """
+                UPDATE news_brief_proposals
+                   SET last_observed_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE proposal_id = %s
+                   AND status = 'pending'
+                RETURNING *
+                """,
+                (now_ms, now_ms, pending["proposal_id"]),
+            ).fetchone()
+        if pending is None:
+            raise RuntimeError("news_brief_pending_proposal_missing")
+        activation_id = None
+        if int(pending["activation_due_at_ms"]) <= now_ms:
+            activation_id = self._activate_brief_proposal(
+                proposal_id=str(pending["proposal_id"]),
+                now_ms=now_ms,
+            )
         return {
-            "selection_snapshot_id": selection["selection_snapshot_id"],
+            "selection_id": selection_id,
             "selection_fingerprint": selection["selection_fingerprint"],
-            "status": status,
+            "proposal_id": str(pending["proposal_id"]),
+            "activation_id": activation_id,
+            "status": "active" if activation_id else "pending",
+            "lane": str(pending["lane"]),
             "selected_story_count": len(bundle.stories),
             "changed": True,
         }
 
-    def promote_due_brief_selections(self, *, now_ms: int) -> int:
-        result = self.conn.execute(
+    def _activate_brief_proposal(self, *, proposal_id: str, now_ms: int) -> str:
+        proposal = self.conn.execute(
             """
-            UPDATE news_brief_selection_snapshots
-               SET status = 'publishable',
-                   updated_at_ms = %s
-             WHERE status = 'debounced'
-               AND publish_after_ms <= %s
+            SELECT *
+              FROM news_brief_proposals
+             WHERE proposal_id = %s
+               AND status = 'pending'
+               AND activation_due_at_ms <= %s
+             FOR UPDATE
             """,
-            (now_ms, now_ms),
+            (proposal_id, now_ms),
+        ).fetchone()
+        if proposal is None:
+            raise RuntimeError("news_brief_proposal_not_activatable")
+        sequence = int(
+            self.conn.execute(
+                "SELECT coalesce(max(activation_sequence), 0) + 1 AS value FROM news_brief_activations"
+            ).fetchone()["value"]
         )
-        return int(result.rowcount)
+        activation_id = deterministic_id(
+            "news-brief-activation",
+            sequence,
+            proposal["selection_id"],
+        )
+        self.conn.execute(
+            """
+            INSERT INTO news_brief_activations (
+              activation_id, activation_sequence, selection_id,
+              proposal_id, lane, activated_at_ms
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                activation_id,
+                sequence,
+                proposal["selection_id"],
+                proposal_id,
+                proposal["lane"],
+                now_ms,
+            ),
+        )
+        self.conn.execute(
+            """
+            UPDATE news_brief_proposals
+               SET status = 'activated',
+                   resolved_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE proposal_id = %s
+            """,
+            (now_ms, now_ms, proposal_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO news_brief_active (singleton_key, activation_id, updated_at_ms)
+            VALUES (true, %s, %s)
+            ON CONFLICT (singleton_key) DO UPDATE SET
+              activation_id = EXCLUDED.activation_id,
+              updated_at_ms = EXCLUDED.updated_at_ms
+            """,
+            (activation_id, now_ms),
+        )
+        return activation_id
+
+    def _active_brief_requires_rectification(
+        self,
+        active_bundle: Mapping[str, object],
+    ) -> bool:
+        active_hashes = {
+            str(story.get("story_id") or ""): str(story.get("material_evidence_hash") or "")
+            for story in _sequence(active_bundle.get("stories"))
+            if isinstance(story, Mapping) and str(story.get("story_id") or "")
+        }
+        if not active_hashes:
+            return False
+        rows = self.conn.execute(
+            """
+            SELECT story_id, material_evidence_hash, evidence_posture,
+                   material_evolution_state
+              FROM news_stories
+             WHERE story_id = ANY(%s)
+            """,
+            (sorted(active_hashes),),
+        ).fetchall()
+        return any(
+            str(row["material_evidence_hash"]) != active_hashes[str(row["story_id"])]
+            and (
+                str(row["evidence_posture"]) in {"contested", "corrected", "withdrawn"}
+                or str(row["material_evolution_state"]) in {"material_correction", "conflict_detected", "retraction"}
+            )
+            for row in rows
+        )
 
     def claim_ai_work(
         self,
@@ -2755,49 +3572,31 @@ class NewsRepository:
         lease_ms: int,
         max_attempts: int,
     ) -> list[tuple[str, str, str, BriefEvidenceBundle | StoryAnalysisEvidence]]:
-        self.promote_due_brief_selections(now_ms=now_ms)
         candidates: list[tuple[int, str, str, str, BriefEvidenceBundle | StoryAnalysisEvidence]] = []
         brief_rows = self.conn.execute(
             """
-            SELECT selections.*
-             FROM news_brief_selection_snapshots AS selections
-             WHERE selections.status IN ('publishable', 'published')
-               AND jsonb_array_length(selected_story_ids) > 0
-               AND (
-                 selections.status = 'publishable'
-                 OR (
-                   NOT EXISTS (
-                     SELECT 1
-                       FROM news_brief_publications AS publications
-                      WHERE publications.selection_snapshot_id = selections.selection_snapshot_id
-                        AND publications.evidence_bundle_hash = selections.evidence_bundle_hash
-                        AND publications.model = %s
-                        AND publications.prompt_version = %s
-                        AND publications.workflow_version = %s
-                        AND publications.schema_version = %s
-                        AND publications.locale = %s
-                   )
-                   AND
-                   NOT EXISTS (
-                     SELECT 1
-                       FROM news_brief_selection_snapshots AS newer
-                      WHERE newer.status IN ('debounced', 'publishable')
-                   )
-                   AND EXISTS (
-                     SELECT 1
-                       FROM news_brief_current AS current_rows
-                       JOIN news_brief_publications AS current_publication
-                         ON current_publication.publication_id = current_rows.publication_id
-                      WHERE current_rows.singleton_key
-                        AND current_publication.selection_snapshot_id =
-                            selections.selection_snapshot_id
-                   )
-                 )
+            SELECT activations.activation_id, activations.activated_at_ms,
+                   selections.*
+              FROM news_brief_active AS active_rows
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = active_rows.activation_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
+             WHERE active_rows.singleton_key
+               AND jsonb_array_length(selections.selected_story_ids) > 0
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM news_brief_activation_analysis AS attached
+                   JOIN news_brief_publications AS publications
+                     ON publications.publication_id = attached.publication_id
+                  WHERE attached.activation_id = activations.activation_id
+                    AND attached.superseded_at_ms IS NULL
+                    AND publications.model = %s
+                    AND publications.prompt_version = %s
+                    AND publications.workflow_version = %s
+                    AND publications.schema_version = %s
+                    AND publications.locale = %s
                )
-             ORDER BY selections.critical DESC,
-                      selections.created_at_ms,
-                      selections.selection_snapshot_id
-             FOR UPDATE SKIP LOCKED
              LIMIT %s
             """,
             (
@@ -2813,10 +3612,10 @@ class NewsRepository:
             brief_evidence = BriefEvidenceBundle.model_validate(row["evidence_bundle"])
             candidates.append(
                 (
-                    0 if bool(row["critical"]) else 1,
+                    0 if bool(row["verified_critical"]) else 1,
                     "brief",
-                    str(row["selection_snapshot_id"]),
-                    str(row["evidence_bundle_hash"]),
+                    str(row["activation_id"]),
+                    str(row["synthesis_input_hash"]),
                     brief_evidence,
                 )
             )
@@ -2833,8 +3632,11 @@ class NewsRepository:
                      requests.status = 'published'
                      AND NOT EXISTS (
                        SELECT 1
-                         FROM news_story_analysis_publications AS publications
-                        WHERE publications.story_id = requests.story_id
+                         FROM news_story_analysis_current AS current_rows
+                         JOIN news_story_analysis_publications AS publications
+                           ON publications.publication_id = current_rows.publication_id
+                        WHERE current_rows.story_id = requests.story_id
+                          AND publications.story_id = requests.story_id
                           AND publications.material_evidence_hash =
                               requests.material_evidence_hash
                           AND publications.model = %s
@@ -2876,12 +3678,115 @@ class NewsRepository:
         claimed: list[tuple[str, str, str, BriefEvidenceBundle | StoryAnalysisEvidence]] = []
         for _, kind, target_id, evidence_hash, evidence in sorted(candidates)[:limit]:
             contract = brief_contract if kind == "brief" else story_contract
-            attempt_key = publication_key_for(
-                publication_kind=kind,
-                target_id=target_id,
-                evidence_hash=evidence_hash,
-                contract=contract,
+            attempt_key = deterministic_id(
+                "news-ai-attempt",
+                kind,
+                target_id,
+                evidence_hash,
+                contract.model,
+                contract.prompt_version,
+                contract.workflow_version,
+                contract.schema_version,
+                contract.locale,
             )
+            self.conn.execute(
+                """
+                INSERT INTO news_ai_current_targets (
+                  publication_kind, target_id, evidence_hash, model,
+                  prompt_version, workflow_version, schema_version, locale,
+                  desired_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (publication_kind, target_id) DO UPDATE SET
+                  evidence_hash = EXCLUDED.evidence_hash,
+                  model = EXCLUDED.model,
+                  prompt_version = EXCLUDED.prompt_version,
+                  workflow_version = EXCLUDED.workflow_version,
+                  schema_version = EXCLUDED.schema_version,
+                  locale = EXCLUDED.locale,
+                  desired_at_ms = CASE
+                    WHEN ROW(
+                      news_ai_current_targets.evidence_hash,
+                      news_ai_current_targets.model,
+                      news_ai_current_targets.prompt_version,
+                      news_ai_current_targets.workflow_version,
+                      news_ai_current_targets.schema_version,
+                      news_ai_current_targets.locale
+                    ) IS DISTINCT FROM ROW(
+                      EXCLUDED.evidence_hash,
+                      EXCLUDED.model,
+                      EXCLUDED.prompt_version,
+                      EXCLUDED.workflow_version,
+                      EXCLUDED.schema_version,
+                      EXCLUDED.locale
+                    )
+                    THEN EXCLUDED.desired_at_ms
+                    ELSE news_ai_current_targets.desired_at_ms
+                  END
+                """,
+                (
+                    kind,
+                    target_id,
+                    evidence_hash,
+                    contract.model,
+                    contract.prompt_version,
+                    contract.workflow_version,
+                    contract.schema_version,
+                    contract.locale,
+                    now_ms,
+                ),
+            )
+            if kind == "brief":
+                self.conn.execute(
+                    """
+                    UPDATE news_brief_activation_analysis AS attached
+                       SET superseded_at_ms = GREATEST(%s, attached.attached_at_ms)
+                      FROM news_brief_publications AS publications
+                     WHERE attached.activation_id = %s
+                       AND attached.publication_id = publications.publication_id
+                       AND attached.superseded_at_ms IS NULL
+                       AND (
+                         publications.model <> %s
+                         OR publications.prompt_version <> %s
+                         OR publications.workflow_version <> %s
+                         OR publications.schema_version <> %s
+                         OR publications.locale <> %s
+                       )
+                    """,
+                    (
+                        now_ms,
+                        target_id,
+                        contract.model,
+                        contract.prompt_version,
+                        contract.workflow_version,
+                        contract.schema_version,
+                        contract.locale,
+                    ),
+                )
+            else:
+                self.conn.execute(
+                    """
+                    DELETE FROM news_story_analysis_current AS current_rows
+                     USING news_story_analysis_publications AS publications
+                     WHERE current_rows.story_id = %s
+                       AND current_rows.publication_id = publications.publication_id
+                       AND (
+                         publications.model <> %s
+                         OR publications.prompt_version <> %s
+                         OR publications.workflow_version <> %s
+                         OR publications.schema_version <> %s
+                         OR publications.locale <> %s
+                       )
+                    """,
+                    (
+                        target_id,
+                        contract.model,
+                        contract.prompt_version,
+                        contract.workflow_version,
+                        contract.schema_version,
+                        contract.locale,
+                    ),
+                )
             publication_id = self._existing_publication_id(
                 publication_kind=kind,
                 target_id=target_id,
@@ -2970,10 +3875,10 @@ class NewsRepository:
                       attempt_key, publication_kind, target_id, evidence_hash,
                       model, prompt_version, workflow_version, schema_version, locale,
                       status, attempt_count, lease_token, lease_expires_at_ms, next_attempt_at_ms,
-                      updated_at_ms
+                      requested_at_ms, updated_at_ms
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            'running', 1, %s, %s, 0, %s)
+                            'running', 1, %s, %s, 0, %s, %s)
                     """,
                     (
                         attempt_key,
@@ -2988,6 +3893,7 @@ class NewsRepository:
                         lease_token,
                         now_ms + lease_ms,
                         now_ms,
+                        now_ms,
                     ),
                 )
             if kind == "story_analysis":
@@ -2996,7 +3902,6 @@ class NewsRepository:
                     UPDATE news_story_analysis_requests
                        SET status = 'claimed', updated_at_ms = %s
                      WHERE story_id = %s AND material_evidence_hash = %s
-                       AND status IN ('pending', 'failed')
                     """,
                     (now_ms, target_id, evidence_hash),
                 )
@@ -3019,9 +3924,8 @@ class NewsRepository:
     ) -> str:
         if publication_kind not in {"brief", "story_analysis"}:
             raise ValueError("news_publication_kind_invalid")
-        target_id = evidence.selection_snapshot_id if isinstance(evidence, BriefEvidenceBundle) else evidence.story_id
         evidence_hash = (
-            evidence.evidence_bundle_hash
+            evidence.synthesis_input_hash
             if isinstance(evidence, BriefEvidenceBundle)
             else evidence.material_evidence_hash
         )
@@ -3039,6 +3943,9 @@ class NewsRepository:
         ).fetchone()
         if active_attempt is None:
             raise RuntimeError("news_ai_attempt_lease_lost")
+        target_id = str(active_attempt["target_id"])
+        if isinstance(evidence, StoryAnalysisEvidence) and target_id != evidence.story_id:
+            raise RuntimeError("news_ai_attempt_story_target_mismatch")
         expected_attempt = (
             publication_kind,
             target_id,
@@ -3064,6 +3971,34 @@ class NewsRepository:
         )
         if actual_attempt != expected_attempt:
             raise RuntimeError("news_ai_attempt_contract_mismatch")
+        current_target = self.conn.execute(
+            """
+            SELECT publication_kind, target_id, evidence_hash, model,
+                   prompt_version, workflow_version, schema_version, locale
+              FROM news_ai_current_targets
+             WHERE publication_kind = %s
+               AND target_id = %s
+             FOR UPDATE
+            """,
+            (publication_kind, target_id),
+        ).fetchone()
+        target_is_current = (
+            current_target is not None
+            and tuple(
+                str(current_target[field])
+                for field in (
+                    "publication_kind",
+                    "target_id",
+                    "evidence_hash",
+                    "model",
+                    "prompt_version",
+                    "workflow_version",
+                    "schema_version",
+                    "locale",
+                )
+            )
+            == expected_attempt
+        )
         publication_id = publication_key_for(
             publication_kind=publication_kind,
             target_id=target_id,
@@ -3076,19 +4011,19 @@ class NewsRepository:
             self.conn.execute(
                 """
                 INSERT INTO news_brief_publications (
-                  publication_id, selection_snapshot_id, selection_fingerprint,
-                  evidence_bundle_hash, model, prompt_version, workflow_version,
-                  schema_version, locale, payload, evidence_references, receipt,
-                  published_at_ms
+                  publication_id, selection_id, synthesis_input_hash,
+                  evidence_cutoff_at_ms, model, prompt_version,
+                  workflow_version, schema_version, locale, payload,
+                  evidence_references, receipt, published_at_ms
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (publication_id) DO NOTHING
                 """,
                 (
                     publication_id,
-                    evidence.selection_snapshot_id,
-                    evidence.selection_fingerprint,
-                    evidence.evidence_bundle_hash,
+                    evidence.selection_id,
+                    evidence.synthesis_input_hash,
+                    evidence.evidence_cutoff_at_ms,
                     contract.model,
                     contract.prompt_version,
                     contract.workflow_version,
@@ -3100,42 +4035,64 @@ class NewsRepository:
                     published_at_ms,
                 ),
             )
-            became_current = self.conn.execute(
+            self.conn.execute(
                 """
-                UPDATE news_brief_selection_snapshots
-                   SET status = 'published', updated_at_ms = %s
-                 WHERE selection_snapshot_id = %s
-                   AND (
-                     status = 'publishable'
-                     OR (
-                       status = 'published'
-                       AND EXISTS (
-                         SELECT 1
-                           FROM news_brief_current AS current_rows
-                           JOIN news_brief_publications AS current_publication
-                             ON current_publication.publication_id =
-                                current_rows.publication_id
-                          WHERE current_rows.singleton_key
-                            AND current_publication.selection_snapshot_id =
-                                news_brief_selection_snapshots.selection_snapshot_id
-                       )
-                     )
+                UPDATE news_brief_activation_analysis AS attached
+                   SET superseded_at_ms = GREATEST(%s, attached.attached_at_ms)
+                 WHERE attached.activation_id = %s
+                   AND attached.publication_id <> %s
+                   AND attached.superseded_at_ms IS NULL
+                   AND %s
+                   AND EXISTS (
+                     SELECT 1
+                       FROM news_brief_active AS active_rows
+                       JOIN news_brief_activations AS activations
+                         ON activations.activation_id = active_rows.activation_id
+                      WHERE active_rows.singleton_key
+                        AND activations.activation_id = %s
+                        AND activations.selection_id = %s
                    )
-                RETURNING selection_snapshot_id
                 """,
-                (published_at_ms, evidence.selection_snapshot_id),
-            ).fetchone()
-            if became_current is not None:
-                self.conn.execute(
-                    """
-                    INSERT INTO news_brief_current (singleton_key, publication_id, updated_at_ms)
-                    VALUES (true, %s, %s)
-                    ON CONFLICT (singleton_key) DO UPDATE SET
-                      publication_id = EXCLUDED.publication_id,
-                      updated_at_ms = EXCLUDED.updated_at_ms
-                    """,
-                    (publication_id, published_at_ms),
+                (
+                    published_at_ms,
+                    target_id,
+                    publication_id,
+                    target_is_current,
+                    target_id,
+                    evidence.selection_id,
+                ),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO news_brief_activation_analysis (
+                  activation_id, publication_id, attachment_kind, attached_at_ms,
+                  superseded_at_ms
                 )
+                SELECT %s, %s, 'generated', %s, NULL
+                 WHERE %s
+                   AND EXISTS (
+                   SELECT 1
+                     FROM news_brief_active AS active_rows
+                     JOIN news_brief_activations AS activations
+                       ON activations.activation_id = active_rows.activation_id
+                    WHERE active_rows.singleton_key
+                      AND activations.activation_id = %s
+                      AND activations.selection_id = %s
+                 )
+                ON CONFLICT (activation_id, publication_id) DO UPDATE SET
+                  attachment_kind = EXCLUDED.attachment_kind,
+                  attached_at_ms = EXCLUDED.attached_at_ms,
+                  superseded_at_ms = NULL
+                """,
+                (
+                    target_id,
+                    publication_id,
+                    published_at_ms,
+                    target_is_current,
+                    target_id,
+                    evidence.selection_id,
+                ),
+            )
         else:
             if not isinstance(evidence, StoryAnalysisEvidence):
                 raise ValueError("news_story_analysis_evidence_required")
@@ -3169,7 +4126,8 @@ class NewsRepository:
                 (evidence.story_id,),
             ).fetchone()
             if (
-                current_story is not None
+                target_is_current
+                and current_story is not None
                 and str(current_story["material_evidence_hash"]) == evidence.material_evidence_hash
             ):
                 self.conn.execute(
@@ -3182,14 +4140,15 @@ class NewsRepository:
                     """,
                     (evidence.story_id, publication_id, published_at_ms),
                 )
-            self.conn.execute(
-                """
-                UPDATE news_story_analysis_requests
-                   SET status = 'published', updated_at_ms = %s
-                 WHERE story_id = %s AND material_evidence_hash = %s
-                """,
-                (published_at_ms, evidence.story_id, evidence.material_evidence_hash),
-            )
+            if target_is_current:
+                self.conn.execute(
+                    """
+                    UPDATE news_story_analysis_requests
+                       SET status = 'published', updated_at_ms = %s
+                     WHERE story_id = %s AND material_evidence_hash = %s
+                    """,
+                    (published_at_ms, evidence.story_id, evidence.material_evidence_hash),
+                )
         self.conn.execute(
             """
             UPDATE news_ai_attempts
@@ -3221,7 +4180,8 @@ class NewsRepository:
     ) -> None:
         row = self.conn.execute(
             """
-            SELECT publication_kind, target_id, evidence_hash
+            SELECT publication_kind, target_id, evidence_hash, model,
+                   prompt_version, workflow_version, schema_version, locale
               FROM news_ai_attempts
              WHERE attempt_key = %s
                AND lease_token = %s
@@ -3262,38 +4222,147 @@ class NewsRepository:
                 UPDATE news_story_analysis_requests
                    SET status = 'failed', updated_at_ms = %s
                  WHERE story_id = %s AND material_evidence_hash = %s
+                   AND EXISTS (
+                     SELECT 1
+                       FROM news_ai_current_targets AS current_targets
+                      WHERE current_targets.publication_kind = 'story_analysis'
+                        AND current_targets.target_id = %s
+                        AND current_targets.evidence_hash = %s
+                        AND current_targets.model = %s
+                        AND current_targets.prompt_version = %s
+                        AND current_targets.workflow_version = %s
+                        AND current_targets.schema_version = %s
+                        AND current_targets.locale = %s
+                   )
                 """,
-                (now_ms, row["target_id"], row["evidence_hash"]),
+                (
+                    now_ms,
+                    row["target_id"],
+                    row["evidence_hash"],
+                    row["target_id"],
+                    row["evidence_hash"],
+                    row["model"],
+                    row["prompt_version"],
+                    row["workflow_version"],
+                    row["schema_version"],
+                    row["locale"],
+                ),
             )
 
     def get_current_brief(self) -> dict[str, Any]:
-        current = self.conn.execute(
+        active_selection = self.conn.execute(
             """
-            SELECT publications.*, selections.cutoff_at_ms,
-                   selections.selected_story_ids, selections.decisions,
-                   selections.evidence_bundle, groupings.groups AS narrative_groups
-              FROM news_brief_current AS current_rows
-              JOIN news_brief_publications AS publications
-                ON publications.publication_id = current_rows.publication_id
-              JOIN news_brief_selection_snapshots AS selections
-                ON selections.selection_snapshot_id = publications.selection_snapshot_id
+            SELECT activations.activation_id, activations.activation_sequence,
+                   activations.lane, activations.activated_at_ms,
+                   selections.*, groupings.groups AS narrative_groups
+              FROM news_brief_active AS active_rows
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = active_rows.activation_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
               JOIN news_narrative_grouping_snapshots AS groupings
                 ON groupings.grouping_snapshot_id = selections.grouping_snapshot_id
-             WHERE current_rows.singleton_key
+             WHERE active_rows.singleton_key
             """
         ).fetchone()
-        fallback = self.conn.execute(
+        analysis = None
+        active_attempt = None
+        if active_selection is not None:
+            analysis = self.conn.execute(
+                """
+                SELECT publications.*, attached.attachment_kind,
+                       attached.attached_at_ms,
+                       activations.activation_id,
+                       activations.activation_sequence,
+                       activations.activated_at_ms,
+                       selections.selection_fingerprint,
+                       selections.selected_story_ids, selections.decisions,
+                       selections.evidence_bundle,
+                       groupings.groups AS narrative_groups
+                  FROM news_brief_activation_analysis AS attached
+                  JOIN news_brief_activations AS activations
+                    ON activations.activation_id = attached.activation_id
+                  JOIN news_brief_publications AS publications
+                    ON publications.publication_id = attached.publication_id
+                  JOIN news_brief_selections AS selections
+                    ON selections.selection_id = publications.selection_id
+                  JOIN news_narrative_grouping_snapshots AS groupings
+                    ON groupings.grouping_snapshot_id = selections.grouping_snapshot_id
+                 WHERE attached.activation_id = %s
+                   AND attached.superseded_at_ms IS NULL
+                 ORDER BY attached.attached_at_ms DESC, publications.publication_id DESC
+                 LIMIT 1
+                """,
+                (active_selection["activation_id"],),
+            ).fetchone()
+            active_attempt = self.conn.execute(
+                """
+                SELECT attempts.status, attempts.attempt_count,
+                       attempts.validation_errors, attempts.last_error,
+                       attempts.requested_at_ms, attempts.updated_at_ms
+                  FROM news_ai_current_targets AS current_targets
+                  JOIN news_ai_attempts AS attempts
+                    ON attempts.publication_kind =
+                       current_targets.publication_kind
+                   AND attempts.target_id = current_targets.target_id
+                   AND attempts.evidence_hash = current_targets.evidence_hash
+                   AND attempts.model = current_targets.model
+                   AND attempts.prompt_version =
+                       current_targets.prompt_version
+                   AND attempts.workflow_version =
+                       current_targets.workflow_version
+                   AND attempts.schema_version =
+                       current_targets.schema_version
+                   AND attempts.locale = current_targets.locale
+                 WHERE current_targets.publication_kind = 'brief'
+                   AND current_targets.target_id = %s
+                 LIMIT 1
+                """,
+                (active_selection["activation_id"],),
+            ).fetchone()
+        previous_publication = self.conn.execute(
             """
-            SELECT *
-              FROM news_brief_selection_snapshots
-             WHERE status IN ('debounced', 'publishable', 'published')
-             ORDER BY created_at_ms DESC, selection_snapshot_id DESC
+            SELECT publications.*, attached.attachment_kind,
+                   attached.attached_at_ms, activations.activation_id,
+                   activations.activation_sequence, activations.activated_at_ms,
+                   selections.selection_fingerprint,
+                   selections.selected_story_ids, selections.decisions,
+                   selections.evidence_bundle,
+                   groupings.groups AS narrative_groups
+              FROM news_brief_activation_analysis AS attached
+              JOIN news_brief_activations AS activations
+                ON activations.activation_id = attached.activation_id
+              JOIN news_brief_publications AS publications
+                ON publications.publication_id = attached.publication_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = activations.selection_id
+              JOIN news_narrative_grouping_snapshots AS groupings
+                ON groupings.grouping_snapshot_id = selections.grouping_snapshot_id
+             WHERE (%s::text IS NULL OR activations.activation_id <> %s)
+             ORDER BY activations.activation_sequence DESC,
+                      attached.attached_at_ms DESC,
+                      publications.publication_id DESC
              LIMIT 1
+            """,
+            (
+                active_selection["activation_id"] if active_selection is not None else None,
+                active_selection["activation_id"] if active_selection is not None else None,
+            ),
+        ).fetchone()
+        pending_proposal = self.conn.execute(
+            """
+            SELECT proposals.*, selections.selection_fingerprint,
+                   selections.selected_story_ids
+              FROM news_brief_proposals AS proposals
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = proposals.selection_id
+             WHERE proposals.status = 'pending'
             """
         ).fetchone()
         latest_failure = self.conn.execute(
             """
-            SELECT last_error, validation_errors, updated_at_ms
+            SELECT target_id AS activation_id, attempt_count, last_error,
+                   validation_errors, requested_at_ms, updated_at_ms
               FROM news_ai_attempts
              WHERE publication_kind = 'brief' AND status = 'failed'
              ORDER BY updated_at_ms DESC, attempt_key DESC
@@ -3301,20 +4370,23 @@ class NewsRepository:
             """
         ).fetchone()
         return {
-            "publication": dict(current) if current is not None else None,
-            "fallback_selection": dict(fallback) if fallback is not None else None,
+            "active_selection": dict(active_selection) if active_selection is not None else None,
+            "analysis": dict(analysis) if analysis is not None else None,
+            "active_attempt": dict(active_attempt) if active_attempt is not None else None,
+            "previous_publication": (dict(previous_publication) if previous_publication is not None else None),
+            "pending_proposal": dict(pending_proposal) if pending_proposal is not None else None,
             "latest_failure": dict(latest_failure) if latest_failure is not None else None,
         }
 
     def list_brief_publications(self, *, limit: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT publications.*, selections.cutoff_at_ms,
+            SELECT publications.*, selections.selection_fingerprint,
                    selections.selected_story_ids, selections.decisions,
                    selections.evidence_bundle, groupings.groups AS narrative_groups
               FROM news_brief_publications AS publications
-              JOIN news_brief_selection_snapshots AS selections
-                ON selections.selection_snapshot_id = publications.selection_snapshot_id
+              JOIN news_brief_selections AS selections
+                ON selections.selection_id = publications.selection_id
               JOIN news_narrative_grouping_snapshots AS groupings
                 ON groupings.grouping_snapshot_id = selections.grouping_snapshot_id
              ORDER BY publications.published_at_ms DESC, publications.publication_id DESC
@@ -3333,18 +4405,18 @@ class NewsRepository:
         contract: NewsPublicationContract,
     ) -> str | None:
         table = "news_brief_publications" if publication_kind == "brief" else "news_story_analysis_publications"
-        target_column = "selection_snapshot_id" if publication_kind == "brief" else "story_id"
-        evidence_column = "evidence_bundle_hash" if publication_kind == "brief" else "material_evidence_hash"
+        target_predicate = "" if publication_kind == "brief" else "story_id = %s AND"
+        evidence_column = "synthesis_input_hash" if publication_kind == "brief" else "material_evidence_hash"
+        params: tuple[object, ...] = (evidence_hash,) if publication_kind == "brief" else (target_id, evidence_hash)
         row = self.conn.execute(
             f"""
             SELECT publication_id FROM {table}
-             WHERE {target_column} = %s AND {evidence_column} = %s
+             WHERE {target_predicate} {evidence_column} = %s
                AND model = %s AND prompt_version = %s
                AND workflow_version = %s AND schema_version = %s AND locale = %s
             """,
             (
-                target_id,
-                evidence_hash,
+                *params,
                 contract.model,
                 contract.prompt_version,
                 contract.workflow_version,
@@ -3364,27 +4436,93 @@ class NewsRepository:
         now_ms: int,
     ) -> None:
         if publication_kind == "brief":
-            became_current = self.conn.execute(
+            self.conn.execute(
                 """
-                UPDATE news_brief_selection_snapshots
-                   SET status = 'published', updated_at_ms = %s
-                 WHERE selection_snapshot_id = %s
-                   AND status = 'publishable'
-                RETURNING selection_snapshot_id
+                UPDATE news_brief_activation_analysis AS attached
+                   SET superseded_at_ms = GREATEST(%s, attached.attached_at_ms)
+                 WHERE attached.activation_id = %s
+                   AND attached.publication_id <> %s
+                   AND attached.superseded_at_ms IS NULL
+                   AND EXISTS (
+                     SELECT 1
+                       FROM news_brief_active AS active_rows
+                       JOIN news_brief_activations AS activations
+                         ON activations.activation_id = active_rows.activation_id
+                       JOIN news_brief_selections AS selections
+                         ON selections.selection_id = activations.selection_id
+                       JOIN news_brief_publications AS publications
+                         ON publications.publication_id = %s
+                       JOIN news_ai_current_targets AS current_targets
+                         ON current_targets.publication_kind = 'brief'
+                        AND current_targets.target_id = activations.activation_id
+                        AND current_targets.evidence_hash =
+                            publications.synthesis_input_hash
+                        AND current_targets.model = publications.model
+                        AND current_targets.prompt_version =
+                            publications.prompt_version
+                        AND current_targets.workflow_version =
+                            publications.workflow_version
+                        AND current_targets.schema_version =
+                            publications.schema_version
+                        AND current_targets.locale = publications.locale
+                      WHERE active_rows.singleton_key
+                        AND activations.activation_id = %s
+                        AND selections.synthesis_input_hash = %s
+                        AND publications.synthesis_input_hash = %s
+                   )
                 """,
-                (now_ms, target_id),
-            ).fetchone()
-            if became_current is not None:
-                self.conn.execute(
-                    """
-                    INSERT INTO news_brief_current (singleton_key, publication_id, updated_at_ms)
-                    VALUES (true, %s, %s)
-                    ON CONFLICT (singleton_key) DO UPDATE SET
-                      publication_id = EXCLUDED.publication_id,
-                      updated_at_ms = EXCLUDED.updated_at_ms
-                    """,
-                    (publication_id, now_ms),
+                (
+                    now_ms,
+                    target_id,
+                    publication_id,
+                    publication_id,
+                    target_id,
+                    evidence_hash,
+                    evidence_hash,
+                ),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO news_brief_activation_analysis (
+                  activation_id, publication_id, attachment_kind, attached_at_ms,
+                  superseded_at_ms
                 )
+                SELECT activations.activation_id, %s, 'reused', %s, NULL
+                  FROM news_brief_active AS active_rows
+                  JOIN news_brief_activations AS activations
+                    ON activations.activation_id = active_rows.activation_id
+                  JOIN news_brief_selections AS selections
+                    ON selections.selection_id = activations.selection_id
+                  JOIN news_brief_publications AS publications
+                    ON publications.publication_id = %s
+                  JOIN news_ai_current_targets AS current_targets
+                    ON current_targets.publication_kind = 'brief'
+                   AND current_targets.target_id = activations.activation_id
+                   AND current_targets.evidence_hash =
+                       publications.synthesis_input_hash
+                   AND current_targets.model = publications.model
+                   AND current_targets.prompt_version = publications.prompt_version
+                   AND current_targets.workflow_version = publications.workflow_version
+                   AND current_targets.schema_version = publications.schema_version
+                   AND current_targets.locale = publications.locale
+                 WHERE active_rows.singleton_key
+                   AND activations.activation_id = %s
+                   AND selections.synthesis_input_hash = %s
+                   AND publications.synthesis_input_hash = %s
+                ON CONFLICT (activation_id, publication_id) DO UPDATE SET
+                  attachment_kind = EXCLUDED.attachment_kind,
+                  attached_at_ms = EXCLUDED.attached_at_ms,
+                  superseded_at_ms = NULL
+                """,
+                (
+                    publication_id,
+                    now_ms,
+                    publication_id,
+                    target_id,
+                    evidence_hash,
+                    evidence_hash,
+                ),
+            )
         else:
             self.conn.execute(
                 """
@@ -3395,10 +4533,37 @@ class NewsRepository:
                 (now_ms, target_id, evidence_hash),
             )
             current_story = self.conn.execute(
-                "SELECT material_evidence_hash FROM news_stories WHERE story_id = %s",
-                (target_id,),
+                """
+                SELECT stories.material_evidence_hash,
+                       EXISTS (
+                         SELECT 1
+                           FROM news_story_analysis_publications AS publications
+                           JOIN news_ai_current_targets AS current_targets
+                             ON current_targets.publication_kind = 'story_analysis'
+                            AND current_targets.target_id = publications.story_id
+                            AND current_targets.evidence_hash =
+                                publications.material_evidence_hash
+                            AND current_targets.model = publications.model
+                            AND current_targets.prompt_version =
+                                publications.prompt_version
+                            AND current_targets.workflow_version =
+                                publications.workflow_version
+                            AND current_targets.schema_version =
+                                publications.schema_version
+                            AND current_targets.locale = publications.locale
+                          WHERE publications.publication_id = %s
+                            AND publications.story_id = stories.story_id
+                       ) AS target_is_current
+                  FROM news_stories AS stories
+                 WHERE stories.story_id = %s
+                """,
+                (publication_id, target_id),
             ).fetchone()
-            if current_story is not None and str(current_story["material_evidence_hash"]) == evidence_hash:
+            if (
+                current_story is not None
+                and bool(current_story["target_is_current"])
+                and str(current_story["material_evidence_hash"]) == evidence_hash
+            ):
                 self.conn.execute(
                     """
                     INSERT INTO news_story_analysis_current (story_id, publication_id, updated_at_ms)
@@ -3418,8 +4583,8 @@ class NewsRepository:
               LEFT JOIN LATERAL (
                 SELECT max(publications.published_at_ms) AS last_brief_published_at_ms
                   FROM news_brief_publications AS publications
-                  JOIN news_brief_selection_snapshots AS selections
-                    ON selections.selection_snapshot_id = publications.selection_snapshot_id
+                  JOIN news_brief_selections AS selections
+                    ON selections.selection_id = publications.selection_id
                  WHERE selections.selected_story_ids ? stories.story_id
               ) AS coverage ON true
              WHERE stories.brief_eligible
@@ -3510,6 +4675,63 @@ def _story_analysis_evidence_sufficient(evidence: StoryAnalysisEvidence) -> bool
     )
 
 
+def _brief_proposal_lane(
+    *,
+    active_bundle: Mapping[str, object] | None,
+    candidate_bundle: Mapping[str, object],
+    verified_critical: bool,
+    rectification: bool,
+) -> str:
+    if rectification:
+        return "rectification"
+    active_story_ids = {
+        str(story.get("story_id") or "")
+        for story in _sequence((active_bundle or {}).get("stories"))
+        if isinstance(story, Mapping) and str(story.get("story_id") or "")
+    }
+    candidate_verified_critical_ids = {
+        str(story.get("story_id") or "")
+        for story in _sequence(candidate_bundle.get("stories"))
+        if isinstance(story, Mapping)
+        and int(story.get("impact_score") or 0) >= 90
+        and str(story.get("evidence_posture")) in {"primary_source_confirmed", "independently_corroborated"}
+    }
+    if verified_critical and candidate_verified_critical_ids - active_story_ids:
+        return "verified_critical"
+    return "ordinary"
+
+
+def _health_reason(
+    *,
+    code: str,
+    status: str,
+    measured_ms: int | None = None,
+    threshold_ms: int | None = None,
+    measured: int | None = None,
+    threshold: int | None = None,
+    **details: object,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "status": status,
+        "measured_ms": measured_ms,
+        "threshold_ms": threshold_ms,
+        "measured": measured,
+        "threshold": threshold,
+        "details": details,
+    }
+
+
+def _health_layer(reasons: Sequence[Mapping[str, object]], **measurements: object) -> dict[str, Any]:
+    statuses = {str(reason.get("status") or "") for reason in reasons}
+    status = "failed" if "failed" in statuses else "degraded" if "degraded" in statuses else "running"
+    return {
+        "status": status,
+        "reasons": [dict(reason) for reason in reasons],
+        "measurements": measurements,
+    }
+
+
 def publication_key_for(
     *,
     publication_kind: str,
@@ -3520,7 +4742,7 @@ def publication_key_for(
     return deterministic_id(
         "news-publication",
         publication_kind,
-        target_id,
+        target_id if publication_kind != "brief" else "content-addressed",
         evidence_hash,
         contract.model,
         contract.prompt_version,

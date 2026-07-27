@@ -12,6 +12,7 @@ export type NewsStoryQueryParams = {
   limit?: number;
   q?: string | null;
   source?: string | null;
+  view?: "latest" | "priority";
 };
 
 type StoryList = components["schemas"]["NewsStoryListData"];
@@ -28,11 +29,12 @@ export const useNewsStoriesWithToken = (
     limit = NEWS_PAGE_SIZE,
     q = null,
     source = null,
+    view = "latest",
   }: NewsStoryQueryParams = {},
 ) =>
   useQuery({
     enabled: Boolean(token) && enabled,
-    queryKey: queryKeys.newsStories({ cursor, evidencePosture, limit, q, source }),
+    queryKey: queryKeys.newsStories({ cursor, evidencePosture, limit, q, source, view }),
     queryFn: async () =>
       (
         await getApi<StoryList>("/api/news/stories", {
@@ -42,6 +44,7 @@ export const useNewsStoriesWithToken = (
             limit,
             q,
             source,
+            view,
           },
           token,
         })
@@ -56,10 +59,9 @@ export const useNewsStoryWithToken = (token: string, storyId?: string | null) =>
     queryKey: queryKeys.newsStory(storyId ?? ""),
     queryFn: async () =>
       (
-        await getApi<StoryDetail>(
-          `/api/news/stories/${encodeURIComponent(storyId ?? "")}`,
-          { token },
-        )
+        await getApi<StoryDetail>(`/api/news/stories/${encodeURIComponent(storyId ?? "")}`, {
+          token,
+        })
       ).data,
     refetchInterval: 30_000,
     staleTime: 15_000,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +22,7 @@ from tracefold.app.http.http import create_api_router
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.schemas import ReadinessData
 from tracefold.app.http.ws import PublicWebSocketHub
+from tracefold.news import NewsInterface
 from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
 from tracefold.platform.postgres.postgres_client import postgres_liveness_check
@@ -195,6 +197,39 @@ def _readiness_payload(runtime: Runtime) -> tuple[dict[str, Any], int]:
 def _status_payload(runtime: Runtime) -> dict[str, Any]:
     snapshot = runtime.current_snapshot()
     reasons = list(snapshot.degradation_reasons)
+    try:
+        with runtime.repositories() as repos:
+            news_health = NewsInterface(repos.news).health(now_ms=int(time.time() * 1000))
+    except Exception as exc:
+        measured_at_ms = int(time.time() * 1000)
+        query_failure = {
+            "code": "news_health_query_failed",
+            "status": "failed",
+            "measured_ms": None,
+            "threshold_ms": None,
+            "measured": None,
+            "threshold": None,
+            "details": {"error": type(exc).__name__},
+        }
+        news_health = {
+            "status": "failed",
+            "reasons": [query_failure],
+            "layers": {
+                layer: {
+                    "status": "failed",
+                    "reasons": [query_failure],
+                    "measurements": {},
+                }
+                for layer in ("source", "material", "brief", "public", "ai")
+            },
+            "measured_at_ms": measured_at_ms,
+        }
+    if str(news_health["status"]) != "running":
+        reasons.extend(
+            f"news:{reason['code']}"
+            for reason in news_health["reasons"]
+            if isinstance(reason, dict) and reason.get("code")
+        )
     payload = {
         "ok": not reasons,
         "reasons": reasons,
@@ -204,6 +239,7 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
         "db": dict(snapshot.startup_db_status),
         "provider_states": snapshot.provider_states,
         "workers": snapshot.workers,
+        "news": news_health,
     }
     return payload
 

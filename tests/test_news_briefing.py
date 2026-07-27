@@ -89,8 +89,9 @@ def test_selection_fingerprint_is_stable_when_only_cutoff_changes() -> None:
 
     assert first_grouping["grouping_snapshot_id"] == second_grouping["grouping_snapshot_id"]
     assert first_selection["selection_fingerprint"] == second_selection["selection_fingerprint"]
-    assert first_bundle.evidence_bundle_hash != second_bundle.evidence_bundle_hash
-    assert first_selection["selection_snapshot_id"] != second_selection["selection_snapshot_id"]
+    assert first_bundle.synthesis_input_hash == second_bundle.synthesis_input_hash
+    assert first_selection["selection_id"] == second_selection["selection_id"]
+    assert first_bundle.evidence_cutoff_at_ms == second_bundle.evidence_cutoff_at_ms
 
 
 def test_brief_evidence_is_strictly_bounded_and_conflict_receipt_matches_retained_refs() -> None:

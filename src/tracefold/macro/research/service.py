@@ -355,9 +355,7 @@ def require_evidence_in_scope(
         if visibility is None:
             raise MacroResearchIntegrityError(f"macro_research_observation_not_visible:{record.evidence_ref}")
         if visibility.available_at_ms != record.available_at_ms:
-            raise MacroResearchIntegrityError(
-                "macro_research_observation_availability_mismatch:" + record.evidence_ref
-            )
+            raise MacroResearchIntegrityError("macro_research_observation_availability_mismatch:" + record.evidence_ref)
     return resolved
 
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import pytest
 from alembic import command
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.news import (
+    STORY_IDENTITY_VERSION,
+    NewsFeedEntry,
+    NewsRepository,
+    NewsSourceDefinition,
+)
 from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
 
 RETIRED_BACKEND_TABLES = {
@@ -64,11 +71,15 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_story_identity_decisions",
     "news_story_material_events",
     "news_narrative_grouping_snapshots",
-    "news_brief_selection_snapshots",
+    "news_brief_selections",
+    "news_brief_proposals",
+    "news_brief_activations",
+    "news_brief_active",
     "news_story_analysis_requests",
     "news_ai_attempts",
+    "news_ai_current_targets",
     "news_brief_publications",
-    "news_brief_current",
+    "news_brief_activation_analysis",
     "news_story_analysis_publications",
     "news_story_analysis_current",
 }
@@ -85,6 +96,8 @@ LEGACY_NEWS_TABLES = {
     "news_story_articles",
     "news_story_analyses",
     "news_story_analysis_attempts",
+    "news_brief_selection_snapshots",
+    "news_brief_current",
 }
 
 
@@ -227,7 +240,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260726_0198"
+    assert version == latest_migration_version() == "20260727_0199"
 
 
 def test_news_professional_hard_cut_preserves_source_config_and_resets_old_facts(
@@ -330,6 +343,337 @@ def test_news_professional_hard_cut_preserves_source_config_and_resets_old_facts
     assert source_row["next_fetch_at_ms"] == 0
     assert article_count == 0
     assert legacy_tables == set()
+
+
+def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identity_v2(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260726_0198")
+
+        repository = NewsRepository(conn)
+        source = NewsSourceDefinition(
+            source_id="preserved-source",
+            name="Preserved Source",
+            feed_url="https://preserved.example/feed.xml",
+            source_domain="preserved.example",
+            source_role="original_publisher",
+            trust_tier="trusted",
+            source_chain_id="preserved-publisher",
+            publisher_organization_id="preserved-publisher",
+            default_language="en",
+            refresh_interval_seconds=60,
+        )
+        repository.sync_sources((source,), now_ms=100)
+        repository.record_fetch_success(
+            source=source,
+            entries=(
+                NewsFeedEntry(
+                    guid="preserved-guid",
+                    link="https://preserved.example/policy-decision",
+                    title="Government implements a preserved policy decision",
+                    summary="The material fact must survive the derived-state hard cut.",
+                    published_at_ms=100,
+                    language="en",
+                ),
+            ),
+            started_at_ms=100,
+            finished_at_ms=101,
+            status_code=200,
+            etag="preserved-etag",
+            last_modified="preserved-last-modified",
+            not_modified=False,
+        )
+        repository.project_pending_revisions(now_ms=200, limit=100)
+        projected_story_id = str(conn.execute("SELECT story_id FROM news_stories").fetchone()["story_id"])
+        columns = [
+            str(row["column_name"])
+            for row in conn.execute(
+                """
+                SELECT column_name
+                  FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'news_stories'
+                 ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+        insert_columns = ", ".join(f'"{column}"' for column in columns)
+        select_columns = ", ".join(
+            "'legacy-story-id' AS story_id"
+            if column == "story_id"
+            else "'news_story_identity_v1' AS identity_version"
+            if column == "identity_version"
+            else f'"{column}"'
+            for column in columns
+        )
+        conn.execute(
+            f"""
+            INSERT INTO news_stories ({insert_columns})
+            SELECT {select_columns}
+              FROM news_stories
+             WHERE story_id = %s
+            """,
+            (projected_story_id,),
+        )
+        for table, column in (
+            ("news_story_memberships", "story_id"),
+            ("news_story_profiles", "story_id"),
+            ("news_story_identity_decisions", "selected_story_id"),
+            ("news_story_material_events", "story_id"),
+            ("news_story_analysis_requests", "story_id"),
+            ("news_story_analysis_publications", "story_id"),
+            ("news_story_analysis_current", "story_id"),
+        ):
+            conn.execute(
+                f"UPDATE {table} SET {column} = 'legacy-story-id' WHERE {column} = %s",
+                (projected_story_id,),
+            )
+        conn.execute(
+            "DELETE FROM news_stories WHERE story_id = %s",
+            (projected_story_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_narrative_grouping_snapshots (
+              grouping_snapshot_id, input_hash, policy_version, embedding_model,
+              fallback_used, groups, receipt, cutoff_at_ms, created_at_ms
+            )
+            VALUES (
+              'legacy-grouping', 'legacy-input', 'legacy-grouping-policy', NULL,
+              true, '[]'::jsonb, '{}'::jsonb, 200, 200
+            );
+            INSERT INTO news_brief_selection_snapshots (
+              selection_snapshot_id, selection_fingerprint, grouping_snapshot_id,
+              policy_version, cutoff_at_ms, selected_story_ids, decisions,
+              critical, evidence_bundle_hash, evidence_bundle, status,
+              publish_after_ms, created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'legacy-selection', 'legacy-fingerprint', 'legacy-grouping',
+              'legacy-selection-policy', 200, '["legacy-story-id"]'::jsonb,
+              '[]'::jsonb, false, 'legacy-bundle-hash', '{}'::jsonb,
+              'published', 200, 200, 200
+            );
+            INSERT INTO news_brief_publications (
+              publication_id, selection_snapshot_id, selection_fingerprint,
+              evidence_bundle_hash, model, prompt_version, workflow_version,
+              schema_version, locale, payload, evidence_references, receipt,
+              published_at_ms
+            )
+            VALUES (
+              'legacy-publication', 'legacy-selection', 'legacy-fingerprint',
+              'legacy-bundle-hash', 'legacy-model', 'legacy-prompt',
+              'legacy-workflow', 'legacy-schema', 'zh-CN', '{}'::jsonb,
+              '[]'::jsonb, '{}'::jsonb, 200
+            );
+            INSERT INTO news_brief_current (
+              singleton_key, publication_id, updated_at_ms
+            )
+            VALUES (true, 'legacy-publication', 200)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE schema_migration_backup_receipts (
+              migration_revision text PRIMARY KEY,
+              backup_sha256 text NOT NULL,
+              backup_location text NOT NULL,
+              backup_created_at_ms bigint NOT NULL,
+              recorded_at_ms bigint NOT NULL
+            );
+            INSERT INTO schema_migration_backup_receipts (
+              migration_revision, backup_sha256, backup_location,
+              backup_created_at_ms, recorded_at_ms
+            )
+            VALUES (
+              '20260727_0199',
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              '/verified/backups/tracefold-before-0199.dump',
+              250,
+              260
+            )
+            """
+        )
+        material_counts_before = {
+            table: int(conn.execute(f"SELECT count(*) AS count FROM {table}").fetchone()["count"])
+            for table in (
+                "news_sources",
+                "news_fetch_receipts",
+                "news_feed_observations",
+                "news_articles",
+                "news_article_revisions",
+                "news_article_content_snapshots",
+            )
+        }
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        material_counts_after = {
+            table: int(conn.execute(f"SELECT count(*) AS count FROM {table}").fetchone()["count"])
+            for table in material_counts_before
+        }
+        tables = {
+            str(row["table_name"])
+            for row in conn.execute(
+                """
+                SELECT table_name
+                  FROM information_schema.tables
+                 WHERE table_schema = 'public'
+                """
+            ).fetchall()
+        }
+        assert material_counts_after == material_counts_before
+        assert {"news_brief_selection_snapshots", "news_brief_current"}.isdisjoint(tables)
+        assert {
+            "news_brief_selections",
+            "news_brief_proposals",
+            "news_brief_activations",
+            "news_brief_active",
+            "news_brief_activation_analysis",
+            "news_ai_current_targets",
+            "schema_migration_backup_receipts",
+        } <= tables
+        attachment_columns = {
+            str(row["column_name"]): str(row["is_nullable"])
+            for row in conn.execute(
+                """
+                SELECT column_name, is_nullable
+                  FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'news_brief_activation_analysis'
+                """
+            ).fetchall()
+        }
+        assert attachment_columns["superseded_at_ms"] == "YES"
+        current_attachment_index = conn.execute(
+            """
+            SELECT indexdef
+              FROM pg_indexes
+             WHERE schemaname = 'public'
+               AND tablename = 'news_brief_activation_analysis'
+               AND indexname = 'ux_news_brief_activation_analysis_current'
+            """
+        ).fetchone()
+        assert current_attachment_index is not None
+        assert "WHERE (superseded_at_ms IS NULL)" in str(current_attachment_index["indexdef"])
+        assert conn.execute("SELECT count(*) AS count FROM news_stories").fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 0
+
+        rebuilt = NewsRepository(conn).project_pending_revisions(now_ms=300, limit=100)
+        rebuilt_story = conn.execute("SELECT story_id, identity_version FROM news_stories").fetchone()
+        assert rebuilt["processed"] == 1
+        assert rebuilt_story["story_id"] != "legacy-story-id"
+        assert rebuilt_story["identity_version"] == STORY_IDENTITY_VERSION
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS count
+                  FROM news_stories
+                 WHERE story_id = 'legacy-story-id'
+                """
+            ).fetchone()["count"]
+            == 0
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0199"
+    finally:
+        conn.close()
+
+
+def test_news_correctness_hard_cut_fails_closed_without_verified_backup_receipt(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260726_0198")
+        repository = NewsRepository(conn)
+        source = NewsSourceDefinition(
+            source_id="unbacked-source",
+            name="Unbacked Source",
+            feed_url="https://unbacked.example/feed.xml",
+            source_domain="unbacked.example",
+            source_role="original_publisher",
+            trust_tier="trusted",
+            source_chain_id="unbacked-publisher",
+            publisher_organization_id="unbacked-publisher",
+            default_language="en",
+            refresh_interval_seconds=60,
+        )
+        repository.sync_sources((source,), now_ms=100)
+        repository.record_fetch_success(
+            source=source,
+            entries=(
+                NewsFeedEntry(
+                    guid="unbacked-guid",
+                    link="https://unbacked.example/fact",
+                    title="A material fact requiring backup",
+                    published_at_ms=100,
+                    language="en",
+                ),
+            ),
+            started_at_ms=100,
+            finished_at_ms=101,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        conn.commit()
+
+        with pytest.raises(
+            Exception,
+            match="news_0199_backup_receipt_required",
+        ):
+            command.upgrade(config, "head")
+
+        conn.rollback()
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260726_0198"
+
+        conn.execute(
+            """
+            CREATE TABLE schema_migration_backup_receipts (
+              migration_revision text PRIMARY KEY,
+              backup_sha256 text NOT NULL,
+              backup_location text NOT NULL,
+              backup_created_at_ms bigint NOT NULL,
+              recorded_at_ms bigint NOT NULL
+            );
+            INSERT INTO schema_migration_backup_receipts (
+              migration_revision, backup_sha256, backup_location,
+              backup_created_at_ms, recorded_at_ms
+            )
+            VALUES ('20260727_0199', 'not-a-sha256', '', 200, 100)
+            """
+        )
+        conn.commit()
+
+        with pytest.raises(
+            Exception,
+            match="news_0199_backup_receipt_required",
+        ):
+            command.upgrade(config, "head")
+
+        conn.rollback()
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260726_0198"
+    finally:
+        conn.close()
 
 
 def test_backend_kiss_hard_cut_migrates_nonempty_0184_state(tmp_path) -> None:

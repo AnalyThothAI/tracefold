@@ -33,15 +33,22 @@ credentials/endpoints needed by the enabled data lanes, including GMGN OpenAPI
 for exact token profiles and OKX provider settings for discovery, market data,
 or DEX WebSocket lanes when those workers are enabled. Keep secrets out of
 terminal output, docs, tests, and commits.
-The `llm` block contains only `api_key` and `base_url`. They are used solely by
-the `macro_research` worker. Its `model`, `model_request_timeout_seconds`,
-`max_tokens`, settle delay, statement timeout, lease/retry policy, attempt
-limit, cadence, and enabled state live under `workers.macro_research`; no third
-config source, generic model policy, deterministic semantic gate configuration,
-or whole-research wall-clock timeout is supported. The request timeout bounds
-one provider transport call; it does not cancel the checkpointed DeepAgents
-research workflow. If the worker is enabled without both credential fields, it
-reports `unavailable: llm_not_configured` and makes no model call.
+The `llm` block contains only `api_key` and `base_url`. It supplies transport
+credentials to the optional `macro_research` and `news_ai_publish` workers.
+Each worker's model, request timeout, token budget, statement timeout,
+lease/retry policy, attempt limit, cadence, and enabled state lives only in its
+own `workers.yaml` section; there is no third model-policy source. The request
+timeout bounds one provider transport call. If an AI worker is enabled without
+both credential fields, it reports `unavailable: llm_not_configured` and makes
+no model call.
+
+News correctness does not depend on the model. The production defaults are a
+5-second `news_story_project` interval, a 30-second `news_brief_plan` interval,
+120,000ms ordinary debounce, 10,000ms verified-critical debounce, and a
+60-second `news_ai_publish` interval. Source refresh intervals remain
+source-specific in `config.yaml`. Change these only with the News SLOs in
+`OPERATIONS.md`; decreasing debounce does not repair identity or evidence
+quality.
 
 Use `uv run tracefold config` to inspect both config paths and the effective
 worker settings. Inspect the running process through authenticated
