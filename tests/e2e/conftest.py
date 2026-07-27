@@ -81,10 +81,10 @@ def e2e_postgres() -> Iterator[str]:
 
     from testcontainers.postgres import PostgresContainer
 
-    from tests.postgres_observability_container import observability_postgres_container
+    from tests.tracefold_postgres_container import tracefold_postgres_container
     from tracefold.platform.postgres.postgres_migrations import upgrade_head
 
-    with observability_postgres_container(PostgresContainer) as pg:
+    with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
         try:
             upgrade_head(dsn)

@@ -393,13 +393,25 @@ def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
     assert validation["line_fallbacks"] == [2]
 
 
-def test_source_inventory_is_frozen_worldmonitor_full_intel_plus_crypto_and_6551() -> None:
+def test_source_inventory_adds_wallstengine_without_changing_worldmonitor_policy() -> None:
     sources = default_sources()
-    assert len(sources) == 117
-    assert sum(len(source.memberships) for source in sources) == 120
+    assert len(sources) == 118
+    assert sum(len(source.memberships) for source in sources) == 121
     assert sum("intel" in source.memberships for source in sources) == 24
     assert any(source.name == "6551NEWS" and source.lang == "zh" for source in sources)
     assert sum("crypto" in source.memberships for source in sources) == 16
+    wallstengine = next(source for source in sources if source.name == "WallStEngine")
+    assert wallstengine.feed_url == (
+        "http://rsshub:1200/twitter/user/wallstengine/"
+        "includeReplies=0&includeRts=0&showRetweetTextInTitle=1&showQuotedInTitle=0"
+    )
+    assert wallstengine.source_id == (
+        f"news-wallstengine-{hashlib.sha256(wallstengine.feed_url.encode()).hexdigest()[:8]}"
+    )
+    assert wallstengine.tier == 4
+    assert wallstengine.lang == "en"
+    assert wallstengine.memberships == ("finance",)
+    assert wallstengine.refresh_interval_seconds == 120
     assert {source.name: source.memberships for source in sources if len(source.memberships) > 1} == {
         "Atlantic Council": ("intel", "thinktanks"),
         "Foreign Affairs": ("intel", "thinktanks"),
@@ -422,4 +434,4 @@ def test_source_inventory_is_frozen_worldmonitor_full_intel_plus_crypto_and_6551
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode()
-    assert hashlib.sha256(encoded).hexdigest() == ("00e83f0eb86c04d372e7bd2f666c6ea169efd7df289664bda5df8c82b2595326")
+    assert hashlib.sha256(encoded).hexdigest() == ("694b4574889e1c6f17c98806161918b6e58754bb5bb59f2987f35a3412973274")

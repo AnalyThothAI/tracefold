@@ -191,26 +191,28 @@ Bind-mounts host `~/.tracefold/` into the container, including
 both `config.yaml` and `workers.yaml`; PostgreSQL data is pinned to the
 `tracefold-postgres` named volume.
 
+`make docker-up` starts the full four-service stack: PostgreSQL, the one-shot
+migration service, Tracefold, and RSSHub. PostgreSQL and RSSHub use
+version-and-digest-pinned upstream images. RSSHub has no host port, uses memory
+cache only, and is not an application-startup dependency.
+
+For the free WallStEngine transport, an operator may create
+`~/.tracefold/rsshub.env` with RSSHub's `TWITTER_AUTH_TOKEN` value and restrict
+the file to the operator account. The file is optional, sidecar-only, and must
+not be copied into `config.yaml`, repository files, templates, or shell
+wrappers. When it is absent, Compose still starts and News records
+WallStEngine as an ordinary degraded source.
+
 `make docker-check` verifies the Docker CLI, the Compose plugin, and daemon
 access before the build starts. If it reports that the Docker daemon is not
 reachable, start Docker Desktop or grant the current terminal access to the
 Docker socket before rerunning `make docker-up`.
 
-PostgreSQL observability is part of the compose runtime. The PostgreSQL image
-loads `pg_stat_statements`, PoWA, `pg_stat_kcache`, `pg_qualstats`, and
-`pg_wait_sampling`; slow logs are mounted under
-`~/.tracefold/postgres-logs`.
-
-```bash
-./scripts/pgbadger_report.sh
-./scripts/powa_configure.sh
-```
-
-`pgbadger_report.sh` writes
-`~/.tracefold/reports/pgbadger/pgbadger-latest.html`.
-`powa_configure.sh` configures the local PoWA GUCs and server row with bounded
-retention, takes snapshots, and prints only non-secret server metadata plus
-current/history row counts.
+The official PostgreSQL 18 Bookworm image preloads `pg_stat_statements` with
+query IDs enabled. Use `tracefold db health`, supported audit/query-audit and
+status/metrics surfaces, the SQL in `OPERATIONS.md`, and `docker compose logs`
+for diagnosis. Compose has no custom PostgreSQL build, auxiliary observability
+services, host log mount, or HTML-report path.
 
 ## Frontend (`web/`)
 

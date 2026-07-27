@@ -1,7 +1,7 @@
 # Tracefold
 
 Tracefold is an evidence-first market research system. One Python service
-ingests social, news, macro, DEX/CEX, and provider evidence, persists material
+ingests provider posts, news, macro, DEX/CEX, and market evidence, persists material
 facts in PostgreSQL, builds deterministic read models, and serves a React
 operator console plus stable HTTP, WebSocket, and CLI contracts.
 
@@ -53,6 +53,7 @@ Live configuration is operator-owned:
 ~/.tracefold/config.yaml
 ~/.tracefold/workers.yaml
 ~/.tracefold/postgres_password
+~/.tracefold/rsshub.env       # optional; Compose RSSHub credentials only
 ~/.tracefold/logs/
 ~/.tracefold/cache/
 ```

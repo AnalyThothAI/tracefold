@@ -26,8 +26,8 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
       layers: {
         ingest: {
           status: "ready",
-          enabled_sources: 117,
-          recent_success_sources: 117,
+          enabled_sources: 118,
+          recent_success_sources: 118,
           failing_sources: 0,
           last_success_at_ms: NOW,
         },

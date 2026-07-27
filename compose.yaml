@@ -2,8 +2,11 @@ name: tracefold
 
 services:
   rsshub:
-    image: diygod/rsshub:latest
+    image: diygod/rsshub:5527d18de9605e5df9112f40904596e6ae5b971e@sha256:5730db6dead9c8e6610c92fc71900fa2e7735346d80d6be79ead3f2419d88282
     restart: unless-stopped
+    env_file:
+      - path: ${HOME}/.tracefold/rsshub.env
+        required: false
     environment:
       NODE_ENV: production
       CACHE_TYPE: memory
@@ -21,17 +24,14 @@ services:
       start_period: 30s
 
   postgres:
-    build:
-      context: .
-      dockerfile: ops/postgres/Dockerfile
-    image: tracefold-postgres-observability:18
+    image: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     restart: unless-stopped
     shm_size: 256mb
     command:
       [
         "postgres",
         "-c",
-        "shared_preload_libraries=pg_stat_statements,powa,pg_stat_kcache,pg_qualstats,pg_wait_sampling",
+        "shared_preload_libraries=pg_stat_statements",
         "-c",
         "compute_query_id=on",
         "-c",
@@ -46,38 +46,6 @@ services:
         "track_wal_io_timing=on",
         "-c",
         "track_activity_query_size=4096",
-        "-c",
-        "logging_collector=on",
-        "-c",
-        "log_destination=stderr",
-        "-c",
-        "log_directory=/var/log/postgresql",
-        "-c",
-        "log_filename=postgresql-%Y-%m-%d_%H%M%S.log",
-        "-c",
-        "log_rotation_age=1d",
-        "-c",
-        "log_rotation_size=100MB",
-        "-c",
-        "log_truncate_on_rotation=off",
-        "-c",
-        "log_line_prefix=%m [%p] db=%d,user=%u,app=%a,client=%h,query_id=%Q ",
-        "-c",
-        "log_parameter_max_length=0",
-        "-c",
-        "log_min_duration_statement=250ms",
-        "-c",
-        "log_lock_waits=on",
-        "-c",
-        "deadlock_timeout=1s",
-        "-c",
-        "log_temp_files=64MB",
-        "-c",
-        "log_checkpoints=on",
-        "-c",
-        "log_autovacuum_min_duration=5s",
-        "-c",
-        "log_statement=none",
       ]
     environment:
       POSTGRES_DB: tracefold
@@ -90,7 +58,6 @@ services:
       - "${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"
     volumes:
       - tracefold-postgres:/var/lib/postgresql
-      - ${HOME}/.tracefold/postgres-logs:/var/log/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tracefold_app -d tracefold"]
       interval: 10s
@@ -123,8 +90,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      rsshub:
-        condition: service_healthy
     ports:
       - "8765:8765"
     environment:
@@ -143,36 +108,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  powa-web:
-    image: tracefold-postgres-observability:18
-    init: true
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8888:8888"
-    command:
-      [
-        "bash",
-        "-lc",
-        "cookie_secret=$$(python3 - <<'PY'\nimport secrets\nprint(secrets.token_urlsafe(48))\nPY\n); printf \"servers={\\n  'main': {\\n    'host': 'postgres',\\n    'port': '5432',\\n    'database': 'powa'\\n  }\\n}\\ncookie_secret='%s'\\n\" \"$$cookie_secret\" > /tmp/powa-web.conf; exec powa-web --address=0.0.0.0 --port=8888 --config=/tmp/powa-web.conf",
-      ]
-
-  pgbadger:
-    image: tracefold-postgres-observability:18
-    profiles:
-      - observability-report
-    volumes:
-      - ${HOME}/.tracefold/postgres-logs:/var/log/postgresql:ro
-      - ${HOME}/.tracefold/reports/pgbadger:/reports
-    command:
-      [
-        "bash",
-        "-lc",
-        "mkdir -p /reports && logs=$$(find /var/log/postgresql -maxdepth 1 -type f -name 'postgresql-*.log' | sort); if [ -z \"$$logs\" ]; then echo 'no PostgreSQL log files found under /var/log/postgresql' >&2; exit 1; fi; pgbadger -f stderr -o /reports/pgbadger-latest.html $$logs",
-      ]
 
 volumes:
   tracefold-postgres:

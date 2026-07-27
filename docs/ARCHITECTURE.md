@@ -61,14 +61,14 @@ tracefold.market
   views/         persisted market read queries
 
 tracefold.news
-  sources.py        frozen WorldMonitor-derived source catalog plus crypto/6551
+  sources.py        WorldMonitor-derived catalog plus code-owned RSS sources
   classification.py deterministic keyword threat/category classifier
   identity.py       WorldMonitor-compatible 512-dimension title clustering
   ranking.py        55/20/15/10 importance and Top-8 selection
   brief.py          Chinese Brief fingerprint and citation index lock
   repository.py     PostgreSQL observation, item, Story, and Brief state
   interface.py      sole external News read interface
-  workers.py        the three bounded News workers
+  workers.py        the two bounded News workers
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -167,8 +167,8 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
 `f73de5b7`, not an independent editorial ontology:
 
 ```text
-117 physical RSS/RSSHub sources / 120 logical memberships
-  -> conditional direct fetch, then allowlisted relay fallback
+118 physical RSS/RSSHub sources / 121 logical memberships
+  -> conditional direct fetch, then public-HTTPS-only relay fallback
   -> ETag / Last-Modified, first five entries
   -> immutable FeedObservation before admission
   -> idempotent NewsItem
@@ -191,6 +191,14 @@ future time beyond one hour remain auditable rejected observations and never
 become NewsItems. Valid entries older than 96 hours are persisted as
 historical inactive NewsItems so acquisition loss stays distinguishable from
 active-cluster eligibility.
+
+WallStEngine is one ordinary tier-4 English source in the Finance membership.
+Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
+keeps original and quote posts, and leaves quoted text in the RSS description
+rather than the title. It uses the same five-entry cap, observations,
+classification, Story source count, ranking, health, and Brief rules as every
+other source. Internal HTTP/RSSHub URLs are direct-only; only code-owned public
+HTTPS feed URLs may be sent to the external relay.
 
 NewsItem identity is `(source_id, source_item_key)`, where the source item key
 comes from GUID and canonical URL. Tracking parameters are removed. The

@@ -23,6 +23,7 @@ from tracefold.news import (
     NewsSourceDefinition,
     NewsWorldBriefWorker,
     attach_pipeline_runtime_health,
+    default_sources,
 )
 from tracefold.news.brief import brief_fingerprint
 from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
@@ -122,6 +123,7 @@ def record(
     started_at_ms: int = NOW_MS,
     reporting_origin: str | None = None,
     link: str | None = None,
+    description: str = "Durable source description for this report.",
 ) -> dict[str, int]:
     return repository.record_fetch_success(
         source=definition,
@@ -130,7 +132,7 @@ def record(
                 guid=guid,
                 link=link or f"https://{definition.source_id}.example/{guid}",
                 title=title,
-                description="Durable source description for this report.",
+                description=description,
                 published_at_ms=published_at_ms,
                 reporting_origin=reporting_origin,
                 raw={"guid": guid},
@@ -259,6 +261,93 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
         assert publisher.calls == 1
         assert asyncio.run(worker.run_once()).skipped == 1
         assert publisher.calls == 1
+    finally:
+        conn.close()
+
+
+def test_wallstengine_uses_ordinary_item_story_classification_and_brief_rules(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
+        reuters = source("reuters", "Reuters")
+        with conn.transaction():
+            repository.sync_sources((wallstengine, reuters), now_ms=NOW_MS)
+            record(
+                repository,
+                wallstengine,
+                guid="wall-only",
+                title="Positioning looks stretched into the closing bell",
+                description=(
+                    "The quoted report says the central bank raised interest rates "
+                    "after an emergency inflation meeting."
+                ),
+                published_at_ms=NOW_MS - 40_000,
+                link="https://x.com/wallstengine/status/201",
+            )
+            record(
+                repository,
+                wallstengine,
+                guid="wall-tariff",
+                title="Government announces emergency tariff package",
+                published_at_ms=NOW_MS - 30_000,
+                started_at_ms=NOW_MS + 1,
+                link="https://x.com/wallstengine/status/202",
+            )
+            record(
+                repository,
+                reuters,
+                guid="reuters-tariff",
+                title="Government announces emergency tariff package",
+                published_at_ms=NOW_MS - 20_000,
+                started_at_ms=NOW_MS + 2,
+            )
+            record(
+                repository,
+                reuters,
+                guid="reuters-rate",
+                title="Central bank raises interest rate after policy shock",
+                published_at_ms=NOW_MS - 10_000,
+                started_at_ms=NOW_MS + 3,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+
+        wall_item = conn.execute(
+            """
+            SELECT title, description, category, source_id
+              FROM news_items
+             WHERE source_id = %s AND source_item_key = 'wall-only'
+            """,
+            (wallstengine.source_id,),
+        ).fetchone()
+        assert wall_item["category"] == "general"
+        assert "central bank raised interest rates" in wall_item["description"]
+
+        corroborated = conn.execute(
+            """
+            SELECT source_count
+              FROM news_stories
+             WHERE active
+               AND representative_title = 'Government announces emergency tariff package'
+            """
+        ).fetchone()
+        assert corroborated == {"source_count": 2}
+
+        candidates = repository.brief_candidates()
+        wall_only = next(
+            candidate
+            for candidate in candidates
+            if candidate["representative_title"] == "Positioning looks stretched into the closing bell"
+        )
+        assert wall_only["representative_source_id"] == wallstengine.source_id
+        assert wall_only["source_count"] == 1
+        assert wall_only["category"] == "general"
+        assert {
+            key for key in wall_only if "wallstengine" in str(key).casefold() or "social" in str(key).casefold()
+        } == set()
     finally:
         conn.close()
 
@@ -648,6 +737,52 @@ def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
         story = degraded["layers"]["story"]
         assert story["last_complete_rebuild_at_ms"] == NOW_MS
         assert story["last_complete_rebuild_age_ms"] == 0
+    finally:
+        conn.close()
+
+
+def test_wallstengine_empty_success_and_failure_use_ordinary_ingest_health(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
+        with conn.transaction():
+            repository.sync_sources((wallstengine,), now_ms=NOW_MS)
+            repository.record_fetch_success(
+                source=wallstengine,
+                entries=(),
+                started_at_ms=NOW_MS,
+                finished_at_ms=NOW_MS,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+        empty = repository.health_snapshot(now_ms=NOW_MS)
+        assert empty["layers"]["ingest"]["empty_sources"] == 1
+        assert empty["layers"]["ingest"]["failing_sources"] == 0
+
+        with conn.transaction():
+            repository.record_fetch_failure(
+                source_id=wallstengine.source_id,
+                started_at_ms=NOW_MS + 120_000,
+                finished_at_ms=NOW_MS + 120_000,
+                error=RuntimeError("RSSHub credentials unavailable"),
+                status_code=503,
+                fetch_path="direct",
+                direct_error_code=None,
+            )
+        failed = repository.health_snapshot(now_ms=NOW_MS + 120_000)
+        ingest = failed["layers"]["ingest"]
+        assert failed["status"] == "degraded"
+        assert ingest["failing_sources"] == 1
+        assert ingest["relay_success_sources"] == 0
     finally:
         conn.close()
 

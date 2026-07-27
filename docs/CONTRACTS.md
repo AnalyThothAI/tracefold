@@ -13,6 +13,11 @@ The active operator-owned files are:
 
 Repository examples, fixtures, `.env` files, and generated docs are not runtime configuration. `uv run tracefold config` reports the effective paths and redacted settings. Unknown settings or worker keys fail validation.
 
+The optional `~/.tracefold/rsshub.env` file belongs only to the Compose RSSHub
+sidecar and is never read or reported by the Tracefold application. Its
+absence is valid: Compose still starts, while the ordinary WallStEngine source
+reports acquisition failure through News health until RSSHub can fetch it.
+
 The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
@@ -178,6 +183,16 @@ after a complete valid publication transaction succeeds.
 `/api/news/status` exposes three independent News health layers: `ingest`,
 `story`, and `brief`. Deterministic Story cards remain readable while a Brief
 is running, failed, insufficient, or stale.
+
+The code-owned inventory contains 118 physical sources and 121 memberships.
+WallStEngine is an ordinary English tier-4 Finance source acquired from the
+internal RSSHub sidecar. Classification reads its RSS title only; quote text
+in the description does not affect category. Source membership does not force
+an economic category or change Story, ranking, corroboration, or Brief rules.
+External relay fallback is allowed only for code-owned public HTTPS feed URLs.
+HTTP, localhost, single-label container hosts, link-local, loopback, private,
+and other non-public destinations are direct-only and never leave the Compose
+network through the relay.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,
