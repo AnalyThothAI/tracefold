@@ -30,6 +30,7 @@ class MacroSessionView:
     session_date: date
     status: str
     market_cutoff_ms: int
+    evidence_pack_id: str
     sealed_at_ms: int
     attempt_count: int
     max_attempts: int
@@ -132,16 +133,15 @@ class CompletedSessionMacro:
         self,
         session_date: date,
     ) -> _RunOutcome:
-        market_cutoff_ms = completed_session_close_ms(session_date)
+        session_close_ms = completed_session_close_ms(session_date)
         now_ms = int(self._clock_ms())
-        due_at_ms = market_cutoff_ms + self._settle_delay_seconds() * 1_000
+        due_at_ms = session_close_ms + self._settle_delay_seconds() * 1_000
         if now_ms < due_at_ms:
             raise ValueError("macro_research_session_not_completed")
 
         prepared = await asyncio.to_thread(
             self._prepare_run,
             session_date=session_date,
-            market_cutoff_ms=market_cutoff_ms,
             due_at_ms=due_at_ms,
             now_ms=now_ms,
         )
@@ -155,11 +155,12 @@ class CompletedSessionMacro:
             session_date=session_date,
             market_cutoff_ms=int(claimed["market_cutoff_ms"]),
             sealed_at_ms=int(claimed["sealed_at_ms"]),
+            evidence_pack_id=str(claimed["evidence_pack_id"]),
         )
         try:
             analysis = await self._analyze_with_lease_heartbeat(scope)
             artifact, artifact_hash = _validated_artifact(analysis, scope=scope)
-            published_at_ms = max(int(self._clock_ms()), market_cutoff_ms)
+            published_at_ms = max(int(self._clock_ms()), int(claimed["market_cutoff_ms"]))
             published = await asyncio.to_thread(
                 self._publish,
                 session_date=session_date,
@@ -278,7 +279,6 @@ class CompletedSessionMacro:
         self,
         *,
         session_date: date,
-        market_cutoff_ms: int,
         due_at_ms: int,
         now_ms: int,
     ) -> _PreparedRun:
@@ -289,9 +289,14 @@ class CompletedSessionMacro:
                     claimed=None,
                     run_rows_written=0,
                 )
+            evidence_pack = repos.macro.evidence_pack(session_date=session_date)
+            if evidence_pack is None:
+                raise MacroResearchIntegrityError("macro_research_evidence_pack_missing")
+            evidence_cutoff_ms = int(evidence_pack["judgment_cutoff_ms"])
             inserted = repos.macro_research.ensure_run(
                 session_date=session_date,
-                market_cutoff_ms=market_cutoff_ms,
+                market_cutoff_ms=evidence_cutoff_ms,
+                evidence_pack_id=str(evidence_pack["evidence_pack_id"]),
                 sealed_at_ms=now_ms,
                 max_attempts=self._max_attempts(),
                 due_at_ms=due_at_ms,
@@ -300,7 +305,7 @@ class CompletedSessionMacro:
             existing = repos.macro_research.run_record(session_date)
             if existing is None:
                 raise RuntimeError("macro_research_run_missing_after_ensure")
-            if int(existing["market_cutoff_ms"]) != int(market_cutoff_ms):
+            if int(existing["market_cutoff_ms"]) != evidence_cutoff_ms:
                 raise MacroResearchIntegrityError("macro_research_run_cutoff_mismatch")
             claimed = repos.macro_research.claim_run(
                 session_date=session_date,
@@ -477,6 +482,7 @@ def _session_view(row: Mapping[str, Any]) -> MacroSessionView:
         session_date=row["session_date"],
         status=str(row["run_status"]),
         market_cutoff_ms=int(row["market_cutoff_ms"]),
+        evidence_pack_id=str(row["evidence_pack_id"]),
         sealed_at_ms=int(row["sealed_at_ms"]),
         attempt_count=int(row["attempt_count"]),
         max_attempts=int(row["max_attempts"]),

@@ -303,24 +303,130 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `search_tsv` | `TSVECTOR` | True | `None` |
 
-## `macro_observations`
+## `macro_acquisition_targets`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `observation_id` | `TEXT` | False | `None` |
-| `source_name` | `TEXT` | False | `None` |
-| `series_key` | `TEXT` | False | `None` |
-| `observed_at` | `DATE` | False | `None` |
-| `value_numeric` | `NUMERIC` | True | `None` |
-| `unit` | `TEXT` | True | `None` |
-| `frequency` | `TEXT` | True | `None` |
-| `data_quality` | `TEXT` | False | `'ok'::text` |
-| `source_ts` | `TEXT` | True | `None` |
-| `raw_payload_json` | `JSONB` | False | `'{}'::jsonb` |
-| `ingested_at_ms` | `BIGINT` | False | `None` |
-| `concept_key` | `TEXT` | False | `None` |
-| `source_priority` | `INTEGER` | False | `None` |
-| `fact_payload_hash` | `TEXT` | False | `None` |
+| `target_key` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `partition_key` | `TEXT` | False | `None` |
+| `clock_kind` | `TEXT` | False | `None` |
+| `cursor_json` | `JSONB` | False | `'{}'::jsonb` |
+| `status` | `TEXT` | False | `'pending'::text` |
+| `next_due_at_ms` | `BIGINT` | False | `None` |
+| `priority` | `INTEGER` | False | `100` |
+| `leased_until_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `max_attempts` | `INTEGER` | False | `None` |
+| `last_receipt_id` | `TEXT` | True | `None` |
+| `last_success_at_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_daily_judgments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
+| `latest_fact_at_ms` | `BIGINT` | False | `None` |
+| `judgment_json` | `JSONB` | False | `None` |
+| `memo_text` | `TEXT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `compiler_version` | `TEXT` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_documents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `document_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `document_type` | `TEXT` | False | `None` |
+| `title` | `TEXT` | False | `None` |
+| `effective_date` | `DATE` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `content_text` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `metadata_json` | `JSONB` | False | `None` |
+
+## `macro_event_updates`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_update_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `trigger_release_fact_id` | `TEXT` | False | `None` |
+| `update_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_evidence_packs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
+| `latest_fact_at_ms` | `BIGINT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `compiler_version` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_feature_series`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `feature_id` | `TEXT` | False | `None` |
+| `as_of_date` | `DATE` | False | `None` |
+| `formula_version` | `TEXT` | False | `None` |
+| `value_numeric` | `DOUBLE PRECISION` | False | `None` |
+| `unit` | `TEXT` | False | `None` |
+| `inputs_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `computed_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_module_current`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `module_id` | `TEXT` | False | `None` |
+| `readiness` | `TEXT` | False | `None` |
+| `fact_cutoff_ms` | `BIGINT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_release_facts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `release_fact_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `release_id` | `TEXT` | False | `None` |
+| `series_id` | `TEXT` | False | `None` |
+| `reference_period` | `TEXT` | False | `None` |
+| `scheduled_at_ms` | `BIGINT` | True | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `actual_value` | `DOUBLE PRECISION` | True | `None` |
+| `prior_value` | `DOUBLE PRECISION` | True | `None` |
+| `revised_prior_value` | `DOUBLE PRECISION` | True | `None` |
+| `estimate_value` | `DOUBLE PRECISION` | True | `None` |
+| `unit` | `TEXT` | False | `None` |
+| `importance_tier` | `SMALLINT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
 
 ## `macro_research_publications`
 
@@ -328,9 +434,11 @@
 |--------|------|----------|---------|
 | `session_date` | `DATE` | False | `None` |
 | `market_cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
 | `artifact_json` | `JSONB` | False | `None` |
 | `report_markdown` | `TEXT` | False | `None` |
 | `audit_json` | `JSONB` | False | `None` |
+| `reviewer_disposition` | `TEXT` | False | `None` |
 | `model_name` | `TEXT` | False | `None` |
 | `prompt_version` | `TEXT` | False | `None` |
 | `workflow_version` | `TEXT` | False | `None` |
@@ -343,6 +451,7 @@
 |--------|------|----------|---------|
 | `session_date` | `DATE` | False | `None` |
 | `market_cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
 | `status` | `TEXT` | False | `'pending'::text` |
 | `sealed_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `0` |
@@ -350,79 +459,123 @@
 | `due_at_ms` | `BIGINT` | False | `None` |
 | `leased_until_ms` | `BIGINT` | True | `None` |
 | `lease_owner` | `TEXT` | True | `None` |
+| `reviewer_disposition` | `TEXT` | True | `None` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `last_error_message` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `macro_sync_runs`
+## `macro_series_facts`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `sync_run_id` | `TEXT` | False | `None` |
-| `sync_window_id` | `TEXT` | True | `None` |
-| `source_name` | `TEXT` | False | `None` |
-| `bundle_name` | `TEXT` | False | `None` |
-| `requested_start` | `DATE` | True | `None` |
-| `requested_end` | `DATE` | True | `None` |
-| `status` | `TEXT` | False | `None` |
-| `asof_date` | `DATE` | True | `None` |
-| `max_observed_at` | `DATE` | True | `None` |
-| `observations_count` | `INTEGER` | False | `0` |
-| `imported_observation_count` | `INTEGER` | False | `0` |
-| `coverage_json` | `JSONB` | False | `'{}'::jsonb` |
-| `missing_series_json` | `JSONB` | False | `'[]'::jsonb` |
-| `series_errors_json` | `JSONB` | False | `'[]'::jsonb` |
-| `reason_codes_json` | `JSONB` | False | `'[]'::jsonb` |
-| `diagnostics_json` | `JSONB` | False | `'{}'::jsonb` |
-| `fred_api_key_env` | `TEXT` | True | `None` |
-| `fred_api_key_configured` | `BOOLEAN` | False | `false` |
-| `error_code` | `TEXT` | True | `None` |
-| `error_message` | `TEXT` | True | `None` |
+| `fact_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `series_id` | `TEXT` | False | `None` |
+| `reference_date` | `DATE` | False | `None` |
+| `vintage_date` | `DATE` | False | `None` |
+| `value_numeric` | `DOUBLE PRECISION` | True | `None` |
+| `value_text` | `TEXT` | True | `None` |
+| `unit` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
+
+## `macro_source_receipts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `receipt_id` | `TEXT` | False | `None` |
+| `target_key` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `partition_key` | `TEXT` | False | `None` |
 | `started_at_ms` | `BIGINT` | False | `None` |
 | `completed_at_ms` | `BIGINT` | False | `None` |
-| `duration_ms` | `BIGINT` | False | `None` |
-| `seen_observation_count` | `INTEGER` | False | `0` |
-| `inserted_observation_count` | `INTEGER` | False | `0` |
-| `changed_observation_count` | `INTEGER` | False | `0` |
-| `noop_observation_count` | `INTEGER` | False | `0` |
-| `max_seen_observed_at` | `DATE` | True | `None` |
-| `min_changed_observed_at` | `DATE` | True | `None` |
-| `max_changed_observed_at` | `DATE` | True | `None` |
+| `status` | `TEXT` | False | `None` |
+| `http_status` | `INTEGER` | True | `None` |
+| `rows_seen` | `INTEGER` | False | `None` |
+| `rows_inserted` | `INTEGER` | False | `None` |
+| `response_hash` | `TEXT` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `error_message` | `TEXT` | True | `None` |
+| `diagnostics_json` | `JSONB` | False | `None` |
 
-## `macro_sync_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `source_name` | `TEXT` | False | `None` |
-| `bundle_name` | `TEXT` | False | `None` |
-| `max_observed_at` | `DATE` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_sync_windows`
+## `market_instruments`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `sync_window_id` | `TEXT` | False | `None` |
-| `source_name` | `TEXT` | False | `None` |
-| `bundle_name` | `TEXT` | False | `None` |
-| `window_start` | `DATE` | False | `None` |
-| `window_end` | `DATE` | False | `None` |
-| `trigger_reason` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `'pending'::text` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `priority` | `INTEGER` | False | `100` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `max_attempts` | `INTEGER` | False | `8` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `last_error_message` | `TEXT` | True | `None` |
-| `last_run_id` | `TEXT` | True | `None` |
+| `instrument_id` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `name` | `TEXT` | False | `None` |
+| `asset_class` | `TEXT` | False | `None` |
+| `instrument_type` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `currency` | `TEXT` | False | `None` |
+| `price_unit` | `TEXT` | False | `None` |
+| `source_metadata_json` | `JSONB` | False | `'{}'::jsonb` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `completed_at_ms` | `BIGINT` | True | `None` |
+
+## `market_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `observation_id` | `TEXT` | False | `None` |
+| `instrument_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `source_id` | `TEXT` | False | `None` |
+| `field_name` | `TEXT` | False | `None` |
+| `value_numeric` | `DOUBLE PRECISION` | False | `None` |
+| `unit` | `TEXT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `trust_tier` | `TEXT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
+
+## `market_position_facts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `position_fact_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `contract_code` | `TEXT` | False | `None` |
+| `contract_name` | `TEXT` | False | `None` |
+| `report_date` | `DATE` | False | `None` |
+| `open_interest` | `DOUBLE PRECISION` | False | `None` |
+| `leveraged_long` | `DOUBLE PRECISION` | False | `None` |
+| `leveraged_short` | `DOUBLE PRECISION` | False | `None` |
+| `leveraged_net_pct_oi` | `DOUBLE PRECISION` | False | `None` |
+| `asset_manager_net_pct_oi` | `DOUBLE PRECISION` | False | `None` |
+| `dealer_net_pct_oi` | `DOUBLE PRECISION` | False | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
+
+## `market_settlements`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `settlement_id` | `TEXT` | False | `None` |
+| `instrument_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `source_id` | `TEXT` | False | `None` |
+| `trade_date` | `DATE` | False | `None` |
+| `contract_code` | `TEXT` | False | `None` |
+| `settlement_price` | `DOUBLE PRECISION` | False | `None` |
+| `open_interest` | `DOUBLE PRECISION` | True | `None` |
+| `volume` | `DOUBLE PRECISION` | True | `None` |
+| `unit` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
 
 ## `market_tick_current`
 

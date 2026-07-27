@@ -174,13 +174,13 @@
         "title": "ApiEnvelope[LiveMarketData]",
         "type": "object"
       },
-      "ApiEnvelope_MacroLiveEvidenceReadData_": {
+      "ApiEnvelope_MacroModuleReadData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/MacroLiveEvidenceReadData"
+                "$ref": "#/components/schemas/MacroModuleReadData"
               },
               {
                 "type": "null"
@@ -217,7 +217,53 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[MacroLiveEvidenceReadData]",
+        "title": "ApiEnvelope[MacroModuleReadData]",
+        "type": "object"
+      },
+      "ApiEnvelope_MacroOverviewReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroOverviewReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroOverviewReadData]",
         "type": "object"
       },
       "ApiEnvelope_MacroResearchReadData_": {
@@ -1547,639 +1593,299 @@
         "title": "LiveMarketData",
         "type": "object"
       },
-      "MacroLiveCalculationData": {
+      "MacroModuleReadData": {
         "additionalProperties": false,
         "properties": {
-          "formula": {
-            "title": "Formula",
-            "type": "string"
+          "charts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Charts",
+            "type": "array"
           },
-          "formula_id": {
-            "title": "Formula Id",
-            "type": "string"
-          },
-          "operands": {
+          "contradictions": {
             "items": {
               "type": "string"
             },
-            "title": "Operands",
+            "title": "Contradictions",
             "type": "array"
           },
-          "result": {
+          "current_state": {
+            "additionalProperties": true,
+            "title": "Current State",
+            "type": "object"
+          },
+          "dataset_states": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Dataset States",
+            "type": "array"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "features": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "judgment_cutoff_ms": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Result"
+            "title": "Judgment Cutoff Ms"
           },
-          "sample_size": {
-            "title": "Sample Size",
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
             "type": "integer"
           },
-          "unit": {
-            "title": "Unit",
+          "module_id": {
+            "enum": [
+              "rates_fed",
+              "economy_inflation",
+              "liquidity_funding",
+              "credit",
+              "volatility",
+              "cross_asset"
+            ],
+            "title": "Module Id",
             "type": "string"
           },
-          "window": {
+          "next_checkpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Next Checkpoints",
+            "type": "array"
+          },
+          "raw_evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Raw Evidence",
+            "type": "array"
+          },
+          "readiness": {
             "enum": [
-              "30d",
-              "90d",
-              "1y",
-              "5y"
+              "ready",
+              "degraded",
+              "blocked"
             ],
-            "title": "Window",
+            "title": "Readiness",
             "type": "string"
+          },
+          "schema_version": {
+            "const": "macro_module_v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "top_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Top Changes",
+            "type": "array"
           }
         },
         "required": [
-          "formula_id",
-          "formula",
-          "operands",
-          "window",
-          "sample_size",
-          "result",
-          "unit"
+          "schema_version",
+          "module_id",
+          "label",
+          "readiness",
+          "judgment_cutoff_ms",
+          "latest_fact_at_ms",
+          "current_state",
+          "top_changes",
+          "features",
+          "charts",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "gaps",
+          "dataset_states",
+          "raw_evidence"
         ],
-        "title": "MacroLiveCalculationData",
+        "title": "MacroModuleReadData",
         "type": "object"
       },
-      "MacroLiveEvidenceReadData": {
+      "MacroModuleSummaryData": {
         "additionalProperties": false,
         "properties": {
+          "current_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current State"
+          },
+          "gap_count": {
+            "title": "Gap Count",
+            "type": "integer"
+          },
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "module_id": {
+            "title": "Module Id",
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "ready",
+              "degraded",
+              "blocked",
+              "missing"
+            ],
+            "title": "Readiness",
+            "type": "string"
+          },
+          "top_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Top Changes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "module_id",
+          "label",
+          "readiness",
+          "latest_fact_at_ms",
+          "current_state",
+          "top_changes",
+          "gap_count",
+          "href"
+        ],
+        "title": "MacroModuleSummaryData",
+        "type": "object"
+      },
+      "MacroOverviewReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "changes_since_judgment": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes Since Judgment",
+            "type": "array"
+          },
+          "daily_judgment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Judgment"
+          },
+          "judgment_cutoff_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judgment Cutoff Ms"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/MacroModuleSummaryData"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "overall_readiness": {
+            "enum": [
+              "ready",
+              "degraded",
+              "blocked"
+            ],
+            "title": "Overall Readiness",
+            "type": "string"
+          },
           "read_at_ms": {
             "title": "Read At Ms",
             "type": "integer"
           },
           "research": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MacroLiveResearchLinkData"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "additionalProperties": true,
+            "title": "Research",
+            "type": "object"
           },
           "schema_version": {
-            "const": "macro_live_evidence_v1",
+            "const": "macro_overview_v1",
             "title": "Schema Version",
-            "type": "string"
-          },
-          "unclassified": {
-            "items": {
-              "$ref": "#/components/schemas/MacroLiveMetricData"
-            },
-            "title": "Unclassified",
-            "type": "array"
-          },
-          "view_id": {
-            "enum": [
-              "dashboard",
-              "overview",
-              "rates-inflation",
-              "growth-labor",
-              "liquidity-funding",
-              "credit",
-              "cross-asset"
-            ],
-            "title": "View Id",
-            "type": "string"
-          },
-          "views": {
-            "items": {
-              "$ref": "#/components/schemas/MacroLiveViewData"
-            },
-            "title": "Views",
-            "type": "array"
-          },
-          "window": {
-            "enum": [
-              "30d",
-              "90d",
-              "1y",
-              "5y"
-            ],
-            "title": "Window",
             "type": "string"
           }
         },
         "required": [
           "schema_version",
-          "view_id",
-          "window",
           "read_at_ms",
-          "views",
-          "unclassified",
+          "judgment_cutoff_ms",
+          "latest_fact_at_ms",
+          "overall_readiness",
+          "daily_judgment",
+          "modules",
+          "changes_since_judgment",
           "research"
         ],
-        "title": "MacroLiveEvidenceReadData",
-        "type": "object"
-      },
-      "MacroLiveHistoryPointData": {
-        "additionalProperties": false,
-        "properties": {
-          "data_quality": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Data Quality"
-          },
-          "frequency": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Frequency"
-          },
-          "observed_at": {
-            "format": "date",
-            "title": "Observed At",
-            "type": "string"
-          },
-          "received_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Received At Ms"
-          },
-          "series_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Series Key"
-          },
-          "source_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Name"
-          },
-          "source_priority": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Priority"
-          },
-          "source_timestamp": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Timestamp"
-          },
-          "source_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Url"
-          },
-          "value_numeric": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Value Numeric"
-          }
-        },
-        "required": [
-          "observed_at",
-          "value_numeric",
-          "source_timestamp",
-          "received_at_ms",
-          "source_name",
-          "series_key",
-          "source_priority",
-          "frequency",
-          "data_quality",
-          "source_url"
-        ],
-        "title": "MacroLiveHistoryPointData",
-        "type": "object"
-      },
-      "MacroLiveMetricData": {
-        "additionalProperties": false,
-        "properties": {
-          "availability": {
-            "enum": [
-              "available",
-              "missing"
-            ],
-            "title": "Availability",
-            "type": "string"
-          },
-          "calculation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MacroLiveCalculationData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "concept_key": {
-            "title": "Concept Key",
-            "type": "string"
-          },
-          "data_quality": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Data Quality"
-          },
-          "display_label": {
-            "title": "Display Label",
-            "type": "string"
-          },
-          "display_order": {
-            "title": "Display Order",
-            "type": "integer"
-          },
-          "frequency": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Frequency"
-          },
-          "history": {
-            "items": {
-              "$ref": "#/components/schemas/MacroLiveHistoryPointData"
-            },
-            "title": "History",
-            "type": "array"
-          },
-          "kind": {
-            "enum": [
-              "material",
-              "derived"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "observed_at": {
-            "anyOf": [
-              {
-                "format": "date",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Observed At"
-          },
-          "page_id": {
-            "anyOf": [
-              {
-                "enum": [
-                  "overview",
-                  "rates-inflation",
-                  "growth-labor",
-                  "liquidity-funding",
-                  "credit",
-                  "cross-asset"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Page Id"
-          },
-          "received_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Received At Ms"
-          },
-          "section_id": {
-            "title": "Section Id",
-            "type": "string"
-          },
-          "section_label": {
-            "title": "Section Label",
-            "type": "string"
-          },
-          "series_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Series Key"
-          },
-          "source_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Name"
-          },
-          "source_priority": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Priority"
-          },
-          "source_timestamp": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Timestamp"
-          },
-          "source_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Url"
-          },
-          "summary": {
-            "title": "Summary",
-            "type": "boolean"
-          },
-          "unit": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unit"
-          },
-          "value_numeric": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Value Numeric"
-          }
-        },
-        "required": [
-          "concept_key",
-          "page_id",
-          "section_id",
-          "section_label",
-          "display_label",
-          "display_order",
-          "summary",
-          "kind",
-          "availability",
-          "value_numeric",
-          "unit",
-          "frequency",
-          "observed_at",
-          "source_timestamp",
-          "received_at_ms",
-          "source_name",
-          "series_key",
-          "source_priority",
-          "data_quality",
-          "source_url",
-          "history",
-          "calculation"
-        ],
-        "title": "MacroLiveMetricData",
-        "type": "object"
-      },
-      "MacroLiveResearchLinkData": {
-        "additionalProperties": false,
-        "properties": {
-          "evidence_gap_summaries": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence Gap Summaries",
-            "type": "array"
-          },
-          "executive_summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Executive Summary"
-          },
-          "href": {
-            "const": "/macro/research",
-            "title": "Href",
-            "type": "string"
-          },
-          "market_cutoff_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Market Cutoff Ms"
-          },
-          "session_date": {
-            "format": "date",
-            "title": "Session Date",
-            "type": "string"
-          },
-          "state": {
-            "enum": [
-              "current",
-              "generating",
-              "failed",
-              "missing"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          }
-        },
-        "required": [
-          "state",
-          "session_date",
-          "market_cutoff_ms",
-          "title",
-          "executive_summary",
-          "evidence_gap_summaries",
-          "href"
-        ],
-        "title": "MacroLiveResearchLinkData",
-        "type": "object"
-      },
-      "MacroLiveViewData": {
-        "additionalProperties": false,
-        "properties": {
-          "available_count": {
-            "title": "Available Count",
-            "type": "integer"
-          },
-          "description": {
-            "title": "Description",
-            "type": "string"
-          },
-          "latest_observed_at": {
-            "anyOf": [
-              {
-                "format": "date",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Observed At"
-          },
-          "max_received_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Received At Ms"
-          },
-          "metrics": {
-            "items": {
-              "$ref": "#/components/schemas/MacroLiveMetricData"
-            },
-            "title": "Metrics",
-            "type": "array"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "total_metric_count": {
-            "title": "Total Metric Count",
-            "type": "integer"
-          },
-          "view_id": {
-            "enum": [
-              "overview",
-              "rates-inflation",
-              "growth-labor",
-              "liquidity-funding",
-              "credit",
-              "cross-asset"
-            ],
-            "title": "View Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "view_id",
-          "title",
-          "description",
-          "metrics",
-          "total_metric_count",
-          "available_count",
-          "latest_observed_at",
-          "max_received_at_ms"
-        ],
-        "title": "MacroLiveViewData",
+        "title": "MacroOverviewReadData",
         "type": "object"
       },
       "MacroResearchCitationData": {
@@ -2320,6 +2026,10 @@
             "title": "Evidence Gaps",
             "type": "array"
           },
+          "evidence_pack_id": {
+            "title": "Evidence Pack Id",
+            "type": "string"
+          },
           "executive_summary": {
             "title": "Executive Summary",
             "type": "string"
@@ -2338,6 +2048,15 @@
               }
             ],
             "title": "Published At Ms"
+          },
+          "reviewer_disposition": {
+            "enum": [
+              "pass",
+              "revise",
+              "block"
+            ],
+            "title": "Reviewer Disposition",
+            "type": "string"
           },
           "reviewer_notes": {
             "items": {
@@ -2376,8 +2095,10 @@
           "sections",
           "evidence_gaps",
           "citations",
+          "reviewer_disposition",
           "reviewer_notes",
-          "audit"
+          "audit",
+          "evidence_pack_id"
         ],
         "title": "MacroResearchPublicationData",
         "type": "object"
@@ -2444,6 +2165,10 @@
             "title": "Attempt Count",
             "type": "integer"
           },
+          "evidence_pack_id": {
+            "title": "Evidence Pack Id",
+            "type": "string"
+          },
           "last_error": {
             "anyOf": [
               {
@@ -2475,6 +2200,7 @@
         },
         "required": [
           "session_date",
+          "evidence_pack_id",
           "status",
           "attempt_count",
           "max_attempts",
@@ -8697,53 +8423,127 @@
         ]
       }
     },
-    "/api/macro/evidence/{view_id}": {
+    "/api/macro/credit": {
       "get": {
-        "operationId": "macro_live_evidence_api_macro_evidence__view_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "view_id",
-            "required": true,
-            "schema": {
-              "title": "View Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "window",
-            "required": false,
-            "schema": {
-              "default": "90d",
-              "title": "Window",
-              "type": "string"
-            }
-          }
-        ],
+        "operationId": "macro_credit_api_macro_credit_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroLiveEvidenceReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
                 }
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
+          }
+        },
+        "summary": "Macro Credit",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/cross-asset": {
+      "get": {
+        "operationId": "macro_cross_asset_api_macro_cross_asset_get",
+        "responses": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Successful Response"
           }
         },
-        "summary": "Macro Live Evidence",
+        "summary": "Macro Cross Asset",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/economy-inflation": {
+      "get": {
+        "operationId": "macro_economy_inflation_api_macro_economy_inflation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Macro Economy Inflation",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/liquidity-funding": {
+      "get": {
+        "operationId": "macro_liquidity_funding_api_macro_liquidity_funding_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Macro Liquidity Funding",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/overview": {
+      "get": {
+        "operationId": "macro_overview_api_macro_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroOverviewReadData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Macro Overview",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/rates-fed": {
+      "get": {
+        "operationId": "macro_rates_fed_api_macro_rates_fed_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Macro Rates Fed",
         "tags": [
           "api"
         ]
@@ -8794,6 +8594,27 @@
           }
         },
         "summary": "Macro Research",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/macro/volatility": {
+      "get": {
+        "operationId": "macro_volatility_api_macro_volatility_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Macro Volatility",
         "tags": [
           "api"
         ]

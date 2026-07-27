@@ -19,8 +19,20 @@ def disabled_workers_settings() -> WorkersSettings:
 
 def runtime_workers_settings() -> WorkersSettings:
     workers = WorkersSettings()
+    disabled_macro_workers = (
+        "macro_market_intraday",
+        "macro_settlements",
+        "macro_economic_releases",
+        "macro_official_state",
+        "macro_official_documents",
+        "macro_backfill",
+        "macro_projection",
+        "macro_judgment",
+        "macro_research",
+    )
     return workers.model_copy(
         update={
-            "macro_sync": workers.macro_sync.model_copy(update={"enabled": False}),
+            name: getattr(workers, name).model_copy(update={"enabled": False})
+            for name in disabled_macro_workers
         }
     )

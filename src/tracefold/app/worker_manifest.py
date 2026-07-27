@@ -67,8 +67,49 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         ),
     ),
     WorkerManifest(
-        name="macro_sync",
+        name="macro_market_intraday",
+        start_priority=75,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_settlements",
+        start_priority=76,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_economic_releases",
+        start_priority=77,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_official_state",
+        start_priority=78,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_official_documents",
+        start_priority=79,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_backfill",
         start_priority=80,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
+        name="macro_projection",
+        start_priority=81,
+        current_read_model_identities=(
+            ("macro_feature_series", ("feature_id", "as_of_date")),
+            ("macro_module_current", ("module_id",)),
+        ),
+    ),
+    WorkerManifest(
+        name="macro_judgment",
+        start_priority=82,
+        current_read_model_identities=(
+            ("macro_daily_judgments", ("session_date",)),
+        ),
     ),
     WorkerManifest(
         name="token_image_mirror",

@@ -35,7 +35,14 @@ event_anchor_backfill
 resolution_refresh
 asset_profile_refresh
 token_radar_projection
-macro_sync
+macro_market_intraday
+macro_settlements
+macro_economic_releases
+macro_official_state
+macro_official_documents
+macro_backfill
+macro_projection
+macro_judgment
 token_image_mirror
 token_profile_current
 news_ingest
@@ -82,7 +89,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Watchlist | `/api/watchlist/handles/overview`, `/api/watchlist/handle/{handle}/overview`, `/api/watchlist/handle/{handle}/timeline` | Evidence queries; no separate Watchlist domain |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
-| Macro | `/api/macro/evidence/{view_id}`, `/api/macro/research` | bounded persisted `macro_observations` views; persisted completed-session DeepAgents research and durable run state |
+| Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable daily judgment/Evidence Pack, and Evidence-Pack-bound DeepAgents research |
 | News | `/api/news/stories`, `/api/news/stories/{story_id}`, `/api/news/sources` | deterministic Story read model, Article evidence, immutable current-evidence analysis, and source fetch state |
 | Notifications | account alerts, notification list with embedded summary, delivery audit, and read commands under `/api` | notification facts and external-delivery ledger |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
@@ -163,22 +170,47 @@ admission fields are absent, not nullable.
 
 ### Macro
 
-Macro exposes one parameterized live-fact read family and one research read:
+Macro exposes one overview, six typed decision-module reads, and one research
+read:
 
 ```text
-/api/macro/evidence/{view_id}?window=30d|90d|1y|5y
+/api/macro/overview
+/api/macro/rates-fed
+/api/macro/economy-inflation
+/api/macro/liquidity-funding
+/api/macro/credit
+/api/macro/volatility
+/api/macro/cross-asset
 /api/macro/research
 ```
 
-`view_id` is `dashboard`, `overview`, `rates-inflation`, `growth-labor`,
-`liquidity-funding`, `credit`, or `cross-asset`. The live endpoint queries
-bounded persisted `macro_observations` directly; it does not call a provider or
-model, write a projection, resume research, or synthesize prose. The dashboard
-returns six category previews plus bounded uncatalogued latest facts. Detail
-views return the complete 108-concept presentation subset for that category,
-with row-local missing states, source-native history, observation/source time,
-received time, provenance, and transparent calculations. The catalog is
-display metadata, never an Agent evidence allowlist.
+Overview and module reads accept no query parameters. The overview returns the
+latest immutable daily judgment, six module summaries, changes since the
+judgment cutoff, overall readiness, and compact research state. Each module
+returns one stable `macro_module_v1` payload containing current state, largest
+changes, versioned features, bounded charts, contradictions, falsifiers, next
+checkpoints, dataset quality, evidence gaps, and raw fact references.
+Readiness is exactly `ready`, `degraded`, or `blocked`. These reads use
+`macro_module_current` and immutable judgment rows only; they never call a
+provider/model, advance a target, rebuild a projection, or synthesize a
+fallback.
+
+The Dataset and Calculation Registries are code-owned public semantics, not
+runtime configuration. Provider config may only enable the free source
+families. A dataset's owner, fact family, source/adapter, acquisition clock,
+freshness, trust tier, criticality, module membership, and formula identity do
+not come from YAML. General cross-asset observations and settlements are Market
+facts; macroeconomic series, release events, and official documents are Macro
+facts. The legacy generic evidence route, window parameter, bundle/sync
+surface, `macro_observations`, and unclassified facts do not exist.
+
+On every U.S. trading session at 08:50 `America/New_York`,
+`macro_judgment` seals one cutoff-bounded `macro_evidence_pack_v1` and publishes
+one immutable `macro_daily_judgment_v1` when no critical module is blocked.
+The judgment fixes growth, inflation, policy, liquidity, credit, and volatility
+states plus one-week/one-month directions for SPY, TLT, HYG, DXY, GLD, USO,
+BTC, and VIX. It exposes conflicts, invalidation conditions, confidence,
+citations, gaps, and next checkpoints instead of a hidden score.
 
 With no query, `GET /api/macro/research` targets the latest completed U.S.
 regular session. Optional `session_date=YYYY-MM-DD` selects one explicit
@@ -187,22 +219,24 @@ session. The response is always persisted-only and returns state `current`,
 and current session dates. A generating or failed response may include the
 durable run status, attempt counts, sanitized last error, and update time.
 
-An available publication contains its schema version, session and market
-cutoff, agent-authored title and Chinese executive summary, one authoritative
-dynamically ordered list of Markdown sections, explicit evidence gaps,
-citations, reviewer notes, sanitized audit, and publication time. A flat
-Markdown export is mechanically derived from the same sections and is not a
-second API narrative. Citations carry stable
+An available publication is bound to the same immutable Evidence Pack used by
+the session judgment. It contains the Evidence Pack ID, schema version, session
+and market cutoff, agent-authored title and Chinese executive summary, one
+authoritative dynamically ordered list of Markdown sections, explicit evidence
+gaps, citations, reviewer disposition (`pass`, `revise`, or `block`), reviewer
+notes, sanitized audit, and publication time. A flat Markdown export is
+mechanically derived from the same sections and is not a second API narrative.
+Citations carry stable
 IDs, material `source_ref` values, source labels, observation/publication time,
 URL when available, and lineage. The envelope does not prescribe fixed
 sections, asset lanes, direction, confidence, score, forecast horizon,
 readiness, or a trading conclusion.
 
-The service verifies session/cutoff identity and citation closure before
-publication. It does not reject content through language, coverage, readiness,
-direction, confidence, or other semantic policy rules. Those judgments belong
-to DeepAgents. The read endpoint does not invoke a model or provider, search
-facts, resume a graph, run a repair, or synthesize a fallback publication.
+The service verifies Evidence Pack/session/cutoff identity, citation closure,
+and reviewer disposition before publication. These are contract checks, not a
+second semantic gate. The read endpoint does not invoke a model or provider,
+search facts, resume a graph, run a repair, or synthesize a fallback
+publication.
 Missing remains a typed successful read state rather than an older publication
 relabelled as current. Unmatched Macro API paths return the ordinary
 application `404` response.
@@ -241,7 +275,7 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 - service/config: `serve`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- Macro: `macro import-bundle|sync|retry-research|status`;
+- Macro: `macro backfill|retry-research|status`;
 - read models: `recent`, `search`, `asset-flow`, `account-alerts`, `notification-deliveries`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 

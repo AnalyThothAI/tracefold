@@ -25,6 +25,15 @@ _SUPPORTED_WORKERS = frozenset(
         "token_image_mirror",
         "token_profile_current",
         "token_radar_projection",
+        "macro_market_intraday",
+        "macro_settlements",
+        "macro_economic_releases",
+        "macro_official_state",
+        "macro_official_documents",
+        "macro_backfill",
+        "macro_projection",
+        "macro_judgment",
+        "macro_research",
     }
 )
 

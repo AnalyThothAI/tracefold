@@ -1,26 +1,35 @@
-"""Public macro capability interface."""
+"""Public Macro decision-system interface."""
 
-from .observations.bundle_importer import import_macrodata_bundle
-from .observations.catalog import MACRO_LIVE_CATALOG, MACRO_LIVE_VIEW_IDS, query_concepts_for_live_view
-from .observations.constants import (
-    MACRO_EVENT_PROVIDER_SERIES_TO_CONCEPT,
-    MACRO_IMPORTABLE_PROVIDER_SERIES_TO_CONCEPT,
-    MACRO_PROVIDER_SERIES_TO_CONCEPT,
+from .acquisition_worker import MacroAcquisitionWorker
+from .domain import (
+    MACRO_MODULE_IDS,
+    MACRO_MODULE_LABELS,
+    DatasetSpec,
+    DocumentFact,
+    FetchBatch,
+    MacroClockKind,
+    MacroFactFamily,
+    MacroModuleId,
+    MacroSourceClientProtocol,
+    MacroSourceError,
+    MacroSourceUnavailable,
+    MarketObservationFact,
+    MarketSettlementFact,
+    ReleaseFact,
+    SeriesFact,
 )
-from .observations.evidence import MACRO_LIVE_WINDOWS, MacroLiveWindow, build_macro_live_evidence
-from .observations.identity import normalize_macro_date
-from .observations.repository import MacroIntelRepository
-from .observations.service import MacroSyncService
-from .observations.types import MacrodataBundleRunResult, MacroSyncRunSummary
-from .observations.worker import MacroSyncWorker
+from .judgment_worker import MacroJudgmentWorker
+from .projection_worker import MacroProjectionWorker
+from .registry import DATASET_REGISTRY, datasets_for_clock, datasets_for_module, require_dataset
+from .repository import MacroRepository
 from .research.completed_session import CompletedSessionMacro, resolve_completed_session
 from .research.repository import MacroResearchRepository, PostgresMacroResearchReadPort
 from .research.service import (
     MACRO_RESEARCH_MAX_PRIOR_PUBLICATIONS_PER_PAGE,
     MACRO_RESEARCH_MAX_READ_REFS,
     FrozenMacroEvidenceScope,
+    MacroEvidenceQuery,
     MacroEvidenceRecord,
-    MacroObservationQuery,
     MacroResearchAgentResult,
     MacroResearchArtifactDraft,
     MacroResearchAudit,
@@ -35,20 +44,25 @@ from .research.service import (
 from .research.worker import MacroResearchWorker
 
 __all__ = [
-    "MACRO_EVENT_PROVIDER_SERIES_TO_CONCEPT",
-    "MACRO_IMPORTABLE_PROVIDER_SERIES_TO_CONCEPT",
-    "MACRO_LIVE_CATALOG",
-    "MACRO_LIVE_VIEW_IDS",
-    "MACRO_LIVE_WINDOWS",
-    "MACRO_PROVIDER_SERIES_TO_CONCEPT",
+    "DATASET_REGISTRY",
+    "MACRO_MODULE_IDS",
+    "MACRO_MODULE_LABELS",
     "MACRO_RESEARCH_MAX_PRIOR_PUBLICATIONS_PER_PAGE",
     "MACRO_RESEARCH_MAX_READ_REFS",
     "CompletedSessionMacro",
+    "DatasetSpec",
+    "DocumentFact",
+    "FetchBatch",
     "FrozenMacroEvidenceScope",
+    "MacroAcquisitionWorker",
+    "MacroClockKind",
+    "MacroEvidenceQuery",
     "MacroEvidenceRecord",
-    "MacroIntelRepository",
-    "MacroLiveWindow",
-    "MacroObservationQuery",
+    "MacroFactFamily",
+    "MacroJudgmentWorker",
+    "MacroModuleId",
+    "MacroProjectionWorker",
+    "MacroRepository",
     "MacroResearchAgentResult",
     "MacroResearchArtifactDraft",
     "MacroResearchAudit",
@@ -56,18 +70,20 @@ __all__ = [
     "MacroResearchReadPort",
     "MacroResearchRepository",
     "MacroResearchWorker",
-    "MacroSyncRunSummary",
-    "MacroSyncService",
-    "MacroSyncWorker",
-    "MacrodataBundleRunResult",
+    "MacroSourceClientProtocol",
+    "MacroSourceError",
+    "MacroSourceUnavailable",
+    "MarketObservationFact",
+    "MarketSettlementFact",
     "PostgresMacroResearchReadPort",
-    "build_macro_live_evidence",
+    "ReleaseFact",
+    "SeriesFact",
     "canonicalize_macro_research_artifact",
-    "import_macrodata_bundle",
-    "normalize_macro_date",
-    "query_concepts_for_live_view",
+    "datasets_for_clock",
+    "datasets_for_module",
     "require_artifact_integrity",
     "require_catalog_in_scope",
+    "require_dataset",
     "require_evidence_in_scope",
     "require_prior_research_in_scope",
     "resolve_completed_session",

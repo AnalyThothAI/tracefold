@@ -1,0 +1,66 @@
+@layer app.features {
+  @media (max-width: 1279px) {
+    .macro-decision__header {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+    }
+
+    .macro-decision__header > button {
+      grid-column: 3;
+    }
+
+    .macro-decision__dimensions {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .macro-decision__module-grid,
+    .macro-decision__review-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 767px) {
+    .macro-decision {
+      padding: 0.7rem;
+    }
+
+    .macro-decision__header,
+    .macro-decision__judgment-grid,
+    .macro-decision__state,
+    .macro-decision__research {
+      grid-template-columns: 1fr;
+    }
+
+    .macro-decision__header > button {
+      grid-column: auto;
+    }
+
+    .macro-decision__header dl,
+    .macro-decision__research dl {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .macro-decision__dimensions,
+    .macro-decision__module-grid,
+    .macro-decision__charts,
+    .macro-decision__review-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .macro-decision__chart figcaption {
+      display: grid;
+    }
+
+    .macro-decision__sparkline {
+      grid-template-columns: 1fr;
+    }
+
+    .macro-decision__dataset-list article {
+      grid-template-columns: 1fr auto;
+    }
+
+    .macro-decision__dataset-list time {
+      grid-column: 1;
+    }
+  }
+}

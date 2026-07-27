@@ -29,18 +29,21 @@ Material facts include:
 - identity: `token_evidence`, `token_intents`,
   `token_intent_lookup_keys`, `token_intent_resolutions`,
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
-- market: `market_ticks`, `enriched_events`;
+- market: `market_ticks`, `enriched_events`, `market_observations`,
+  `market_settlements`, and `market_position_facts`;
 - news: idempotent normalized Article facts in `news_articles`;
-- macro: `macro_observations`;
+- macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
+  `macro_documents`;
 - notifications: `notifications` and the external delivery facts in
   `notification_deliveries`. `account_token_alerts` remains a Market fact that
   Notifications consumes through an explicit input.
 
 Current read models are `token_radar_current_rows`, `token_profile_current`,
-`market_tick_current`, and deterministic `news_stories` plus
-`news_story_memberships`. Each uses stable product/window/target
-identity, has exactly one runtime writer, is rebuildable from facts, and writes
-zero serving rows when its business payload is unchanged.
+`market_tick_current`, deterministic `news_stories` plus
+`news_story_memberships`, and the six stable rows in `macro_module_current`.
+Each uses stable product/window/target identity, has exactly one runtime
+writer, is rebuildable from facts, and writes zero serving rows when its
+business payload is unchanged.
 
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
@@ -67,8 +70,12 @@ tracefold.news
   workers.py    bounded RSS ingest and Story-analysis workers
 
 tracefold.macro
-  observations/  provider fact import and live evidence reads
-  research/      completed-session immutable research lifecycle
+  registry.py    code-owned Dataset Registry and six-module membership
+  acquisition.py clock-driven claim, provider-I/O, receipt, fact and cursor flow
+  calculations.py versioned calculation registry and transparent features
+  projection.py  six current decision modules
+  judgment.py    08:50 New York Evidence Pack and deterministic daily judgment
+  research/      Evidence-Pack-bound immutable DeepAgents research lifecycle
 
 tracefold.notifications
   durable notification creation, rules, and delivery state
@@ -108,11 +115,13 @@ with their business owner. These rules are executable in
 `tests/architecture/test_backend_boundaries.py`.
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
-profile, price, Radar, and collector tables; News owns `news_*`; Macro owns
-`macro_*`; Notifications owns `notification*`. Platform owns Alembic,
-checkpoint, and generic terminal-evidence tables. Macro has no live or hidden
-dependency on News. The architecture gate checks SQL table references against
-the generated current schema.
+profile, price, Radar, collector, general cross-asset observation, and
+settlement tables; News owns `news_*`; Macro owns `macro_*`; Notifications owns
+`notification*`. Platform owns Alembic, checkpoint, and generic
+terminal-evidence tables. Macro imports Market only through
+`tracefold.market`, has no live or hidden dependency on News, and never
+duplicates general market facts into Macro storage. The architecture gate
+checks SQL table references against the generated current schema.
 
 ## Transaction ownership
 
@@ -124,11 +133,14 @@ Important atomic units are:
 
 - fact persistence, identity resolution, market capture, and downstream dirty
   target creation;
+- one Macro acquisition completion: normalized fact insert, append-only source
+  receipt, cursor advance, and compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
 - News Article persistence plus deterministic Story membership/projection;
 - immutable Story analysis publication plus completion of its exact
   evidence/model/version attempt;
-- immutable Macro publication plus transition of its run to `published`;
+- immutable Macro Evidence Pack, daily judgment, or research publication plus
+  the corresponding stable session transition;
 - notification creation plus activation of delivery rows;
 - retry or terminal transition plus mutation of its source queue row.
 
@@ -227,22 +239,52 @@ A pending or failed model never hides deterministic Story cards.
 ### Macro
 
 ```text
-macro_sync_windows
-  -> provider bundles
-  -> macro_observations
-  -> persisted-only live evidence reads
+code-owned Dataset Registry
+  -> one of six clock families
+  -> macro_acquisition_targets claim
+  -> free official / exchange / disclosed proxy adapter
+  -> typed append-only Market or Macro fact + source receipt + cursor
+  -> macro_projection
+  -> six macro_module_current rows
+  -> persisted-only overview and module reads
 
-completed-session macro_research_runs
-  -> one frozen-scope DeepAgents graph
+08:50 America/New_York trading session
+  -> cutoff-bounded six-module compilation
+  -> immutable macro_evidence_packs
+  -> immutable macro_daily_judgments
+
+completed-session macro_research_runs bound to that Evidence Pack
+  -> one checkpointed DeepAgents graph and reviewer
   -> one immutable macro_research_publications row
   -> persisted-only research read
 ```
 
-Live Macro evidence reads bounded `macro_observations` directly through six
-descriptive lenses. It has no projection table or semantic readiness gate.
-Completed-session research freezes session, cutoff, and evidence visibility
-before model work. PostgreSQL checkpoints are resumable execution state, not
-facts or a second publication source. Read requests never invoke the graph.
+The acquisition clock families are `intraday_market`, `daily_settlement`,
+`scheduled_release`, `official_state`, `official_document`, and explicit
+`backfill`. They are separate workers over one target table, not a uniform
+bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
+transactions; completion atomically writes facts, receipt, cursor, and target
+state. Unchanged source content writes zero fact rows while every attempt
+retains a receipt. Revisions append a new fact and never overwrite history.
+
+The Dataset Registry fixes ownership, clock, adapter, trust tier, freshness,
+criticality, and module membership in code. Operator config only enables source
+families and sets runtime cadence/lease/timeout knobs. Dataset and module
+quality are explicit (`current`, `delayed`, `stale`, `backfilling`,
+`unavailable`; `ready`, `degraded`, `blocked`) and are decision metadata, not a
+generic process-readiness gate.
+
+The six product modules are `rates_fed`, `economy_inflation`,
+`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. The
+Calculation Registry records every feature's inputs, formula version, windows,
+minimum observations, units, gap policy, freshness, baseline, and output
+shape. The daily judgment fixes six macro dimensions and SPY/TLT/HYG/DXY/GLD/
+USO/BTC/VIX directions to one cutoff-bounded Evidence Pack. DeepAgents receives
+that exact Evidence Pack later in the completed-session research lane; the
+reviewer disposition is `pass`, `revise`, or `block`. A model failure cannot
+hide the six deterministic modules or the daily judgment. PostgreSQL
+checkpoints are resumable execution state, not facts or a second publication
+source. Read requests never invoke providers or the graph.
 
 ## Safety boundary
 

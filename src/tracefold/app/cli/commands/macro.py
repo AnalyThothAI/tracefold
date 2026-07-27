@@ -1,31 +1,19 @@
 from __future__ import annotations
 
-import json
-import sys
 import time
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import date
-from pathlib import Path
 from typing import Any
 
-from tracefold.app.macro_runtime import (
-    MacroStatusOperationError,
-    MacroSyncOperationError,
-    import_macro_bundle,
-    macro_status,
-    retry_failed_macro_research,
-    sync_macro_window,
-)
-from tracefold.macro import MacroSyncRunSummary, normalize_macro_date
+from tracefold.app.repositories import repositories
+from tracefold.macro import require_dataset
 from tracefold.platform.config.settings import load_settings
 
 
 def handle_macro(args: Namespace) -> tuple[int, dict[str, Any]]:
-    if args.macro_command == "import-bundle":
-        return _handle_import_bundle(args)
-    if args.macro_command == "sync":
-        return _handle_sync(args)
+    if args.macro_command == "backfill":
+        return _handle_backfill(args)
     if args.macro_command == "retry-research":
         return _handle_retry_research(args)
     if args.macro_command == "status":
@@ -33,131 +21,93 @@ def handle_macro(args: Namespace) -> tuple[int, dict[str, Any]]:
     return 2, {"ok": False, "error": f"unknown macro command: {args.macro_command}"}
 
 
-def _handle_import_bundle(args: Namespace) -> tuple[int, dict[str, Any]]:
-    file_path = args.file
-    use_stdin = bool(args.stdin)
-    if bool(file_path) == use_stdin:
-        return 2, {"ok": False, "error": "macro_import_bundle_requires_file_or_stdin"}
-
+def _handle_backfill(args: Namespace) -> tuple[int, dict[str, Any]]:
     try:
-        raw_json = sys.stdin.read() if use_stdin else Path(str(file_path)).read_text(encoding="utf-8")
-        envelope = json.loads(raw_json)
-        if not isinstance(envelope, Mapping):
-            raise ValueError("macrodata envelope must be a JSON object")
+        start_date = _parse_date(str(args.start))
+        end_date = _parse_date(str(args.end))
+        if start_date > end_date or end_date > date.today():
+            raise ValueError("macro_backfill_invalid_range")
+        spec = require_dataset(str(args.dataset))
         settings = load_settings(require_ws_token=False)
-        summary = import_macro_bundle(settings, envelope, now_ms=_now_ms())
+        now_ms = _now_ms()
+        with repositories(settings) as repos, repos.transaction():
+            target = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=start_date,
+                end_date=end_date,
+                now_ms=now_ms,
+                max_attempts=int(settings.workers.macro_backfill.max_attempts),
+            )
     except Exception as exc:
-        return 1, _error_payload("macro_import_bundle_failed", exc)
-    return 0, {"ok": True, "data": _json_ready(summary)}
-
-
-def _handle_sync(args: Namespace) -> tuple[int, dict[str, Any]]:
-    try:
-        settings = load_settings(require_ws_token=False)
-        window_start = _parse_cli_date(str(args.start), field="start")
-        window_end = _parse_cli_date(str(args.end), field="end")
-        if window_start > window_end:
-            return 2, {"ok": False, "error": "macro_sync_invalid_date_range"}
-        execution = sync_macro_window(
-            settings,
-            bundle_name=str(args.bundle),
-            window_start=window_start,
-            window_end=window_end,
-            now_ms=_now_ms(),
-        )
-        summary = execution.summary
-        sync_payload = _sync_summary(summary, window_start=window_start, window_end=window_end)
-        sync_ok = summary.status in {"ok", "partial"}
-    except _MacroSyncCliValidationError as exc:
-        return 2, {"ok": False, "error": "macro_sync_invalid_date", "field": exc.field}
-    except MacroSyncOperationError as exc:
-        payload = _error_payload("macro_sync_failed", exc.cause)
-        payload.update(_fred_payload_from_diagnostics(exc.diagnostics))
-        return 1, payload
-    except Exception as exc:
-        return 1, _error_payload("macro_sync_failed", exc)
-
-    data = {
-        **_fred_payload_from_diagnostics(execution.diagnostics),
-        "sync": sync_payload,
-    }
-    if not sync_ok:
-        return 1, {"ok": False, "error": "macro_sync_failed", "data": data}
-
-    return (
-        0,
-        {
-            "ok": True,
-            "data": data,
-        },
-    )
-
-
-def _handle_status() -> tuple[int, dict[str, Any]]:
-    settings = load_settings(require_ws_token=False)
-    try:
-        data = macro_status(settings, now_ms=_now_ms())
-    except MacroStatusOperationError as exc:
-        payload = _error_payload("macro_status_unavailable", exc.cause)
-        payload["error_type"] = type(exc.cause).__name__
-        payload["data"] = {
-            **_fred_payload_from_diagnostics(exc.diagnostics),
-            "macrodata_cli": exc.diagnostics.get("macrodata_cli", {}),
-        }
-        return 1, payload
-    return 0, {"ok": True, "data": data}
+        return 1, _error("macro_backfill_failed", exc)
+    return 0, {"ok": True, "data": _json_ready(target)}
 
 
 def _handle_retry_research(args: Namespace) -> tuple[int, dict[str, Any]]:
     try:
-        session_date = _parse_cli_date(str(args.session_date), field="session_date")
+        session_date = _parse_date(str(args.session_date))
         settings = load_settings(require_ws_token=False)
-        data = retry_failed_macro_research(
-            settings,
-            session_date=session_date,
-            now_ms=_now_ms(),
-        )
-    except _MacroSyncCliValidationError as exc:
-        return 2, {"ok": False, "error": "macro_retry_research_invalid_date", "field": exc.field}
+        with repositories(settings) as repos, repos.transaction():
+            run = repos.macro_research.retry_failed_run(
+                session_date=session_date,
+                now_ms=_now_ms(),
+            )
     except Exception as exc:
-        return 1, _error_payload("macro_retry_research_failed", exc)
-    return 0, {"ok": True, "data": _json_ready(data)}
+        return 1, _error("macro_retry_research_failed", exc)
+    return 0, {"ok": True, "data": _json_ready(run)}
 
 
-def _fred_payload_from_diagnostics(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "fred_api_key_env": diagnostics.get("fred_api_key_env"),
-        "fred_api_key_configured": bool(diagnostics.get("fred_api_key_configured")),
-    }
-
-
-class _MacroSyncCliValidationError(ValueError):
-    def __init__(self, *, field: str) -> None:
-        super().__init__(field)
-        self.field = field
-
-
-def _parse_cli_date(raw: str, *, field: str) -> date:
+def _handle_status() -> tuple[int, dict[str, Any]]:
     try:
-        return normalize_macro_date(raw)
-    except ValueError as exc:
-        raise _MacroSyncCliValidationError(field=field) from exc
+        settings = load_settings(require_ws_token=False)
+        with repositories(settings) as repos:
+            targets = repos.macro.target_states()
+            receipts = repos.macro.recent_receipts(limit=20)
+            modules = repos.macro.all_modules_current()
+            judgment = repos.macro.daily_judgment()
+            research = repos.macro_research.research_state()
+    except Exception as exc:
+        return 1, _error("macro_status_unavailable", exc)
+    status_counts: dict[str, int] = {}
+    for target in targets:
+        status = str(target["status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return (
+        0,
+        {
+            "ok": True,
+            "data": _json_ready(
+                {
+                    "dataset_target_count": len(targets),
+                    "target_status_counts": status_counts,
+                    "recent_receipts": receipts,
+                    "modules": [
+                        {
+                            "module_id": row["module_id"],
+                            "readiness": row["readiness"],
+                            "fact_cutoff_ms": row["fact_cutoff_ms"],
+                            "updated_at_ms": row["updated_at_ms"],
+                        }
+                        for row in modules
+                    ],
+                    "daily_judgment": judgment,
+                    "research": research,
+                }
+            ),
+        },
+    )
 
 
-def _sync_summary(summary: MacroSyncRunSummary, *, window_start: date, window_end: date) -> dict[str, Any]:
+def _parse_date(raw: str) -> date:
+    return date.fromisoformat(raw)
+
+
+def _error(error: str, exc: Exception) -> dict[str, Any]:
     return {
-        "sync_run_id": summary.sync_run_id,
-        "status": summary.status,
-        "window_start": str(window_start),
-        "window_end": str(window_end),
-        "imported_observation_count": summary.imported_observation_count,
-        "max_observed_at": str(summary.max_observed_at) if summary.max_observed_at else None,
-        "asof_date": str(summary.asof_date) if summary.asof_date else None,
+        "ok": False,
+        "error": error,
+        "detail": str(exc)[:200] or type(exc).__name__,
     }
-
-
-def _error_payload(error: str, exc: Exception) -> dict[str, Any]:
-    return {"ok": False, "error": error, "detail": type(exc).__name__}
 
 
 def _json_ready(value: object) -> object:
@@ -171,7 +121,7 @@ def _json_ready(value: object) -> object:
 
 
 def _now_ms() -> int:
-    return int(time.time() * 1000)
+    return int(time.time() * 1_000)
 
 
 __all__ = ["handle_macro"]

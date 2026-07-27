@@ -138,21 +138,21 @@ const routeCases: RouteCase[] = [
   },
   {
     name: "macro",
-    path: "/macro?window=90d",
+    path: "/macro",
     primary: async (page) => {
-      await expect(page.getByRole("heading", { level: 1, name: "宏观实时数据" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1, name: "每日宏观决策台" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("navigation", { name: "宏观数据分类" })).toBeVisible();
-      await expect(page.getByRole("region", { name: "六类宏观数据" })).toBeVisible();
-      await expect(page.getByRole("region", { name: "最近 DeepAgents 研究" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "宏观决策模块" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "六个宏观模块" })).toBeVisible();
+      await expect(page.getByText("固定资产方向")).toBeVisible();
     },
     nestedOverflowSelectors: [
-      ".macro-live-workbench",
-      ".macro-live-header",
-      ".macro-live-category-grid",
+      ".macro-decision",
+      ".macro-decision__header",
+      ".macro-decision__module-grid",
     ],
-    lastMeaningfulSelector: ".macro-live-unclassified",
+    lastMeaningfulSelector: ".macro-decision__research",
   },
 ];
 

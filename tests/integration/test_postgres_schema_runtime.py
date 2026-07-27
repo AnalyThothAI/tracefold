@@ -33,6 +33,7 @@ RETIRED_BACKEND_TABLES = {
     "narrative_admission_dirty_targets",
     "macro_daily_briefs",
     "macro_import_runs",
+    "macro_observations",
     "macro_projection_dirty_targets",
     "macro_observation_series_rows",
     "macro_observation_series_publication_state",
@@ -40,6 +41,9 @@ RETIRED_BACKEND_TABLES = {
     "macro_judgment_jobs",
     "macro_judgment_publications",
     "macro_judgment_outcomes",
+    "macro_sync_runs",
+    "macro_sync_state",
+    "macro_sync_windows",
     "cex_oi_radar_publication_state",
     "cex_oi_radar_rows",
     "cex_detail_snapshots",
@@ -168,9 +172,20 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "token_radar_current_rows",
         "token_radar_publication_state",
         "account_token_alerts",
-        "macro_observations",
-        "macro_sync_windows",
-        "macro_sync_runs",
+        "market_instruments",
+        "market_observations",
+        "market_settlements",
+        "market_position_facts",
+        "macro_series_facts",
+        "macro_release_facts",
+        "macro_documents",
+        "macro_source_receipts",
+        "macro_acquisition_targets",
+        "macro_feature_series",
+        "macro_module_current",
+        "macro_evidence_packs",
+        "macro_daily_judgments",
+        "macro_event_updates",
         "macro_research_runs",
         "macro_research_publications",
         "checkpoint_migrations",
@@ -184,6 +199,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
     assert macro_research_run_columns == {
         "session_date",
         "market_cutoff_ms",
+        "evidence_pack_id",
         "status",
         "sealed_at_ms",
         "attempt_count",
@@ -191,6 +207,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "due_at_ms",
         "leased_until_ms",
         "lease_owner",
+        "reviewer_disposition",
         "last_error_code",
         "last_error_message",
         "created_at_ms",
@@ -229,9 +246,11 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
     assert macro_research_publication_columns == {
         "session_date",
         "market_cutoff_ms",
+        "evidence_pack_id",
         "artifact_json",
         "report_markdown",
         "audit_json",
+        "reviewer_disposition",
         "model_name",
         "prompt_version",
         "workflow_version",
@@ -239,7 +258,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260727_0199"
+    assert version == latest_migration_version() == "20260727_0201"
 
 
 def test_news_professional_hard_cut_preserves_source_config_and_resets_old_facts(
@@ -563,7 +582,7 @@ def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identit
         conn.commit()
 
         command.upgrade(config, "head")
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0199"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0201"
     finally:
         conn.close()
 
