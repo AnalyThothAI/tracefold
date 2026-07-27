@@ -25,11 +25,11 @@ outputs, or evaluation control planes require an explicit current need.
 
 ## Package design
 
-Business capabilities are exported from `tracefold.market`,
-`tracefold.news`, `tracefold.macro`, and `tracefold.notifications`. Code outside
-the owning package imports only those roots. Keep internal modules cohesive and
-move behavior behind the root interface instead of adding forwarding modules,
-aliases, or compatibility packages.
+Business capabilities are exported from `tracefold.market`, `tracefold.news`,
+and `tracefold.macro`. Code outside the owning package imports only those
+roots. Keep internal modules cohesive and move behavior behind the root
+interface instead of adding forwarding modules, aliases, or compatibility
+packages.
 
 PostgreSQL material facts and public HTTP/WS/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts

@@ -25,7 +25,6 @@ class ApiEnvelope[T](ExactApiSchema):
 
 class BootstrapData(ExactApiSchema):
     ws_token: str
-    handles: list[str]
     replay_limit: int
 
 
@@ -50,7 +49,6 @@ class NewsHealthData(ExactApiSchema):
 class StatusData(ExactApiSchema):
     ok: bool
     reasons: list[str]
-    handles: list[str]
     store: Literal["postgresql"]
     snapshot_gate: JsonObject
     db: JsonObject
@@ -62,7 +60,6 @@ class StatusData(ExactApiSchema):
 class ReadinessData(ExactApiSchema):
     ok: bool
     reasons: list[str]
-    handles: list[str]
     store: Literal["postgresql"]
     db: JsonObject
     composition: JsonObject
@@ -598,7 +595,6 @@ class MacroOverviewReadData(ExactApiSchema):
 
 
 class RecentData(ExactApiSchema):
-    scope: str
     events: list[JsonObject]
     items: list[JsonObject]
 
@@ -620,7 +616,6 @@ class SearchInspectQueryData(ExactApiSchema):
     q: str
     normalized_q: str
     window: str
-    scope: str
     result_kind: Literal["token_result", "topic_result", "ambiguous_result", "empty_result"]
 
 
@@ -809,7 +804,7 @@ class TokenFactorProvenanceData(ApiSchema):
 class TokenFactorSnapshotData(ApiSchema):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["token_factor_snapshot_v4_transparent_factors"]
+    schema_version: Literal["token_factor_snapshot_v5_provider_neutral"]
     subject: TokenFactorSubjectData
     market: TokenFactorMarketData
     gates: TokenFactorGatesData
@@ -869,7 +864,6 @@ class TokenRadarProjectionData(ExactApiSchema):
 
 class TokenRadarData(ExactApiSchema):
     window: str
-    scope: str
     venue: str
     targets: list[TokenRadarRowData]
     attention: list[TokenRadarRowData]
@@ -878,7 +872,6 @@ class TokenRadarData(ExactApiSchema):
 
 class StocksRadarQueryData(ExactApiSchema):
     window: str
-    scope: str
     limit: int
     window_start_ms: int
     window_end_ms: int
@@ -897,7 +890,6 @@ class StocksRadarTargetData(ExactApiSchema):
 class StocksRadarAttentionData(ExactApiSchema):
     mentions: int
     unique_authors: int
-    watched_mentions: int
     latest_seen_ms: int | None
 
 
@@ -938,7 +930,6 @@ class StocksRadarHealthData(ExactApiSchema):
 
 class StocksRadarData(ExactApiSchema):
     window: str
-    scope: str
     query: StocksRadarQueryData
     rows: list[StocksRadarRowData]
     health: StocksRadarHealthData
@@ -967,7 +958,6 @@ class TargetPostsQueryData(ExactApiSchema):
     target_type: str
     target_id: str
     window: str
-    scope: str
     post_range: str = Field(alias="range")
 
 
@@ -989,7 +979,6 @@ class TargetSocialTimelineQueryData(ExactApiSchema):
     target_type: str
     target_id: str
     window: str
-    scope: str
     bucket: str
 
 
@@ -1007,65 +996,6 @@ class TargetSocialTimelineData(ExactApiSchema):
     next_cursor: str | None
 
 
-class AccountAlertsData(ExactApiSchema):
-    window: str
-    alert_type: str | None
-    items: list[JsonObject]
-
-
-class NotificationSummary(ExactApiSchema):
-    subscriber_key: str
-    unread_count: int
-    high_unread_count: int
-    critical_unread_count: int
-    highest_unread_severity: str | None
-    account_unread_counts: dict[str, int]
-
-
-class NotificationItemData(ExactApiSchema):
-    notification_id: str
-    dedup_key: str
-    rule_id: str
-    severity: str
-    title: str
-    body: str
-    entity_type: str | None
-    entity_key: str | None
-    author_handle: str | None
-    symbol: str | None
-    chain: str | None
-    address: str | None
-    event_id: str | None
-    source_table: str
-    source_id: str
-    occurrence_count: int
-    first_seen_at_ms: int
-    last_seen_at_ms: int
-    created_at_ms: int
-    updated_at_ms: int
-    read_at_ms: int | None
-    payload: JsonObject
-    channels: list[str]
-
-
-class NotificationsData(ExactApiSchema):
-    items: list[NotificationItemData]
-    summary: NotificationSummary
-
-
-class NotificationDeliveriesData(ExactApiSchema):
-    items: list[JsonObject]
-
-
-class NotificationReadData(ExactApiSchema):
-    notification_id: str
-    updated: bool
-
-
-class NotificationReadAllData(ExactApiSchema):
-    updated_count: int
-
-
 class SourceEventDetail(ExactApiSchema):
     event_id: str
     timestamp_ms: int
@@ -1075,7 +1005,6 @@ class SourceEventDetail(ExactApiSchema):
     author_handle: str | None
     author_name: str | None
     author_followers: int | None
-    author_watched: bool
     text_clean: str | None
     canonical_url: str | None
 
@@ -1083,74 +1012,3 @@ class SourceEventDetail(ExactApiSchema):
 class SourceEventsByIdsData(ExactApiSchema):
     events: list[SourceEventDetail]
     not_found: list[str]
-
-
-class WatchlistHandleRowOverview(ExactApiSchema):
-    handle: str
-    last_source_event_at_ms: int | None
-    recent_source_event_count: int
-
-
-class WatchlistHandlesOverviewData(ExactApiSchema):
-    window: str
-    items: list[WatchlistHandleRowOverview]
-
-
-class WatchlistOverviewQuery(ExactApiSchema):
-    handle: str
-    window: str
-
-
-class WatchlistOverviewMetrics(ExactApiSchema):
-    source_event_count: int
-    resolved_token_count: int
-    candidate_mention_count: int
-    hashtag_count: int
-    last_source_event_at_ms: int | None
-
-
-class WatchlistOverviewCluster(ExactApiSchema):
-    label: str
-    count: int
-    query: str
-    kind: Literal["resolved_token", "candidate_mention", "hashtag"]
-    target_type: str | None
-    target_id: str | None
-    symbol: str | None
-    source: str
-
-
-class WatchlistHandleOverviewData(ExactApiSchema):
-    query: WatchlistOverviewQuery
-    metrics: WatchlistOverviewMetrics
-    resolved_token_clusters: list[WatchlistOverviewCluster]
-    candidate_mention_clusters: list[WatchlistOverviewCluster]
-    hashtag_clusters: list[WatchlistOverviewCluster]
-    clusters_truncated: bool
-    risk_notes: list[str]
-
-
-class WatchlistTimelineQuery(ExactApiSchema):
-    handle: str
-    limit: int
-
-
-class WatchlistTimelineItem(ExactApiSchema):
-    event_id: str
-    received_at_ms: int
-    author_handle: str | None
-    action: str
-    text_clean: str | None
-    canonical_url: str | None
-    cashtags: list[str]
-    hashtags: list[str]
-    mentions: list[str]
-    event: JsonObject
-    token_resolutions: list[JsonObject]
-
-
-class WatchlistHandleTimelineData(ExactApiSchema):
-    query: WatchlistTimelineQuery
-    items: list[WatchlistTimelineItem]
-    has_more: bool
-    next_cursor: str | None

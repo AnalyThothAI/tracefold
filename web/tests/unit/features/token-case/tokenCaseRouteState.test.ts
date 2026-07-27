@@ -8,9 +8,7 @@ import { describe, expect, it } from "vitest";
 describe("token case route state", () => {
   it("defaults token case detail routes to the 24h window", () => {
     expect(parseTokenCaseRouteState(new URLSearchParams()).window).toBe("24h");
-    expect(
-      serializeTokenCaseRouteState({ window: "24h", scope: "all", postSort: "recent" }).toString(),
-    ).toBe("");
+    expect(serializeTokenCaseRouteState({ window: "24h" }).toString()).toBe("");
     expect(
       tokenTargetPath({
         targetType: "Asset",

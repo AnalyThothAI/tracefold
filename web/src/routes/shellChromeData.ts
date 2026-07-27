@@ -5,8 +5,7 @@ import {
   type SearchShellProps,
 } from "@features/cockpit";
 import { useLiveRouteState } from "@features/live/shell";
-import { useNotificationsController } from "@features/notifications";
-import type { ScopeKey, WindowKey } from "@lib/types";
+import type { WindowKey } from "@lib/types";
 import { searchPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useSocketSnapshot } from "@shared/socket/socketContext";
@@ -15,11 +14,7 @@ import { useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 export type ShellRouteContext = {
-  configuredWatchlistHandles: string[];
-  onMarkHandleRead: (handle: string) => void;
-  scope: ScopeKey;
   token: string;
-  updateScope: (scope: ScopeKey) => void;
   updateWindow: (window: WindowKey) => void;
   windowKey: WindowKey;
 };
@@ -38,23 +33,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const statusQuery = useCockpitStatusQuery({ token: session.token });
   const socketSnapshot = useSocketSnapshot();
   const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const bootstrapHandles = session.bootstrapHandles;
-  const scope = liveRoute.scope;
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
   const windowKey = liveRoute.window;
-  const notificationsController = useNotificationsController({
-    enabled: true,
-    socketNotifications: socketSnapshot.notificationItems,
-    token,
-  });
-  const configuredWatchlistHandles = bootstrapHandles;
   const routeContext: ShellRouteContext = {
-    configuredWatchlistHandles,
-    onMarkHandleRead: notificationsController.markAuthorRead,
-    scope,
     token,
-    updateScope: liveRoute.updateScope,
     updateWindow: liveRoute.updateWindow,
     windowKey,
   };
@@ -80,7 +63,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const searchTargetsNews = shouldRouteTopbarSearchToNews(location.pathname);
   const submitTopbarSearch = (searchText: string) => {
     if (!searchTargetsNews) {
-      navigate(searchPath({ q: searchText.trim(), window: "24h", scope }));
+      navigate(searchPath({ q: searchText.trim(), window: "24h" }));
       return;
     }
     const query = searchText.trim();
@@ -110,26 +93,9 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       statusError: statusQuery.isError,
       configReady: Boolean(token),
     },
-    notifications: {
-      summary: notificationsController.notificationSummary,
-      drawerOpen: notificationsController.drawerOpen,
-      onToggleDrawer: notificationsController.toggleDrawer,
-    },
     onRefresh: () => void queryClient.invalidateQueries(),
   };
-  const notificationProps = {
-    notifications: notificationsController.notifications,
-    notificationSummary: notificationsController.notificationSummary,
-    notificationDrawerOpen: notificationsController.drawerOpen,
-    notificationsLoading: notificationsController.notificationsLoading,
-    onCloseNotificationDrawer: notificationsController.closeDrawer,
-    onMarkAllRead: notificationsController.markAllRead,
-    onMarkRead: notificationsController.markRead,
-    onOpenNotification: notificationsController.openNotification,
-    socketNotifications: socketSnapshot.notificationItems,
-  };
   const shellProps = {
-    notifications: notificationProps,
     topbar: topbarProps,
     onHotkey: handleHotkey,
     outletContext: routeContext,

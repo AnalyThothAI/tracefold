@@ -79,9 +79,9 @@ describe("Tracefold design-system hard cut", () => {
     expect([...css.matchAll(/#[0-9a-fA-F]{6}/g)]).toEqual([]);
   });
 
-  it("exposes five primary research destinations with no duplicate Macro tree", () => {
+  it("exposes four primary research destinations with no duplicate Macro tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(items.map((item) => item.to)).toEqual(["/", "/stocks", "/news", "/macro", "/watchlist"]);
+    expect(items.map((item) => item.to)).toEqual(["/", "/stocks", "/news", "/macro"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
@@ -100,11 +100,10 @@ describe("Tracefold design-system hard cut", () => {
     expect(topbar).not.toContain("WsStatusBeacon");
   });
 
-  it("assigns every supported route family to one of four page archetypes", () => {
+  it("assigns every supported route family to a page archetype", () => {
     const owners = {
       case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
       decision: ["features/macro/ui/MacroResearchPage.tsx"],
-      monitoring: ["features/watchlist/ui/WatchlistPage.tsx"],
       scan: [
         "features/live/ui/LivePage.tsx",
         "features/stocks/ui/StocksRadarPage.tsx",

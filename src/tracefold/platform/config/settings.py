@@ -13,11 +13,6 @@ from tracefold.platform.paths import app_home, app_log_path, config_path, worker
 DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc")
 DEFAULT_UPSTREAM_CHANNELS = ("twitter_monitor_basic", "twitter_monitor_token")
 DEFAULT_GMGN_APP_VERSION = "20260429-12894-ccec416"
-NOTIFICATION_SEVERITIES = ("info", "warning", "high", "critical")
-NOTIFICATION_RULE_IDS = (
-    "watched_account_activity",
-    "watched_account_token_alert",
-)
 
 
 class ApiConfig(BaseModel):
@@ -131,92 +126,6 @@ class UpstreamConfig(BaseModel):
         return normalized
 
 
-class NotificationRuleConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    channels: tuple[str, ...] = ("in_app",)
-    cooldown_seconds: int = Field(default=0, ge=0)
-
-    @field_validator("channels", mode="before")
-    @classmethod
-    def parse_channels(cls, value: Any) -> tuple[str, ...]:
-        parsed = tuple(_split_values(value))
-        return parsed or ("in_app",)
-
-
-class NotificationChannelConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    provider: str = "apprise"
-    url: str | None = None
-    min_severity: str = "warning"
-
-    @field_validator("provider", mode="before")
-    @classmethod
-    def parse_provider(cls, value: Any) -> str:
-        normalized = str(value or "apprise").strip().lower()
-        if normalized not in {"apprise", "log", "pushdeer"}:
-            raise ValueError("notifications channel provider must be 'apprise', 'log', or 'pushdeer'")
-        return normalized
-
-    @field_validator("url", mode="before")
-    @classmethod
-    def parse_url(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("min_severity", mode="before")
-    @classmethod
-    def parse_min_severity(cls, value: Any) -> str:
-        normalized = str(value or "warning").strip().lower()
-        if normalized not in NOTIFICATION_SEVERITIES:
-            raise ValueError("notifications channel min_severity must be info, warning, high, or critical")
-        return normalized
-
-
-class NotificationsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    candidate_limit: int = Field(default=50, ge=1)
-    watched_activity_window_ms: int = Field(default=3_600_000, ge=1)
-    retention_days: int = Field(default=30, ge=1)
-    rules: dict[str, NotificationRuleConfig] = Field(
-        default_factory=lambda: {
-            rule_id: NotificationRuleConfig(**payload)
-            for rule_id, payload in _default_notification_rule_payloads().items()
-        }
-    )
-    channels: dict[str, NotificationChannelConfig] = Field(default_factory=dict)
-
-    @field_validator("rules", mode="before")
-    @classmethod
-    def parse_rules(cls, value: Any) -> dict[str, Any]:
-        merged = _default_notification_rule_payloads()
-        if value is None:
-            return merged
-        if not isinstance(value, Mapping):
-            raise ValueError("notifications.rules must be a mapping")
-        for rule_id, raw_payload in value.items():
-            key = str(rule_id).strip()
-            if key not in NOTIFICATION_RULE_IDS:
-                raise ValueError(f"unknown notification rule: {key}")
-            if isinstance(raw_payload, NotificationRuleConfig):
-                payload: Mapping[str, Any] = raw_payload.model_dump(exclude_unset=True)
-            elif raw_payload is None:
-                payload = {}
-            else:
-                payload = raw_payload
-            if not isinstance(payload, Mapping):
-                raise ValueError(f"notifications.rules.{key} must be a mapping")
-            merged[key] = {**merged[key], **dict(payload)}
-        return merged
-
-
 class OkxProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -295,51 +204,6 @@ class ProvidersConfig(BaseModel):
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
-class NewsSourceSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source_id: str
-    name: str
-    feed_url: str
-    tier: int = Field(ge=1, le=4)
-    lang: str = "en"
-    memberships: tuple[str, ...]
-    enabled: bool = True
-    refresh_interval_seconds: int = Field(default=120, ge=1)
-
-    @field_validator(
-        "source_id",
-        "name",
-        "feed_url",
-        "lang",
-        mode="before",
-    )
-    @classmethod
-    def parse_required_string(cls, value: Any) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("news source field must not be empty")
-        return normalized
-
-    @field_validator("memberships", mode="before")
-    @classmethod
-    def parse_memberships(cls, value: Any) -> tuple[str, ...]:
-        if not isinstance(value, list | tuple):
-            raise ValueError("news source memberships must be a list")
-        memberships = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
-        if not memberships:
-            raise ValueError("news source memberships must not be empty")
-        return memberships
-
-    @field_validator("lang", mode="before")
-    @classmethod
-    def parse_lower_string(cls, value: Any) -> str:
-        normalized = str(value or "").strip().lower()
-        if not normalized:
-            raise ValueError("news source field must not be empty")
-        return normalized
-
-
 class NewsRelaySettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -363,27 +227,7 @@ class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    sources: tuple[NewsSourceSettings, ...] = ()
     relay: NewsRelaySettings = Field(default_factory=NewsRelaySettings)
-
-    @field_validator("sources", mode="before")
-    @classmethod
-    def parse_sources(cls, value: Any) -> tuple[Any, ...]:
-        if value is None:
-            return ()
-        if isinstance(value, tuple):
-            return value
-        if isinstance(value, list):
-            return tuple(value)
-        raise ValueError("news.sources must be a list")
-
-    @field_validator("sources", mode="after")
-    @classmethod
-    def validate_source_identity(cls, sources: tuple[NewsSourceSettings, ...]) -> tuple[NewsSourceSettings, ...]:
-        source_ids = [source.source_id for source in sources]
-        if len(source_ids) != len(set(source_ids)):
-            raise ValueError("news.sources source_id must be unique")
-        return sources
 
 
 class BackoffPolicy(BaseModel):
@@ -487,12 +331,11 @@ class TokenRadarProjectionWorkerSettings(PerWorkerSettings):
     private_cache_retention_ms: int = Field(default=172_800_000, ge=1)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     windows: tuple[str, ...] = ("5m", "1h", "4h", "24h")
-    scopes: tuple[str, ...] = ("all", "matched")
     venues: tuple[str, ...] = ("all", "sol", "eth", "base", "bsc", "cex")
     hot_windows: tuple[str, ...] = ("5m",)
     cold_interval_seconds: float = Field(default=60.0, ge=0)
 
-    @field_validator("windows", "scopes", "venues", "hot_windows", mode="before")
+    @field_validator("windows", "venues", "hot_windows", mode="before")
     @classmethod
     def parse_tuple(cls, value: Any) -> tuple[str, ...]:
         return tuple(_split_values(value))
@@ -558,21 +401,6 @@ class MacroJudgmentWorkerSettings(PerWorkerSettings):
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
 
-class NotificationRuleWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=5.0, ge=0)
-    batch_size: int = Field(default=50, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-
-
-class NotificationDeliveryWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=5.0, ge=0)
-    batch_size: int = Field(default=1, ge=1)
-    max_attempts: int = Field(default=5, ge=1)
-    running_timeout_ms: int = Field(default=300_000, ge=1)
-    stale_running_terminalization_batch_size: int = Field(default=100, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-
-
 class NewsPipelineWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=120.0, ge=0)
     batch_size: int = Field(default=200, ge=1)
@@ -630,10 +458,6 @@ class WorkersSettings(BaseModel):
     )
     macro_judgment: MacroJudgmentWorkerSettings = Field(default_factory=MacroJudgmentWorkerSettings)
     macro_research: MacroResearchWorkerSettings = Field(default_factory=MacroResearchWorkerSettings)
-    notification_rule: NotificationRuleWorkerSettings = Field(default_factory=NotificationRuleWorkerSettings)
-    notification_delivery: NotificationDeliveryWorkerSettings = Field(
-        default_factory=NotificationDeliveryWorkerSettings
-    )
     news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
     news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
 
@@ -644,7 +468,6 @@ class Settings(BaseModel):
     _config_dir: Path = PrivateAttr(default_factory=app_home)
 
     ws_token: str | None = None
-    handles: tuple[str, ...] = Field(default_factory=tuple)
     api: ApiConfig = Field(default_factory=ApiConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
@@ -652,7 +475,6 @@ class Settings(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
-    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     workers: WorkersSettings = Field(default_factory=WorkersSettings)
 
     def set_config_dir(self, value: Path) -> None:
@@ -693,18 +515,6 @@ class Settings(BaseModel):
             and self.providers.okx.dex_passphrase
         )
 
-    @field_validator("handles", mode="before")
-    @classmethod
-    def parse_handles(cls, value: Any) -> tuple[str, ...]:
-        handles = []
-        seen = set()
-        for item in _split_values(value):
-            handle = item.lstrip("@").lower()
-            if handle and handle not in seen:
-                handles.append(handle)
-                seen.add(handle)
-        return tuple(handles)
-
     @field_validator("ws_token", mode="before")
     @classmethod
     def parse_optional_ws_token(cls, value: Any) -> str | None:
@@ -732,41 +542,23 @@ def load_settings(*, require_ws_token: bool = True) -> Settings:
     return settings
 
 
-def write_default_config(
-    *,
-    force: bool = False,
-    news_sources: tuple[Mapping[str, Any], ...] = (),
-) -> Path:
+def write_default_config(*, force: bool = False) -> Path:
     home = app_home()
     path = config_path(home)
     workers_path = workers_config_path(home)
     home.mkdir(parents=True, exist_ok=True)
     (home / "logs").mkdir(parents=True, exist_ok=True)
     if force or not path.exists():
-        path.write_text(default_config_yaml(news_sources=news_sources), encoding="utf-8")
+        path.write_text(default_config_yaml(), encoding="utf-8")
     if force or not workers_path.exists():
         workers_path.write_text(default_workers_yaml(), encoding="utf-8")
     return path
 
 
-def default_config_yaml(*, news_sources: tuple[Mapping[str, Any], ...] = ()) -> str:
+def default_config_yaml() -> str:
     token = secrets.token_urlsafe(32)
     return f"""# Tracefold
 ws_token: "{token}"
-handles:
-  - toly
-  - traderpow
-  - theunipcs
-  - dotyyds1234
-  - brc20niubi
-  - jessepollak
-  - cz_binance
-  - heyibinance
-  - elonmusk
-  - cookerflips
-  - himgajria
-  - cryptodevinl
-  - spidercrypto0x
 
 api:
   host: "0.0.0.0"
@@ -820,7 +612,12 @@ providers:
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"
 
-{_default_news_yaml(news_sources)}
+news:
+  enabled: true
+  relay:
+    base_url: ""
+    auth_header: "x-relay-key"
+    auth_token:
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]
@@ -830,34 +627,7 @@ upstream:
   reconnect_delay: 3
   heartbeat_interval: 25
   idle_timeout: 90
-
-notifications:
-  enabled: true
-  candidate_limit: 50
-  watched_activity_window_ms: 3600000
-  retention_days: 30
-  rules:
-    watched_account_activity:
-      enabled: true
-      channels: ["in_app"]
-    watched_account_token_alert:
-      enabled: true
-      channels: ["in_app"]
-  channels: {{}}
 """
-
-
-def _default_news_yaml(news_sources: tuple[Mapping[str, Any], ...]) -> str:
-    rendered = yaml.safe_dump(
-        {
-            "news": {
-                "enabled": True,
-                "sources": [dict(source) for source in news_sources],
-            }
-        },
-        sort_keys=False,
-    )
-    return str(rendered).rstrip()
 
 
 def default_workers_yaml() -> str:
@@ -884,18 +654,3 @@ def _split_values(value: Any) -> list[str]:
     if isinstance(value, list | tuple | set):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()]
-
-
-def _default_notification_rule_payloads() -> dict[str, dict[str, Any]]:
-    return {
-        "watched_account_activity": {
-            "enabled": True,
-            "channels": ("in_app",),
-            "cooldown_seconds": 300,
-        },
-        "watched_account_token_alert": {
-            "enabled": True,
-            "channels": ("in_app",),
-            "cooldown_seconds": 900,
-        },
-    }

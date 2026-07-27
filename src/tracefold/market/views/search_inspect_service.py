@@ -29,7 +29,6 @@ class SearchInspectService:
         q: str,
         *,
         window: str,
-        scope: str,
         limit: int,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
@@ -37,7 +36,6 @@ class SearchInspectService:
         search_page = SearchService(search_query=self.search_query).search(
             q,
             limit=parsed_limit,
-            scope=scope,
             window=window,
             now_ms=now_ms,
         )
@@ -52,7 +50,6 @@ class SearchInspectService:
                     search_page.query.get("normalized_text") or search_page.query.get("text") or q
                 ).strip(),
                 "window": window,
-                "scope": scope,
                 "result_kind": result_kind,
             },
             "resolver": {
@@ -70,7 +67,6 @@ class SearchInspectService:
             payload["token_result"] = self._token_result(
                 selected=selected,
                 window=window,
-                scope=scope,
                 now_ms=now_ms,
                 limit=parsed_limit,
             )
@@ -91,7 +87,6 @@ class SearchInspectService:
         *,
         selected: dict[str, Any],
         window: str,
-        scope: str,
         now_ms: int | None,
         limit: int,
     ) -> dict[str, Any]:
@@ -106,7 +101,6 @@ class SearchInspectService:
             target_type=target_type,
             target_id=target_id,
             window=window,
-            scope=scope,
             posts_limit=min(limit, 50),
             now_ms=now_ms,
         )

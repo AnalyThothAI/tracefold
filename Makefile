@@ -3,7 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 
-.PHONY: help sync install uninstall tool-path test lint compile check init config db-migrate db-health serve status recent asset-flow account-alerts docker-check docker-up docker-status docker-logs docker-down docker-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help sync install uninstall tool-path test lint compile check init config db-migrate db-health serve status recent asset-flow docker-check docker-up docker-status docker-logs docker-down docker-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,14 +78,11 @@ status: ## print health and readiness for the running API
 	@curl -fsS http://127.0.0.1:8765/healthz
 	@curl -fsS http://127.0.0.1:8765/readyz
 
-recent: ## print recent matched events
+recent: ## print recent stored events
 	@$(TRACEFOLD) recent --limit 20
 
 asset-flow: ## print 5m token activity
 	@$(TRACEFOLD) asset-flow --window 5m --limit 20
-
-account-alerts: ## print watched-account token alerts
-	@$(TRACEFOLD) account-alerts --window 24h --limit 50
 
 docker-check: ## verify Docker CLI, Compose plugin, and daemon access
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed or not on PATH" >&2; exit 127; }

@@ -131,7 +131,6 @@ def _assemble_runtime(
         settings=workers.collector,
         db=db,
         telemetry=telemetry,
-        handles=settings.handles,
         store=ingest,
         publisher=hub,
         upstream_client=None,
@@ -194,8 +193,8 @@ class _PooledIngestStore:
         with self.db.worker_session("collector") as repos, repos.transaction():
             return repos.evidence.insert_raw_frame(**kwargs)
 
-    def ingest_event(self, event: Any, *, is_watched: bool):
-        prepared = IngestService.prepare_event(event, is_watched=is_watched)
+    def ingest_event(self, event: Any):
+        prepared = IngestService.prepare_event(event)
         market_resolutions: list[dict[str, Any]] = []
         prefetched_ticks: dict[tuple[str, str], Any] = {}
         with self.db.worker_session("collector") as repos, repos.transaction():
@@ -247,7 +246,6 @@ def _ingest_service_for_repos(
     return IngestService(
         evidence=repos.evidence,
         entities=repos.entities,
-        signals=repos.signals,
         registry=repos.registry,
         identity_evidence=repos.identity_evidence,
         token_intent_lookup=repos.token_intent_lookup,

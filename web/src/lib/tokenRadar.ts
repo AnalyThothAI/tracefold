@@ -41,18 +41,16 @@ export function assetFlowRows(data?: AssetFlowData | null): AssetFlowRow[] {
 export function tokenRadarItems(
   data: AssetFlowData | null | undefined,
   window: TokenFlowItem["flow"]["window"],
-  scope: TokenFlowItem["posts_query"]["scope"],
 ): TokenFlowItem[] {
   if (!data) {
     return [];
   }
-  return assetFlowRows(data).map((row) => tokenRadarRowToTokenItem(row, window, scope));
+  return assetFlowRows(data).map((row) => tokenRadarRowToTokenItem(row, window));
 }
 
 export function tokenRadarRowToTokenItem(
   row: AssetFlowRow,
   window: TokenFlowItem["flow"]["window"],
-  scope: TokenFlowItem["posts_query"]["scope"],
 ): TokenFlowItem {
   const snapshot = requiredFactorSnapshot(row);
   const subject = requiredObject(snapshot.subject, "factor_snapshot.subject") as Record<
@@ -140,10 +138,6 @@ export function tokenRadarRowToTokenItem(
   const authors = requiredNumber(
     attention.unique_authors,
     "factor_snapshot.social_heat.unique_authors",
-  );
-  const watched = requiredNumber(
-    attention.watched_mentions,
-    "factor_snapshot.social_heat.watched_mentions",
   );
   const latestSeenMs = requiredNumber(
     attention.latest_seen_ms,
@@ -308,7 +302,6 @@ export function tokenRadarRowToTokenItem(
       symbol_mentions: mentions,
       weighted_mentions: mentions,
       avg_attribution_confidence: undefined,
-      watched_mentions: watched,
       previous_mentions: previousMentions,
       mention_delta: mentionDelta,
       mention_delta_pct: mentionDeltaPct,
@@ -333,7 +326,6 @@ export function tokenRadarRowToTokenItem(
       z_score: zScore,
       new_burst_score: newBurstScore,
       stream_share: streamShare,
-      watched_share: mentions ? watched / mentions : 0,
       status: heatStatus,
     },
     discussion_quality: {
@@ -345,7 +337,6 @@ export function tokenRadarRowToTokenItem(
       informative_post_count:
         optionalNumber(diffusionFacts.informative_post_count) ??
         Math.min(mentions, authors || mentions),
-      watched_source_count: watched,
     },
     propagation: {
       ...propagation,
@@ -387,15 +378,6 @@ export function tokenRadarRowToTokenItem(
       risk_caps: timing.risk_caps,
     },
     opportunity,
-    watch: {
-      status: watched ? "direct_watch" : "public_only",
-      direct_mentions: watched,
-      direct_authors: watched ? 1 : 0,
-      seed_link_count: 0,
-      top_seed: null,
-      reasons: watched ? ["watched_source_present"] : [],
-      risks: watched ? [] : ["no_watched_confirmation"],
-    },
     profile: row.profile ?? null,
     factor_data_health: dataHealth,
     factor_gates: gates,
@@ -406,14 +388,12 @@ export function tokenRadarRowToTokenItem(
       target_type: stringValue(subject.target_type),
       target_id: targetId,
       window,
-      scope,
       range: "current_window",
     },
     timeline_query: {
       target_type: stringValue(subject.target_type),
       target_id: targetId,
       window,
-      scope,
     },
   };
 }

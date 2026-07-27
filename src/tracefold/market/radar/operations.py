@@ -15,7 +15,7 @@ def token_radar_publication_status(conn: Any, *, projection_version: str) -> dic
             SELECT *
             FROM token_radar_publication_state
             WHERE projection_version = %s
-            ORDER BY "window" ASC, scope ASC, venue ASC
+            ORDER BY "window" ASC, venue ASC
             """,
             (version,),
         ).fetchall()

@@ -7,7 +7,6 @@ from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
-from tests.notification_helpers import insert_notification_row
 from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
 from tests.runtime_settings import runtime_workers_settings, workers_settings_with_enabled
 from tracefold.app.http.app import create_app
@@ -230,7 +229,6 @@ def _sha256(value: str) -> str:
 def make_settings(tmp_path, *, enabled_workers: tuple[str, ...] = ("token_radar_projection",)) -> Settings:
     prepare_postgres_database()
     settings = Settings(
-        handles=("toly", "elonmusk"),
         ws_token="secret",
         storage=postgres_settings_storage(),
         workers=workers_settings_with_enabled(*enabled_workers),
@@ -265,7 +263,6 @@ def make_event(
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[handle],
         raw={"id": event_id},
     )
 
@@ -369,7 +366,7 @@ def seed_resolved_asset_with_event(
         text=f"${symbol} ignition {address}",
         received_at_ms=now_ms if now_ms is not None else int(time.time() * 1000),
     )
-    client.app.state.service.ingest.ingest_event(event, is_watched=True)
+    client.app.state.service.ingest.ingest_event(event)
     search = client.get(
         "/api/search",
         params={"q": f"${symbol}", "limit": 5, "window": "24h"},
@@ -393,7 +390,6 @@ def test_api_bootstrap_exposes_frontend_runtime_config_without_token(tmp_path):
     assert body["ok"] is True
     assert body["data"] == {
         "ws_token": "secret",
-        "handles": ["toly", "elonmusk"],
         "replay_limit": 100,
     }
 
@@ -776,7 +772,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
             text=f"$PEPE ignition {PEPE}",
             received_at_ms=now_ms - 1_000,
         )
-        client.app.state.service.ingest.ingest_event(event, is_watched=True)
+        client.app.state.service.ingest.ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         headers = {"Authorization": "Bearer secret"}
@@ -784,7 +780,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
         search = client.get("/api/search", params={"q": "$PEPE", "limit": 5, "window": "24h"}, headers=headers)
         search_inspect = client.get(
             "/api/search/inspect",
-            params={"q": "$PEPE", "limit": 5, "window": "24h", "scope": "all"},
+            params={"q": "$PEPE", "limit": 5, "window": "24h"},
             headers=headers,
         )
         asset_flow = client.get("/api/token-radar?window=5m&limit=5", headers=headers)
@@ -851,9 +847,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
     assert "discussion_digest" not in radar_row
     assert "narrative_admission" not in radar_row
 
-    assert account_alerts.status_code == 200
-    assert account_alerts.json()["data"]["items"][0]["event_id"] == "event-1"
-    assert account_alerts.json()["data"]["items"][0]["token_resolution_status"] == "EXACT"
+    assert account_alerts.status_code == 404
 
 
 def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
@@ -871,7 +865,6 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
                 text=f"$PEPE {PEPE}",
                 received_at_ms=now_ms - 1_000,
             ),
-            is_watched=True,
         )
         runtime.ingest.ingest_event(
             make_event(
@@ -879,13 +872,12 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
                 text="$NEWTOKEN soon",
                 received_at_ms=now_ms - 500,
             ),
-            is_watched=True,
         )
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         response = client.get(
             "/api/token-radar",
-            params={"window": "5m", "scope": "all", "limit": 20},
+            params={"window": "5m", "limit": 20},
             headers={"Authorization": "Bearer secret"},
         )
 
@@ -913,7 +905,6 @@ def test_live_market_reads_durable_current_without_gateway(tmp_path):
                 text=f"$PEPE {PEPE}",
                 received_at_ms=now_ms - 1_000,
             ),
-            is_watched=True,
         )
         resolution = next(item for item in ingested.token_resolutions if item["resolution_status"] == "EXACT")
         with runtime.repositories() as repos:
@@ -992,15 +983,12 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
 
         runtime.ingest.ingest_event(
             make_event("event-aapl-1", handle="toly", text="$AAPL breakout", received_at_ms=now_ms - 10_000),
-            is_watched=True,
         )
         runtime.ingest.ingest_event(
             make_event("event-aapl-2", handle="elonmusk", text="$AAPL still bid", received_at_ms=now_ms - 5_000),
-            is_watched=False,
         )
         runtime.ingest.ingest_event(
             make_event("event-rklb-1", handle="toly", text="$RKLB launch cadence", received_at_ms=now_ms - 3_000),
-            is_watched=True,
         )
         runtime.ingest.ingest_event(
             make_token_event(
@@ -1010,12 +998,11 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
                 text=f"$PEPE {PEPE}",
                 received_at_ms=now_ms - 1_000,
             ),
-            is_watched=True,
         )
 
         response = client.get(
             "/api/stocks-radar",
-            params={"window": "1h", "scope": "all", "limit": 10},
+            params={"window": "1h", "limit": 10},
             headers={"Authorization": "Bearer secret"},
         )
 
@@ -1045,171 +1032,19 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
     assert by_symbol["RKLB"]["row_health"] == ["quote_unavailable"]
 
 
-def test_api_exposes_notification_list_summary_and_read_state(tmp_path):
+def test_api_notification_routes_are_not_registered(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
 
     with TestClient(app) as client:
-        runtime = client.app.state.service
-        with runtime.repositories() as repos, repos.transaction():
-            first = insert_notification_row(
-                repos.notifications,
-                dedup_key="activity:event-1",
-                rule_id="watched_account_activity",
-                severity="info",
-                title="activity",
-                body="new post",
-                entity_type="account",
-                entity_key="account:toly",
-                author_handle="toly",
-                event_id="event-1",
-                source_table="events",
-                source_id="event-1",
-                occurrence_at_ms=1_700_000_000_000,
-                payload={"event_id": "event-1"},
-                channels=["in_app"],
-            )
-            insert_notification_row(
-                repos.notifications,
-                dedup_key="watched-token:pepe",
-                rule_id="watched_account_token_alert",
-                severity="high",
-                title="@toly mentioned $PEPE",
-                body="First-seen watched-account token mention",
-                entity_type="token",
-                entity_key="token:eth:pepe",
-                author_handle="toly",
-                symbol="PEPE",
-                chain="eth",
-                address=PEPE,
-                source_table="account_token_alerts",
-                source_id="alert-1",
-                occurrence_at_ms=1_700_000_060_000,
-                payload={
-                    "alert_id": "alert-1",
-                    "author_handle": "toly",
-                    "symbol": "PEPE",
-                    "is_first_seen_global": True,
-                },
-                channels=["in_app"],
-            )
-        assert first is not None
-
         headers = {"Authorization": "Bearer secret"}
-        listed = client.get("/api/notifications?limit=10", headers=headers)
-        read = client.post(f"/api/notifications/{first['notification_id']}/read", headers=headers)
-        unread = client.get("/api/notifications?unread_only=true&limit=10", headers=headers)
+        responses = [
+            client.get("/api/notifications", headers=headers),
+            client.post("/api/notifications/id/read", headers=headers),
+            client.post("/api/notifications/author/toly/read", headers=headers),
+            client.get("/api/notification-deliveries", headers=headers),
+        ]
 
-    assert listed.status_code == 200
-    assert listed.json()["data"]["summary"]["unread_count"] == 2
-    assert listed.json()["data"]["summary"]["high_unread_count"] == 1
-    assert listed.json()["data"]["summary"]["account_unread_counts"] == {"toly": 2}
-    assert listed.json()["data"]["items"][0]["rule_id"] == "watched_account_token_alert"
-    assert listed.json()["data"]["items"][0]["payload"] == {
-        "alert_id": "alert-1",
-        "author_handle": "toly",
-        "symbol": "PEPE",
-        "is_first_seen_global": True,
-    }
-    assert listed.json()["data"]["items"][0]["channels"] == ["in_app"]
-
-    assert read.status_code == 200
-    assert read.json()["data"]["updated"] is True
-    assert unread.status_code == 200
-    assert [item["notification_id"] for item in unread.json()["data"]["items"]] != [first["notification_id"]]
-    assert unread.json()["data"]["summary"]["unread_count"] == 1
-
-
-def test_api_marks_author_notifications_read(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
-
-    with TestClient(app) as client:
-        runtime = client.app.state.service
-        with runtime.repositories() as repos, repos.transaction():
-            for suffix in ("1", "2"):
-                insert_notification_row(
-                    repos.notifications,
-                    dedup_key=f"activity:toly:{suffix}",
-                    rule_id="watched_account_activity",
-                    severity="info",
-                    title="activity",
-                    body="new post",
-                    entity_type="account",
-                    entity_key="account:toly",
-                    author_handle="toly",
-                    event_id=f"event-toly-{suffix}",
-                    source_table="events",
-                    source_id=f"event-toly-{suffix}",
-                    occurrence_at_ms=1_700_000_000_000 + int(suffix),
-                    payload={"event_id": f"event-toly-{suffix}"},
-                    channels=["in_app"],
-                )
-            insert_notification_row(
-                repos.notifications,
-                dedup_key="activity:elon",
-                rule_id="watched_account_activity",
-                severity="info",
-                title="activity",
-                body="new post",
-                entity_type="account",
-                entity_key="account:elonmusk",
-                author_handle="elonmusk",
-                event_id="event-elon",
-                source_table="events",
-                source_id="event-elon",
-                occurrence_at_ms=1_700_000_000_010,
-                payload={"event_id": "event-elon"},
-                channels=["in_app"],
-            )
-
-        headers = {"Authorization": "Bearer secret"}
-        read = client.post("/api/notifications/author/toly/read", headers=headers)
-        listed = client.get("/api/notifications?limit=10", headers=headers)
-
-    assert read.status_code == 200
-    assert read.json()["data"]["updated_count"] == 2
-    assert listed.status_code == 200
-    assert listed.json()["data"]["summary"]["unread_count"] == 1
-    assert listed.json()["data"]["summary"]["account_unread_counts"] == {"elonmusk": 1}
-
-
-def test_api_exposes_notification_delivery_audit(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
-
-    with TestClient(app) as client:
-        runtime = client.app.state.service
-        with runtime.repositories() as repos, repos.transaction():
-            notification = insert_notification_row(
-                repos.notifications,
-                dedup_key="watched-token:pepe",
-                rule_id="watched_account_token_alert",
-                severity="high",
-                title="@toly mentioned $PEPE",
-                body="First-seen watched-account token mention",
-                entity_type="token",
-                entity_key="token:eth:pepe",
-                symbol="PEPE",
-                source_table="account_token_alerts",
-                source_id="alert-1",
-                occurrence_at_ms=1_700_000_060_000,
-                payload={"alert_id": "alert-1", "symbol": "PEPE"},
-                channels=["in_app", "pushdeer"],
-            )
-            assert notification is not None
-            repos.notifications.enqueue_delivery(
-                notification_id=notification["notification_id"],
-                channel_id="pushdeer",
-                provider="apprise",
-                max_attempts=5,
-                next_run_at_ms=1_700_000_060_000,
-            )
-
-        response = client.get("/api/notification-deliveries", headers={"Authorization": "Bearer secret"})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["data"]["items"][0]["channel_id"] == "pushdeer"
-    assert body["data"]["items"][0]["provider"] == "apprise"
-    assert body["data"]["items"][0]["status"] == "pending"
+    assert [response.status_code for response in responses] == [404, 404, 404, 404]
 
 
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
@@ -1230,44 +1065,21 @@ def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
     assert [response.status_code for response in deleted] == [404, 404, 404, 404, 404, 404, 404]
 
 
-def test_api_asset_flow_scope_filters_watched_mentions(tmp_path):
+def test_api_token_radar_rejects_removed_scope(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
 
     with TestClient(app) as client:
-        now_ms = int(time.time() * 1000)
-        rebuild_now_ms = now_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
-        watched_event = make_token_event(
-            "event-watched",
-            symbol="PEPE",
-            address="0x6982508145454ce325ddbe47a25d4ec3d2311933",
-            text="$PEPE watched",
-            received_at_ms=now_ms - 1_000,
-        )
-        public_event = make_token_event(
-            "event-public",
-            symbol="BONK",
-            address="0x44b28991b167582f18ba0259e0173176ca125505",
-            handle="anon",
-            text="$BONK public",
-            received_at_ms=now_ms - 900,
-        )
-        client.app.state.service.ingest.ingest_event(watched_event, is_watched=True)
-        client.app.state.service.ingest.ingest_event(public_event, is_watched=False)
-        rebuild_token_radar(client, now_ms=rebuild_now_ms)
-
         headers = {"Authorization": "Bearer secret"}
-        all_flow = client.get("/api/token-radar", params={"window": "5m", "scope": "all"}, headers=headers)
-        watched_flow = client.get("/api/token-radar", params={"window": "5m", "scope": "matched"}, headers=headers)
+        responses = [
+            client.get("/api/token-radar", params={"window": "5m", "scope": scope}, headers=headers)
+            for scope in ("all", "matched")
+        ]
 
-    assert all_flow.status_code == 200
-    assert {item["factor_snapshot"]["subject"]["symbol"] for item in all_flow.json()["data"]["targets"]} == {
-        "PEPE",
-        "BONK",
-    }
-
-    assert watched_flow.status_code == 200
-    assert watched_flow.json()["data"]["scope"] == "matched"
-    assert [item["factor_snapshot"]["subject"]["symbol"] for item in watched_flow.json()["data"]["targets"]] == ["PEPE"]
+    assert [response.status_code for response in responses] == [400, 400]
+    assert [response.json() for response in responses] == [
+        {"ok": False, "error": "unsupported_query_param", "field": "scope"},
+        {"ok": False, "error": "unsupported_query_param", "field": "scope"},
+    ]
 
 
 def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):
@@ -1301,7 +1113,6 @@ def test_api_token_case_returns_dossier_for_resolved_asset(tmp_path):
                 "target_type": target["target_type"],
                 "target_id": target["target_id"],
                 "window": "24h",
-                "scope": "all",
                 "posts_limit": 2,
             },
             headers={"Authorization": "Bearer secret"},
@@ -1348,7 +1159,7 @@ def test_api_token_case_requires_auth(tmp_path):
     assert response.json() == {"ok": False, "error": "unauthorized"}
 
 
-def test_api_token_case_rejects_invalid_window_and_scope(tmp_path):
+def test_api_token_case_rejects_invalid_window_and_removed_scope(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
 
     with TestClient(app) as client:
@@ -1366,7 +1177,7 @@ def test_api_token_case_rejects_invalid_window_and_scope(tmp_path):
     assert bad_window.status_code == 400
     assert bad_window.json() == {"ok": False, "error": "invalid_window", "field": "window"}
     assert bad_scope.status_code == 400
-    assert bad_scope.json() == {"ok": False, "error": "invalid_scope", "field": "scope"}
+    assert bad_scope.json() == {"ok": False, "error": "unsupported_query_param", "field": "scope"}
 
 
 def test_api_token_case_matches_search_inspect_token_result_shape(tmp_path, monkeypatch):
@@ -1382,13 +1193,12 @@ def test_api_token_case_matches_search_inspect_token_result_shape(tmp_path, monk
                 "target_type": target["target_type"],
                 "target_id": target["target_id"],
                 "window": "24h",
-                "scope": "all",
             },
             headers={"Authorization": "Bearer secret"},
         )
         inspect = client.get(
             "/api/search/inspect",
-            params={"q": "$HANSA", "window": "24h", "scope": "all"},
+            params={"q": "$HANSA", "window": "24h"},
             headers={"Authorization": "Bearer secret"},
         )
 
@@ -1412,12 +1222,12 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
                 text=f"$PEPE post {index}",
                 received_at_ms=base_ms - index * 1_000,
             )
-            client.app.state.service.ingest.ingest_event(event, is_watched=index == 0)
+            client.app.state.service.ingest.ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         asset_flow = client.get(
             "/api/token-radar",
-            params={"window": "5m", "limit": 5, "scope": "all"},
+            params={"window": "5m", "limit": 5},
             headers={"Authorization": "Bearer secret"},
         ).json()["data"]["targets"][0]
         target_type = asset_flow["factor_snapshot"]["subject"]["target_type"]
@@ -1426,7 +1236,7 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
         missing = client.get("/api/target-posts?window=5m", headers={"Authorization": "Bearer secret"})
         first_page = client.get(
             "/api/target-posts",
-            params={"target_type": target_type, "target_id": target_id, "window": "5m", "scope": "all", "limit": 2},
+            params={"target_type": target_type, "target_id": target_id, "window": "5m", "limit": 2},
             headers={"Authorization": "Bearer secret"},
         )
         second_page = client.get(
@@ -1435,7 +1245,6 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
                 "target_type": target_type,
                 "target_id": target_id,
                 "window": "5m",
-                "scope": "all",
                 "limit": 2,
                 "cursor": first_page.json()["data"]["next_cursor"],
             },
@@ -1519,12 +1328,12 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
                 text=f"$PEPE timeline mcap liquidity {index}",
                 received_at_ms=base_ms - index * 30_000,
             )
-            client.app.state.service.ingest.ingest_event(event, is_watched=index == 0)
+            client.app.state.service.ingest.ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         asset_flow = client.get(
             "/api/token-radar",
-            params={"window": "5m", "limit": 5, "scope": "all"},
+            params={"window": "5m", "limit": 5},
             headers={"Authorization": "Bearer secret"},
         ).json()["data"]["targets"][0]
         target_type = asset_flow["factor_snapshot"]["subject"]["target_type"]
@@ -1533,7 +1342,7 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
         missing = client.get("/api/target-social-timeline?window=5m", headers={"Authorization": "Bearer secret"})
         response = client.get(
             "/api/target-social-timeline",
-            params={"target_type": target_type, "target_id": target_id, "window": "5m", "scope": "all", "limit": 2},
+            params={"target_type": target_type, "target_id": target_id, "window": "5m", "limit": 2},
             headers={"Authorization": "Bearer secret"},
         )
 
@@ -1571,7 +1380,7 @@ def test_api_rejects_removed_1m_window(tmp_path):
     with TestClient(app) as client:
         response = client.get(
             "/api/token-radar",
-            params={"window": "1m", "limit": 5, "scope": "all"},
+            params={"window": "1m", "limit": 5},
             headers={"Authorization": "Bearer secret"},
         )
 
@@ -1605,7 +1414,7 @@ def test_api_status_exposes_operational_state(tmp_path):
     body = response.json()
     assert body["ok"] is True
     data = body["data"]
-    assert data["handles"] == ["toly", "elonmusk"]
+    assert "handles" not in data
     manifest_names = {manifest.name for manifest in all_worker_manifests()}
     assert manifest_names.issubset(data["workers"])
     assert "worker_lanes" not in data
@@ -1684,8 +1493,8 @@ def test_social_events_by_ids_returns_full_records(tmp_path):
     events = response.json()["data"]["events"]
     assert {event["event_id"] for event in events} == set(ids)
     by_handle = {event["author_handle"]: event for event in events}
-    assert by_handle["toly"]["author_watched"] is True
-    assert by_handle["random_dude"]["author_watched"] is False
+    assert "author_watched" not in by_handle["toly"]
+    assert "author_watched" not in by_handle["random_dude"]
     assert by_handle["toly"]["source_provider"] == "gmgn"
     assert by_handle["toly"]["channel"] == "twitter_monitor_basic"
 
@@ -1736,7 +1545,6 @@ def _seed_social_event_batch(app) -> None:
     with app.state.service.repositories() as repos, repos.transaction():
         repos.evidence.insert_event(
             make_event("event-watched", handle="toly", text="$PEPE watched", received_at_ms=1_700_000_000_000),
-            is_watched=True,
         )
         repos.evidence.insert_event(
             make_event(
@@ -1745,5 +1553,4 @@ def _seed_social_event_batch(app) -> None:
                 text="$PEPE public",
                 received_at_ms=1_700_000_010_000,
             ),
-            is_watched=False,
         )

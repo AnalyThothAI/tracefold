@@ -81,7 +81,6 @@ function tokenFlowFixture(): TokenFlowItem {
     flow: {
       window: "1h",
       mentions: 21,
-      watched_mentions: 3,
       previous_mentions: 4,
       mention_delta: 17,
       stream_dominance: 0.004,
@@ -105,7 +104,6 @@ function tokenFlowFixture(): TokenFlowItem {
       previous_mentions: 4,
       mention_delta: 17,
       stream_share: 0.004,
-      watched_share: 0.14,
       status: "new_burst",
     },
     discussion_quality: {
@@ -120,7 +118,6 @@ function tokenFlowFixture(): TokenFlowItem {
       avg_attribution_confidence: 0.91,
       duplicate_text_share: 0.08,
       informative_post_count: 12,
-      watched_source_count: 3,
     },
     propagation: {
       score_version: "fixture",
@@ -171,17 +168,8 @@ function tokenFlowFixture(): TokenFlowItem {
       risk_caps: [],
       components: { heat: 86, propagation: 74, timing: 88 },
     },
-    watch: {
-      status: "public_only",
-      direct_mentions: 0,
-      direct_authors: 0,
-      seed_link_count: 0,
-      top_seed: null,
-      reasons: [],
-      risks: [],
-    },
     evidence_total_count: 21,
-    posts_query: { window: "1h", scope: "all", range: "current_window" },
-    timeline_query: { window: "1h", scope: "all" },
+    posts_query: { window: "1h", range: "current_window" },
+    timeline_query: { window: "1h" },
   };
 }

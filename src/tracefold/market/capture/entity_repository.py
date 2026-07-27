@@ -19,8 +19,6 @@ class EntityRepository:
         self,
         event: TwitterEvent,
         entities: list[ExtractedEntity],
-        *,
-        is_watched: bool,
     ) -> int:
         require_transaction(self.conn, operation="insert_event_entities")
         inserted = 0
@@ -32,10 +30,10 @@ class EntityRepository:
                 INSERT INTO event_entities(
                   entity_id, event_id, entity_type, raw_value, normalized_value, chain,
                   token_resolution_status, confidence, source, received_at_ms, author_handle,
-                  is_watched, text_surface, span_start, span_end, sentence_id, local_group_key,
+                  text_surface, span_start, span_end, sentence_id, local_group_key,
                   created_at_ms
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
                 """,
                 (
@@ -50,7 +48,6 @@ class EntityRepository:
                     entity.source,
                     event.received_at_ms,
                     author,
-                    is_watched,
                     entity.text_surface,
                     entity.span_start,
                     entity.span_end,
@@ -91,13 +88,12 @@ class EntityRepository:
             grouped.setdefault(str(item["event_id"]), []).append(item)
         return grouped
 
-    def find_by_symbol(self, symbol: str, *, limit: int, watched_only: bool = False) -> list[dict[str, Any]]:
+    def find_by_symbol(self, symbol: str, *, limit: int) -> list[dict[str, Any]]:
         return self._find(
             entity_type="symbol",
             normalized_value=symbol.strip().lstrip("$").upper(),
             chain=None,
             limit=limit,
-            watched_only=watched_only,
         )
 
     def _find(
@@ -107,7 +103,6 @@ class EntityRepository:
         normalized_value: str,
         chain: str | None,
         limit: int,
-        watched_only: bool,
     ) -> list[dict[str, Any]]:
         parsed_limit = require_nonnegative_int(limit, error_code="entity_repository_find_limit_required")
         clauses = ["entity_type = %s", "normalized_value = %s"]
@@ -121,8 +116,6 @@ class EntityRepository:
         else:
             clauses.append("chain = %s")
             params.append(chain)
-        if watched_only:
-            clauses.append("is_watched = true")
         rows = self.conn.execute(
             f"""
             SELECT * FROM event_entities

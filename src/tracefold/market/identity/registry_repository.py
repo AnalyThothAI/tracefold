@@ -436,7 +436,6 @@ class RegistryRepository:
             WITH latest_sets AS MATERIALIZED (
               SELECT
                 "window",
-                scope,
                 venue,
                 current_published_at_ms
               FROM token_radar_publication_state
@@ -455,9 +454,8 @@ class RegistryRepository:
                 rows.rank_score
               FROM latest_sets
               JOIN token_radar_current_rows rows
-                ON rows.projection_version = %s
+               ON rows.projection_version = %s
                AND rows."window" = latest_sets."window"
-               AND rows.scope = latest_sets.scope
                AND rows.venue = latest_sets.venue
               WHERE rows.target_type IN ('Asset', 'CexToken')
                 AND rows.target_id IS NOT NULL

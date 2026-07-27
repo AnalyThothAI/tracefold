@@ -22,7 +22,6 @@ class TokenRadarFeatureSourceRequest:
     target_type_key: str
     identity_id: str
     window: str
-    scope: str
     analysis_since_ms: int
     score_since_ms: int
     now_ms: int
@@ -150,7 +149,6 @@ def _feature_request_payload(request: TokenRadarFeatureSourceRequest) -> dict[st
         "target_type_key": str(request.target_type_key),
         "identity_id": str(request.identity_id),
         "window": str(request.window),
-        "scope": str(request.scope),
         "analysis_since_ms": int(request.analysis_since_ms),
         "score_since_ms": int(request.score_since_ms),
         "now_ms": int(request.now_ms),
@@ -294,7 +292,6 @@ WITH requested AS (
     target_type_key text,
     identity_id text,
     "window" text,
-    scope text,
     analysis_since_ms bigint,
     score_since_ms bigint,
     now_ms bigint
@@ -304,7 +301,6 @@ source_edges AS (
   SELECT
     requested.request_key,
     requested."window",
-    requested.scope,
     requested.score_since_ms,
     rank_source.source_payload_hash,
     rank_source.intent_id,
@@ -314,7 +310,6 @@ source_edges AS (
     rank_source.target_id,
     rank_source.pricefeed_id,
     rank_source.resolution_status,
-    rank_source.is_watched,
     rank_source.event_received_at_ms,
     row_number() OVER (
       PARTITION BY requested.request_key, rank_source.target_type_key, rank_source.identity_id
@@ -328,13 +323,11 @@ source_edges AS (
   WHERE rank_source.source_kind = 'event'
     AND rank_source.event_received_at_ms >= requested.analysis_since_ms
     AND rank_source.event_received_at_ms <= requested.now_ms
-    AND CASE WHEN requested.scope = 'matched' THEN rank_source.is_watched = true ELSE true END
 ),
 hydrated AS (
   SELECT
     source_edges.request_key,
     source_edges."window",
-    source_edges.scope,
     source_edges.score_since_ms,
     source_edges.source_payload_hash,
     source_edges.intent_id,
@@ -362,7 +355,6 @@ hydrated AS (
     token_intent_resolutions.lookup_keys_json,
     token_intent_resolutions.decision_time_ms,
     events.author_handle,
-    source_edges.is_watched,
     source_edges.event_received_at_ms AS received_at_ms,
     source_edges.source_rank,
     md5(COALESCE(events.search_tsv::text, '')) AS text_fingerprint,
@@ -370,7 +362,6 @@ hydrated AS (
       WHEN events.search_tsv IS NULL THEN NULL
       WHEN events.search_tsv @@ websearch_to_tsquery('simple', 'price OR liquidity OR volume OR holders OR mcap OR fdv')
         THEN 80
-      WHEN events.is_watched THEN 65
       ELSE 55
     END AS post_quality_score,
     CASE WHEN events.search_tsv IS NULL THEN NULL ELSE true END AS post_informative,
@@ -571,8 +562,7 @@ raw_edges AS (
         token_intent_resolutions.target_id,
         COALESCE(token_intent_resolutions.pricefeed_id, ''),
         COALESCE(token_intent_resolutions.resolution_status, ''),
-        events.received_at_ms::text,
-        events.is_watched::text
+        events.received_at_ms::text
       )
     ) AS source_payload_hash,
     token_intents.intent_id,
@@ -581,8 +571,7 @@ raw_edges AS (
     token_intent_resolutions.target_type,
     token_intent_resolutions.target_id,
     token_intent_resolutions.pricefeed_id,
-    token_intent_resolutions.resolution_status,
-    events.is_watched
+    token_intent_resolutions.resolution_status
   FROM requested_targets
   JOIN token_intent_resolutions
     ON token_intent_resolutions.target_type = requested_targets.target_type_key
@@ -614,8 +603,7 @@ fresh_edges AS (
     target_type,
     target_id,
     pricefeed_id,
-    resolution_status,
-    is_watched
+    resolution_status
   FROM raw_edges
   ORDER BY
     projection_version,
@@ -631,13 +619,13 @@ upserted AS (
     projection_version, target_type_key, identity_id, source_kind, source_id,
     event_received_at_ms, projected_at_ms, source_payload_hash,
     intent_id, event_id, resolution_id, target_type, target_id, pricefeed_id,
-    resolution_status, is_watched
+    resolution_status
   )
   SELECT
     projection_version, target_type_key, identity_id, source_kind, source_id,
     event_received_at_ms, projected_at_ms, source_payload_hash,
     intent_id, event_id, resolution_id, target_type, target_id, pricefeed_id,
-    resolution_status, is_watched
+    resolution_status
   FROM fresh_edges
   ON CONFLICT(projection_version, target_type_key, identity_id, source_kind, source_id)
   DO UPDATE SET
@@ -650,8 +638,7 @@ upserted AS (
     target_type = excluded.target_type,
     target_id = excluded.target_id,
     pricefeed_id = excluded.pricefeed_id,
-    resolution_status = excluded.resolution_status,
-    is_watched = excluded.is_watched
+    resolution_status = excluded.resolution_status
   WHERE token_radar_rank_source_events.source_payload_hash IS DISTINCT FROM excluded.source_payload_hash
   RETURNING 1
 ),

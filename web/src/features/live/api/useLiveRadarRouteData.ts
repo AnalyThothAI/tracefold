@@ -1,5 +1,5 @@
 import { countDecisions, tokenRadarItems } from "@lib/tokenRadar";
-import type { AssetFlowData, ScopeKey, TokenFlowItem, WindowKey } from "@lib/types";
+import type { AssetFlowData, TokenFlowItem, WindowKey } from "@lib/types";
 import type { TokenRadarVenueFilter } from "@lib/venue";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -17,12 +17,10 @@ type RadarFrame = {
 
 export function useLiveRadarRouteData({
   enabled = true,
-  scope,
   token,
   window,
 }: {
   enabled?: boolean;
-  scope: ScopeKey;
   token: string;
   window: WindowKey;
 }) {
@@ -30,16 +28,14 @@ export function useLiveRadarRouteData({
   const assetFlowQuery = useTokenRadarQuery({
     token,
     window,
-    scope,
     venue: venueFilter,
     limit: 48,
     enabled,
   });
   const lastReadyFrames = useRef(new Map<string, RadarFrame>());
-  const cacheKey = `${window}:${scope}:${venueFilter}`;
+  const cacheKey = `${window}:${venueFilter}`;
   const responseData = assetFlowQuery.data?.data;
   const responseIdentityMatches = radarResponseMatchesIdentity(responseData, {
-    scope,
     venue: venueFilter,
     window,
   });
@@ -47,10 +43,7 @@ export function useLiveRadarRouteData({
     ? (responseData?.projection?.status ?? null)
     : null;
   const projectionPending = projectionStatus === "pending";
-  const parsed = useMemo(
-    () => parseTokenRadarItems(responseData, window, scope),
-    [responseData, scope, window],
-  );
+  const parsed = useMemo(() => parseTokenRadarItems(responseData, window), [responseData, window]);
   const currentFrame = useMemo(
     () => ({
       rawTokenItems: parsed.items,
@@ -153,10 +146,9 @@ function positiveTimestamp(value: number | null | undefined): number | null {
 function parseTokenRadarItems(
   data: AssetFlowData | null | undefined,
   window: WindowKey,
-  scope: ScopeKey,
 ): { items: TokenFlowItem[]; error: Error | null } {
   try {
-    return { items: tokenRadarItems(data, window, scope), error: null };
+    return { items: tokenRadarItems(data, window), error: null };
   } catch (error) {
     return {
       items: [],

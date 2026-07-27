@@ -92,7 +92,7 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
         data = run_worker_once(
             settings,
             "token_radar_projection",
-            {"windows": (args.window,), "scopes": (args.scope,), "batch_size": args.limit},
+            {"windows": (args.window,), "batch_size": args.limit},
         ).payload()
         return 0, {"ok": True, "data": data}
 
@@ -153,7 +153,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
         if args.ops_command == "factor-diagnostics":
             rows = repos.token_radar.latest_current_rows(
                 window=args.window,
-                scope=args.scope,
                 venue=TOKEN_RADAR_DEFAULT_VENUE,
                 limit=args.limit,
                 projection_version=TOKEN_RADAR_PROJECTION_VERSION,

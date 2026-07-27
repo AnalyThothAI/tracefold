@@ -16,11 +16,7 @@ export function CockpitApp({
   const router = useMemo(() => createRouter(), [createRouter]);
 
   return (
-    <IntelSocketProvider
-      token={session.token}
-      handles={session.bootstrapHandles.join(",")}
-      notifications
-    >
+    <IntelSocketProvider token={session.token}>
       <AppRouteSessionProvider session={session}>
         <RouterProvider router={router} fallbackElement={<RouteFallback />} />
       </AppRouteSessionProvider>

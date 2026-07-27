@@ -1,24 +1,14 @@
 import { getApi } from "@lib/api/client";
-import type {
-  TokenCaseApiScope,
-  TokenCaseDossier,
-  TokenCasePostsData,
-  TokenPostRange,
-  WindowKey,
-} from "@lib/types";
-import type { TokenCaseScope } from "@shared/model/tokenCaseViewModel";
+import type { TokenCaseDossier, TokenCasePostsData, TokenPostRange, WindowKey } from "@lib/types";
 import { queryKeys } from "@shared/query/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import type { TargetRef } from "../../../domain/tokenTarget";
 import { targetRefKey } from "../../../domain/tokenTarget";
-import { tokenCaseScopeToApiScope } from "../state/tokenCaseRouteState";
-
 type UseTokenCaseArgs = {
   token: string;
   target: TargetRef | null;
   window: WindowKey;
-  scope: TokenCaseScope;
   postsLimit?: number;
 };
 
@@ -27,9 +17,9 @@ type UseTokenCasePostsArgs = UseTokenCaseArgs & {
   initialPosts?: TokenCasePostsData | null;
 };
 
-export function useTokenCase({ token, target, window, scope, postsLimit = 24 }: UseTokenCaseArgs) {
+export function useTokenCase({ token, target, window, postsLimit = 24 }: UseTokenCaseArgs) {
   return useQuery({
-    queryKey: queryKeys.tokenCase(target ? targetRefKey(target) : null, window, scope, postsLimit),
+    queryKey: queryKeys.tokenCase(target ? targetRefKey(target) : null, window, postsLimit),
     queryFn: () =>
       getApi<TokenCaseDossier>("/api/token-case", {
         token,
@@ -37,7 +27,6 @@ export function useTokenCase({ token, target, window, scope, postsLimit = 24 }: 
           target_type: target?.target_type,
           target_id: target?.target_id,
           window,
-          scope: tokenCaseScopeToApiScope(scope),
           posts_limit: postsLimit,
         },
       }),
@@ -50,17 +39,14 @@ export function useTokenCasePosts({
   token,
   target,
   window,
-  scope,
   postsLimit = 24,
   range = "current_window",
   initialPosts,
 }: UseTokenCasePostsArgs) {
-  const apiScope = tokenCaseScopeToApiScope(scope);
   const seedPosts = canSeedTokenCasePosts({
     initialPosts,
     target,
     window,
-    scope: apiScope,
     range,
   })
     ? initialPosts
@@ -74,7 +60,6 @@ export function useTokenCasePosts({
   const queryKey = queryKeys.targetPosts(
     target ? targetRefKey(target) : null,
     window,
-    scope,
     range,
     postsLimit,
   );
@@ -88,7 +73,6 @@ export function useTokenCasePosts({
           target_type: target?.target_type,
           target_id: target?.target_id,
           window,
-          scope: apiScope,
           range,
           limit: postsLimit,
           cursor: pageParam || undefined,
@@ -131,13 +115,11 @@ export function canSeedTokenCasePosts({
   initialPosts,
   target,
   window,
-  scope,
   range,
 }: {
   initialPosts?: TokenCasePostsData | null;
   target: TargetRef | null;
   window: WindowKey;
-  scope: TokenCaseApiScope;
   range: TokenPostRange;
 }): boolean {
   if (!initialPosts || !target) {
@@ -148,13 +130,8 @@ export function canSeedTokenCasePosts({
     query.target_type === target.target_type &&
     query.target_id === target.target_id &&
     query.window === window &&
-    tokenCaseScopeKey(query.scope) === tokenCaseScopeKey(scope) &&
     query.range === range
   );
-}
-
-function tokenCaseScopeKey(scope: TokenCaseApiScope): TokenCaseScope {
-  return scope === "matched" ? "watched" : scope;
 }
 
 export function shouldEnableTokenCasePostsQuery({

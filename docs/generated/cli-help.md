@@ -6,10 +6,10 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,init,config,db,macro,recent,search,asset-flow,account-alerts,notification-deliveries,ops} ...
+                 {serve,init,config,db,macro,recent,search,asset-flow,ops} ...
 
 positional arguments:
-  {serve,init,config,db,macro,recent,search,asset-flow,account-alerts,notification-deliveries,ops}
+  {serve,init,config,db,macro,recent,search,asset-flow,ops}
     serve               run the collector service
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
@@ -19,9 +19,6 @@ positional arguments:
     search              search stored tweets by query text
     asset-flow          rank resolved assets and unresolved attention
                         candidates
-    account-alerts      print watched-account token alerts
-    notification-deliveries
-                        inspect notification external delivery audit rows
     ops                 maintenance commands
 
 options:

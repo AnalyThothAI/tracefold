@@ -1,87 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AccountAlertsData": {
-        "additionalProperties": false,
-        "properties": {
-          "alert_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alert Type"
-          },
-          "items": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          }
-        },
-        "required": [
-          "window",
-          "alert_type",
-          "items"
-        ],
-        "title": "AccountAlertsData",
-        "type": "object"
-      },
-      "ApiEnvelope_AccountAlertsData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AccountAlertsData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[AccountAlertsData]",
-        "type": "object"
-      },
       "ApiEnvelope_BootstrapData_": {
         "additionalProperties": false,
         "properties": {
@@ -540,190 +459,6 @@
           "ok"
         ],
         "title": "ApiEnvelope[MacroVolatilityReadData]",
-        "type": "object"
-      },
-      "ApiEnvelope_NotificationDeliveriesData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NotificationDeliveriesData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[NotificationDeliveriesData]",
-        "type": "object"
-      },
-      "ApiEnvelope_NotificationReadAllData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NotificationReadAllData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[NotificationReadAllData]",
-        "type": "object"
-      },
-      "ApiEnvelope_NotificationReadData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NotificationReadData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[NotificationReadData]",
-        "type": "object"
-      },
-      "ApiEnvelope_NotificationsData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NotificationsData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[NotificationsData]",
         "type": "object"
       },
       "ApiEnvelope_RecentData_": {
@@ -1186,144 +921,6 @@
         "title": "ApiEnvelope[TokenRadarData]",
         "type": "object"
       },
-      "ApiEnvelope_WatchlistHandleOverviewData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WatchlistHandleOverviewData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[WatchlistHandleOverviewData]",
-        "type": "object"
-      },
-      "ApiEnvelope_WatchlistHandleTimelineData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WatchlistHandleTimelineData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[WatchlistHandleTimelineData]",
-        "type": "object"
-      },
-      "ApiEnvelope_WatchlistHandlesOverviewData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WatchlistHandlesOverviewData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[WatchlistHandlesOverviewData]",
-        "type": "object"
-      },
       "ApiEnvelope_dict_str__Any__": {
         "additionalProperties": false,
         "properties": {
@@ -1375,13 +972,6 @@
       "BootstrapData": {
         "additionalProperties": false,
         "properties": {
-          "handles": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Handles",
-            "type": "array"
-          },
           "replay_limit": {
             "title": "Replay Limit",
             "type": "integer"
@@ -1393,7 +983,6 @@
         },
         "required": [
           "ws_token",
-          "handles",
           "replay_limit"
         ],
         "title": "BootstrapData",
@@ -4648,311 +4237,6 @@
         "title": "NewsHealthLayersData",
         "type": "object"
       },
-      "NotificationDeliveriesData": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "NotificationDeliveriesData",
-        "type": "object"
-      },
-      "NotificationItemData": {
-        "additionalProperties": false,
-        "properties": {
-          "address": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Address"
-          },
-          "author_handle": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Author Handle"
-          },
-          "body": {
-            "title": "Body",
-            "type": "string"
-          },
-          "chain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Chain"
-          },
-          "channels": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Channels",
-            "type": "array"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
-            "type": "integer"
-          },
-          "dedup_key": {
-            "title": "Dedup Key",
-            "type": "string"
-          },
-          "entity_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entity Key"
-          },
-          "entity_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entity Type"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Event Id"
-          },
-          "first_seen_at_ms": {
-            "title": "First Seen At Ms",
-            "type": "integer"
-          },
-          "last_seen_at_ms": {
-            "title": "Last Seen At Ms",
-            "type": "integer"
-          },
-          "notification_id": {
-            "title": "Notification Id",
-            "type": "string"
-          },
-          "occurrence_count": {
-            "title": "Occurrence Count",
-            "type": "integer"
-          },
-          "payload": {
-            "additionalProperties": true,
-            "title": "Payload",
-            "type": "object"
-          },
-          "read_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Read At Ms"
-          },
-          "rule_id": {
-            "title": "Rule Id",
-            "type": "string"
-          },
-          "severity": {
-            "title": "Severity",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          },
-          "source_table": {
-            "title": "Source Table",
-            "type": "string"
-          },
-          "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "updated_at_ms": {
-            "title": "Updated At Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "notification_id",
-          "dedup_key",
-          "rule_id",
-          "severity",
-          "title",
-          "body",
-          "entity_type",
-          "entity_key",
-          "author_handle",
-          "symbol",
-          "chain",
-          "address",
-          "event_id",
-          "source_table",
-          "source_id",
-          "occurrence_count",
-          "first_seen_at_ms",
-          "last_seen_at_ms",
-          "created_at_ms",
-          "updated_at_ms",
-          "read_at_ms",
-          "payload",
-          "channels"
-        ],
-        "title": "NotificationItemData",
-        "type": "object"
-      },
-      "NotificationReadAllData": {
-        "additionalProperties": false,
-        "properties": {
-          "updated_count": {
-            "title": "Updated Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "updated_count"
-        ],
-        "title": "NotificationReadAllData",
-        "type": "object"
-      },
-      "NotificationReadData": {
-        "additionalProperties": false,
-        "properties": {
-          "notification_id": {
-            "title": "Notification Id",
-            "type": "string"
-          },
-          "updated": {
-            "title": "Updated",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "notification_id",
-          "updated"
-        ],
-        "title": "NotificationReadData",
-        "type": "object"
-      },
-      "NotificationSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "account_unread_counts": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Account Unread Counts",
-            "type": "object"
-          },
-          "critical_unread_count": {
-            "title": "Critical Unread Count",
-            "type": "integer"
-          },
-          "high_unread_count": {
-            "title": "High Unread Count",
-            "type": "integer"
-          },
-          "highest_unread_severity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Highest Unread Severity"
-          },
-          "subscriber_key": {
-            "title": "Subscriber Key",
-            "type": "string"
-          },
-          "unread_count": {
-            "title": "Unread Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "subscriber_key",
-          "unread_count",
-          "high_unread_count",
-          "critical_unread_count",
-          "highest_unread_severity",
-          "account_unread_counts"
-        ],
-        "title": "NotificationSummary",
-        "type": "object"
-      },
-      "NotificationsData": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/NotificationItemData"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/NotificationSummary"
-          }
-        },
-        "required": [
-          "items",
-          "summary"
-        ],
-        "title": "NotificationsData",
-        "type": "object"
-      },
       "ReadinessData": {
         "additionalProperties": false,
         "properties": {
@@ -4965,13 +4249,6 @@
             "additionalProperties": true,
             "title": "Db",
             "type": "object"
-          },
-          "handles": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Handles",
-            "type": "array"
           },
           "ok": {
             "title": "Ok",
@@ -4993,7 +4270,6 @@
         "required": [
           "ok",
           "reasons",
-          "handles",
           "store",
           "db",
           "composition"
@@ -5019,14 +4295,9 @@
             },
             "title": "Items",
             "type": "array"
-          },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
           }
         },
         "required": [
-          "scope",
           "events",
           "items"
         ],
@@ -5172,10 +4443,6 @@
             "title": "Result Kind",
             "type": "string"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "window": {
             "title": "Window",
             "type": "string"
@@ -5185,7 +4452,6 @@
           "q",
           "normalized_q",
           "window",
-          "scope",
           "result_kind"
         ],
         "title": "SearchInspectQueryData",
@@ -5342,10 +4608,6 @@
             ],
             "title": "Author Name"
           },
-          "author_watched": {
-            "title": "Author Watched",
-            "type": "boolean"
-          },
           "canonical_url": {
             "anyOf": [
               {
@@ -5394,7 +4656,6 @@
           "author_handle",
           "author_name",
           "author_followers",
-          "author_watched",
           "text_clean",
           "canonical_url"
         ],
@@ -5433,13 +4694,6 @@
             "additionalProperties": true,
             "title": "Db",
             "type": "object"
-          },
-          "handles": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Handles",
-            "type": "array"
           },
           "news": {
             "$ref": "#/components/schemas/NewsHealthData"
@@ -5484,7 +4738,6 @@
         "required": [
           "ok",
           "reasons",
-          "handles",
           "store",
           "snapshot_gate",
           "db",
@@ -5516,16 +4769,11 @@
           "unique_authors": {
             "title": "Unique Authors",
             "type": "integer"
-          },
-          "watched_mentions": {
-            "title": "Watched Mentions",
-            "type": "integer"
           }
         },
         "required": [
           "mentions",
           "unique_authors",
-          "watched_mentions",
           "latest_seen_ms"
         ],
         "title": "StocksRadarAttentionData",
@@ -5547,10 +4795,6 @@
             "title": "Rows",
             "type": "array"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "window": {
             "title": "Window",
             "type": "string"
@@ -5558,7 +4802,6 @@
         },
         "required": [
           "window",
-          "scope",
           "query",
           "rows",
           "health"
@@ -5654,10 +4897,6 @@
             "title": "Limit",
             "type": "integer"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "window": {
             "title": "Window",
             "type": "string"
@@ -5673,7 +4912,6 @@
         },
         "required": [
           "window",
-          "scope",
           "limit",
           "window_start_ms",
           "window_end_ms"
@@ -5998,10 +5236,6 @@
             "title": "Range",
             "type": "string"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "target_id": {
             "title": "Target Id",
             "type": "string"
@@ -6019,7 +5253,6 @@
           "target_type",
           "target_id",
           "window",
-          "scope",
           "range"
         ],
         "title": "TargetPostsQueryData",
@@ -6142,10 +5375,6 @@
             "title": "Bucket",
             "type": "string"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "target_id": {
             "title": "Target Id",
             "type": "string"
@@ -6163,7 +5392,6 @@
           "target_type",
           "target_id",
           "window",
-          "scope",
           "bucket"
         ],
         "title": "TargetSocialTimelineQueryData",
@@ -6703,7 +5931,7 @@
             "$ref": "#/components/schemas/TokenFactorProvenanceData"
           },
           "schema_version": {
-            "const": "token_factor_snapshot_v4_transparent_factors",
+            "const": "token_factor_snapshot_v5_provider_neutral",
             "title": "Schema Version",
             "type": "string"
           },
@@ -6860,10 +6088,6 @@
           "projection": {
             "$ref": "#/components/schemas/TokenRadarProjectionData"
           },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
           "targets": {
             "items": {
               "$ref": "#/components/schemas/TokenRadarRowData"
@@ -6882,7 +6106,6 @@
         },
         "required": [
           "window",
-          "scope",
           "venue",
           "targets",
           "attention",
@@ -7378,404 +6601,6 @@
         "title": "ValidationError",
         "type": "object"
       },
-      "WatchlistHandleOverviewData": {
-        "additionalProperties": false,
-        "properties": {
-          "candidate_mention_clusters": {
-            "items": {
-              "$ref": "#/components/schemas/WatchlistOverviewCluster"
-            },
-            "title": "Candidate Mention Clusters",
-            "type": "array"
-          },
-          "clusters_truncated": {
-            "title": "Clusters Truncated",
-            "type": "boolean"
-          },
-          "hashtag_clusters": {
-            "items": {
-              "$ref": "#/components/schemas/WatchlistOverviewCluster"
-            },
-            "title": "Hashtag Clusters",
-            "type": "array"
-          },
-          "metrics": {
-            "$ref": "#/components/schemas/WatchlistOverviewMetrics"
-          },
-          "query": {
-            "$ref": "#/components/schemas/WatchlistOverviewQuery"
-          },
-          "resolved_token_clusters": {
-            "items": {
-              "$ref": "#/components/schemas/WatchlistOverviewCluster"
-            },
-            "title": "Resolved Token Clusters",
-            "type": "array"
-          },
-          "risk_notes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Risk Notes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "query",
-          "metrics",
-          "resolved_token_clusters",
-          "candidate_mention_clusters",
-          "hashtag_clusters",
-          "clusters_truncated",
-          "risk_notes"
-        ],
-        "title": "WatchlistHandleOverviewData",
-        "type": "object"
-      },
-      "WatchlistHandleRowOverview": {
-        "additionalProperties": false,
-        "properties": {
-          "handle": {
-            "title": "Handle",
-            "type": "string"
-          },
-          "last_source_event_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Source Event At Ms"
-          },
-          "recent_source_event_count": {
-            "title": "Recent Source Event Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "handle",
-          "last_source_event_at_ms",
-          "recent_source_event_count"
-        ],
-        "title": "WatchlistHandleRowOverview",
-        "type": "object"
-      },
-      "WatchlistHandleTimelineData": {
-        "additionalProperties": false,
-        "properties": {
-          "has_more": {
-            "title": "Has More",
-            "type": "boolean"
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/WatchlistTimelineItem"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "query": {
-            "$ref": "#/components/schemas/WatchlistTimelineQuery"
-          }
-        },
-        "required": [
-          "query",
-          "items",
-          "has_more",
-          "next_cursor"
-        ],
-        "title": "WatchlistHandleTimelineData",
-        "type": "object"
-      },
-      "WatchlistHandlesOverviewData": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/WatchlistHandleRowOverview"
-            },
-            "title": "Items",
-            "type": "array"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          }
-        },
-        "required": [
-          "window",
-          "items"
-        ],
-        "title": "WatchlistHandlesOverviewData",
-        "type": "object"
-      },
-      "WatchlistOverviewCluster": {
-        "additionalProperties": false,
-        "properties": {
-          "count": {
-            "title": "Count",
-            "type": "integer"
-          },
-          "kind": {
-            "enum": [
-              "resolved_token",
-              "candidate_mention",
-              "hashtag"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "query": {
-            "title": "Query",
-            "type": "string"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          },
-          "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Id"
-          },
-          "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Type"
-          }
-        },
-        "required": [
-          "label",
-          "count",
-          "query",
-          "kind",
-          "target_type",
-          "target_id",
-          "symbol",
-          "source"
-        ],
-        "title": "WatchlistOverviewCluster",
-        "type": "object"
-      },
-      "WatchlistOverviewMetrics": {
-        "additionalProperties": false,
-        "properties": {
-          "candidate_mention_count": {
-            "title": "Candidate Mention Count",
-            "type": "integer"
-          },
-          "hashtag_count": {
-            "title": "Hashtag Count",
-            "type": "integer"
-          },
-          "last_source_event_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Source Event At Ms"
-          },
-          "resolved_token_count": {
-            "title": "Resolved Token Count",
-            "type": "integer"
-          },
-          "source_event_count": {
-            "title": "Source Event Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "source_event_count",
-          "resolved_token_count",
-          "candidate_mention_count",
-          "hashtag_count",
-          "last_source_event_at_ms"
-        ],
-        "title": "WatchlistOverviewMetrics",
-        "type": "object"
-      },
-      "WatchlistOverviewQuery": {
-        "additionalProperties": false,
-        "properties": {
-          "handle": {
-            "title": "Handle",
-            "type": "string"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          }
-        },
-        "required": [
-          "handle",
-          "window"
-        ],
-        "title": "WatchlistOverviewQuery",
-        "type": "object"
-      },
-      "WatchlistTimelineItem": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "title": "Action",
-            "type": "string"
-          },
-          "author_handle": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Author Handle"
-          },
-          "canonical_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Canonical Url"
-          },
-          "cashtags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Cashtags",
-            "type": "array"
-          },
-          "event": {
-            "additionalProperties": true,
-            "title": "Event",
-            "type": "object"
-          },
-          "event_id": {
-            "title": "Event Id",
-            "type": "string"
-          },
-          "hashtags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Hashtags",
-            "type": "array"
-          },
-          "mentions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Mentions",
-            "type": "array"
-          },
-          "received_at_ms": {
-            "title": "Received At Ms",
-            "type": "integer"
-          },
-          "text_clean": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Text Clean"
-          },
-          "token_resolutions": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Token Resolutions",
-            "type": "array"
-          }
-        },
-        "required": [
-          "event_id",
-          "received_at_ms",
-          "author_handle",
-          "action",
-          "text_clean",
-          "canonical_url",
-          "cashtags",
-          "hashtags",
-          "mentions",
-          "event",
-          "token_resolutions"
-        ],
-        "title": "WatchlistTimelineItem",
-        "type": "object"
-      },
-      "WatchlistTimelineQuery": {
-        "additionalProperties": false,
-        "properties": {
-          "handle": {
-            "title": "Handle",
-            "type": "string"
-          },
-          "limit": {
-            "title": "Limit",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "handle",
-          "limit"
-        ],
-        "title": "WatchlistTimelineQuery",
-        "type": "object"
-      },
       "WorkerStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -7890,85 +6715,6 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/account-alerts": {
-      "get": {
-        "operationId": "account_alerts_api_account_alerts_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "window",
-            "required": false,
-            "schema": {
-              "default": "24h",
-              "title": "Window",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "handles",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Handles",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "alert_type",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Alert Type"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AccountAlertsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Account Alerts",
-        "tags": [
-          "api"
-        ]
-      }
-    },
     "/api/bootstrap": {
       "get": {
         "operationId": "bootstrap_api_bootstrap_get",
@@ -8484,233 +7230,6 @@
         ]
       }
     },
-    "/api/notification-deliveries": {
-      "get": {
-        "operationId": "notification_deliveries_api_notification_deliveries_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NotificationDeliveriesData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Notification Deliveries",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/notifications": {
-      "get": {
-        "operationId": "notifications_api_notifications_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "unread_only",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Unread Only",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "rule_id",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Rule Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NotificationsData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Notifications",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/notifications/author/{author_handle}/read": {
-      "post": {
-        "operationId": "mark_author_notifications_read_api_notifications_author__author_handle__read_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "author_handle",
-            "required": true,
-            "schema": {
-              "title": "Author Handle",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NotificationReadAllData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Mark Author Notifications Read",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/notifications/read-all": {
-      "post": {
-        "operationId": "mark_all_notifications_read_api_notifications_read_all_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NotificationReadAllData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Mark All Notifications Read",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/notifications/{notification_id}/read": {
-      "post": {
-        "operationId": "mark_notification_read_api_notifications__notification_id__read_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "notification_id",
-            "required": true,
-            "schema": {
-              "title": "Notification Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NotificationReadData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Mark Notification Read",
-        "tags": [
-          "api"
-        ]
-      }
-    },
     "/api/recent": {
       "get": {
         "operationId": "recent_api_recent_get",
@@ -8762,16 +7281,6 @@
             "schema": {
               "default": "",
               "title": "Symbol",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "matched",
-              "title": "Scope",
               "type": "string"
             }
           }
@@ -8826,16 +7335,6 @@
               "default": 20,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
-              "type": "string"
             }
           },
           {
@@ -8908,16 +7407,6 @@
             "schema": {
               "default": "24h",
               "title": "Window",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
               "type": "string"
             }
           },
@@ -9003,16 +7492,6 @@
               "default": 20,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
-              "type": "string"
             }
           }
         ],
@@ -9100,16 +7579,6 @@
           },
           {
             "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "cursor",
             "required": false,
             "schema": {
@@ -9178,16 +7647,6 @@
             "schema": {
               "default": "1h",
               "title": "Window",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
               "type": "string"
             }
           },
@@ -9276,16 +7735,6 @@
           },
           {
             "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "posts_limit",
             "required": false,
             "schema": {
@@ -9349,16 +7798,6 @@
           },
           {
             "in": "query",
-            "name": "scope",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Scope",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "venue",
             "required": false,
             "schema": {
@@ -9391,133 +7830,6 @@
           }
         },
         "summary": "Token Radar",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/watchlist/handle/{handle}/overview": {
-      "get": {
-        "operationId": "watchlist_handle_overview_api_watchlist_handle__handle__overview_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "handle",
-            "required": true,
-            "schema": {
-              "title": "Handle",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_WatchlistHandleOverviewData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Watchlist Handle Overview",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/watchlist/handle/{handle}/timeline": {
-      "get": {
-        "operationId": "watchlist_handle_timeline_api_watchlist_handle__handle__timeline_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "handle",
-            "required": true,
-            "schema": {
-              "title": "Handle",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 30,
-              "maximum": 100,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Cursor",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_WatchlistHandleTimelineData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Watchlist Handle Timeline",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/watchlist/handles/overview": {
-      "get": {
-        "operationId": "watchlist_handles_overview_api_watchlist_handles_overview_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_WatchlistHandlesOverviewData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Watchlist Handles Overview",
         "tags": [
           "api"
         ]

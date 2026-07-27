@@ -22,7 +22,6 @@ class StocksRadarService:
         *,
         window: str,
         limit: int,
-        scope: str,
         now_ms: int,
     ) -> dict[str, Any]:
         parsed_limit = require_nonnegative_int(limit, error_code="stocks_radar_limit_required")
@@ -30,7 +29,6 @@ class StocksRadarService:
         rows = self.stock_rows_query.stock_rows(
             since_ms=since_ms,
             now_ms=int(now_ms),
-            scope=scope,
             limit=parsed_limit,
         )
         items = [
@@ -41,10 +39,8 @@ class StocksRadarService:
         quote_unavailable_count = len(items) - quote_ready_count
         return {
             "window": window,
-            "scope": scope,
             "query": {
                 "window": window,
-                "scope": scope,
                 "limit": parsed_limit,
                 "window_start_ms": since_ms,
                 "window_end_ms": int(now_ms),
@@ -72,7 +68,6 @@ def _public_row(row: dict[str, Any], *, quote: dict[str, Any]) -> dict[str, Any]
         "attention": {
             "mentions": int(row.get("mentions") or 0),
             "unique_authors": int(row.get("unique_authors") or 0),
-            "watched_mentions": int(row.get("watched_mentions") or 0),
             "latest_seen_ms": _int_or_none(row.get("latest_seen_ms")),
         },
         "latest_event": {

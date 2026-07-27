@@ -17,7 +17,7 @@ def construct_news_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
         return {name: disabled_worker(ctx, name) for name in names}
 
     constructed: dict[str, WorkerBase] = {}
-    sources = settings.news.sources or default_sources()
+    sources = default_sources()
     if workers.news_pipeline.enabled:
         constructed["news_pipeline"] = NewsPipelineWorker(
             settings=workers.news_pipeline,

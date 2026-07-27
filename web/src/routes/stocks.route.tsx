@@ -7,10 +7,8 @@ export function Component() {
 
   return (
     <StocksRadarPage
-      scope={context.scope}
       token={context.token}
       windowKey={context.windowKey}
-      onScopeChange={context.updateScope}
       onWindowChange={context.updateWindow}
     />
   );

@@ -4,17 +4,13 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from tracefold.news import default_sources
 from tracefold.platform.config.settings import load_settings, write_default_config
 from tracefold.platform.paths import config_path, workers_config_path
 
 
 def handle_init(args: object) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists() and workers_config_path().exists()
-    path = write_default_config(
-        force=args.force,
-        news_sources=tuple(source.model_dump(mode="json") for source in default_sources()),
-    )
+    path = write_default_config(force=args.force)
     password_path = _ensure_postgres_password_file(path.parent)
     return (
         0,
@@ -38,8 +34,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
         {
             "ok": True,
             "data": {
-                "handles": list(settings.handles),
-                "handle_count": len(settings.handles),
                 "config_path": str(settings.app_home / "config.yaml"),
                 "workers_config_path": str(workers_config_path(settings.app_home)),
                 "api": {
@@ -90,23 +84,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "cboe_enabled": settings.providers.macro_sources.cboe_enabled,
                         "cftc_enabled": settings.providers.macro_sources.cftc_enabled,
                         "nasdaq_public_enabled": settings.providers.macro_sources.nasdaq_public_enabled,
-                    },
-                },
-                "notifications": {
-                    "enabled": settings.notifications.enabled,
-                    "candidate_limit": settings.notifications.candidate_limit,
-                    "retention_days": settings.notifications.retention_days,
-                    "rules": {
-                        rule_id: rule.model_dump(mode="json") for rule_id, rule in settings.notifications.rules.items()
-                    },
-                    "channels": {
-                        channel_id: {
-                            "enabled": channel.enabled,
-                            "provider": channel.provider,
-                            "url_configured": bool(channel.url),
-                            "min_severity": channel.min_severity,
-                        }
-                        for channel_id, channel in settings.notifications.channels.items()
                     },
                 },
                 "workers": settings.workers.model_dump(mode="json"),

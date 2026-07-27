@@ -11,7 +11,6 @@ from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.validators import (
     _limit,
-    _scope,
     _target_type,
     _token_radar_venue,
     _window,
@@ -26,24 +25,22 @@ def token_radar(
     request: Request,
     window: Annotated[str, Query()] = "1h",
     limit: Annotated[int, Query()] = 20,
-    scope: Annotated[str, Query()] = "all",
     venue: Annotated[str, Query()] = "all",
 ) -> JSONResponse:
+    _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
-    parsed_scope = _scope(scope)
     parsed_venue = _token_radar_venue(venue)
     data = _token_radar_data(
         runtime,
         window=parsed_window,
         limit=_limit(limit),
-        scope=parsed_scope,
         venue=parsed_venue,
         now_ms=_now_ms(),
     )
     return _validated_json(
         api_schemas.ApiEnvelope[api_schemas.TokenRadarData],
-        {"ok": True, "data": {"window": parsed_window, "scope": parsed_scope, "venue": parsed_venue, **data}},
+        {"ok": True, "data": {"window": parsed_window, "venue": parsed_venue, **data}},
     )
 
 
@@ -52,18 +49,16 @@ def stocks_radar(
     request: Request,
     window: Annotated[str, Query()] = "1h",
     limit: Annotated[int, Query()] = 20,
-    scope: Annotated[str, Query()] = "all",
 ) -> JSONResponse:
+    _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
-    parsed_scope = _scope(scope)
     with runtime.repositories() as repos:
         data = StocksRadarService(
             conn=repos.conn,
         ).stocks_radar(
             window=parsed_window,
             limit=_limit(limit),
-            scope=parsed_scope,
             now_ms=_now_ms(),
         )
     return _validated_json(
@@ -104,7 +99,6 @@ def _token_radar_data(
     *,
     window: str,
     limit: int,
-    scope: str,
     venue: str,
     now_ms: int,
 ) -> dict[str, Any]:
@@ -116,8 +110,12 @@ def _token_radar_data(
         ).asset_flow(
             window=window,
             limit=limit,
-            scope=scope,
             venue=venue,
             now_ms=now_ms,
         )
         return data
+
+
+def _reject_removed_scope(request: Request) -> None:
+    if "scope" in request.query_params:
+        raise ApiBadRequest("unsupported_query_param", field="scope")

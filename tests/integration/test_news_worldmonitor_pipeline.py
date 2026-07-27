@@ -25,7 +25,7 @@ from tracefold.news import (
     attach_pipeline_runtime_health,
 )
 from tracefold.news.brief import brief_fingerprint
-from tracefold.platform.postgres.postgres_migrations import alembic_config
+from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
 
 NOW_MS = 1_779_000_000_000
 
@@ -895,7 +895,7 @@ def test_destructive_migration_clears_old_news_only_and_preserves_non_news_state
         ).fetchone()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
         assert sentinel == {"payload": "non-news-domain-state"}
-        assert version == {"version_num": "20260727_0206"}
+        assert version == {"version_num": latest_migration_version()}
         assert conn.execute("SELECT count(*) AS count FROM news_sources").fetchone() == {"count": 0}
         assert conn.execute(
             """

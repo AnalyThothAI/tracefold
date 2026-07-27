@@ -42,8 +42,6 @@ export function buildTokenCaseViewModel({
   const market = buildMarketView(dossier);
   const livePrice = numberValue(dossier.market_live.price_usd);
   const timelineItems = mergedPosts.items.map((post) => buildPostEvent(post, livePrice));
-  const visibleTimelineItems =
-    route.postSort === "watched" ? timelineItems.filter((item) => item.isWatched) : timelineItems;
 
   return {
     target: {
@@ -58,7 +56,6 @@ export function buildTokenCaseViewModel({
     },
     route: {
       window: route.window,
-      scope: route.scope,
       searchHref: `/search?q=${encodeURIComponent(symbol ? `$${symbol}` : target.target_id)}`,
     },
     hero: {
@@ -72,12 +69,11 @@ export function buildTokenCaseViewModel({
     },
     metrics: tokenCaseMetrics(dossier, route),
     timeline: {
-      sort: route.postSort,
-      items: visibleTimelineItems,
+      items: timelineItems,
       hasMore: mergedPosts.has_more,
       isLoading: isLoadingPosts,
       isFetchingNextPage,
-      emptyLabel: visibleTimelineItems.length ? null : "No matching posts in this window.",
+      emptyLabel: timelineItems.length ? null : "No matching posts in this window.",
     },
     market,
     dataGaps: [],
@@ -93,8 +89,8 @@ function tokenCaseMetrics(
   const lane = cleanText(currentRadar?.radar.lane);
   const decision = currentRadar?.factor_snapshot.composite.recommended_decision;
   const rankScore = numberValue(currentRadar?.factor_snapshot.composite.rank_score);
-  const listedDetail = `current ${route.window} / ${route.scope} row`;
-  const missingDetail = `no current ${route.window} / ${route.scope} row`;
+  const listedDetail = `current ${route.window} row`;
+  const missingDetail = `no current ${route.window} row`;
 
   return [
     {
@@ -152,7 +148,6 @@ function buildPostEvent(post: TokenPostItem, livePriceUsd: number | null): Token
     timeLabel: post.received_at_ms ? timeAgoLabel(post.received_at_ms) : null,
     phase: cleanText(post.stage_phase),
     role: cleanText(post.author_role),
-    isWatched: Boolean(post.is_watched),
     pills: postPills(post),
     market: buildPostMarket(post, livePriceUsd),
     quality: {

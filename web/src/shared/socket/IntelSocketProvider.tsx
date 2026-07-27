@@ -1,5 +1,5 @@
 import { websocketUrl } from "@lib/api/client";
-import type { LiveMarketUpdatePayload, NotificationLivePayload } from "@lib/types";
+import type { LiveMarketUpdatePayload } from "@lib/types";
 import {
   patchTokenCaseLiveMarketUpdate,
   patchTokenRadarLiveMarketUpdate,
@@ -14,38 +14,25 @@ import type { MarketTargetRef, NormalizedMarketTarget, SocketSnapshot } from "./
 
 type IntelSocketProviderProps = {
   token: string;
-  handles: string;
-  notifications?: boolean;
   children: ReactNode;
 };
 
-export function IntelSocketProvider({
-  token,
-  handles,
-  notifications = false,
-  children,
-}: IntelSocketProviderProps) {
+export function IntelSocketProvider({ token, children }: IntelSocketProviderProps) {
   const queryClient = useQueryClient();
   const [snapshot, setSnapshot] = useState<SocketSnapshot>(idleSocketSnapshot);
   const [marketTargetCounts, setMarketTargetCounts] = useState<Record<string, number>>({});
   const socketRef = useRef<ReconnectingWebSocket | null>(null);
   const readyRef = useRef(false);
   const subscribeRef = useRef({
-    handlesKey: "[]",
     marketTargetKey: "[]",
-    notifications: false,
   });
-  const handlesKey = useMemo(() => JSON.stringify(normalizeHandles(handles)), [handles]);
   const marketTargets = useMemo(
     () => Object.keys(marketTargetCounts).map(targetFromKey).filter(isTarget),
     [marketTargetCounts],
   );
   const marketTargetKey = useMemo(() => JSON.stringify(marketTargets), [marketTargets]);
-  const subscriptionKey = useMemo(
-    () => JSON.stringify({ handlesKey, marketTargetKey, notifications }),
-    [handlesKey, marketTargetKey, notifications],
-  );
-  subscribeRef.current = { handlesKey, marketTargetKey, notifications };
+  const subscriptionKey = useMemo(() => JSON.stringify({ marketTargetKey }), [marketTargetKey]);
+  subscribeRef.current = { marketTargetKey };
 
   const sendSubscribe = useCallback(() => {
     const socket = socketRef.current;
@@ -56,8 +43,6 @@ export function IntelSocketProvider({
     socket.send(
       JSON.stringify({
         type: "subscribe",
-        handles: JSON.parse(subscription.handlesKey) as string[],
-        notifications: subscription.notifications,
         market_targets: JSON.parse(subscription.marketTargetKey) as NormalizedMarketTarget[],
         replay: 0,
       }),
@@ -97,16 +82,6 @@ export function IntelSocketProvider({
         readyRef.current = true;
         setSnapshot((current) => ({ ...current, status: "connected" }));
         sendSubscribe();
-        return;
-      }
-      if (payload.type === "notification") {
-        setSnapshot((current) => ({
-          ...current,
-          notificationItems: [
-            payload as NotificationLivePayload,
-            ...current.notificationItems,
-          ].slice(0, 50),
-        }));
         return;
       }
       if (payload.type === "live_market_update") {
@@ -165,11 +140,4 @@ export function IntelSocketProvider({
   );
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
-}
-
-function normalizeHandles(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim().replace(/^@/, "").toLowerCase())
-    .filter(Boolean);
 }

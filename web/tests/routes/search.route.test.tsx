@@ -40,7 +40,7 @@ describe("search route", () => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/search/inspect",
         expect.objectContaining({
-          params: expect.objectContaining({ q: "$RKC", window: "24h", scope: "all" }),
+          params: expect.objectContaining({ q: "$RKC", window: "24h" }),
         }),
       );
     });
@@ -58,7 +58,6 @@ function searchTokenInspectFixture(q: string): SearchInspectData {
       q,
       normalized_q: q.replace(/^\$/, "").toLowerCase(),
       window: "24h",
-      scope: "all",
       result_kind: "token_result",
     },
     resolver: {
@@ -91,7 +90,6 @@ function searchTokenInspectFixture(q: string): SearchInspectData {
           ...tokenResult.timeline.query,
           target_id: "asset:solana:rkc",
           window: "24h",
-          scope: "all",
         },
       },
       posts: {
@@ -100,7 +98,6 @@ function searchTokenInspectFixture(q: string): SearchInspectData {
           ...tokenResult.posts.query,
           target_id: "asset:solana:rkc",
           window: "24h",
-          scope: "all",
         },
       },
     },

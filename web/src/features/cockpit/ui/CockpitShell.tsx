@@ -1,5 +1,3 @@
-import { NotificationDrawer, NotificationToastBridge } from "@features/notifications";
-import type { NotificationItem, NotificationLivePayload, NotificationSummary } from "@lib/types";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@shared/ui/sidebar";
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
@@ -9,31 +7,13 @@ import { CockpitTopbar, type CockpitTopbarProps } from "./CockpitTopbar";
 import "./cockpitShell.css";
 import "./cockpitShellContract.css";
 
-export type ShellNotificationProps = {
-  notifications: NotificationItem[];
-  notificationSummary: NotificationSummary | null;
-  notificationDrawerOpen: boolean;
-  notificationsLoading: boolean;
-  onCloseNotificationDrawer: () => void;
-  onMarkAllRead: () => void;
-  onMarkRead: (notificationId: string) => void;
-  onOpenNotification: (notification: NotificationItem) => void;
-  socketNotifications: NotificationLivePayload[];
-};
-
 export type CockpitShellProps = {
   topbar: CockpitTopbarProps;
-  notifications: ShellNotificationProps;
   onHotkey: (event: KeyboardEvent) => void;
   outletContext?: unknown;
 };
 
-export function CockpitShell({
-  topbar,
-  notifications,
-  onHotkey,
-  outletContext,
-}: CockpitShellProps) {
+export function CockpitShell({ topbar, onHotkey, outletContext }: CockpitShellProps) {
   useShellHotkeys(onHotkey);
 
   return (
@@ -48,39 +28,7 @@ export function CockpitShell({
           <Outlet context={outletContext} />
         </section>
       </SidebarInset>
-      <NotificationLayer {...notifications} />
     </SidebarProvider>
-  );
-}
-
-export function NotificationLayer({
-  notifications,
-  notificationSummary,
-  notificationDrawerOpen,
-  notificationsLoading,
-  onCloseNotificationDrawer,
-  onMarkAllRead,
-  onMarkRead,
-  onOpenNotification,
-  socketNotifications,
-}: ShellNotificationProps) {
-  return (
-    <>
-      <NotificationDrawer
-        loading={notificationsLoading}
-        notifications={notifications}
-        open={notificationDrawerOpen}
-        summary={notificationSummary}
-        onClose={onCloseNotificationDrawer}
-        onMarkAllRead={onMarkAllRead}
-        onMarkRead={onMarkRead}
-        onOpenNotification={onOpenNotification}
-      />
-      <NotificationToastBridge
-        notifications={socketNotifications.map((item) => item.notification)}
-        onOpenNotification={onOpenNotification}
-      />
-    </>
   );
 }
 

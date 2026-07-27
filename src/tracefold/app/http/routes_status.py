@@ -22,7 +22,6 @@ def bootstrap(request: Request) -> JSONResponse:
             "ok": True,
             "data": {
                 "ws_token": runtime.settings.ws_token,
-                "handles": list(runtime.settings.handles),
                 "replay_limit": runtime.settings.api.replay_limit,
             },
         },

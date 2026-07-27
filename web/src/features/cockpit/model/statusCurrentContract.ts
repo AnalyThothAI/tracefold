@@ -5,7 +5,6 @@ type JsonRecord = Record<string, unknown>;
 const STATUS_KEYS = [
   "ok",
   "reasons",
-  "handles",
   "store",
   "snapshot_gate",
   "db",
@@ -31,7 +30,6 @@ export function requireStatusData(value: unknown): OpenApiStatusData {
   requireExactKeys(status, STATUS_KEYS, "status");
   requireBoolean(status.ok, "status.ok");
   requireStringArray(status.reasons, "status.reasons");
-  requireStringArray(status.handles, "status.handles");
   requireString(status.store, "status.store");
   requireRecord(status.snapshot_gate, "status.snapshot_gate");
   requireRecord(status.db, "status.db");

@@ -40,7 +40,6 @@ export function tokenCaseFixture(): TokenCaseDossier {
         target_type: "Asset",
         target_id: "asset:solana:token:FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspump",
         window: "1h",
-        scope: "all",
         bucket: "5m",
       },
       summary: {
@@ -49,7 +48,6 @@ export function tokenCaseFixture(): TokenCaseDossier {
         effective_authors: 7,
         first_seen_ms: BASE_MS - 42 * 60_000,
         latest_seen_ms: BASE_MS - 90_000,
-        watched_posts: 4,
         phase: "expansion",
         top_author_share: 0.24,
         duplicate_text_share: 0.08,
@@ -66,9 +64,9 @@ export function tokenCaseFixture(): TokenCaseDossier {
         provider: "gmgn",
       },
       stages: [
-        stage("stage-seed", "seed", BASE_MS - 42 * 60_000, 3, 2, 1),
-        stage("stage-ignition", "ignition", BASE_MS - 24 * 60_000, 7, 4, 2),
-        stage("stage-expansion", "expansion", BASE_MS - 9 * 60_000, 8, 5, 1),
+        stage("stage-seed", "seed", BASE_MS - 42 * 60_000, 3, 2),
+        stage("stage-ignition", "ignition", BASE_MS - 24 * 60_000, 7, 4),
+        stage("stage-expansion", "expansion", BASE_MS - 9 * 60_000, 8, 5),
       ],
       buckets: [],
       authors: [
@@ -146,7 +144,7 @@ function currentRadarFixture(): TokenCaseDossier["current_radar"] {
       degraded_reasons: [],
     },
     factor_snapshot: {
-      schema_version: "token_factor_snapshot_v4_transparent_factors",
+      schema_version: "token_factor_snapshot_v5_provider_neutral",
       subject: {
         target_type: "Asset",
         target_id: "asset:solana:token:FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspump",
@@ -219,7 +217,6 @@ export function tokenCasePostsFixture(): TokenPostsData {
       target_type: "Asset",
       target_id: "asset:solana:token:FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspump",
       window: "1h",
-      scope: "all",
       range: "current_window",
     },
     score_window: { window: "1h" },
@@ -233,28 +230,19 @@ export function tokenCasePostsFixture(): TokenPostsData {
         "solwatch",
         "Expansion leg forming on $HANSA. CA still needs market confirmation.",
         82,
-        true,
       ),
       post(
         "event-hansa-2",
         "scannerjoe",
         "$HANSA scanner pickup. Watching independent follow-through.",
         74,
-        false,
       ),
-      post("event-hansa-1", "earlyape", "First $HANSA mention with contract evidence.", 91, true),
+      post("event-hansa-1", "earlyape", "First $HANSA mention with contract evidence.", 91),
     ],
   };
 }
 
-function stage(
-  stageId: string,
-  phase: string,
-  startMs: number,
-  posts: number,
-  authors: number,
-  watchedPosts: number,
-) {
+function stage(stageId: string, phase: string, startMs: number, posts: number, authors: number) {
   return {
     stage_id: stageId,
     phase,
@@ -267,8 +255,6 @@ function stage(
       posts,
       authors,
       new_authors: authors,
-      watched_posts: watchedPosts,
-      watched_authors: Math.min(watchedPosts, authors),
       top_author_share: 0.25,
     },
     representative_event_ids: [`event-hansa-${phase}`],
@@ -280,7 +266,7 @@ function stage(
   };
 }
 
-function post(eventId: string, handle: string, text: string, quality: number, watched: boolean) {
+function post(eventId: string, handle: string, text: string, quality: number) {
   return {
     event_id: eventId,
     tweet_id: eventId.replace("event-", "tweet-"),
@@ -295,10 +281,9 @@ function post(eventId: string, handle: string, text: string, quality: number, wa
     attribution_status: "ca_evidence",
     attribution_confidence: 0.91,
     attribution_weight: 1,
-    is_watched: watched,
     event_type: "tweet",
     stage_phase: eventId.endsWith("3") ? "expansion" : eventId.endsWith("2") ? "ignition" : "seed",
-    author_role: watched ? "watched" : "scanner",
+    author_role: eventId.endsWith("3") ? "early_amplifier" : "scanner",
     is_stage_representative: true,
     post_quality: {
       score: quality,

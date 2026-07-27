@@ -1,11 +1,4 @@
-import {
-  BarChart3,
-  BriefcaseBusiness,
-  Newspaper,
-  Radar,
-  Star,
-  type LucideIcon,
-} from "lucide-react";
+import { BarChart3, BriefcaseBusiness, Newspaper, Radar, type LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
   children?: AppNavigationItem[];
@@ -29,7 +22,6 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       { icon: BarChart3, label: "Stocks", matchPath: "/stocks/*", to: "/stocks" },
       { icon: Newspaper, label: "News", matchPath: "/news/*", to: "/news" },
       { icon: BriefcaseBusiness, label: "Macro", matchPath: "/macro/*", to: "/macro" },
-      { icon: Star, label: "Watchlist", matchPath: "/watchlist/*", to: "/watchlist" },
     ],
   },
 ];

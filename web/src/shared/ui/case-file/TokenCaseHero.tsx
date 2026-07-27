@@ -1,6 +1,5 @@
 import type {
   TokenCaseMetric,
-  TokenCaseScope,
   TokenCaseMarketView,
   TokenCaseViewModel,
   TokenCaseWindow,
@@ -17,11 +16,9 @@ type TokenCaseHeroProps = {
   route: TokenCaseViewModel["route"];
   target: TokenCaseViewModel["target"];
   onWindowChange: (window: TokenCaseWindow) => void;
-  onScopeChange: (scope: TokenCaseScope) => void;
 };
 
 const WINDOWS: TokenCaseWindow[] = ["5m", "1h", "4h", "24h"];
-const SCOPES: TokenCaseScope[] = ["all", "watched"];
 
 export function TokenCaseHero({
   hero,
@@ -30,7 +27,6 @@ export function TokenCaseHero({
   route,
   target,
   onWindowChange,
-  onScopeChange,
 }: TokenCaseHeroProps) {
   const mark = target.symbol?.slice(0, 2).toUpperCase() ?? "?";
 
@@ -48,18 +44,6 @@ export function TokenCaseHero({
                 onClick={() => onWindowChange(window)}
               >
                 {window}
-              </button>
-            ))}
-          </div>
-          <div className={styles.segmented} role="group" aria-label="case scope">
-            {SCOPES.map((scope) => (
-              <button
-                key={scope}
-                type="button"
-                aria-pressed={route.scope === scope}
-                onClick={() => onScopeChange(scope)}
-              >
-                {scope}
               </button>
             ))}
           </div>

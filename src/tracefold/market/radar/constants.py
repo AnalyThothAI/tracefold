@@ -4,12 +4,12 @@ from __future__ import annotations
 # This module intentionally has no intra-domain imports to avoid circular dependencies.
 
 TOKEN_RADAR_PROJECTION_NAME = "token-radar"
-TOKEN_RADAR_PROJECTION_VERSION = "token-radar-v14-transparent-factors"
+TOKEN_RADAR_PROJECTION_VERSION = "token-radar-v15-provider-neutral"
 TOKEN_RADAR_RESOLVER_POLICY_VERSION = "token_radar_v5_identity_resolver"
 TOKEN_RADAR_SOURCE_TABLE = "token_radar_rank_source_events"
 TOKEN_RADAR_DEFAULT_VENUE = "all"
 TOKEN_RADAR_VENUES = ("all", "sol", "eth", "base", "bsc", "cex")
-TOKEN_FACTOR_SNAPSHOT_VERSION = "token_factor_snapshot_v4_transparent_factors"
+TOKEN_FACTOR_SNAPSHOT_VERSION = "token_factor_snapshot_v5_provider_neutral"
 TOKEN_RADAR_DECISIONS = frozenset({"discard", "watch", "high_alert"})
 TOKEN_RADAR_FACTOR_FAMILIES = (
     "social_heat",

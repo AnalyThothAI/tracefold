@@ -51,12 +51,12 @@ describe("Live Radar Tape frontend hard cut", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("subscribes with zero replay without weakening preserved socket behavior", () => {
+  it("subscribes with zero replay and only preserves live market behavior", () => {
     const provider = readFileSync(join(srcRoot, "shared/socket/IntelSocketProvider.tsx"), "utf8");
 
     expect(provider).toContain("replay: 0");
     expect(provider).not.toMatch(/\breplay:\s*[1-9]/);
-    expect(provider).toContain('payload.type === "notification"');
+    expect(provider).not.toContain('payload.type === "notification"');
     expect(provider).toContain('payload.type === "live_market_update"');
     expect(provider).toContain("registerMarketTargets");
   });

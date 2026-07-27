@@ -8,7 +8,7 @@ diagnosis, and safe repair boundaries.
 Real configuration is operator-owned:
 
 - `~/.tracefold/config.yaml`: application, PostgreSQL, providers, credentials,
-  storage, and notifications;
+  and storage;
 - `~/.tracefold/workers.yaml`: enabled state, cadence, batch, lease, retry, and
   timeout settings.
 
@@ -63,9 +63,6 @@ Provider, DB, subprocess, and network boundaries own their explicit timeouts.
 - Provider/network/subprocess/filesystem I/O occurs outside DB transactions.
 - Current rows use stable keys and skip unchanged payload writes.
 
-External delivery follows claim -> close transaction -> I/O -> CAS complete or
-retry. It requires a durable delivery ledger and stable dedup identity.
-
 ## First checks
 
 For missing or stale live data:
@@ -84,7 +81,6 @@ For missing or stale live data:
 | stale row after a run | fact watermark, payload hash, zero-write comparison |
 | growing queue | claim size, lease expiry, retry budget, terminal events |
 | repeated provider failure | provider status and deterministic terminal policy |
-| duplicate external action | dedup key and CAS delivery state |
 | readiness 503 | DB liveness and startup schema/composition |
 | status degraded, readiness 200 | expected runtime/product separation |
 
@@ -177,11 +173,11 @@ schema. The operator accepted no backup, no downgrade, no ID redirect, no
 dual writer, and no compatibility read.
 
 1. Stop the service so no older News worker can write during the cut.
-2. Confirm the intended checkout and that Alembic currently ends at
-   `20260727_0204`.
+2. Confirm the intended checkout and current Alembic version.
 3. Remove every retired News worker key, configure `news.relay` when relay
    fallback is required, and reject every old source field.
-4. Run `uv run tracefold db migrate` and verify head `20260727_0205`.
+4. Run `uv run tracefold db migrate` and verify the repository's reported
+   latest head.
 5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
    service.
 6. Verify exactly eleven `news_*` tables, 117 synchronized physical sources,
@@ -193,7 +189,7 @@ dual writer, and no compatibility read.
 
 Macro:
 
-Migration `20260727_0206` is the irreversible Macro professional-coverage hard
+Migration `20260727_0207` is the irreversible Macro professional-coverage hard
 cut layered after the News production cut. It archives v1 Macro publications,
 creates the typed v2 publication lane and Fed evidence tables, and clears the
 generic module read model for a deterministic rebuild.
@@ -300,9 +296,6 @@ manual recovery from `failed`. It atomically grants one immediately due
 attempt, clears the old lease/error, and returns an auditable JSON receipt.
 Missing, non-failed, or already-published sessions are explicit errors rather
 than hidden state changes.
-
-Notifications create/aggregate the notification and activate delivery rows in
-one transaction. Sending happens later outside the transaction.
 
 ## Operator actions and retention
 

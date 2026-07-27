@@ -45,7 +45,7 @@ test("mobile shell exposes sidebar route nav and keeps Radar task-local", async 
 
 test("mobile radar list remains reachable without reserved task-nav space", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/?window=24h&scope=matched");
+  await page.goto("/?window=24h");
 
   await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
@@ -84,7 +84,7 @@ test("mobile radar row click reaches token detail without task-nav interception"
   page,
 }) => {
   await installMockApi(page);
-  await page.goto("/?window=24h&scope=matched");
+  await page.goto("/?window=24h");
 
   const rows = page.locator(".token-radar-row");
   await expect(rows).toHaveCount(8);
@@ -135,7 +135,6 @@ async function expectMobileTopbarContract(page: Page) {
   for (const [name, locator] of [
     ["sidebar trigger", page.getByRole("button", { name: "Toggle Sidebar" })],
     ["search input", page.getByLabel("global search")],
-    ["notification button", page.getByRole("button", { name: "notifications" })],
   ] satisfies Array<[string, Locator]>) {
     await expect(locator, `${name} should render in the mobile topbar`).toBeVisible();
     expectRectContained(await locatorRect(locator, name), topbarRect, name);

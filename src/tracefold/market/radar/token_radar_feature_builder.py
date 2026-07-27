@@ -11,7 +11,7 @@ from tracefold.market.radar.diffusion_health import diffusion_health
 from tracefold.market.radar.post_text_quality import post_quality_score, post_text_features
 from tracefold.market.radar.social_signal_features import (
     author_entropy,
-    public_followup_author_count,
+    followup_author_count,
     source_weighted_effective_authors,
     time_to_nth_independent_author_ms,
 )
@@ -70,10 +70,7 @@ def build_radar_features(
         "baseline_nonzero_sample_count": heat["baseline_nonzero_sample_count"],
         "zero_slot_count": heat["zero_slot_count"],
     }
-    diffusion = diffusion_health(
-        window,
-        watched_author_handles={str(row.get("author_handle") or "") for row in window if row.get("is_watched")},
-    )
+    diffusion = diffusion_health(window)
     quality = _quality_features(window, diffusion=diffusion)
     propagation = _propagation_features(
         window=window,
@@ -115,7 +112,6 @@ def _attention(
 
     event_ids = {str(row["event_id"]) for row in window}
     authors = {str(row.get("author_handle") or "") for row in window if row.get("author_handle")}
-    watched = sum(1 for row in window if row.get("is_watched"))
     mentions = len(event_ids)
     return {
         "mentions_5m": count(5 * 60_000),
@@ -124,7 +120,6 @@ def _attention(
         "mentions_24h": count(24 * 60 * 60_000),
         "mentions_window": mentions,
         "unique_authors": len(authors),
-        "watched_mentions": watched,
         "latest_seen_ms": max((int(row.get("received_at_ms") or 0) for row in window), default=0),
         "stream_share": round(mentions / max(1, int(total_window_events)), 6),
     }
@@ -141,7 +136,6 @@ def _heat_features(
 ) -> dict[str, Any]:
     mentions = len({str(row["event_id"]) for row in window})
     previous_mentions = len({str(row["event_id"]) for row in previous})
-    watched_mentions = int(attention.get("watched_mentions") or 0)
     mention_delta = mentions - previous_mentions
     weighted_mentions = sum(_atomic_quality(row) * _confidence(row) for row in window)
     mention_delta_pct = mention_delta / max(previous_mentions, 1) if previous_mentions else None
@@ -177,9 +171,7 @@ def _heat_features(
         "z_score": z_score,
         "new_burst_score": baseline["new_burst_score"],
         "stream_share": attention.get("stream_share"),
-        "watched_share": watched_mentions / max(1, mentions),
         "is_new_local_evidence": previous_mentions == 0 and mentions > 0,
-        "is_first_seen_by_watched": watched_mentions > 0 and not any(row.get("is_watched") for row in previous),
     }
 
 
@@ -215,7 +207,6 @@ def _quality_features(window: list[dict[str, Any]], *, diffusion: dict[str, Any]
         "avg_attribution_confidence": sum(_confidence(row) for row in window) / max(1, len(window)),
         "duplicate_text_share": duplicate_share,
         "informative_post_count": informative_count,
-        "watched_source_count": sum(1 for row in window if row.get("is_watched")),
         "market_context_count": market_context_count,
         "avg_post_quality": round(sum(post_scores) / max(1, len(post_scores))),
         "diffusion_status": diffusion.get("status"),
@@ -247,14 +238,12 @@ def _propagation_features(
         "source_weighted_effective_authors": source_weighted_effective_authors(window),
         "time_to_second_author_ms": time_to_nth_independent_author_ms(window, 2),
         "time_to_third_author_ms": time_to_nth_independent_author_ms(window, 3),
-        "public_followup_author_count": public_followup_author_count(window),
+        "followup_author_count": followup_author_count(window),
         "author_entropy": author_entropy(window),
         "new_authors": len(set(authors) - previous_authors),
         "top_author_share": diffusion.get("top_author_share"),
         "duplicate_text_share": diffusion.get("duplicate_text_share"),
-        "watched_author_count": len({str(row.get("author_handle")) for row in window if row.get("is_watched")}),
         "seed_lag_ms": None,
-        "watch_status": "seed_linked" if any(row.get("is_watched") for row in window) else "public_only",
         "reproduction_rate": active_buckets / bucket_count,
         "phase_hint": None,
         "top_authors": diffusion.get("top_authors") or [],
@@ -309,7 +298,6 @@ def _post_score(row: dict[str, Any]) -> int:
             "attribution_status": "direct",
             "attribution_confidence": _confidence(row),
             "attribution_weight": _confidence(row),
-            "is_watched": bool(row.get("is_watched")),
         }
     )
     return int(score.get("score") or 0)

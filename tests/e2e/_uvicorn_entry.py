@@ -38,7 +38,6 @@ def main() -> int:
 
     settings = Settings(
         ws_token=ws_token,
-        handles=("e2e_test",),
         storage={"postgres": {"dsn": dsn, "password_file": None}},
         workers={manifest.name: {"enabled": False} for manifest in all_worker_manifests()},
     )

@@ -6,7 +6,7 @@ from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.platform.postgres.postgres_migrations import alembic_config
+from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
 
 
 def test_0200_destroys_legacy_macro_state_and_starts_new_fact_model_empty(
@@ -464,7 +464,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     finally:
         conn.close()
 
-    assert version == "20260727_0206"
+    assert version == latest_migration_version()
     assert observation_count == 0
     assert target == {
         "clock_kind": "daily_settlement",
@@ -474,7 +474,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     }
 
 
-def test_0206_archives_v1_publications_and_enforces_typed_v2_contracts(
+def test_0207_archives_v1_publications_and_enforces_typed_v2_contracts(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -523,7 +523,7 @@ def test_0206_archives_v1_publications_and_enforces_typed_v2_contracts(
         )
         conn.commit()
 
-        command.upgrade(config, "20260727_0206")
+        command.upgrade(config, "20260727_0207")
 
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         active_counts = {
@@ -582,7 +582,7 @@ def test_0206_archives_v1_publications_and_enforces_typed_v2_contracts(
     finally:
         conn.close()
 
-    assert version == "20260727_0206"
+    assert version == "20260727_0207"
     assert set(active_counts.values()) == {0}
     assert archived_pack == {"schema_version": "macro_evidence_pack_v1"}
     assert archived_judgment == {"schema_version": "macro_daily_judgment_v1"}

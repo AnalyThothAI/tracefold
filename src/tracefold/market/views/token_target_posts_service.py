@@ -19,10 +19,6 @@ class TokenTargetPostsRangeError(Exception):
     pass
 
 
-class TokenTargetPostsScopeError(ValueError):
-    pass
-
-
 class TokenTargetPostsWindowError(ValueError):
     pass
 
@@ -37,7 +33,6 @@ class TokenTargetPostsService:
         target_type: str,
         target_id: str,
         window: str,
-        scope: str,
         post_range: str,
         limit: int,
         cursor: str | None = None,
@@ -52,13 +47,11 @@ class TokenTargetPostsService:
             raise TokenTargetPostsCursorError(cursor) from exc
         resolved_now_ms = int(now_ms or time.time() * 1000)
         window_ms = _window_ms(window)
-        watched_only = _watched_only(scope)
         since_ms = 0 if post_range in {"since_ignition", "all_history"} else resolved_now_ms - window_ms
         rows = self.targets.timeline_rows(
             target_type=target_type,
             target_id=target_id,
             since_ms=since_ms,
-            watched_only=watched_only,
             limit=row_limit + 1,
             cursor=timeline_cursor,
         )
@@ -71,7 +64,6 @@ class TokenTargetPostsService:
                 "target_type": target_type,
                 "target_id": target_id,
                 "window": window,
-                "scope": scope,
                 "range": post_range,
             },
             "score_window": {"window": window},
@@ -94,11 +86,3 @@ def _window_ms(window: str) -> int:
         return WINDOW_MS[window]
     except KeyError as exc:
         raise TokenTargetPostsWindowError(window) from exc
-
-
-def _watched_only(scope: str) -> bool:
-    if scope == "matched":
-        return True
-    if scope == "all":
-        return False
-    raise TokenTargetPostsScopeError(scope)

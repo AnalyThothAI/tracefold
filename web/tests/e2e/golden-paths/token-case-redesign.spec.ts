@@ -5,7 +5,7 @@ const targetId = "asset:solana:token:FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspum
 
 test("token route renders the HANSA case dossier and loads another post page", async ({ page }) => {
   await installMockApi(page);
-  await page.goto(`/token/Asset/${encodeURIComponent(targetId)}?window=1h&scope=all`);
+  await page.goto(`/token/Asset/${encodeURIComponent(targetId)}?window=1h`);
 
   const tokenCase = page.getByRole("region", { name: "Token case" });
   await expect(tokenCase.getByRole("heading", { name: /\$HANSA/ })).toBeVisible();
@@ -48,7 +48,7 @@ test("search token_result reuses the case dossier without fetching token-case", 
     if (url.pathname === "/api/token-case") tokenCaseRequests.push(request.url());
   });
 
-  await page.goto("/search?q=HANSA&window=24h&scope=all");
+  await page.goto("/search?q=HANSA&window=24h");
 
   const tokenCase = page.getByRole("region", { name: "Token case" });
   await expect(tokenCase.getByRole("heading", { name: /\$HANSA/ })).toBeVisible();

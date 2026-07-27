@@ -42,7 +42,6 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/bootstrap") {
       return fulfill(route, {
         ws_token: "secret",
-        handles: ["toly", "traderpow"],
         replay_limit: 25,
       });
     }
@@ -54,24 +53,10 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/events/by-ids") return fulfill(route, socialEventsByIds(url));
     if (path === "/api/target-social-timeline") return fulfill(route, timelineData());
     if (path === "/api/target-posts") return fulfill(route, targetPostsData(url));
-    if (path === "/api/notifications") return fulfill(route, notificationsData());
     if (path === "/api/news/feed") return fulfill(route, newsFeedData());
     if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
     if (path === "/api/news/brief") return fulfill(route, newsGlobalBriefFixture());
-    if (path === "/api/notifications/read-all") return fulfill(route, { updated_count: 1 });
-    if (path.startsWith("/api/notifications/author/") && path.endsWith("/read")) {
-      return fulfill(route, { updated_count: 1 });
-    }
-    if (path.endsWith("/read"))
-      return fulfill(route, { notification_id: "notification-1", updated: true });
     if (path === "/api/stocks-radar") return fulfill(route, stocksRadarData(url));
-    if (path === "/api/watchlist/handles/overview") return fulfill(route, watchlistOverviewData());
-    if (path.match(/^\/api\/watchlist\/handles?\/[^/]+\/overview$/)) {
-      return fulfill(route, watchlistHandleOverviewData(handleFromPath(path)));
-    }
-    if (path.match(/^\/api\/watchlist\/handles?\/[^/]+\/timeline$/)) {
-      return fulfill(route, watchlistHandleTimelineData(handleFromPath(path)));
-    }
     if (path === "/api/macro/overview") return fulfill(route, macroOverviewFixture());
     if (path === "/api/macro/rates-fed") return fulfill(route, macroModuleFixture("rates_fed"));
     if (path === "/api/macro/economy-inflation") {
@@ -145,7 +130,6 @@ function statusData() {
   return {
     ok: true,
     reasons: [],
-    handles: ["toly", "traderpow"],
     store: "postgresql",
     snapshot_gate: {},
     db: { ok: true },
@@ -159,8 +143,6 @@ function statusData() {
       market_tick_stream: workerStatus({ enabled: false, running: false }),
       market_tick_poll: workerStatus({ enabled: true, running: true }),
       event_anchor_backfill: workerStatus({ enabled: true, running: true }),
-      notification_rule: workerStatus({ enabled: true, running: true }),
-      notification_delivery: workerStatus({ enabled: true, running: true }),
       asset_profile_refresh: workerStatus(),
       resolution_refresh: workerStatus(),
     },
@@ -185,24 +167,12 @@ function workerStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function notificationSummary() {
-  return {
-    subscriber_key: "local",
-    unread_count: 1,
-    high_unread_count: 1,
-    critical_unread_count: 0,
-    highest_unread_severity: "high",
-    account_unread_counts: { toly: 1 },
-  };
-}
-
 function tokenRadarData(url: URL) {
   const targets = shouldReturnLongMobileRadarList(url)
     ? Array.from({ length: 8 }, () => assetFlowRow())
     : [assetFlowRow()];
   return {
     window: url.searchParams.get("window") ?? "1h",
-    scope: url.searchParams.get("scope") ?? "all",
     venue: url.searchParams.get("venue") ?? "all",
     targets,
     attention: [],
@@ -238,7 +208,7 @@ function tokenRadarData(url: URL) {
 }
 
 function shouldReturnLongMobileRadarList(url: URL) {
-  return url.searchParams.get("window") === "24h" && url.searchParams.get("scope") === "matched";
+  return url.searchParams.get("window") === "24h";
 }
 
 function assetFlowRow() {
@@ -249,7 +219,6 @@ function assetFlowRow() {
     mentions_24h: 4,
     mentions_window: 4,
     unique_authors: 3,
-    watched_mentions: 1,
     latest_seen_ms: NOW,
     previous_mentions: 0,
     mention_delta: 4,
@@ -316,7 +285,7 @@ function assetFlowRow() {
 
 function factorSnapshot({ attention, market }: { attention: any; market: any }) {
   return {
-    schema_version: "token_factor_snapshot_v4_transparent_factors",
+    schema_version: "token_factor_snapshot_v5_provider_neutral",
     subject: {
       target_type: "Asset",
       target_id: TARGET_ID,
@@ -341,7 +310,6 @@ function factorSnapshot({ attention, market }: { attention: any; market: any }) 
         mentions_4h: attention.mentions_4h,
         mentions_24h: attention.mentions_24h,
         unique_authors: attention.unique_authors,
-        watched_mentions: attention.watched_mentions,
         latest_seen_ms: attention.latest_seen_ms,
         previous_mentions: attention.previous_mentions,
         mention_delta: attention.mention_delta,
@@ -417,7 +385,6 @@ function tokenCaseData(url: URL) {
   const targetType = url.searchParams.get("target_type") ?? dossier.target.target_type;
   const targetId = url.searchParams.get("target_id") ?? dossier.target.target_id;
   const window = url.searchParams.get("window") ?? dossier.timeline.query.window;
-  const scope = url.searchParams.get("scope") ?? dossier.timeline.query.scope;
   return {
     ...dossier,
     target: { ...dossier.target, target_type: targetType, target_id: targetId },
@@ -428,7 +395,6 @@ function tokenCaseData(url: URL) {
         target_type: targetType,
         target_id: targetId,
         window,
-        scope,
       },
     },
     posts: {
@@ -438,7 +404,6 @@ function tokenCaseData(url: URL) {
         target_type: targetType,
         target_id: targetId,
         window,
-        scope,
       },
     },
     market_live: {
@@ -463,7 +428,6 @@ function tokenCasePostsData(url: URL) {
   const targetType = url.searchParams.get("target_type") ?? posts.query.target_type;
   const targetId = url.searchParams.get("target_id") ?? posts.query.target_id;
   const window = url.searchParams.get("window") ?? posts.query.window;
-  const scope = url.searchParams.get("scope") ?? posts.query.scope;
   const nextItem = {
     ...posts.items[0],
     event_id: "event-hansa-4",
@@ -472,13 +436,11 @@ function tokenCasePostsData(url: URL) {
     author_handle: "marketdesk",
     text: "Follow-up page adds fresh HANSA context after the first dossier page.",
     url: "https://x.com/marketdesk/status/event-hansa-4",
-    is_watched: false,
-    is_first_seen_by_watched_for_token: false,
   };
   const items = cursor ? [nextItem] : posts.items;
   return {
     ...posts,
-    query: { ...posts.query, target_type: targetType, target_id: targetId, window, scope },
+    query: { ...posts.query, target_type: targetType, target_id: targetId, window },
     returned_count: items.length,
     total_count: posts.total_count + 1,
     has_more: false,
@@ -496,7 +458,6 @@ function searchInspectData(url: URL) {
         q: query,
         normalized_q: query.toLowerCase(),
         window: url.searchParams.get("window") ?? "24h",
-        scope: url.searchParams.get("scope") ?? "all",
         result_kind: "token_result",
       },
       resolver: {
@@ -514,7 +475,6 @@ function searchInspectData(url: URL) {
       q: query,
       normalized_q: query.toLowerCase(),
       window: "24h",
-      scope: "all",
       result_kind: "topic_result",
     },
     resolver: { target_candidates: [], selected_target: null, reasons: ["e2e"] },
@@ -546,7 +506,6 @@ function sourceEvent(item: ReturnType<typeof post>) {
     author_handle: item.author_handle,
     author_name: item.author_handle,
     author_followers: item.post_quality.score >= 80 ? 168_905 : 220,
-    author_watched: item.is_watched,
     text_clean: item.text,
     canonical_url: item.url,
   };
@@ -558,14 +517,13 @@ function timelineData() {
     bucket_start_ms: index < 2 ? NOW - 300_000 : NOW,
   }));
   return {
-    query: { target_type: "Asset", target_id: TARGET_ID, window: "1h", scope: "all", bucket: "5m" },
+    query: { target_type: "Asset", target_id: TARGET_ID, window: "1h", bucket: "5m" },
     summary: {
       posts: 3,
       authors: 2,
       effective_authors: 1.8,
       first_seen_ms: NOW - 300_000,
       latest_seen_ms: NOW,
-      watched_posts: 1,
       phase: "expansion",
       top_author_share: 0.5,
       duplicate_text_share: 0,
@@ -580,7 +538,6 @@ function timelineData() {
         posts: 2,
         authors: 1,
         new_authors: 1,
-        watched_posts: 1,
         duplicate_text_share: 0,
         price: {
           status: "ready",
@@ -597,7 +554,6 @@ function timelineData() {
         posts: 1,
         authors: 1,
         new_authors: 1,
-        watched_posts: 0,
         duplicate_text_share: 0,
         price: {
           status: "ready",
@@ -630,8 +586,6 @@ function timelineData() {
           posts: 1,
           authors: 1,
           new_authors: 1,
-          watched_posts: 1,
-          watched_authors: 1,
           top_author_share: 1,
         },
         representative_event_ids: ["event-upeg-1"],
@@ -653,7 +607,7 @@ function timelineData() {
         latest_seen_ms: NOW - 300_000,
         posts: 1,
         followers: 168_905,
-        role: "watched",
+        role: "seed",
         quality_score: 86,
       },
       {
@@ -689,9 +643,9 @@ function timelineData() {
 function postsData() {
   return {
     items: [
-      post("event-upeg-1", "traderpow", "$UPEG watched account evidence", true, 86),
-      post("event-upeg-2", "alien19710628", "$UPEG public follow-through", false, 74),
-      post("event-upeg-3", "alien19710628", "$UPEG another public post", false, 68),
+      post("event-upeg-1", "traderpow", "$UPEG source evidence", 86),
+      post("event-upeg-2", "alien19710628", "$UPEG public follow-through", 74),
+      post("event-upeg-3", "alien19710628", "$UPEG another public post", 68),
     ],
     returned_count: 3,
     total_count: 3,
@@ -702,13 +656,12 @@ function postsData() {
       target_type: "Asset",
       target_id: TARGET_ID,
       window: "1h",
-      scope: "all",
       range: "current_window",
     },
   };
 }
 
-function post(eventId: string, handle: string, text: string, watched: boolean, score: number) {
+function post(eventId: string, handle: string, text: string, score: number) {
   const phase = eventId.endsWith("-1") ? "seed" : "ignition";
   return {
     event_id: eventId,
@@ -724,9 +677,7 @@ function post(eventId: string, handle: string, text: string, watched: boolean, s
     attribution_status: "direct",
     attribution_confidence: 1,
     attribution_weight: 1,
-    is_watched: watched,
-    is_first_seen_by_watched_for_token: watched,
-    event_type: watched ? "watched_token_call" : "public_followup",
+    event_type: phase === "seed" ? "seed_post" : "public_followup",
     reference:
       eventId === "event-upeg-2"
         ? { tweet_id: "tweet-upeg-1", author_handle: "traderpow", type: "quote" }
@@ -740,8 +691,8 @@ function post(eventId: string, handle: string, text: string, watched: boolean, s
     },
     stage_id: phase === "seed" ? "seed:1777746000000:1" : "ignition:1777746240000:1",
     stage_phase: phase,
-    author_role: watched ? "watched" : "early_amplifier",
-    is_stage_representative: watched,
+    author_role: phase === "seed" ? "seed" : "early_amplifier",
+    is_stage_representative: phase === "seed",
     price_delta_from_previous_post_pct: null,
     post_quality: {
       score_version: "post_quality_v1",
@@ -756,46 +707,11 @@ function post(eventId: string, handle: string, text: string, watched: boolean, s
   };
 }
 
-function notificationsData() {
-  return {
-    items: [
-      {
-        notification_id: "notification-1",
-        dedup_key: "watched-account-bnb",
-        rule_id: "watched_account_token_alert",
-        severity: "high",
-        title: "BNB watched-account alert",
-        body: "A watched account mentioned BNB",
-        entity_type: "token",
-        entity_key: "token:bnb",
-        author_handle: "traderpow",
-        symbol: "BNB",
-        chain: "bnb",
-        address: null,
-        event_id: null,
-        source_table: "events",
-        source_id: "event-bnb",
-        occurrence_count: 1,
-        first_seen_at_ms: NOW,
-        last_seen_at_ms: NOW,
-        created_at_ms: NOW,
-        updated_at_ms: NOW,
-        read_at_ms: null,
-        payload: { event_id: "event-bnb" },
-        channels: ["in_app"],
-      },
-    ],
-    summary: notificationSummary(),
-  };
-}
-
 function stocksRadarData(url: URL) {
   return {
     window: url.searchParams.get("window") ?? "1h",
-    scope: url.searchParams.get("scope") ?? "all",
     query: {
       window: "1h",
-      scope: "all",
       limit: 48,
       window_start_ms: NOW - 3_600_000,
       window_end_ms: NOW,
@@ -811,7 +727,7 @@ function stocksRadarData(url: URL) {
           instrument_type: "equity",
           name: "Apple Inc.",
         },
-        attention: { mentions: 3, unique_authors: 2, watched_mentions: 1, latest_seen_ms: NOW },
+        attention: { mentions: 3, unique_authors: 2, latest_seen_ms: NOW },
         latest_event: {
           event_id: "event-aapl",
           author_handle: "toly",
@@ -835,113 +751,5 @@ function stocksRadarData(url: URL) {
       },
     ],
     health: { returned_count: 1, quote_ready_count: 1, quote_unavailable_count: 0 },
-  };
-}
-
-function handleFromPath(path: string) {
-  const parts = path.split("/");
-  const handleIndex = parts.includes("handle")
-    ? parts.indexOf("handle") + 1
-    : parts.indexOf("handles") + 1;
-  return decodeURIComponent(parts[handleIndex] ?? "toly");
-}
-
-function watchlistOverviewData() {
-  return {
-    window: "7d",
-    items: [
-      {
-        handle: "toly",
-        last_source_event_at_ms: NOW,
-        recent_source_event_count: 3,
-      },
-      {
-        handle: "marionawfal",
-        last_source_event_at_ms: NOW - 60_000,
-        recent_source_event_count: 42,
-      },
-    ],
-  };
-}
-
-function watchlistHandleOverviewData(handle: string) {
-  return {
-    query: { handle, window: "3d" },
-    metrics: {
-      source_event_count: 42,
-      resolved_token_count: 1,
-      candidate_mention_count: 3,
-      hashtag_count: 1,
-      last_source_event_at_ms: NOW,
-    },
-    resolved_token_clusters: [
-      {
-        label: "$UPEG",
-        count: 4,
-        query: "$UPEG",
-        kind: "resolved_token",
-        source: "token_resolutions",
-        target_type: "Asset",
-        target_id: TARGET_ID,
-        symbol: "UPEG",
-      },
-    ],
-    candidate_mention_clusters: [
-      {
-        label: "$ALOY",
-        count: 3,
-        query: "$ALOY",
-        kind: "candidate_mention",
-        source: "event_cashtags",
-        target_type: null,
-        target_id: null,
-        symbol: null,
-      },
-    ],
-    hashtag_clusters: [
-      {
-        label: "Liquidity rotation",
-        count: 2,
-        query: "liquidity",
-        kind: "hashtag",
-        source: "event_hashtags",
-        target_type: null,
-        target_id: null,
-        symbol: null,
-      },
-    ],
-    clusters_truncated: false,
-    risk_notes: [],
-  };
-}
-
-function watchlistHandleTimelineData(handle: string) {
-  return {
-    query: { handle, limit: 80 },
-    items: postsData().items.map((item) => ({
-      event_id: item.event_id,
-      received_at_ms: item.received_at_ms,
-      author_handle: handle,
-      action: "tweet",
-      text_clean: item.text,
-      canonical_url: item.url,
-      cashtags: ["UPEG"],
-      hashtags: [],
-      mentions: [],
-      event: {
-        event_id: item.event_id,
-        action: "tweet",
-        canonical_url: item.url,
-        received_at_ms: item.received_at_ms,
-        author_handle: handle,
-        text_clean: item.text,
-        cashtags: ["UPEG"],
-        hashtags: [],
-        mentions: [],
-      },
-      token_resolutions: [],
-    })),
-    has_more: false,
-    next_cursor: null,
   };
 }

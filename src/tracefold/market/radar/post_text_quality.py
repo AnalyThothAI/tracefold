@@ -38,7 +38,6 @@ def post_quality_score(features: dict[str, Any]) -> dict[str, Any]:
     mention_source = str(features.get("mention_source") or features.get("source") or "")
     confidence = safe_float(features.get("attribution_confidence"))
     weight = safe_float(features.get("attribution_weight"))
-    is_watched = bool(features.get("is_watched"))
 
     score = 0.0
     reasons: list[str] = []
@@ -67,11 +66,6 @@ def post_quality_score(features: dict[str, Any]) -> dict[str, Any]:
         score += 7.0
         reasons.append("reference_link_present")
         contributions.append(contribution("post.reference_link", 7.0, "reference_link_present"))
-    if is_watched:
-        score += 12.0
-        reasons.append("watched_source")
-        contributions.append(contribution("post.watched_source", 12.0, "watched_source"))
-
     if text_features["is_short"]:
         risks.append("low_information_post")
         risk_caps.append(cap("low_information_post", 65))

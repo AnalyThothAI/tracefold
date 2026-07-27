@@ -63,7 +63,7 @@ uv run tracefold ops rebuild-token-profiles --limit 500
 uv run tracefold ops repair-token-profile-images --limit 500
 uv run tracefold ops mirror-token-images --limit 50
 uv run tracefold ops rebuild-token-profiles --limit 500
-uv run tracefold asset-flow --window 1h --scope all --limit 20
+uv run tracefold asset-flow --window 1h --limit 20
 ```
 
 The first command confirms the real config paths. The profile refresh command
@@ -136,7 +136,7 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Projection and judgment intentionally remain blocked while required
 history or document analysis is incomplete.
 
-A good macro status reports Alembic `20260727_0206`, bounded acquisition target
+A good macro status reports Alembic `20260727_0207`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -156,7 +156,7 @@ FRED liquidity series ingested with incorrect units, resets those targets, and
 invalidates derived Macro state before a clean rebuild.
 Migration `20260727_0203` removes the redundant intraday clock and rebuilds the
 Binance dataset as a UTC daily close under the settlement worker.
-Migration `20260727_0206` archives v1 Macro publication tables, hard-cuts the
+Migration `20260727_0207` archives v1 Macro publication tables, hard-cuts the
 active lane to v2 Evidence Pack/judgment/research schemas, adds Fed role and
 immutable document-analysis storage, and requires six module-specific payloads.
 Enable the Macro workers only after the migration is current.

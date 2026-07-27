@@ -77,7 +77,6 @@ function SearchTopBar({
           <code key={`${reason}-${index}`}>{reason}</code>
         ))}
         <code>{data?.query.window ?? routeState.window}</code>
-        <code>{data?.query.scope ?? routeState.scope}</code>
       </div>
     </header>
   );

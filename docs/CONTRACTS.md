@@ -8,7 +8,7 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 The active operator-owned files are:
 
-- `~/.tracefold/config.yaml` for application, PostgreSQL, providers, credentials, notifications, API, and public WebSocket settings.
+- `~/.tracefold/config.yaml` for application, PostgreSQL, providers, credentials, API, and public WebSocket settings.
 - `~/.tracefold/workers.yaml` for worker enablement, cadence, and batch/lease/timeout settings.
 
 Repository examples, fixtures, `.env` files, and generated docs are not runtime configuration. `uv run tracefold config` reports the effective paths and redacted settings. Unknown settings or worker keys fail validation.
@@ -17,6 +17,23 @@ The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
+
+### Watchlist and Notifications config cutover
+
+Before starting this hard cut, edit the active operator-owned files rather than
+copying repository examples over them:
+
+1. Remove top-level `handles`, top-level `notifications`, and `news.sources`
+   from `~/.tracefold/config.yaml`.
+2. Remove top-level `notification_rule`, top-level
+   `notification_delivery`, and `token_radar_projection.scopes` from
+   `~/.tracefold/workers.yaml`.
+3. Run `uv run tracefold config` and confirm only the reported paths and
+   redacted configuration. Any retired key must fail validation; there is no
+   alias, merge, or generated-source fallback.
+4. Stop older workers, run `uv run tracefold db migrate`, and then start the
+   current service so no process can write a retired persistence contract
+   during the irreversible migration.
 
 `llm` contains operator-owned provider credentials: `api_key` and `base_url`
 for the current OpenAI-compatible provider plus optional
@@ -51,8 +68,6 @@ token_profile_current
 news_pipeline
 news_world_brief
 macro_research
-notification_rule
-notification_delivery
 ```
 
 `workers.yaml`, `WorkersSettings`, factories, status output, and this manifest
@@ -87,12 +102,10 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition and worker status |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
-| Watchlist | `/api/watchlist/handles/overview`, `/api/watchlist/handle/{handle}/overview`, `/api/watchlist/handle/{handle}/timeline` | Evidence queries; no separate Watchlist domain |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable daily judgment/Evidence Pack, and Evidence-Pack-bound DeepAgents research |
 | News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | deterministic Story read model, NewsItem members, immutable Chinese Brief, source fetch state, and derived News health |
-| Notifications | account alerts, notification list with embedded summary, delivery audit, and read commands under `/api` | notification facts and external-delivery ledger |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
@@ -110,6 +123,11 @@ and `pricefeed_id`. The transparent factor families are `social_heat`,
 `discard`, `watch`, or `high_alert`. The endpoint never falls back to
 historical runs, source-event dirty rows, provider calls, identity aliases, or
 alternate decision labels.
+
+Radar, Stocks, Search, Asset Flow, and Token Case use one provider-neutral
+population. Radar reads accept window and venue where declared by OpenAPI, but
+no population `scope`; a retired `scope` query parameter is rejected with
+`400 unsupported_query_param` instead of being ignored or aliased.
 
 ### News
 
@@ -280,17 +298,6 @@ Missing remains a typed successful read state rather than an older publication
 relabelled as current. Unmatched Macro API paths return the ordinary
 application `404` response.
 
-### Notifications
-
-Notifications are durable facts. `GET /api/notifications` is the sole
-list/read-summary query and returns both `items` and `summary`. Read commands
-update persisted read state. Only watched-account activity and watched-account
-token-alert rules produce candidates. The unique `dedup_key` is the sole dedup
-authority; its rule-defined occurrence bucket enforces cooldown. External
-delivery uses `notification_deliveries` as an auditable side-effect ledger with
-compare-and-set state transitions; API responses never infer successful
-delivery from a provider call alone.
-
 ### Token images
 
 `/api/token-images/{image_id}` accepts only the persisted lowercase SHA-256 URL identity. Only `ready` assets whose relative path resolves under `~/.tracefold/cache/token-images` are served. Missing rows/files, malformed IDs, absolute paths, and traversal attempts return `404`. Provider URLs are never accepted as a proxy input.
@@ -301,10 +308,22 @@ Clients connect to `/ws`, authenticate, then subscribe:
 
 ```json
 {"type":"auth","token":"..."}
-{"type":"subscribe","handles":[],"cas":[{"ca":"0x...","chain":"eip155:1"}],"symbols":[],"market_targets":[],"notifications":false,"replay":100}
+{"type":"subscribe","cas":[{"ca":"0x...","chain":"eip155:1"}],"symbols":[],"market_targets":[],"replay":100}
 ```
 
-Authentication accepts exactly `type` and a string `token`. Subscription keys and value shapes are exact: `handles` and `symbols` are string arrays; `cas` contains `{ca, chain?}` objects; `market_targets` contains `{target_type, target_id}` objects; `notifications` is boolean; and `replay` is an integer. Retired `ca`/`tokens` keys, scalar CA values, `address` aliases, extra target keys, and coercible string/number booleans are rejected as `invalid_subscription`. The total filter count and replay count are bounded. Replay is a PostgreSQL read-side query with batched hydration, not one query per event or filter. Push message families are `event`, `notification`, and `live_market_update`.
+Authentication accepts exactly `type` and a string `token`. Subscription keys
+and value shapes are exact: `symbols` is a string array; `cas` contains
+`{ca, chain?}` objects; `market_targets` contains `{target_type, target_id}`
+objects; and `replay` is an integer. Retired `handles`, `notifications`,
+`ca`, and `tokens` keys, scalar CA values, `address` aliases, extra target
+keys, and coercible string/number values are rejected as
+`invalid_subscription`. The total filter count and replay count are bounded.
+Replay is a PostgreSQL read-side query with batched hydration, not one query
+per event or filter. Event replay and event pushes require at least one `cas`
+or `symbols` filter; an empty event filter returns and broadcasts no events.
+`market_targets` remains an independent subscription for
+`live_market_update` pushes. Push message families are `event` and
+`live_market_update`.
 
 Worker progress is recovered by bounded database catch-up. Provider frames are never emitted as business facts before persistence.
 
@@ -315,7 +334,7 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 - service/config: `serve`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|retry-research|status`;
-- read models: `recent`, `search`, `asset-flow`, `account-alerts`, `notification-deliveries`;
+- read models: `recent`, `search`, `asset-flow`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.

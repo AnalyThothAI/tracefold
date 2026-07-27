@@ -46,13 +46,10 @@ def _dex_candidate(
 def _ingest_service_for_connection(conn) -> IngestService:
     repos = repositories_for_connection(
         conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
     return IngestService(
         evidence=repos.evidence,
         entities=repos.entities,
-        signals=repos.signals,
         registry=repos.registry,
         identity_evidence=repos.identity_evidence,
         token_intent_lookup=repos.token_intent_lookup,
@@ -81,13 +78,10 @@ def test_resolution_refresh_worker_resolves_recent_symbol_and_defers_projection(
             "event-upeg",
             text="$UPEG is getting attention",
             received_at_ms=now_ms,
-            is_watched=True,
         )
-        ingested = ingest.ingest_event(event, is_watched=True)
+        ingested = ingest.ingest_event(event)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         before = repos.intent_resolutions.active_resolution_for_intent(ingested.token_intents[0]["intent_id"])
 
@@ -207,22 +201,18 @@ def test_resolution_refresh_worker_skips_symbol_lookup_after_retained_candidate_
             "event-upeg-1",
             text="$UPEG is getting attention",
             received_at_ms=now_ms,
-            is_watched=True,
         )
-        ingest.ingest_event(first_event, is_watched=True)
+        ingest.ingest_event(first_event)
         asyncio.run(worker.run_once(now_ms=now_ms + 60_000))
 
         second_event = make_event(
             "event-upeg-2",
             text="$UPEG again",
             received_at_ms=now_ms + 40 * 60_000,
-            is_watched=True,
         )
-        second_ingested = ingest.ingest_event(second_event, is_watched=True)
+        second_ingested = ingest.ingest_event(second_event)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         before = repos.intent_resolutions.active_resolution_for_intent(second_ingested.token_intents[0]["intent_id"])
 
@@ -259,16 +249,12 @@ def test_resolution_refresh_worker_retries_hot_not_found_before_default_ttl(tmp_
                 "event-fresh-1",
                 text="$FRESH is waking up",
                 received_at_ms=now_ms,
-                is_watched=True,
             ),
-            is_watched=True,
         )
 
         first = asyncio.run(worker.run_once(now_ms=now_ms + 60_000)).notes["result"]
         before = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         ).intent_resolutions.active_resolution_for_intent(ingested.token_intents[0]["intent_id"])
         dex_market.candidates = [
             DexTokenCandidate(
@@ -288,8 +274,6 @@ def test_resolution_refresh_worker_retries_hot_not_found_before_default_ttl(tmp_
         second = asyncio.run(worker.run_once(now_ms=now_ms + 120_000)).notes["result"]
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         after = repos.intent_resolutions.active_resolution_for_intent(ingested.token_intents[0]["intent_id"])
     finally:
@@ -312,8 +296,6 @@ def test_discovery_terminalize_claimed_payload_hash_deletes_active_row(tmp_path)
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         conn.execute(
             """
@@ -373,8 +355,7 @@ def test_dex_symbol_discovery_retains_top_three_per_chain(tmp_path):
         migrate(conn)
         ingest = _ingest_service_for_connection(conn)
         ingest.ingest_event(
-            make_event("event-hanta-top3", text="$HANTA is moving", received_at_ms=now_ms, is_watched=True),
-            is_watched=True,
+            make_event("event-hanta-top3", text="$HANTA is moving", received_at_ms=now_ms),
         )
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
@@ -519,13 +500,10 @@ def test_dex_symbol_discovery_excludes_stale_unretained_search_assets_from_resul
         migrate(conn)
         repos = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         )
         ingest = _ingest_service_for_connection(conn)
         ingest.ingest_event(
-            make_event("event-hanta-demote", text="$HANTA", received_at_ms=now_ms + 1_000, is_watched=True),
-            is_watched=True,
+            make_event("event-hanta-demote", text="$HANTA", received_at_ms=now_ms + 1_000),
         )
         old = repos.registry.upsert_chain_asset(
             chain_id="eip155:56",
@@ -665,8 +643,3 @@ class FakeDexMarket:
                 if candidate.chain_id == request.chain_id and candidate.address.lower() == request.address.lower()
             )
         return prices
-
-
-class FakeEnrichment:
-    def enqueue_watched_event(self, *, event_id, received_at_ms, priority=None):
-        return None

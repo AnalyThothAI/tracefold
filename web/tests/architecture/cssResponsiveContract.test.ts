@@ -165,7 +165,7 @@ describe("responsive CSS contract", () => {
       responsiveControlPanelOffenders,
       [
         "Shell must not keep the retired responsive-control-panel compatibility path.",
-        "Route-specific filters belong to their feature pages; the shell owns only navigation, frame, scroll, and notifications.",
+        "Route-specific filters belong to their feature pages; the shell owns only navigation, frame, and scroll.",
       ].join("\n"),
     ).toEqual([]);
 
@@ -245,7 +245,7 @@ describe("responsive CSS contract", () => {
         const css = readFileSync(path, "utf8");
 
         return findRules(css).flatMap((rule) =>
-          [".radar-controls-group", ".radar-controls-window", ".radar-controls-scope"]
+          [".radar-controls-group", ".radar-controls-window"]
             .filter((selector) => selectorContains(rule.selector, selector))
             .map(
               (selector) =>
@@ -265,7 +265,6 @@ describe("responsive CSS contract", () => {
     const primitiveSelectors = [
       ".compact-panel",
       ".decision-tag",
-      ".handle-filter",
       ".icon-button",
       ".page-state-empty",
       ".page-state-error",
@@ -277,7 +276,6 @@ describe("responsive CSS contract", () => {
       ".token-profile-card",
       ".radar-controls-group",
       ".radar-controls-window",
-      ".radar-controls-scope",
     ];
     const offenders = collectFiles(join(srcRoot, "features"))
       .filter(isCssFile)
@@ -299,40 +297,6 @@ describe("responsive CSS contract", () => {
     expect(
       offenders,
       "Feature CSS may lay out feature containers, but shared primitive internals belong under shared/ui.",
-    ).toEqual([]);
-  });
-
-  it("keeps notification selectors owned by the notifications feature", () => {
-    const notificationSelectors = [
-      ".notification-bell",
-      ".notification-drawer",
-      ".notification-list",
-      ".notification-row",
-      ".notification-row-main",
-      ".notification-row-actions",
-      ".watchlist-notification-dot",
-    ];
-    const offenders = collectFiles(srcRoot)
-      .filter(isCssFile)
-      .filter((path) => !relativeToSrc(path).startsWith("features/notifications/"))
-      .flatMap((path) => {
-        const css = readFileSync(path, "utf8");
-
-        return findRules(css).flatMap((rule) =>
-          notificationSelectors
-            .filter((selector) => selectorContains(rule.selector, selector))
-            .map(
-              (selector) =>
-                `${relativeToSrc(path)}:${lineNumber(css, rule.start)} owns notification selector ${selector} via ${compactSelector(
-                  rule.selector,
-                )}`,
-            ),
-        );
-      });
-
-    expect(
-      offenders,
-      "Cockpit may place notification slots, but notification component internals belong to features/notifications.",
     ).toEqual([]);
   });
 

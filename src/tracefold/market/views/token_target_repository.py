@@ -140,7 +140,6 @@ class TokenTargetRepository:
         target_type: str,
         target_id: str,
         since_ms: int,
-        watched_only: bool,
         limit: int,
         cursor: tuple[int, str] | None = None,
     ) -> list[dict[str, Any]]:
@@ -157,12 +156,10 @@ class TokenTargetRepository:
             cursor_ms, cursor_event_id = cursor
             clauses.append("(events.received_at_ms, events.event_id) < (%s, %s)")
             params.extend([int(cursor_ms), str(cursor_event_id)])
-        if watched_only:
-            clauses.append("events.is_watched = true")
         params.append(row_limit)
         rows = self.conn.execute(
             f"""
-            WITH matched AS (
+            WITH target_events AS (
             SELECT
               events.event_id,
               events.tweet_id,
@@ -171,7 +168,6 @@ class TokenTargetRepository:
               events.text,
               events.text_clean,
               events.reference_json,
-              events.is_watched,
               events.received_at_ms,
               tir.target_type,
               tir.target_id,
@@ -275,7 +271,7 @@ class TokenTargetRepository:
             WHERE {" AND ".join(clauses)}
             )
             SELECT *
-            FROM matched
+            FROM target_events
             WHERE event_target_rank = 1
             ORDER BY received_at_ms DESC, event_id DESC
             LIMIT %s
@@ -290,7 +286,6 @@ class TokenTargetRepository:
         target_type: str,
         target_id: str,
         event_ids: list[str] | tuple[str, ...],
-        watched_only: bool,
         limit: int,
     ) -> list[dict[str, Any]]:
         row_limit = require_nonnegative_int(limit, error_code="token_target_repository_limit_required")
@@ -309,8 +304,6 @@ class TokenTargetRepository:
             target_id,
             TOKEN_RADAR_RESOLVER_POLICY_VERSION,
         ]
-        if watched_only:
-            clauses.append("events.is_watched = true")
         params.append(row_limit)
         rows = self.conn.execute(
             f"""
@@ -319,7 +312,7 @@ class TokenTargetRepository:
               FROM unnest(%s::text[]) WITH ORDINALITY AS event_ids(event_id, ordinality)
               WHERE NULLIF(btrim(event_ids.event_id::text), '') IS NOT NULL
             ),
-            matched AS (
+            target_events AS (
             SELECT
               requested_events.source_event_ordinal,
               events.event_id,
@@ -329,7 +322,6 @@ class TokenTargetRepository:
               events.text,
               events.text_clean,
               events.reference_json,
-              events.is_watched,
               events.received_at_ms,
               tir.target_type,
               tir.target_id,
@@ -435,7 +427,7 @@ class TokenTargetRepository:
             WHERE {" AND ".join(clauses)}
             )
             SELECT *
-            FROM matched
+            FROM target_events
             WHERE event_target_rank = 1
             ORDER BY source_event_ordinal ASC, received_at_ms DESC, event_id DESC
             LIMIT %s

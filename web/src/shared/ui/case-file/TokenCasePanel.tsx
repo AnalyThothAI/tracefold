@@ -1,9 +1,4 @@
-import type {
-  TokenCaseScope,
-  TokenCaseSort,
-  TokenCaseViewModel,
-  TokenCaseWindow,
-} from "@shared/model/tokenCaseViewModel";
+import type { TokenCaseViewModel, TokenCaseWindow } from "@shared/model/tokenCaseViewModel";
 
 import { TokenCaseDataGapsRail } from "./TokenCaseDataGapsRail";
 import { TokenCaseHero } from "./TokenCaseHero";
@@ -13,18 +8,10 @@ import { TokenCaseTimeline } from "./TokenCaseTimeline";
 export type TokenCasePanelProps = {
   vm: TokenCaseViewModel;
   onWindowChange: (window: TokenCaseWindow) => void;
-  onScopeChange: (scope: TokenCaseScope) => void;
-  onTimelineSortChange: (sort: TokenCaseSort) => void;
   onLoadMorePosts: () => void;
 };
 
-export function TokenCasePanel({
-  vm,
-  onWindowChange,
-  onScopeChange,
-  onTimelineSortChange,
-  onLoadMorePosts,
-}: TokenCasePanelProps) {
+export function TokenCasePanel({ vm, onWindowChange, onLoadMorePosts }: TokenCasePanelProps) {
   return (
     <section aria-label="Token case" className={styles.panel} data-page-archetype="case">
       <TokenCaseHero
@@ -33,16 +20,11 @@ export function TokenCasePanel({
         metrics={vm.metrics}
         route={vm.route}
         target={vm.target}
-        onScopeChange={onScopeChange}
         onWindowChange={onWindowChange}
       />
       <div className={styles.workspace}>
         <div className={styles.mainColumn}>
-          <TokenCaseTimeline
-            timeline={vm.timeline}
-            onLoadMorePosts={onLoadMorePosts}
-            onTimelineSortChange={onTimelineSortChange}
-          />
+          <TokenCaseTimeline timeline={vm.timeline} onLoadMorePosts={onLoadMorePosts} />
         </div>
         <div className={styles.sideRail} aria-label="Token case side rail">
           <TokenCaseDataGapsRail dataGaps={vm.dataGaps} />

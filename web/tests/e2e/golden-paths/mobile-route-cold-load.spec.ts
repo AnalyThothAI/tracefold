@@ -27,7 +27,7 @@ test.beforeEach(({}, testInfo) => {
 const routeCases: RouteCase[] = [
   {
     name: "search token result",
-    path: "/search?q=HANSA&window=24h&scope=all",
+    path: "/search?q=HANSA&window=24h",
     primary: async (page) => {
       await expect(page.getByRole("region", { name: "Search Intel" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Search Intel" })).toBeVisible();
@@ -99,28 +99,8 @@ const routeCases: RouteCase[] = [
     lastMeaningfulSelector: ".news-membership-list",
   },
   {
-    name: "watchlist",
-    path: "/watchlist",
-    primary: async (page) => {
-      await expect(page.getByRole("region", { name: "Twitter source monitor" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "@toly" })).toBeVisible();
-    },
-    specific: async (page) => {
-      await expect(page.getByRole("region", { name: "Monitor status" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Handle intelligence" })).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "Twitter source list" })).toBeVisible();
-      await expect(page.locator("[aria-label='Watchlist source context']")).toBeVisible();
-    },
-    nestedOverflowSelectors: [
-      ".watchlist-page",
-      ".watchlist-monitor-shell",
-      ".watchlist-monitor-grid",
-    ],
-    lastMeaningfulSelector: ".watchlist-extraction-panel",
-  },
-  {
     name: "token case",
-    path: `/token/Asset/${encodeURIComponent(tokenCaseTargetId)}?window=1h&scope=all`,
+    path: `/token/Asset/${encodeURIComponent(tokenCaseTargetId)}?window=1h`,
     primary: async (page) => {
       const tokenCase = page.getByRole("region", { name: "Token case" });
       await expect(tokenCase.getByRole("heading", { name: /\$HANSA/ })).toBeVisible();

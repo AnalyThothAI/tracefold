@@ -8,18 +8,10 @@ describe("TokenCasePanel", () => {
   it("renders the shared token case anatomy", () => {
     const vm = buildTokenCaseViewModel({
       dossier: tokenCaseFixture(),
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
     });
 
-    render(
-      <TokenCasePanel
-        vm={vm}
-        onLoadMorePosts={vi.fn()}
-        onScopeChange={vi.fn()}
-        onTimelineSortChange={vi.fn()}
-        onWindowChange={vi.fn()}
-      />,
-    );
+    render(<TokenCasePanel vm={vm} onLoadMorePosts={vi.fn()} onWindowChange={vi.fn()} />);
 
     expect(screen.getByRole("region", { name: /Token case/i })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /\$HANSA/i })).toBeInTheDocument();

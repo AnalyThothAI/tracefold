@@ -8,7 +8,6 @@ export type SocketContextValue = SocketSnapshot & {
 
 export const idleSocketSnapshot: SocketSnapshot = {
   status: "idle",
-  notificationItems: [],
   lastMessageAt: null,
 };
 
@@ -21,7 +20,6 @@ export function useSocketSnapshot(): SocketSnapshot {
   }
   return {
     status: context.status,
-    notificationItems: context.notificationItems,
     lastMessageAt: context.lastMessageAt,
   };
 }

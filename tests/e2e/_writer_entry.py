@@ -6,12 +6,10 @@ Run as:
 Reads TRACEFOLD_POSTGRES_DSN (and optional TRACEFOLD_E2E_WS_TOKEN, defaults to
 "e2e-token") from env. Builds a Runtime via the same bootstrap path
 the production app uses (start_collector=False, no upstream WS), then calls
-runtime.ingest.ingest_event(event, is_watched=True) with a synthetic mention.
+runtime.ingest.ingest_event(event) with a synthetic mention.
 
 By writing through the production wiring chain we exercise the same
-EvidenceRepository -> events table path the API will read from. The event is
-flagged is_watched=True so it shows up under /api/recent's default
-scope=matched filter.
+EvidenceRepository -> events table path the API will read from.
 
 Stdout: 'INGESTED <event_id>'. Exit 0 on success.
 """
@@ -50,7 +48,6 @@ def main() -> int:
 
     settings = Settings(
         ws_token=ws_token,
-        handles=(args.author,),
         storage={"postgres": {"dsn": dsn, "password_file": None}},
     )
     runtime = bootstrap(settings, start_collector=False)
@@ -76,11 +73,10 @@ def main() -> int:
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[args.author],
         raw={"id": args.event_id},
     )
     try:
-        runtime.ingest.ingest_event(event, is_watched=True)
+        runtime.ingest.ingest_event(event)
         print(f"INGESTED {args.event_id}", flush=True)
     finally:
         asyncio.run(runtime.aclose())

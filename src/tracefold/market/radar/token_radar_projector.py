@@ -60,7 +60,7 @@ class TokenRadarProjectionWindowError(ValueError):
 @dataclass(frozen=True)
 class ProjectedClaim:
     claim: Mapping[str, Any]
-    rank_sets: frozenset[tuple[str, str, str]]
+    rank_sets: frozenset[tuple[str, str]]
     source_rows: int
     error: str | None = None
 
@@ -75,7 +75,6 @@ def prune_token_radar_private_cache(
     *,
     repos: Any,
     windows: tuple[str, ...],
-    scopes: tuple[str, ...],
     now_ms: int,
     retention_ms: int,
     limit: int,
@@ -92,23 +91,19 @@ def prune_token_radar_private_cache(
     rank_source_edges_deleted = 0
     with repos.transaction():
         for window in windows:
-            for scope in scopes:
-                if remaining <= 0:
-                    break
-                deleted = int(
-                    repos.token_radar.prune_target_features(
-                        projection_version=PROJECTION_VERSION,
-                        window=str(window),
-                        scope=str(scope),
-                        latest_event_before_ms=cutoff_ms,
-                        limit=remaining,
-                    )
-                    or 0
-                )
-                target_features_deleted += deleted
-                remaining = max(0, remaining - deleted)
             if remaining <= 0:
                 break
+            deleted = int(
+                repos.token_radar.prune_target_features(
+                    projection_version=PROJECTION_VERSION,
+                    window=str(window),
+                    latest_event_before_ms=cutoff_ms,
+                    limit=remaining,
+                )
+                or 0
+            )
+            target_features_deleted += deleted
+            remaining = max(0, remaining - deleted)
         if remaining > 0:
             rank_source_edges_deleted = int(
                 repos.token_radar_rank_sources.prune_edges(
@@ -137,7 +132,7 @@ class TokenRadarProjector:
         self,
         *,
         claimed_targets: Sequence[Mapping[str, Any]],
-        work_items: tuple[tuple[str, ...], ...],
+        work_items: tuple[str, ...],
         now_ms: int,
     ) -> tuple[ProjectedClaim, ...]:
         computed_at_ms = int(now_ms)
@@ -181,7 +176,7 @@ class TokenRadarProjector:
 
         for target_index, target in enumerate(targets):
             source_row_count = 0
-            touched: set[tuple[str, str, str]] = set()
+            touched: set[tuple[str, str]] = set()
             try:
                 for request in requests_by_target.get(target_index, []):
                     source_rows = rows_by_request.get(request.request_key, [])
@@ -226,7 +221,6 @@ class TokenRadarProjector:
         now_ms: int,
     ) -> dict[str, Any]:
         window = request.window
-        scope = request.scope
         target_type_key = _required_target_identity_text(target, "target_type_key")
         identity_id = _required_target_identity_text(target, "identity_id")
         window_ms = _window_ms(window)
@@ -238,7 +232,6 @@ class TokenRadarProjector:
             source_rows,
             now_ms=int(now_ms),
             window=window,
-            scope=scope,
             score_since_ms=score_since_ms,
             window_ms=window_ms,
             total_window_events=total_window_events,
@@ -250,7 +243,6 @@ class TokenRadarProjector:
                     self.repos.token_radar.delete_target_feature(
                         projection_version=PROJECTION_VERSION,
                         window=window,
-                        scope=scope,
                         lane=lane,
                         target_type_key=target_type_key,
                         identity_id=identity_id,
@@ -270,7 +262,6 @@ class TokenRadarProjector:
             self.repos.token_radar.upsert_target_feature(
                 projection_version=PROJECTION_VERSION,
                 window=window,
-                scope=scope,
                 row=projected,
                 computed_at_ms=int(now_ms),
             )
@@ -281,7 +272,6 @@ class TokenRadarProjector:
             self.repos.token_radar.delete_target_feature(
                 projection_version=PROJECTION_VERSION,
                 window=window,
-                scope=scope,
                 lane=opposite_lane,
                 target_type_key=target_type_key,
                 identity_id=identity_id,
@@ -301,14 +291,12 @@ class TokenRadarProjector:
         self,
         *,
         window: str,
-        scope: str,
         venue: str,
         now_ms: int,
         limit: int,
     ) -> RankSetProjection:
         return self.build_rank_sets(
             window=window,
-            scope=scope,
             venues=(venue,),
             now_ms=now_ms,
             limit=limit,
@@ -318,7 +306,6 @@ class TokenRadarProjector:
         self,
         *,
         window: str,
-        scope: str,
         venues: tuple[str, ...],
         now_ms: int,
         limit: int,
@@ -327,7 +314,6 @@ class TokenRadarProjector:
         rank_inputs = self.repos.token_radar.list_rank_inputs_for_rank_set(
             projection_version=PROJECTION_VERSION,
             window=window,
-            scope=scope,
             min_latest_event_received_at_ms=min_latest_event_received_at_ms,
         )
         current_inputs = [
@@ -382,7 +368,7 @@ class TokenRadarProjector:
             cohort_metadata[target_id] = {
                 "high_confidence_mentions": high_conf,
                 "kol_mentions": kol_count,
-                "public_followup_authors": int(row.get("cohort_public_followup_authors") or 0),
+                "followup_authors": int(row.get("cohort_followup_authors") or 0),
                 "first_seen_global_24h": first_seen_global,
                 "symbol": symbol,
             }
@@ -455,9 +441,9 @@ def _analysis_since_ms(*, computed_at_ms: int, window_ms: int) -> int:
 def _rank_source_repair_analysis_since_ms(
     *,
     computed_at_ms: int,
-    work_items: tuple[tuple[str, str], ...],
+    work_items: tuple[str, ...],
 ) -> int:
-    window_names = [str(item[0]) for item in work_items if item]
+    window_names = [str(item) for item in work_items if item]
     if not window_names:
         raise TokenRadarProjectionWindowError("token_radar_projection_work_item_window_required")
     max_window_ms = max(_window_ms(window) for window in window_names)
@@ -468,15 +454,15 @@ def _rank_source_repair_analysis_since_ms(
     )
 
 
-def _score_work_items(work_items: tuple[tuple[str, ...], ...]) -> tuple[tuple[str, str], ...]:
+def _score_work_items(work_items: tuple[str, ...]) -> tuple[str, ...]:
     """Collapse product venues before loading or scoring target features."""
 
-    return tuple(dict.fromkeys((str(item[0]), str(item[1])) for item in work_items if len(item) >= 2))
+    return tuple(dict.fromkeys(str(item) for item in work_items if item))
 
 
 def _source_requests_for_targets(
     targets: list[dict[str, Any]],
-    work_items: tuple[tuple[str, str], ...],
+    work_items: tuple[str, ...],
     *,
     now_ms: int,
 ) -> list[TokenRadarFeatureSourceRequest]:
@@ -484,7 +470,7 @@ def _source_requests_for_targets(
     for target_index, target in enumerate(targets):
         target_type_key = _required_target_identity_text(target, "target_type_key")
         identity_id = _required_target_identity_text(target, "identity_id")
-        for window, scope in work_items:
+        for window in work_items:
             window_ms = _window_ms(window)
             score_since_ms = int(now_ms) - window_ms
             requests.append(
@@ -494,12 +480,10 @@ def _source_requests_for_targets(
                         target_type_key=target_type_key,
                         identity_id=identity_id,
                         window=window,
-                        scope=scope,
                     ),
                     target_type_key=target_type_key,
                     identity_id=identity_id,
                     window=window,
-                    scope=scope,
                     analysis_since_ms=_analysis_since_ms(computed_at_ms=int(now_ms), window_ms=window_ms),
                     score_since_ms=score_since_ms,
                     now_ms=int(now_ms),
@@ -525,12 +509,12 @@ def _rank_items_for_projection_change(
     *,
     request: TokenRadarFeatureSourceRequest,
     score_result: Mapping[str, Any],
-) -> tuple[tuple[str, str, str], ...]:
+) -> tuple[tuple[str, str], ...]:
     target_venue = str(score_result.get("target_venue") or "").strip()
     venues = [TOKEN_RADAR_DEFAULT_VENUE]
     if target_venue and target_venue != TOKEN_RADAR_DEFAULT_VENUE and target_venue in TOKEN_RADAR_VENUES:
         venues.append(target_venue)
-    return tuple((request.window, request.scope, venue) for venue in dict.fromkeys(venues))
+    return tuple((request.window, venue) for venue in dict.fromkeys(venues))
 
 
 def _venue_for_identity(*, target_type_key: str, identity_id: str) -> str:
@@ -602,7 +586,6 @@ def _target_source_request_key(
     target_type_key: str,
     identity_id: str,
     window: str,
-    scope: str,
 ) -> str:
     stable = _stable_id(
         "token-radar-source-request",
@@ -610,7 +593,6 @@ def _target_source_request_key(
         target_type_key,
         identity_id,
         window,
-        scope,
     )
     return f"target-{target_index}:{stable}"
 
@@ -944,7 +926,6 @@ def _project_group(
     *,
     now_ms: int,
     window: str,
-    scope: str,
     score_since_ms: int | None = None,
     window_ms: int | None = None,
     total_window_events: int | None = None,
@@ -1003,7 +984,7 @@ def _project_group(
     )
     cohort_kol_count = sum(1 for r in window_rows if set(r.get("author_tags_json") or ()) & KOL_TIER_TAGS)
     cohort_first_seen_global_24h = any(row.get("first_seen_global_24h") is True for row in window_rows)
-    cohort_public_followup_count = int(features.propagation.get("public_followup_author_count") or 0)
+    cohort_followup_count = int(features.propagation.get("followup_author_count") or 0)
     return {
         "source_max_received_at_ms": latest_seen_ms,
         "lane": lane,
@@ -1049,7 +1030,7 @@ def _project_group(
         "_cohort_high_conf_count": cohort_high_conf_count,
         "_cohort_kol_count": cohort_kol_count,
         "_cohort_first_seen_global_24h": cohort_first_seen_global_24h,
-        "_cohort_public_followup_count": cohort_public_followup_count,
+        "_cohort_followup_count": cohort_followup_count,
     }
 
 
@@ -1519,14 +1500,13 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _compact_rank_key(row: dict[str, Any]) -> tuple[int, float, int, int, int]:
+def _compact_rank_key(row: dict[str, Any]) -> tuple[int, float, int, int]:
     decision = _rank_input_decision(row, "recommended_decision")
     rank_score = _rank_input_number(row, "rank_score")
     mentions_1h = _rank_input_nonnegative_int(row, "social_heat_mentions_1h")
     return (
         TOKEN_RADAR_DECISION_PRIORITY[decision],
         -rank_score,
-        -int(row.get("social_heat_watched_mentions") or 0),
         -mentions_1h,
         -int(row.get("social_heat_latest_seen_ms") or 0),
     )
@@ -1587,7 +1567,6 @@ def _venue_for_chain(value: Any) -> str:
 def _row_from_target_feature(row: dict[str, Any], *, venue: str = TOKEN_RADAR_DEFAULT_VENUE) -> dict[str, Any]:
     projection_version = _required_target_feature_current_row_text(row, "projection_version")
     window = _required_target_feature_current_row_text(row, "window")
-    scope = _required_target_feature_current_row_text(row, "scope")
     lane = _required_target_feature_current_row_text(row, "lane")
     target_type_key = _required_projection_row_text(row, "target_type_key")
     identity_id = _required_projection_row_text(row, "identity_id")
@@ -1621,7 +1600,6 @@ def _row_from_target_feature(row: dict[str, Any], *, venue: str = TOKEN_RADAR_DE
             "token-radar-row",
             projection_version,
             window,
-            scope,
             str(venue),
             lane,
             target_type_key,

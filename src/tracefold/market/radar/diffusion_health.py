@@ -25,13 +25,11 @@ def text_fingerprint(value: str | None) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-def diffusion_health(mentions: list[dict[str, Any]], watched_author_handles: set[str]) -> dict[str, Any]:
+def diffusion_health(mentions: list[dict[str, Any]]) -> dict[str, Any]:
     total_mentions = len(mentions)
-    watched_handles = {_normalize_handle(handle) for handle in watched_author_handles if _normalize_handle(handle)}
 
     author_counts: Counter[str] = Counter()
     author_followers: dict[str, int] = defaultdict(int)
-    author_watched_counts: Counter[str] = Counter()
     author_latest_seen: dict[str, int] = defaultdict(int)
     author_fingerprints: dict[str, set[str]] = defaultdict(set)
     fingerprint_counts: Counter[str] = Counter()
@@ -49,9 +47,6 @@ def diffusion_health(mentions: list[dict[str, Any]], watched_author_handles: set
         author_counts[handle] += 1
         author_followers[handle] = max(author_followers[handle], int(mention.get("author_followers") or 0))
         author_latest_seen[handle] = max(author_latest_seen[handle], int(mention.get("received_at_ms") or 0))
-        if mention.get("is_watched"):
-            author_watched_counts[handle] += 1
-            watched_handles.add(handle)
         if fingerprint:
             author_fingerprints[handle].add(fingerprint)
 
@@ -90,8 +85,6 @@ def diffusion_health(mentions: list[dict[str, Any]], watched_author_handles: set
     reasons = []
     if independent_authors >= MIN_HEALTHY_AUTHORS:
         reasons.append("multi_author")
-    if set(author_counts) & watched_handles:
-        reasons.append("watched_author_present")
 
     return {
         "score": _score_from_risks(risks, total_mentions=total_mentions),
@@ -103,7 +96,7 @@ def diffusion_health(mentions: list[dict[str, Any]], watched_author_handles: set
         "author_entropy": author_entropy(mentions),
         "repeated_cluster_count": repeated_cluster_count,
         "shill_author_count": shill_author_count,
-        "top_authors": _top_authors(author_counts, author_followers, author_watched_counts, author_latest_seen),
+        "top_authors": _top_authors(author_counts, author_followers, author_latest_seen),
         "reasons": reasons,
         "risks": risks,
     }
@@ -112,7 +105,6 @@ def diffusion_health(mentions: list[dict[str, Any]], watched_author_handles: set
 def _top_authors(
     author_counts: Counter[str],
     author_followers: dict[str, int],
-    author_watched_counts: Counter[str],
     author_latest_seen: dict[str, int],
 ) -> list[dict[str, Any]]:
     authors: list[dict[str, Any]] = [
@@ -120,7 +112,6 @@ def _top_authors(
             "handle": handle,
             "count": count,
             "followers": int(author_followers.get(handle) or 0),
-            "watched_count": int(author_watched_counts.get(handle) or 0),
         }
         for handle, count in author_counts.items()
     ]

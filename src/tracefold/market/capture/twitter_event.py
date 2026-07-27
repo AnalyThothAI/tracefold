@@ -92,7 +92,6 @@ class TwitterEvent:
     unfollow_target: UnfollowTarget | None
     avatar_change: AvatarChange | None
     bio_change: BioChange | None
-    matched_handles: list[str]
     raw: dict[str, Any] | None
     token_snapshot: TokenSnapshot | None = None
 

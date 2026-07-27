@@ -7,7 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "aiolimiter>=1.2.1",
     "alembic>=1.18.0",
-    "apprise>=1.10.0",
     "curl-cffi>=0.15,<0.16",
     "deepagents==0.6.12",
     "defusedxml>=0.7.1",
@@ -84,9 +83,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]
 #         no actual credentials are hardcoded in the src/ tree.
 # - RUF001: codebase has intentional Chinese fullwidth characters in constant/model strings
 #         (e.g. Chinese punctuation in user-visible prompts); not copy-paste accidents.
-# - PLC0415: 5 deferred imports in src/ are intentional (break circular deps or defer optional
-#         deps: apprise in notification_delivery, psycopg in cli, TokenRadarProjection in two
-#         runtime workers). ruff --fix strips noqa comments on these so they're globally ignored.
+# - PLC0415: deferred imports in src/ are intentional where they break circular dependencies
+#         or defer optional runtime dependencies. ruff --fix strips noqa comments on these so
+#         they're globally ignored.
 ignore = [
   "PLR0913",
   "PLR2004",
@@ -150,7 +149,7 @@ warn_return_any = false
 disable_error_code = ["arg-type", "attr-defined", "union-attr", "index", "operator", "assignment", "no-untyped-call"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "loguru.*", "psycopg.*", "apprise.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml", "feedparser"]
+module = ["alembic.*", "loguru.*", "psycopg.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml", "feedparser"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

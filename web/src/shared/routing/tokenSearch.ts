@@ -1,4 +1,4 @@
-import type { ScopeKey, TokenFlowItem, WindowKey } from "@lib/types";
+import type { TokenFlowItem, WindowKey } from "@lib/types";
 
 import { searchPath } from "./paths";
 
@@ -26,10 +26,9 @@ export function tokenSearchQuery(item: TokenFlowItem): string {
   return item.identity.identity_key;
 }
 
-export function tokenSearchPath(item: TokenFlowItem, window: WindowKey, scope: ScopeKey): string {
+export function tokenSearchPath(item: TokenFlowItem, window: WindowKey): string {
   return searchPath({
     q: tokenSearchQuery(item),
     window,
-    scope,
   });
 }

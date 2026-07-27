@@ -1,5 +1,3 @@
-import type { NotificationLivePayload } from "@lib/types";
-
 export type SocketStatus =
   | "idle"
   | "connecting"
@@ -20,6 +18,5 @@ export type NormalizedMarketTarget = {
 
 export type SocketSnapshot = {
   status: SocketStatus;
-  notificationItems: NotificationLivePayload[];
   lastMessageAt: number | null;
 };

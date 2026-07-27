@@ -8,12 +8,11 @@ from tracefold.app.worker_manifest import all_worker_manifests
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
-BUSINESS_PACKAGES = ("market", "news", "macro", "notifications")
+BUSINESS_PACKAGES = ("market", "news", "macro")
 ALLOWED_BUSINESS_DEPENDENCIES = {
     "market": {"market", "platform"},
     "news": {"news", "platform"},
     "macro": {"macro", "market", "platform"},
-    "notifications": {"notifications", "platform"},
 }
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {
     "attempt_id",
@@ -98,7 +97,6 @@ def test_backend_has_only_the_hard_cut_package_shape() -> None:
         "macro",
         "market",
         "news",
-        "notifications",
         "platform",
     }
     assert not (SRC / "domains").exists()
@@ -222,6 +220,4 @@ def _business_table_owner(table: str) -> str:
         return "news"
     if table.startswith("macro_"):
         return "macro"
-    if table.startswith("notification"):
-        return "notifications"
     return "market"

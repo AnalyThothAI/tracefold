@@ -72,7 +72,7 @@ export function resetApiMock(mock: ApiMock): void {
   mock.getApi.mockClear();
   mock.getBootstrap.mockClear();
   mock.postApi.mockClear();
-  mock.writeApiImpl = async () => ok({ notification_id: "notification-1", updated: true });
+  mock.writeApiImpl = async () => ok({ updated: true });
 }
 
 export function ok<T>(data: T): ApiResponse<T> {
@@ -80,7 +80,7 @@ export function ok<T>(data: T): ApiResponse<T> {
 }
 
 export function defaultBootstrap(): ApiResponse<BootstrapData> {
-  return ok({ ws_token: "secret", handles: ["toly", "traderpow"], replay_limit: 25 });
+  return ok({ ws_token: "secret", replay_limit: 25 });
 }
 
 export function requestOptionsFromRequest(request: Request): RequestOptions {
