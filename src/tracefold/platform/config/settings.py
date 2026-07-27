@@ -564,6 +564,7 @@ class NewsPipelineWorkerSettings(PerWorkerSettings):
 class NewsWorldBriefWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=600.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
+    max_attempts: int = Field(default=3, ge=1, le=10)
     model: str = "deepseek-chat"
     total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
     ollama_base_url: str = "http://host.docker.internal:11434/v1"

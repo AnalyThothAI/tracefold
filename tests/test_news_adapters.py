@@ -5,6 +5,7 @@ import httpx
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import RssFeedReader
 from tracefold.news import NewsBriefStory, NewsSourceDefinition
+from tracefold.platform.config.settings import NewsWorldBriefWorkerSettings
 
 
 def source() -> NewsSourceDefinition:
@@ -15,6 +16,11 @@ def source() -> NewsSourceDefinition:
         tier=2,
         memberships=("economic",),
     )
+
+
+def test_world_brief_worker_settings_owns_a_bounded_retry_budget() -> None:
+    settings = NewsWorldBriefWorkerSettings()
+    assert settings.max_attempts == 3
 
 
 def test_rss_reader_honors_conditionals_limits_first_five_and_cleans_description() -> None:
