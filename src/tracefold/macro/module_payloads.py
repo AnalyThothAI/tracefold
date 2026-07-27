@@ -224,7 +224,10 @@ def _dataset_states(
         active_backfills = [
             row
             for row in dataset_targets
-            if str(row.get("clock_kind")) == "backfill" and str(row.get("status")) != "current"
+            if str(row.get("clock_kind")) == "backfill"
+            and str(row.get("status")) != "current"
+            and isinstance(row.get("cursor_json"), dict)
+            and row["cursor_json"].get("required_for_judgment") is True
         ]
         latest = latest_by_dataset.get(spec.dataset_id)
         if spec.adapter_id == "unavailable":

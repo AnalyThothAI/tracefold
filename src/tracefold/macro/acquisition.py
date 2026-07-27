@@ -114,6 +114,13 @@ class MacroAcquisitionService:
 
         completed_at_ms = int(self.clock_ms())
         receipt_id = _receipt_id(target, started_at_ms, completed_at_ms, batch.response_hash)
+        completed_cursor = dict(batch.cursor)
+        if self.clock_kind == "backfill":
+            target_cursor = target.get("cursor_json")
+            if isinstance(target_cursor, dict):
+                for key in ("history_class", "required_for_judgment"):
+                    if key in target_cursor:
+                        completed_cursor[key] = target_cursor[key]
         inserted = 0
         with self._session() as repos, repos.transaction():
             for fact in batch.facts:
@@ -149,7 +156,7 @@ class MacroAcquisitionService:
                 diagnostics=batch.diagnostics,
             )
             backfill_complete = self.clock_kind != "backfill" or _backfill_complete(
-                batch.cursor,
+                completed_cursor,
                 has_facts=bool(batch.facts),
             )
             target_status = (
@@ -163,7 +170,7 @@ class MacroAcquisitionService:
                 target_key=str(target["target_key"]),
                 lease_owner=self.worker_name,
                 receipt_id=receipt_id,
-                cursor=batch.cursor,
+                cursor=completed_cursor,
                 next_due_at_ms=(
                     completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else int(self.settings.retry_ms))
                     if self.clock_kind != "backfill"

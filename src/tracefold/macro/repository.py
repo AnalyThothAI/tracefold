@@ -75,6 +75,8 @@ class MacroRepository:
         end_date: date,
         now_ms: int,
         max_attempts: int,
+        history_class: str | None = None,
+        required_for_judgment: bool = False,
     ) -> dict[str, Any]:
         if start_date > end_date:
             raise ValueError("macro_backfill_invalid_range")
@@ -113,6 +115,8 @@ class MacroRepository:
                     {
                         "start_date": start_date.isoformat(),
                         "end_date": end_date.isoformat(),
+                        "history_class": history_class,
+                        "required_for_judgment": required_for_judgment,
                     },
                     sort_keys=True,
                 ),

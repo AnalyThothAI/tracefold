@@ -120,7 +120,15 @@ uv run tracefold macro backfill-professional
 uv run tracefold macro status
 ```
 
-Enable `macro_backfill` until every professional target is `current`; then
+The readiness-critical Treasury, FOMC, speech, ETF, and BTC window is the most
+recent five years. Older deep history is optional enrichment and does not block
+Coverage, projection, or Daily Judgment. Credit and WTI retain longer reliable
+public history where one bounded source response makes that history cheap and
+material to percentile context.
+
+Enable `macro_backfill` until every readiness-required professional target is
+`current`; optional deep-history targets may continue without blocking the
+workbench. Then
 enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Projection and judgment intentionally remain blocked while required
 history or document analysis is incomplete.

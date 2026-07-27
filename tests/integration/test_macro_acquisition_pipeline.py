@@ -202,6 +202,8 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
                 end_date=date(2026, 7, 27),
                 now_ms=clock(),
                 max_attempts=3,
+                history_class="optional_maximum_public_history",
+                required_for_judgment=False,
             )
         service = MacroAcquisitionService(
             db=_TestDb(conn),
@@ -245,6 +247,8 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
     }
     assert stored["status"] == "current"
     assert stored["cursor_json"]["backfill_complete"] is True
+    assert stored["cursor_json"]["history_class"] == "optional_maximum_public_history"
+    assert stored["cursor_json"]["required_for_judgment"] is False
     assert dict(receipt) == {"status": "empty", "rows_seen": 0, "rows_inserted": 0}
 
 
