@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tracefold.macro.backfill import REQUIRED_PROFESSIONAL_BACKFILL_DATASETS
 from tracefold.macro.calculations import (
     calculate_curve_contract,
     calculate_funding_cost_comparisons,
@@ -226,6 +227,7 @@ def _dataset_states(
             for row in dataset_targets
             if str(row.get("clock_kind")) == "backfill"
             and str(row.get("status")) != "current"
+            and spec.dataset_id in REQUIRED_PROFESSIONAL_BACKFILL_DATASETS
             and isinstance(row.get("cursor_json"), dict)
             and row["cursor_json"].get("required_for_judgment") is True
         ]

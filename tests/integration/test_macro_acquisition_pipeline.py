@@ -237,6 +237,16 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
             """,
             (stored["last_receipt_id"],),
         ).fetchone()
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            promoted = repos.macro.promote_covering_backfill_target(
+                spec,
+                start_date=date(2021, 7, 27),
+                end_date=date(2026, 7, 27),
+                history_class="required_trailing_five_years",
+                required_for_judgment=True,
+                priority=25,
+                now_ms=clock(),
+            )
     finally:
         conn.close()
 
@@ -252,6 +262,14 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
     assert stored["cursor_json"]["history_class"] == "optional_maximum_public_history"
     assert stored["cursor_json"]["required_for_judgment"] is False
     assert dict(receipt) == {"status": "empty", "rows_seen": 0, "rows_inserted": 0}
+
+    assert promoted is not None
+    assert promoted["target_key"] == target["target_key"]
+    assert promoted["partition_key"] == "1900-01-01..2026-07-27"
+    assert promoted["status"] == "current"
+    assert promoted["priority"] == 25
+    assert promoted["cursor_json"]["history_class"] == "required_trailing_five_years"
+    assert promoted["cursor_json"]["required_for_judgment"] is True
 
 
 def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:

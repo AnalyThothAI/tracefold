@@ -40,10 +40,8 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
         "nasdaq.gld.history",
         "nasdaq.uso.history",
     }
-    assert expected_etfs <= policies.keys()
-    assert all(policies[dataset_id].history_class == "required_trailing_five_years" for dataset_id in expected_etfs)
-    assert all(policies[dataset_id].required_for_judgment for dataset_id in expected_etfs)
-    assert all(policies[dataset_id].priority == 25 for dataset_id in expected_etfs)
+    assert expected_etfs.isdisjoint(policies)
+    assert expected_etfs <= DATASET_REGISTRY.keys()
 
 
 def test_professional_backfill_five_year_boundary_handles_leap_day() -> None:

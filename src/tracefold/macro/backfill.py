@@ -5,6 +5,17 @@ from datetime import date
 
 from tracefold.macro.registry import DATASET_REGISTRY
 
+REQUIRED_PROFESSIONAL_BACKFILL_DATASETS = frozenset(
+    {
+        "treasury.daily_nominal_curve",
+        "treasury.daily_real_curve",
+        "federal_reserve.fomc.documents",
+        "federal_reserve.board.speeches",
+        "federal_reserve.reserve_bank.speeches",
+        "binance.btcusdt.spot",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MacroBackfillPolicy:
@@ -44,13 +55,7 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
         )
 
     recent_history_start = _years_before(through_date, 5)
-    for dataset_id in (
-        "treasury.daily_nominal_curve",
-        "treasury.daily_real_curve",
-        "federal_reserve.fomc.documents",
-        "federal_reserve.board.speeches",
-        "federal_reserve.reserve_bank.speeches",
-    ):
+    for dataset_id in REQUIRED_PROFESSIONAL_BACKFILL_DATASETS:
         register(
             dataset_id,
             "required_trailing_five_years",
@@ -74,26 +79,6 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
         required_for_judgment=False,
     )
 
-    for dataset_id in (
-        "nasdaq.spy.history",
-        "nasdaq.qqq.history",
-        "nasdaq.iwm.history",
-        "nasdaq.tlt.history",
-        "nasdaq.ief.history",
-        "nasdaq.lqd.history",
-        "nasdaq.hyg.history",
-        "nasdaq.dxy.history",
-        "nasdaq.gld.history",
-        "nasdaq.uso.history",
-        "binance.btcusdt.spot",
-    ):
-        register(
-            dataset_id,
-            "required_trailing_five_years",
-            recent_history_start,
-            required_for_judgment=True,
-        )
-
     for spec in DATASET_REGISTRY.values():
         if spec.adapter_id == "cftc_tff":
             register(
@@ -106,4 +91,8 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
     return tuple(policies[key] for key in sorted(policies))
 
 
-__all__ = ["MacroBackfillPolicy", "professional_backfill_policies"]
+__all__ = [
+    "REQUIRED_PROFESSIONAL_BACKFILL_DATASETS",
+    "MacroBackfillPolicy",
+    "professional_backfill_policies",
+]

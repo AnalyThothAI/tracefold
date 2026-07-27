@@ -210,18 +210,23 @@ clock-specific target claim -> provider I/O -> typed fact + source receipt + cur
 The four automatic acquisition workers claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`; `macro_backfill` claims only
 explicit bounded backfills. `macro backfill-professional` enqueues the
-code-owned Treasury/Fed/credit/ETF/WTI/CFTC history policy in one transaction.
-Treasury curves, FOMC materials, policy speeches, ETF proxies, and BTC use a
-readiness-critical trailing five-year window. Older history is optional
-enrichment and must not delay the current workbench. Credit and WTI may retain
-longer reliable public history because their bounded single-source histories
-are inexpensive and materially improve regime context. The durable target
-cursor records `required_for_judgment`; only those required targets gate module
-health and publication. An operator-created repair or optional deep-history
-target remains observable but non-blocking.
+code-owned Treasury/Fed/credit/WTI/BTC/CFTC history policy in one transaction.
+Treasury curves, FOMC materials, policy speeches, and BTC use a
+readiness-critical trailing five-year backfill window. Nasdaq ETF `latest`
+acquisition already requests the complete five-year window, so no duplicate ETF
+backfill is created. Older history is optional enrichment and must not delay
+the current workbench. Credit and WTI may retain longer reliable public history
+because their bounded single-source histories are inexpensive and materially
+improve regime context. The durable target cursor records
+`required_for_judgment`; only code-owned currently required targets gate module
+health and publication. An operator-created repair, retired requirement, or
+optional deep-history target remains observable but non-blocking.
 Required five-year targets also have a lower numeric queue priority than
 optional deep history, so a large enrichment crawl cannot sit ahead of current
-professional readiness.
+professional readiness. Before creating a new target, the professional command
+promotes an already-current target whose durable cursor covers the requested
+window; a four-day boundary change must not trigger a duplicate multi-year
+fetch.
 Provider I/O happens after claim commit. One
 completion transaction appends normalized facts and
 `macro_source_receipts`, advances the cursor, and compare-and-set completes the

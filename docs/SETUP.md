@@ -120,11 +120,14 @@ uv run tracefold macro backfill-professional
 uv run tracefold macro status
 ```
 
-The readiness-critical Treasury, FOMC, speech, ETF, and BTC window is the most
-recent five years. Older deep history is optional enrichment and does not block
-Coverage, projection, or Daily Judgment. Credit and WTI retain longer reliable
-public history where one bounded source response makes that history cheap and
-material to percentile context.
+The readiness-critical Treasury, FOMC, speech, and BTC backfill window is the
+most recent five years. Nasdaq ETF `latest` acquisition already requests and
+persists the complete five-year window in one response, so the professional
+command does not enqueue a duplicate ETF backfill. Older deep history is
+optional enrichment and does not block Coverage, projection, or Daily
+Judgment. Credit and WTI retain longer reliable public history where one
+bounded source response makes that history cheap and material to percentile
+context.
 
 Enable `macro_backfill` until every readiness-required professional target is
 `current`; optional deep-history targets may continue without blocking the

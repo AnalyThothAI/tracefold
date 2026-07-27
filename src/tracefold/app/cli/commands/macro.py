@@ -59,16 +59,26 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                 spec = require_dataset(policy.dataset_id)
                 if spec.instrument_id is not None:
                     repos.macro_market.ensure_instrument(spec, now_ms=now_ms)
-                target = repos.macro.enqueue_backfill_target(
+                target = repos.macro.promote_covering_backfill_target(
                     spec,
                     start_date=policy.start_date,
                     end_date=through_date,
-                    now_ms=now_ms,
-                    max_attempts=int(settings.workers.macro_backfill.max_attempts),
                     history_class=policy.history_class,
                     required_for_judgment=policy.required_for_judgment,
                     priority=policy.priority,
+                    now_ms=now_ms,
                 )
+                if target is None:
+                    target = repos.macro.enqueue_backfill_target(
+                        spec,
+                        start_date=policy.start_date,
+                        end_date=through_date,
+                        now_ms=now_ms,
+                        max_attempts=int(settings.workers.macro_backfill.max_attempts),
+                        history_class=policy.history_class,
+                        required_for_judgment=policy.required_for_judgment,
+                        priority=policy.priority,
+                    )
                 targets.append(
                     {
                         "dataset_id": policy.dataset_id,

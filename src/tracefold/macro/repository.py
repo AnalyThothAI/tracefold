@@ -133,6 +133,59 @@ class MacroRepository:
             raise RuntimeError("macro_backfill_target_not_written")
         return dict(row)
 
+    def promote_covering_backfill_target(
+        self,
+        spec: DatasetSpec,
+        *,
+        start_date: date,
+        end_date: date,
+        history_class: str,
+        required_for_judgment: bool,
+        priority: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            WITH candidate AS (
+              SELECT target_key
+              FROM macro_acquisition_targets
+              WHERE dataset_id = %s
+                AND clock_kind = 'backfill'
+                AND status = 'current'
+                AND cursor_json ? 'start_date'
+                AND cursor_json ? 'end_date'
+                AND (cursor_json ->> 'start_date')::date <= %s
+                AND (cursor_json ->> 'end_date')::date >= %s
+              ORDER BY
+                (cursor_json ->> 'start_date')::date DESC,
+                (cursor_json ->> 'end_date')::date,
+                target_key
+              LIMIT 1
+              FOR UPDATE
+            )
+            UPDATE macro_acquisition_targets AS target
+            SET cursor_json = target.cursor_json || jsonb_build_object(
+                  'history_class', %s::text,
+                  'required_for_judgment', %s::boolean
+                ),
+                priority = %s,
+                updated_at_ms = %s
+            FROM candidate
+            WHERE target.target_key = candidate.target_key
+            RETURNING target.*
+            """,
+            (
+                spec.dataset_id,
+                start_date,
+                end_date,
+                history_class,
+                required_for_judgment,
+                int(priority),
+                int(now_ms),
+            ),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def claim_target(
         self,
         *,
