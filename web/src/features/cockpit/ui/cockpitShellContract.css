@@ -62,12 +62,6 @@
       grid-row: 1;
     }
 
-    .topbar-notification-slot {
-      display: grid;
-      grid-column: 3;
-      grid-row: 1;
-    }
-
     .topbar-refresh-button {
       display: none;
     }

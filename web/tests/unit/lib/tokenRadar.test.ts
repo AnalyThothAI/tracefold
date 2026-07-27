@@ -18,9 +18,7 @@ describe("token radar factor snapshot mapper", () => {
       schema_version: legacySnapshotVersion("v1"),
     } as unknown as AssetFlowRow["factor_snapshot"];
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
-      /factor_snapshot\.schema_version/,
-    );
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(/factor_snapshot\.schema_version/);
   });
 
   it("rejects v2 alpha-gated factor snapshots", () => {
@@ -30,9 +28,7 @@ describe("token radar factor snapshot mapper", () => {
       schema_version: legacySnapshotV2Alpha(),
     } as unknown as AssetFlowRow["factor_snapshot"];
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
-      /factor_snapshot\.schema_version/,
-    );
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(/factor_snapshot\.schema_version/);
   });
 
   it("rejects the retired four-family snapshot contract", () => {
@@ -42,9 +38,7 @@ describe("token radar factor snapshot mapper", () => {
       schema_version: legacySnapshotVersion("v3_social_attention"),
     } as unknown as AssetFlowRow["factor_snapshot"];
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
-      /factor_snapshot\.schema_version/,
-    );
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(/factor_snapshot\.schema_version/);
   });
 
   it("rejects snapshots with legacy gate blocks", () => {
@@ -54,7 +48,7 @@ describe("token radar factor snapshot mapper", () => {
       [legacyGateKey()]: { eligible_for_high_alert: true, blocked_reasons: [] },
     } as unknown as AssetFlowRow["factor_snapshot"];
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(
       new RegExp(`factor_snapshot\\.${legacyGateKey()}`),
     );
   });
@@ -64,7 +58,7 @@ describe("token radar factor snapshot mapper", () => {
     delete (row.factor_snapshot.composite as Record<string, unknown>).recommended_decision;
     (row as unknown as Record<string, unknown>).decision = "high_alert";
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(
       /factor_snapshot\.composite\.recommended_decision/,
     );
   });
@@ -73,13 +67,13 @@ describe("token radar factor snapshot mapper", () => {
     const row = productionFactorSnapshotRow();
     row.factor_snapshot.provenance.source_event_ids = [];
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(
       /factor_snapshot\.provenance\.source_event_ids/,
     );
   });
 
   it("maps production hard-cut rows from factor_snapshot and market roles", () => {
-    const item = tokenRadarRowToTokenItem(productionFactorSnapshotRow(), "1h", "all");
+    const item = tokenRadarRowToTokenItem(productionFactorSnapshotRow(), "1h");
 
     expect(item.identity.symbol).toBe("ZEC");
     expect(item.identity.target_type).toBe("CexToken");
@@ -107,7 +101,7 @@ describe("token radar factor snapshot mapper", () => {
       tick_lag_ms: null,
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.market.price).toBe(35.42);
     expect(item.market.market_status).toBe("live");
@@ -142,7 +136,7 @@ describe("token radar factor snapshot mapper", () => {
     const row = productionFactorSnapshotRow() as AssetFlowRow & { profile: typeof profile };
     row.profile = profile;
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect((item as { profile?: unknown }).profile).toEqual(profile);
   });
@@ -159,7 +153,7 @@ describe("token radar factor snapshot mapper", () => {
       source_max_received_at_ms: 1_778_426_100_000,
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.radar).toEqual(row.radar);
   });
@@ -171,7 +165,7 @@ describe("token radar factor snapshot mapper", () => {
       pricefeed_id: "pricefeed:cex:okx:swap:ZEC-USDT-SWAP",
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.identity.exchange).toBe("okx");
     expect(item.identity.inst_id).toBe("ZEC-USDT-SWAP");
@@ -182,16 +176,14 @@ describe("token radar factor snapshot mapper", () => {
     const row = productionFactorSnapshotRow();
     delete (row.factor_snapshot as unknown as Record<string, unknown>).market;
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(/market/);
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(/market/);
   });
 
   it("rejects legacy identity aliases in factor snapshot subject", () => {
     const row = productionChainAssetRow();
     (row.factor_snapshot.subject as unknown as Record<string, unknown>).chain_id = "eip155:1";
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
-      /factor_snapshot\.subject\.chain_id/,
-    );
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(/factor_snapshot\.subject\.chain_id/);
   });
 
   it("rejects unknown backend decisions", () => {
@@ -199,7 +191,7 @@ describe("token radar factor snapshot mapper", () => {
     (row.factor_snapshot.composite as unknown as Record<string, unknown>).recommended_decision =
       "investigate";
 
-    expect(() => tokenRadarRowToTokenItem(row, "1h", "all")).toThrow(
+    expect(() => tokenRadarRowToTokenItem(row, "1h")).toThrow(
       /factor_snapshot\.composite\.recommended_decision/,
     );
   });
@@ -207,7 +199,7 @@ describe("token radar factor snapshot mapper", () => {
   it("keeps usable market cap for chain asset rows", () => {
     const row = productionChainAssetRow();
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.identity.target_type).toBe("Asset");
     expect(item.market.price).toBe(0.104);
@@ -234,7 +226,7 @@ describe("token radar factor snapshot mapper", () => {
       },
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.market.price).toBe(0.1);
     expect(item.market.provider).toBe("gmgn_dex_quote");
@@ -254,7 +246,7 @@ describe("token radar factor snapshot mapper", () => {
       price_change_before_social_pct: 8.88,
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.market.price_change_since_social_pct).toBeCloseTo((35.42 - 34) / 34);
     expect(item.market.price_change_before_social_pct).toBeNull();
@@ -267,7 +259,7 @@ describe("token radar factor snapshot mapper", () => {
     const row = productionFactorSnapshotRow();
     row.factor_snapshot.data_health.market = "missing";
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.tradeability.market_fresh).toBe(false);
     expect(item.tradeability.contributions).toContainEqual({
@@ -292,7 +284,7 @@ describe("token radar factor snapshot mapper", () => {
       },
     };
 
-    const item = tokenRadarRowToTokenItem(row, "1h", "all");
+    const item = tokenRadarRowToTokenItem(row, "1h");
 
     expect(item.market.market_status).toBe("stale");
     expect(item.market.price_status).toBe("stale");
@@ -337,7 +329,7 @@ function productionFactorSnapshotRow(): AssetFlowRow {
       discovery: [],
     },
     factor_snapshot: {
-      schema_version: "token_factor_snapshot_v4_transparent_factors",
+      schema_version: "token_factor_snapshot_v5_provider_neutral",
       subject: {
         target_type: "CexToken",
         target_id: "cex_token:ZEC",
@@ -366,13 +358,11 @@ function productionFactorSnapshotRow(): AssetFlowRow {
             mentions_4h: 6,
             mentions_24h: 12,
             unique_authors: 2,
-            watched_mentions: 1,
             latest_seen_ms: 1_778_425_132_800,
           },
           factors: {
             mentions_1h: factor("social_heat", "mentions_1h", 2, 46),
             unique_authors: factor("social_heat", "unique_authors", 2, 46),
-            watched_mentions: factor("social_heat", "watched_mentions", 1, 50),
           },
           data_health: "ready",
         },

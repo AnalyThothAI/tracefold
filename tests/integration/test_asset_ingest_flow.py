@@ -24,13 +24,10 @@ def open_ingest(tmp_path):
     migrate(conn)
     repos = repositories_for_connection(
         conn,
-        notification_delivery_running_timeout_ms=300_000,
-        notification_delivery_stale_running_terminalization_batch_size=100,
     )
     ingest = IngestService(
         evidence=repos.evidence,
         entities=repos.entities,
-        signals=repos.signals,
         registry=repos.registry,
         identity_evidence=repos.identity_evidence,
         token_evidence=repos.token_evidence,
@@ -52,7 +49,7 @@ def open_ingest(tmp_path):
 def test_ingest_mirror_writes_unresolved_token_intent(tmp_path):
     conn, _, ingest = open_ingest(tmp_path)
     try:
-        result = ingest.ingest_event(make_event("event-1", text="$mirror is moving"), is_watched=True)
+        result = ingest.ingest_event(make_event("event-1", text="$mirror is moving"))
     finally:
         conn.close()
 
@@ -82,7 +79,7 @@ def test_ingest_gmgn_payload_writes_identity_without_market_observation(tmp_path
             make_event("event-gmgn-payload-no-market", text="$PEPE payload identity"),
             token_snapshot=snapshot,
         )
-        result = ingest.ingest_event(event, is_watched=True)
+        result = ingest.ingest_event(event)
         resolution = next(item for item in result.token_resolutions if item["resolution_status"] == "EXACT")
         asset = repos.registry.find_assets_by_address(chain_id="eth", address=address)[0]
         identity_evidence = repos.identity_evidence.list_identity_evidence(asset["asset_id"])
@@ -112,7 +109,6 @@ def test_ingest_chain_ca_from_gmgn_url_writes_exact_registry_asset(tmp_path):
     try:
         result = ingest.ingest_event(
             make_event("event-upic", text=f"https://gmgn.ai/eth/token/{address}"),
-            is_watched=True,
         )
         resolution = result.token_resolutions[0]
         asset = repos.registry.find_assets_by_address(chain_id="eth", address=address)[0]
@@ -135,7 +131,6 @@ def test_ingest_unknown_chain_ca_is_retained_as_unresolved_asset(tmp_path):
     try:
         result = ingest.ingest_event(
             make_event("event-1", text="watch 0xd0667d0618dc9b6d2a0a55f428b47c64bcf00416"),
-            is_watched=True,
         )
     finally:
         conn.close()
@@ -227,7 +222,7 @@ def test_ingest_registry_asset_rolls_back_with_failed_event_transaction(tmp_path
 
     try:
         with pytest.raises(RuntimeError, match="event_anchor_enqueue_failed_for_test"):
-            ingest.ingest_event(event, is_watched=True)
+            ingest.ingest_event(event)
 
         event_row = conn.execute("SELECT event_id FROM events WHERE event_id = %s", (event.event_id,)).fetchone()
         assets = repos.registry.find_assets_by_address(chain_id="eth", address=address)
@@ -265,7 +260,7 @@ def test_ingest_rejects_loose_capture_result_contract(tmp_path):
 
 
 def _prepared_capture(ingest: IngestService, event):
-    prepared = ingest.prepare_event(event, is_watched=True)
+    prepared = ingest.prepare_event(event)
     ingest.prepare_registry_for_resolution(prepared)
     resolutions = ingest.resolve_prepared(prepared, persist=False)
     market_resolution = next(

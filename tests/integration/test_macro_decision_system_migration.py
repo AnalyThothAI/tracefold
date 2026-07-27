@@ -6,7 +6,7 @@ from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.platform.postgres.postgres_migrations import alembic_config
+from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
 
 
 def test_0200_destroys_legacy_macro_state_and_starts_new_fact_model_empty(
@@ -464,7 +464,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     finally:
         conn.close()
 
-    assert version == "20260727_0205"
+    assert version == latest_migration_version()
     assert observation_count == 0
     assert target == {
         "clock_kind": "daily_settlement",

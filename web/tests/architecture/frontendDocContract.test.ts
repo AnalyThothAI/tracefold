@@ -84,13 +84,12 @@ describe("frontend documentation contract", () => {
     expect(frontendDoc).toContain("`@features/<name>/shell`");
   });
 
-  it("keeps drawer route docs aligned with the app navigation tree", () => {
+  it("keeps primary route docs aligned with the app navigation tree", () => {
     const documentedRoutes = [
       { term: "Radar", to: "/" },
       { term: "Stocks", to: "/stocks" },
       { term: "News", to: "/news" },
       { term: "Macro", to: "/macro" },
-      { term: "Watchlist", to: "/watchlist" },
     ];
     const navigationItems = flattenNavigation(
       APP_NAVIGATION_GROUPS.flatMap((group) => group.items),

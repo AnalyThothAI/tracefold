@@ -1,19 +1,5 @@
 # Tracefold
 ws_token: "replace-with-a-strong-token"
-handles:
-  - toly
-  - traderpow
-  - theunipcs
-  - dotyyds1234
-  - brc20niubi
-  - jessepollak
-  - cz_binance
-  - heyibinance
-  - elonmusk
-  - cookerflips
-  - himgajria
-  - cryptodevinl
-  - spidercrypto0x
 
 api:
   host: "0.0.0.0"
@@ -58,20 +44,26 @@ providers:
     cex_universe_quote_symbol: "USDT"
     cex_universe_contract_type: "PERPETUAL"
     timeout_seconds: 15
-  macrodata:
+  macro_sources:
     enabled: true
-    fred_api_key_env: "FINANCE_FRED_API_KEY"
+    fred_enabled: true
+    cboe_enabled: true
+    cftc_enabled: true
+    nasdaq_public_enabled: true
+    request_timeout_seconds: 60
+    user_agent: "TracefoldMacro/1.0 research@localhost"
 
 news:
   enabled: true
-  # Omit `sources` to use the pinned WorldMonitor full/en inventory plus
-  # Tracefold's crypto feeds and 6551NEWS extension. RSSHub is internal to
-  # compose; 6551NEWS resolves through
+  # The source catalog is code-owned; `sources` is not a configuration field.
+  # The pinned WorldMonitor full/en inventory plus Tracefold's crypto feeds
+  # and 6551NEWS extension are always used. RSSHub is internal to compose;
+  # 6551NEWS resolves through
   # http://rsshub:1200/telegram/channel/news6551.
   # Worker timing and provider endpoints/models live in workers.yaml.
   relay:
     # WorldMonitor-compatible independent egress fallback. Direct fetch is
-    # always attempted first; only enabled configured source URLs are relayed.
+    # always attempted first; only enabled code-owned source URLs are relayed.
     base_url: "https://proxy.worldmonitor.app"
     auth_header: "x-relay-key"
     auth_token:

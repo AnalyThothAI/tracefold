@@ -63,7 +63,7 @@ uv run tracefold ops rebuild-token-profiles --limit 500
 uv run tracefold ops repair-token-profile-images --limit 500
 uv run tracefold ops mirror-token-images --limit 50
 uv run tracefold ops rebuild-token-profiles --limit 500
-uv run tracefold asset-flow --window 1h --scope all --limit 20
+uv run tracefold asset-flow --window 1h --limit 20
 ```
 
 The first command confirms the real config paths. The profile refresh command

@@ -1,7 +1,6 @@
 import {
   parseTokenCaseRouteState,
   serializeTokenCaseRouteState,
-  tokenCaseScopeToApiScope,
 } from "@features/token-case/state/tokenCaseRouteState";
 import { describe, expect, it } from "vitest";
 
@@ -9,23 +8,15 @@ describe("tokenCaseRouteState", () => {
   it("uses defaults when params are omitted", () => {
     expect(parseTokenCaseRouteState(new URLSearchParams())).toEqual({
       window: "24h",
-      scope: "all",
-      postSort: "recent",
     });
   });
 
-  it("accepts supported window, watched scope, and sort params", () => {
+  it("accepts the supported window and ignores retired scope and sort params", () => {
     expect(
       parseTokenCaseRouteState(new URLSearchParams("window=24h&scope=watched&postSort=watched")),
     ).toEqual({
       window: "24h",
-      scope: "watched",
-      postSort: "watched",
     });
-  });
-
-  it("parses inbound matched scope as watched", () => {
-    expect(parseTokenCaseRouteState(new URLSearchParams("scope=matched")).scope).toBe("watched");
   });
 
   it("falls back to defaults for invalid enum params", () => {
@@ -33,8 +24,6 @@ describe("tokenCaseRouteState", () => {
       parseTokenCaseRouteState(new URLSearchParams("window=7d&scope=private&postSort=quality")),
     ).toEqual({
       window: "24h",
-      scope: "all",
-      postSort: "recent",
     });
   });
 
@@ -42,24 +31,15 @@ describe("tokenCaseRouteState", () => {
     expect(
       serializeTokenCaseRouteState({
         window: "24h",
-        scope: "all",
-        postSort: "recent",
       }).toString(),
     ).toBe("");
   });
 
-  it("serializes public watched scope in stable order", () => {
+  it("serializes only the window in stable order", () => {
     expect(
       serializeTokenCaseRouteState({
         window: "1h",
-        scope: "watched",
-        postSort: "recent",
       }).toString(),
-    ).toBe("window=1h&scope=watched");
-  });
-
-  it("maps public scope to the token-case API scope", () => {
-    expect(tokenCaseScopeToApiScope("all")).toBe("all");
-    expect(tokenCaseScopeToApiScope("watched")).toBe("watched");
+    ).toBe("window=1h");
   });
 });

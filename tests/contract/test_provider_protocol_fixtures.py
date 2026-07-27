@@ -76,7 +76,6 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
             ),
             db=object(),
             telemetry=object(),
-            handles=("fixture_signal",),
             store=store,
             publisher=publisher,
             upstream_client=None,
@@ -196,13 +195,12 @@ class MemoryStore:
         self.raw_frames.append(kwargs)
         return True
 
-    def ingest_event(self, event: Any, *, is_watched: bool) -> IngestedEvent:
+    def ingest_event(self, event: Any) -> IngestedEvent:
         self.twitter_events.append(event)
-        _row, event_read = materialize_event(event, is_watched=is_watched, now_ms=event.received_at_ms)
+        _row, event_read = materialize_event(event, now_ms=event.received_at_ms)
         return IngestedEvent(
             event=event_read,
             entities=[],
-            alerts=[],
             token_intents=[],
             token_resolutions=[{"event_id": event.event_id, "target_id": "fixture:mirror"}],
             inserted=True,

@@ -6,7 +6,7 @@ backend architecture map.
 Before changing business behavior:
 
 1. identify the owning root interface: `tracefold.market`, `tracefold.news`,
-   `tracefold.macro`, or `tracefold.notifications`;
+   or `tracefold.macro`;
 2. trace provider input to PostgreSQL fact, durable target, current row, and
    public consumer;
 3. preserve the glossary embodied by persisted fact names and public

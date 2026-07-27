@@ -74,8 +74,7 @@ export function buildTokenCaseView(item: TokenFlowItem): TokenCaseView {
       detail: communityDetail(item),
       label: "Community",
       source: "social",
-      tone:
-        item.watch.direct_mentions > 0 || item.social_heat.watched_share > 0 ? "health" : "neutral",
+      tone: item.flow.mentions > 0 ? "health" : "neutral",
       value: `${compactNumber(item.flow.mentions)} posts · ${compactNumber(
         item.propagation.independent_authors,
       )} authors`,
@@ -241,9 +240,7 @@ function communityDetail(item: TokenFlowItem): string {
     .filter((handle): handle is string => Boolean(handle))
     .slice(0, 2)
     .map((handle) => `@${handle}`);
-  const watched = item.watch.direct_mentions || item.discussion_quality.watched_source_count;
   return [
-    `watched ${compactNumber(watched)}`,
     `top share ${formatPercentShare(item.propagation.top_author_share)}`,
     topAuthors.length ? `lead ${topAuthors.join(", ")}` : null,
   ]

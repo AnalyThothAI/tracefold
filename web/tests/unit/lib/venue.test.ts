@@ -87,7 +87,6 @@ function token(options: {
     flow: {
       window: "1h",
       mentions: 1,
-      watched_mentions: 0,
       previous_mentions: 0,
       mention_delta: 1,
       baseline_status: "insufficient_history",
@@ -134,8 +133,8 @@ function token(options: {
     },
     watch: { status: "public_only", direct_mentions: 0, direct_authors: 0 },
     evidence_total_count: 0,
-    posts_query: { window: "1h", scope: "all", range: "current_window" },
-    timeline_query: { window: "1h", scope: "all" },
+    posts_query: { window: "1h", range: "current_window" },
+    timeline_query: { window: "1h" },
   } as unknown as TokenFlowItem;
 }
 

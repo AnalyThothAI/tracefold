@@ -15,7 +15,6 @@ from tracefold.platform.config.settings import Settings
 def make_settings(tmp_path) -> Settings:
     prepare_postgres_database()
     settings = Settings(
-        handles=("toly", "elonmusk"),
         ws_token="secret",
         storage=postgres_settings_storage(),
         workers=disabled_workers_settings(),
@@ -48,7 +47,6 @@ def make_event(event_id: str, handle: str, text: str | None = None) -> TwitterEv
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[handle],
         raw=None,
     )
 
@@ -57,25 +55,25 @@ def test_websocket_auth_subscribe_replay_and_live_filtering(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
 
     with TestClient(app) as client:
-        client.app.state.service.ingest.ingest_event(make_event("event-1", "toly"), is_watched=True)
+        client.app.state.service.ingest.ingest_event(make_event("event-1", "toly", text="$PEPE replay"))
 
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "auth", "token": "secret"})
             assert ws.receive_json()["type"] == "ready"
 
-            ws.send_json({"type": "subscribe", "handles": ["toly"], "replay": 5})
+            ws.send_json({"type": "subscribe", "symbols": ["PEPE"], "replay": 5})
             replay = ws.receive_json()
             assert replay["type"] == "event"
             assert replay["event"]["event_id"] == "event-1"
             assert "entities" in replay
-            assert "alerts" in replay
+            assert "alerts" not in replay
             assert "token_intents" in replay
             assert "token_resolutions" in replay
             assert "harness" not in replay
             replay_event_fields = set(replay["event"])
 
-            ignored = _ingest_payload(client, make_event("event-2", "elonmusk"), is_watched=True)
-            matched = _ingest_payload(client, make_event("event-3", "toly"), is_watched=True)
+            ignored = _ingest_payload(client, make_event("event-2", "elonmusk", text="no token"))
+            matched = _ingest_payload(client, make_event("event-3", "toly", text="$PEPE live"))
             client.portal.call(client.app.state.service.hub.publish, ignored)
             client.portal.call(client.app.state.service.hub.publish, matched)
             live = ws.receive_json()
@@ -88,7 +86,7 @@ def test_websocket_can_subscribe_by_ca_for_replay_and_live_events(tmp_path):
 
     with TestClient(app) as client:
         replay_event = make_event("event-ca-replay", "toly", text=f"$PEPE replay {PEPE}")
-        client.app.state.service.ingest.ingest_event(replay_event, is_watched=True)
+        client.app.state.service.ingest.ingest_event(replay_event)
 
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "auth", "token": "secret"})
@@ -102,8 +100,8 @@ def test_websocket_can_subscribe_by_ca_for_replay_and_live_events(tmp_path):
 
             ignored = make_event("event-ignore", "toly", text="no token")
             matched = make_event("event-ca-live", "elonmusk", text=f"$PEPE live {PEPE}")
-            ignored_payload = _ingest_payload(client, ignored, is_watched=True)
-            matched_payload = _ingest_payload(client, matched, is_watched=True)
+            ignored_payload = _ingest_payload(client, ignored)
+            matched_payload = _ingest_payload(client, matched)
             client.portal.call(client.app.state.service.hub.publish, ignored_payload)
             client.portal.call(client.app.state.service.hub.publish, matched_payload)
             live = ws.receive_json()
@@ -123,6 +121,7 @@ def test_websocket_rejects_retired_subscription_aliases_and_malformed_shapes():
             "replay": 0,
         },
         {"type": "subscribe", "replay": "5"},
+        {"type": "subscribe", "handles": ["toly"], "replay": 0},
         {"type": "subscribe", "notifications": 1, "replay": 0},
     ]
 
@@ -134,76 +133,9 @@ def test_websocket_rejects_retired_subscription_aliases_and_malformed_shapes():
         asyncio.run(hub._handle_client_message(client, json.dumps(message)))
 
         assert json.loads(socket.messages[-1]) == {"type": "error", "code": "invalid_subscription"}
-        assert client.handles == set()
         assert client.cas == set()
         assert client.symbols == set()
         assert client.market_targets == set()
-        assert client.notifications is False
-
-
-def test_websocket_routes_social_event_enrichment_updates_by_event_handle(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
-
-    with TestClient(app) as client:
-        event = make_event("seed-event", "toly", text="Grok is getting scary good")
-        ingested = client.app.state.service.ingest.ingest_event(event, is_watched=True)
-
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "secret"})
-            assert ws.receive_json()["type"] == "ready"
-            ws.send_json({"type": "subscribe", "handles": ["toly"], "replay": 0})
-
-            client.portal.call(
-                client.app.state.service.hub.publish,
-                {
-                    "type": "social_event_enrichment_update",
-                    "event": ingested.event,
-                    "social_event": {"event_id": "seed-event", "event_type": "meme_phrase_seed"},
-                },
-            )
-            update = ws.receive_json()
-
-    assert update["type"] == "social_event_enrichment_update"
-    assert update["social_event"]["event_id"] == "seed-event"
-
-
-def test_websocket_routes_live_notifications_when_subscribed(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
-
-    with TestClient(app) as client:
-        runtime = client.app.state.service
-        with runtime.repositories() as repos, repos.transaction():
-            notification = repos.notifications.insert_notification_with_outcome(
-                dedup_key="activity:event-1",
-                rule_id="watched_account_activity",
-                severity="info",
-                title="activity",
-                body="new post",
-                entity_type="account",
-                entity_key="account:toly",
-                author_handle="toly",
-                event_id="event-1",
-                source_table="events",
-                source_id="event-1",
-                occurrence_at_ms=1_700_000_000_000,
-                payload={"event_id": "event-1"},
-                channels=["in_app"],
-            ).row
-        assert notification is not None
-
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "secret"})
-            assert ws.receive_json()["type"] == "ready"
-            ws.send_json({"type": "subscribe", "handles": ["elonmusk"], "notifications": True, "replay": 0})
-
-            client.portal.call(
-                client.app.state.service.hub.publish,
-                {"type": "notification", "notification": notification},
-            )
-            message = ws.receive_json()
-
-    assert message["type"] == "notification"
-    assert message["notification"]["notification_id"] == notification["notification_id"]
 
 
 def test_websocket_repeated_subscribe_replaces_market_targets():
@@ -256,19 +188,47 @@ def test_websocket_publish_is_bounded_when_a_client_send_hangs():
             repository_session=_empty_repository_session,
             send_timeout_seconds=0.01,
         )
-        slow = ClientSubscription(websocket=_HangingWebSocket())
+        market_target = ("Asset", "asset:solana:token:one")
+        slow = ClientSubscription(websocket=_HangingWebSocket(), market_targets={market_target})
         fast_socket = _DummyWebSocket()
-        fast = ClientSubscription(websocket=fast_socket)
+        fast = ClientSubscription(websocket=fast_socket, market_targets={market_target})
         hub._clients.add(slow)
         hub._clients.add(fast)
 
-        await hub.publish({"type": "event", "event": {"event_id": "event-1", "author_handle": "alice"}})
+        await hub.publish(
+            {
+                "type": "live_market_update",
+                "target_type": market_target[0],
+                "target_id": market_target[1],
+            }
+        )
 
         assert len(fast_socket.messages) == 1
         assert fast in hub._clients
         assert slow not in hub._clients
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=0.1))
+
+
+def test_websocket_empty_event_filter_replays_and_broadcasts_no_events():
+    def unexpected_repository_session():
+        raise AssertionError("empty event filters must not query replay evidence")
+
+    hub = PublicWebSocketHub(token="secret", repository_session=unexpected_repository_session)
+    client = ClientSubscription(
+        websocket=None,
+        market_targets={("Asset", "asset:solana:token:one")},
+    )
+    payload = {
+        "type": "event",
+        "event": {"event_id": "event-1", "author_handle": "alice"},
+        "entities": [],
+        "token_intents": [],
+        "token_resolutions": [],
+    }
+
+    assert hub._replay_events(client, 10) == []
+    assert hub._payload_matches_subscription(payload, client) is False
 
 
 def test_websocket_symbol_filter_matches_token_intents_without_entities():
@@ -403,15 +363,14 @@ def test_websocket_ignores_legacy_market_update_even_when_subscribed():
     assert hub._payload_matches_subscription(payload, client) is False
 
 
-def _ingest_payload(client, event: TwitterEvent, *, is_watched: bool) -> dict:
-    result = client.app.state.service.ingest.ingest_event(event, is_watched=is_watched)
+def _ingest_payload(client, event: TwitterEvent) -> dict:
+    result = client.app.state.service.ingest.ingest_event(event)
     with client.app.state.service.repositories() as repos:
         token_resolutions = repos.event_tokens.for_event(event.event_id)
     return {
         "type": "event",
         "event": result.event,
         "entities": result.entities,
-        "alerts": result.alerts,
         "token_intents": result.token_intents,
         "token_resolutions": token_resolutions,
         "harness": None,

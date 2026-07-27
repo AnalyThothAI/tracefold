@@ -1,6 +1,6 @@
 import type { TokenFactorFamilyKey, TokenFactorSnapshot } from "@lib/types";
 
-export const TOKEN_FACTOR_SNAPSHOT_SCHEMA = "token_factor_snapshot_v4_transparent_factors";
+export const TOKEN_FACTOR_SNAPSHOT_SCHEMA = "token_factor_snapshot_v5_provider_neutral";
 const TOP_LEVEL_KEYS = new Set([
   "schema_version",
   "subject",

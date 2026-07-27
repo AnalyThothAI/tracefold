@@ -14,7 +14,6 @@ def token_target_post_payload(
     since_ms: int | None = None,
 ) -> dict[str, Any]:
     text = row.get("text_clean") or row.get("text")
-    watched = bool(row.get("is_watched"))
     confidence = float(row.get("confidence") or 0.0)
     quality = post_quality_score(
         {
@@ -23,7 +22,6 @@ def token_target_post_payload(
             "attribution_status": "direct",
             "attribution_confidence": confidence,
             "attribution_weight": confidence,
-            "is_watched": watched,
         }
     )
     payload = {
@@ -40,9 +38,7 @@ def token_target_post_payload(
         "attribution_status": row.get("attribution_status"),
         "attribution_confidence": confidence,
         "attribution_weight": confidence,
-        "is_watched": row.get("is_watched"),
-        "is_first_seen_by_watched_for_token": watched,
-        "event_type": "watched_token_intent" if watched else "public_token_intent",
+        "event_type": "token_intent",
         "reference": _reference(row.get("reference_json")),
         "price": message_price_payload(row),
         "post_quality": quality,

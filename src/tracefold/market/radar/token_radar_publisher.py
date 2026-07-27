@@ -27,7 +27,6 @@ class TokenRadarPublisher:
         self,
         *,
         windows: tuple[str, ...] = (),
-        scopes: tuple[str, ...] = (),
         work_items: tuple[tuple[str, ...], ...] | None = None,
         score_work_items: tuple[tuple[str, ...], ...] | None = None,
         now_ms: int | None = None,
@@ -54,7 +53,6 @@ class TokenRadarPublisher:
         with self.repos.transaction():
             return self._rebuild_dirty_targets_in_transaction(
                 windows=windows,
-                scopes=scopes,
                 work_items=work_items,
                 score_work_items=score_work_items,
                 now_ms=now_ms,
@@ -71,7 +69,6 @@ class TokenRadarPublisher:
         self,
         *,
         windows: tuple[str, ...],
-        scopes: tuple[str, ...],
         work_items: tuple[tuple[str, ...], ...] | None,
         score_work_items: tuple[tuple[str, ...], ...] | None,
         now_ms: int | None,
@@ -86,7 +83,6 @@ class TokenRadarPublisher:
         computed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         source_work_items = _resolve_score_work_items(
             windows=windows,
-            scopes=scopes,
             work_items=score_work_items if score_work_items is not None else work_items,
         )
         due_work_items = _resolve_due_work_items(work_items=work_items)
@@ -113,12 +109,12 @@ class TokenRadarPublisher:
             return result
 
         claim_keys = {_claim_identity_key(claim): _claim_key(claim) for claim in target_claims}
-        successful_claims: list[tuple[dict[str, str | int], set[tuple[str, str, str]]]] = []
-        touched: set[tuple[str, str, str]] = set()
+        successful_claims: list[tuple[dict[str, str | int], set[tuple[str, str]]]] = []
+        touched: set[tuple[str, str]] = set()
         failures = 0
         first_error: str | None = None
         first_publish_error: str | None = None
-        failed_publish_items: set[tuple[str, str, str]] = set()
+        failed_publish_items: set[tuple[str, str]] = set()
 
         if target_claims:
             projected_claims = self.projector.project_claims(
@@ -149,10 +145,9 @@ class TokenRadarPublisher:
         publish_items.update(touched)
         if publish_items:
             result["status"] = "ready"
-        for (window, scope), venues in _group_publish_items(publish_items).items():
+        for window, venues in _group_publish_items(publish_items).items():
             rank_results = self.publish_rank_sets(
                 window=window,
-                scope=scope,
                 venues=venues,
                 now_ms=computed_at_ms,
                 limit=rank_limit,
@@ -165,8 +160,8 @@ class TokenRadarPublisher:
                     failures += 1
                     first_error = first_error or error
                     first_publish_error = first_publish_error or error
-                    failed_publish_items.add((window, scope, venue))
-                result["windows"][f"{window}:{scope}:{venue}"] = rank_result
+                    failed_publish_items.add((window, venue))
+                result["windows"][f"{window}:{venue}"] = rank_result
                 result["rows_written"] += int(rank_result.get("rows_written") or 0)
 
         if failures:
@@ -192,8 +187,8 @@ class TokenRadarPublisher:
     def _finish_successful_claims(
         self,
         *,
-        successful_claims: list[tuple[dict[str, str | int], set[tuple[str, str, str]]]],
-        failed_publish_items: set[tuple[str, str, str]],
+        successful_claims: list[tuple[dict[str, str | int], set[tuple[str, str]]]],
+        failed_publish_items: set[tuple[str, str]],
         error: str,
         retry_ms: int,
         max_attempts: int,
@@ -226,14 +221,12 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         now_ms: int,
         limit: int,
         venue: str = TOKEN_RADAR_DEFAULT_VENUE,
     ) -> dict[str, Any]:
         result = self.publish_rank_sets(
             window=window,
-            scope=scope,
             venues=(venue,),
             now_ms=now_ms,
             limit=limit,
@@ -246,7 +239,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         venues: tuple[str, ...],
         now_ms: int,
         limit: int,
@@ -256,7 +248,6 @@ class TokenRadarPublisher:
         try:
             projected_by_venue = self.projector.build_rank_sets(
                 window=window,
-                scope=scope,
                 venues=requested_venues,
                 now_ms=computed_at_ms,
                 limit=limit,
@@ -265,7 +256,6 @@ class TokenRadarPublisher:
             return {
                 venue: self._failed_rank_publication(
                     window=window,
-                    scope=scope,
                     venue=venue,
                     computed_at_ms=computed_at_ms,
                     error=exc,
@@ -277,7 +267,6 @@ class TokenRadarPublisher:
             try:
                 results[venue] = self._publish_rank_projection(
                     window=window,
-                    scope=scope,
                     venue=venue,
                     computed_at_ms=computed_at_ms,
                     projected=projected_by_venue[venue],
@@ -285,7 +274,6 @@ class TokenRadarPublisher:
             except Exception as exc:
                 results[venue] = self._failed_rank_publication(
                     window=window,
-                    scope=scope,
                     venue=venue,
                     computed_at_ms=computed_at_ms,
                     error=exc,
@@ -296,7 +284,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         venue: str,
         computed_at_ms: int,
         projected: Any,
@@ -305,7 +292,6 @@ class TokenRadarPublisher:
         generation_id = stable_generation_id(
             projection_version=PROJECTION_VERSION,
             window=window,
-            scope=scope,
             venue=venue,
             rows=rows,
         )
@@ -314,7 +300,6 @@ class TokenRadarPublisher:
             publication_result = self.repos.token_radar.publish_current_generation(
                 projection_version=PROJECTION_VERSION,
                 window=window,
-                scope=scope,
                 venue=venue,
                 generation_id=generation_id,
                 published_at_ms=computed_at_ms,
@@ -350,7 +335,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         venue: str,
         computed_at_ms: int,
         error: Exception,
@@ -359,9 +343,8 @@ class TokenRadarPublisher:
             self.repos.token_radar.mark_publication_failed(
                 projection_version=PROJECTION_VERSION,
                 window=window,
-                scope=scope,
                 venue=venue,
-                generation_id=f"attempt:{PROJECTION_VERSION}:{window}:{scope}:{venue}:{computed_at_ms}",
+                generation_id=f"attempt:{PROJECTION_VERSION}:{window}:{venue}:{computed_at_ms}",
                 started_at_ms=computed_at_ms,
                 finished_at_ms=_now_ms(),
                 error=str(error),
@@ -378,7 +361,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         venue: str,
         rows: list[dict[str, Any]],
         exited_rows: list[dict[str, Any]],
@@ -389,7 +371,6 @@ class TokenRadarPublisher:
             return
         self._enqueue_token_profiles(
             window=window,
-            scope=scope,
             rows=rows,
             exited_rows=exited_rows,
             previous_by_key=previous_by_key,
@@ -397,7 +378,6 @@ class TokenRadarPublisher:
         )
         self._enqueue_asset_profiles(
             window=window,
-            scope=scope,
             rows=rows,
             previous_by_key=previous_by_key,
             computed_at_ms=computed_at_ms,
@@ -407,7 +387,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         rows: list[dict[str, Any]],
         exited_rows: list[dict[str, Any]],
         previous_by_key: dict[tuple[str, str, str], dict[str, Any]],
@@ -422,7 +401,6 @@ class TokenRadarPublisher:
                 row,
                 previous=previous,
                 window=window,
-                scope=scope,
                 computed_at_ms=computed_at_ms,
                 exited=False,
             )
@@ -433,7 +411,6 @@ class TokenRadarPublisher:
                 row,
                 previous=row,
                 window=window,
-                scope=scope,
                 computed_at_ms=computed_at_ms,
                 exited=True,
             )
@@ -445,7 +422,6 @@ class TokenRadarPublisher:
         self,
         *,
         window: str,
-        scope: str,
         rows: list[dict[str, Any]],
         previous_by_key: dict[tuple[str, str, str], dict[str, Any]],
         computed_at_ms: int,
@@ -460,7 +436,6 @@ class TokenRadarPublisher:
                     row,
                     previous=previous,
                     window=window,
-                    scope=scope,
                     computed_at_ms=computed_at_ms,
                 )
             )
@@ -470,50 +445,47 @@ class TokenRadarPublisher:
 def _resolve_work_items(
     *,
     windows: tuple[str, ...],
-    scopes: tuple[str, ...],
     venues: tuple[str, ...],
     work_items: tuple[tuple[str, ...], ...] | None,
-) -> tuple[tuple[str, str, str], ...]:
+) -> tuple[tuple[str, str], ...]:
     if work_items is not None:
-        return tuple(dict.fromkeys(_normalize_work_item(item) for item in work_items if len(item) >= 2))
+        return tuple(dict.fromkeys(_normalize_work_item(item) for item in work_items if item))
     resolved_venues = venues or (TOKEN_RADAR_DEFAULT_VENUE,)
-    return tuple((window, scope, venue) for window in windows for scope in scopes for venue in resolved_venues)
+    return tuple((window, venue) for window in windows for venue in resolved_venues)
 
 
 def _resolve_score_work_items(
     *,
     windows: tuple[str, ...],
-    scopes: tuple[str, ...],
     work_items: tuple[tuple[str, ...], ...] | None,
-) -> tuple[tuple[str, str], ...]:
+) -> tuple[str, ...]:
     if work_items is not None:
-        return tuple(dict.fromkeys((str(item[0]), str(item[1])) for item in work_items if len(item) >= 2))
-    return tuple((window, scope) for window in windows for scope in scopes)
+        return tuple(dict.fromkeys(str(item[0]) for item in work_items if item))
+    return tuple(dict.fromkeys(windows))
 
 
 def _resolve_due_work_items(
     *,
     work_items: tuple[tuple[str, ...], ...] | None,
-) -> tuple[tuple[str, str, str], ...]:
+) -> tuple[tuple[str, str], ...]:
     if work_items is None:
         return ()
-    return _resolve_work_items(windows=(), scopes=(), venues=(), work_items=work_items)
+    return _resolve_work_items(windows=(), venues=(), work_items=work_items)
 
 
 def _group_publish_items(
-    work_items: set[tuple[str, str, str]],
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for window, scope, venue in sorted(work_items):
-        grouped.setdefault((window, scope), []).append(venue)
+    work_items: set[tuple[str, str]],
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for window, venue in sorted(work_items):
+        grouped.setdefault(window, []).append(venue)
     return {key: tuple(venues) for key, venues in grouped.items()}
 
 
-def _normalize_work_item(item: tuple[str, ...]) -> tuple[str, str, str]:
+def _normalize_work_item(item: tuple[str, ...]) -> tuple[str, str]:
     window = str(item[0])
-    scope = str(item[1])
-    venue = str(item[2]) if len(item) >= 3 and item[2] else TOKEN_RADAR_DEFAULT_VENUE
-    return (window, scope, venue)
+    venue = str(item[1]) if len(item) >= 2 and item[1] else TOKEN_RADAR_DEFAULT_VENUE
+    return (window, venue)
 
 
 def _positive_worker_policy(value: int, *, error: str) -> int:
@@ -606,7 +578,6 @@ def _token_profile_target(
     *,
     previous: Mapping[str, Any] | None,
     window: str,
-    scope: str,
     computed_at_ms: int,
     exited: bool,
 ) -> dict[str, Any] | None:
@@ -620,7 +591,6 @@ def _token_profile_target(
         "target_type": target_type,
         "target_id": target_id,
         "window": str(window),
-        "scope": str(scope),
         "rank": row.get("rank"),
         "lane": row.get("lane"),
         "decision": row.get("decision"),
@@ -645,7 +615,6 @@ def _asset_profile_targets(
     *,
     previous: Mapping[str, Any] | None,
     window: str,
-    scope: str,
     computed_at_ms: int,
 ) -> list[dict[str, Any]]:
     resolved = _resolved_target(row)
@@ -670,7 +639,6 @@ def _asset_profile_targets(
             "address": address,
             "symbol": symbol,
             "window": str(window),
-            "scope": str(scope),
             "rank": row.get("rank"),
             "lane": row.get("lane"),
             "decision": row.get("decision"),

@@ -17,7 +17,7 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
   });
 
-  it("renders exactly five primary destinations in task order", () => {
+  it("renders exactly four primary destinations in task order", () => {
     renderSidebar();
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
@@ -27,7 +27,6 @@ describe("AppSidebar", () => {
       ["Stocks", "/stocks"],
       ["News", "/news"],
       ["Macro", "/macro"],
-      ["Watchlist", "/watchlist"],
     ]);
   });
 

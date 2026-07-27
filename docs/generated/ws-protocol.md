@@ -10,10 +10,8 @@ Source: `src/tracefold/app/http/ws.py`
 |----------------------|----------------|
 | `auth` | `PublicWebSocketHub._authenticate` |
 | `error` | `PublicWebSocketHub._handle_client_message` |
-| `event` | `PublicWebSocketHub._payloads_for_events` |
+| `event` | `PublicWebSocketHub._payload_matches_subscription`, `PublicWebSocketHub._payloads_for_events` |
 | `live_market_update` | `PublicWebSocketHub._payload_matches_subscription` |
-| `market_update` | `PublicWebSocketHub._payload_matches_subscription` |
-| `notification` | `PublicWebSocketHub._payload_matches_subscription` |
 | `ready` | `PublicWebSocketHub.handle` |
 | `subscribe` | `PublicWebSocketHub._handle_client_message` |
 

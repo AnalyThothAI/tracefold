@@ -36,15 +36,14 @@ src/tracefold/
   market/         capture, identity, pricing, profiles, radar, read views
   news/           Article facts, deterministic Stories, immutable analysis
   macro/          observations and completed-session research
-  notifications/  durable notification and delivery behavior
   integrations/   provider and external-system adapters
   platform/       config, PostgreSQL, telemetry, generic worker kernel
   app/            composition plus HTTP, WebSocket, and CLI adapters
 ```
 
 Other packages import business capabilities from `tracefold.market`,
-`tracefold.news`, `tracefold.macro`, or `tracefold.notifications`, not from
-their internal modules. See [Architecture](docs/ARCHITECTURE.md).
+`tracefold.news`, or `tracefold.macro`, not from their internal modules. See
+[Architecture](docs/ARCHITECTURE.md).
 
 ## Runtime
 

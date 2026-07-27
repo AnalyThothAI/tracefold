@@ -22,7 +22,6 @@ from tracefold.market import (
     MarketTickCurrentRepository,
     MarketTickRepository,
     RegistryRepository,
-    SignalRepository,
     TokenEvidenceRepository,
     TokenImageAssetRepository,
     TokenImageSourceDirtyTargetRepository,
@@ -35,10 +34,8 @@ from tracefold.market import (
     TokenRadarRankSourceRepository,
     TokenRadarRepository,
     TokenTargetRepository,
-    WatchlistQuery,
 )
 from tracefold.news import NewsRepository
-from tracefold.notifications import NotificationRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     require_transaction,
@@ -52,7 +49,6 @@ class RepositorySession:
     conn: Any
     evidence: EvidenceRepository
     entities: EntityRepository
-    signals: SignalRepository
     asset_profiles: AssetProfileRepository
     asset_profile_refresh_targets: AssetProfileRefreshTargetRepository
     source_query: TokenProfileSourceQuery
@@ -77,8 +73,6 @@ class RepositorySession:
     token_radar_rank_sources: TokenRadarRankSourceRepository
     token_radar: TokenRadarRepository
     token_targets: TokenTargetRepository
-    notifications: NotificationRepository
-    watchlist: WatchlistQuery
     news: NewsRepository
     macro: MacroRepository
     macro_market: GeneralMarketRepository
@@ -91,17 +85,11 @@ class RepositorySession:
         require_transaction(self.conn, operation=operation)
 
 
-def repositories_for_connection(
-    conn: Any,
-    *,
-    notification_delivery_running_timeout_ms: int,
-    notification_delivery_stale_running_terminalization_batch_size: int,
-) -> RepositorySession:
+def repositories_for_connection(conn: Any) -> RepositorySession:
     return RepositorySession(
         conn=conn,
         evidence=EvidenceRepository(conn),
         entities=EntityRepository(conn),
-        signals=SignalRepository(conn),
         asset_profiles=AssetProfileRepository(conn),
         asset_profile_refresh_targets=AssetProfileRefreshTargetRepository(conn),
         source_query=TokenProfileSourceQuery(conn),
@@ -126,12 +114,6 @@ def repositories_for_connection(
         token_radar_rank_sources=TokenRadarRankSourceRepository(conn),
         token_radar=TokenRadarRepository(conn),
         token_targets=TokenTargetRepository(conn),
-        notifications=NotificationRepository(
-            conn,
-            running_timeout_ms=notification_delivery_running_timeout_ms,
-            stale_running_terminalization_batch_size=notification_delivery_stale_running_terminalization_batch_size,
-        ),
-        watchlist=WatchlistQuery(conn),
         news=NewsRepository(conn),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
@@ -155,10 +137,4 @@ def postgres_connection(settings: Any) -> Iterator[Any]:
 def repositories(settings: Any) -> Iterator[RepositorySession]:
     """Open one short-lived repository session for a CLI/application operation."""
     with postgres_connection(settings) as conn:
-        yield repositories_for_connection(
-            conn,
-            notification_delivery_running_timeout_ms=int(settings.workers.notification_delivery.running_timeout_ms),
-            notification_delivery_stale_running_terminalization_batch_size=int(
-                settings.workers.notification_delivery.stale_running_terminalization_batch_size
-            ),
-        )
+        yield repositories_for_connection(conn)

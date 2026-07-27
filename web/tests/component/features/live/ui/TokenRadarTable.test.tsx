@@ -47,7 +47,7 @@ describe("TokenRadarTable rows", () => {
     expect(within(row).getByText("$TROLL")).toBeInTheDocument();
     expect(within(row).getByText("ETH · 0x111111...111111")).toBeInTheDocument();
     expect(within(row).getByText("1 帖 · 1 作者")).toBeInTheDocument();
-    expect(within(row).getByText("关注源 0 · 较前窗 +1")).toBeInTheDocument();
+    expect(within(row).getByText("较前窗 +1 · top share 100%")).toBeInTheDocument();
     expect(within(row).getByText("50 / 100")).toBeInTheDocument();
     expect(within(row).getByText("1 informative · 0% duplicate")).toBeInTheDocument();
     expect(within(row).queryByText("种子中 · 1 条有效讨论")).not.toBeInTheDocument();
@@ -162,10 +162,8 @@ describe("TokenRadarTable rows", () => {
         error={null}
         isLoading={false}
         items={[]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -184,10 +182,8 @@ describe("TokenRadarTable rows", () => {
         isLoading={true}
         isRefreshing={false}
         items={[]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -205,10 +201,8 @@ describe("TokenRadarTable rows", () => {
         isLoading={false}
         isRefreshing={true}
         items={[mixedFreshnessToken()]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -227,10 +221,8 @@ describe("TokenRadarTable rows", () => {
         isLoading={true}
         isRefreshing={false}
         items={[]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -343,10 +335,8 @@ describe("TokenRadarTable rows", () => {
         error={null}
         isLoading={false}
         items={[mixedFreshnessToken()]}
-        scope="matched"
         selectedKey={null}
         windowKey="5m"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -355,15 +345,11 @@ describe("TokenRadarTable rows", () => {
     expect(screen.getByRole("heading", { name: "Token Radar" })).toBeInTheDocument();
     expect(screen.getByText("1 live case")).toBeInTheDocument();
     const windowGroup = screen.getByLabelText("radar window");
-    const scopeGroup = screen.getByLabelText("token flow scope");
     expect(within(windowGroup).getByRole("radio", { name: "5m" })).toHaveAttribute(
       "data-state",
       "on",
     );
-    expect(within(scopeGroup).getByRole("radio", { name: "watched" })).toHaveAttribute(
-      "data-state",
-      "on",
-    );
+    expect(screen.queryByLabelText("token flow scope")).not.toBeInTheDocument();
 
     for (const label of ["Attention", "Proof", "Reach", "Entry"]) {
       expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
@@ -386,10 +372,8 @@ describe("TokenRadarTable rows", () => {
         error={null}
         isLoading={false}
         items={[item]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -449,10 +433,8 @@ describe("TokenRadarTable rows", () => {
         error={null}
         isLoading={false}
         items={[low, high]}
-        scope="all"
         selectedKey={null}
         windowKey="1h"
-        onScopeChange={vi.fn()}
         onSelect={vi.fn()}
         onWindowChange={vi.fn()}
       />,
@@ -476,10 +458,8 @@ function renderTokenRadarTable(
       error={null}
       isLoading={false}
       items={items}
-      scope="all"
       selectedKey={null}
       windowKey="1h"
-      onScopeChange={vi.fn()}
       onSelect={overrides.onSelect ?? vi.fn()}
       onVenueChange={overrides.onVenueChange ?? vi.fn()}
       onWindowChange={vi.fn()}
@@ -695,7 +675,6 @@ function unresolvedSymbolOnly(): TokenFlowItem {
     flow: {
       window: "5m",
       mentions: 1,
-      watched_mentions: 0,
       previous_mentions: 0,
       mention_delta: 1,
       stream_dominance: 1,
@@ -703,7 +682,7 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       baseline_sample_count: 0,
     },
     social_heat: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:social_heat",
+      score_version: "token_factor_snapshot_v5_provider_neutral:social_heat",
       score: 44,
       reasons: [],
       risks: [],
@@ -719,11 +698,10 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       previous_mentions: 0,
       mention_delta: 1,
       stream_share: 1,
-      watched_share: 0,
       status: "insufficient_history",
     },
     discussion_quality: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:discussion_quality",
+      score_version: "token_factor_snapshot_v5_provider_neutral:discussion_quality",
       score: 43,
       reasons: [],
       risks: [],
@@ -734,10 +712,9 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       avg_attribution_confidence: 0,
       duplicate_text_share: 0,
       informative_post_count: 1,
-      watched_source_count: 0,
     },
     propagation: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:propagation",
+      score_version: "token_factor_snapshot_v5_provider_neutral:propagation",
       score: 50,
       reasons: [],
       risks: [],
@@ -753,7 +730,7 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       top_authors: [],
     },
     tradeability: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:gates",
+      score_version: "token_factor_snapshot_v5_provider_neutral:gates",
       score: 0,
       reasons: [],
       risks: ["identity_not_tradeable"],
@@ -766,7 +743,7 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       pool_present: false,
     },
     timing: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:timing",
+      score_version: "token_factor_snapshot_v5_provider_neutral:timing",
       score: 0,
       status: "market_unavailable",
       chase_risk: false,
@@ -775,7 +752,7 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       market_observation_status: "no_resolved_target",
     },
     opportunity: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:composite",
+      score_version: "token_factor_snapshot_v5_provider_neutral:composite",
       score: 44,
       decision: "investigate",
       reasons: [],
@@ -784,23 +761,13 @@ function unresolvedSymbolOnly(): TokenFlowItem {
       risk_caps: [],
       components: { heat: 44, propagation: 50, timing: 0 },
     },
-    watch: {
-      status: "seed",
-      direct_mentions: 1,
-      direct_authors: 1,
-      seed_link_count: 0,
-      top_seed: null,
-      reasons: [],
-      risks: [],
-    },
     evidence_total_count: 1,
     posts_query: {
       target_type: null,
       target_id: null,
       window: "5m",
-      scope: "all",
       range: "current_window",
     },
-    timeline_query: { target_type: null, target_id: null, window: "5m", scope: "all" },
+    timeline_query: { target_type: null, target_id: null, window: "5m" },
   };
 }

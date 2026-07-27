@@ -2,23 +2,6 @@
 
 # Database Schema
 
-## `account_token_alerts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `alert_id` | `TEXT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `author_handle` | `TEXT` | False | `None` |
-| `entity_key` | `TEXT` | False | `None` |
-| `entity_type` | `TEXT` | False | `None` |
-| `normalized_value` | `TEXT` | False | `None` |
-| `chain` | `TEXT` | True | `None` |
-| `token_resolution_status` | `TEXT` | False | `None` |
-| `is_first_seen_global` | `BOOLEAN` | False | `None` |
-| `is_first_seen_by_author` | `BOOLEAN` | False | `None` |
-| `received_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
 ## `alembic_version`
 
 | Column | Type | Nullable | Default |
@@ -254,7 +237,6 @@
 | `source` | `TEXT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `author_handle` | `TEXT` | True | `None` |
-| `is_watched` | `BOOLEAN` | False | `false` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `text_surface` | `TEXT` | True | `None` |
 | `span_start` | `BIGINT` | True | `None` |
@@ -294,9 +276,6 @@
 | `mentions_json` | `JSONB` | False | `'[]'::jsonb` |
 | `media_json` | `JSONB` | False | `'[]'::jsonb` |
 | `reference_json` | `JSONB` | True | `None` |
-| `matched_handles_json` | `JSONB` | False | `'[]'::jsonb` |
-| `is_watched` | `BOOLEAN` | False | `false` |
-| `matched_at_ms` | `BIGINT` | False | `0` |
 | `raw_json` | `JSONB` | False | `None` |
 | `event_json` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
@@ -843,59 +822,6 @@
 | `first_joined_at_ms` | `BIGINT` | False | `None` |
 | `last_confirmed_at_ms` | `BIGINT` | False | `None` |
 
-## `notification_deliveries`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `delivery_id` | `TEXT` | False | `None` |
-| `notification_id` | `TEXT` | False | `None` |
-| `channel_id` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `attempt_count` | `BIGINT` | False | `0` |
-| `max_attempts` | `BIGINT` | False | `5` |
-| `next_run_at_ms` | `BIGINT` | False | `None` |
-| `last_attempt_at_ms` | `BIGINT` | True | `None` |
-| `delivered_at_ms` | `BIGINT` | True | `None` |
-| `last_error` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `notification_reads`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `notification_id` | `TEXT` | False | `None` |
-| `subscriber_key` | `TEXT` | False | `None` |
-| `read_at_ms` | `BIGINT` | False | `None` |
-
-## `notifications`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `notification_id` | `TEXT` | False | `None` |
-| `dedup_key` | `TEXT` | False | `None` |
-| `rule_id` | `TEXT` | False | `None` |
-| `severity` | `TEXT` | False | `None` |
-| `title` | `TEXT` | False | `None` |
-| `body` | `TEXT` | False | `None` |
-| `entity_type` | `TEXT` | True | `None` |
-| `entity_key` | `TEXT` | True | `None` |
-| `author_handle` | `TEXT` | True | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `chain` | `TEXT` | True | `None` |
-| `address` | `TEXT` | True | `None` |
-| `event_id` | `TEXT` | True | `None` |
-| `source_table` | `TEXT` | False | `None` |
-| `source_id` | `TEXT` | False | `None` |
-| `occurrence_count` | `BIGINT` | False | `1` |
-| `first_seen_at_ms` | `BIGINT` | False | `None` |
-| `last_seen_at_ms` | `BIGINT` | False | `None` |
-| `payload_json` | `JSONB` | False | `'{}'::jsonb` |
-| `channels_json` | `JSONB` | False | `'["in_app"]'::jsonb` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `price_feeds`
 
 | Column | Type | Nullable | Default |
@@ -1169,7 +1095,6 @@
 | `row_id` | `TEXT` | False | `None` |
 | `projection_version` | `TEXT` | False | `None` |
 | `window` | `TEXT` | False | `None` |
-| `scope` | `TEXT` | False | `None` |
 | `lane` | `TEXT` | False | `None` |
 | `target_type_key` | `TEXT` | False | `None` |
 | `identity_id` | `TEXT` | False | `None` |
@@ -1223,7 +1148,6 @@
 |--------|------|----------|---------|
 | `projection_version` | `TEXT` | False | `None` |
 | `window` | `TEXT` | False | `None` |
-| `scope` | `TEXT` | False | `None` |
 | `venue` | `TEXT` | False | `'all'::text` |
 | `current_generation_id` | `TEXT` | True | `None` |
 | `current_published_at_ms` | `BIGINT` | True | `None` |
@@ -1256,7 +1180,6 @@
 | `target_id` | `TEXT` | True | `None` |
 | `pricefeed_id` | `TEXT` | True | `None` |
 | `resolution_status` | `TEXT` | True | `None` |
-| `is_watched` | `BOOLEAN` | False | `false` |
 
 ## `token_radar_target_features`
 
@@ -1264,7 +1187,6 @@
 |--------|------|----------|---------|
 | `projection_version` | `TEXT` | False | `None` |
 | `window` | `TEXT` | False | `None` |
-| `scope` | `TEXT` | False | `None` |
 | `lane` | `TEXT` | False | `None` |
 | `target_type_key` | `TEXT` | False | `None` |
 | `identity_id` | `TEXT` | False | `None` |
@@ -1293,10 +1215,9 @@
 | `timing_risk_weight` | `DOUBLE PRECISION` | False | `0` |
 | `cohort_high_confidence_mentions` | `INTEGER` | False | `0` |
 | `cohort_kol_mentions` | `INTEGER` | False | `0` |
-| `cohort_public_followup_authors` | `INTEGER` | False | `0` |
+| `cohort_followup_authors` | `INTEGER` | False | `0` |
 | `cohort_first_seen_global_24h` | `BOOLEAN` | False | `false` |
 | `cohort_symbol` | `TEXT` | False | `''::text` |
-| `social_heat_watched_mentions` | `INTEGER` | False | `0` |
 | `social_heat_mentions_1h` | `INTEGER` | False | `0` |
 | `social_propagation_mentions` | `INTEGER` | False | `0` |
 | `social_heat_latest_seen_ms` | `BIGINT` | True | `None` |
@@ -1312,7 +1233,6 @@
 |--------|------|----------|---------|
 | `projection_version` | `TEXT` | False | `None` |
 | `window` | `TEXT` | False | `None` |
-| `scope` | `TEXT` | False | `None` |
 | `target_type_key` | `TEXT` | False | `None` |
 | `identity_id` | `TEXT` | False | `None` |
 | `first_seen_ms` | `BIGINT` | False | `None` |

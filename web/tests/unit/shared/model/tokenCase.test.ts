@@ -14,7 +14,7 @@ describe("buildTokenCaseView", () => {
     expect(view.official.detail).toContain("alpha.io");
     expect(view.official.source).toBe("official");
     expect(view.community.value).toBe("4 posts · 3 authors");
-    expect(view.community.detail).toContain("watched 2");
+    expect(view.community.detail).toContain("top share");
     expect(view.market.value).toBe("$51M");
     expect(view.market.detail).toContain("+13%");
     expect(view.decision.value).toBe("driver");
@@ -93,7 +93,6 @@ function tokenFixture(): TokenFlowItem {
     flow: {
       window: "1h",
       mentions: 4,
-      watched_mentions: 2,
       previous_mentions: 0,
       mention_delta: 4,
       stream_dominance: 0.004,
@@ -101,7 +100,7 @@ function tokenFixture(): TokenFlowItem {
       baseline_sample_count: 21,
     },
     social_heat: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:social_heat",
+      score_version: "token_factor_snapshot_v5_provider_neutral:social_heat",
       score: 86,
       reasons: ["z_score_above_3"],
       risks: [],
@@ -117,11 +116,10 @@ function tokenFixture(): TokenFlowItem {
       previous_mentions: 0,
       mention_delta: 4,
       stream_share: 0.004,
-      watched_share: 0.5,
       status: "new_burst",
     },
     discussion_quality: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:discussion_quality",
+      score_version: "token_factor_snapshot_v5_provider_neutral:discussion_quality",
       score: 78,
       reasons: ["informative_discussion"],
       risks: [],
@@ -132,10 +130,9 @@ function tokenFixture(): TokenFlowItem {
       avg_attribution_confidence: 0.91,
       duplicate_text_share: 0,
       informative_post_count: 3,
-      watched_source_count: 2,
     },
     propagation: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:propagation",
+      score_version: "token_factor_snapshot_v5_provider_neutral:propagation",
       score: 74,
       reasons: ["independent_expansion"],
       risks: [],
@@ -149,12 +146,12 @@ function tokenFixture(): TokenFlowItem {
       author_entropy: 0.8,
       phase: "expansion",
       top_authors: [
-        { handle: "alpha_founder", posts: 1, watched_count: 1 },
-        { handle: "traderpow", posts: 1, watched_count: 1 },
+        { handle: "alpha_founder", posts: 1 },
+        { handle: "traderpow", posts: 1 },
       ],
     },
     tradeability: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:gates",
+      score_version: "token_factor_snapshot_v5_provider_neutral:gates",
       score: 100,
       reasons: [],
       risks: [],
@@ -167,7 +164,7 @@ function tokenFixture(): TokenFlowItem {
       pool_present: true,
     },
     timing: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:timing",
+      score_version: "token_factor_snapshot_v5_provider_neutral:timing",
       score: 88,
       status: "neutral",
       chase_risk: false,
@@ -177,7 +174,7 @@ function tokenFixture(): TokenFlowItem {
       market_observation_status: "ready",
     },
     opportunity: {
-      score_version: "token_factor_snapshot_v4_transparent_factors:composite",
+      score_version: "token_factor_snapshot_v5_provider_neutral:composite",
       score: 83,
       decision: "driver",
       reasons: ["resolved_direct_evidence", "independent_expansion"],
@@ -186,28 +183,17 @@ function tokenFixture(): TokenFlowItem {
       risk_caps: [],
       components: { heat: 86, propagation: 74, timing: 88 },
     },
-    watch: {
-      status: "direct_watch",
-      direct_mentions: 2,
-      direct_authors: 2,
-      seed_link_count: 1,
-      top_seed: null,
-      reasons: [],
-      risks: [],
-    },
     evidence_total_count: 4,
     posts_query: {
       target_type: "Asset",
       target_id: "asset:dex:eth:0x1111111111111111111111111111111111111111",
       window: "1h",
-      scope: "all",
       range: "current_window",
     },
     timeline_query: {
       target_type: "Asset",
       target_id: "asset:dex:eth:0x1111111111111111111111111111111111111111",
       window: "1h",
-      scope: "all",
     },
   };
 }

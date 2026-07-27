@@ -27,7 +27,7 @@ describe("token target route", () => {
   it("renders the token case route without the old radar fallback", async () => {
     const targetId = "asset:solana:token:FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspump";
 
-    renderAppRoute(`/token/Asset/${encodeURIComponent(targetId)}?window=24h&scope=watched`);
+    renderAppRoute(`/token/Asset/${encodeURIComponent(targetId)}?window=24h`);
 
     expect(await screen.findByRole("region", { name: /Token case/i })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: /\$HANSA/i })).toBeInTheDocument();
@@ -43,7 +43,6 @@ describe("token target route", () => {
             target_type: "Asset",
             target_id: targetId,
             window: "24h",
-            scope: "watched",
           }),
         }),
       );
@@ -60,7 +59,6 @@ function routeTokenCaseFixture(): TokenCaseDossier {
       query: {
         ...dossier.timeline.query,
         window: "24h",
-        scope: "watched",
       },
     },
     posts: {
@@ -68,7 +66,6 @@ function routeTokenCaseFixture(): TokenCaseDossier {
       query: {
         ...dossier.posts.query,
         window: "24h",
-        scope: "watched",
       },
     },
   };

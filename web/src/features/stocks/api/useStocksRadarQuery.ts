@@ -1,5 +1,5 @@
 import { getApi } from "@lib/api/client";
-import type { ScopeKey, StocksRadarData, WindowKey } from "@lib/types";
+import type { StocksRadarData, WindowKey } from "@lib/types";
 import { queryKeys } from "@shared/query/queryKeys";
 import { useQuery } from "@tanstack/react-query";
 
@@ -7,7 +7,6 @@ type StocksRadarArgs = {
   enabled?: boolean;
   token: string;
   window: WindowKey;
-  scope: ScopeKey;
   limit?: number;
 };
 
@@ -15,15 +14,14 @@ export function useStocksRadarQuery({
   enabled = true,
   token,
   window,
-  scope,
   limit = 48,
 }: StocksRadarArgs) {
   return useQuery({
-    queryKey: queryKeys.stocksRadar(window, scope, limit),
+    queryKey: queryKeys.stocksRadar(window, limit),
     queryFn: async () => {
       const response = await getApi<StocksRadarData>("/api/stocks-radar", {
         token,
-        params: { window, scope, limit },
+        params: { window, limit },
       });
       return response.data;
     },

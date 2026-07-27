@@ -1,4 +1,4 @@
-import type { ScopeKey, WindowKey } from "@lib/types";
+import type { WindowKey } from "@lib/types";
 import type { TokenRadarVenueFilter } from "@lib/venue";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { tokenRadarFixture, tokenRadarRowFixture } from "@tests/fixtures/appRouteFixtures";
@@ -125,10 +125,6 @@ describe("live radar route", () => {
     for (const control of [
       () => screen.getByRole("button", { name: "SOL" }),
       () => within(screen.getByLabelText("radar window")).getByRole("radio", { name: "4h" }),
-      () =>
-        within(screen.getByLabelText("token flow scope")).getByRole("radio", {
-          name: "watched",
-        }),
     ]) {
       blockNextRadarRead = true;
       releaseRadarRead = null;
@@ -299,7 +295,6 @@ describe("live radar route", () => {
             ok: true,
             data: {
               window: "1h",
-              scope: "all",
               venue: "all",
               targets: [],
               attention: [],
@@ -345,13 +340,12 @@ function radarRequestCount(): number {
 }
 
 function radarResponse({
-  identity = { scope: "all", venue: "all", window: "1h" },
+  identity = { venue: "all", window: "1h" },
   projectionStatus = "fresh",
   sourceMaxReceivedAtMs,
   withRow = false,
 }: {
   identity?: {
-    scope: ScopeKey;
     venue: TokenRadarVenueFilter;
     window: WindowKey;
   };
@@ -363,7 +357,6 @@ function radarResponse({
   const rows = withRow ? [tokenRadarRowFixture()] : [];
   return {
     ...base,
-    scope: identity.scope,
     targets: rows,
     venue: identity.venue,
     window: identity.window,
@@ -388,12 +381,10 @@ function radarIdentityFromOptions(
       }
     | undefined,
 ): {
-  scope: ScopeKey;
   venue: TokenRadarVenueFilter;
   window: WindowKey;
 } {
   return {
-    scope: String(options?.params?.scope ?? "all") as ScopeKey,
     venue: String(options?.params?.venue ?? "all") as TokenRadarVenueFilter,
     window: String(options?.params?.window ?? "1h") as WindowKey,
   };

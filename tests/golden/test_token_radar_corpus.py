@@ -23,7 +23,7 @@ def test_versa_symbol_and_ca_build_one_intent(tmp_path):
         received_at_ms=1_777_800_000_000,
     )
 
-    result = ingest.ingest_event(event, is_watched=True)
+    result = ingest.ingest_event(event)
 
     intents = repos.token_intents.intents_for_event("event-versa")
     resolutions = repos.intent_resolutions.resolutions_for_event("event-versa")
@@ -48,20 +48,17 @@ def test_unresolved_attention_never_projects_as_driver(tmp_path):
                 received_at_ms=1_777_800_000_000 + index,
                 author_handle=f"voice{index}",
             ),
-            is_watched=True,
         )
         for index in range(7)
     ]
 
     _publisher(repos).publish_rank_set(
         window="5m",
-        scope="all",
         now_ms=1_777_800_060_000,
         limit=20,
     )
     rows = repos.token_radar.latest_current_rows(
         window="5m",
-        scope="all",
         venue=TOKEN_RADAR_DEFAULT_VENUE,
         limit=20,
         projection_version=TOKEN_RADAR_PROJECTION_VERSION,
@@ -83,11 +80,10 @@ def test_address_like_payload_symbol_does_not_mask_missing_real_symbol(tmp_path)
         received_at_ms=1_777_800_000_000,
     )
 
-    result = ingest.ingest_event(event, is_watched=True)
+    result = ingest.ingest_event(event)
     _rebuild_resolved_current_rows(repos, now_ms=1_777_800_060_000)
     rows = repos.token_radar.latest_current_rows(
         window="5m",
-        scope="all",
         venue=TOKEN_RADAR_DEFAULT_VENUE,
         limit=20,
         projection_version=TOKEN_RADAR_PROJECTION_VERSION,
@@ -108,11 +104,10 @@ def test_gmgn_payload_identity_does_not_project_market_snapshot_into_radar(tmp_p
         received_at_ms=1_777_800_000_000,
     )
 
-    result = ingest.ingest_event(event, is_watched=True)
+    result = ingest.ingest_event(event)
     _rebuild_resolved_current_rows(repos, now_ms=1_777_800_060_000)
     rows = repos.token_radar.latest_current_rows(
         window="5m",
-        scope="all",
         venue=TOKEN_RADAR_DEFAULT_VENUE,
         limit=20,
         projection_version=TOKEN_RADAR_PROJECTION_VERSION,
@@ -146,7 +141,6 @@ def _rebuild_resolved_current_rows(repos, *, now_ms: int) -> None:
         retry_ms=30_000,
         max_attempts=3,
         windows=("5m",),
-        scopes=("all",),
         now_ms=now_ms,
         limit=20,
         rank_limit=20,

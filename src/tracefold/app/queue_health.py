@@ -19,14 +19,6 @@ class StatusQueueSpec:
 
 
 STATUS_QUEUE_SPECS = {
-    "notification_deliveries": StatusQueueSpec(
-        table="notification_deliveries",
-        active_statuses=("pending", "failed", "running"),
-        due_statuses=("pending", "failed"),
-        running_statuses=("running",),
-        failed_statuses=("failed",),
-        terminal_statuses=("dead",),
-    ),
     "event_anchor_backfill_jobs": StatusQueueSpec(
         table="event_anchor_backfill_jobs",
         active_statuses=("pending",),

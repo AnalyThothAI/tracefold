@@ -47,9 +47,6 @@ class EventRead(TypedDict):
     mentions: list[str]
     media: list[dict[str, Any]]
     reference: dict[str, Any] | None
-    matched_handles: list[str]
-    is_watched: bool
-    matched_at_ms: int
     raw: dict[str, Any] | None
     unfollow_target: dict[str, Any] | None
     avatar_change: dict[str, Any] | None
@@ -91,10 +88,10 @@ class EvidenceRepository:
             raise TypeError("evidence_repository_rowcount_invalid")
         return rowcount == 1
 
-    def insert_event(self, event: TwitterEvent, *, is_watched: bool) -> bool:
+    def insert_event(self, event: TwitterEvent) -> bool:
         require_transaction(self.conn, operation="insert_event")
         now_ms = _now_ms()
-        row = event_to_row(event, is_watched=is_watched, now_ms=now_ms)
+        row = event_to_row(event, now_ms=now_ms)
         return self.insert_event_row(row)
 
     def insert_event_row(self, row: dict[str, Any]) -> bool:
@@ -106,8 +103,8 @@ class EvidenceRepository:
               coverage, channel, action, original_action, tweet_id, internal_id, timestamp_ms,
               received_at_ms, author_handle, author_name, author_avatar, author_followers,
               author_tags_json, text, text_raw, text_clean, search_text, urls_json, cashtags_json,
-              hashtags_json, mentions_json, media_json, reference_json, matched_handles_json,
-              is_watched, matched_at_ms, raw_json, event_json, created_at_ms, updated_at_ms
+              hashtags_json, mentions_json, media_json, reference_json, raw_json, event_json,
+              created_at_ms, updated_at_ms
             )
             VALUES (
               %(event_id)s, %(logical_dedup_key)s, %(canonical_url)s, %(source_provider)s, %(source_transport)s,
@@ -116,8 +113,8 @@ class EvidenceRepository:
               %(received_at_ms)s, %(author_handle)s, %(author_name)s, %(author_avatar)s, %(author_followers)s,
               %(author_tags_json)s, %(text)s, %(text_raw)s, %(text_clean)s, %(search_text)s, %(urls_json)s,
               %(cashtags_json)s,
-              %(hashtags_json)s, %(mentions_json)s, %(media_json)s, %(reference_json)s, %(matched_handles_json)s,
-              %(is_watched)s, %(matched_at_ms)s, %(raw_json)s, %(event_json)s, %(created_at_ms)s, %(updated_at_ms)s
+              %(hashtags_json)s, %(mentions_json)s, %(media_json)s, %(reference_json)s,
+              %(raw_json)s, %(event_json)s, %(created_at_ms)s, %(updated_at_ms)s
             )
             ON CONFLICT DO NOTHING
             """,
@@ -149,15 +146,12 @@ class EvidenceRepository:
         chain: str | None = None,
         symbol: str | None = None,
         since_ms: int | None = None,
-        watched_only: bool = True,
     ) -> list[EventRead]:
         parsed_limit = require_nonnegative_int(limit, error_code="evidence_recent_events_limit_required")
         if parsed_limit == 0:
             return []
         clauses: list[str] = []
         params: list[Any] = []
-        if watched_only:
-            clauses.append("e.is_watched = true")
         if since_ms is not None:
             clauses.append("e.received_at_ms >= %s")
             params.append(int(since_ms))
@@ -198,7 +192,6 @@ class EvidenceRepository:
         cas: set[tuple[str, str]] | None = None,
         symbols: set[str] | None = None,
         since_ms: int | None = None,
-        watched_only: bool = True,
     ) -> list[EventRead]:
         parsed_limit = require_positive_int(limit, error_code="evidence_token_filter_limit_required")
         parsed_per_filter_limit = require_positive_int(
@@ -212,8 +205,6 @@ class EvidenceRepository:
 
         clauses: list[str] = []
         params: list[Any] = [filter_kinds, filter_chains, filter_values, sorted(EVM_QUERY_CHAINS)]
-        if watched_only:
-            clauses.append("e.is_watched = true")
         if since_ms is not None:
             clauses.append("e.received_at_ms >= %s")
             params.append(int(since_ms))
@@ -292,12 +283,6 @@ class EvidenceRepository:
             "events": int(
                 self.conn.execute(f"SELECT COUNT(*) AS count FROM events{suffix}", params).fetchone()["count"]
             ),
-            "watched_events": int(
-                self.conn.execute(
-                    f"SELECT COUNT(*) AS count FROM events{suffix}{' AND' if suffix else ' WHERE'} is_watched = true",
-                    params,
-                ).fetchone()["count"]
-            ),
         }
 
     def close(self) -> None:
@@ -326,13 +311,11 @@ def _token_filter_keysets(
 def materialize_event(
     event: TwitterEvent,
     *,
-    is_watched: bool,
     now_ms: int,
 ) -> tuple[dict[str, Any], EventRead]:
     event_dict = event.to_dict()
     reference_text = event.reference.text if event.reference else None
     projection = build_text_projection(event.content.text, reference_text=reference_text)
-    matched_handles = [handle.lower() for handle in event.matched_handles]
     event_read: EventRead = _sanitize_postgres_value(
         {
             "event_id": event.event_id,
@@ -363,9 +346,6 @@ def materialize_event(
             "mentions": list(projection.mentions),
             "media": [asdict(item) for item in event.content.media],
             "reference": event_dict["reference"],
-            "matched_handles": matched_handles,
-            "is_watched": is_watched,
-            "matched_at_ms": now_ms if is_watched else 0,
             "raw": event.raw,
             "unfollow_target": event_dict["unfollow_target"],
             "avatar_change": event_dict["avatar_change"],
@@ -400,8 +380,6 @@ def materialize_event(
                     "text_raw",
                     "text_clean",
                     "search_text",
-                    "is_watched",
-                    "matched_at_ms",
                 )
             },
             "author_tags_json": _json(event_read["author_tags"]),
@@ -411,7 +389,6 @@ def materialize_event(
             "mentions_json": _json(event_read["mentions"]),
             "media_json": _json(event_read["media"]),
             "reference_json": _json(event_read["reference"]),
-            "matched_handles_json": _json(event_read["matched_handles"]),
             "raw_json": _json(event_read["raw"]),
             "event_json": _json(event_dict),
             "created_at_ms": now_ms,
@@ -421,8 +398,8 @@ def materialize_event(
     return sanitized, event_read
 
 
-def event_to_row(event: TwitterEvent, *, is_watched: bool, now_ms: int) -> dict[str, Any]:
-    row, _event_read = materialize_event(event, is_watched=is_watched, now_ms=now_ms)
+def event_to_row(event: TwitterEvent, *, now_ms: int) -> dict[str, Any]:
+    row, _event_read = materialize_event(event, now_ms=now_ms)
     return row
 
 
@@ -458,9 +435,6 @@ def decode_event_row(row: Mapping[str, Any]) -> EventRead:
         "mentions": _required_string_list(data["mentions_json"], field="mentions_json"),
         "media": _required_object_list(data["media_json"], field="media_json"),
         "reference": _optional_json_object(data["reference_json"], field="reference_json"),
-        "matched_handles": _required_string_list(data["matched_handles_json"], field="matched_handles_json"),
-        "is_watched": _required_bool(data["is_watched"], field="is_watched"),
-        "matched_at_ms": _required_nonnegative_int(data["matched_at_ms"], field="matched_at_ms"),
         "raw": _optional_json_object(data["raw_json"], field="raw_json"),
         "unfollow_target": _optional_json_object(event_payload["unfollow_target"], field="unfollow_target"),
         "avatar_change": _optional_json_object(event_payload["avatar_change"], field="avatar_change"),

@@ -1,8 +1,6 @@
 import type {
   AssetFlowData,
   AssetFlowRow,
-  NotificationItem,
-  NotificationSummary,
   OpenApiStatusData,
   SearchInspectData,
   TokenPostsData,
@@ -19,7 +17,6 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
   return {
     ok: true,
     reasons: [],
-    handles: ["toly", "traderpow"],
     store: "postgresql",
     snapshot_gate: {},
     db: { ok: true },
@@ -76,8 +73,6 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         running: true,
         last_started_at_ms: NOW,
       }),
-      notification_rule: workerStatusFixture({ enabled: true, running: true }),
-      notification_delivery: workerStatusFixture({ enabled: true, running: true }),
       asset_profile_refresh: workerStatusFixture(),
       resolution_refresh: workerStatusFixture(),
     },
@@ -103,24 +98,9 @@ function workerStatusFixture(overrides: Partial<OpenApiStatusData["workers"][str
   };
 }
 
-export function notificationSummaryFixture(
-  overrides: Partial<NotificationSummary> = {},
-): NotificationSummary {
-  return {
-    subscriber_key: "local",
-    unread_count: 0,
-    high_unread_count: 0,
-    critical_unread_count: 0,
-    highest_unread_severity: null,
-    account_unread_counts: {},
-    ...overrides,
-  };
-}
-
 export function tokenRadarFixture(overrides: Partial<AssetFlowData> = {}): AssetFlowData {
   return {
     window: "1h",
-    scope: "all",
     venue: "all",
     targets: [],
     attention: [],
@@ -159,7 +139,6 @@ export function tokenRadarRowFixture(): AssetFlowRow {
     mentions_24h: 4,
     mentions_window: 4,
     unique_authors: 3,
-    watched_mentions: 1,
     latest_seen_ms: NOW,
     previous_mentions: 0,
     mention_delta: 4,
@@ -229,7 +208,7 @@ function radarFactorSnapshot(
   market: ReturnType<typeof marketContextFixture>,
 ): AssetFlowRow["factor_snapshot"] {
   return {
-    schema_version: "token_factor_snapshot_v4_transparent_factors",
+    schema_version: "token_factor_snapshot_v5_provider_neutral",
     subject: {
       target_type: "Asset",
       target_id: RADAR_TARGET_ID,
@@ -254,7 +233,6 @@ function radarFactorSnapshot(
         mentions_4h: attention.mentions_4h,
         mentions_24h: attention.mentions_24h,
         unique_authors: attention.unique_authors,
-        watched_mentions: attention.watched_mentions,
         latest_seen_ms: attention.latest_seen_ms,
         previous_mentions: attention.previous_mentions,
         mention_delta: attention.mention_delta,
@@ -333,7 +311,6 @@ export function searchInspectFixture(
       q: "$RKC",
       normalized_q: "rkc",
       window: "24h",
-      scope: "all",
       result_kind: "empty_result",
     },
     resolver: {
@@ -352,12 +329,11 @@ export function targetSocialTimelineFixture(
   overrides: Partial<TokenSocialTimelineData> = {},
 ): TokenSocialTimelineData {
   return {
-    query: { window: "1h", scope: "all", bucket: "5m" },
+    query: { window: "1h", bucket: "5m" },
     summary: {
       posts: 0,
       authors: 0,
       effective_authors: 0,
-      watched_posts: 0,
       phase: "seed",
       top_author_share: 0,
       latest_seen_ms: null,
@@ -387,38 +363,8 @@ export function targetPostsFixture(overrides: Partial<TokenPostsData> = {}): Tok
       target_type: null,
       target_id: null,
       window: "1h",
-      scope: "all",
       range: "current_window",
     },
     ...overrides,
   } as TokenPostsData;
-}
-
-export function notificationFixture(overrides: Partial<NotificationItem> = {}): NotificationItem {
-  return {
-    notification_id: "notification-route-1",
-    dedup_key: "route:notification:1",
-    rule_id: "watched_account_token_alert",
-    severity: "high",
-    title: "Watched token alert",
-    body: "$RKC was mentioned by a watched account",
-    entity_type: "token",
-    entity_key: "token:rkc",
-    author_handle: "traderpow",
-    symbol: "RKC",
-    chain: null,
-    address: null,
-    event_id: null,
-    source_table: "events",
-    source_id: "event:rkc",
-    occurrence_count: 1,
-    first_seen_at_ms: NOW,
-    last_seen_at_ms: NOW,
-    created_at_ms: NOW,
-    updated_at_ms: NOW,
-    read_at_ms: null,
-    payload: { event_id: "event:rkc" },
-    channels: ["in_app"],
-    ...overrides,
-  };
 }

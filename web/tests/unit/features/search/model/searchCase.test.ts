@@ -79,7 +79,6 @@ function searchInspectFixture(): SearchInspectData {
       normalized_q: "hansa",
       q: "$HANSA",
       result_kind: "token_result",
-      scope: "all",
       window: "24h",
     },
     resolver: {
@@ -101,7 +100,6 @@ function searchItem(eventId: string, receivedAtMs: number) {
       canonical_url: null,
       content: { text: "topic mention" },
       event_id: eventId,
-      is_watched: true,
       received_at_ms: receivedAtMs,
       search_text: "topic mention",
       text_clean: "topic mention",

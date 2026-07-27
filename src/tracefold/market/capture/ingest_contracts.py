@@ -10,7 +10,6 @@ from tracefold.market.capture.evidence_repository import EventRead
 class IngestedEvent:
     event: EventRead
     entities: list[dict[str, Any]]
-    alerts: list[dict[str, Any]]
     inserted: bool
     token_intents: list[dict[str, Any]] = field(default_factory=list)
     token_resolutions: list[dict[str, Any]] = field(default_factory=list)

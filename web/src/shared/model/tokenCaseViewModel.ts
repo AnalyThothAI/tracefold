@@ -1,5 +1,3 @@
-export type TokenCaseScope = "all" | "watched";
-export type TokenCaseSort = "recent" | "watched";
 export type TokenCaseWindow = "5m" | "1h" | "4h" | "24h";
 export type TokenCaseTone = "neutral" | "health" | "info" | "warn" | "risk" | "opportunity";
 
@@ -22,7 +20,6 @@ export type TokenCasePostEvent = {
   timeLabel: string | null;
   phase: string | null;
   role: string | null;
-  isWatched: boolean;
   pills: Array<{ label: string; tone: TokenCaseTone }>;
   market: {
     eventPriceLabel: string;
@@ -66,7 +63,6 @@ export type TokenCaseViewModel = {
   };
   route: {
     window: TokenCaseWindow;
-    scope: TokenCaseScope;
     searchHref: string;
   };
   hero: {
@@ -78,7 +74,6 @@ export type TokenCaseViewModel = {
   };
   metrics: TokenCaseMetric[];
   timeline: {
-    sort: TokenCaseSort;
     items: TokenCasePostEvent[];
     hasMore: boolean;
     isLoading: boolean;

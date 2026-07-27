@@ -50,19 +50,19 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
             ),
             (
                 "token_radar_target_features",
-                ("projection_version", "window", "scope", "lane", "target_type_key", "identity_id"),
+                ("projection_version", "window", "lane", "target_type_key", "identity_id"),
             ),
             (
                 "token_radar_current_rows",
-                ("projection_version", "window", "scope", "venue", "lane", "target_type_key", "identity_id"),
+                ("projection_version", "window", "venue", "lane", "target_type_key", "identity_id"),
             ),
             (
                 "token_radar_publication_state",
-                ("projection_version", "window", "scope", "venue"),
+                ("projection_version", "window", "venue"),
             ),
             (
                 "token_radar_target_first_seen",
-                ("projection_version", "window", "scope", "venue", "target_type_key", "identity_id"),
+                ("projection_version", "window", "venue", "target_type_key", "identity_id"),
             ),
         ),
     ),
@@ -134,16 +134,6 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         name="macro_research",
         start_priority=100,
         queue_tables=("macro_research_runs",),
-    ),
-    WorkerManifest(
-        name="notification_rule",
-        start_priority=120,
-        current_read_model_identities=(("notifications", ("dedup_key",)),),
-    ),
-    WorkerManifest(
-        name="notification_delivery",
-        start_priority=130,
-        queue_tables=("notification_deliveries",),
     ),
 )
 

@@ -40,7 +40,7 @@ function renderAt(url: string) {
 
 describe("SearchIntelPage", () => {
   it("loads search inspect data from the route and renders token evidence", async () => {
-    const { container } = renderAt("/search?q=%24RKC&window=24h&scope=all");
+    const { container } = renderAt("/search?q=%24RKC&window=24h");
 
     expect(await screen.findByRole("heading", { name: "Search Intel" })).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: /Token case/i })).toBeInTheDocument();
@@ -62,7 +62,7 @@ describe("SearchIntelPage", () => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/search/inspect",
         expect.objectContaining({
-          params: expect.objectContaining({ q: "$RKC", window: "24h", scope: "all", limit: 200 }),
+          params: expect.objectContaining({ q: "$RKC", window: "24h", limit: 200 }),
         }),
       );
     });
@@ -103,7 +103,7 @@ describe("SearchIntelPage", () => {
     };
     apiMock.readApiImpl = async () => ok(data);
 
-    renderAt("/search?q=%24RKC&window=24h&scope=all");
+    renderAt("/search?q=%24RKC&window=24h");
 
     expect(await screen.findByText("Ambiguous query")).toBeInTheDocument();
     const compare = screen.getByRole("heading", { name: "Candidate Compare" }).closest("section");
@@ -120,7 +120,6 @@ function searchInspectData(): SearchInspectData {
       q: "$RKC",
       normalized_q: "rkc",
       window: "24h",
-      scope: "all",
       result_kind: "token_result",
     },
     resolver: {
@@ -160,14 +159,12 @@ function searchInspectData(): SearchInspectData {
           target_type: "Asset",
           target_id: "asset:solana:rkc",
           window: "24h",
-          scope: "all",
           bucket: "1h",
         },
         summary: {
           posts: 73,
           authors: 18,
           effective_authors: 18,
-          watched_posts: 6,
           phase: "expansion",
           top_author_share: 0.22,
           duplicate_text_share: 0.12,
@@ -184,7 +181,6 @@ function searchInspectData(): SearchInspectData {
             posts: 8,
             authors: 4,
             new_authors: 4,
-            watched_posts: 1,
             duplicate_text_share: 0,
             price: null,
             price_change_from_start_pct: null,
@@ -202,7 +198,6 @@ function searchInspectData(): SearchInspectData {
           target_type: "Asset",
           target_id: "asset:solana:rkc",
           window: "24h",
-          scope: "all",
           range: "current_window",
         },
         score_window: { window: "24h" },

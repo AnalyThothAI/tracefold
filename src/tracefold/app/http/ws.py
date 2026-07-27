@@ -10,12 +10,12 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from tracefold.market import EVM_QUERY_CHAINS, EventRead, normalize_ca, normalize_handles
+from tracefold.market import EVM_QUERY_CHAINS, EventRead, normalize_ca
 
 DEFAULT_SEND_TIMEOUT_SECONDS = 0.25
 MAX_REPLAY_LIMIT = 1000
 MAX_SUBSCRIPTION_FILTER_VALUES = 50
-SUBSCRIBE_MESSAGE_KEYS = frozenset({"type", "handles", "cas", "symbols", "market_targets", "notifications", "replay"})
+SUBSCRIBE_MESSAGE_KEYS = frozenset({"type", "cas", "symbols", "market_targets", "replay"})
 
 
 @dataclass(eq=False)
@@ -23,11 +23,9 @@ class ClientSubscription:
     """Client filters for replay events and material live market target updates."""
 
     websocket: WebSocket
-    handles: set[str] = field(default_factory=set)
     cas: set[tuple[str, str]] = field(default_factory=set)
     symbols: set[str] = field(default_factory=set)
     market_targets: set[tuple[str, str]] = field(default_factory=set)
-    notifications: bool = False
 
 
 class PublicWebSocketHub:
@@ -121,18 +119,16 @@ class PublicWebSocketHub:
             return
 
         try:
-            handles = normalize_handles(_string_list(message.get("handles", []), field="handles"))
             cas = _normalize_cas(_list_value(message.get("cas", []), field="cas"))
             symbols = _normalize_symbols(_string_list(message.get("symbols", []), field="symbols"))
             market_targets = _normalize_market_targets(
                 _list_value(message.get("market_targets", []), field="market_targets")
             )
             replay_limit = _replay_limit(message.get("replay"), self.default_replay_limit)
-            notifications = _bool_value(message.get("notifications", False), field="notifications")
         except ValueError:
             await client.websocket.send_text(_json_message({"type": "error", "code": "invalid_subscription"}))
             return
-        if _subscription_filter_count(handles=handles, cas=cas, symbols=symbols, market_targets=market_targets) > (
+        if _subscription_filter_count(cas=cas, symbols=symbols, market_targets=market_targets) > (
             MAX_SUBSCRIPTION_FILTER_VALUES
         ):
             await client.websocket.send_text(
@@ -146,51 +142,42 @@ class PublicWebSocketHub:
             )
             return
 
-        client.handles = handles
         client.cas = cas
         client.symbols = symbols
         client.market_targets = market_targets
-        client.notifications = notifications
         replay_events = self._replay_events(client, replay_limit)
         for payload in reversed(replay_events):
             await client.websocket.send_text(_json_message(payload))
 
     def _replay_events(self, client: ClientSubscription, limit: int) -> list[dict[str, Any]]:
-        if limit <= 0:
+        if limit <= 0 or not (client.cas or client.symbols):
             return []
         collected: dict[str, dict[str, Any]] = {}
         with self.repository_session() as repos:
-            if client.cas or client.symbols:
-                per_filter_limit = _per_filter_replay_limit(
-                    total_limit=limit,
-                    filter_count=len(client.cas) + len(client.symbols),
-                )
-                for event in repos.evidence.recent_events_for_token_filters(
-                    limit=limit,
-                    per_filter_limit=per_filter_limit,
-                    cas=client.cas,
-                    symbols=client.symbols,
-                ):
-                    collected[str(event["event_id"])] = event
-                events = list(collected.values())
-                events.sort(key=lambda item: item.get("received_at_ms") or 0, reverse=True)
-                return self._payloads_for_events(repos, events[:limit])
-            events = repos.evidence.recent_events(limit=limit, handles=client.handles)
-            return self._payloads_for_events(repos, events)
+            per_filter_limit = _per_filter_replay_limit(
+                total_limit=limit,
+                filter_count=len(client.cas) + len(client.symbols),
+            )
+            for event in repos.evidence.recent_events_for_token_filters(
+                limit=limit,
+                per_filter_limit=per_filter_limit,
+                cas=client.cas,
+                symbols=client.symbols,
+            ):
+                collected[str(event["event_id"])] = event
+            events = list(collected.values())
+            events.sort(key=lambda item: item.get("received_at_ms") or 0, reverse=True)
+            return self._payloads_for_events(repos, events[:limit])
 
     def _payload_matches_subscription(self, payload: dict[str, Any], client: ClientSubscription) -> bool:
-        if payload.get("type") == "notification":
-            return client.notifications
         if payload.get("type") == "live_market_update":
             target = _market_target(payload)
             return bool(target and target in client.market_targets)
-        if payload.get("type") == "market_update":
+        if payload.get("type") != "event":
             return False
         has_token_filters = bool(client.cas or client.symbols)
-        if client.handles and _event_handle(payload.get("event")) in client.handles:
-            return True
         if not has_token_filters:
-            return not client.handles
+            return False
         for entity in payload.get("entities") or []:
             ca_key = (entity.get("chain"), entity.get("normalized_value"))
             if entity.get("entity_type") == "ca" and _ca_subscription_matches(ca_key, client.cas):
@@ -216,7 +203,6 @@ class PublicWebSocketHub:
     def _payloads_for_events(repos: Any, events: list[EventRead]) -> list[dict[str, Any]]:
         event_ids = tuple(str(event["event_id"]) for event in events)
         entities_by_event = repos.entities.entities_for_events(event_ids)
-        alerts_by_event = repos.signals.alerts_for_events(event_ids)
         intents_by_event = repos.token_intents.intents_for_events(event_ids)
         token_resolutions_by_event = repos.event_tokens.for_events(event_ids)
         return [
@@ -224,7 +210,6 @@ class PublicWebSocketHub:
                 "type": "event",
                 "event": event,
                 "entities": entities_by_event.get(str(event["event_id"]), []),
-                "alerts": alerts_by_event.get(str(event["event_id"]), []),
                 "token_intents": intents_by_event.get(str(event["event_id"]), []),
                 "token_resolutions": token_resolutions_by_event.get(str(event["event_id"]), []),
             }
@@ -246,12 +231,11 @@ def _replay_limit(value: Any, default: int) -> int:
 
 def _subscription_filter_count(
     *,
-    handles: set[str],
     cas: set[tuple[str, str]],
     symbols: set[str],
     market_targets: set[tuple[str, str]],
 ) -> int:
-    return len(handles) + len(cas) + len(symbols) + len(market_targets)
+    return len(cas) + len(symbols) + len(market_targets)
 
 
 def _per_filter_replay_limit(*, total_limit: int, filter_count: int) -> int:
@@ -321,12 +305,6 @@ def _string_list(value: Any, *, field: str) -> list[str]:
     return values
 
 
-def _bool_value(value: Any, *, field: str) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"invalid_{field}")
-    return value
-
-
 def _ca_subscription_matches(ca_key: tuple[Any, Any], subscribed: set[tuple[str, str]]) -> bool:
     chain, address = ca_key
     if (chain, address) in subscribed:
@@ -335,13 +313,6 @@ def _ca_subscription_matches(ca_key: tuple[Any, Any], subscribed: set[tuple[str,
         subscribed_chain == "evm_unknown" and address == subscribed_address and chain in EVM_QUERY_CHAINS
         for subscribed_chain, subscribed_address in subscribed
     )
-
-
-def _event_handle(event: Any) -> str | None:
-    if not isinstance(event, dict):
-        return None
-    handle = event["author_handle"]
-    return str(handle).lower() if handle is not None else None
 
 
 async def _close_if_connected(websocket: WebSocket, *, code: int, reason: str) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
 from typing import Any
 
 from tracefold.market import CexTicker, DexTokenQuote, DexTokenQuoteRequest
@@ -90,14 +89,3 @@ class FakeCexQuoteProvider:
     def ticker(self, *, inst_id: str) -> CexTicker | None:
         self.requests.append(inst_id)
         return next((ticker for ticker in self._tickers if ticker.inst_id == inst_id), None)
-
-
-@dataclass
-class RecordingNotificationProvider:
-    deliveries: list[dict[str, Any]] = field(default_factory=list)
-
-    def notify(self, *, url: str, title: str, body: str, body_format: str = "text") -> None:
-        self.deliveries.append({"url": url, "title": title, "body": body, "body_format": body_format})
-
-    def notify_markdown(self, *, url: str, title: str, body: str) -> None:
-        self.deliveries.append({"url": url, "title": title, "body": body, "body_format": "markdown"})

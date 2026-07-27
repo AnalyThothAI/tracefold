@@ -1,7 +1,5 @@
 import {
   appStatusFixture,
-  notificationSummaryFixture,
-  notificationFixture,
   searchInspectFixture,
   targetSocialTimelineFixture,
   tokenRadarFixture,
@@ -17,12 +15,8 @@ export function mockBootstrap(apiMock: ApiMock) {
 }
 
 export function mockLiveRadarRoute(apiMock: ApiMock) {
-  const summary = notificationSummaryFixture();
   apiMock.getApiImpl = async (path, requestOptions) => {
     if (path === "/api/status") return ok(appStatusFixture());
-    if (path === "/api/notifications") {
-      return ok({ items: [], summary });
-    }
     if (path === "/api/token-radar") return ok(tokenRadarFixture());
     if (path === "/api/stocks-radar") return ok(stocksRadarFixture());
     if (path === "/api/news/feed") return ok(newsFeedFixture());
@@ -38,33 +32,9 @@ export function mockLiveRadarRoute(apiMock: ApiMock) {
   };
 }
 
-export function mockNotificationRoute(apiMock: ApiMock) {
-  const summary = {
-    ...notificationSummaryFixture(),
-    unread_count: 1,
-    high_unread_count: 1,
-    account_unread_counts: { traderpow: 1 },
-  };
-  const notification = notificationFixture();
-  apiMock.getApiImpl = async (path) => {
-    if (path === "/api/status") {
-      return ok(appStatusFixture());
-    }
-    if (path === "/api/notifications") return ok({ items: [notification], summary });
-    if (path === "/api/token-radar") return ok(tokenRadarFixture());
-    if (path === "/api/stocks-radar") return ok(stocksRadarFixture());
-    if (path === "/api/news/feed") return ok(newsFeedFixture());
-    if (path === "/api/token-case") return ok(tokenCaseFixture());
-    if (path === "/api/target-social-timeline") return ok(targetSocialTimelineFixture());
-    if (path === "/api/target-posts") return ok(tokenCasePostsFixture());
-    throw new Error(`unexpected path ${path}`);
-  };
-}
-
 function stocksRadarFixture() {
   return {
     window: "1h",
-    scope: "all",
     rows: [],
     health: { returned_count: 0, quote_ready_count: 0, quote_unavailable_count: 0 },
   };
@@ -77,7 +47,6 @@ function tokenCaseSearchInspectFixture(q: string) {
       q,
       normalized_q: q.toLowerCase(),
       window: "24h",
-      scope: "all",
       result_kind: "token_result",
     },
     resolver: {

@@ -27,7 +27,6 @@ const featureClassPrefixes: Record<string, string[]> = {
     "decision-count",
     "main-route-button",
     "rail-",
-    "scope-stack",
     "search-focus-mode",
     "search-shell",
     "searchbar",
@@ -36,8 +35,6 @@ const featureClassPrefixes: Record<string, string[]> = {
     "top-stats",
     "topbar",
     "topbar-",
-    "watchlist",
-    "watchlist-",
     "ws-status-beacon",
   ],
   live: [
@@ -51,11 +48,9 @@ const featureClassPrefixes: Record<string, string[]> = {
   ],
   macro: ["active-trigger-column", "macro-"],
   news: ["news-"],
-  notifications: ["notification-", "watchlist-notification-dot"],
   ops: ["ops-"],
   search: ["search-"],
   stocks: ["stock-", "stocks-"],
-  watchlist: ["watchlist-"],
 };
 
 const modifierClassNames = new Set([
@@ -84,8 +79,6 @@ const modifierClassNames = new Set([
   "frozen",
   "gap",
   "good",
-  "has-high",
-  "has-unread",
   "health",
   "hold",
   "holders",
@@ -109,14 +102,12 @@ const modifierClassNames = new Set([
   "settled",
   "stress",
   "two",
-  "unread",
   "unavailable",
   "up",
   "venue",
   "volume",
   "warn",
   "watch",
-  "watched",
   "wide",
 ]);
 

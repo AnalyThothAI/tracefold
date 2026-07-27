@@ -57,7 +57,6 @@ describe("data router architecture", () => {
       "@features/search",
       "@features/stocks",
       "@features/token-case",
-      "@features/watchlist",
     ];
 
     expect(importSources.filter((source) => pageExportingFeatureBarrels.includes(source))).toEqual(

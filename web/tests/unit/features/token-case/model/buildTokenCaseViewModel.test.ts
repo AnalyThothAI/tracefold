@@ -10,7 +10,7 @@ describe("buildTokenCaseViewModel", () => {
 
     const vm = buildTokenCaseViewModel({
       dossier,
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
       posts: dossier.posts,
       isLoadingPosts: false,
       isFetchingNextPage: false,
@@ -26,7 +26,7 @@ describe("buildTokenCaseViewModel", () => {
     ]);
     expect(vm.metrics.find((metric) => metric.key === "radar-rank")).toMatchObject({
       value: "#3",
-      detail: "current 1h / all row",
+      detail: "current 1h row",
       tone: "info",
     });
     expect(vm.metrics.find((metric) => metric.key === "radar-lane")?.value).toBe("resolved");
@@ -34,13 +34,12 @@ describe("buildTokenCaseViewModel", () => {
     expect(vm.metrics.find((metric) => metric.key === "confidence")).toBeUndefined();
     expect(vm.metrics.find((metric) => metric.key === "readiness")).toBeUndefined();
     expect(vm.metrics.find((metric) => metric.key === "authors")).toBeUndefined();
-    expect(vm.metrics.find((metric) => metric.key === "watched")).toBeUndefined();
     expect(vm.metrics.find((metric) => metric.key === "radar-decision")).toMatchObject({
       detail: "rank score 70",
       tone: "info",
     });
     expect(vm.hero.logoUrl).toBe(HANSA_TOKEN_IMAGE_URL);
-    expect(vm.timeline.items[0]).toMatchObject({ phase: "expansion", role: "watched" });
+    expect(vm.timeline.items[0]).toMatchObject({ phase: "expansion", role: "early_amplifier" });
     expect(vm.timeline.items[0].pills).toEqual([]);
     expect(vm.timeline.items[0].pills.map((pill) => pill.label)).not.toContain("PQ 82");
     expect(vm.market.status).toBe("missing");
@@ -53,7 +52,7 @@ describe("buildTokenCaseViewModel", () => {
 
     const vm = buildTokenCaseViewModel({
       dossier,
-      route: { window: "4h", scope: "watched", postSort: "recent" },
+      route: { window: "4h" },
     });
 
     expect(vm.metrics.map((metric) => [metric.key, metric.value])).toEqual([
@@ -90,7 +89,7 @@ describe("buildTokenCaseViewModel", () => {
           ],
         },
       },
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
     });
 
     expect(vm.timeline.items[0].pills.map((pill) => pill.label)).toContain("$0.00042");
@@ -127,7 +126,7 @@ describe("buildTokenCaseViewModel", () => {
           ],
         },
       },
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
     });
 
     expect(vm.timeline.items[0].market).toEqual({
@@ -138,18 +137,18 @@ describe("buildTokenCaseViewModel", () => {
     });
   });
 
-  it("filters watched timeline items on the client", () => {
+  it("keeps the full evidence timeline", () => {
     const dossier = tokenCaseFixture();
 
     const vm = buildTokenCaseViewModel({
       dossier,
-      route: { window: "1h", scope: "all", postSort: "watched" },
+      route: { window: "1h" },
       posts: dossier.posts,
       isLoadingPosts: false,
       isFetchingNextPage: false,
     });
 
-    expect(vm.timeline.items.every((item) => item.isWatched)).toBe(true);
+    expect(vm.timeline.items).toHaveLength(dossier.posts.items.length);
   });
 
   it("keeps stale market snapshots in a degraded market state", () => {
@@ -164,7 +163,7 @@ describe("buildTokenCaseViewModel", () => {
           error: null,
         },
       },
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
       posts: dossier.posts,
     });
 
@@ -186,7 +185,7 @@ describe("buildTokenCaseViewModel", () => {
           open_interest_usd: 12_400_000,
         },
       },
-      route: { window: "1h", scope: "all", postSort: "recent" },
+      route: { window: "1h" },
       posts: dossier.posts,
     });
 

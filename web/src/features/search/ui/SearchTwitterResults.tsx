@@ -25,7 +25,6 @@ type EvidenceRow = {
   handle?: string | null;
   text: string;
   anchor: string;
-  watched: boolean;
   quality?: number | null;
   delta?: number | null;
   url?: string | null;
@@ -40,7 +39,6 @@ export function SearchTwitterResults({
   onSelectedStageChange,
 }: SearchTwitterResultsProps) {
   const [query, setQuery] = useState("");
-  const [watchedOnly, setWatchedOnly] = useState(false);
   const [sortMode, setSortMode] = useState<"recent" | "quality">("recent");
 
   const rows = useMemo(
@@ -52,7 +50,6 @@ export function SearchTwitterResults({
     const normalizedQuery = query.trim().toLowerCase();
     return rows
       .filter((row) => selectedStageId === "all" || row.stageId === selectedStageId)
-      .filter((row) => !watchedOnly || row.watched)
       .filter(
         (row) =>
           !normalizedQuery ||
@@ -65,7 +62,7 @@ export function SearchTwitterResults({
           ? Number(right.quality ?? -1) - Number(left.quality ?? -1)
           : Number(right.receivedAtMs ?? 0) - Number(left.receivedAtMs ?? 0),
       );
-  }, [query, rows, selectedStageId, sortMode, watchedOnly]);
+  }, [query, rows, selectedStageId, sortMode]);
 
   return (
     <section className="search-panel search-twitter-results" id="evidence">
@@ -103,22 +100,12 @@ export function SearchTwitterResults({
           <option value="recent">recent</option>
           <option value="quality">quality</option>
         </select>
-        <label htmlFor="search-evidence-watched-only">
-          <input
-            aria-label="watched evidence only"
-            id="search-evidence-watched-only"
-            checked={watchedOnly}
-            onChange={(event) => setWatchedOnly(event.target.checked)}
-            type="checkbox"
-          />
-          watched
-        </label>
       </div>
 
       {filteredRows.length ? (
         <div className="search-evidence-list">
           {filteredRows.map((row) => (
-            <article key={row.id} className={row.watched ? "watched" : ""}>
+            <article key={row.id}>
               <div className="search-evidence-time">
                 <b>{formatRelativeTime(row.receivedAtMs)} ago</b>
                 <span>{row.phase}</span>
@@ -163,7 +150,6 @@ function rowFromPost(post: TokenTimelinePost): EvidenceRow {
       price?.price_usd !== undefined && price?.price_usd !== null
         ? formatTokenPriceUsd(price.price_usd)
         : (price?.status ?? "-"),
-    watched: Boolean(post.is_watched),
     quality: post.post_quality?.score,
     delta: post.price_delta_from_previous_post_pct,
     url: post.url,
@@ -179,7 +165,6 @@ function rowFromSearchItem(item: SearchItem): EvidenceRow {
     handle: item.event.author_handle,
     text: item.event.text_clean ?? item.event.search_text ?? item.event.content?.text ?? "",
     anchor: "-",
-    watched: Boolean(item.event.is_watched),
     quality: Math.round(item.score * 1000),
     delta: null,
     url: item.event.canonical_url,

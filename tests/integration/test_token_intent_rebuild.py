@@ -25,15 +25,11 @@ def test_rebuild_recent_token_intents_uses_current_builder_policy():
             reference_text="Could be something, but you will own solana:F7pB3ZdfBnyFw2LRHydWEn9BmhEa5XihXLjhySFRpump",
         )
         with conn.transaction():
-            EvidenceRepository(conn).insert_event_row(
-                event_to_row(event, is_watched=False, now_ms=event.received_at_ms)
-            )
+            EvidenceRepository(conn).insert_event_row(event_to_row(event, now_ms=event.received_at_ms))
 
         result = rebuild_recent_token_intents(
             repos=repositories_for_connection(
                 conn,
-                notification_delivery_running_timeout_ms=300_000,
-                notification_delivery_stale_running_terminalization_batch_size=100,
             ),
             now_ms=event.received_at_ms + 1_000,
             window="5m",
@@ -42,8 +38,6 @@ def test_rebuild_recent_token_intents_uses_current_builder_policy():
 
         intents = repositories_for_connection(
             conn,
-            notification_delivery_running_timeout_ms=300_000,
-            notification_delivery_stale_running_terminalization_batch_size=100,
         ).token_intents.intents_for_event("event-cross")
         assert result["events_rebuilt"] == 1
         assert {intent["intent_key"] for intent in intents} == {
@@ -87,6 +81,5 @@ def _event(*, event_id: str, text: str, reference_text: str | None = None) -> Tw
         unfollow_target=None,
         avatar_change=None,
         bio_change=None,
-        matched_handles=[],
         raw=None,
     )

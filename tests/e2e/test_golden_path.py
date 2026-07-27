@@ -92,11 +92,11 @@ def test_golden_path_websocket_pushes_after_writer(
     in-memory hub.publish path is collector-only and disabled in this setup,
     so replay is the right channel to assert cross-process propagation.
 
-    The replay returns events in chronological order (oldest first), so we
-    drain the subscription and assert the new event id is somewhere in the
-    delivered batch -- this is the right contract for "the WS surface saw the
-    write that another process performed", and it tolerates other writes
-    landing in the same DB during the session.
+    The replay uses an explicit symbol filter and returns matching events in
+    chronological order (oldest first), so we drain the subscription and assert
+    the new event id is somewhere in the delivered batch. This is the right
+    contract for "the WS surface saw the write that another process performed"
+    without treating an empty event filter as broadcast-all permission.
     """
     event_id = f"e2e-{uuid.uuid4().hex[:12]}"
     # Insert BEFORE connecting so replay finds it deterministically.
@@ -114,7 +114,7 @@ def test_golden_path_websocket_pushes_after_writer(
                 json.dumps(
                     {
                         "type": "subscribe",
-                        "handles": ["e2e_test"],
+                        "symbols": ["WS"],
                         "replay": 100,
                     }
                 )

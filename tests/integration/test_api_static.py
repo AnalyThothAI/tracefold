@@ -17,7 +17,6 @@ def _disable_workers(settings: Settings) -> None:
 def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     prepare_postgres_database()
     settings = Settings(
-        handles=("toly",),
         ws_token="secret",
         storage=postgres_settings_storage(),
         workers=disabled_workers_settings(),
@@ -57,7 +56,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
             )
         ]
         unknown_macro_route = client.get("/macro/not-a-page")
-        watchlist_route = client.get("/watchlist?handle=toly")
+        retired_watchlist_route = client.get("/watchlist?handle=toly")
         asset = client.get("/assets/app.js")
         favicon = client.get("/favicon.svg")
         health = client.get("/healthz")
@@ -77,8 +76,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     assert all(response.status_code == 200 for response in macro_routes)
     assert all("text/html" in response.headers["content-type"] for response in macro_routes)
     assert unknown_macro_route.status_code == 404
-    assert watchlist_route.status_code == 200
-    assert "text/html" in watchlist_route.headers["content-type"]
+    assert retired_watchlist_route.status_code == 404
     assert asset.status_code == 200
     assert "window.__cockpit" in asset.text
     assert asset.headers["cache-control"] == "no-cache, max-age=0, must-revalidate"
@@ -119,7 +117,7 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path):
             )
         ]
         unknown_macro_route = client.get("/macro/not-a-page")
-        watchlist_route = client.get("/watchlist?handle=toly")
+        retired_watchlist_route = client.get("/watchlist?handle=toly")
         missing_api = client.get("/api/not-a-route")
 
     assert token_route.status_code == 200
@@ -136,6 +134,5 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path):
     assert all(response.status_code == 200 for response in macro_routes)
     assert all("text/html" in response.headers["content-type"] for response in macro_routes)
     assert unknown_macro_route.status_code == 404
-    assert watchlist_route.status_code == 200
-    assert "text/html" in watchlist_route.headers["content-type"]
+    assert retired_watchlist_route.status_code == 404
     assert missing_api.status_code == 404
