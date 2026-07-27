@@ -22,7 +22,7 @@ from tracefold.app.http.http import create_api_router
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.schemas import ReadinessData
 from tracefold.app.http.ws import PublicWebSocketHub
-from tracefold.news import NewsInterface
+from tracefold.news import NewsInterface, attach_pipeline_runtime_health
 from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
 from tracefold.platform.postgres.postgres_client import postgres_liveness_check
@@ -202,21 +202,21 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
     try:
         with runtime.repositories() as repos:
             news_health = NewsInterface(repos.news).health(now_ms=measured_at_ms)
-        _attach_news_pipeline_health(
+        attach_pipeline_runtime_health(
             news_health,
             worker_status=snapshot.workers.get("news_pipeline"),
             now_ms=measured_at_ms,
         )
     except Exception as exc:
         measured_at_ms = int(time.time() * 1000)
-        query_failure = {"status": "unavailable", "error": type(exc).__name__}
+        query_failure = {"status": "degraded", "error": type(exc).__name__}
         news_health = {
-            "status": "unavailable",
+            "status": "degraded",
             "reasons": ["news_health_query_failed"],
             "layers": {layer: query_failure for layer in ("ingest", "story", "brief")},
             "measured_at_ms": measured_at_ms,
         }
-    if str(news_health["status"]) != "healthy":
+    if str(news_health["status"]) != "ready":
         reasons.extend(f"news:{reason}" for reason in news_health["reasons"])
     payload = {
         "ok": not reasons,
@@ -230,65 +230,6 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
         "news": news_health,
     }
     return payload
-
-
-def _attach_news_pipeline_health(
-    news_health: dict[str, Any],
-    *,
-    worker_status: dict[str, Any] | None,
-    now_ms: int,
-) -> None:
-    if not worker_status or not worker_status.get("enabled"):
-        return
-    story = news_health["layers"]["story"]
-    last_finished = worker_status.get("last_finished_at_ms")
-    last_result = worker_status.get("last_result")
-    notes = dict(last_result.get("notes") or {}) if isinstance(last_result, dict) else {}
-    successful_build = (
-        last_finished is not None
-        and isinstance(last_result, dict)
-        and int(last_result.get("failed") or 0) == 0
-        and int(last_result.get("dead") or 0) == 0
-        and not worker_status.get("last_error")
-    )
-    last_successful_build = int(last_finished) if successful_build else None
-    age_ms = max(0, now_ms - last_successful_build) if last_successful_build is not None else None
-    story.update(
-        {
-            "last_successful_build_at_ms": last_successful_build,
-            "last_successful_build_age_ms": age_ms,
-            "last_build_added": int(notes.get("added") or 0),
-            "last_build_archived": int(notes.get("archived") or 0),
-            "last_build_unchanged": int(notes.get("unchanged") or 0),
-        }
-    )
-    layer_reasons = list(story.get("reasons") or [])
-    effective_status = str(worker_status.get("effective_status") or "unavailable")
-    if last_successful_build is None:
-        layer_reasons.append("pipeline_has_no_successful_build_receipt")
-        story["status"] = "unavailable"
-    elif effective_status in {"failed", "unavailable"}:
-        layer_reasons.append(f"pipeline_worker_{effective_status}")
-        if story["status"] == "healthy":
-            story["status"] = "degraded"
-    elif age_ms is not None and age_ms > 300_000:
-        layer_reasons.append("last_successful_build_older_than_5m")
-        if story["status"] == "healthy":
-            story["status"] = "degraded"
-    story["reasons"] = list(dict.fromkeys(layer_reasons))
-
-    layers = news_health["layers"]
-    statuses = [str(layer["status"]) for layer in layers.values()]
-    news_health["status"] = (
-        "unavailable"
-        if all(status == "unavailable" for status in statuses)
-        else "degraded"
-        if any(status != "healthy" for status in statuses)
-        else "healthy"
-    )
-    news_health["reasons"] = [
-        f"{name}:{reason}" for name, layer in layers.items() for reason in layer.get("reasons", ())
-    ]
 
 
 def _db_status(runtime: Runtime) -> dict[str, object]:

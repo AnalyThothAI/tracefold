@@ -4,8 +4,9 @@ import calendar
 import html
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 import feedparser
 import httpx
@@ -26,12 +27,26 @@ class RssFeedReader(NewsFeedReader):
         timeout_seconds: float = 20.0,
         user_agent: str = "Tracefold/0.1 RSS reader",
         max_attempts: int = 2,
+        relay_base_url: str = "",
+        relay_auth_header: str = "x-relay-key",
+        relay_auth_token: str | None = None,
+        relay_allowed_urls: Collection[str] = (),
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._max_attempts = require_positive_int(
             max_attempts,
             error_code="news_rss_max_attempts_required",
         )
+        self._relay_base_url = str(relay_base_url or "").strip().rstrip("/")
+        if self._relay_base_url:
+            parsed_relay = urlsplit(self._relay_base_url)
+            if parsed_relay.scheme not in {"http", "https"} or not parsed_relay.netloc:
+                raise ValueError("news_rss_relay_url_invalid")
+        self._relay_auth_header = str(relay_auth_header or "").strip().lower()
+        self._relay_auth_token = str(relay_auth_token or "").strip() or None
+        self._relay_allowed_urls = frozenset(str(url).strip() for url in relay_allowed_urls if str(url).strip())
+        if self._relay_auth_token and not self._relay_auth_header:
+            raise ValueError("news_rss_relay_auth_header_required")
         self._client = httpx.Client(
             timeout=require_positive_float(
                 timeout_seconds,
@@ -57,12 +72,17 @@ class RssFeedReader(NewsFeedReader):
             headers["If-None-Match"] = etag
         if last_modified:
             headers["If-Modified-Since"] = last_modified
-        response = self._get_with_retry(source.feed_url, headers=headers)
+        response, fetch_path, direct_error_code = self._fetch_response(
+            source=source,
+            headers=headers,
+        )
         response_etag = response.headers.get("etag") or etag
         response_last_modified = response.headers.get("last-modified") or last_modified
         if response.status_code == 304:
             return NewsFeedFetch(
                 status_code=304,
+                fetch_path=fetch_path,
+                direct_error_code=direct_error_code,
                 etag=response_etag,
                 last_modified=response_last_modified,
                 not_modified=True,
@@ -73,13 +93,20 @@ class RssFeedReader(NewsFeedReader):
         parsed = feedparser.parse(response.content)
         if bool(getattr(parsed, "bozo", False)) and not getattr(parsed, "entries", None):
             exception = getattr(parsed, "bozo_exception", None)
-            raise ValueError(f"news_rss_parse_failed:{type(exception).__name__}:{exception}")
+            raise NewsFeedAcquisitionError(
+                f"news_rss_parse_failed:{type(exception).__name__}:{exception}",
+                status_code=int(response.status_code),
+                fetch_path=fetch_path,
+                direct_error_code=direct_error_code,
+            )
         feed_language = _optional_text(_mapping_get(getattr(parsed, "feed", {}), "language"))
         raw_entries = tuple(getattr(parsed, "entries", ()))
         capped_entries = raw_entries[:5]
         entries = tuple(_entry(entry, feed_language=feed_language) for entry in capped_entries)
         return NewsFeedFetch(
             status_code=int(response.status_code),
+            fetch_path=fetch_path,
+            direct_error_code=direct_error_code,
             entries=entries,
             entries_seen=len(raw_entries),
             gate_counts={"per_feed_cap": max(0, len(raw_entries) - len(capped_entries))},
@@ -103,6 +130,97 @@ class RssFeedReader(NewsFeedReader):
                 continue
             return response
         raise RuntimeError("news_rss_retry_unreachable")
+
+    def _fetch_response(
+        self,
+        *,
+        source: NewsSourceDefinition,
+        headers: Mapping[str, str],
+    ) -> tuple[httpx.Response, str, str | None]:
+        direct_error_code: str | None = None
+        try:
+            direct = self._get_with_retry(source.feed_url, headers=headers)
+            if direct.status_code == 304:
+                return direct, "direct", None
+            if direct.status_code in {403, 429} or direct.status_code >= 500:
+                direct_error_code = f"http_{direct.status_code}"
+            elif direct.status_code >= 400:
+                raise NewsFeedAcquisitionError(
+                    "news_rss_direct_http_error",
+                    status_code=int(direct.status_code),
+                    fetch_path="direct",
+                    direct_error_code=f"http_{direct.status_code}",
+                )
+            else:
+                if _looks_like_rss(direct.text):
+                    return direct, "direct", None
+                direct_error_code = "non_feed_response"
+        except httpx.TransportError as exc:
+            direct_error_code = f"transport_{type(exc).__name__}"
+
+        if not self._relay_base_url:
+            raise NewsFeedAcquisitionError(
+                "news_rss_direct_failed_no_relay",
+                status_code=(int(direct.status_code) if "direct" in locals() and direct is not None else None),
+                fetch_path="direct",
+                direct_error_code=direct_error_code,
+            )
+        if source.feed_url not in self._relay_allowed_urls:
+            raise NewsFeedAcquisitionError(
+                "news_rss_relay_source_not_allowed",
+                status_code=(int(direct.status_code) if "direct" in locals() and direct is not None else None),
+                fetch_path="direct",
+                direct_error_code=direct_error_code,
+            )
+        relay_headers: dict[str, str] = {}
+        if self._relay_auth_token:
+            relay_headers[self._relay_auth_header] = self._relay_auth_token
+        relay_endpoint = (
+            self._relay_base_url
+            if urlsplit(self._relay_base_url).path.rstrip("/").endswith("/rss")
+            else f"{self._relay_base_url}/rss"
+        )
+        try:
+            relay = self._client.get(
+                relay_endpoint,
+                params={"url": source.feed_url},
+                headers=relay_headers,
+            )
+            if relay.status_code == 304:
+                return relay, "relay", direct_error_code
+            relay.raise_for_status()
+            if not _looks_like_rss(relay.text):
+                raise NewsFeedAcquisitionError(
+                    "news_rss_relay_non_feed_response",
+                    status_code=int(relay.status_code),
+                    fetch_path="relay",
+                    direct_error_code=direct_error_code,
+                )
+            return relay, "relay", direct_error_code
+        except NewsFeedAcquisitionError:
+            raise
+        except httpx.HTTPError as exc:
+            raise NewsFeedAcquisitionError(
+                f"news_rss_relay_failed:{type(exc).__name__}",
+                status_code=getattr(getattr(exc, "response", None), "status_code", None),
+                fetch_path="relay",
+                direct_error_code=direct_error_code,
+            ) from exc
+
+
+class NewsFeedAcquisitionError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None,
+        fetch_path: str,
+        direct_error_code: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.fetch_path = fetch_path
+        self.direct_error_code = direct_error_code
 
 
 def _entry(entry: Any, *, feed_language: str | None) -> NewsFeedEntry:
@@ -230,4 +348,4 @@ def _looks_like_rss(value: str) -> bool:
     return bool(re.search(r"<rss[\s>]|<feed[\s>]|<rdf:rdf[\s>]", head))
 
 
-__all__ = ["RssFeedReader"]
+__all__ = ["NewsFeedAcquisitionError", "RssFeedReader"]

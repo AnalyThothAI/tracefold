@@ -12,7 +12,7 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.news import NewsInterface
+from tracefold.news import NewsInterface, attach_pipeline_runtime_health
 
 router = APIRouter()
 _Envelope = api_schemas.ApiEnvelope[api_schemas.JsonObject]
@@ -22,12 +22,37 @@ _Envelope = api_schemas.ApiEnvelope[api_schemas.JsonObject]
 def get_news_feed(
     request: Request,
     category: Annotated[str, Query()] = "",
+    level: Annotated[str, Query()] = "",
+    source_id: Annotated[str, Query()] = "",
     sort: Annotated[str, Query(pattern="^(importance|latest)$")] = "importance",
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str, Query()] = "",
 ) -> Response:
-    _validate_query_params(request, supported={"category", "sort", "token"})
+    _validate_query_params(
+        request,
+        supported={
+            "category",
+            "level",
+            "source_id",
+            "sort",
+            "limit",
+            "cursor",
+            "token",
+        },
+    )
     runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        data = _news_interface(repos).get_feed(category=category or None, sort=sort)
+    try:
+        with runtime.repositories() as repos:
+            data = _news_interface(repos).get_feed(
+                category=category or None,
+                level=level or None,
+                source_id=source_id or None,
+                sort=sort,
+                limit=limit,
+                cursor=cursor or None,
+            )
+    except ValueError as exc:
+        raise ApiBadRequest(str(exc), field="cursor") from exc
     return _etagged(data, request)
 
 
@@ -61,6 +86,21 @@ def get_news_sources(request: Request) -> JSONResponse:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = _news_interface(repos).get_sources()
+    return _validated_json(_Envelope, {"ok": True, "data": data})
+
+
+@router.get("/news/status", response_model=_Envelope)
+def get_news_status(request: Request) -> JSONResponse:
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        data = _news_interface(repos).health(now_ms=int(time.time() * 1000))
+    measured_at_ms = int(data["measured_at_ms"])
+    attach_pipeline_runtime_health(
+        data,
+        worker_status=runtime.current_snapshot().workers.get("news_pipeline"),
+        now_ms=measured_at_ms,
+    )
     return _validated_json(_Envelope, {"ok": True, "data": data})
 
 

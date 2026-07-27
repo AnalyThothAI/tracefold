@@ -185,7 +185,6 @@ def test_news_runtime_has_exactly_the_three_worldmonitor_pipeline_workers() -> N
     news_workers = {manifest.name for manifest in all_worker_manifests() if manifest.name.startswith("news_")}
     assert news_workers == {
         "news_pipeline",
-        "news_ai_classify",
         "news_world_brief",
     }
 

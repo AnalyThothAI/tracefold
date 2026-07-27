@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from tracefold.news import (
@@ -311,7 +314,7 @@ def test_worldmonitor_importance_score_matrix(
     assert factors["total"] == expected
 
 
-def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> None:
+def test_importance_is_worldmonitor_55_20_15_10_and_physical_source_based() -> None:
     factors = importance_factors(
         level="high",
         tier=1,
@@ -325,7 +328,7 @@ def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> 
         "severity_points": 41.25,
         "source_tier": 1,
         "source_points": 20.0,
-        "reporting_origin_count": 3,
+        "physical_source_count": 3,
         "scoring_corroboration_count": 3,
         "corroboration_points": 9.0,
         "recency_points": 10.0,
@@ -335,14 +338,13 @@ def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> 
     }
 
 
-def test_top8_keeps_rank_and_caps_reporting_origin_at_three() -> None:
+def test_top8_keeps_rank_and_caps_physical_source_at_three() -> None:
     stories = [
         {
             "story_id": f"story-{index}",
             "importance_score": 100 - index,
             "last_published_at_ms": 100 - index,
-            "representative_source_id": f"feed-{index}",
-            "representative_reporting_origin": "reuters" if index < 5 else f"origin-{index}",
+            "representative_source_id": "reuters" if index < 5 else f"feed-{index}",
         }
         for index in range(12)
     ]
@@ -391,8 +393,33 @@ def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
     assert validation["line_fallbacks"] == [2]
 
 
-def test_source_inventory_is_frozen_worldmonitor_full_en_plus_crypto_and_6551() -> None:
+def test_source_inventory_is_frozen_worldmonitor_full_intel_plus_crypto_and_6551() -> None:
     sources = default_sources()
-    assert len(sources) == 96
+    assert len(sources) == 117
+    assert sum(len(source.memberships) for source in sources) == 120
+    assert sum("intel" in source.memberships for source in sources) == 24
     assert any(source.name == "6551NEWS" and source.lang == "zh" for source in sources)
-    assert sum(source.category_hint == "crypto" for source in sources) == 16
+    assert sum("crypto" in source.memberships for source in sources) == 16
+    assert {source.name: source.memberships for source in sources if len(source.memberships) > 1} == {
+        "Atlantic Council": ("intel", "thinktanks"),
+        "Foreign Affairs": ("intel", "thinktanks"),
+        "Foreign Policy": ("intel", "thinktanks"),
+    }
+    manifest = [
+        {
+            "source_id": source.source_id,
+            "name": source.name,
+            "feed_url": source.feed_url,
+            "tier": source.tier,
+            "lang": source.lang,
+            "memberships": list(source.memberships),
+        }
+        for source in sources
+    ]
+    encoded = json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    assert hashlib.sha256(encoded).hexdigest() == ("00e83f0eb86c04d372e7bd2f666c6ea169efd7df289664bda5df8c82b2595326")

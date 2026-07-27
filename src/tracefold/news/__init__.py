@@ -2,10 +2,10 @@
 
 from .classification import (
     SEVERITY_VALUES,
-    bounded_ai_classification,
     classify_by_keyword,
     has_historical_marker,
 )
+from .health import attach_pipeline_runtime_health
 from .identity import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
@@ -17,7 +17,6 @@ from .identity import (
 )
 from .interface import NewsInterface
 from .models import (
-    AI_CLASSIFIER_PROMPT_VERSION,
     BRIEF_PROMPT_VERSION,
     BRIEF_SCHEMA_VERSION,
     BRIEF_WORKFLOW_VERSION,
@@ -30,7 +29,6 @@ from .models import (
     NewsBriefPublisher,
     NewsBriefStory,
     NewsClassification,
-    NewsClassificationPublisher,
     NewsFeedEntry,
     NewsFeedFetch,
     NewsFeedReader,
@@ -40,10 +38,9 @@ from .models import (
 from .ranking import importance_score, is_delayed_brief_excluded, select_top_stories
 from .repository import NewsRepository
 from .sources import WORLDMONITOR_COMMIT, default_sources
-from .workers import NewsAiClassifyWorker, NewsPipelineWorker, NewsWorldBriefWorker
+from .workers import NewsPipelineWorker, NewsWorldBriefWorker
 
 __all__ = [
-    "AI_CLASSIFIER_PROMPT_VERSION",
     "BRIEF_PROMPT_VERSION",
     "BRIEF_SCHEMA_VERSION",
     "BRIEF_WORKFLOW_VERSION",
@@ -55,12 +52,10 @@ __all__ = [
     "STORY_IDENTITY_VERSION",
     "STORY_SIMILARITY_THRESHOLD",
     "WORLDMONITOR_COMMIT",
-    "NewsAiClassifyWorker",
     "NewsBriefDraft",
     "NewsBriefPublisher",
     "NewsBriefStory",
     "NewsClassification",
-    "NewsClassificationPublisher",
     "NewsFeedEntry",
     "NewsFeedFetch",
     "NewsFeedReader",
@@ -69,7 +64,7 @@ __all__ = [
     "NewsRepository",
     "NewsSourceDefinition",
     "NewsWorldBriefWorker",
-    "bounded_ai_classification",
+    "attach_pipeline_runtime_health",
     "candidate_tokens",
     "classify_by_keyword",
     "cluster_texts",

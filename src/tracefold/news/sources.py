@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Final
+from typing import Final, TypedDict
 
 from .models import NewsSourceDefinition
 
@@ -184,6 +184,68 @@ _WM_FULL_EN: Final[tuple[tuple[str, str, str, int], ...]] = (
     ),
 )
 
+_WM_INTEL: Final[tuple[tuple[str, str, str, int], ...]] = (
+    ("intel", "Defense One", "https://www.defenseone.com/rss/all/", 3),
+    ("intel", "The War Zone", "https://www.twz.com/feed", 3),
+    (
+        "intel",
+        "Defense News",
+        "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+        3,
+    ),
+    ("intel", "Breaking Defense", "https://breakingdefense.com/feed/", 3),
+    (
+        "intel",
+        "Military Times",
+        "https://www.militarytimes.com/arc/outboundfeeds/rss/?outputType=xml",
+        2,
+    ),
+    ("intel", "Task & Purpose", "https://taskandpurpose.com/feed/", 3),
+    (
+        "intel",
+        "USNI News",
+        "https://news.google.com/rss/search?q=site:news.usni.org+when:3d&hl=en-US&gl=US&ceid=US:en",
+        2,
+    ),
+    ("intel", "gCaptain", "https://gcaptain.com/feed/", 3),
+    (
+        "intel",
+        "Oryx OSINT",
+        "https://www.oryxspioenkop.com/feeds/posts/default?alt=rss",
+        2,
+    ),
+    ("intel", "Foreign Policy", "https://foreignpolicy.com/feed/", 3),
+    ("intel", "Foreign Affairs", "https://www.foreignaffairs.com/rss.xml", 3),
+    ("intel", "Atlantic Council", "https://www.atlanticcouncil.org/feed/", 3),
+    (
+        "intel",
+        "Bellingcat",
+        "https://news.google.com/rss/search?q=site%3Abellingcat.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+        3,
+    ),
+    ("intel", "Krebs Security", "https://krebsonsecurity.com/feed/", 3),
+    (
+        "intel",
+        "Arms Control Assn",
+        "https://news.google.com/rss/search?q=site%3Aarmscontrol.org%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+        2,
+    ),
+    (
+        "intel",
+        "Bulletin of Atomic Scientists",
+        "https://news.google.com/rss/search?q=site%3Athebulletin.org%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+        2,
+    ),
+    ("intel", "FAO News", "https://www.fao.org/feeds/fao-newsroom-rss", 4),
+    ("intel", "OCCRP", "https://www.occrp.org/en/feed", 2),
+    ("intel", "DFRLab", "https://dfrlab.org/feed/", 2),
+    ("intel", "Lighthouse Reports", "https://www.lighthousereports.com/feed/", 3),
+    ("intel", "The Sentry", "https://thesentry.org/feed/", 3),
+    ("intel", "GITOC", "https://globalinitiative.net/feed/", 3),
+    ("intel", "VSquare", "https://vsquare.org/feed/", 3),
+    ("intel", "Correctiv", "https://correctiv.org/feed/", 3),
+)
+
 _CRYPTO: Final[tuple[tuple[str, str, str, int], ...]] = (
     ("crypto", "CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/", 3),
     ("crypto", "Cointelegraph", "https://cointelegraph.com/rss", 3),
@@ -233,44 +295,41 @@ _CRYPTO: Final[tuple[tuple[str, str, str, int], ...]] = (
     ("crypto", "6551NEWS", "http://rsshub:1200/telegram/channel/news6551", 2),
 )
 
-_ORIGIN_ALIASES: Final = {
-    "bbc": "bbc",
-    "guardian": "the-guardian",
-    "reuters": "reuters",
-    "mit tech review": "mit-technology-review",
-    "white house": "white-house",
-    "bloomberg": "bloomberg",
-}
+
+class _SourceAccumulator(TypedDict):
+    name: str
+    url: str
+    tier: int
+    memberships: set[str]
 
 
-def _source_id(category: str, name: str, url: str) -> str:
+def _source_id(name: str, url: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     digest = hashlib.sha256(url.encode()).hexdigest()[:8]
-    return f"wm-{category}-{slug}-{digest}"
-
-
-def _reporting_origin(name: str) -> str:
-    lowered = name.lower()
-    for prefix, origin in _ORIGIN_ALIASES.items():
-        if lowered.startswith(prefix):
-            return origin
-    return re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    return f"news-{slug}-{digest}"
 
 
 def default_sources() -> tuple[NewsSourceDefinition, ...]:
-    rows = (*_WM_FULL_EN, *_CRYPTO)
+    physical: dict[tuple[str, str], _SourceAccumulator] = {}
+    for membership, name, url, tier in (*_WM_FULL_EN, *_WM_INTEL, *_CRYPTO):
+        key = (name, url)
+        row = physical.setdefault(
+            key,
+            {"name": name, "url": url, "tier": tier, "memberships": set()},
+        )
+        row["tier"] = min(int(row["tier"]), tier)
+        row["memberships"].add(membership)
     return tuple(
         NewsSourceDefinition(
-            source_id=_source_id(category, name, url),
-            name=name,
-            feed_url=url,
-            reporting_origin=_reporting_origin(name),
-            tier=tier,
-            lang="zh" if name == "6551NEWS" else "en",
-            category_hint=category,
+            source_id=_source_id(str(row["name"]), str(row["url"])),
+            name=str(row["name"]),
+            feed_url=str(row["url"]),
+            tier=int(row["tier"]),
+            lang="zh" if row["name"] == "6551NEWS" else "en",
+            memberships=tuple(sorted(str(value) for value in row["memberships"])),
             refresh_interval_seconds=120,
         )
-        for category, name, url, tier in rows
+        for row in physical.values()
     )
 
 

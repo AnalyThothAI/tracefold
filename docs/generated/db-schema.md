@@ -653,32 +653,14 @@
 | `payload_hash` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
-## `news_ai_classification_cache`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `cache_key` | `TEXT` | False | `None` |
-| `item_id` | `TEXT` | False | `None` |
-| `model` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `level` | `TEXT` | False | `None` |
-| `category` | `TEXT` | False | `None` |
-| `confidence` | `DOUBLE PRECISION` | False | `None` |
-| `raw_response` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_brief_current`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `singleton_key` | `BOOLEAN` | False | `true` |
 | `publication_id` | `TEXT` | True | `None` |
-| `pending_fingerprint` | `TEXT` | True | `None` |
-| `update_started_at_ms` | `BIGINT` | True | `None` |
-| `last_attempt_at_ms` | `BIGINT` | True | `None` |
-| `last_failure_at_ms` | `BIGINT` | True | `None` |
-| `last_error` | `TEXT` | True | `None` |
+| `target_fingerprint` | `TEXT` | True | `None` |
+| `latest_run_id` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_brief_publications`
@@ -701,8 +683,25 @@
 | `sources` | `JSONB` | False | `None` |
 | `validation` | `JSONB` | False | `None` |
 | `raw_response` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_brief_runs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `run_id` | `TEXT` | False | `None` |
+| `fingerprint` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `attempt_count` | `INTEGER` | False | `None` |
+| `candidate_story_count` | `INTEGER` | False | `None` |
+| `candidate_source_count` | `INTEGER` | False | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `heartbeat_at_ms` | `BIGINT` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `completed_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_feed_observations`
 
@@ -758,6 +757,8 @@
 | `started_at_ms` | `BIGINT` | False | `None` |
 | `finished_at_ms` | `BIGINT` | False | `None` |
 | `status` | `TEXT` | False | `None` |
+| `fetch_path` | `TEXT` | True | `None` |
+| `direct_error_code` | `TEXT` | True | `None` |
 | `http_status` | `INTEGER` | True | `None` |
 | `entries_seen` | `INTEGER` | False | `0` |
 | `observations_inserted` | `INTEGER` | False | `0` |
@@ -767,6 +768,13 @@
 | `error_code` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
+## `news_source_memberships`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_id` | `TEXT` | False | `None` |
+| `membership` | `TEXT` | False | `None` |
+
 ## `news_sources`
 
 | Column | Type | Nullable | Default |
@@ -774,10 +782,8 @@
 | `source_id` | `TEXT` | False | `None` |
 | `name` | `TEXT` | False | `None` |
 | `feed_url` | `TEXT` | False | `None` |
-| `reporting_origin` | `TEXT` | False | `None` |
 | `tier` | `SMALLINT` | False | `None` |
 | `lang` | `TEXT` | False | `None` |
-| `category_hint` | `TEXT` | True | `None` |
 | `enabled` | `BOOLEAN` | False | `true` |
 | `refresh_interval_seconds` | `INTEGER` | False | `None` |
 | `etag` | `TEXT` | True | `None` |
@@ -804,6 +810,7 @@
 | `representative_title` | `TEXT` | False | `None` |
 | `representative_url` | `TEXT` | False | `None` |
 | `representative_description` | `TEXT` | False | `''::text` |
+| `scoring_item_id` | `TEXT` | False | `None` |
 | `level` | `TEXT` | False | `None` |
 | `category` | `TEXT` | False | `None` |
 | `importance_score` | `INTEGER` | False | `None` |
@@ -934,6 +941,13 @@
 | `status` | `TEXT` | False | `None` |
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `release_non_news_sentinel`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `sentinel_id` | `TEXT` | False | `None` |
+| `payload` | `TEXT` | False | `None` |
 
 ## `token_discovery_dirty_lookup_keys`
 

@@ -24,18 +24,18 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
     snapshot_gate: {},
     db: { ok: true },
     news: {
-      status: "healthy",
+      status: "ready",
       reasons: [],
       layers: {
         ingest: {
-          status: "healthy",
-          enabled_sources: 96,
-          recent_success_sources: 96,
+          status: "ready",
+          enabled_sources: 117,
+          recent_success_sources: 117,
           failing_sources: 0,
           last_success_at_ms: NOW,
         },
         story: {
-          status: "healthy",
+          status: "ready",
           active_stories: 120,
           last_projected_at_ms: NOW,
           identity_version: "worldmonitor-story-identity-f73de5b7",
@@ -43,8 +43,8 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
           importance_version: "worldmonitor-importance-f73de5b7",
         },
         brief: {
-          status: "healthy",
-          public_state: "fresh",
+          status: "ready",
+          public_state: "ready",
           publication_id: "news_brief_fixture",
           last_error: null,
         },

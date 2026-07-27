@@ -30,7 +30,7 @@ class BootstrapData(ExactApiSchema):
 
 
 class NewsHealthLayerData(ExactApiSchema):
-    status: Literal["healthy", "degraded", "unavailable"]
+    status: Literal["warming", "ready", "degraded"]
     model_config = ConfigDict(extra="allow")
 
 
@@ -41,7 +41,7 @@ class NewsHealthLayersData(ExactApiSchema):
 
 
 class NewsHealthData(ExactApiSchema):
-    status: Literal["healthy", "degraded", "unavailable"]
+    status: Literal["warming", "ready", "degraded"]
     reasons: list[str]
     layers: NewsHealthLayersData
     measured_at_ms: int

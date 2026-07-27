@@ -14,7 +14,6 @@ from .models import (
     EventCategory,
     NewsBriefPublisher,
     NewsBriefStory,
-    NewsClassificationPublisher,
     NewsFeedReader,
     NewsSourceDefinition,
     ThreatLevel,
@@ -23,7 +22,7 @@ from .models import (
 
 
 class NewsPipelineWorker(WorkerBase):
-    """The only NewsItem/Story writer: fetch, normalize, cluster, score, project."""
+    """The only NewsItem/Story writer."""
 
     def __init__(
         self,
@@ -80,9 +79,15 @@ class NewsPipelineWorker(WorkerBase):
                     row = futures[future]
                     finished_at_ms = int(self.clock_ms())
                     try:
-                        fetched[str(row["source_id"])] = (future.result(), finished_at_ms)
+                        fetched[str(row["source_id"])] = (
+                            future.result(),
+                            finished_at_ms,
+                        )
                     except Exception as exc:
-                        failures[str(row["source_id"])] = (exc, finished_at_ms)
+                        failures[str(row["source_id"])] = (
+                            exc,
+                            finished_at_ms,
+                        )
 
         totals = {
             "entries_seen": 0,
@@ -107,7 +112,21 @@ class NewsPipelineWorker(WorkerBase):
                         started_at_ms=started_at_ms,
                         finished_at_ms=finished_at_ms,
                         error=error,
-                        status_code=getattr(getattr(error, "response", None), "status_code", None),
+                        status_code=getattr(
+                            error,
+                            "status_code",
+                            getattr(
+                                getattr(error, "response", None),
+                                "status_code",
+                                None,
+                            ),
+                        ),
+                        fetch_path=getattr(error, "fetch_path", None),
+                        direct_error_code=getattr(
+                            error,
+                            "direct_error_code",
+                            None,
+                        ),
                     )
                 continue
             result, finished_at_ms = fetched[source.source_id]
@@ -124,6 +143,8 @@ class NewsPipelineWorker(WorkerBase):
                     started_at_ms=started_at_ms,
                     finished_at_ms=finished_at_ms,
                     status_code=int(result.status_code),
+                    fetch_path=str(result.fetch_path),
+                    direct_error_code=result.direct_error_code,
                     etag=result.etag,
                     last_modified=result.last_modified,
                     not_modified=bool(result.not_modified),
@@ -133,8 +154,6 @@ class NewsPipelineWorker(WorkerBase):
             for key in totals:
                 totals[key] += int(summary[key])
 
-        # A full 96h recluster runs after all due fetches, even when every feed
-        # was 304: expiration/archival is a deterministic time projection.
         with (
             self.db.worker_session(
                 self.name,
@@ -153,73 +172,6 @@ class NewsPipelineWorker(WorkerBase):
                 **projection,
             },
         )
-
-
-class NewsAiClassifyWorker(WorkerBase):
-    """Optional bounded enhancement; never gates deterministic News."""
-
-    def __init__(
-        self,
-        *,
-        settings: Any,
-        db: Any,
-        telemetry: Any,
-        publisher: NewsClassificationPublisher,
-        name: str = "news_ai_classify",
-        clock_ms: Any | None = None,
-    ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
-        self.publisher = publisher
-        self.clock_ms = clock_ms or _now_ms
-
-    async def run_once(self) -> WorkerResult:
-        return await asyncio.to_thread(self.run_once_sync)
-
-    async def on_close(self) -> None:
-        await asyncio.to_thread(self.publisher.close)
-
-    def run_once_sync(self) -> WorkerResult:
-        now_ms = int(self.clock_ms())
-        with self.db.worker_session(
-            self.name,
-            statement_timeout_seconds=self.settings.statement_timeout_seconds,
-        ) as repos:
-            candidates = repos.news.list_ai_classification_candidates(
-                now_ms=now_ms,
-                limit=int(self.settings.batch_size),
-            )
-        if not candidates:
-            return WorkerResult(skipped=1, notes={"reason": "no_uncached_titles"})
-        try:
-            classifications = tuple(self.publisher.classify([str(row["title"]) for row in candidates]))
-        except Exception as exc:
-            return WorkerResult(
-                failed=len(candidates),
-                notes={"reason": type(exc).__name__, "feed_unaffected": True},
-            )
-        if len(classifications) != len(candidates):
-            return WorkerResult(
-                failed=len(candidates),
-                notes={"reason": "classification_coverage_invalid", "feed_unaffected": True},
-            )
-        model = str(getattr(self.publisher, "last_model", "") or "configured-provider")
-        raw_response = str(getattr(self.publisher, "last_raw_response", "") or "{}")
-        with (
-            self.db.worker_session(
-                self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
-            ) as repos,
-            repos.transaction(),
-        ):
-            for row, classification in zip(candidates, classifications, strict=True):
-                repos.news.store_ai_classification(
-                    item_id=str(row["item_id"]),
-                    classification=classification,
-                    model=model,
-                    raw_response=raw_response,
-                    now_ms=int(self.clock_ms()),
-                )
-        return WorkerResult(processed=len(candidates))
 
 
 class NewsWorldBriefWorker(WorkerBase):
@@ -249,24 +201,33 @@ class NewsWorldBriefWorker(WorkerBase):
             statement_timeout_seconds=self.settings.statement_timeout_seconds,
         ) as repos:
             candidates = repos.news.brief_candidates()
-            current_fingerprint = repos.news.current_brief_fingerprint()
-        if not candidates:
-            return WorkerResult(skipped=1, notes={"reason": "no_candidates_lkg_preserved"})
-
         fingerprint = brief_fingerprint(candidates)
-        if fingerprint == current_fingerprint:
-            return WorkerResult(skipped=1, notes={"reason": "unchanged_fingerprint"})
-        with self.db.worker_session(
-            self.name,
-            statement_timeout_seconds=self.settings.statement_timeout_seconds,
-        ) as repos:
-            if repos.news.brief_publication_exists(fingerprint=fingerprint):
-                return WorkerResult(
-                    skipped=1,
-                    notes={"reason": "fingerprint_already_attempted_lkg_preserved"},
-                )
-
+        source_count = len({str(candidate["representative_source_id"]) for candidate in candidates})
         now_ms = int(self.clock_ms())
+        if len(candidates) < 3 or source_count < 2:
+            with (
+                self.db.worker_session(
+                    self.name,
+                    statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                ) as repos,
+                repos.transaction(),
+            ):
+                repos.news.record_brief_insufficient(
+                    fingerprint=fingerprint,
+                    story_count=len(candidates),
+                    source_count=source_count,
+                    now_ms=now_ms,
+                )
+            return WorkerResult(
+                skipped=1,
+                notes={
+                    "reason": "insufficient_material",
+                    "story_count": len(candidates),
+                    "source_count": source_count,
+                    "model_calls": 0,
+                },
+            )
+
         with (
             self.db.worker_session(
                 self.name,
@@ -274,7 +235,18 @@ class NewsWorldBriefWorker(WorkerBase):
             ) as repos,
             repos.transaction(),
         ):
-            repos.news.begin_brief_update(fingerprint=fingerprint, now_ms=now_ms)
+            claim = repos.news.claim_brief_run(
+                fingerprint=fingerprint,
+                story_count=len(candidates),
+                source_count=source_count,
+                now_ms=now_ms,
+                max_attempts=int(self.settings.max_attempts),
+            )
+        if claim is None:
+            return WorkerResult(
+                skipped=1,
+                notes={"reason": "fingerprint_not_due"},
+            )
 
         stories = [
             NewsBriefStory(
@@ -291,7 +263,7 @@ class NewsWorldBriefWorker(WorkerBase):
         ]
         try:
             draft = self.publisher.publish(stories)
-            repaired, validation, degraded = validate_and_repair_brief(draft, stories)
+            repaired, validation, _ = validate_and_repair_brief(draft, stories)
             with (
                 self.db.worker_session(
                     self.name,
@@ -300,12 +272,13 @@ class NewsWorldBriefWorker(WorkerBase):
                 repos.transaction(),
             ):
                 publication_id = repos.news.publish_brief(
+                    run_id=claim["run_id"],
+                    lease_owner=claim["lease_owner"],
                     fingerprint=fingerprint,
                     stories=candidates,
                     draft=repaired,
                     validation=validation,
                     now_ms=int(self.clock_ms()),
-                    degraded=degraded,
                 )
         except Exception as exc:
             with (
@@ -315,14 +288,25 @@ class NewsWorldBriefWorker(WorkerBase):
                 ) as repos,
                 repos.transaction(),
             ):
-                repos.news.fail_brief_update(error=exc, now_ms=int(self.clock_ms()))
-            return WorkerResult(failed=1, notes={"reason": type(exc).__name__, "lkg_preserved": True})
+                repos.news.fail_brief_run(
+                    run_id=claim["run_id"],
+                    lease_owner=claim["lease_owner"],
+                    error=exc,
+                    now_ms=int(self.clock_ms()),
+                )
+            return WorkerResult(
+                failed=1,
+                notes={
+                    "reason": type(exc).__name__,
+                    "last_known_good_preserved": True,
+                },
+            )
         return WorkerResult(
             processed=1,
             notes={
                 "publication_id": publication_id,
                 "story_count": len(stories),
-                "degraded": degraded,
+                "source_count": source_count,
             },
         )
 
@@ -336,4 +320,4 @@ def _optional_text(value: object) -> str | None:
     return normalized or None
 
 
-__all__ = ["NewsAiClassifyWorker", "NewsPipelineWorker", "NewsWorldBriefWorker"]
+__all__ = ["NewsPipelineWorker", "NewsWorldBriefWorker"]

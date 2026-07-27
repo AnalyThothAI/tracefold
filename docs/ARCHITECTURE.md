@@ -178,17 +178,19 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
 `f73de5b7`, not an independent editorial ontology:
 
 ```text
-96 frozen RSS/RSSHub sources
-  -> conditional fetch (ETag / Last-Modified, first five entries)
+117 physical RSS/RSSHub sources / 120 logical memberships
+  -> conditional direct fetch, then allowlisted relay fallback
+  -> ETag / Last-Modified, first five entries
   -> immutable FeedObservation before admission
   -> idempotent NewsItem
   -> full 96-hour WorldMonitor title clustering
-  -> persistent Story identity + members + aliases
-  -> category groups, each capped at 20 Stories
+  -> canonical alias union
+  -> coherent persistent Story + members + aliases
+  -> one flat global cursor Feed; category is a facet
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
   -> /api/news/feed + /api/news/stories/{story_id}
-     + /api/news/brief + /api/news/sources
+     + /api/news/brief + /api/news/sources + /api/news/status
 ```
 
 `news_pipeline` is the only NewsItem/Story writer. It synchronizes the
@@ -203,7 +205,7 @@ active-cluster eligibility.
 
 NewsItem identity is `(source_id, source_item_key)`, where the source item key
 comes from GUID and canonical URL. Tracking parameters are removed. The
-content fingerprint covers canonical URL, normalized title, and description,
+content fingerprint covers canonical URL, title, and description,
 but deliberately excludes `pubDate`: a source timestamp drift produces a new
 observation and zero NewsItem or Story writes.
 
@@ -219,37 +221,40 @@ translation, full-article extraction, browser clustering, revision product, or
 per-Story AI analysis.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
-including exclusions and historical downgrade. `news_ai_classify` is the only
-optional enhancement seam, is disabled by default, and cannot gate News facts
-or serving. Importance uses WorldMonitor's 55% severity, 20% source tier,
-15% independent reporting-origin corroboration, and 10% recency, followed by
-the narrow diplomacy/flashpoint and entity-corroboration boosts. Because
-Tracefold persists this otherwise request-time score, recency uses the
-equivalent one-hour healthy-cache epoch; unchanged input within an epoch writes
-zero serving rows. The API exposes the factor breakdown. Global clustering
-precedes per-category Top-20 truncation.
+including exclusions and historical downgrade. There is no item-level AI
+classifier or cache. Importance uses WorldMonitor's 55% severity, 20% source
+tier, 15% corroboration, and 10% recency, followed by the narrow
+diplomacy/flashpoint and entity-corroboration boosts. Corroboration counts
+distinct physical source IDs; logical memberships and parsed reporting-origin
+metadata never increase it. Because Tracefold persists this otherwise
+request-time score, recency uses the equivalent one-hour healthy-cache epoch;
+unchanged input within an epoch writes zero serving rows. The API exposes the
+scoring item and factor breakdown. Global clustering precedes filtering,
+sorting, and keyset pagination; category is a facet, never a bucket or cap.
 
-`news_world_brief` selects at most eight Stories, caps one structured
-`reporting_origin` at three across all distribution feeds, and excludes
-opinion, feel-good, and ephemeral live coverage.
+`news_world_brief` selects at most eight Stories, caps one representative
+physical source at three, and excludes opinion, feel-good, and ephemeral live
+coverage. It requires at least three Stories from at least two physical
+sources before making a model call.
 Its fingerprint binds the ordered Story state and the prompt/workflow/schema/
 locale contract. An unchanged fingerprint makes no model call and no write.
 The provider chain gets one bounded attempt per configured provider under one
 60-second total budget. Output is Chinese, each line is index-locked to its
 selected Story, malformed lines receive a deterministic local fallback, and an
 empty set or provider failure preserves the last-known-good publication.
-Publication history is immutable; degraded attempts are retained for audit but
-cannot replace last-known-good. `news_brief_current` is the single current
-pointer and the read contract exposes `fresh`, `updating`, `stale`,
-`unavailable`, or `failed` honestly.
+Publication history is immutable; failed runs cannot replace last-known-good.
+`news_brief_current` is the single current pointer and the read contract
+exposes `unavailable`, `insufficient_material`, `running`, `ready`,
+`stale_fallback`, or `failed` honestly. `running` requires a current database
+run with an unexpired lease and heartbeat.
 
-The complete live News storage boundary is exactly ten tables:
-`news_sources`, `news_source_fetches`, `news_feed_observations`,
-`news_items`, `news_stories`, `news_story_members`,
-`news_story_aliases`, `news_ai_classification_cache`,
+The complete live News storage boundary is exactly eleven tables:
+`news_sources`, `news_source_memberships`, `news_source_fetches`,
+`news_feed_observations`, `news_items`, `news_stories`,
+`news_story_members`, `news_story_aliases`, `news_brief_runs`,
 `news_brief_publications`, and `news_brief_current`. Migration
-`20260727_0204` destructively drops every prior `news_*` table before
-creating this schema and has no downgrade or compatibility lane.
+`20260727_0205` destructively drops every prior `news_*` table before creating
+this schema and has no downgrade or compatibility lane.
 
 ### Macro
 

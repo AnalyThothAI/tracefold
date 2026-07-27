@@ -1,6 +1,6 @@
 import { getApi } from "@lib/api/client";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 export type NewsLevel = "critical" | "high" | "medium" | "low" | "info";
 
@@ -14,7 +14,7 @@ export type NewsStory = {
     diplomacy_flashpoint_boost: number;
     entity_corroboration_boost: number;
     recency_points: number;
-    reporting_origin_count: number;
+    physical_source_count: number;
     scoring_corroboration_count: number;
     severity_level: NewsLevel;
     severity_points: number;
@@ -28,25 +28,39 @@ export type NewsStory = {
   source_count: number;
   source_id: string;
   source_name: string;
+  representative_item_id: string;
+  scoring_item_id: string;
   story_id: string;
   title: string;
   url: string;
 };
 
 export type NewsFeed = {
-  categories: Array<{ category: string; stories: NewsStory[] }>;
-  per_category_cap_count: number;
+  facets: {
+    categories: Array<{ count: number; value: string }>;
+    levels: Array<{ count: number; value: string }>;
+    sources: Array<{ count: number; label: string; value: string }>;
+  };
+  filters: {
+    category: string | null;
+    level: string | null;
+    source_id: string | null;
+  };
+  has_more: boolean;
+  next_cursor: string | null;
   sort: "importance" | "latest";
-  story_count: number;
+  stories: NewsStory[];
 };
 
 export type NewsStoryMember = {
   category: string;
   current: boolean;
   description: string;
+  first_joined_at_ms: number;
   importance_score: number;
   item_id: string;
   lang: string;
+  last_confirmed_at_ms: number;
   last_observed_at_ms: number;
   level: NewsLevel;
   published_at_ms: number;
@@ -82,7 +96,6 @@ export type BriefPublication = {
     title: string;
     url: string;
   }>;
-  status: "published" | "degraded";
   validation: {
     citation_index_lock: boolean;
     citation_closure: boolean;
@@ -98,18 +111,35 @@ export type BriefPublication = {
 };
 
 export type WorldBrief = {
+  candidate_source_count: number;
+  candidate_story_count: number;
   history: BriefPublication[];
-  last_error: string | null;
-  last_failure_at_ms: number | null;
-  last_known_good_published_at_ms: number | null;
-  pending_fingerprint: string | null;
+  latest_run: {
+    attempt_count: number;
+    candidate_source_count: number;
+    candidate_story_count: number;
+    completed_at_ms: number | null;
+    created_at_ms: number;
+    fingerprint: string;
+    heartbeat_at_ms: number | null;
+    last_error: string | null;
+    lease_expires_at_ms: number | null;
+    run_id: string;
+    status: "running" | "ready" | "insufficient_material" | "failed";
+    updated_at_ms: number;
+  } | null;
   publication: BriefPublication | null;
-  state: "fresh" | "updating" | "stale" | "unavailable" | "failed";
-  update_started_at_ms: number | null;
+  state:
+    | "unavailable"
+    | "insufficient_material"
+    | "running"
+    | "ready"
+    | "stale_fallback"
+    | "failed";
+  target_fingerprint: string;
 };
 
 export type NewsSource = {
-  category_hint: string | null;
   consecutive_failures: number;
   enabled: boolean;
   feed_url: string;
@@ -120,6 +150,8 @@ export type NewsSource = {
   latest_entries_seen: number | null;
   latest_fetch_duration_ms: number | null;
   latest_fetch_error_code: string | null;
+  latest_fetch_path: "direct" | "relay" | null;
+  latest_direct_error_code: string | null;
   latest_fetch_finished_at_ms: number | null;
   latest_fetch_status: "success" | "not_modified" | "failed" | null;
   latest_items_inserted: number | null;
@@ -127,9 +159,9 @@ export type NewsSource = {
   latest_observations_inserted: number | null;
   latest_rejection_counts: Record<string, number> | null;
   name: string;
+  memberships: string[];
   next_fetch_at_ms: number;
   refresh_interval_seconds: number;
-  reporting_origin: string;
   source_id: string;
   tier: number;
 };
@@ -143,17 +175,19 @@ export const useNewsFeedWithToken = (
   category?: string | null,
   sort: "importance" | "latest" = "importance",
 ) =>
-  useQuery({
+  useInfiniteQuery({
     enabled: Boolean(token),
     queryKey: queryKeys.newsFeed(category ?? null, sort),
-    queryFn: async () =>
+    queryFn: async ({ pageParam }) =>
       (
         await getApi<NewsFeed>("/api/news/feed", {
-          etagKey: `news-feed:${category ?? "all"}:${sort}`,
-          params: { category, sort },
+          etagKey: `news-feed:${category ?? "all"}:${sort}:${pageParam ?? "first"}`,
+          params: { category, cursor: pageParam, limit: 50, sort },
           token,
         })
       ).data,
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     refetchInterval: 60_000,
     staleTime: 30_000,
   });

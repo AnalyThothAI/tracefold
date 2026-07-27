@@ -69,6 +69,12 @@ news:
   # compose; 6551NEWS resolves through
   # http://rsshub:1200/telegram/channel/news6551.
   # Worker timing and provider endpoints/models live in workers.yaml.
+  relay:
+    # WorldMonitor-compatible independent egress fallback. Direct fetch is
+    # always attempted first; only enabled configured source URLs are relayed.
+    base_url: "https://proxy.worldmonitor.app"
+    auth_header: "x-relay-key"
+    auth_token:
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

@@ -255,28 +255,8 @@ def classify_by_keyword(title: str, *, now_ms: int | None = None) -> NewsClassif
     return NewsClassification(level="info", category="general", confidence=0.3, source="keyword")
 
 
-_LEVELS: Final[tuple[ThreatLevel, ...]] = ("info", "low", "medium", "high", "critical")
-
-
-def bounded_ai_classification(
-    deterministic: NewsClassification,
-    ai: NewsClassification,
-) -> NewsClassification:
-    """Apply WorldMonitor's non-authoritative AI upgrade contract."""
-
-    if deterministic.level == "critical":
-        return deterministic
-    if deterministic.level == "info" and ai.level in {"high", "critical"}:
-        capped_level: ThreatLevel = "medium"
-    else:
-        max_rank = min(len(_LEVELS) - 1, _LEVELS.index(deterministic.level) + 2)
-        capped_level = _LEVELS[min(_LEVELS.index(ai.level), max_rank)]
-    return ai.model_copy(update={"level": capped_level, "source": "llm"})
-
-
 __all__ = [
     "SEVERITY_VALUES",
-    "bounded_ai_classification",
     "classify_by_keyword",
     "has_historical_marker",
 ]

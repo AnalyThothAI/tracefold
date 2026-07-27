@@ -464,7 +464,7 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
     finally:
         conn.close()
 
-    assert version == "20260727_0204"
+    assert version == "20260727_0205"
     assert observation_count == 0
     assert target == {
         "clock_kind": "daily_settlement",

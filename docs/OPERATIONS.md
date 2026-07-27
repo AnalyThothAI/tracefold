@@ -104,7 +104,7 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-96 configured sources
+117 physical sources / 120 logical memberships
   -> NewsPipelineWorker
   -> FetchReceipt + immutable FeedObservation + NewsItem
   -> full active-window cluster + Story/member/alias projection
@@ -122,7 +122,9 @@ one short transaction, performs up to 16 fetches concurrently outside the
 database, and closes each source independently. One source failure records a
 failed receipt, increments its failure count, and cannot block another source.
 A successful response retains ETag and Last-Modified; a `304` still permits
-the deterministic 96-hour expiry/recluster pass.
+the deterministic 96-hour expiry/recluster pass. Direct transport/403/429/5xx/
+HTML/non-RSS failure can use the configured relay only for an enabled source
+URL; the winning path and bounded diagnostics are persisted without secrets.
 
 The same worker is the only NewsItem, Story, membership, and alias writer.
 There is no News dirty queue or repair command: restart recovery is the normal
@@ -130,12 +132,11 @@ full-window projection. Unchanged items, membership, and Story fingerprints
 write zero serving rows. The hourly persisted recency epoch prevents a
 two-minute worker tick from masquerading as a Story revision.
 
-`news_ai_classify` is disabled by default. It is an optional cache writer only
-and never gates admission, clustering, ranking, Feed, or Brief selection.
 `news_world_brief` runs every 600 seconds by default. It exits before any
-model call when candidates are empty or the ordered Story fingerprint is
-unchanged. On provider or validation failure it records the failure and keeps
-the last-known-good current pointer.
+model call when fewer than three Stories, fewer than two physical sources, or
+an unchanged ordered Story fingerprint is observed. On provider or validation
+failure it records the failed run and keeps the last-known-good current
+pointer.
 
 Diagnose News in this order:
 
@@ -143,24 +144,26 @@ Diagnose News in this order:
    failure count, conditional-fetch validators;
 2. `news_source_fetches`: one receipt for the source attempt, duration, parsed
    entry count, admitted/updated/observation counts, and bounded gate counts
-   (`per_feed_cap`, `missing_title`, `invalid_url`, `missing_date`,
+   (`per_feed_cap`, `missing_title`, `missing_http_url`, `missing_date`,
    `future_date`, `stale_age`, and `duplicate`);
 3. `news_feed_observations`: raw entry exists even when rejected;
 4. `news_items`: admitted source identity and content fingerprint;
 5. `news_story_members` and `news_stories`: membership closure, stable
-   Story ID, state fingerprint, independent-origin count, score factors;
-6. `/api/news/feed`: category Top-20 server order;
-7. `news_brief_current` plus `news_brief_publications`: candidate
-   fingerprint, state, current publication, last error, and immutable history;
-8. `/api/news/brief`: ETag and public freshness state.
+   Story ID, state fingerprint, physical-source count, score factors;
+6. `/api/news/feed`: flat global keyset order, filters, facets, and cursor;
+7. `news_brief_runs`, `news_brief_current`, and
+   `news_brief_publications`: candidate fingerprint, lease/run state, current
+   publication, last error, and immutable history;
+8. `/api/news/brief`: ETag and truthful public state;
+9. `/api/news/status`: warming/ready/degraded derived health.
 
 News health has three layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
-| ingest | enabled sources exist and at least one recent success | no sources, every source failing, or all successes stale |
-| story | active admitted items close into active Story memberships | active items without current membership or no active Stories |
-| brief | current valid publication matches the current Top-8 fingerprint | no publication, mismatched fingerprint, update failure, or stale last-known-good |
+| ingest | every source has a terminal first attempt, no current failures, and at least 80% succeeded in the last hour | no sources, incomplete first coverage, any current source failure, low recent coverage, or material polling backlog |
+| story | active admitted items close into coherent active Story aggregates | missing/duplicate ownership, aggregate mismatch, or no active Stories |
+| brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
 
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
@@ -168,22 +171,23 @@ the model.
 
 #### News WorldMonitor hard-cut runbook
 
-Migration `20260727_0204` is intentionally destructive. It drops every
-existing `news_*` table and creates the exact ten-table WorldMonitor-backed
+Migration `20260727_0205` is intentionally destructive. It drops every
+existing `news_*` table and creates the exact eleven-table WorldMonitor-backed
 schema. The operator accepted no backup, no downgrade, no ID redirect, no
 dual writer, and no compatibility read.
 
 1. Stop the service so no older News worker can write during the cut.
 2. Confirm the intended checkout and that Alembic currently ends at
-   `20260727_0203`.
-3. Replace the operator `news.sources` entries and News worker keys with the
-   new exact schema; unknown old fields and worker names must fail validation.
-4. Run `uv run tracefold db migrate` and verify head `20260727_0204`.
-5. Start exactly `news_pipeline`, `news_ai_classify`, and
-   `news_world_brief` with the rest of the service.
-6. Verify exactly ten `news_*` tables, 96 synchronized sources, fresh fetch
-   receipts/observations, non-empty NewsItems and Stories, membership closure,
-   the four HTTP routes, ETag `304`, one Chinese Brief, and zero old routes.
+   `20260727_0204`.
+3. Remove every retired News worker key, configure `news.relay` when relay
+   fallback is required, and reject every old source field.
+4. Run `uv run tracefold db migrate` and verify head `20260727_0205`.
+5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
+   service.
+6. Verify exactly eleven `news_*` tables, 117 synchronized physical sources,
+   120 memberships, a terminal attempt for every source, fresh receipts and
+   observations, non-empty NewsItems and Stories, membership closure, the five
+   HTTP routes, ETag `304`, a truthful Brief state, and zero old routes.
 7. Leave the deployment stopped and repair forward if any acceptance check
    fails; there is no historical News restore path in this release.
 
