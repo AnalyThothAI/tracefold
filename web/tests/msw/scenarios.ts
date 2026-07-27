@@ -6,6 +6,7 @@ import {
   targetSocialTimelineFixture,
   tokenRadarFixture,
 } from "@tests/fixtures/appRouteFixtures";
+import { newsFeedFixture } from "@tests/fixtures/newsFixture";
 import { tokenCaseFixture, tokenCasePostsFixture } from "@tests/fixtures/tokenCaseFixture";
 
 import type { ApiMock } from "./fixtures";
@@ -24,7 +25,7 @@ export function mockLiveRadarRoute(apiMock: ApiMock) {
     }
     if (path === "/api/token-radar") return ok(tokenRadarFixture());
     if (path === "/api/stocks-radar") return ok(stocksRadarFixture());
-    if (path === "/api/news/stories") return ok(newsStoriesFixture());
+    if (path === "/api/news/feed") return ok(newsFeedFixture());
     if (path === "/api/token-case") return ok(tokenCaseFixture());
     if (path === "/api/search/inspect") {
       const q = String(requestOptions?.params?.q ?? "$RKC");
@@ -52,16 +53,12 @@ export function mockNotificationRoute(apiMock: ApiMock) {
     if (path === "/api/notifications") return ok({ items: [notification], summary });
     if (path === "/api/token-radar") return ok(tokenRadarFixture());
     if (path === "/api/stocks-radar") return ok(stocksRadarFixture());
-    if (path === "/api/news/stories") return ok(newsStoriesFixture());
+    if (path === "/api/news/feed") return ok(newsFeedFixture());
     if (path === "/api/token-case") return ok(tokenCaseFixture());
     if (path === "/api/target-social-timeline") return ok(targetSocialTimelineFixture());
     if (path === "/api/target-posts") return ok(tokenCasePostsFixture());
     throw new Error(`unexpected path ${path}`);
   };
-}
-
-function newsStoriesFixture() {
-  return { items: [], next_cursor: null };
 }
 
 function stocksRadarFixture() {

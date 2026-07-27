@@ -119,12 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_market_current.add_argument("--after-target-id", default="")
     rebuild_market_current.add_argument("--limit", type=_positive_int, default=500)
     rebuild_market_current.add_argument("--execute", action="store_true", required=True)
-    rebuild_news_stories = ops_subcommands.add_parser(
-        "rebuild-news-stories",
-        help="destructively rebuild News Story products from ArticleRevision facts",
-    )
-    rebuild_news_stories.add_argument("--batch-size", type=_positive_int, default=100)
-    rebuild_news_stories.add_argument("--execute", action="store_true", required=True)
     ops_subcommands.add_parser("projection-status", help="print Token Radar publication state")
     queue_inspect = ops_subcommands.add_parser("queue-inspect", help="inspect worker queue terminal evidence")
     queue_inspect.add_argument("--worker", default="")

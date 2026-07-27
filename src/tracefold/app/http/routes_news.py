@@ -1,153 +1,82 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.app.http.validators import _limit
 from tracefold.news import NewsInterface
 
 router = APIRouter()
+_Envelope = api_schemas.ApiEnvelope[api_schemas.JsonObject]
 
 
-@router.get(
-    "/news/stories",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsStoryListData],
-)
-def list_news_stories(
+@router.get("/news/feed", response_model=_Envelope)
+def get_news_feed(
     request: Request,
-    limit: Annotated[int, Query()] = 50,
-    cursor: Annotated[str, Query()] = "",
-    view: Annotated[str, Query()] = "latest",
-    q: Annotated[str, Query()] = "",
-    evidence_posture: Annotated[str, Query()] = "",
-    source: Annotated[str, Query()] = "",
-) -> JSONResponse:
-    _validate_query_params(
-        request,
-        supported={"limit", "cursor", "view", "q", "evidence_posture", "source", "token"},
-    )
+    category: Annotated[str, Query()] = "",
+    sort: Annotated[str, Query(pattern="^(importance|latest)$")] = "importance",
+) -> Response:
+    _validate_query_params(request, supported={"category", "sort", "token"})
     runtime = _authenticated_runtime(request)
-    try:
-        with runtime.repositories() as repos:
-            data = _news_interface(repos).list_stories(
-                limit=_limit(limit, maximum=200),
-                cursor=cursor or None,
-                view=view,
-                q=q or None,
-                evidence_posture=evidence_posture or None,
-                source=source or None,
-            )
-    except ValueError as exc:
-        raise ApiBadRequest(str(exc)) from exc
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsStoryListData],
-        {"ok": True, "data": data},
-    )
+    with runtime.repositories() as repos:
+        data = _news_interface(repos).get_feed(category=category or None, sort=sort)
+    return _etagged(data, request)
 
 
-@router.get(
-    "/news/stories/{story_id}",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData],
-)
+@router.get("/news/stories/{story_id}", response_model=_Envelope)
 def get_news_story(request: Request, story_id: str) -> JSONResponse:
+    _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = _news_interface(repos).get_story(story_id=story_id)
     if data is None:
         return _validated_json(
-            api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData],
+            _Envelope,
             {"ok": False, "error": "news_story_not_found"},
             status_code=404,
         )
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData],
-        {"ok": True, "data": data},
-    )
+    return _validated_json(_Envelope, {"ok": True, "data": data})
 
 
-@router.post(
-    "/news/stories/{story_id}/analysis-requests",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
-)
-def request_news_story_analysis(request: Request, story_id: str) -> JSONResponse:
-    runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos, repos.transaction():
-        data = _news_interface(repos).request_story_analysis(
-            story_id=story_id,
-            now_ms=int(time.time() * 1000),
-        )
-    if data is None:
-        return _validated_json(
-            api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
-            {"ok": False, "error": "news_story_not_found"},
-            status_code=404,
-        )
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsStoryAnalysisRequestData],
-        {"ok": True, "data": data},
-        status_code=202,
-    )
-
-
-@router.get(
-    "/news/brief",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefData],
-)
-def get_news_global_brief(request: Request) -> JSONResponse:
+@router.get("/news/brief", response_model=_Envelope)
+def get_news_world_brief(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = _news_interface(repos).get_global_brief()
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefData],
-        {"ok": True, "data": data},
-    )
+        data = _news_interface(repos).get_world_brief(now_ms=int(time.time() * 1000))
+    return _etagged(data, request)
 
 
-@router.get(
-    "/news/brief/history",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefHistoryData],
-)
-def list_news_global_brief_history(
-    request: Request,
-    limit: Annotated[int, Query()] = 20,
-) -> JSONResponse:
-    _validate_query_params(request, supported={"limit", "token"})
-    runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        data = _news_interface(repos).list_global_brief_history(
-            limit=_limit(limit, maximum=100),
-        )
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsGlobalBriefHistoryData],
-        {"ok": True, "data": data},
-    )
-
-
-@router.get(
-    "/news/sources",
-    response_model=api_schemas.ApiEnvelope[api_schemas.NewsSourcesData],
-)
-def list_news_sources(request: Request) -> JSONResponse:
+@router.get("/news/sources", response_model=_Envelope)
+def get_news_sources(request: Request) -> JSONResponse:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = _news_interface(repos).list_sources()
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.NewsSourcesData],
-        {"ok": True, "data": data},
-    )
+        data = _news_interface(repos).get_sources()
+    return _validated_json(_Envelope, {"ok": True, "data": data})
 
 
 def _news_interface(repos: Any) -> NewsInterface:
     return NewsInterface(repos.news)
+
+
+def _etagged(data: dict[str, Any], request: Request) -> JSONResponse | Response:
+    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    etag = f'"{hashlib.sha256(encoded).hexdigest()}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    response = _validated_json(_Envelope, {"ok": True, "data": data})
+    response.headers.update(headers)
+    return response
 
 
 def _validate_query_params(request: Request, *, supported: set[str]) -> None:

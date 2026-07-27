@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,120 +17,6 @@ NOTIFICATION_SEVERITIES = ("info", "warning", "high", "critical")
 NOTIFICATION_RULE_IDS = (
     "watched_account_activity",
     "watched_account_token_alert",
-)
-DEFAULT_NEWS_SOURCE_CONFIGS: tuple[dict[str, object], ...] = (
-    {
-        "source_id": "reuters-world",
-        "name": "Reuters World",
-        "feed_url": "https://news.google.com/rss/search?q=site%3Areuters.com%20world&hl=en-US&gl=US&ceid=US%3Aen",
-        "source_domain": "reuters.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "reuters",
-        "coverage_tags": ("politics", "geopolitics", "world"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "reuters-business",
-        "name": "Reuters Business",
-        "feed_url": "https://news.google.com/rss/search?q=site%3Areuters.com%20business&hl=en-US&gl=US&ceid=US%3Aen",
-        "source_domain": "reuters.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "reuters",
-        "coverage_tags": ("economy", "markets", "business"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "ap-global",
-        "name": "AP News",
-        "feed_url": (
-            "https://news.google.com/rss/search?"
-            "q=site%3Aapnews.com%20%28politics%20OR%20economy%20OR%20world%29"
-            "&hl=en-US&gl=US&ceid=US%3Aen"
-        ),
-        "source_domain": "apnews.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "ap",
-        "coverage_tags": ("politics", "economy", "world"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "bbc-world",
-        "name": "BBC World",
-        "feed_url": "https://feeds.bbci.co.uk/news/world/rss.xml",
-        "source_domain": "bbc.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "bbc",
-        "coverage_tags": ("politics", "geopolitics", "world"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "al-jazeera",
-        "name": "Al Jazeera",
-        "feed_url": "https://www.aljazeera.com/xml/rss/all.xml",
-        "source_domain": "aljazeera.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "al-jazeera",
-        "coverage_tags": ("politics", "geopolitics", "world"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "financial-times",
-        "name": "Financial Times",
-        "feed_url": (
-            "https://news.google.com/rss/search?"
-            "q=site%3Aft.com%20%28world%20OR%20economy%20OR%20markets%29"
-            "&hl=en-US&gl=US&ceid=US%3Aen"
-        ),
-        "source_domain": "ft.com",
-        "source_role": "original_publisher",
-        "trust_tier": "authoritative",
-        "source_chain_id": "financial-times",
-        "coverage_tags": ("economy", "markets", "geopolitics"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 600,
-    },
-    {
-        "source_id": "cnbc-economy",
-        "name": "CNBC Economy",
-        "feed_url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
-        "source_domain": "cnbc.com",
-        "source_role": "original_publisher",
-        "trust_tier": "trusted",
-        "source_chain_id": "cnbc",
-        "coverage_tags": ("economy", "markets", "business"),
-        "default_language": "en",
-        "enabled": True,
-        "refresh_interval_seconds": 300,
-    },
-    {
-        "source_id": "6551news",
-        "name": "6551News",
-        "feed_url": "http://rsshub:1200/telegram/channel/news6551",
-        "source_domain": "t.me",
-        "source_role": "trusted_aggregator",
-        "trust_tier": "authoritative",
-        "source_chain_id": "6551",
-        "coverage_tags": ("politics", "economy", "markets", "realtime"),
-        "default_language": "zh",
-        "enabled": True,
-        "refresh_interval_seconds": 60,
-    },
 )
 
 
@@ -178,8 +64,10 @@ class LlmConfig(BaseModel):
 
     api_key: str | None = None
     base_url: str = ""
+    openrouter_api_key: str | None = None
+    groq_api_key: str | None = None
 
-    @field_validator("api_key", mode="before")
+    @field_validator("api_key", "openrouter_api_key", "groq_api_key", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -413,22 +301,19 @@ class NewsSourceSettings(BaseModel):
     source_id: str
     name: str
     feed_url: str
-    source_domain: str
-    source_role: Literal["original_publisher", "trusted_aggregator"]
-    trust_tier: Literal["authoritative", "trusted", "standard", "low"]
-    source_chain_id: str
-    coverage_tags: tuple[str, ...] = ()
-    default_language: str = "en"
+    reporting_origin: str
+    tier: int = Field(ge=1, le=4)
+    lang: str = "en"
+    category_hint: str | None = None
     enabled: bool = True
-    refresh_interval_seconds: int = Field(default=300, ge=1)
+    refresh_interval_seconds: int = Field(default=120, ge=1)
 
     @field_validator(
         "source_id",
         "name",
         "feed_url",
-        "source_domain",
-        "source_chain_id",
-        "default_language",
+        "reporting_origin",
+        "lang",
         mode="before",
     )
     @classmethod
@@ -438,7 +323,7 @@ class NewsSourceSettings(BaseModel):
             raise ValueError("news source field must not be empty")
         return normalized
 
-    @field_validator("source_domain", "default_language", mode="before")
+    @field_validator("lang", mode="before")
     @classmethod
     def parse_lower_string(cls, value: Any) -> str:
         normalized = str(value or "").strip().lower()
@@ -446,47 +331,12 @@ class NewsSourceSettings(BaseModel):
             raise ValueError("news source field must not be empty")
         return normalized
 
-    @field_validator("coverage_tags", mode="before")
-    @classmethod
-    def parse_string_tuple(cls, value: Any) -> tuple[str, ...]:
-        return _normalize_news_string_tuple(value)
-
-
-def _default_news_source_settings() -> tuple[NewsSourceSettings, ...]:
-    return tuple(NewsSourceSettings(**source) for source in DEFAULT_NEWS_SOURCE_CONFIGS)
-
-
-def _normalize_news_string_tuple(value: object) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return _normalize_news_string_parts(value.split(","))
-    if isinstance(value, bytes | bytearray):
-        try:
-            return _normalize_news_string_tuple(bytes(value).decode("utf-8"))
-        except UnicodeDecodeError:
-            return _normalize_news_string_parts((str(value).strip(),))
-    if isinstance(value, Mapping):
-        raise TypeError("mappings are not valid string tuples")
-    if isinstance(value, Iterable):
-        return _normalize_news_string_parts(value)
-    return _normalize_news_string_parts((value,))
-
-
-def _normalize_news_string_parts(parts: Iterable[object]) -> tuple[str, ...]:
-    normalized: list[str] = []
-    for part in parts:
-        item = str(part or "").strip()
-        if item:
-            normalized.append(item)
-    return tuple(normalized)
-
 
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    sources: tuple[NewsSourceSettings, ...] = Field(default_factory=_default_news_source_settings)
+    sources: tuple[NewsSourceSettings, ...] = ()
 
     @field_validator("sources", mode="before")
     @classmethod
@@ -675,46 +525,33 @@ class NotificationDeliveryWorkerSettings(PerWorkerSettings):
     statement_timeout_seconds: float = Field(default=30.0, ge=0)
 
 
-class NewsIngestWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=8, ge=1)
+class NewsPipelineWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=120.0, ge=0)
+    batch_size: int = Field(default=200, ge=1)
+    fetch_concurrency: int = Field(default=16, ge=1, le=64)
+    statement_timeout_seconds: float = Field(default=180.0, ge=0)
+    fetch_timeout_seconds: float = Field(default=20.0, ge=1)
+
+
+class NewsAiClassifyWorkerSettings(PerWorkerSettings):
+    enabled: bool = False
+    interval_seconds: float = Field(default=120.0, ge=0)
+    batch_size: int = Field(default=20, ge=1, le=100)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    fetch_timeout_seconds: float = Field(default=30.0, ge=1)
-    page_enrichment_enabled: bool = False
-    page_enrichment_batch_size: int = Field(default=2, ge=1, le=20)
-    page_enrichment_minimum_impact_score: int = Field(default=75, ge=0, le=100)
-    page_enrichment_timeout_seconds: float = Field(default=12.0, ge=1)
-    page_enrichment_max_bytes: int = Field(default=512_000, ge=16_384, le=2_000_000)
-    page_enrichment_lease_ms: int = Field(default=120_000, ge=1)
-    page_enrichment_max_attempts: int = Field(default=2, ge=1, le=5)
-    page_enrichment_retry_ms: int = Field(default=900_000, ge=1)
+    total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
 
 
-class NewsStoryProjectWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=5.0, ge=0)
-    batch_size: int = Field(default=100, ge=1)
-    presentation_batch_size: int = Field(default=500, ge=1)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class NewsBriefPlanWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=30.0, ge=0)
-    candidate_limit: int = Field(default=200, ge=1, le=2000)
-    debounce_ms: int = Field(default=120_000, ge=0)
-    critical_debounce_ms: int = Field(default=10_000, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class NewsAiPublishWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=2, ge=1)
-    lease_ms: int = Field(default=600_000, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    retry_ms: int = Field(default=300_000, ge=1)
+class NewsWorldBriefWorkerSettings(PerWorkerSettings):
+    interval_seconds: float = Field(default=600.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     model: str = "deepseek-chat"
-    model_request_timeout_seconds: float = Field(default=240.0, ge=1)
-    max_tokens: int = Field(default=4000, ge=512)
+    total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
+    ollama_base_url: str = "http://host.docker.internal:11434/v1"
+    ollama_model: str = "deepseek-r1:8b"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "deepseek/deepseek-v4-flash"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_model: str = "llama-3.3-70b-versatile"
 
 
 class WorkersSettings(BaseModel):
@@ -753,10 +590,9 @@ class WorkersSettings(BaseModel):
     notification_delivery: NotificationDeliveryWorkerSettings = Field(
         default_factory=NotificationDeliveryWorkerSettings
     )
-    news_ingest: NewsIngestWorkerSettings = Field(default_factory=NewsIngestWorkerSettings)
-    news_story_project: NewsStoryProjectWorkerSettings = Field(default_factory=NewsStoryProjectWorkerSettings)
-    news_brief_plan: NewsBriefPlanWorkerSettings = Field(default_factory=NewsBriefPlanWorkerSettings)
-    news_ai_publish: NewsAiPublishWorkerSettings = Field(default_factory=NewsAiPublishWorkerSettings)
+    news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
+    news_ai_classify: NewsAiClassifyWorkerSettings = Field(default_factory=NewsAiClassifyWorkerSettings)
+    news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
 
 
 class Settings(BaseModel):
@@ -853,20 +689,24 @@ def load_settings(*, require_ws_token: bool = True) -> Settings:
     return settings
 
 
-def write_default_config(*, force: bool = False) -> Path:
+def write_default_config(
+    *,
+    force: bool = False,
+    news_sources: tuple[Mapping[str, Any], ...] = (),
+) -> Path:
     home = app_home()
     path = config_path(home)
     workers_path = workers_config_path(home)
     home.mkdir(parents=True, exist_ok=True)
     (home / "logs").mkdir(parents=True, exist_ok=True)
     if force or not path.exists():
-        path.write_text(default_config_yaml(), encoding="utf-8")
+        path.write_text(default_config_yaml(news_sources=news_sources), encoding="utf-8")
     if force or not workers_path.exists():
         workers_path.write_text(default_workers_yaml(), encoding="utf-8")
     return path
 
 
-def default_config_yaml() -> str:
+def default_config_yaml(*, news_sources: tuple[Mapping[str, Any], ...] = ()) -> str:
     token = secrets.token_urlsafe(32)
     return f"""# Tracefold
 ws_token: "{token}"
@@ -902,6 +742,8 @@ storage:
 llm:
   api_key:
   base_url: ""
+  openrouter_api_key:
+  groq_api_key:
 
 gmgn:
   api_key:
@@ -935,7 +777,7 @@ providers:
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"
 
-{_default_news_yaml()}
+{_default_news_yaml(news_sources)}
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]
@@ -962,12 +804,12 @@ notifications:
 """
 
 
-def _default_news_yaml() -> str:
+def _default_news_yaml(news_sources: tuple[Mapping[str, Any], ...]) -> str:
     rendered = yaml.safe_dump(
         {
             "news": {
                 "enabled": True,
-                "sources": [dict(source) for source in DEFAULT_NEWS_SOURCE_CONFIGS],
+                "sources": [dict(source) for source in news_sources],
             }
         },
         sort_keys=False,

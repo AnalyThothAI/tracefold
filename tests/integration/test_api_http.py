@@ -23,7 +23,7 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
-from tracefold.news import NewsFeedEntry, NewsSourceDefinition
+from tracefold.news import NewsBriefDraft, NewsFeedEntry, NewsSourceDefinition
 from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
@@ -482,72 +482,81 @@ def test_api_status_exposes_flat_worker_status(tmp_path):
     assert workers["event_anchor_backfill"]["enabled"] is True
 
 
-def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
+def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    now_ms = int(time.time() * 1000)
     source_definition = NewsSourceDefinition(
         source_id="source-story-test",
         name="Example News",
         feed_url="https://example.test/feed.xml",
-        source_domain="example.test",
-        source_role="original_publisher",
-        trust_tier="authoritative",
-        source_chain_id="example",
-        coverage_tags=("politics", "economy"),
+        reporting_origin="example",
+        tier=1,
     )
 
     with TestClient(app) as client:
         with client.app.state.service.repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source_definition,), now_ms=1_000)
+            repos.news.sync_sources((source_definition,), now_ms=now_ms)
             repos.news.record_fetch_success(
                 source=source_definition,
                 entries=(
                     NewsFeedEntry(
                         guid="story-1",
                         link="https://example.test/story-1",
-                        title="Global policy response confirmed",
-                        summary="Officials published the policy response.",
-                        published_at_ms=2_000,
+                        title="Central bank raises interest rate after policy shock",
+                        description="Officials published a detailed policy response.",
+                        published_at_ms=now_ms - 60_000,
                     ),
                 ),
-                started_at_ms=3_000,
-                finished_at_ms=3_100,
+                started_at_ms=now_ms,
+                finished_at_ms=now_ms,
                 status_code=200,
                 etag="etag-1",
                 last_modified=None,
                 not_modified=False,
             )
-            repos.news.project_pending_revisions(now_ms=3_200, limit=100)
-            repos.news.conn.execute(
-                """
-                UPDATE news_stories
-                   SET brief_eligible = true,
-                       impact_score = 90,
-                       priority_score = 90
-                """
-            )
-            repos.news.plan_global_brief(
-                now_ms=3_300,
-                candidate_limit=100,
-                debounce_ms=0,
-                critical_debounce_ms=0,
+            repos.news.rebuild_stories(now_ms=now_ms)
+            candidates = repos.news.brief_candidates()
+            repos.news.begin_brief_update(fingerprint="fixture-fingerprint", now_ms=now_ms)
+            repos.news.publish_brief(
+                fingerprint="fixture-fingerprint",
+                stories=candidates,
+                draft=NewsBriefDraft(
+                    lead="今日全球政策重点发生变化 [1]",
+                    lines=("央行上调利率以回应政策冲击 [1]",),
+                    provider="fixture",
+                    model="fixture-model",
+                    raw_response="{}",
+                ),
+                validation={"citation_index_lock": True},
+                now_ms=now_ms,
+                degraded=False,
             )
 
         headers = {"Authorization": "Bearer secret"}
         sources_response = client.get("/api/news/sources", headers=headers)
-        stories_response = client.get("/api/news/stories", headers=headers)
-        story_id = stories_response.json()["data"]["items"][0]["story_id"]
+        feed_response = client.get("/api/news/feed", headers=headers)
+        latest_feed_response = client.get(
+            "/api/news/feed",
+            params={"sort": "latest"},
+            headers=headers,
+        )
+        feed_etag = feed_response.headers["etag"]
+        unchanged_feed = client.get(
+            "/api/news/feed",
+            headers={**headers, "If-None-Match": feed_etag},
+        )
+        story = feed_response.json()["data"]["categories"][0]["stories"][0]
+        story_id = story["story_id"]
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
-        request_response = client.post(
-            f"/api/news/stories/{story_id}/analysis-requests",
-            headers=headers,
-        )
-        missing_request_response = client.post(
-            "/api/news/stories/missing-story/analysis-requests",
-            headers=headers,
-        )
         brief_response = client.get("/api/news/brief", headers=headers)
-        brief_history_response = client.get("/api/news/brief/history", headers=headers)
+        unchanged_brief = client.get(
+            "/api/news/brief",
+            headers={**headers, "If-None-Match": brief_response.headers["etag"]},
+        )
         retired_responses = [
+            client.get("/api/news/stories", headers=headers),
+            client.get("/api/news/brief/history", headers=headers),
+            client.post(f"/api/news/stories/{story_id}/analysis-requests", headers=headers),
             client.get("/api/news", headers=headers),
             client.get("/api/news/items/news-1", headers=headers),
             client.get("/api/news/sources/status", headers=headers),
@@ -556,174 +565,140 @@ def test_api_news_exposes_only_story_and_source_contracts(tmp_path):
     assert sources_response.status_code == 200
     [source] = sources_response.json()["data"]["items"]
     assert source["source_id"] == "source-story-test"
-    assert source["last_success_at_ms"] == 3_100
+    assert source["reporting_origin"] == "example"
+    assert source["last_success_at_ms"] == now_ms
     assert source["last_http_status"] == 200
-    assert stories_response.status_code == 200
-    [story] = stories_response.json()["data"]["items"]
-    assert story["title"] == "Global policy response confirmed"
-    assert story["evidence_posture"] == "single_origin_reported"
+
+    assert feed_response.status_code == 200
+    assert latest_feed_response.status_code == 200
+    assert latest_feed_response.json()["data"]["sort"] == "latest"
+    assert feed_response.headers["cache-control"] == "private, no-cache"
+    assert unchanged_feed.status_code == 304
+    assert story["title"] == "Central bank raises interest rate after policy shock"
+    assert story["category"] == "economic"
     assert story["source_count"] == 1
+    assert set(story["importance_factors"]) >= {
+        "severity_points",
+        "source_points",
+        "corroboration_points",
+        "recency_points",
+        "total",
+    }
+
     assert detail_response.status_code == 200
-    assert detail_response.json()["data"]["memberships"][0]["epistemic_use"] == "fact_evidence"
-    assert request_response.status_code == 202
-    assert request_response.json()["data"]["status"] == "insufficient"
-    assert missing_request_response.status_code == 404
+    detail = detail_response.json()["data"]
+    assert detail["story_id"] == story_id
+    assert detail["members"][0]["current"] is True
+    assert detail["members"][0]["reporting_origin"] == "example"
+    assert "analysis" not in detail
+    assert "revisions" not in detail
+
     assert brief_response.status_code == 200
-    brief_data = brief_response.json()["data"]
-    assert brief_data["active_selection"]["selected_story_ids"] == [story_id]
-    assert brief_data["analysis"] is None
-    assert brief_data["analysis_status"] == "pending"
-    assert "current" not in brief_data
-    assert "fallback" not in brief_data
-    assert brief_history_response.status_code == 200
-    assert brief_history_response.json()["data"]["items"] == []
-    assert [response.status_code for response in retired_responses] == [404, 404, 404]
+    brief = brief_response.json()["data"]
+    assert brief["state"] == "fresh"
+    assert brief["publication"]["selected_story_ids"] == [story_id]
+    assert brief["publication"]["locale"] == "zh-CN"
+    assert brief["publication"]["validation"]["citation_index_lock"] is True
+    assert unchanged_brief.status_code == 304
+    assert [response.status_code for response in retired_responses] == [404] * 6
 
 
-def test_api_news_story_cursor_search_and_filters_compose(tmp_path):
+def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
     app = create_app(settings=make_settings(tmp_path), start_collector=False)
-    authoritative = NewsSourceDefinition(
-        source_id="authority",
-        name="Authority News",
-        feed_url="https://authority.test/feed.xml",
-        source_domain="authority.test",
-        source_role="original_publisher",
-        trust_tier="authoritative",
-        source_chain_id="authority",
-    )
-    standard = NewsSourceDefinition(
-        source_id="standard",
-        name="Standard News",
-        feed_url="https://standard.test/feed.xml",
-        source_domain="standard.test",
-        source_role="original_publisher",
-        trust_tier="standard",
-        source_chain_id="standard",
+    now_ms = int(time.time() * 1000)
+    sources = (
+        NewsSourceDefinition(
+            source_id="authority",
+            name="Authority News",
+            feed_url="https://authority.test/feed.xml",
+            reporting_origin="authority",
+            tier=1,
+        ),
+        NewsSourceDefinition(
+            source_id="standard",
+            name="Standard News",
+            feed_url="https://standard.test/feed.xml",
+            reporting_origin="standard",
+            tier=3,
+        ),
     )
 
     with TestClient(app) as client:
         with client.app.state.service.repositories() as repos, repos.transaction():
-            repos.news.sync_sources((authoritative, standard), now_ms=1_000)
+            repos.news.sync_sources(sources, now_ms=now_ms)
             repos.news.record_fetch_success(
-                source=authoritative,
+                source=sources[0],
                 entries=(
                     NewsFeedEntry(
-                        guid="alpha",
-                        link="https://authority.test/alpha",
-                        title="Alpha government approves fiscal package",
-                        published_at_ms=2_000,
+                        guid="rates",
+                        link="https://authority.test/rates",
+                        title="Federal Reserve changes interest rate policy",
+                        description="Officials announced a new interest rate decision.",
+                        published_at_ms=now_ms - 30_000,
                     ),
                     NewsFeedEntry(
-                        guid="beta",
-                        link="https://authority.test/beta",
-                        title="Beta central bank cuts rates by 25 basis points",
-                        published_at_ms=3_000,
+                        guid="earthquake",
+                        link="https://authority.test/earthquake",
+                        title="Major earthquake strikes coastal region",
+                        description="Emergency services reported widespread damage.",
+                        published_at_ms=now_ms - 20_000,
                     ),
                 ),
-                started_at_ms=4_000,
-                finished_at_ms=4_100,
+                started_at_ms=now_ms,
+                finished_at_ms=now_ms,
                 status_code=200,
                 etag=None,
                 last_modified=None,
                 not_modified=False,
             )
             repos.news.record_fetch_success(
-                source=standard,
+                source=sources[1],
                 entries=(
                     NewsFeedEntry(
-                        guid="gamma",
-                        link="https://standard.test/gamma",
-                        title="Gamma conflict ceasefire announced",
-                        published_at_ms=5_000,
+                        guid="ceasefire",
+                        link="https://standard.test/ceasefire",
+                        title="Ceasefire talks begin between regional governments",
+                        description="Diplomats began formal negotiations.",
+                        published_at_ms=now_ms - 10_000,
                     ),
                 ),
-                started_at_ms=6_000,
-                finished_at_ms=6_100,
+                started_at_ms=now_ms,
+                finished_at_ms=now_ms,
                 status_code=200,
                 etag=None,
                 last_modified=None,
                 not_modified=False,
             )
-            repos.news.project_pending_revisions(now_ms=6_200, limit=100)
-            repos.news.conn.execute(
-                """
-                UPDATE news_stories
-                   SET priority_score = CASE title
-                     WHEN 'Alpha government approves fiscal package' THEN 99
-                     WHEN 'Beta central bank cuts rates by 25 basis points' THEN 50
-                     ELSE 10
-                   END
-                """
-            )
+            repos.news.rebuild_stories(now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
-        first = client.get("/api/news/stories", params={"limit": 1}, headers=headers)
-        first_data = first.json()["data"]
-        second = client.get(
-            "/api/news/stories",
-            params={"limit": 1, "cursor": first_data["next_cursor"]},
+        complete = client.get("/api/news/feed", headers=headers)
+        economic = client.get(
+            "/api/news/feed",
+            params={"category": "economic"},
             headers=headers,
         )
-        searched = client.get(
-            "/api/news/stories",
-            params={"q": "Gamma"},
-            headers=headers,
-        )
-        trusted = client.get(
-            "/api/news/stories",
-            params={
-                "evidence_posture": "single_origin_reported",
-                "source": "authority",
-            },
-            headers=headers,
-        )
-        unverified = client.get(
-            "/api/news/stories",
-            params={
-                "evidence_posture": "single_origin_reported",
-                "source": "standard",
-            },
-            headers=headers,
-        )
-        invalid_cursor = client.get(
-            "/api/news/stories",
-            params={"cursor": "not-a-cursor"},
-            headers=headers,
-        )
-        invalid_verification = client.get(
-            "/api/news/stories",
-            params={"evidence_posture": "invented"},
-            headers=headers,
-        )
-        priority = client.get(
-            "/api/news/stories",
+        unsupported = client.get(
+            "/api/news/feed",
             params={"view": "priority"},
             headers=headers,
         )
-        mismatched_cursor = client.get(
-            "/api/news/stories",
-            params={"view": "priority", "cursor": first_data["next_cursor"]},
-            headers=headers,
-        )
 
-    assert first.status_code == second.status_code == 200
-    assert first_data["view"] == "latest"
-    assert first_data["next_cursor"]
-    first_id = first_data["items"][0]["story_id"]
-    second_id = second.json()["data"]["items"][0]["story_id"]
-    assert first_id != second_id
-    assert [item["title"] for item in searched.json()["data"]["items"]] == ["Gamma conflict ceasefire announced"]
-    assert {item["representative_evidence"]["source_id"] for item in trusted.json()["data"]["items"]} == {"authority"}
-    assert {item["evidence_posture"] for item in trusted.json()["data"]["items"]} == {"single_origin_reported"}
-    assert [item["evidence_posture"] for item in unverified.json()["data"]["items"]] == ["single_origin_reported"]
-    assert invalid_cursor.status_code == 400
-    assert invalid_cursor.json()["error"] == "news_story_cursor_invalid"
-    assert invalid_verification.status_code == 400
-    assert invalid_verification.json()["error"] == "news_story_evidence_posture_invalid"
-    assert priority.json()["data"]["view"] == "priority"
-    assert priority.json()["data"]["items"][0]["title"] == "Alpha government approves fiscal package"
-    assert mismatched_cursor.status_code == 400
-    assert mismatched_cursor.json()["error"] == "news_story_cursor_view_mismatch"
+    assert complete.status_code == 200
+    groups = complete.json()["data"]["categories"]
+    assert [group["category"] for group in groups] == ["disaster", "diplomatic", "economic"]
+    assert complete.json()["data"]["story_count"] == 3
+    assert economic.status_code == 200
+    assert [group["category"] for group in economic.json()["data"]["categories"]] == ["economic"]
+    assert [story["title"] for story in economic.json()["data"]["categories"][0]["stories"]] == [
+        "Federal Reserve changes interest rate policy"
+    ]
+    assert unsupported.status_code == 400
+    assert unsupported.json() == {
+        "ok": False,
+        "error": "unsupported_query_param",
+        "field": "view",
+    }
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):
@@ -1609,15 +1584,9 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     assert "database_unhealthy" not in body["data"]["reasons"]
     assert "news:news_health_query_failed" in body["data"]["reasons"]
     assert body["data"]["db"]["ok"] is True
-    assert body["data"]["news"]["status"] == "failed"
-    assert set(body["data"]["news"]["layers"]) == {
-        "source",
-        "material",
-        "brief",
-        "public",
-        "ai",
-    }
-    assert all(layer["status"] == "failed" for layer in body["data"]["news"]["layers"].values())
+    assert body["data"]["news"]["status"] == "unavailable"
+    assert set(body["data"]["news"]["layers"]) == {"ingest", "story", "brief"}
+    assert all(layer["status"] == "unavailable" for layer in body["data"]["news"]["layers"].values())
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

@@ -4,9 +4,11 @@ import type { ApiResponse, BootstrapData } from "@lib/types";
 export type RequestOptions = {
   token?: string;
   params?: Record<string, string | number | boolean | null | undefined>;
+  etagKey?: string;
 };
 
 let authToken: string | null = null;
+const etagCache = new Map<string, { etag: string; body: ApiResponse<unknown> }>();
 
 export class ApiError extends Error {
   status: number;
@@ -58,8 +60,13 @@ async function requestApi<T>(
   if (requestToken) {
     headers.Authorization = `Bearer ${requestToken}`;
   }
+  const cached = options.etagKey ? etagCache.get(options.etagKey) : undefined;
+  if (cached) headers["If-None-Match"] = cached.etag;
 
   const response = await fetch(url, { headers, method: options.method });
+  if (response.status === 304 && cached) {
+    return cached.body as ApiResponse<T>;
+  }
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     const text = (await response.text()).trim();
@@ -68,6 +75,10 @@ async function requestApi<T>(
   const body = (await response.json()) as ApiResponse<T>;
   if (!response.ok || body.ok === false) {
     throw new ApiError(body.error ?? response.statusText, response.status, body.error);
+  }
+  const etag = response.headers.get("etag");
+  if (options.etagKey && etag) {
+    etagCache.set(options.etagKey, { etag, body });
   }
   return body;
 }

@@ -65,66 +65,40 @@ Select commands by risk:
 universal completion mandate. Run only the additional lanes that cross the
 changed seam and report omitted evidence honestly.
 
-### News Story Identity v2 frozen evaluation
+### News WorldMonitor parity evaluation
 
-`news_story_identity_v2_proof_ladder` is released against the actual
-`NewsRepository` → PostgreSQL → `NewsInterface` seam, not a second clustering
-implementation. The primary fixture
-`tests/fixtures/news_story_identity_golden.json` has 35 isolated cases and 70
-reports: 19 same-event positive pairs, 16 hard-negative pairs, and 22 cases
-adjudicated from the 2026-07-27 production ambiguity audit. It covers exact
-title, truncation, containment, paraphrase, cross-language reports, compatible
-numeric revisions, syndication, stage, temporal episode, named event,
-actor-direction, identity number, roundup, reaction, and distinct action. A
-secondary WorldMonitor-reference fixture adds 13 positive and 10 negative
-pairs through the same seam.
+News identity, classification, importance, and Brief selection are frozen to
+the implementation copied from WorldMonitor commit
+`f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds persistence,
+stable Story IDs, scheduled acquisition, `reporting_origin` corroboration, and
+immutable Chinese Brief publications; it does not add a second identity or
+scoring policy.
 
-The read-only pre-cut production snapshot was Alembic `20260726_0198`, 581
-Articles, 564 Stories, and 226 `ambiguous_new_story` decisions. Expanding the
-old fixture first produced candidate recall `1.0` but five false merges and five
-false splits: pairwise precision/recall `0.736842`, B-cubed
-precision/recall/purity `0.928571`. The false merges came from treating
-correlated sparse anchors as independent event proof; false splits exposed
-missing or under-normalized event actions and objects.
-
-The correction keeps the admission threshold fixed and instead:
-
-1. requires an action plus an independent event object, named event, temporal
-   episode, identity quantity, stage, or actor/target discriminator for
-   deterministic event-key proof;
-2. retains hard-conflict vetoes ahead of exact-title and containment proof;
-3. adds bounded production-derived aliases for event-defining actions,
-   institutions, objects, locations, and actor direction;
-4. treats earthquake magnitude as identity-defining;
-5. preserves runner-up ambiguity rather than forcing a merge.
-
-| Metric | Frozen result | Release floor |
-|---|---:|---:|
-| Candidate recall | 1.000 | ≥0.97 |
-| Pairwise precision | 1.000 | ≥0.995 |
-| Pairwise recall | 1.000 | ≥0.95 |
-| B-cubed precision | 1.000 | ≥0.995 |
-| B-cubed recall | 1.000 | ≥0.95 |
-| Cluster purity | 1.000 | ≥0.995 |
-| Hard-negative false merges | 0 | 0 |
-| False splits | 0 | ≤1% of positive pairs |
-
-The frozen distribution is 32 singleton clusters and 19 two-report clusters;
-all 23 WorldMonitor-reference pairs pass. Reproduce with:
+`tests/test_news_worldmonitor_parity.py` is the executable parity suite. Its 79
+tests cover positive and negative title pairs, exact-title and containment
+merges, CJK features, hot buckets, order independence, classification,
+historical exclusions, importance rounding, and source-diverse Top-8
+selection. Run it with:
 
 ```bash
-GMGN_TEST_POSTGRES_DSN=<isolated-test-dsn> \
-  uv run pytest -q tests/integration/test_news_story_evaluation.py
+uv run pytest -q tests/test_news_worldmonitor_parity.py
 ```
 
-This labeled pair corpus is necessary but not complete ground truth and does
-not exhaust multi-member transitive shapes. Production cutover must therefore
-also have explicit operator approval of the irreversible cutover and prove
-material-fact preservation, sequential Identity-v2 rebuild, zero backlog and
-hard-conflict violations, post-rebuild distribution/candidate audit, both Story
-views, Active Brief hash closure, Chinese provider or exact-cache provenance,
-and all five News health layers. The pre-cut 0198 Stories are not considered
-corrected.
+The release evaluation additionally replays the current production NewsItem
+corpus in isolated PostgreSQL. The review artifact must state its source
+cutoff, item/Story/singleton/multi-member/origin/category counts, every
+multi-member cluster, and the highest-similarity non-merged pairs. It is a
+distribution review, not a compression target. The known Ebola
+3,200-infections/1,405-deaths pair remains split at approximately `0.509`
+similarity because the frozen threshold is `0.615`; changing that result
+requires a new shared-corpus specification, never a private production patch.
+
+Cutover acceptance requires a destructive empty-News-schema cold start,
+exactly ten News tables, 96 synchronized sources, exactly three News workers,
+real RSS observations and NewsItems, deterministic Story membership, all four
+public endpoints, one valid Chinese Brief, provider-failure last-known-good
+retention, measured acquisition/projection latency, and browser verification
+of Feed, Story, Brief, and Sources.
 
 ## Generated contracts
 

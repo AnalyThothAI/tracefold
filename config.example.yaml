@@ -32,6 +32,8 @@ storage:
 llm:
   api_key:
   base_url: ""
+  openrouter_api_key:
+  groq_api_key:
 
 gmgn:
   api_key:
@@ -62,11 +64,11 @@ providers:
 
 news:
   enabled: true
-  # Omit `sources` to use the eight built-in global politics/economy feeds:
-  # Reuters World/Business, AP, BBC, Al Jazeera, FT, CNBC, and 6551News.
-  # RSSHub is internal to compose; 6551News resolves through
+  # Omit `sources` to use the pinned WorldMonitor full/en inventory plus
+  # Tracefold's crypto feeds and 6551NEWS extension. RSSHub is internal to
+  # compose; 6551NEWS resolves through
   # http://rsshub:1200/telegram/channel/news6551.
-  # Worker timing and DeepSeek model settings live in workers.yaml.
+  # Worker timing and provider endpoints/models live in workers.yaml.
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

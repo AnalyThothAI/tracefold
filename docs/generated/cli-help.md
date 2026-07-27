@@ -50,18 +50,15 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {enqueue-token-radar-dirty-targets,rebuild-market-current,rebuild-news-stories,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics} ...
+                     {enqueue-token-radar-dirty-targets,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics} ...
 
 positional arguments:
-  {enqueue-token-radar-dirty-targets,rebuild-market-current,rebuild-news-stories,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics}
+  {enqueue-token-radar-dirty-targets,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics}
     enqueue-token-radar-dirty-targets
                         enqueue Token Radar dirty targets from persisted facts
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
-    rebuild-news-stories
-                        destructively rebuild News Story products from
-                        ArticleRevision facts
     projection-status   print Token Radar publication state
     queue-inspect       inspect worker queue terminal evidence
     queue-resolve       resolve worker queue terminal evidence

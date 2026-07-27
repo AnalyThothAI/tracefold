@@ -93,22 +93,22 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Watchlist-specific projection. It does not consume `/api/recent` or
   WebSocket replay to reconstruct selected-handle counts, resolved targets,
   candidate mentions, or evidence clusters.
-- **News route.** `/news` is the Story-first global politics/economy stream
-  backed only by `/api/news/stories`. `view=latest|priority` is URL-owned:
-  Latest is the default material-change order and Priority is the deterministic
-  importance order. The browser never re-clusters or reorders either response.
-  Each row shows material age separately from Impact/Priority, lifecycle,
-  verification, acquisition-source count, independent-origin count, and current
-  analysis state. Search, source, verification, and view survive reload/share.
-  The Global Brief renders deterministic Active Story cards immediately; its
-  nullable AI analysis, pending/failed state, historical prior Publication,
-  cache-reuse badge, Activation time, evidence cutoff, and Publication time are
-  visually distinct. Old analysis cannot occupy the active selection slot.
-  `/news/stories/:storyId` is the evidence page backed by
-  `/api/news/stories/{story_id}`. It presents the Chinese analysis separately
-  from every member Article, provenance, and deterministic membership audit.
-  On both News routes, topbar search remains route-local and must not call
-  `/api/search/inspect` or reuse token resolver state.
+- **News route.** `/news` renders the server-grouped Story Feed from
+  `/api/news/feed`; the browser never clusters, scores, or reorders. Category
+  selection is route-local and every Story row shows level, representative
+  source/time, NewsItem count, distinct reporting-origin count, importance,
+  and its factor breakdown. `/news/stories/:storyId` reads
+  `/api/news/stories/{story_id}` and shows current member NewsItems only—there
+  is no revision timeline or per-Story AI panel. `/news/brief` renders the
+  single Chinese World Brief, selected Story evidence, freshness state, and
+  immutable publication history from `/api/news/brief`. `/news/sources` renders
+  per-source fetch outcome, latency, failure/backoff, and acquisition gate
+  counts from `/api/news/sources`. Feed sorting is URL-owned:
+  `sort=latest` selects publication time while the absent/default value uses
+  importance; neither path reorders in the browser. Feed and Brief poll every
+  60 seconds with ETag revalidation; a `304` reuses the cached body.
+  Topbar search remains route-local and must not call `/api/search/inspect` or
+  reuse token resolver state.
 - **Macro routes.** `/macro` and `/macro/overview` are the daily decision
   overview. `/macro/rates-fed`, `/macro/economy-inflation`,
   `/macro/liquidity-funding`, `/macro/credit`, `/macro/volatility`, and

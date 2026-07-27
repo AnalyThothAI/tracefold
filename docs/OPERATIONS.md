@@ -104,91 +104,88 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-configured feeds -> fetch receipts -> observations -> Article revisions
-  -> Identity v2 candidate recall + proof-ladder Event Story projection
-  -> Latest / Priority Story views
-  -> Brief Selection -> Proposal -> Activation -> Active
-  -> content-addressed immutable Brief / Story analysis publication
-  -> /api/news/stories + /api/news/brief + /api/news/sources
+96 configured sources
+  -> NewsPipelineWorker
+  -> FetchReceipt + immutable FeedObservation + NewsItem
+  -> full active-window cluster + Story/member/alias projection
+  -> /api/news/feed + /api/news/stories/{story_id}
+
+Top-8 changed Story fingerprint
+  -> NewsWorldBriefWorker
+  -> provider chain under one 60s budget
+  -> validated Chinese immutable publication + current pointer
+  -> /api/news/brief
 ```
 
-`news_ingest` synchronizes the configured source catalog, claims due sources,
-and commits one source at a time. A failed source records its own bounded error
-and does not stop the remaining claimed sources. `news_story_project` is the
-sole Identity-feature, Story membership/profile/material-event writer.
-`news_brief_plan` alone writes Narrative grouping, Selection, Proposal,
-Activation, and Active. Ordinary candidate transitions must remain stable for
-120 seconds, verified critical additions for 10 seconds, and rectifications
-activate on the next planner cycle. `news_ai_publish` only claims activated
-work, validates immutable Publications, and attaches generated or exactly
-reused analysis; it cannot advance Active. A qualified publication-contract
-change supersedes the incompatible current attachment in the claim transaction,
-then exposes pending/failed until generation finishes or an exact cache hit is
-reattached. `news_ai_current_targets` is the durable intent fence used to reject
-an older in-flight contract after rolling deploys or contract reversions.
-Superseded and late Publications remain immutable history, not current state.
+`news_pipeline` runs every 120 seconds by default. It claims due sources in
+one short transaction, performs up to 16 fetches concurrently outside the
+database, and closes each source independently. One source failure records a
+failed receipt, increments its failure count, and cannot block another source.
+A successful response retains ETag and Last-Modified; a `304` still permits
+the deterministic 96-hour expiry/recluster pass.
 
-Provider retries and terminal failure never roll back or hide Article/Story
-facts. Diagnose acquisition through `/api/news/sources`, deterministic Brief
-state through `/api/news/brief`, and all five correctness layers through
-`/api/status`. There is no legacy News repair, provider-item, page-projection,
-current/fallback Brief, or compatibility command.
+The same worker is the only NewsItem, Story, membership, and alias writer.
+There is no News dirty queue or repair command: restart recovery is the normal
+full-window projection. Unchanged items, membership, and Story fingerprints
+write zero serving rows. The hourly persisted recency epoch prevents a
+two-minute worker tick from masquerading as a Story revision.
 
-News health uses due work and persisted invariants rather than arbitrary
-headline age:
+`news_ai_classify` is disabled by default. It is an optional cache writer only
+and never gates admission, clustering, ranking, Feed, or Brief selection.
+`news_world_brief` runs every 600 seconds by default. It exits before any
+model call when candidates are empty or the ordered Story fingerprint is
+unchanged. On provider or validation failure it records the failure and keeps
+the last-known-good current pointer.
 
-| Layer | Target | Degraded | Failed |
-|---|---:|---:|---:|
-| Source fetch | each source refresh interval | 2 overdue cycles | 5 overdue cycles |
-| Revision → Story | ≤15s | >30s | >120s |
-| Story → public read | ≤30s | >60s | >180s |
-| Ordinary Proposal → Activation | ≤150s | >180s | >300s |
-| Verified critical → Activation | ≤40s | >60s | >120s |
-| Rectification → Activation | next cycle, ≤30s | >45s | >90s |
-| Activation → Brief read | ≤30s | >45s | >90s |
-| AI queue | never blocks facts | >5m | terminal validation, exhausted attempts, or stuck lease |
+Diagnose News in this order:
 
-`planner_active_mismatch` is degraded as soon as a Proposal is mature and
-failed after more than two 30-second planner cycles. Pointer closure, exact
-Selection bundle identity, Story counters/profile/material-hash closure, and
-attached Publication synthesis identity have zero tolerance. Story/public and
-Activation/Brief reads are PostgreSQL transaction-closed rather than queued
-projections: a closed pointer reports zero visibility lag, while any closure
-violation fails the layer instead of waiting out a freshness budget. Lane-
-specific `proposal_activation_lag` reasons retain the ordinary, verified-
-critical, and rectification SLO thresholds even though a mature unactivated
-Proposal already raises the stricter `planner_active_mismatch`. Every health
-reason returns its measured lag/value and threshold.
+1. `/api/news/sources`: enabled count, due source, last success, HTTP status,
+   failure count, conditional-fetch validators;
+2. `news_source_fetches`: one receipt for the source attempt, duration, parsed
+   entry count, admitted/updated/observation counts, and bounded gate counts
+   (`per_feed_cap`, `missing_title`, `invalid_url`, `missing_date`,
+   `future_date`, `stale_age`, and `duplicate`);
+3. `news_feed_observations`: raw entry exists even when rejected;
+4. `news_items`: admitted source identity and content fingerprint;
+5. `news_story_members` and `news_stories`: membership closure, stable
+   Story ID, state fingerprint, independent-origin count, score factors;
+6. `/api/news/feed`: category Top-20 server order;
+7. `news_brief_current` plus `news_brief_publications`: candidate
+   fingerprint, state, current publication, last error, and immutable history;
+8. `/api/news/brief`: ETag and public freshness state.
 
-Material closure treats a FeedObservation as closed when it either introduced
-an ArticleRevision directly or exactly matches an existing Revision of the
-same publisher artifact. Repeated acquisition evidence is therefore retained
-without being misreported as a missing material revision. Primary membership
-is counted once per Article even when that Article has multiple revisions, and
-equal-millisecond MaterialEvents use the projector's revision order.
+News health has three layers:
 
-#### News Identity v2 hard-cut runbook
+| Layer | Healthy evidence | Degradation signal |
+|---|---|---|
+| ingest | enabled sources exist and at least one recent success | no sources, every source failing, or all successes stale |
+| story | active admitted items close into active Story memberships | active items without current membership or no active Stories |
+| brief | current valid publication matches the current Top-8 fingerprint | no publication, mismatched fingerprint, update failure, or stale last-known-good |
 
-Migration `20260727_0199` preserves Source Registry, FetchReceipt,
-FeedObservation, Article, ArticleRevision, and Article content snapshots. It
-destructively removes all old identity/Story/Brief/analysis derived products.
-For this cutover the operator explicitly accepted an irreversible migration
-without a backup. There is no backup-receipt table, compatibility path,
-downgrade, or database restore point.
+The HTTP service remains ready when News is degraded; the structured News
+health object names the affected layer. Facts and Story cards never wait for
+the model.
 
-1. Stop all application workers so no 0198 writer can run during migration.
-2. Record the Alembic head and non-empty material-fact counts.
-3. Run `uv run tracefold db migrate`.
-4. Verify that the Alembic head is `20260727_0203` and the preserved
-   material-fact identities/counts are unchanged.
-5. Run
-   `uv run tracefold ops rebuild-news-stories --batch-size 100 --execute`.
-   This replays every preserved ArticleRevision through the same sequential
-   projector used by live catch-up.
-6. Start the four News workers, then verify migration head, zero projection
-   backlog, Story count/membership closure, Latest/Priority order, Active Brief,
-   AI provenance, and all five News health layers. If validation fails, keep
-   writers stopped and repair forward from the preserved material facts.
+#### News WorldMonitor hard-cut runbook
+
+Migration `20260727_0204` is intentionally destructive. It drops every
+existing `news_*` table and creates the exact ten-table WorldMonitor-backed
+schema. The operator accepted no backup, no downgrade, no ID redirect, no
+dual writer, and no compatibility read.
+
+1. Stop the service so no older News worker can write during the cut.
+2. Confirm the intended checkout and that Alembic currently ends at
+   `20260727_0203`.
+3. Replace the operator `news.sources` entries and News worker keys with the
+   new exact schema; unknown old fields and worker names must fail validation.
+4. Run `uv run tracefold db migrate` and verify head `20260727_0204`.
+5. Start exactly `news_pipeline`, `news_ai_classify`, and
+   `news_world_brief` with the rest of the service.
+6. Verify exactly ten `news_*` tables, 96 synchronized sources, fresh fetch
+   receipts/observations, non-empty NewsItems and Stories, membership closure,
+   the four HTTP routes, ETag `304`, one Chinese Brief, and zero old routes.
+7. Leave the deployment stopped and repair forward if any acceptance check
+   fails; there is no historical News restore path in this release.
 
 Macro:
 

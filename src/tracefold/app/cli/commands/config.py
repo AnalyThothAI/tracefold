@@ -4,13 +4,17 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from tracefold.news import default_sources
 from tracefold.platform.config.settings import load_settings, write_default_config
 from tracefold.platform.paths import config_path, workers_config_path
 
 
 def handle_init(args: object) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists() and workers_config_path().exists()
-    path = write_default_config(force=args.force)
+    path = write_default_config(
+        force=args.force,
+        news_sources=tuple(source.model_dump(mode="json") for source in default_sources()),
+    )
     password_path = _ensure_postgres_password_file(path.parent)
     return (
         0,

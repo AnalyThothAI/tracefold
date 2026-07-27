@@ -116,35 +116,23 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         current_read_model_identities=(("token_profile_current", ("target_type", "target_id")),),
     ),
     WorkerManifest(
-        name="news_ingest",
+        name="news_pipeline",
         start_priority=90,
-    ),
-    WorkerManifest(
-        name="news_story_project",
-        start_priority=92,
         current_read_model_identities=(
+            ("news_items", ("source_id", "source_item_key")),
             ("news_stories", ("story_id",)),
-            ("news_story_memberships", ("story_id", "article_id")),
+            ("news_story_members", ("story_id", "item_id")),
         ),
     ),
     WorkerManifest(
-        name="news_brief_plan",
-        start_priority=94,
-        current_read_model_identities=(
-            ("news_brief_selections", ("selection_id",)),
-            ("news_brief_proposals", ("proposal_id",)),
-            ("news_brief_activations", ("activation_id",)),
-            ("news_brief_active", ("singleton_key",)),
-        ),
+        name="news_ai_classify",
+        start_priority=92,
+        current_read_model_identities=(("news_ai_classification_cache", ("cache_key",)),),
     ),
     WorkerManifest(
-        name="news_ai_publish",
+        name="news_world_brief",
         start_priority=95,
-        queue_tables=("news_ai_attempts", "news_story_analysis_requests"),
-        current_read_model_identities=(
-            ("news_brief_activation_analysis", ("activation_id", "publication_id")),
-            ("news_story_analysis_current", ("story_id",)),
-        ),
+        current_read_model_identities=(("news_brief_current", ("singleton_key",)),),
     ),
     WorkerManifest(
         name="macro_research",

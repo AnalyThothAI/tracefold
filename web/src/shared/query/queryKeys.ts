@@ -22,33 +22,11 @@ export const queryKeys = {
   macroPage: (pageId: string) => ["macro", "page", pageId] as const,
   macroSeries: (conceptKeys: string[], window: string) =>
     ["macro", "series", [...conceptKeys].sort(), window] as const,
-  newsStories: ({
-    cursor,
-    limit,
-    q,
-    source,
-    evidencePosture,
-    view,
-  }: {
-    cursor?: string | null;
-    limit: number;
-    q?: string | null;
-    source?: string | null;
-    evidencePosture?: string | null;
-    view: "latest" | "priority";
-  }) =>
-    [
-      "news-stories",
-      view,
-      limit,
-      cursor ?? "",
-      evidencePosture ?? "",
-      source ?? "",
-      q ?? "",
-    ] as const,
+  newsFeed: (category: string | null, sort: "importance" | "latest") =>
+    ["news-feed", category ?? "", sort] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
   newsBrief: () => ["news-brief"] as const,
-  newsBriefHistory: () => ["news-brief-history"] as const,
+  newsSources: () => ["news-sources"] as const,
   targetSocialTimeline: (targetKey: string | null, window: WindowKey, scope: ScopeKey) =>
     ["target-social-timeline", targetKey, window, scope] as const,
   targetPosts: (

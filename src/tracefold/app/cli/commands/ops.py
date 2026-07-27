@@ -3,10 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.app.cli.commands import queue_ops
-from tracefold.app.read_models import (
-    rebuild_market_tick_current_batch,
-    rebuild_news_story_projection,
-)
+from tracefold.app.read_models import rebuild_market_tick_current_batch
 from tracefold.app.reference_data import (
     sync_binance_cex_profiles_once,
     sync_binance_usdt_perp_universe,
@@ -108,13 +105,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
             settings,
             after=(after_target_type, after_target_id) if after_target_type else None,
             limit=args.limit,
-        )
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "rebuild-news-stories":
-        data = rebuild_news_story_projection(
-            settings,
-            batch_size=args.batch_size,
         )
         return 0, {"ok": True, "data": data}
 

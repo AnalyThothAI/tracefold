@@ -18,11 +18,14 @@ The configuration schema uses typed nested models directly
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
-`llm` contains only shared provider credentials (`api_key` and `base_url`).
-They are consumed only when `macro_research` or `news_ai_publish` is enabled.
-Model, request timeout, token, cadence, lease, and retry settings remain typed
-under the owning worker in `workers.yaml`. The request timeout applies to one
-provider transport call; there is no generic model-policy or capacity surface.
+`llm` contains operator-owned provider credentials: `api_key` and `base_url`
+for the current OpenAI-compatible provider plus optional
+`openrouter_api_key` and `groq_api_key` for the News fallback chain. They are
+consumed only by enabled AI workers. Model, endpoint, request timeout, token,
+cadence, lease, and retry settings remain typed under the owning worker in
+`workers.yaml`. News World Brief attempts configured local Ollama, the current
+OpenAI-compatible provider, OpenRouter, then Groq once each under one
+60-second chain budget. Environment variables are not a credential contract.
 
 `src/tracefold/app/worker_manifest.py` owns the worker inventory and
 writer/queue declarations. The current keys are:
@@ -44,10 +47,9 @@ macro_projection
 macro_judgment
 token_image_mirror
 token_profile_current
-news_ingest
-news_story_project
-news_brief_plan
-news_ai_publish
+news_pipeline
+news_ai_classify
+news_world_brief
 macro_research
 notification_rule
 notification_delivery
@@ -89,7 +91,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable daily judgment/Evidence Pack, and Evidence-Pack-bound DeepAgents research |
-| News | `/api/news/stories`, `/api/news/stories/{story_id}`, `/api/news/sources` | deterministic Story read model, Article evidence, immutable current-evidence analysis, and source fetch state |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources` | deterministic Story read model, NewsItem members, immutable Chinese Brief, and source fetch state |
 | Notifications | account alerts, notification list with embedded summary, delivery audit, and read commands under `/api` | notification facts and external-delivery ledger |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
@@ -111,61 +113,52 @@ alternate decision labels.
 
 ### News
 
-`/api/news/stories` serves the Story Feed with bounded cursor pagination,
-`view=latest|priority`, and `q`, `source`, and `evidence_posture` filters.
-`latest` is the default and orders by last material-evidence time; `priority`
-orders by deterministic Priority and then material time. Cursors are
-view-bound and fail closed with `news_story_cursor_view_mismatch` when reused
-across views.
-`/api/news/stories/{story_id}` serves Story Detail with Article/Revision/
-Observation provenance, member semantics, identity decisions, material events,
-and current/history Story analysis. A user can explicitly request analysis
-through `POST /api/news/stories/{story_id}/analysis-requests`; this schedules
-work but never calls a model in the request.
+The News public surface is exactly four read-only routes:
 
-`/api/news/brief` returns one composite with:
+- `GET /api/news/feed?category={category}&sort={importance|latest}` returns
+  globally clustered Stories grouped by deterministic category, at most 20
+  per group. `importance` is the default. Without `category`, all non-empty
+  groups are returned. Both sorts contain the same Story identities; the
+  server order is authoritative and the browser does not cluster or score.
+- `GET /api/news/stories/{story_id}` returns one persistent Story and its
+  current NewsItem members. It exposes title/source/time, classification,
+  independent reporting-origin count, importance score, and the transparent
+  factor breakdown. It contains no revisions or per-Story AI analysis.
+- `GET /api/news/brief` returns one current Chinese World Brief, its freshness
+  state, selected Story evidence, bounded immutable publication history, and
+  last failure when present. Empty candidates or a failed update preserve the
+  last-known-good publication.
+- `GET /api/news/sources` returns the frozen source registry and current
+  conditional-fetch health.
 
-- `active_selection`: the deterministic current Activation and required Story
-  cards;
-- nullable `analysis`: only an immutable Publication attached to that
-  Activation;
-- `analysis_status`: `unavailable`, `pending`, `available`, `failed`, or
-  `reused`;
-- optional `previous_publication`, always historical rather than current;
-- optional `pending_proposal` and bounded `latest_failure`.
+`/api/news/feed` and `/api/news/brief` emit an ETag, honor
+`If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
+Every read is PostgreSQL-only: it never fetches a source, calls a model,
+reclusters, or repairs state.
 
-Activation time, evidence cutoff, Publication time, and cache attachment are
-separate fields. Pending or failed AI never replaces `active_selection` with an
-older Publication. `/api/news/brief/history` returns immutable Publications,
-including valid late completions that were ineligible to attach.
-Changing any qualified model/prompt/workflow/schema/locale field immediately
-withdraws an incompatible current attachment. Reads then expose the
-deterministic `active_selection` with `analysis_status=pending|failed` until the
-new Publication completes or an exact cached Publication is reattached.
+NewsItem identity is source scoped. A changed source `pubDate` alone is an
+acquisition observation, not a material revision. Story identity is the
+persistent result of the WorldMonitor-compatible 96-hour title cluster;
+existing memberships and aliases prevent a representative change from
+inventing a new Story. Corroboration counts distinct reporting origins, not
+feeds or syndicated copies. Keyword classification and importance are
+deterministic and fully sufficient without AI.
 
-Article identity is publisher-artifact scoped and deterministic. Story
-membership is versioned, candidate-channel audited, proof-ladder,
-constraint-first, and conflict-aware. Source quality,
-reporting origin, syndication, independent corroboration, corrections, and
-conflict remain separate fields. AI publications are Chinese,
-evidence-referenced, fail-closed, and content-addressed by evidence plus the
-actual model/prompt/workflow/schema/locale contract. Provider/network/model
-calls never occur on read endpoints.
+The Brief worker calls no model when its ordered Top-8 Story fingerprint is
+unchanged. A new fingerprint permits one attempt per configured provider,
+bounded by 60 seconds total. Publications are Chinese and citation-index
+locked: line `[n]` always refers to selected Story `n`. Invalid lines are
+repaired locally without shifting indexes. The current pointer changes only
+after a complete valid publication transaction succeeds. A degraded
+publication remains in immutable history but never replaces last-known-good.
 
-`/api/status` includes a structured `news` health object with independent
-`source`, `material`, `brief`, `public`, and `ai` layers. Each breach carries
-an exact reason code, measured value or lag, threshold, and bounded details.
-Business-invariant failures such as `planner_active_mismatch`,
-`active_publication_mismatch`, `story_projection_lag`, or
-`public_active_contract_mismatch` can degrade global readiness without making
-deterministic Story reads unavailable.
+`/api/status` exposes three independent News health layers: `ingest`,
+`story`, and `brief`. Deterministic Story cards remain readable while a
+Brief is updating or stale.
 
-There is no `/api/news` compatibility collection, legacy item/fact detail
-route, News WebSocket payload, webhook, or public provider adapter.
-
-Search inspection and Token Case likewise return resolver, identity, current
-Radar, market, timeline, and source-post facts only. Removed derived prose and
-admission fields are absent, not nullable.
+There is no `/api/news/stories` collection, `view=latest|priority`, Brief
+history route, analysis request route, item route, News WebSocket payload,
+webhook, compatibility alias, or alternate clustering path.
 
 ### Macro
 
@@ -282,12 +275,9 @@ Mutating maintenance commands require an explicit execution flag where the parse
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
-`ops rebuild-news-stories --execute` is the destructive, explicit Identity-v2
-replay from preserved ArticleRevision facts; it invokes the same sequential
-projection seam as `news_story_project` and does not preserve or redirect old
-Story IDs. Normal recovery remains bounded PostgreSQL catch-up across the four
-News workers, with no compatibility CLI or alternate clustering path. Token
-Radar contract and distribution checks use `projection-status`,
+News has no repair/rebuild CLI: normal recovery is a full 96-hour PostgreSQL
+recluster by `news_pipeline` on each bounded catch-up cycle. Token Radar
+contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.
 

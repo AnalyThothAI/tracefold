@@ -38,10 +38,7 @@ PLATFORM_TABLES = {
     "worker_queue_terminal_events",
 }
 RETIRED_NEWS_RUNTIME_MARKERS = (
-    "NewsItem",
-    "newsItem",
     "news_item_process",
-    "news_items",
     "news_page_projection",
     "news_page_rows",
     "news_provider_items",
@@ -57,8 +54,20 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_analysis",
     "verification_status",
     "evidence_set_hash",
+    "news_ingest",
+    "news_story_project",
+    "news_brief_plan",
+    "news_ai_publish",
+    "NewsIngestWorker",
+    "NewsStoryProjectWorker",
+    "NewsBriefPlanWorker",
+    "NewsAiPublishWorker",
+    "rebuild-news-stories",
     "/api/news/items",
     "/api/news/sources/status",
+    "/api/news/stories?",
+    "/api/news/brief/history",
+    "/analysis/requests",
     "/news/items",
 )
 
@@ -172,13 +181,12 @@ def test_worker_manifest_has_one_writer_per_current_read_model() -> None:
     assert len(tables) == len(set(tables))
 
 
-def test_news_runtime_has_exactly_the_four_professional_pipeline_workers() -> None:
+def test_news_runtime_has_exactly_the_three_worldmonitor_pipeline_workers() -> None:
     news_workers = {manifest.name for manifest in all_worker_manifests() if manifest.name.startswith("news_")}
     assert news_workers == {
-        "news_ingest",
-        "news_story_project",
-        "news_brief_plan",
-        "news_ai_publish",
+        "news_pipeline",
+        "news_ai_classify",
+        "news_world_brief",
     }
 
 

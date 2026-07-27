@@ -14,17 +14,7 @@ const STATUS_KEYS = [
   "workers",
 ] as const;
 const NEWS_KEYS = ["status", "reasons", "layers", "measured_at_ms"] as const;
-const NEWS_LAYER_NAMES = ["source", "material", "brief", "public", "ai"] as const;
-const NEWS_LAYER_KEYS = ["status", "reasons", "measurements"] as const;
-const NEWS_REASON_KEYS = [
-  "code",
-  "status",
-  "measured_ms",
-  "threshold_ms",
-  "measured",
-  "threshold",
-  "details",
-] as const;
+const NEWS_LAYER_NAMES = ["ingest", "story", "brief"] as const;
 const WORKER_KEYS = [
   "enabled",
   "running",
@@ -62,37 +52,18 @@ function requireNewsHealth(value: unknown): void {
   requireExactKeys(news, NEWS_KEYS, "status.news");
   requireHealthStatus(news.status, "status.news.status");
   requireFiniteNumber(news.measured_at_ms, "status.news.measured_at_ms");
-  requireHealthReasons(news.reasons, "status.news.reasons");
+  requireStringArray(news.reasons, "status.news.reasons");
   const layers = requireRecord(news.layers, "status.news.layers");
   requireExactKeys(layers, NEWS_LAYER_NAMES, "status.news.layers");
   for (const layerName of NEWS_LAYER_NAMES) {
     const path = `status.news.layers.${layerName}`;
     const layer = requireRecord(layers[layerName], path);
-    requireExactKeys(layer, NEWS_LAYER_KEYS, path);
     requireHealthStatus(layer.status, `${path}.status`);
-    requireHealthReasons(layer.reasons, `${path}.reasons`);
-    requireRecord(layer.measurements, `${path}.measurements`);
   }
 }
 
-function requireHealthReasons(value: unknown, path: string): void {
-  if (!Array.isArray(value)) fail(path);
-  value.forEach((item, index) => {
-    const reasonPath = `${path}.${index}`;
-    const reason = requireRecord(item, reasonPath);
-    requireExactKeys(reason, NEWS_REASON_KEYS, reasonPath);
-    requireString(reason.code, `${reasonPath}.code`);
-    requireHealthStatus(reason.status, `${reasonPath}.status`);
-    requireNullableFiniteNumber(reason.measured_ms, `${reasonPath}.measured_ms`);
-    requireNullableFiniteNumber(reason.threshold_ms, `${reasonPath}.threshold_ms`);
-    requireNullableFiniteNumber(reason.measured, `${reasonPath}.measured`);
-    requireNullableFiniteNumber(reason.threshold, `${reasonPath}.threshold`);
-    requireRecord(reason.details, `${reasonPath}.details`);
-  });
-}
-
 function requireHealthStatus(value: unknown, path: string): void {
-  if (value !== "running" && value !== "degraded" && value !== "failed") fail(path);
+  if (value !== "healthy" && value !== "degraded" && value !== "unavailable") fail(path);
 }
 
 export function requireWorkerStatusData(value: unknown, path = "worker"): WorkerStatusData {

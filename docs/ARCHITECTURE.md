@@ -31,7 +31,8 @@ Material facts include:
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
 - market: `market_ticks`, `enriched_events`, `market_observations`,
   `market_settlements`, and `market_position_facts`;
-- news: idempotent normalized Article facts in `news_articles`;
+- news: immutable acquisition observations in `news_feed_observations` and
+  idempotent normalized current `news_items`;
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`;
 - notifications: `notifications` and the external delivery facts in
@@ -39,8 +40,8 @@ Material facts include:
   Notifications consumes through an explicit input.
 
 Current read models are `token_radar_current_rows`, `token_profile_current`,
-`market_tick_current`, deterministic `news_stories` plus
-`news_story_memberships`, and the six stable rows in `macro_module_current`.
+`market_tick_current`, deterministic `news_items`, `news_stories`, and
+`news_story_members`, plus the six stable rows in `macro_module_current`.
 Each uses stable product/window/target identity, has exactly one runtime
 writer, is rebuildable from facts, and writes zero serving rows when its
 business payload is unchanged.
@@ -48,9 +49,8 @@ business payload is unchanged.
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
 or audit state. They are not alternate business truth.
-`macro_research_publications`, `news_brief_publications`, and
-`news_story_analysis_publications` are immutable derived
-research keyed by frozen evidence; they are not material facts.
+`macro_research_publications` and `news_brief_publications` are immutable
+derived research keyed by frozen evidence; they are not material facts.
 
 ## Package map
 
@@ -64,10 +64,14 @@ tracefold.market
   views/         persisted market read queries
 
 tracefold.news
-  identity.py    Article identity, provenance, Story matching and projection
-  repository.py PostgreSQL facts, membership, lifecycle and analysis publication
-  interface.py  sole external Story read interface
-  workers.py    bounded RSS ingest and Story-analysis workers
+  sources.py        frozen WorldMonitor-derived source catalog plus crypto/6551
+  classification.py deterministic keyword threat/category classifier
+  identity.py       WorldMonitor-compatible 512-dimension title clustering
+  ranking.py        55/20/15/10 importance and Top-8 selection
+  brief.py          Chinese Brief fingerprint and citation index lock
+  repository.py     PostgreSQL observation, item, Story, and Brief state
+  interface.py      sole external News read interface
+  workers.py        the three bounded News workers
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -136,8 +140,9 @@ Important atomic units are:
 - one Macro acquisition completion: normalized fact insert, append-only source
   receipt, cursor advance, and compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
-- News Article persistence plus deterministic Story membership/projection;
-- immutable Story analysis publication plus completion of its exact
+- News observation/item persistence plus deterministic Story
+  membership/projection;
+- immutable World Brief publication plus completion of its exact
   evidence/model/version attempt;
 - immutable Macro Evidence Pack, daily judgment, or research publication plus
   the corresponding stable session transition;
@@ -169,78 +174,82 @@ persisted identity, social, and market facts.
 
 ### News
 
+News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
+`f73de5b7`, not an independent editorial ontology:
+
 ```text
-configured sources
-  -> internal RSS/RSSHub adapter
-  -> fetch receipts + observations + immutable Article revisions
-  -> versioned Article identity features v2
-  -> multi-channel candidate recall
-  -> constraint-first proof-ladder Event Story admission
-  -> single-writer deterministic Story memberships + profiles + material events
-  -> Latest / Priority Story views
-  -> Narrative grouping + Brief Selection + Proposal
-  -> immutable Brief Activation + singleton Active pointer
-  -> content-addressed validated AI Publication
-  -> Story Interface -> HTTP + React
+96 frozen RSS/RSSHub sources
+  -> conditional fetch (ETag / Last-Modified, first five entries)
+  -> immutable FeedObservation before admission
+  -> idempotent NewsItem
+  -> full 96-hour WorldMonitor title clustering
+  -> persistent Story identity + members + aliases
+  -> category groups, each capped at 20 Stories
+  -> deterministic Top-8 Brief selection
+  -> one Chinese World Brief publication
+  -> /api/news/feed + /api/news/stories/{story_id}
+     + /api/news/brief + /api/news/sources
 ```
 
-Article identity is publisher-artifact scoped and deterministic. Story identity
-v2 first recalls bounded candidates through content fingerprint, normalized
-exact title, high title containment, same-language lexical similarity,
-deterministic event anchors, and named events. Admission is a separate ordered
-proof ladder. Place, actor direction, action/state transition, event object,
-policy stage, named event, temporal episode, and explicitly
-identity-defining-number conflicts veto every positive proof. Exact title,
-near-complete containment, high same-language member similarity, deterministic
-event anchors, and the stricter cross-language anchor path are then evaluated
-in order. Runner-up ambiguity creates a separate Story. There is no union-find,
-embedding, translation, LLM, or browser clustering path.
-Every admitted FeedObservation either introduces an ArticleRevision or resolves
-by exact content to an existing Revision of the same publisher artifact. A
-repeat Observation remains immutable acquisition evidence but does not invent a
-material Revision. Revision projection and MaterialEvent closure share the
-total order `(observed_at_ms, revision_id)` so equal-millisecond arrivals cannot
-make event hashes depend on unrelated deterministic IDs.
-The frozen production-derived and WorldMonitor-reference evaluation, red/green
-metrics, release floors, and remaining limits are owned by
-`docs/DEVELOPMENT.md`; the executable labels live in
-`tests/fixtures/news_story_identity_golden.json`.
+`news_pipeline` is the only NewsItem/Story writer. It synchronizes the
+code-owned source catalog, claims due sources, performs concurrent provider I/O
+outside transactions, records one FetchReceipt per attempt, and commits each
+source independently. Every parsed entry first becomes an immutable
+`news_feed_observations` row. Missing title, non-HTTP URL, missing date, and
+future time beyond one hour remain auditable rejected observations and never
+become NewsItems. Valid entries older than 96 hours are persisted as
+historical inactive NewsItems so acquisition loss stays distinguishable from
+active-cluster eligibility.
 
-Source role, trust, acquisition chain, publisher organization, and reporting
-origin remain separate so syndication cannot manufacture corroboration.
-Lifecycle, Impact, Priority, evidence posture, and Brief eligibility are
-deterministic scheduled projection state. `latest` and `priority` are two
-ordered views over the same Story identities; they never create a second
-projection.
+NewsItem identity is `(source_id, source_item_key)`, where the source item key
+comes from GUID and canonical URL. Tracking parameters are removed. The
+content fingerprint covers canonical URL, normalized title, and description,
+but deliberately excludes `pubDate`: a source timestamp drift produces a new
+observation and zero NewsItem or Story writes.
 
-Global Brief separates content identity from temporal currentness:
+Story clustering is the Python port of WorldMonitor's
+`shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
+512-dimensional vectors, uniform and boosted cosine channels, threshold
+`0.615`, exact-duplicate union, high-containment rescue, 250-item candidate
+buckets, and deterministic union-find. The entire active 96-hour set is
+reclustered per pipeline cycle. Existing member ownership and seven-day title
+aliases preserve a stable Story ID across representative changes; dropped
+Stories are archived, not treated as current. There is no embedding,
+translation, full-article extraction, browser clustering, revision product, or
+per-Story AI analysis.
 
-- `news_brief_selections` stores the content-addressed deterministic editorial
-  portfolio and exact synthesis input hash.
-- `news_brief_proposals` stores the one candidate transition being observed
-  through ordinary, verified-critical, or rectification debounce.
-- `news_brief_activations` records each immutable transition that became
-  current; `news_brief_active` points to exactly one Activation.
-- `news_brief_publications` stores immutable AI analysis by synthesis input plus
-  the qualified model/prompt/workflow/schema/locale contract.
-- `news_ai_current_targets` is the transactionally replaced intent for the
-  evidence and qualified contract that may currently attach for each Activation
-  or Story; an older in-flight result can enter immutable history but cannot
-  regain the current pointer.
-- `news_brief_activation_analysis` attaches a generated or exactly reused
-  Publication without allowing AI to advance Active. Each Activation has at
-  most one unsuperseded attachment: requesting a different qualified
-  model/prompt/workflow/schema/locale contract first withdraws the incompatible
-  current attachment, so the public state is honestly pending or failed until
-  the new contract publishes or an exact cached Publication is reattached.
+Threat level and category use WorldMonitor's deterministic keyword classifier,
+including exclusions and historical downgrade. `news_ai_classify` is the only
+optional enhancement seam, is disabled by default, and cannot gate News facts
+or serving. Importance uses WorldMonitor's 55% severity, 20% source tier,
+15% independent reporting-origin corroboration, and 10% recency, followed by
+the narrow diplomacy/flashpoint and entity-corroboration boosts. Because
+Tracefold persists this otherwise request-time score, recency uses the
+equivalent one-hour healthy-cache epoch; unchanged input within an epoch writes
+zero serving rows. The API exposes the factor breakdown. Global clustering
+precedes per-category Top-20 truncation.
 
-Consequently A → A is a no-op, while A → B → A produces A₁, B₁, and A₂ even
-when A₂ reuses A₁'s Publication. Activation time, evidence cutoff, Publication
-time, and attachment time are distinct. A late or invalid model result can be
-retained as immutable history/cache but cannot overwrite a newer Activation.
-Superseded attachments likewise remain immutable provenance and cache, never
-the current analysis.
-A pending or failed model never hides deterministic Story cards.
+`news_world_brief` selects at most eight Stories, caps one structured
+`reporting_origin` at three across all distribution feeds, and excludes
+opinion, feel-good, and ephemeral live coverage.
+Its fingerprint binds the ordered Story state and the prompt/workflow/schema/
+locale contract. An unchanged fingerprint makes no model call and no write.
+The provider chain gets one bounded attempt per configured provider under one
+60-second total budget. Output is Chinese, each line is index-locked to its
+selected Story, malformed lines receive a deterministic local fallback, and an
+empty set or provider failure preserves the last-known-good publication.
+Publication history is immutable; degraded attempts are retained for audit but
+cannot replace last-known-good. `news_brief_current` is the single current
+pointer and the read contract exposes `fresh`, `updating`, `stale`,
+`unavailable`, or `failed` honestly.
+
+The complete live News storage boundary is exactly ten tables:
+`news_sources`, `news_source_fetches`, `news_feed_observations`,
+`news_items`, `news_stories`, `news_story_members`,
+`news_story_aliases`, `news_ai_classification_cache`,
+`news_brief_publications`, and `news_brief_current`. Migration
+`20260727_0204` destructively drops every prior `news_*` table before
+creating this schema and has no downgrade or compatibility lane.
 
 ### Macro
 
