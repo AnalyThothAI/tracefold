@@ -285,12 +285,15 @@ function StoryCard({ story }: { story: NewsStory }) {
         <strong>{story.title}</strong>
         <small>{story.description || "原始来源未提供有效摘要"}</small>
         <span className="news-factor-line">
-          严重度 {formatPoints(factors.severity_points)} · 来源{" "}
-          {formatPoints(factors.source_points)}
-          {" · "}独立源 {formatPoints(factors.corroboration_points)} · 时效{" "}
-          {formatPoints(factors.recency_points)}
+          严重度得分 {formatPoints(factors.severity_points)} · 来源质量得分{" "}
+          {formatPoints(factors.source_points)}（Tier {factors.source_tier}） · 佐证得分{" "}
+          {formatPoints(factors.corroboration_points)}（计分来源{" "}
+          {factors.scoring_corroboration_count}） · 时效得分 {formatPoints(factors.recency_points)}
           {factors.diplomacy_flashpoint_boost
-            ? ` · 地缘信号 +${factors.diplomacy_flashpoint_boost}`
+            ? ` · 外交热点 +${factors.diplomacy_flashpoint_boost}`
+            : ""}
+          {factors.entity_corroboration_boost
+            ? ` · 实体佐证 +${factors.entity_corroboration_boost}`
             : ""}
         </span>
       </span>
@@ -371,22 +374,55 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
 
           <section className="news-detail-card">
             <h2>重要度因子</h2>
+            <p>
+              来源数量与得分分开显示；计分佐证来源取 Story 内物理来源与 24
+              小时实体信号来源的较大值，最多按 5 个来源计入佐证得分。
+            </p>
             <dl className="news-factor-grid">
               <div>
-                <dt>严重度</dt>
+                <dt>严重度得分</dt>
                 <dd>{formatPoints(story.importance_factors.severity_points)}</dd>
+                <small>{LEVEL_LABELS[story.importance_factors.severity_level]}严重度</small>
               </div>
               <div>
-                <dt>来源层级</dt>
+                <dt>来源质量得分</dt>
                 <dd>{formatPoints(story.importance_factors.source_points)}</dd>
+                <small>
+                  {scoringMember?.source_name ?? "评分 NewsItem"} · Tier{" "}
+                  {story.importance_factors.source_tier}
+                </small>
               </div>
               <div>
-                <dt>独立报道源</dt>
+                <dt>Story 内物理来源</dt>
+                <dd>{story.importance_factors.physical_source_count}</dd>
+                <small>聚类成员中的不同物理来源</small>
+              </div>
+              <div>
+                <dt>计分佐证来源</dt>
+                <dd>{story.importance_factors.scoring_corroboration_count}</dd>
+                <small>Story 内来源与 24 小时实体信号来源取较大值</small>
+              </div>
+              <div>
+                <dt>佐证得分</dt>
                 <dd>{formatPoints(story.importance_factors.corroboration_points)}</dd>
+                <small>最多按 5 个来源计分</small>
               </div>
               <div>
-                <dt>24 小时时效</dt>
+                <dt>24 小时时效得分</dt>
                 <dd>{formatPoints(story.importance_factors.recency_points)}</dd>
+              </div>
+              <div>
+                <dt>外交热点加分</dt>
+                <dd>+{formatPoints(story.importance_factors.diplomacy_flashpoint_boost)}</dd>
+              </div>
+              <div>
+                <dt>实体佐证加分</dt>
+                <dd>+{formatPoints(story.importance_factors.entity_corroboration_boost)}</dd>
+              </div>
+              <div>
+                <dt>总重要度</dt>
+                <dd>{story.importance_factors.total}</dd>
+                <small>基础四项四舍五入后加额外加分</small>
               </div>
             </dl>
           </section>

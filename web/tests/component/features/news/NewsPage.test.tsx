@@ -38,7 +38,8 @@ describe("NewsPage", () => {
     expect(
       await screen.findByText("Central banks respond to a new global policy shock"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/严重度 41.3/)).toBeInTheDocument();
+    expect(screen.getByText(/严重度得分 41.3/)).toBeInTheDocument();
+    expect(screen.getByText(/佐证得分 12（计分来源 4）/)).toBeInTheDocument();
     expect(screen.getAllByText("4", { selector: ".news-story-counts b" })).toHaveLength(2);
     expect(screen.queryByText(/AI 分析/)).not.toBeInTheDocument();
   });
@@ -151,6 +152,46 @@ describe("NewsPage", () => {
       "https://www.reuters.com/world/story",
     );
     expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
+  });
+
+  it("separates physical source counts from scoring points and boosts", async () => {
+    const story = newsStoryDetailFixture({
+      importance_score: 124,
+      item_count: 2,
+      source_count: 2,
+    });
+    story.importance_factors = {
+      ...story.importance_factors,
+      corroboration_points: 15,
+      diplomacy_flashpoint_boost: 18,
+      entity_corroboration_boost: 20,
+      physical_source_count: 2,
+      recency_points: 9.66,
+      scoring_corroboration_count: 9,
+      total: 124,
+    };
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: story }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
+    );
+
+    expect(await screen.findByText("重要度因子")).toBeInTheDocument();
+    expect(screen.getByText("Story 内物理来源").parentElement).toHaveTextContent("2");
+    expect(screen.getByText("计分佐证来源").parentElement).toHaveTextContent("9");
+    expect(screen.getByText("来源质量得分").parentElement).toHaveTextContent("20");
+    expect(screen.getByText("来源质量得分").parentElement).toHaveTextContent(
+      "Reuters World · Tier 1",
+    );
+    expect(screen.getByText("佐证得分").parentElement).toHaveTextContent("15");
+    expect(screen.getByText("外交热点加分").parentElement).toHaveTextContent("+18");
+    expect(screen.getByText("实体佐证加分").parentElement).toHaveTextContent("+20");
+    expect(screen.getByText("总重要度").parentElement).toHaveTextContent("124");
   });
 
   it("renders one Chinese World Brief and its embedded history", async () => {
