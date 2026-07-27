@@ -509,7 +509,7 @@ class MacroRepository:
                 *
               FROM macro_series_facts
               WHERE dataset_id = ANY(%s)
-                AND (%s IS NULL OR received_at_ms <= %s)
+                AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
               ORDER BY
                 dataset_id, series_id, reference_date,
                 vintage_date DESC, received_at_ms DESC
@@ -530,7 +530,6 @@ class MacroRepository:
             (
                 list(dataset_ids),
                 received_before_ms,
-                received_before_ms,
                 int(limit_per_dataset),
             ),
         ).fetchall()
@@ -549,10 +548,10 @@ class MacroRepository:
             SELECT *
             FROM macro_release_facts
             WHERE dataset_id = ANY(%s)
-              AND (%s IS NULL OR received_at_ms <= %s)
+              AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
             ORDER BY dataset_id, published_at_ms
             """,
-            (list(dataset_ids), received_before_ms, received_before_ms),
+            (list(dataset_ids), received_before_ms),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -569,10 +568,10 @@ class MacroRepository:
             SELECT *
             FROM macro_documents
             WHERE dataset_id = ANY(%s)
-              AND (%s IS NULL OR received_at_ms <= %s)
+              AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
             ORDER BY dataset_id, published_at_ms
             """,
-            (list(dataset_ids), received_before_ms, received_before_ms),
+            (list(dataset_ids), received_before_ms),
         ).fetchall()
         return [dict(row) for row in rows]
 

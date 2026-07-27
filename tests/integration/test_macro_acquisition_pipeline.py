@@ -147,3 +147,26 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
     assert fact_count == 1
     assert receipt_count == 2
     assert legacy_tables == []
+
+
+def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        with repository_session_for_connection(conn) as repos:
+            assert repos.macro.series_history(dataset_ids=("fred.dgs10",)) == []
+            assert repos.macro.release_history(dataset_ids=("bls.cpi.release",)) == []
+            assert repos.macro.document_history(
+                dataset_ids=("federal_reserve.monetary_policy.documents",)
+            ) == []
+            assert repos.macro_market.market_history(
+                dataset_ids=("nasdaq.spy.history",)
+            ) == []
+            assert repos.macro_market.settlement_history(
+                dataset_ids=("cboe.cfe.vx.settlement",)
+            ) == []
+            assert repos.macro_market.position_history(
+                dataset_ids=("cftc.tff.rates_positions",)
+            ) == []
+    finally:
+        conn.close()

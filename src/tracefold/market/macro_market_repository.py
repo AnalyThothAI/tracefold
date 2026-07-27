@@ -203,14 +203,16 @@ class GeneralMarketRepository:
                 ) AS row_number
               FROM market_observations AS observations
               WHERE observations.dataset_id = ANY(%s)
-                AND (%s IS NULL OR observations.received_at_ms <= %s)
+                AND observations.received_at_ms <= COALESCE(
+                  %s::bigint,
+                  observations.received_at_ms
+                )
             ) AS ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, observed_at_ms
             """,
             (
                 list(dataset_ids),
-                received_before_ms,
                 received_before_ms,
                 int(limit_per_dataset),
             ),
@@ -238,14 +240,16 @@ class GeneralMarketRepository:
                 ) AS row_number
               FROM market_settlements AS settlements
               WHERE settlements.dataset_id = ANY(%s)
-                AND (%s IS NULL OR settlements.received_at_ms <= %s)
+                AND settlements.received_at_ms <= COALESCE(
+                  %s::bigint,
+                  settlements.received_at_ms
+                )
             ) AS ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, trade_date, contract_code
             """,
             (
                 list(dataset_ids),
-                received_before_ms,
                 received_before_ms,
                 int(limit_per_dataset),
             ),
@@ -274,14 +278,16 @@ class GeneralMarketRepository:
                 ) AS row_number
               FROM market_position_facts AS positions
               WHERE positions.dataset_id = ANY(%s)
-                AND (%s IS NULL OR positions.received_at_ms <= %s)
+                AND positions.received_at_ms <= COALESCE(
+                  %s::bigint,
+                  positions.received_at_ms
+                )
             ) AS ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, contract_code, report_date
             """,
             (
                 list(dataset_ids),
-                received_before_ms,
                 received_before_ms,
                 int(limit_per_contract),
             ),
