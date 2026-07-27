@@ -19,7 +19,7 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
       diplomacy_flashpoint_boost: 0,
       entity_corroboration_boost: 0,
       recency_points: 9.8,
-      reporting_origin_count: 4,
+      physical_source_count: 4,
       scoring_corroboration_count: 4,
       severity_level: "high",
       severity_points: 41.25,
@@ -34,6 +34,8 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
     source_count: 4,
     source_id: "wm-politics-reuters",
     source_name: "Reuters World",
+    representative_item_id: "news-item-reuters",
+    scoring_item_id: "news-item-reuters",
     story_id: "story-global-policy",
     title: "Central banks respond to a new global policy shock",
     url: "https://www.reuters.com/world/story",
@@ -43,10 +45,16 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
 
 export function newsFeedFixture(): NewsFeed {
   return {
-    categories: [{ category: "economic", stories: [newsStoryFixture()] }],
-    per_category_cap_count: 0,
+    facets: {
+      categories: [{ count: 1, value: "economic" }],
+      levels: [{ count: 1, value: "high" }],
+      sources: [{ count: 1, label: "Reuters World", value: "wm-politics-reuters" }],
+    },
+    filters: { category: null, level: null, source_id: null },
+    has_more: false,
+    next_cursor: null,
     sort: "importance",
-    story_count: 1,
+    stories: [newsStoryFixture()],
   };
 }
 
@@ -60,9 +68,11 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
         category: "economic",
         current: true,
         description: "Central banks respond as the policy outlook changes.",
+        first_joined_at_ms: NEWS_NOW_MS - 60_000,
         importance_score: 83,
         item_id: "news-item-reuters",
         lang: "en",
+        last_confirmed_at_ms: NEWS_NOW_MS,
         last_observed_at_ms: NEWS_NOW_MS,
         level: "high",
         published_at_ms: NEWS_NOW_MS - 60_000,
@@ -101,7 +111,6 @@ export function newsBriefPublicationFixture(
         url: "https://www.reuters.com/world/story",
       },
     ],
-    status: "published",
     validation: {
       citation_index_lock: true,
       citation_closure: true,
@@ -121,14 +130,26 @@ export function newsBriefPublicationFixture(
 export function newsGlobalBriefFixture(overrides: Partial<WorldBrief> = {}): WorldBrief {
   const publication = newsBriefPublicationFixture();
   return {
+    candidate_source_count: 4,
+    candidate_story_count: 1,
     history: [publication],
-    last_error: null,
-    last_failure_at_ms: null,
-    last_known_good_published_at_ms: publication.published_at_ms,
-    pending_fingerprint: null,
+    latest_run: {
+      attempt_count: 1,
+      candidate_source_count: 4,
+      candidate_story_count: 1,
+      completed_at_ms: NEWS_NOW_MS,
+      created_at_ms: NEWS_NOW_MS,
+      fingerprint: "brief-fingerprint",
+      heartbeat_at_ms: NEWS_NOW_MS,
+      last_error: null,
+      lease_expires_at_ms: null,
+      run_id: "brief-run",
+      status: "ready",
+      updated_at_ms: NEWS_NOW_MS,
+    },
     publication,
-    state: "fresh",
-    update_started_at_ms: null,
+    state: "ready",
+    target_fingerprint: "brief-fingerprint",
     ...overrides,
   };
 }
@@ -137,7 +158,6 @@ export function newsSourcesFixture(): NewsSources {
   return {
     items: [
       {
-        category_hint: "politics",
         consecutive_failures: 0,
         enabled: true,
         feed_url: "https://example.test/reuters.xml",
@@ -148,6 +168,8 @@ export function newsSourcesFixture(): NewsSources {
         latest_entries_seen: 5,
         latest_fetch_duration_ms: 240,
         latest_fetch_error_code: null,
+        latest_fetch_path: "direct",
+        latest_direct_error_code: null,
         latest_fetch_finished_at_ms: NEWS_NOW_MS,
         latest_fetch_status: "success",
         latest_items_inserted: 2,
@@ -155,9 +177,9 @@ export function newsSourcesFixture(): NewsSources {
         latest_observations_inserted: 5,
         latest_rejection_counts: { duplicate: 3 },
         name: "Reuters World",
+        memberships: ["politics", "intel"],
         next_fetch_at_ms: NEWS_NOW_MS + 120_000,
         refresh_interval_seconds: 120,
-        reporting_origin: "reuters",
         source_id: "wm-politics-reuters",
         tier: 1,
       },

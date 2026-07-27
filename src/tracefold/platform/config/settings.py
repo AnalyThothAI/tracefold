@@ -301,10 +301,9 @@ class NewsSourceSettings(BaseModel):
     source_id: str
     name: str
     feed_url: str
-    reporting_origin: str
     tier: int = Field(ge=1, le=4)
     lang: str = "en"
-    category_hint: str | None = None
+    memberships: tuple[str, ...]
     enabled: bool = True
     refresh_interval_seconds: int = Field(default=120, ge=1)
 
@@ -312,7 +311,6 @@ class NewsSourceSettings(BaseModel):
         "source_id",
         "name",
         "feed_url",
-        "reporting_origin",
         "lang",
         mode="before",
     )
@@ -323,6 +321,16 @@ class NewsSourceSettings(BaseModel):
             raise ValueError("news source field must not be empty")
         return normalized
 
+    @field_validator("memberships", mode="before")
+    @classmethod
+    def parse_memberships(cls, value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list | tuple):
+            raise ValueError("news source memberships must be a list")
+        memberships = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
+        if not memberships:
+            raise ValueError("news source memberships must not be empty")
+        return memberships
+
     @field_validator("lang", mode="before")
     @classmethod
     def parse_lower_string(cls, value: Any) -> str:
@@ -332,11 +340,31 @@ class NewsSourceSettings(BaseModel):
         return normalized
 
 
+class NewsRelaySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str = ""
+    auth_header: str = "x-relay-key"
+    auth_token: str | None = None
+
+    @field_validator("base_url", "auth_header", mode="before")
+    @classmethod
+    def parse_relay_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("auth_token", mode="before")
+    @classmethod
+    def parse_relay_token(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
     sources: tuple[NewsSourceSettings, ...] = ()
+    relay: NewsRelaySettings = Field(default_factory=NewsRelaySettings)
 
     @field_validator("sources", mode="before")
     @classmethod
@@ -553,17 +581,10 @@ class NewsPipelineWorkerSettings(PerWorkerSettings):
     fetch_timeout_seconds: float = Field(default=20.0, ge=1)
 
 
-class NewsAiClassifyWorkerSettings(PerWorkerSettings):
-    enabled: bool = False
-    interval_seconds: float = Field(default=120.0, ge=0)
-    batch_size: int = Field(default=20, ge=1, le=100)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
-
-
 class NewsWorldBriefWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=600.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
+    max_attempts: int = Field(default=3, ge=1, le=10)
     model: str = "deepseek-chat"
     total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
     ollama_base_url: str = "http://host.docker.internal:11434/v1"
@@ -614,7 +635,6 @@ class WorkersSettings(BaseModel):
         default_factory=NotificationDeliveryWorkerSettings
     )
     news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
-    news_ai_classify: NewsAiClassifyWorkerSettings = Field(default_factory=NewsAiClassifyWorkerSettings)
     news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
 
 

@@ -63,13 +63,14 @@ RETIRED_BACKEND_TABLES = {
 }
 PROFESSIONAL_NEWS_TABLES = {
     "news_sources",
+    "news_source_memberships",
     "news_source_fetches",
     "news_feed_observations",
     "news_items",
     "news_stories",
     "news_story_members",
     "news_story_aliases",
-    "news_ai_classification_cache",
+    "news_brief_runs",
     "news_brief_publications",
     "news_brief_current",
 }
@@ -219,10 +220,8 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "source_id",
         "name",
         "feed_url",
-        "reporting_origin",
         "tier",
         "lang",
-        "category_hint",
         "enabled",
         "refresh_interval_seconds",
         "etag",

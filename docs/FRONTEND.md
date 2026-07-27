@@ -93,17 +93,20 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Watchlist-specific projection. It does not consume `/api/recent` or
   WebSocket replay to reconstruct selected-handle counts, resolved targets,
   candidate mentions, or evidence clusters.
-- **News route.** `/news` renders the server-grouped Story Feed from
+- **News route.** `/news` renders the flat global Story Feed from
   `/api/news/feed`; the browser never clusters, scores, or reorders. Category
-  selection is route-local and every Story row shows level, representative
-  source/time, NewsItem count, distinct reporting-origin count, importance,
-  and its factor breakdown. `/news/stories/:storyId` reads
-  `/api/news/stories/{story_id}` and shows current member NewsItems only—there
-  is no revision timeline or per-Story AI panel. `/news/brief` renders the
-  single Chinese World Brief, selected Story evidence, freshness state, and
-  immutable publication history from `/api/news/brief`. `/news/sources` renders
-  per-source fetch outcome, latency, failure/backoff, and acquisition gate
-  counts from `/api/news/sources`. Feed sorting is URL-owned:
+  selection is a route-local filter, pagination uses the server cursor, and
+  loaded pages deduplicate by Story ID. Every Story row shows level,
+  representative source/time, NewsItem count, distinct physical-source count,
+  importance, and its factor breakdown. `/news/stories/:storyId` reads
+  `/api/news/stories/{story_id}` and shows the complete evidence membership,
+  representative item, scoring item, and current/archived state—there is no
+  revision timeline or per-Story AI panel. `/news/brief` renders the single
+  Chinese World Brief, selected Story evidence, truthful publication/run
+  state, and immutable publication history from `/api/news/brief`.
+  `/news/sources` renders membership, fetch outcome, direct/relay path,
+  latency, failure/backoff, and acquisition gate counts from
+  `/api/news/sources`. Feed sorting is URL-owned:
   `sort=latest` selects publication time while the absent/default value uses
   importance; neither path reorders in the browser. Feed and Brief poll every
   60 seconds with ETag revalidation; a `304` reuses the cached body.

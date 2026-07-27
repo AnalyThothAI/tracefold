@@ -113,7 +113,7 @@ function newsFeedData() {
     title: "Macro desk flags liquidity rotation",
     description: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
   });
-  return { ...newsFeedFixture(), categories: [{ category: "economic", stories: [story] }] };
+  return { ...newsFeedFixture(), stories: [story] };
 }
 
 function newsStoryDetailData(path: string) {

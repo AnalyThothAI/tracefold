@@ -130,13 +130,9 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         ),
     ),
     WorkerManifest(
-        name="news_ai_classify",
-        start_priority=92,
-        current_read_model_identities=(("news_ai_classification_cache", ("cache_key",)),),
-    ),
-    WorkerManifest(
         name="news_world_brief",
         start_priority=95,
+        queue_tables=("news_brief_runs",),
         current_read_model_identities=(("news_brief_current", ("singleton_key",)),),
     ),
     WorkerManifest(

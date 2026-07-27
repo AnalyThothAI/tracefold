@@ -63,7 +63,7 @@ function requireNewsHealth(value: unknown): void {
 }
 
 function requireHealthStatus(value: unknown, path: string): void {
-  if (value !== "healthy" && value !== "degraded" && value !== "unavailable") fail(path);
+  if (value !== "warming" && value !== "ready" && value !== "degraded") fail(path);
 }
 
 export function requireWorkerStatusData(value: unknown, path = "worker"): WorkerStatusData {

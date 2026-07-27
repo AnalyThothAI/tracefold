@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -11,10 +13,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from psycopg.types.json import Jsonb
 
 from .brief import brief_fingerprint
-from .classification import bounded_ai_classification, classify_by_keyword
+from .classification import SEVERITY_VALUES, classify_by_keyword
 from .identity import cluster_texts, normalize_story_text
 from .models import (
-    AI_CLASSIFIER_PROMPT_VERSION,
     BRIEF_PROMPT_VERSION,
     BRIEF_SCHEMA_VERSION,
     BRIEF_WORKFLOW_VERSION,
@@ -22,10 +23,11 @@ from .models import (
     IMPORTANCE_VERSION,
     NEWS_LOCALE,
     STORY_IDENTITY_VERSION,
+    EventCategory,
     NewsBriefDraft,
-    NewsClassification,
     NewsFeedEntry,
     NewsSourceDefinition,
+    ThreatLevel,
 )
 from .ranking import (
     diplomacy_entity_keys,
@@ -40,8 +42,8 @@ _BRIEF_LOCK_KEY = 727_301_985
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _ALIAS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 _SCORING_EPOCH_MS = 60 * 60 * 1000
-_FETCH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
-_AI_CACHE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+_OPERATIONS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+_BRIEF_LEASE_MS = 120_000
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -52,6 +54,22 @@ _TRACKING_PARAMS = frozenset(
         "gclid",
         "fbclid",
     }
+)
+_CATEGORY_ORDER: tuple[EventCategory, ...] = (
+    "conflict",
+    "protest",
+    "disaster",
+    "diplomatic",
+    "economic",
+    "terrorism",
+    "cyber",
+    "health",
+    "environmental",
+    "military",
+    "crime",
+    "infrastructure",
+    "tech",
+    "general",
 )
 
 
@@ -87,8 +105,6 @@ def _source_item_key(entry: NewsFeedEntry, canonical_url: str) -> str:
 
 
 def _content_fingerprint(*, title: str, description: str, canonical_url: str) -> str:
-    # pubDate is deliberately absent. Timestamp-only drift must not mutate
-    # NewsItem or trigger a Story write.
     return _sha256_json(
         {
             "title": title,
@@ -98,11 +114,41 @@ def _content_fingerprint(*, title: str, description: str, canonical_url: str) ->
     )
 
 
+def _alias_key(normalized_title: str) -> str:
+    return hashlib.sha256(normalized_title.encode()).hexdigest()
+
+
+def _mode(values: Sequence[str], order: Sequence[str]) -> str:
+    counts = Counter(values)
+    highest = max(counts.values())
+    index = {value: position for position, value in enumerate(order)}
+    return min(
+        (value for value, count in counts.items() if count == highest),
+        key=lambda value: (index.get(value, len(index)), value),
+    )
+
+
+def _cursor_encode(payload: Mapping[str, Any]) -> str:
+    raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _cursor_decode(value: str) -> dict[str, Any]:
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except (ValueError, TypeError, json.JSONDecodeError, binascii.Error) as exc:
+        raise ValueError("news_feed_cursor_invalid") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("news_feed_cursor_invalid")
+    return decoded
+
+
 class NewsRepository:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
-    # Source inventory and acquisition --------------------------------------------
+    # Source inventory and acquisition -----------------------------------------
 
     def sync_sources(self, sources: Sequence[NewsSourceDefinition], *, now_ms: int) -> None:
         source_ids = [source.source_id for source in sources]
@@ -110,47 +156,57 @@ class NewsRepository:
             self.conn.execute(
                 """
                 INSERT INTO news_sources (
-                  source_id, name, feed_url, reporting_origin, tier, lang,
-                  category_hint, enabled, refresh_interval_seconds,
-                  next_fetch_at_ms, created_at_ms, updated_at_ms
+                  source_id, name, feed_url, tier, lang, enabled,
+                  refresh_interval_seconds, next_fetch_at_ms,
+                  created_at_ms, updated_at_ms
                 )
                 VALUES (
-                  %(source_id)s, %(name)s, %(feed_url)s, %(reporting_origin)s,
-                  %(tier)s, %(lang)s, %(category_hint)s, %(enabled)s,
-                  %(refresh_interval_seconds)s, %(now_ms)s, %(now_ms)s, %(now_ms)s
+                  %(source_id)s, %(name)s, %(feed_url)s, %(tier)s, %(lang)s,
+                  %(enabled)s, %(refresh_interval_seconds)s, %(now_ms)s,
+                  %(now_ms)s, %(now_ms)s
                 )
                 ON CONFLICT (source_id) DO UPDATE SET
                   name = EXCLUDED.name,
                   feed_url = EXCLUDED.feed_url,
-                  reporting_origin = EXCLUDED.reporting_origin,
                   tier = EXCLUDED.tier,
                   lang = EXCLUDED.lang,
-                  category_hint = EXCLUDED.category_hint,
                   enabled = EXCLUDED.enabled,
                   refresh_interval_seconds = EXCLUDED.refresh_interval_seconds,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE (
                   news_sources.name,
                   news_sources.feed_url,
-                  news_sources.reporting_origin,
                   news_sources.tier,
                   news_sources.lang,
-                  news_sources.category_hint,
                   news_sources.enabled,
                   news_sources.refresh_interval_seconds
                 ) IS DISTINCT FROM (
                   EXCLUDED.name,
                   EXCLUDED.feed_url,
-                  EXCLUDED.reporting_origin,
                   EXCLUDED.tier,
                   EXCLUDED.lang,
-                  EXCLUDED.category_hint,
                   EXCLUDED.enabled,
                   EXCLUDED.refresh_interval_seconds
                 )
                 """,
                 {**source.model_dump(), "now_ms": now_ms},
             )
+            self.conn.execute(
+                """
+                DELETE FROM news_source_memberships
+                 WHERE source_id = %s AND NOT (membership = ANY(%s))
+                """,
+                (source.source_id, list(source.memberships)),
+            )
+            for membership in source.memberships:
+                self.conn.execute(
+                    """
+                    INSERT INTO news_source_memberships(source_id, membership)
+                    VALUES (%s, %s)
+                    ON CONFLICT (source_id, membership) DO NOTHING
+                    """,
+                    (source.source_id, membership),
+                )
         if source_ids:
             self.conn.execute(
                 """
@@ -169,11 +225,17 @@ class NewsRepository:
     def claim_due_sources(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT *
-              FROM news_sources
-             WHERE enabled AND next_fetch_at_ms <= %s
-             ORDER BY next_fetch_at_ms, source_id
-             FOR UPDATE SKIP LOCKED
+            SELECT s.*,
+                   COALESCE(m.memberships, ARRAY[]::text[]) AS memberships
+              FROM news_sources s
+              LEFT JOIN LATERAL (
+                SELECT array_agg(membership ORDER BY membership) AS memberships
+                  FROM news_source_memberships
+                 WHERE source_id = s.source_id
+              ) m ON true
+             WHERE s.enabled AND s.next_fetch_at_ms <= %s
+             ORDER BY s.next_fetch_at_ms, s.source_id
+             FOR UPDATE OF s SKIP LOCKED
              LIMIT %s
             """,
             (now_ms, limit),
@@ -181,7 +243,10 @@ class NewsRepository:
         claimed: list[dict[str, Any]] = []
         for row in rows:
             failures = int(row["consecutive_failures"])
-            backoff_ms = min(3_600_000, int(row["refresh_interval_seconds"]) * 1000 * (2**failures))
+            backoff_ms = min(
+                3_600_000,
+                int(row["refresh_interval_seconds"]) * 1000 * (2**failures),
+            )
             next_fetch_at_ms = now_ms + backoff_ms
             self.conn.execute(
                 """
@@ -196,7 +261,6 @@ class NewsRepository:
             claimed_row = dict(row)
             claimed_row["last_fetch_started_at_ms"] = now_ms
             claimed_row["next_fetch_at_ms"] = next_fetch_at_ms
-            claimed_row["updated_at_ms"] = now_ms
             claimed.append(claimed_row)
         return claimed
 
@@ -208,6 +272,8 @@ class NewsRepository:
         started_at_ms: int,
         finished_at_ms: int,
         status_code: int,
+        fetch_path: str,
+        direct_error_code: str | None,
         etag: str | None,
         last_modified: str | None,
         not_modified: bool,
@@ -222,6 +288,8 @@ class NewsRepository:
                 started_at_ms=started_at_ms,
                 finished_at_ms=finished_at_ms,
                 status="not_modified",
+                fetch_path=fetch_path,
+                direct_error_code=direct_error_code,
                 http_status=status_code,
                 entries_seen=0,
                 observations_inserted=0,
@@ -250,14 +318,14 @@ class NewsRepository:
             {str(key): max(0, int(value)) for key, value in (gate_counts or {}).items() if int(value) > 0}
         )
         observed_entry_count = max(len(entries), int(entries_seen or 0))
-        # The fetch row is inserted first because every immutable observation
-        # references it. Counts are finalized after all raw observations exist.
         self._insert_fetch(
             fetch_id=fetch_id,
             source_id=source.source_id,
             started_at_ms=started_at_ms,
             finished_at_ms=finished_at_ms,
             status="success",
+            fetch_path=fetch_path,
+            direct_error_code=direct_error_code,
             http_status=status_code,
             entries_seen=observed_entry_count,
             observations_inserted=0,
@@ -268,10 +336,13 @@ class NewsRepository:
 
         for position, entry in enumerate(entries):
             title = str(entry.title or "").strip()
-            canonical_url = _canonical_url(str(entry.link or ""))
-            reporting_origin = str(entry.reporting_origin or source.reporting_origin).strip().lower()
+            canonical_url = _canonical_url(str(entry.link or "")) or _canonical_url(str(entry.guid or ""))
+            reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
             source_item_key = _source_item_key(entry, canonical_url) or deterministic_id(
-                "missing_item_key", source.source_id, position, title
+                "missing_item_key",
+                source.source_id,
+                position,
+                title,
             )
             rejection = self._rejection_reason(
                 title=title,
@@ -339,12 +410,12 @@ class NewsRepository:
                 self.conn.execute(
                     """
                     INSERT INTO news_items (
-                      item_id, source_id, source_item_key, canonical_url, title,
-                      reporting_origin, normalized_title, description, lang, published_at_ms,
-                      first_observed_at_ms, last_observed_at_ms, content_fingerprint,
-                      level, category, classification_source,
-                      classification_confidence, importance_score, importance_factors,
-                      brief_excluded,
+                      item_id, source_id, source_item_key, canonical_url,
+                      reporting_origin, title, normalized_title, description,
+                      lang, published_at_ms, first_observed_at_ms,
+                      last_observed_at_ms, content_fingerprint, level, category,
+                      classification_source, classification_confidence,
+                      importance_score, importance_factors, brief_excluded,
                       active, created_at_ms, updated_at_ms
                     )
                     VALUES (
@@ -357,8 +428,8 @@ class NewsRepository:
                         source.source_id,
                         source_item_key,
                         canonical_url,
-                        title,
                         reporting_origin,
+                        title,
                         normalize_story_text(title),
                         description,
                         entry.language or source.lang,
@@ -382,24 +453,14 @@ class NewsRepository:
                 )
                 inserted += 1
             elif str(existing["content_fingerprint"]) == fingerprint:
-                # Timestamp-only/source-repeat drift is an observation, not an
-                # item revision and not a Story event.
-                self.conn.execute(
-                    """
-                    UPDATE news_items
-                       SET last_observed_at_ms = GREATEST(last_observed_at_ms, %s)
-                     WHERE item_id = %s
-                    """,
-                    (finished_at_ms, item_id),
-                )
                 rejection_counts["duplicate"] += 1
             else:
                 self.conn.execute(
                     """
                     UPDATE news_items
                        SET canonical_url = %s,
-                           title = %s,
                            reporting_origin = %s,
+                           title = %s,
                            normalized_title = %s,
                            description = %s,
                            lang = %s,
@@ -417,8 +478,8 @@ class NewsRepository:
                     """,
                     (
                         canonical_url,
-                        title,
                         reporting_origin,
+                        title,
                         normalize_story_text(title),
                         description,
                         entry.language or source.lang,
@@ -474,6 +535,8 @@ class NewsRepository:
         finished_at_ms: int,
         error: Exception,
         status_code: int | None,
+        fetch_path: str | None = None,
+        direct_error_code: str | None = None,
     ) -> None:
         fetch_id = deterministic_id("news_fetch", source_id, started_at_ms)
         error_code = f"{type(error).__name__}:{str(error)[:500]}"
@@ -483,6 +546,8 @@ class NewsRepository:
             started_at_ms=started_at_ms,
             finished_at_ms=finished_at_ms,
             status="failed",
+            fetch_path=fetch_path,
+            direct_error_code=direct_error_code,
             http_status=status_code,
             entries_seen=0,
             observations_inserted=0,
@@ -509,21 +574,25 @@ class NewsRepository:
             """
             INSERT INTO news_source_fetches (
               fetch_id, source_id, started_at_ms, finished_at_ms, status,
-              http_status, entries_seen, observations_inserted, items_inserted,
-              items_updated, rejection_counts, error_code, created_at_ms
+              fetch_path, direct_error_code, http_status, entries_seen,
+              observations_inserted, items_inserted, items_updated,
+              rejection_counts, error_code, created_at_ms
             )
             VALUES (
               %(fetch_id)s, %(source_id)s, %(started_at_ms)s, %(finished_at_ms)s,
-              %(status)s, %(http_status)s, %(entries_seen)s,
-              %(observations_inserted)s, %(items_inserted)s, %(items_updated)s,
-              %(rejection_counts)s, %(error_code)s, %(finished_at_ms)s
+              %(status)s, %(fetch_path)s, %(direct_error_code)s, %(http_status)s,
+              %(entries_seen)s, %(observations_inserted)s, %(items_inserted)s,
+              %(items_updated)s, %(rejection_counts)s, %(error_code)s,
+              %(finished_at_ms)s
             )
             ON CONFLICT (fetch_id) DO NOTHING
             """,
             {
                 **values,
-                "rejection_counts": Jsonb(values["rejection_counts"]),
+                "fetch_path": values.get("fetch_path"),
+                "direct_error_code": values.get("direct_error_code"),
                 "error_code": values.get("error_code"),
+                "rejection_counts": Jsonb(values["rejection_counts"]),
             },
         )
 
@@ -580,76 +649,7 @@ class NewsRepository:
             return "future_date"
         return None
 
-    # Persistent Story projection ---------------------------------------------------
-
-    def list_ai_classification_candidates(
-        self,
-        *,
-        now_ms: int,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT i.item_id, i.title
-              FROM news_items i
-             WHERE i.active
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM news_ai_classification_cache c
-                  WHERE c.item_id = i.item_id
-                    AND c.prompt_version = %s
-                    AND c.expires_at_ms > %s
-               )
-             ORDER BY i.first_observed_at_ms, i.item_id
-             LIMIT %s
-            """,
-            (AI_CLASSIFIER_PROMPT_VERSION, now_ms, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def store_ai_classification(
-        self,
-        *,
-        item_id: str,
-        classification: NewsClassification,
-        model: str,
-        raw_response: str,
-        now_ms: int,
-    ) -> None:
-        cache_key = deterministic_id(
-            "news_classification",
-            item_id,
-            AI_CLASSIFIER_PROMPT_VERSION,
-        )
-        self.conn.execute(
-            """
-            INSERT INTO news_ai_classification_cache (
-              cache_key, item_id, model, prompt_version, level, category,
-              confidence, raw_response, created_at_ms, expires_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (cache_key) DO UPDATE SET
-              model = EXCLUDED.model,
-              level = EXCLUDED.level,
-              category = EXCLUDED.category,
-              confidence = EXCLUDED.confidence,
-              raw_response = EXCLUDED.raw_response,
-              created_at_ms = EXCLUDED.created_at_ms,
-              expires_at_ms = EXCLUDED.expires_at_ms
-            """,
-            (
-                cache_key,
-                item_id,
-                model,
-                AI_CLASSIFIER_PROMPT_VERSION,
-                classification.level,
-                classification.category,
-                classification.confidence,
-                raw_response,
-                now_ms,
-                now_ms + _AI_CACHE_RETENTION_MS,
-            ),
-        )
+    # Persistent Story projection ----------------------------------------------
 
     def rebuild_stories(self, *, now_ms: int) -> dict[str, int]:
         self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
@@ -658,82 +658,129 @@ class NewsRepository:
             for row in self.conn.execute("SELECT story_id FROM news_stories WHERE active").fetchall()
         }
         cutoff_ms = now_ms - _ACTIVE_WINDOW_MS
-        # WorldMonitor recomputes Date.now()-based recency behind its healthy
-        # one-hour RSS cache. Persisting that score every pipeline tick would
-        # create false Story revisions, so this projection uses the equivalent
-        # one-hour scoring epoch.
         scoring_now_ms = now_ms - (now_ms % _SCORING_EPOCH_MS)
         self.conn.execute(
-            "UPDATE news_items SET active = (published_at_ms >= %s)",
-            (cutoff_ms,),
-        )
-        items = self.conn.execute(
             """
-            SELECT i.*, s.name AS source_name, s.tier,
-                   ai.level AS ai_level,
-                   ai.category AS ai_category,
-                   ai.confidence AS ai_confidence
-              FROM news_items i
-              JOIN news_sources s ON s.source_id = i.source_id
-              LEFT JOIN LATERAL (
-                SELECT c.level, c.category, c.confidence
-                  FROM news_ai_classification_cache c
-                 WHERE c.item_id = i.item_id
-                   AND c.prompt_version = %s
-                   AND c.expires_at_ms > %s
-                 ORDER BY c.created_at_ms DESC, c.cache_key
-                 LIMIT 1
-              ) ai ON true
-             WHERE i.active
-             ORDER BY i.published_at_ms, i.item_id
+            UPDATE news_items
+               SET active = (published_at_ms >= %s)
+             WHERE active IS DISTINCT FROM (published_at_ms >= %s)
             """,
-            (AI_CLASSIFIER_PROMPT_VERSION, now_ms),
-        ).fetchall()
-        clusters = cluster_texts([str(item["title"]) for item in items])
-        cluster_index_by_item: dict[str, int] = {}
+            (cutoff_ms, cutoff_ms),
+        )
+        items = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT i.*, s.name AS source_name, s.tier
+                  FROM news_items i
+                  JOIN news_sources s ON s.source_id = i.source_id
+                 WHERE i.active
+                 ORDER BY i.published_at_ms, i.item_id
+                """
+            ).fetchall()
+        ]
+        temporary_clusters = cluster_texts([str(item["title"]) for item in items])
+
+        previous_by_item = {
+            str(row["item_id"]): str(row["story_id"])
+            for row in self.conn.execute("SELECT item_id, story_id FROM news_story_members WHERE current").fetchall()
+        }
+        alias_by_key = {
+            str(row["alias_key"]): str(row["story_id"])
+            for row in self.conn.execute(
+                """
+                SELECT alias_key, story_id
+                  FROM news_story_aliases
+                 WHERE expires_at_ms > %s
+                """,
+                (now_ms,),
+            ).fetchall()
+        }
+
+        candidate_counts_by_cluster: list[Counter[str]] = []
+        parents = list(range(len(temporary_clusters)))
+
+        def find(value: int) -> int:
+            while parents[value] != value:
+                parents[value] = parents[parents[value]]
+                value = parents[value]
+            return value
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[max(left_root, right_root)] = min(left_root, right_root)
+
+        first_cluster_by_story: dict[str, int] = {}
+        for cluster_index, indices in enumerate(temporary_clusters):
+            candidates: Counter[str] = Counter()
+            for item_index in indices:
+                item = items[item_index]
+                item_id = str(item["item_id"])
+                if item_id in previous_by_item:
+                    candidates[previous_by_item[item_id]] += 1
+                story_id = alias_by_key.get(_alias_key(str(item["normalized_title"])))
+                if story_id:
+                    candidates[story_id] += 1
+            candidate_counts_by_cluster.append(candidates)
+            for story_id in candidates:
+                previous_cluster = first_cluster_by_story.setdefault(story_id, cluster_index)
+                union(previous_cluster, cluster_index)
+
+        merged_indices: dict[int, list[int]] = {}
+        merged_candidates: dict[int, Counter[str]] = {}
+        for cluster_index, indices in enumerate(temporary_clusters):
+            root = find(cluster_index)
+            merged_indices.setdefault(root, []).extend(indices)
+            merged_candidates.setdefault(root, Counter()).update(candidate_counts_by_cluster[cluster_index])
+        clusters = [
+            sorted(indices)
+            for _, indices in sorted(
+                merged_indices.items(),
+                key=lambda pair: min(pair[1], default=-1),
+            )
+        ]
+        candidates_for_cluster = [
+            merged_candidates[root]
+            for root, _ in sorted(
+                merged_indices.items(),
+                key=lambda pair: min(pair[1], default=-1),
+            )
+        ]
+
+        cluster_by_item: dict[str, int] = {}
         for cluster_index, indices in enumerate(clusters):
             for item_index in indices:
-                cluster_index_by_item[str(items[item_index]["item_id"])] = cluster_index
-        entity_buckets: dict[str, dict[str, Any]] = {}
+                cluster_by_item[str(items[item_index]["item_id"])] = cluster_index
+        entity_buckets: dict[str, dict[str, set[str] | set[int]]] = {}
         for item in items:
             if scoring_now_ms - int(item["published_at_ms"]) > 86_400_000:
                 continue
             for entity_key in diplomacy_entity_keys(str(item["title"])):
                 bucket = entity_buckets.setdefault(
                     entity_key,
-                    {"clusters": set(), "origins": set(), "tier12_origins": set()},
+                    {"clusters": set(), "sources": set(), "tier12_sources": set()},
                 )
-                bucket["clusters"].add(cluster_index_by_item[str(item["item_id"])])
-                origin = str(item["reporting_origin"])
-                bucket["origins"].add(origin)
+                cast(set[int], bucket["clusters"]).add(cluster_by_item[str(item["item_id"])])
+                cast(set[str], bucket["sources"]).add(str(item["source_id"]))
                 if int(item["tier"]) <= 2:
-                    bucket["tier12_origins"].add(origin)
+                    cast(set[str], bucket["tier12_sources"]).add(str(item["source_id"]))
         entity_signal_by_cluster: dict[int, tuple[int, int]] = {}
         for bucket in entity_buckets.values():
-            if len(bucket["origins"]) < 2:
+            sources = cast(set[str], bucket["sources"])
+            if len(sources) < 2:
                 continue
-            signal = (len(bucket["origins"]), len(bucket["tier12_origins"]))
-            for cluster_index in bucket["clusters"]:
-                previous_signal = entity_signal_by_cluster.get(cluster_index, (0, 0))
+            signal = (
+                len(sources),
+                len(cast(set[str], bucket["tier12_sources"])),
+            )
+            for cluster_index in cast(set[int], bucket["clusters"]):
+                previous = entity_signal_by_cluster.get(cluster_index, (0, 0))
                 entity_signal_by_cluster[cluster_index] = (
-                    max(previous_signal[0], signal[0]),
-                    max(previous_signal[1], signal[1]),
+                    max(previous[0], signal[0]),
+                    max(previous[1], signal[1]),
                 )
-
-        previous = self.conn.execute(
-            """
-            SELECT m.item_id, m.story_id
-              FROM news_story_members m
-              JOIN news_stories s ON s.story_id = m.story_id
-             WHERE m.current
-            """
-        ).fetchall()
-        previous_by_item = {str(row["item_id"]): str(row["story_id"]) for row in previous}
-        aliases = self.conn.execute(
-            "SELECT alias_key, story_id FROM news_story_aliases WHERE expires_at_ms > %s",
-            (now_ms,),
-        ).fetchall()
-        alias_by_key = {str(row["alias_key"]): str(row["story_id"]) for row in aliases}
 
         story_writes = 0
         membership_writes = 0
@@ -741,48 +788,39 @@ class NewsRepository:
         current_story_ids: list[str] = []
         current_item_ids: list[str] = []
         for cluster_index, indices in enumerate(clusters):
-            members = [dict(items[index]) for index in indices]
-            origins = {str(member["reporting_origin"]) for member in members}
-            origin_count = len(origins)
-            entity_origin_count, tier12_entity_origin_count = entity_signal_by_cluster.get(
-                cluster_index,
-                (0, 0),
-            )
+            members = [items[index] for index in indices]
+            physical_sources = {str(member["source_id"]) for member in members}
+            source_count = len(physical_sources)
+            entity_source_count, tier12_entity_source_count = entity_signal_by_cluster.get(cluster_index, (0, 0))
             for member in members:
-                deterministic = classify_by_keyword(str(member["title"]), now_ms=scoring_now_ms)
-                classified = deterministic
-                if member["ai_level"] is not None:
-                    ai = NewsClassification(
-                        level=str(member["ai_level"]),
-                        category=str(member["ai_category"]),
-                        confidence=float(member["ai_confidence"]),
-                        source="llm",
-                    )
-                    if deterministic.source == "keyword-historical-downgrade":
-                        classified = ai.model_copy(update={"level": "info", "source": "llm"})
-                    else:
-                        classified = bounded_ai_classification(deterministic, ai)
+                classified = classify_by_keyword(
+                    str(member["title"]),
+                    now_ms=scoring_now_ms,
+                )
                 level = promote_diplomacy_severity(
                     classified.level,
                     title=str(member["title"]),
-                    tier12_origin_count=tier12_entity_origin_count,
+                    tier12_origin_count=tier12_entity_source_count,
                 )
-                member["level"] = level
-                member["category"] = classified.category
-                member["classification_source"] = classified.source
-                member["classification_confidence"] = classified.confidence
                 factors = importance_factors(
                     level=level,
                     tier=int(member["tier"]),
-                    corroboration_count=origin_count,
+                    corroboration_count=source_count,
                     published_at_ms=int(member["published_at_ms"]),
                     now_ms=scoring_now_ms,
                     title=str(member["title"]),
-                    entity_corroboration_count=entity_origin_count,
+                    entity_corroboration_count=entity_source_count,
                 )
-                score = int(factors["total"])
-                member["importance_score"] = score
-                member["importance_factors"] = factors
+                member.update(
+                    {
+                        "level": level,
+                        "category": classified.category,
+                        "classification_source": classified.source,
+                        "classification_confidence": classified.confidence,
+                        "importance_score": int(factors["total"]),
+                        "importance_factors": factors,
+                    }
+                )
                 self.conn.execute(
                     """
                     UPDATE news_items
@@ -804,39 +842,36 @@ class NewsRepository:
                        )
                     """,
                     (
-                        score,
+                        member["importance_score"],
                         Jsonb(factors),
-                        member["level"],
-                        member["category"],
-                        member["classification_source"],
-                        member["classification_confidence"],
+                        level,
+                        classified.category,
+                        classified.source,
+                        classified.confidence,
                         now_ms,
                         member["item_id"],
-                        score,
+                        member["importance_score"],
                         Jsonb(factors),
-                        member["level"],
-                        member["category"],
-                        member["classification_source"],
-                        member["classification_confidence"],
+                        level,
+                        classified.category,
+                        classified.source,
+                        classified.confidence,
                     ),
                 )
 
             earliest = min(
                 members,
-                key=lambda member: (int(member["published_at_ms"]), str(member["normalized_title"])),
+                key=lambda member: (
+                    int(member["published_at_ms"]),
+                    str(member["normalized_title"]),
+                    str(member["item_id"]),
+                ),
             )
-            canonical_key = hashlib.sha256(str(earliest["normalized_title"]).encode()).hexdigest()
-            candidate_counts: Counter[str] = Counter()
-            for member in members:
-                item_id = str(member["item_id"])
-                if item_id in previous_by_item:
-                    candidate_counts[previous_by_item[item_id]] += 1
-                alias_key = hashlib.sha256(str(member["normalized_title"]).encode()).hexdigest()
-                if alias_key in alias_by_key:
-                    candidate_counts[alias_by_key[alias_key]] += 1
-            if candidate_counts:
-                max_hits = max(candidate_counts.values())
-                story_id = min(story for story, hits in candidate_counts.items() if hits == max_hits)
+            canonical_key = _alias_key(str(earliest["normalized_title"]))
+            candidates = candidates_for_cluster[cluster_index]
+            if candidates:
+                max_hits = max(candidates.values())
+                story_id = min(story for story, hits in candidates.items() if hits == max_hits)
             else:
                 story_id = deterministic_id("story", canonical_key)
             current_story_ids.append(story_id)
@@ -844,40 +879,69 @@ class NewsRepository:
             representative = min(
                 members,
                 key=lambda member: (
-                    -int(member["importance_score"]),
+                    int(member["tier"]),
                     -int(member["published_at_ms"]),
-                    str(member["title"]),
+                    str(member["normalized_title"]),
                     str(member["item_id"]),
                 ),
             )
-            fingerprint_payload = {
-                "identity_version": STORY_IDENTITY_VERSION,
-                "canonical_key": canonical_key,
-                "representative_item_id": representative["item_id"],
-                "members": sorted(str(member["item_id"]) for member in members),
-                "level": representative["level"],
-                "category": representative["category"],
-                "importance_score": representative["importance_score"],
-                "importance_factors": representative["importance_factors"],
-                "source_count": origin_count,
-                "first": min(int(member["published_at_ms"]) for member in members),
-                "last": max(int(member["published_at_ms"]) for member in members),
-            }
-            fingerprint = _sha256_json(fingerprint_payload)
+            scoring_item = min(
+                members,
+                key=lambda member: (
+                    -int(member["importance_score"]),
+                    int(member["tier"]),
+                    -int(member["published_at_ms"]),
+                    str(member["source_id"]),
+                    str(member["item_id"]),
+                ),
+            )
+            level = cast(
+                ThreatLevel,
+                max(
+                    (str(member["level"]) for member in members),
+                    key=lambda value: (SEVERITY_VALUES[cast(ThreatLevel, value)], value),
+                ),
+            )
+            category = cast(
+                EventCategory,
+                _mode(
+                    [str(member["category"]) for member in members],
+                    _CATEGORY_ORDER,
+                ),
+            )
+            first_published_at_ms = min(int(member["published_at_ms"]) for member in members)
+            last_published_at_ms = max(int(member["published_at_ms"]) for member in members)
+            fingerprint = _sha256_json(
+                {
+                    "identity_version": STORY_IDENTITY_VERSION,
+                    "canonical_key": canonical_key,
+                    "representative_item_id": representative["item_id"],
+                    "scoring_item_id": scoring_item["item_id"],
+                    "members": sorted(str(member["item_id"]) for member in members),
+                    "level": level,
+                    "category": category,
+                    "importance_score": scoring_item["importance_score"],
+                    "importance_factors": scoring_item["importance_factors"],
+                    "source_count": source_count,
+                    "first": first_published_at_ms,
+                    "last": last_published_at_ms,
+                }
+            )
             row_count = self.conn.execute(
                 """
                 INSERT INTO news_stories (
                   story_id, canonical_key, canonical_title,
                   representative_item_id, representative_source_id,
                   representative_title, representative_url,
-                  representative_description, level, category, importance_score,
-                  importance_factors, item_count, source_count, first_published_at_ms,
+                  representative_description, scoring_item_id,
+                  level, category, importance_score, importance_factors,
+                  item_count, source_count, first_published_at_ms,
                   last_published_at_ms, active, state_fingerprint,
                   created_at_ms, updated_at_ms
                 )
                 VALUES (
                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, true, %s, %s, %s
+                  %s, %s, %s, %s, %s, true, %s, %s, %s
                 )
                 ON CONFLICT (story_id) DO UPDATE SET
                   canonical_key = EXCLUDED.canonical_key,
@@ -887,6 +951,7 @@ class NewsRepository:
                   representative_title = EXCLUDED.representative_title,
                   representative_url = EXCLUDED.representative_url,
                   representative_description = EXCLUDED.representative_description,
+                  scoring_item_id = EXCLUDED.scoring_item_id,
                   level = EXCLUDED.level,
                   category = EXCLUDED.category,
                   importance_score = EXCLUDED.importance_score,
@@ -898,7 +963,8 @@ class NewsRepository:
                   active = true,
                   state_fingerprint = EXCLUDED.state_fingerprint,
                   updated_at_ms = EXCLUDED.updated_at_ms
-                WHERE news_stories.state_fingerprint IS DISTINCT FROM EXCLUDED.state_fingerprint
+                WHERE news_stories.state_fingerprint IS DISTINCT FROM
+                      EXCLUDED.state_fingerprint
                    OR NOT news_stories.active
                 """,
                 (
@@ -910,14 +976,15 @@ class NewsRepository:
                     representative["title"],
                     representative["canonical_url"],
                     representative["description"],
-                    representative["level"],
-                    representative["category"],
-                    representative["importance_score"],
-                    Jsonb(representative["importance_factors"]),
+                    scoring_item["item_id"],
+                    level,
+                    category,
+                    scoring_item["importance_score"],
+                    Jsonb(scoring_item["importance_factors"]),
                     len(members),
-                    origin_count,
-                    min(int(member["published_at_ms"]) for member in members),
-                    max(int(member["published_at_ms"]) for member in members),
+                    source_count,
+                    first_published_at_ms,
+                    last_published_at_ms,
                     fingerprint,
                     now_ms,
                     now_ms,
@@ -928,20 +995,25 @@ class NewsRepository:
                 changed_story_ids.add(story_id)
 
             for member in members:
-                current_item_ids.append(str(member["item_id"]))
-                self.conn.execute(
-                    """
-                    UPDATE news_story_members
-                       SET current = false
-                     WHERE item_id = %s AND story_id <> %s AND current
-                    """,
-                    (member["item_id"], story_id),
+                item_id = str(member["item_id"])
+                current_item_ids.append(item_id)
+                membership_writes += int(
+                    self.conn.execute(
+                        """
+                        UPDATE news_story_members
+                           SET current = false
+                         WHERE item_id = %s AND story_id <> %s AND current
+                        """,
+                        (item_id, story_id),
+                    ).rowcount
+                    or 0
                 )
                 membership_writes += int(
                     self.conn.execute(
                         """
                         INSERT INTO news_story_members (
-                          story_id, item_id, current, first_joined_at_ms, last_confirmed_at_ms
+                          story_id, item_id, current,
+                          first_joined_at_ms, last_confirmed_at_ms
                         )
                         VALUES (%s, %s, true, %s, %s)
                         ON CONFLICT (story_id, item_id) DO UPDATE SET
@@ -949,23 +1021,34 @@ class NewsRepository:
                           last_confirmed_at_ms = EXCLUDED.last_confirmed_at_ms
                         WHERE NOT news_story_members.current
                         """,
-                        (story_id, member["item_id"], now_ms, now_ms),
+                        (story_id, item_id, now_ms, now_ms),
                     ).rowcount
                     or 0
                 )
-                alias_key = hashlib.sha256(str(member["normalized_title"]).encode()).hexdigest()
                 self.conn.execute(
                     """
-                    INSERT INTO news_story_aliases(alias_key, story_id, expires_at_ms, created_at_ms)
+                    INSERT INTO news_story_aliases (
+                      alias_key, story_id, expires_at_ms, created_at_ms
+                    )
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (alias_key) DO UPDATE SET
                       story_id = EXCLUDED.story_id,
                       expires_at_ms = EXCLUDED.expires_at_ms
+                    WHERE news_story_aliases.story_id IS DISTINCT FROM
+                          EXCLUDED.story_id
+                       OR news_story_aliases.expires_at_ms < %s
                     """,
-                    (alias_key, story_id, now_ms + _ALIAS_TTL_MS, now_ms),
+                    (
+                        _alias_key(str(member["normalized_title"])),
+                        story_id,
+                        now_ms + _ALIAS_TTL_MS,
+                        now_ms,
+                        now_ms + _ALIAS_TTL_MS - _SCORING_EPOCH_MS,
+                    ),
                 )
 
-        if current_story_ids:
+        unique_story_ids = sorted(set(current_story_ids))
+        if unique_story_ids:
             story_writes += int(
                 self.conn.execute(
                     """
@@ -973,14 +1056,18 @@ class NewsRepository:
                        SET active = false, updated_at_ms = %s
                      WHERE active AND NOT (story_id = ANY(%s))
                     """,
-                    (now_ms, current_story_ids),
+                    (now_ms, unique_story_ids),
                 ).rowcount
                 or 0
             )
         else:
             story_writes += int(
                 self.conn.execute(
-                    "UPDATE news_stories SET active = false, updated_at_ms = %s WHERE active",
+                    """
+                    UPDATE news_stories
+                       SET active = false, updated_at_ms = %s
+                     WHERE active
+                    """,
                     (now_ms,),
                 ).rowcount
                 or 0
@@ -1001,92 +1088,275 @@ class NewsRepository:
             membership_writes += int(
                 self.conn.execute("UPDATE news_story_members SET current = false WHERE current").rowcount or 0
             )
-        self.conn.execute("DELETE FROM news_story_aliases WHERE expires_at_ms <= %s", (now_ms,))
+        invariant_counts = self._story_invariant_counts()
+        if invariant_counts["total"] > 0:
+            raise RuntimeError(
+                "news_story_invariant_failed:" + json.dumps(invariant_counts, sort_keys=True, separators=(",", ":"))
+            )
         self.conn.execute(
-            "DELETE FROM news_source_fetches WHERE created_at_ms < %s",
-            (now_ms - _FETCH_RETENTION_MS,),
-        )
-        self.conn.execute(
-            "DELETE FROM news_ai_classification_cache WHERE expires_at_ms <= %s",
+            "DELETE FROM news_story_aliases WHERE expires_at_ms <= %s",
             (now_ms,),
         )
-        current_story_id_set = set(current_story_ids)
-        added = len(current_story_id_set - active_before)
-        archived = len(active_before - current_story_id_set)
-        unchanged = len((current_story_id_set & active_before) - changed_story_ids)
+        self.conn.execute(
+            "DELETE FROM news_source_fetches WHERE created_at_ms < %s",
+            (now_ms - _OPERATIONS_RETENTION_MS,),
+        )
+        self.conn.execute(
+            """
+            DELETE FROM news_brief_runs
+             WHERE updated_at_ms < %s
+               AND (
+                 status IN ('failed', 'insufficient_material')
+                 OR (
+                   status = 'running'
+                   AND lease_expires_at_ms IS NOT NULL
+                   AND lease_expires_at_ms < %s
+                 )
+               )
+            """,
+            (
+                now_ms - _OPERATIONS_RETENTION_MS,
+                now_ms - _OPERATIONS_RETENTION_MS,
+            ),
+        )
+        current_story_id_set = set(unique_story_ids)
         return {
             "items": len(items),
-            "stories": len(clusters),
+            "temporary_clusters": len(temporary_clusters),
+            "stories": len(current_story_id_set),
             "story_writes": story_writes,
             "membership_writes": membership_writes,
-            "added": added,
-            "archived": archived,
-            "unchanged": unchanged,
+            "added": len(current_story_id_set - active_before),
+            "archived": len(active_before - current_story_id_set),
+            "unchanged": len((current_story_id_set & active_before) - changed_story_ids),
         }
 
-    # Read contract ---------------------------------------------------------------
+    def _story_invariant_counts(self) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            WITH current_owners AS (
+              SELECT i.item_id, count(m.story_id) AS owner_count
+                FROM news_items i
+                LEFT JOIN news_story_members m
+                  ON m.item_id = i.item_id AND m.current
+               WHERE i.active
+               GROUP BY i.item_id
+            ),
+            story_aggregates AS (
+              SELECT st.story_id,
+                     st.item_count AS stored_item_count,
+                     st.source_count AS stored_source_count,
+                     st.first_published_at_ms AS stored_first_at_ms,
+                     st.last_published_at_ms AS stored_last_at_ms,
+                     count(m.item_id) AS actual_item_count,
+                     count(DISTINCT i.source_id) AS actual_source_count,
+                     min(i.published_at_ms) AS actual_first_at_ms,
+                     max(i.published_at_ms) AS actual_last_at_ms,
+                     bool_or(m.item_id = st.representative_item_id)
+                       AS representative_is_member,
+                     bool_or(m.item_id = st.scoring_item_id)
+                       AS scoring_item_is_member
+                FROM news_stories st
+                LEFT JOIN news_story_members m
+                  ON m.story_id = st.story_id AND m.current
+                LEFT JOIN news_items i ON i.item_id = m.item_id
+               WHERE st.active
+               GROUP BY st.story_id
+            ),
+            invalid_stories AS (
+              SELECT story_id
+                FROM story_aggregates
+               WHERE stored_item_count <> actual_item_count
+                  OR stored_source_count <> actual_source_count
+                  OR stored_first_at_ms IS DISTINCT FROM actual_first_at_ms
+                  OR stored_last_at_ms IS DISTINCT FROM actual_last_at_ms
+                  OR representative_is_member IS DISTINCT FROM true
+                  OR scoring_item_is_member IS DISTINCT FROM true
+            )
+            SELECT count(*) FILTER (WHERE owner_count <> 1)
+                     AS invalid_owner_count,
+                   (SELECT count(*) FROM invalid_stories)
+                     AS invalid_story_aggregate_count
+              FROM current_owners
+            """
+        ).fetchone()
+        invalid_owners = int(row["invalid_owner_count"] or 0)
+        invalid_aggregates = int(row["invalid_story_aggregate_count"] or 0)
+        return {
+            "invalid_owner_count": invalid_owners,
+            "invalid_story_aggregate_count": invalid_aggregates,
+            "total": invalid_owners + invalid_aggregates,
+        }
+
+    # Read contract ------------------------------------------------------------
 
     def list_feed(
         self,
         *,
         category: str | None = None,
+        level: str | None = None,
+        source_id: str | None = None,
         sort: str = "importance",
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         if sort not in {"importance", "latest"}:
             raise ValueError("news_feed_sort_invalid")
-        categories = (
-            [category]
-            if category
-            else [
-                "conflict",
-                "protest",
-                "disaster",
-                "diplomatic",
-                "economic",
-                "terrorism",
-                "cyber",
-                "health",
-                "environmental",
-                "military",
-                "crime",
-                "infrastructure",
-                "tech",
-                "general",
-            ]
-        )
-        query = (
-            """
-            SELECT st.*, src.name AS representative_source_name
-              FROM news_stories st
-              JOIN news_sources src ON src.source_id = st.representative_source_id
-             WHERE st.active AND st.category = ANY(%s)
-             ORDER BY st.category, st.importance_score DESC,
-                      st.last_published_at_ms DESC, st.story_id
-            """
-            if sort == "importance"
-            else """
-            SELECT st.*, src.name AS representative_source_name
-              FROM news_stories st
-              JOIN news_sources src ON src.source_id = st.representative_source_id
-             WHERE st.active AND st.category = ANY(%s)
-             ORDER BY st.category, st.last_published_at_ms DESC,
-                      st.importance_score DESC, st.story_id
-            """
+        if limit < 1 or limit > 100:
+            raise ValueError("news_feed_limit_invalid")
+        filters = {
+            "category": str(category or "").strip().lower() or None,
+            "level": str(level or "").strip().lower() or None,
+            "source_id": str(source_id or "").strip() or None,
+        }
+        where = ["st.active"]
+        params: list[Any] = []
+        if filters["category"]:
+            where.append("st.category = %s")
+            params.append(filters["category"])
+        if filters["level"]:
+            where.append("st.level = %s")
+            params.append(filters["level"])
+        if filters["source_id"]:
+            where.append(
+                """
+                EXISTS (
+                  SELECT 1
+                    FROM news_story_members fm
+                    JOIN news_items fi ON fi.item_id = fm.item_id
+                   WHERE fm.story_id = st.story_id
+                     AND fm.current
+                     AND fi.source_id = %s
+                )
+                """
+            )
+            params.append(filters["source_id"])
+
+        if cursor:
+            decoded = _cursor_decode(cursor)
+            if decoded.get("v") != 1 or decoded.get("sort") != sort:
+                raise ValueError("news_feed_cursor_invalid")
+            if decoded.get("filters") != filters:
+                raise ValueError("news_feed_cursor_filter_mismatch")
+            try:
+                last_ms = int(decoded["last_published_at_ms"])
+                score = int(decoded["importance_score"])
+                story_id_value = str(decoded["story_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("news_feed_cursor_invalid") from exc
+            if sort == "latest":
+                where.append(
+                    """
+                    (
+                      st.last_published_at_ms < %s
+                      OR (
+                        st.last_published_at_ms = %s
+                        AND st.importance_score < %s
+                      )
+                      OR (
+                        st.last_published_at_ms = %s
+                        AND st.importance_score = %s
+                        AND st.story_id > %s
+                      )
+                    )
+                    """
+                )
+                params.extend([last_ms, last_ms, score, last_ms, score, story_id_value])
+            else:
+                where.append(
+                    """
+                    (
+                      st.importance_score < %s
+                      OR (
+                        st.importance_score = %s
+                        AND st.last_published_at_ms < %s
+                      )
+                      OR (
+                        st.importance_score = %s
+                        AND st.last_published_at_ms = %s
+                        AND st.story_id > %s
+                      )
+                    )
+                    """
+                )
+                params.extend([score, score, last_ms, score, last_ms, story_id_value])
+        order = (
+            "st.last_published_at_ms DESC, st.importance_score DESC, st.story_id"
+            if sort == "latest"
+            else "st.importance_score DESC, st.last_published_at_ms DESC, st.story_id"
         )
         rows = self.conn.execute(
-            query,
-            (categories,),
+            f"""
+            SELECT st.*, src.name AS representative_source_name
+              FROM news_stories st
+              JOIN news_sources src
+                ON src.source_id = st.representative_source_id
+             WHERE {" AND ".join(where)}
+             ORDER BY {order}
+             LIMIT %s
+            """,
+            (*params, limit + 1),
         ).fetchall()
-        grouped: dict[str, list[dict[str, Any]]] = {value: [] for value in categories}
-        for row in rows:
-            bucket = grouped[str(row["category"])]
-            if len(bucket) < 20:
-                bucket.append(_story_summary(row))
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        next_cursor = None
+        if has_more and page:
+            last = page[-1]
+            next_cursor = _cursor_encode(
+                {
+                    "v": 1,
+                    "sort": sort,
+                    "filters": filters,
+                    "last_published_at_ms": int(last["last_published_at_ms"]),
+                    "importance_score": int(last["importance_score"]),
+                    "story_id": str(last["story_id"]),
+                }
+            )
         return {
             "sort": sort,
-            "categories": [{"category": value, "stories": grouped[value]} for value in categories if grouped[value]],
-            "story_count": sum(len(values) for values in grouped.values()),
-            "per_category_cap_count": max(0, len(rows) - sum(len(values) for values in grouped.values())),
+            "filters": filters,
+            "stories": [_story_summary(row) for row in page],
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "facets": self._feed_facets(),
+        }
+
+    def _feed_facets(self) -> dict[str, list[dict[str, Any]]]:
+        categories = self.conn.execute(
+            """
+            SELECT category AS value, count(*) AS count
+              FROM news_stories
+             WHERE active
+             GROUP BY category
+             ORDER BY count(*) DESC, category
+            """
+        ).fetchall()
+        levels = self.conn.execute(
+            """
+            SELECT level AS value, count(*) AS count
+              FROM news_stories
+             WHERE active
+             GROUP BY level
+             ORDER BY count(*) DESC, level
+            """
+        ).fetchall()
+        sources = self.conn.execute(
+            """
+            SELECT src.source_id AS value, src.name AS label,
+                   count(DISTINCT m.story_id) AS count
+              FROM news_story_members m
+              JOIN news_stories st ON st.story_id = m.story_id
+              JOIN news_items i ON i.item_id = m.item_id
+              JOIN news_sources src ON src.source_id = i.source_id
+             WHERE st.active AND m.current
+             GROUP BY src.source_id, src.name
+             ORDER BY count(DISTINCT m.story_id) DESC, src.name, src.source_id
+            """
+        ).fetchall()
+        return {
+            "categories": [dict(row) for row in categories],
+            "levels": [dict(row) for row in levels],
+            "sources": [dict(row) for row in sources],
         }
 
     def get_story(self, *, story_id: str) -> dict[str, Any] | None:
@@ -1094,7 +1364,8 @@ class NewsRepository:
             """
             SELECT st.*, src.name AS representative_source_name
               FROM news_stories st
-              JOIN news_sources src ON src.source_id = st.representative_source_id
+              JOIN news_sources src
+                ON src.source_id = st.representative_source_id
              WHERE st.story_id = %s
             """,
             (story_id,),
@@ -1124,11 +1395,15 @@ class NewsRepository:
         rows = self.conn.execute(
             """
             SELECT s.*,
+                   COALESCE(m.memberships, ARRAY[]::text[]) AS memberships,
                    f.fetch_id AS latest_fetch_id,
                    f.status AS latest_fetch_status,
+                   f.fetch_path AS latest_fetch_path,
+                   f.direct_error_code AS latest_direct_error_code,
                    f.started_at_ms AS latest_fetch_started_at_ms,
                    f.finished_at_ms AS latest_fetch_finished_at_ms,
-                   (f.finished_at_ms - f.started_at_ms) AS latest_fetch_duration_ms,
+                   (f.finished_at_ms - f.started_at_ms)
+                     AS latest_fetch_duration_ms,
                    f.http_status AS latest_fetch_http_status,
                    f.entries_seen AS latest_entries_seen,
                    f.observations_inserted AS latest_observations_inserted,
@@ -1138,74 +1413,207 @@ class NewsRepository:
                    f.error_code AS latest_fetch_error_code
               FROM news_sources s
               LEFT JOIN LATERAL (
+                SELECT array_agg(membership ORDER BY membership) AS memberships
+                  FROM news_source_memberships
+                 WHERE source_id = s.source_id
+              ) m ON true
+              LEFT JOIN LATERAL (
                 SELECT *
                   FROM news_source_fetches
                  WHERE source_id = s.source_id
-                 ORDER BY finished_at_ms DESC
+                 ORDER BY finished_at_ms DESC, fetch_id DESC
                  LIMIT 1
               ) f ON true
-             ORDER BY s.category_hint, s.tier, s.name, s.source_id
+             ORDER BY s.tier, s.name, s.source_id
             """
         ).fetchall()
         return {"items": [dict(row) for row in rows]}
 
-    # World Brief ------------------------------------------------------------------
+    # World Brief ---------------------------------------------------------------
 
     def brief_candidates(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT st.*, src.name AS representative_source_name,
-                   item.reporting_origin AS representative_reporting_origin
+            SELECT st.*, src.name AS representative_source_name
               FROM news_stories st
-              JOIN news_sources src ON src.source_id = st.representative_source_id
+              JOIN news_sources src
+                ON src.source_id = st.representative_source_id
               JOIN news_items item ON item.item_id = st.representative_item_id
              WHERE st.active AND NOT item.brief_excluded
             """
         ).fetchall()
         return select_top_stories(rows, limit=8, max_per_source=3)
 
-    def current_brief_fingerprint(self) -> str | None:
-        row = self.conn.execute(
-            """
-            SELECT p.fingerprint
-              FROM news_brief_current c
-              LEFT JOIN news_brief_publications p ON p.publication_id = c.publication_id
-             WHERE c.singleton_key
-            """
-        ).fetchone()
-        return str(row["fingerprint"]) if row and row["fingerprint"] else None
-
-    def brief_publication_exists(self, *, fingerprint: str) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM news_brief_publications WHERE fingerprint = %s",
-            (fingerprint,),
-        ).fetchone()
-        return row is not None
-
-    def begin_brief_update(self, *, fingerprint: str, now_ms: int) -> None:
+    def record_brief_insufficient(
+        self,
+        *,
+        fingerprint: str,
+        story_count: int,
+        source_count: int,
+        now_ms: int,
+    ) -> None:
         self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+        run_id = deterministic_id("brief_run", fingerprint)
+        self.conn.execute(
+            """
+            INSERT INTO news_brief_runs (
+              run_id, fingerprint, status, attempt_count,
+              candidate_story_count, candidate_source_count,
+              created_at_ms, updated_at_ms, completed_at_ms
+            )
+            VALUES (%s, %s, 'insufficient_material', 0, %s, %s, %s, %s, %s)
+            ON CONFLICT (fingerprint) DO UPDATE SET
+              status = 'insufficient_material',
+              candidate_story_count = EXCLUDED.candidate_story_count,
+              candidate_source_count = EXCLUDED.candidate_source_count,
+              lease_owner = NULL,
+              lease_expires_at_ms = NULL,
+              heartbeat_at_ms = NULL,
+              last_error = NULL,
+              updated_at_ms = EXCLUDED.updated_at_ms,
+              completed_at_ms = EXCLUDED.completed_at_ms
+            WHERE news_brief_runs.status <> 'ready'
+              AND (
+                news_brief_runs.status <> 'insufficient_material'
+                OR news_brief_runs.candidate_story_count
+                     IS DISTINCT FROM EXCLUDED.candidate_story_count
+                OR news_brief_runs.candidate_source_count
+                     IS DISTINCT FROM EXCLUDED.candidate_source_count
+              )
+            """,
+            (
+                run_id,
+                fingerprint,
+                story_count,
+                source_count,
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
+        )
         self.conn.execute(
             """
             UPDATE news_brief_current
-               SET pending_fingerprint = %s,
-                   update_started_at_ms = %s,
-                   last_attempt_at_ms = %s,
-                   last_error = NULL,
+               SET target_fingerprint = %s,
+                   latest_run_id = %s,
+                   updated_at_ms = %s
+             WHERE singleton_key
+               AND (
+                 target_fingerprint IS DISTINCT FROM %s
+                 OR latest_run_id IS DISTINCT FROM %s
+               )
+            """,
+            (fingerprint, run_id, now_ms, fingerprint, run_id),
+        )
+
+    def claim_brief_run(
+        self,
+        *,
+        fingerprint: str,
+        story_count: int,
+        source_count: int,
+        now_ms: int,
+        max_attempts: int,
+    ) -> dict[str, str] | None:
+        self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+        row = self.conn.execute(
+            """
+            SELECT *
+              FROM news_brief_runs
+             WHERE fingerprint = %s
+             FOR UPDATE
+            """,
+            (fingerprint,),
+        ).fetchone()
+        if row is not None:
+            status = str(row["status"])
+            if status in {"ready", "insufficient_material"}:
+                return None
+            if (
+                status == "running"
+                and row["lease_expires_at_ms"] is not None
+                and int(row["lease_expires_at_ms"]) > now_ms
+            ):
+                return None
+            if int(row["attempt_count"]) >= max_attempts:
+                self.conn.execute(
+                    """
+                    UPDATE news_brief_runs
+                       SET status = 'failed',
+                           lease_owner = NULL,
+                           lease_expires_at_ms = NULL,
+                           heartbeat_at_ms = NULL,
+                           last_error = 'brief_attempts_exhausted',
+                           updated_at_ms = %s,
+                           completed_at_ms = %s
+                     WHERE run_id = %s
+                       AND status <> 'failed'
+                    """,
+                    (now_ms, now_ms, str(row["run_id"])),
+                )
+                return None
+            run_id = str(row["run_id"])
+            attempt_count = int(row["attempt_count"]) + 1
+        else:
+            run_id = deterministic_id("brief_run", fingerprint)
+            attempt_count = 1
+        owner = deterministic_id("brief_owner", fingerprint, now_ms, attempt_count)
+        self.conn.execute(
+            """
+            INSERT INTO news_brief_runs (
+              run_id, fingerprint, status, attempt_count,
+              candidate_story_count, candidate_source_count,
+              lease_owner, lease_expires_at_ms, heartbeat_at_ms,
+              created_at_ms, updated_at_ms
+            )
+            VALUES (%s, %s, 'running', %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fingerprint) DO UPDATE SET
+              status = 'running',
+              attempt_count = EXCLUDED.attempt_count,
+              candidate_story_count = EXCLUDED.candidate_story_count,
+              candidate_source_count = EXCLUDED.candidate_source_count,
+              lease_owner = EXCLUDED.lease_owner,
+              lease_expires_at_ms = EXCLUDED.lease_expires_at_ms,
+              heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
+              last_error = NULL,
+              updated_at_ms = EXCLUDED.updated_at_ms,
+              completed_at_ms = NULL
+            """,
+            (
+                run_id,
+                fingerprint,
+                attempt_count,
+                story_count,
+                source_count,
+                owner,
+                now_ms + _BRIEF_LEASE_MS,
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
+        )
+        self.conn.execute(
+            """
+            UPDATE news_brief_current
+               SET target_fingerprint = %s,
+                   latest_run_id = %s,
                    updated_at_ms = %s
              WHERE singleton_key
             """,
-            (fingerprint, now_ms, now_ms, now_ms),
+            (fingerprint, run_id, now_ms),
         )
+        return {"run_id": run_id, "lease_owner": owner}
 
     def publish_brief(
         self,
         *,
+        run_id: str,
+        lease_owner: str,
         fingerprint: str,
         stories: Sequence[Mapping[str, Any]],
         draft: NewsBriefDraft,
         validation: Mapping[str, Any],
         now_ms: int,
-        degraded: bool,
     ) -> str:
         publication_id = deterministic_id("brief", fingerprint)
         sources = [
@@ -1219,17 +1627,35 @@ class NewsRepository:
             for index, story in enumerate(stories)
         ]
         evidence_cutoff = max(int(story["last_published_at_ms"]) for story in stories)
+        claimed = self.conn.execute(
+            """
+            SELECT 1
+              FROM news_brief_runs
+             WHERE run_id = %s
+               AND fingerprint = %s
+               AND status = 'running'
+               AND lease_owner = %s
+               AND lease_expires_at_ms > %s
+             FOR UPDATE
+            """,
+            (run_id, fingerprint, lease_owner, now_ms),
+        ).fetchone()
+        if claimed is None:
+            raise RuntimeError("news_brief_lease_lost")
+        current_candidates = self.brief_candidates()
+        if brief_fingerprint(current_candidates) != fingerprint:
+            raise RuntimeError("news_brief_source_fingerprint_changed")
         self.conn.execute(
             """
             INSERT INTO news_brief_publications (
-              publication_id, fingerprint, evidence_cutoff_at_ms, published_at_ms,
-              provider, model, prompt_version, workflow_version, schema_version,
-              locale, selected_story_ids, lead, lines, sources, validation,
-              raw_response, status, created_at_ms
+              publication_id, fingerprint, evidence_cutoff_at_ms,
+              published_at_ms, provider, model, prompt_version,
+              workflow_version, schema_version, locale, selected_story_ids,
+              lead, lines, sources, validation, raw_response, created_at_ms
             )
             VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s
             )
             ON CONFLICT (fingerprint) DO NOTHING
             """,
@@ -1250,60 +1676,91 @@ class NewsRepository:
                 Jsonb(sources),
                 Jsonb(dict(validation)),
                 draft.raw_response,
-                "degraded" if degraded else "published",
                 now_ms,
             ),
         )
-        if degraded:
-            self.conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET pending_fingerprint = NULL,
-                       update_started_at_ms = NULL,
-                       last_failure_at_ms = %s,
-                       last_error = 'brief_validation_degraded',
-                       updated_at_ms = %s
-                 WHERE singleton_key
-                """,
-                (now_ms, now_ms),
-            )
-        else:
-            self.conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET publication_id = %s,
-                       pending_fingerprint = NULL,
-                       update_started_at_ms = NULL,
-                       last_error = NULL,
-                       updated_at_ms = %s
-                 WHERE singleton_key
-                """,
-                (publication_id, now_ms),
-            )
-        return publication_id
-
-    def fail_brief_update(self, *, error: Exception, now_ms: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_brief_runs
+               SET status = 'ready',
+                   lease_owner = NULL,
+                   lease_expires_at_ms = NULL,
+                   heartbeat_at_ms = %s,
+                   completed_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE run_id = %s AND lease_owner = %s
+            """,
+            (now_ms, now_ms, now_ms, run_id, lease_owner),
+        )
         self.conn.execute(
             """
             UPDATE news_brief_current
-               SET pending_fingerprint = NULL,
-                   update_started_at_ms = NULL,
-                   last_failure_at_ms = %s,
-                   last_error = %s,
+               SET publication_id = %s,
+                   target_fingerprint = %s,
+                   latest_run_id = %s,
                    updated_at_ms = %s
              WHERE singleton_key
             """,
-            (now_ms, f"{type(error).__name__}:{str(error)[:1000]}", now_ms),
+            (publication_id, fingerprint, run_id, now_ms),
+        )
+        return publication_id
+
+    def fail_brief_run(
+        self,
+        *,
+        run_id: str,
+        lease_owner: str,
+        error: Exception,
+        now_ms: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_brief_runs
+               SET status = 'failed',
+                   lease_owner = NULL,
+                   lease_expires_at_ms = NULL,
+                   heartbeat_at_ms = %s,
+                   last_error = %s,
+                   completed_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE run_id = %s
+               AND status = 'running'
+               AND lease_owner = %s
+            """,
+            (
+                now_ms,
+                f"{type(error).__name__}:{str(error)[:1000]}",
+                now_ms,
+                now_ms,
+                run_id,
+                lease_owner,
+            ),
         )
 
     def get_brief(self, *, now_ms: int, history_limit: int = 20) -> dict[str, Any]:
+        candidates = self.brief_candidates()
+        fingerprint = brief_fingerprint(candidates)
+        candidate_sources = {str(candidate["representative_source_id"]) for candidate in candidates}
+        sufficient = len(candidates) >= 3 and len(candidate_sources) >= 2
         current = self.conn.execute(
             """
-            SELECT c.*, p.*
+            SELECT c.publication_id, c.target_fingerprint, c.latest_run_id,
+                   c.updated_at_ms, p.*
               FROM news_brief_current c
-              LEFT JOIN news_brief_publications p ON p.publication_id = c.publication_id
+              LEFT JOIN news_brief_publications p
+                ON p.publication_id = c.publication_id
              WHERE c.singleton_key
             """
+        ).fetchone()
+        run = self.conn.execute(
+            """
+            SELECT *
+              FROM news_brief_runs
+             WHERE fingerprint = %s
+             ORDER BY updated_at_ms DESC
+             LIMIT 1
+            """,
+            (fingerprint,),
         ).fetchone()
         history = self.conn.execute(
             """
@@ -1314,55 +1771,94 @@ class NewsRepository:
             """,
             (history_limit,),
         ).fetchall()
-        publication = _brief_payload(current) if current and current["publication_id"] else None
-        publication_age_ms = max(0, now_ms - int(publication["published_at_ms"])) if publication is not None else None
-        if current and current["pending_fingerprint"]:
-            state = "updating"
-        elif publication is None:
-            state = "failed" if current and current["last_error"] else "unavailable"
-        else:
-            age_ms = max(0, now_ms - int(publication["published_at_ms"]))
-            state = (
-                "fresh"
-                if age_ms <= 3_600_000
-                else "stale"
-                if age_ms <= 10_800_000
-                else "failed"
-                if current and current["last_error"]
-                else "unavailable"
-            )
-        readable_publication = (
-            publication if publication_age_ms is not None and publication_age_ms <= 10_800_000 else None
+        publication = _brief_payload(current) if current is not None and current["publication_id"] else None
+        publication_matches = publication is not None and publication["fingerprint"] == fingerprint
+        run_active = (
+            run is not None
+            and str(run["status"]) == "running"
+            and run["lease_expires_at_ms"] is not None
+            and int(run["lease_expires_at_ms"]) > now_ms
+            and run["heartbeat_at_ms"] is not None
+            and int(run["heartbeat_at_ms"]) > now_ms - _BRIEF_LEASE_MS
         )
+        run_failed = run is not None and (
+            str(run["status"]) == "failed" or (str(run["status"]) == "running" and not run_active)
+        )
+        if not sufficient:
+            state = "insufficient_material"
+        elif publication_matches:
+            state = "ready"
+        elif run_active:
+            state = "running"
+        elif publication is not None:
+            state = "stale_fallback"
+        elif run_failed:
+            state = "failed"
+        else:
+            state = "unavailable"
         return {
             "state": state,
-            "publication": readable_publication,
-            "last_known_good_published_at_ms": (publication["published_at_ms"] if publication else None),
-            "pending_fingerprint": current["pending_fingerprint"] if current else None,
-            "update_started_at_ms": current["update_started_at_ms"] if current else None,
-            "last_error": current["last_error"] if current else None,
-            "last_failure_at_ms": current["last_failure_at_ms"] if current else None,
+            "target_fingerprint": fingerprint,
+            "candidate_story_count": len(candidates),
+            "candidate_source_count": len(candidate_sources),
+            "publication": publication if sufficient else None,
+            "latest_run": _brief_run_payload(run, now_ms=now_ms) if run else None,
             "history": [_brief_payload(row) for row in history],
         }
 
-    # Health -----------------------------------------------------------------------
+    # Health -------------------------------------------------------------------
 
     def health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         source = self.conn.execute(
             """
-            SELECT
-              count(*) FILTER (WHERE enabled) AS enabled_count,
-              count(*) FILTER (
-                WHERE enabled AND last_success_at_ms >= %s
-              ) AS recent_success_count,
-              max(last_success_at_ms) AS last_success_at_ms,
-              count(*) FILTER (
-                WHERE enabled AND consecutive_failures > 0
-              ) AS failing_count,
-              count(*) FILTER (
-                WHERE enabled AND next_fetch_at_ms < %s
-              ) AS overdue_count
-              FROM news_sources
+            WITH latest_fetch AS (
+              SELECT DISTINCT ON (source_id)
+                     source_id, status, fetch_path, direct_error_code,
+                     entries_seen
+                FROM news_source_fetches
+               ORDER BY source_id, finished_at_ms DESC, fetch_id DESC
+            )
+            SELECT count(*) FILTER (WHERE s.enabled) AS enabled_count,
+                   count(*) FILTER (
+                     WHERE s.enabled
+                       AND s.last_fetch_finished_at_ms IS NOT NULL
+                   ) AS attempted_count,
+                   count(*) FILTER (
+                     WHERE s.enabled AND s.last_success_at_ms IS NOT NULL
+                   ) AS successful_count,
+                   count(*) FILTER (
+                     WHERE s.enabled AND s.last_success_at_ms >= %s
+                   ) AS recent_success_count,
+                   count(*) FILTER (
+                     WHERE s.enabled
+                       AND lf.status = 'success'
+                       AND lf.entries_seen = 0
+                   ) AS empty_count,
+                   count(*) FILTER (
+                     WHERE s.enabled AND s.consecutive_failures > 0
+                   ) AS failing_count,
+                   count(*) FILTER (
+                     WHERE s.enabled AND s.next_fetch_at_ms < %s
+                   ) AS overdue_count,
+                   count(*) FILTER (
+                     WHERE s.enabled
+                       AND lf.status <> 'failed'
+                       AND lf.fetch_path = 'direct'
+                   ) AS direct_success_count,
+                   count(*) FILTER (
+                     WHERE s.enabled
+                       AND lf.status <> 'failed'
+                       AND lf.fetch_path = 'relay'
+                   ) AS relay_success_count,
+                   count(*) FILTER (
+                     WHERE s.enabled
+                       AND lf.status = 'failed'
+                       AND lf.fetch_path = 'relay'
+                       AND lf.direct_error_code IS NOT NULL
+                   ) AS both_failed_count,
+                   max(s.last_success_at_ms) AS last_success_at_ms
+              FROM news_sources s
+              LEFT JOIN latest_fetch lf ON lf.source_id = s.source_id
             """,
             (now_ms - 3_600_000, now_ms - 300_000),
         ).fetchone()
@@ -1379,110 +1875,122 @@ class NewsRepository:
             gate_counts.update({str(key): int(value) for key, value in dict(fetch["rejection_counts"]).items()})
         story = self.conn.execute(
             """
-            SELECT
-              count(*) FILTER (WHERE active) AS active_count,
-              max(updated_at_ms) FILTER (WHERE active) AS last_material_change_at_ms,
-              (
-                SELECT count(*)
-                  FROM news_items i
-                 WHERE i.active
-                   AND NOT EXISTS (
-                     SELECT 1 FROM news_story_members m
-                      WHERE m.item_id = i.item_id AND m.current
-                   )
-              ) AS unmaterialized_item_count
-              ,(
-                SELECT count(*)
-                  FROM (
-                    SELECT row_number() OVER (
-                             PARTITION BY category
-                             ORDER BY importance_score DESC,
-                                      last_published_at_ms DESC,
-                                      story_id
-                           ) AS category_rank
-                      FROM news_stories
-                     WHERE active
-                  ) ranked
-                 WHERE category_rank > 20
-              ) AS per_category_cap_count
+            SELECT count(*) FILTER (WHERE active) AS active_count,
+                   max(last_published_at_ms) FILTER (WHERE active)
+                     AS newest_story_at_ms,
+                   max(updated_at_ms) FILTER (WHERE active)
+                     AS last_material_change_at_ms,
+                   (SELECT count(*) FROM news_items WHERE active)
+                     AS active_item_count,
+                   (SELECT max(published_at_ms) FROM news_items WHERE active)
+                     AS newest_item_at_ms,
+                   (
+                     SELECT count(*)
+                       FROM news_items i
+                      WHERE i.active
+                        AND NOT EXISTS (
+                          SELECT 1
+                            FROM news_story_members m
+                           WHERE m.item_id = i.item_id AND m.current
+                        )
+                   ) AS unmaterialized_item_count,
+                   (
+                     SELECT count(*)
+                       FROM (
+                         SELECT m.item_id, count(*) AS owners
+                           FROM news_story_members m
+                          WHERE m.current
+                          GROUP BY m.item_id
+                         HAVING count(*) <> 1
+                       ) invalid
+                   ) AS invalid_owner_count
               FROM news_stories
             """
         ).fetchone()
+        invariant_counts = self._story_invariant_counts()
         brief = self.get_brief(now_ms=now_ms, history_limit=1)
         enabled = int(source["enabled_count"] or 0)
+        attempted = int(source["attempted_count"] or 0)
         recent = int(source["recent_success_count"] or 0)
         coverage_ratio = recent / enabled if enabled else 0.0
         ingest_reasons: list[str] = []
         if enabled == 0:
+            ingest_status = "degraded"
             ingest_reasons.append("no_enabled_sources")
-            ingest_status = "unavailable"
-        elif source["last_success_at_ms"] is None:
-            ingest_reasons.append("no_source_success")
-            ingest_status = "unavailable"
+        elif attempted < enabled:
+            ingest_status = "warming"
+            ingest_reasons.append("not_all_sources_attempted")
+        elif int(source["failing_count"] or 0) > 0:
+            ingest_status = "degraded"
+            ingest_reasons.append("source_failures_present")
         elif coverage_ratio < 0.8:
+            ingest_status = "degraded"
             ingest_reasons.append("recent_source_coverage_below_80_percent")
-            ingest_status = "degraded"
         elif int(source["overdue_count"] or 0) > max(3, enabled // 5):
-            ingest_reasons.append("material_source_poll_overdue")
             ingest_status = "degraded"
+            ingest_reasons.append("material_source_poll_overdue")
         else:
-            ingest_status = "healthy"
-        active_story_count = int(story["active_count"] or 0)
+            ingest_status = "ready"
+
         unmaterialized = int(story["unmaterialized_item_count"] or 0)
+        invalid_owners = invariant_counts["invalid_owner_count"]
+        invalid_aggregates = invariant_counts["invalid_story_aggregate_count"]
+        active_stories = int(story["active_count"] or 0)
         story_reasons: list[str] = []
-        if unmaterialized:
-            story_reasons.append("current_items_unmaterialized")
+        if unmaterialized or invalid_owners or invalid_aggregates:
             story_status = "degraded"
-        elif active_story_count == 0:
-            story_reasons.append("no_active_stories")
-            story_status = "unavailable"
+            if unmaterialized:
+                story_reasons.append("active_items_unmaterialized")
+            if invalid_owners:
+                story_reasons.append("current_item_owner_invalid")
+            if invalid_aggregates:
+                story_reasons.append("story_aggregate_invalid")
+        elif active_stories == 0:
+            story_status = "warming"
+            story_reasons.append("no_active_stories_yet")
         else:
-            story_status = "healthy"
+            story_status = "ready"
+
         brief_status = (
-            "healthy"
-            if brief["state"] in {"fresh", "updating"}
+            "ready"
+            if brief["state"] in {"ready", "insufficient_material"}
             else "degraded"
-            if brief["state"] == "stale"
-            else "unavailable"
+            if brief["state"] in {"stale_fallback", "failed"}
+            else "warming"
         )
-        brief_reasons = [] if brief_status == "healthy" else [f"public_brief_{brief['state']}"]
-        candidates = self.brief_candidates()
-        top8_fingerprint = brief_fingerprint(candidates) if candidates else None
-        current_fingerprint = str(brief["publication"]["fingerprint"]) if brief["publication"] else None
-        fingerprint_current = top8_fingerprint is not None and top8_fingerprint == current_fingerprint
-        if candidates and not fingerprint_current and brief["state"] not in {"updating"}:
-            brief_reasons.append("top8_fingerprint_unpublished")
-            if brief_status == "healthy":
-                brief_status = "degraded"
+        brief_reasons = [] if brief_status == "ready" else [f"public_brief_{brief['state']}"]
         layers = {
             "ingest": {
                 "status": ingest_status,
                 "reasons": ingest_reasons,
+                "configured_sources": enabled,
                 "enabled_sources": enabled,
+                "attempted_sources": attempted,
+                "terminal_sources": attempted,
+                "successful_sources": int(source["successful_count"] or 0),
+                "empty_sources": int(source["empty_count"] or 0),
                 "recent_success_sources": recent,
                 "recent_coverage_ratio": round(coverage_ratio, 4),
                 "failing_sources": int(source["failing_count"] or 0),
                 "overdue_sources": int(source["overdue_count"] or 0),
+                "direct_success_sources": int(source["direct_success_count"] or 0),
+                "relay_success_sources": int(source["relay_success_count"] or 0),
+                "both_failed_sources": int(source["both_failed_count"] or 0),
                 "last_success_at_ms": source["last_success_at_ms"],
-                "last_success_age_ms": (
-                    max(0, now_ms - int(source["last_success_at_ms"]))
-                    if source["last_success_at_ms"] is not None
-                    else None
-                ),
                 "gate_counts_1h": dict(gate_counts),
             },
             "story": {
                 "status": story_status,
                 "reasons": story_reasons,
-                "active_stories": int(story["active_count"] or 0),
+                "active_items": int(story["active_item_count"] or 0),
+                "active_stories": active_stories,
+                "newest_item_at_ms": story["newest_item_at_ms"],
+                "newest_story_at_ms": story["newest_story_at_ms"],
                 "last_material_change_at_ms": story["last_material_change_at_ms"],
-                "last_material_change_age_ms": (
-                    max(0, now_ms - int(story["last_material_change_at_ms"]))
-                    if story["last_material_change_at_ms"] is not None
-                    else None
-                ),
                 "unmaterialized_item_count": unmaterialized,
-                "per_category_cap_count": int(story["per_category_cap_count"] or 0),
+                "invalid_owner_count": invalid_owners,
+                "invalid_story_aggregate_count": invalid_aggregates,
+                "invariant_error_count": invariant_counts["total"],
                 "identity_version": STORY_IDENTITY_VERSION,
                 "classifier_version": CLASSIFIER_VERSION,
                 "importance_version": IMPORTANCE_VERSION,
@@ -1491,35 +1999,13 @@ class NewsRepository:
                 "status": brief_status,
                 "reasons": brief_reasons,
                 "public_state": brief["state"],
+                "target_fingerprint": brief["target_fingerprint"],
                 "publication_id": (brief["publication"]["publication_id"] if brief["publication"] else None),
-                "last_known_good_age_ms": (
-                    max(0, now_ms - int(brief["last_known_good_published_at_ms"]))
-                    if brief["last_known_good_published_at_ms"] is not None
-                    else None
-                ),
-                "last_error": brief["last_error"],
-                "latest_provider_outcome": (
-                    {
-                        "publication_id": brief["history"][0]["publication_id"],
-                        "provider": brief["history"][0]["provider"],
-                        "model": brief["history"][0]["model"],
-                        "status": brief["history"][0]["status"],
-                    }
-                    if brief["history"]
-                    else None
-                ),
-                "top8_fingerprint": top8_fingerprint,
-                "current_publication_matches_top8": fingerprint_current,
+                "latest_run": brief["latest_run"],
             },
         }
         statuses = [ingest_status, story_status, brief_status]
-        overall = (
-            "unavailable"
-            if all(status == "unavailable" for status in statuses)
-            else "degraded"
-            if any(status != "healthy" for status in statuses)
-            else "healthy"
-        )
+        overall = "degraded" if "degraded" in statuses else "warming" if "warming" in statuses else "ready"
         return {
             "status": overall,
             "reasons": [f"{name}:{reason}" for name, details in layers.items() for reason in details["reasons"]],
@@ -1536,6 +2022,8 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "url": str(row["representative_url"]),
         "source_id": str(row["representative_source_id"]),
         "source_name": str(row["representative_source_name"]),
+        "representative_item_id": str(row["representative_item_id"]),
+        "scoring_item_id": str(row["scoring_item_id"]),
         "level": str(row["level"]),
         "category": str(row["category"]),
         "importance_score": int(row["importance_score"]),
@@ -1565,6 +2053,8 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "importance_score": int(row["importance_score"]),
         "importance_factors": dict(row["importance_factors"]),
         "current": bool(row["current"]),
+        "first_joined_at_ms": int(row["first_joined_at_ms"]),
+        "last_confirmed_at_ms": int(row["last_confirmed_at_ms"]),
     }
 
 
@@ -1585,7 +2075,37 @@ def _brief_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "lines": list(row["lines"]),
         "sources": list(row["sources"]),
         "validation": dict(row["validation"]),
-        "status": str(row["status"]),
+    }
+
+
+def _brief_run_payload(
+    row: Mapping[str, Any],
+    *,
+    now_ms: int,
+) -> dict[str, Any]:
+    status = str(row["status"])
+    last_error = row["last_error"]
+    if status == "running" and (
+        row["lease_expires_at_ms"] is None
+        or int(row["lease_expires_at_ms"]) <= now_ms
+        or row["heartbeat_at_ms"] is None
+        or int(row["heartbeat_at_ms"]) <= now_ms - _BRIEF_LEASE_MS
+    ):
+        status = "failed"
+        last_error = last_error or "brief_lease_expired"
+    return {
+        "run_id": str(row["run_id"]),
+        "fingerprint": str(row["fingerprint"]),
+        "status": status,
+        "attempt_count": int(row["attempt_count"]),
+        "candidate_story_count": int(row["candidate_story_count"]),
+        "candidate_source_count": int(row["candidate_source_count"]),
+        "heartbeat_at_ms": row["heartbeat_at_ms"],
+        "lease_expires_at_ms": row["lease_expires_at_ms"],
+        "last_error": last_error,
+        "created_at_ms": int(row["created_at_ms"]),
+        "updated_at_ms": int(row["updated_at_ms"]),
+        "completed_at_ms": row["completed_at_ms"],
     }
 
 

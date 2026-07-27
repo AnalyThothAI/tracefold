@@ -4591,9 +4591,9 @@
           },
           "status": {
             "enum": [
-              "healthy",
-              "degraded",
-              "unavailable"
+              "warming",
+              "ready",
+              "degraded"
             ],
             "title": "Status",
             "type": "string"
@@ -4613,9 +4613,9 @@
         "properties": {
           "status": {
             "enum": [
-              "healthy",
-              "degraded",
-              "unavailable"
+              "warming",
+              "ready",
+              "degraded"
             ],
             "title": "Status",
             "type": "string"
@@ -8320,12 +8320,54 @@
           },
           {
             "in": "query",
+            "name": "level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Level",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "sort",
             "required": false,
             "schema": {
               "default": "importance",
               "pattern": "^(importance|latest)$",
               "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
               "type": "string"
             }
           }
@@ -8374,6 +8416,27 @@
           }
         },
         "summary": "Get News Sources",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/status": {
+      "get": {
+        "operationId": "get_news_status_api_news_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get News Status",
         "tags": [
           "api"
         ]

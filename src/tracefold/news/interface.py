@@ -15,13 +15,24 @@ class NewsInterface:
         self,
         *,
         category: str | None = None,
+        level: str | None = None,
+        source_id: str | None = None,
         sort: str = "importance",
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         normalized = str(category or "").strip().lower() or None
         normalized_sort = str(sort or "").strip().lower()
         if normalized_sort not in {"importance", "latest"}:
             raise ValueError("news_feed_sort_invalid")
-        return self._repository.list_feed(category=normalized, sort=normalized_sort)
+        return self._repository.list_feed(
+            category=normalized,
+            level=str(level or "").strip().lower() or None,
+            source_id=str(source_id or "").strip() or None,
+            sort=normalized_sort,
+            limit=limit,
+            cursor=str(cursor or "").strip() or None,
+        )
 
     def get_story(self, *, story_id: str) -> dict[str, Any] | None:
         normalized = str(story_id or "").strip()

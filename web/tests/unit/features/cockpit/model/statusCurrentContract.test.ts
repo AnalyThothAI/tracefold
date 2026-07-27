@@ -32,7 +32,7 @@ describe("statusCurrentContract", () => {
   it("rejects an incomplete News invariant-health payload", () => {
     const payload = {
       ...appStatusFixture(),
-      news: { status: "healthy", reasons: [], layers: {} },
+      news: { status: "ready", reasons: [], layers: {} },
     };
     expect(() => requireStatusData(payload)).toThrowError(
       "status_current_contract:status.news.measured_at_ms",

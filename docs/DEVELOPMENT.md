@@ -70,15 +70,15 @@ changed seam and report omitted evidence honestly.
 News identity, classification, importance, and Brief selection are frozen to
 the implementation copied from WorldMonitor commit
 `f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds persistence,
-stable Story IDs, scheduled acquisition, `reporting_origin` corroboration, and
-immutable Chinese Brief publications; it does not add a second identity or
-scoring policy.
+stable Story IDs, scheduled acquisition, physical-source membership, and
+immutable Chinese Brief publications; it does not add a second identity,
+scoring policy, or item-level AI lane.
 
-`tests/test_news_worldmonitor_parity.py` is the executable parity suite. Its 79
-tests cover positive and negative title pairs, exact-title and containment
-merges, CJK features, hot buckets, order independence, classification,
-historical exclusions, importance rounding, and source-diverse Top-8
-selection. Run it with:
+`tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
+covers positive and negative title pairs, exact-title and containment merges,
+CJK features, hot buckets, order independence, classification, historical
+exclusions, importance rounding, source-diverse Top-8 selection, and the
+frozen source-manifest digest. Run it with:
 
 ```bash
 uv run pytest -q tests/test_news_worldmonitor_parity.py
@@ -86,7 +86,7 @@ uv run pytest -q tests/test_news_worldmonitor_parity.py
 
 The release evaluation additionally replays the current production NewsItem
 corpus in isolated PostgreSQL. The review artifact must state its source
-cutoff, item/Story/singleton/multi-member/origin/category counts, every
+cutoff, item/Story/singleton/multi-member/source/category counts, every
 multi-member cluster, and the highest-similarity non-merged pairs. It is a
 distribution review, not a compression target. The known Ebola
 3,200-infections/1,405-deaths pair remains split at approximately `0.509`
@@ -94,11 +94,12 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly ten News tables, 96 synchronized sources, exactly three News workers,
-real RSS observations and NewsItems, deterministic Story membership, all four
-public endpoints, one valid Chinese Brief, provider-failure last-known-good
-retention, measured acquisition/projection latency, and browser verification
-of Feed, Story, Brief, and Sources.
+exactly eleven News tables, 117 synchronized physical sources with 120
+memberships, exactly two News workers, real RSS observations and NewsItems,
+deterministic Story membership, all five public endpoints, one valid Chinese
+Brief or truthful insufficient-material state, provider-failure
+last-known-good retention, measured acquisition/projection latency, and
+browser verification of Feed, Story, Brief, and Sources.
 
 ## Generated contracts
 

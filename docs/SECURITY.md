@@ -27,7 +27,9 @@ Schemas and public config contracts live in `CONTRACTS.md`.
 
 ## Macro Research Agent capability boundary
 
-The `macro_research` worker is the sole production product-model consumer.
+`macro_research` and the separately published `news_world_brief` are the only
+production product-model consumers. News acquisition, NewsItem classification,
+Story identity, scoring, and serving never call a model.
 DeepAgents keeps its native todo planning, checkpoint-backed virtual
 filesystem, real `execute`, context management, structured final output, and
 dynamic `task` delegation.

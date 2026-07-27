@@ -5,14 +5,13 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SOURCE_INVENTORY_VERSION = "worldmonitor_full_en_f73de5b7"
+SOURCE_INVENTORY_VERSION = "worldmonitor_full_intel_plus_crypto_f73de5b7"
 STORY_IDENTITY_VERSION = "worldmonitor_story_identity_f73de5b7"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_f73de5b7"
-IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_reporting_origin"
+IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_physical_source"
 BRIEF_PROMPT_VERSION = "worldmonitor_top8_zh_v1"
 BRIEF_WORKFLOW_VERSION = "worldmonitor_world_brief_v1"
 BRIEF_SCHEMA_VERSION = "worldmonitor_world_brief_schema_v1"
-AI_CLASSIFIER_PROMPT_VERSION = "worldmonitor_title_classifier_v1"
 NEWS_LOCALE = "zh-CN"
 
 ThreatLevel = Literal["critical", "high", "medium", "low", "info"]
@@ -42,10 +41,9 @@ class NewsSourceDefinition(ExactNewsModel):
     source_id: str
     name: str
     feed_url: str
-    reporting_origin: str
     tier: int = Field(ge=1, le=4)
     lang: str = "en"
-    category_hint: str | None = None
+    memberships: tuple[str, ...]
     enabled: bool = True
     refresh_interval_seconds: int = Field(default=120, ge=1)
 
@@ -53,7 +51,6 @@ class NewsSourceDefinition(ExactNewsModel):
         "source_id",
         "name",
         "feed_url",
-        "reporting_origin",
         "lang",
         mode="before",
     )
@@ -63,6 +60,16 @@ class NewsSourceDefinition(ExactNewsModel):
         if not normalized:
             raise ValueError("news_source_text_required")
         return normalized
+
+    @field_validator("memberships", mode="before")
+    @classmethod
+    def normalize_memberships(cls, value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list | tuple):
+            raise ValueError("news_source_memberships_required")
+        memberships = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
+        if not memberships:
+            raise ValueError("news_source_memberships_required")
+        return memberships
 
 
 class NewsFeedEntry(ExactNewsModel):
@@ -78,6 +85,8 @@ class NewsFeedEntry(ExactNewsModel):
 
 class NewsFeedFetch(ExactNewsModel):
     status_code: int
+    fetch_path: Literal["direct", "relay"]
+    direct_error_code: str | None = None
     entries: tuple[NewsFeedEntry, ...] = ()
     entries_seen: int = Field(default=0, ge=0)
     gate_counts: dict[str, int] = Field(default_factory=dict)
@@ -90,7 +99,7 @@ class NewsClassification(ExactNewsModel):
     level: ThreatLevel
     category: EventCategory
     confidence: float = Field(ge=0, le=1)
-    source: Literal["keyword", "keyword-historical-downgrade", "llm"]
+    source: Literal["keyword", "keyword-historical-downgrade"]
 
 
 class NewsBriefStory(ExactNewsModel):
@@ -130,12 +139,6 @@ class NewsBriefPublisher(Protocol):
     def close(self) -> None: ...
 
 
-class NewsClassificationPublisher(Protocol):
-    def classify(self, titles: Sequence[str]) -> Sequence[NewsClassification]: ...
-
-    def close(self) -> None: ...
-
-
 def source_definition(value: NewsSourceDefinition | Mapping[str, Any] | Any) -> NewsSourceDefinition:
     if isinstance(value, NewsSourceDefinition):
         return value
@@ -147,7 +150,6 @@ def source_definition(value: NewsSourceDefinition | Mapping[str, Any] | Any) -> 
 
 
 __all__ = [
-    "AI_CLASSIFIER_PROMPT_VERSION",
     "BRIEF_PROMPT_VERSION",
     "BRIEF_SCHEMA_VERSION",
     "BRIEF_WORKFLOW_VERSION",
@@ -161,7 +163,6 @@ __all__ = [
     "NewsBriefPublisher",
     "NewsBriefStory",
     "NewsClassification",
-    "NewsClassificationPublisher",
     "NewsFeedEntry",
     "NewsFeedFetch",
     "NewsFeedReader",

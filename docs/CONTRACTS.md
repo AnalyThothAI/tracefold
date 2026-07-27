@@ -49,7 +49,6 @@ macro_judgment
 token_image_mirror
 token_profile_current
 news_pipeline
-news_ai_classify
 news_world_brief
 macro_research
 notification_rule
@@ -92,7 +91,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable daily judgment/Evidence Pack, and Evidence-Pack-bound DeepAgents research |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources` | deterministic Story read model, NewsItem members, immutable Chinese Brief, and source fetch state |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | deterministic Story read model, NewsItem members, immutable Chinese Brief, source fetch state, and derived News health |
 | Notifications | account alerts, notification list with embedded summary, delivery audit, and read commands under `/api` | notification facts and external-delivery ledger |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
@@ -114,25 +113,27 @@ alternate decision labels.
 
 ### News
 
-The News public surface is exactly four read-only routes:
+The News public surface is exactly five read-only routes:
 
-- `GET /api/news/feed?category={category}&sort={importance|latest}` returns
-  globally clustered Stories grouped by deterministic category, at most 20
-  per group. `importance` is the default. Without `category`, all non-empty
-  groups are returned. Both sorts use the same persisted Story identity; the
-  per-category cap is applied after the requested sort, so their returned
-  subsets may differ. The server order is authoritative and the browser does
-  not cluster or score.
-- `GET /api/news/stories/{story_id}` returns one persistent Story and its
-  current NewsItem members. It exposes title/source/time, classification,
-  independent reporting-origin count, importance score, and the transparent
-  factor breakdown. It contains no revisions or per-Story AI analysis.
-- `GET /api/news/brief` returns one current Chinese World Brief, its freshness
+- `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&sort={importance|latest}&limit={limit}&cursor={cursor}`
+  returns one flat global Story page. `importance` is the default; page size
+  defaults to 50 and is capped at 100. Both sorts use the same eligible Story
+  population. Filters run before deterministic keyset ordering and
+  pagination. The response includes Stories, facets, `next_cursor`, and
+  `has_more`; the browser does not cluster, score, or reorder.
+- `GET /api/news/stories/{story_id}` returns one persistent active or archived
+  Story and its NewsItem evidence. It exposes representative/scoring item
+  identity, title/source/time, classification, physical-source count,
+  importance score, and the transparent factor breakdown. It contains no
+  revisions or per-Story AI analysis.
+- `GET /api/news/brief` returns one current Chinese World Brief, its truthful
   state, selected Story evidence, bounded immutable publication history, and
-  last failure when present. Empty candidates or a failed update preserve the
-  last-known-good publication.
-- `GET /api/news/sources` returns the frozen source registry and current
-  conditional-fetch health.
+  latest run when present. Insufficient material makes no model call. A failed
+  update preserves the last-known-good publication as `stale_fallback`.
+- `GET /api/news/sources` returns the frozen physical-source registry,
+  memberships, conditional-fetch health, and direct/relay diagnostics.
+- `GET /api/news/status` derives warming/ready/degraded News health from
+  PostgreSQL source, Story-invariant, and Brief state.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
@@ -143,21 +144,22 @@ NewsItem identity is source scoped. A changed source `pubDate` alone is an
 acquisition observation, not a material revision. Story identity is the
 persistent result of the WorldMonitor-compatible 96-hour title cluster;
 existing memberships and aliases prevent a representative change from
-inventing a new Story. Corroboration counts distinct reporting origins, not
-feeds or syndicated copies. Keyword classification and importance are
-deterministic and fully sufficient without AI.
+inventing a new Story. Corroboration counts distinct physical source IDs, not
+memberships, parsed publisher names, or same-source revisions. Keyword
+classification and importance are deterministic and fully sufficient without
+AI.
 
-The Brief worker calls no model when its ordered Top-8 Story fingerprint is
+The Brief worker calls no model when fewer than three Stories or fewer than two
+physical sources are available, or when its ordered Top-8 Story fingerprint is
 unchanged. A new fingerprint permits one attempt per configured provider,
 bounded by 60 seconds total. Publications are Chinese and citation-index
 locked: line `[n]` always refers to selected Story `n`. Invalid lines are
 repaired locally without shifting indexes. The current pointer changes only
-after a complete valid publication transaction succeeds. A degraded
-publication remains in immutable history but never replaces last-known-good.
+after a complete valid publication transaction succeeds.
 
-`/api/status` exposes three independent News health layers: `ingest`,
-`story`, and `brief`. Deterministic Story cards remain readable while a
-Brief is updating or stale.
+`/api/news/status` exposes three independent News health layers: `ingest`,
+`story`, and `brief`. Deterministic Story cards remain readable while a Brief
+is running, failed, insufficient, or stale.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,

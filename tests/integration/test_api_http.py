@@ -24,6 +24,7 @@ from tracefold.market import (
     parse_gmgn_token_payload,
 )
 from tracefold.news import NewsBriefDraft, NewsFeedEntry, NewsSourceDefinition
+from tracefold.news.brief import brief_fingerprint
 from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
@@ -489,13 +490,20 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         source_id="source-story-test",
         name="Example News",
         feed_url="https://example.test/feed.xml",
-        reporting_origin="example",
         tier=1,
+        memberships=("economic",),
+    )
+    second_source = NewsSourceDefinition(
+        source_id="source-story-second",
+        name="Second News",
+        feed_url="https://second.test/feed.xml",
+        tier=2,
+        memberships=("world",),
     )
 
     with TestClient(app) as client:
         with client.app.state.service.repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source_definition,), now_ms=now_ms)
+            repos.news.sync_sources((source_definition, second_source), now_ms=now_ms)
             repos.news.record_fetch_success(
                 source=source_definition,
                 entries=(
@@ -506,30 +514,71 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                         description="Officials published a detailed policy response.",
                         published_at_ms=now_ms - 60_000,
                     ),
+                    NewsFeedEntry(
+                        guid="story-2",
+                        link="https://example.test/story-2",
+                        title="Major earthquake strikes coastal region",
+                        description="Emergency services reported widespread damage.",
+                        published_at_ms=now_ms - 50_000,
+                    ),
                 ),
                 started_at_ms=now_ms,
                 finished_at_ms=now_ms,
                 status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
                 etag="etag-1",
+                last_modified=None,
+                not_modified=False,
+            )
+            repos.news.record_fetch_success(
+                source=second_source,
+                entries=(
+                    NewsFeedEntry(
+                        guid="story-3",
+                        link="https://second.test/story-3",
+                        title="Cyber attack disrupts regional infrastructure",
+                        description="Operators reported a sustained service disruption.",
+                        published_at_ms=now_ms - 40_000,
+                    ),
+                ),
+                started_at_ms=now_ms,
+                finished_at_ms=now_ms,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
                 last_modified=None,
                 not_modified=False,
             )
             repos.news.rebuild_stories(now_ms=now_ms)
             candidates = repos.news.brief_candidates()
-            repos.news.begin_brief_update(fingerprint="fixture-fingerprint", now_ms=now_ms)
+            fingerprint = brief_fingerprint(candidates)
+            claim = repos.news.claim_brief_run(
+                fingerprint=fingerprint,
+                story_count=len(candidates),
+                source_count=2,
+                now_ms=now_ms,
+                max_attempts=3,
+            )
+            assert claim is not None
             repos.news.publish_brief(
-                fingerprint="fixture-fingerprint",
+                run_id=claim["run_id"],
+                lease_owner=claim["lease_owner"],
+                fingerprint=fingerprint,
                 stories=candidates,
                 draft=NewsBriefDraft(
                     lead="今日全球政策重点发生变化 [1]",
-                    lines=("央行上调利率以回应政策冲击 [1]",),
+                    lines=tuple(
+                        f"第{index}条：{story['representative_title']} [{index}]"
+                        for index, story in enumerate(candidates, 1)
+                    ),
                     provider="fixture",
                     model="fixture-model",
                     raw_response="{}",
                 ),
                 validation={"citation_index_lock": True},
                 now_ms=now_ms,
-                degraded=False,
             )
 
         headers = {"Authorization": "Bearer secret"}
@@ -545,7 +594,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
             "/api/news/feed",
             headers={**headers, "If-None-Match": feed_etag},
         )
-        story = feed_response.json()["data"]["categories"][0]["stories"][0]
+        story = feed_response.json()["data"]["stories"][0]
         story_id = story["story_id"]
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
         brief_response = client.get("/api/news/brief", headers=headers)
@@ -563,9 +612,9 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         ]
 
     assert sources_response.status_code == 200
-    [source] = sources_response.json()["data"]["items"]
+    source = next(item for item in sources_response.json()["data"]["items"] if item["source_id"] == "source-story-test")
     assert source["source_id"] == "source-story-test"
-    assert source["reporting_origin"] == "example"
+    assert source["memberships"] == ["economic"]
     assert source["last_success_at_ms"] == now_ms
     assert source["last_http_status"] == 200
 
@@ -574,8 +623,11 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert latest_feed_response.json()["data"]["sort"] == "latest"
     assert feed_response.headers["cache-control"] == "private, no-cache"
     assert unchanged_feed.status_code == 304
-    assert story["title"] == "Central bank raises interest rate after policy shock"
-    assert story["category"] == "economic"
+    assert story["title"] in {
+        "Central bank raises interest rate after policy shock",
+        "Major earthquake strikes coastal region",
+        "Cyber attack disrupts regional infrastructure",
+    }
     assert story["source_count"] == 1
     assert set(story["importance_factors"]) >= {
         "severity_points",
@@ -588,15 +640,18 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail_response.status_code == 200
     detail = detail_response.json()["data"]
     assert detail["story_id"] == story_id
+    assert detail["representative_item_id"]
+    assert detail["scoring_item_id"]
     assert detail["members"][0]["current"] is True
-    assert detail["members"][0]["reporting_origin"] == "example"
+    assert detail["members"][0]["first_joined_at_ms"] <= detail["members"][0]["last_confirmed_at_ms"]
+    assert detail["members"][0]["reporting_origin"]
     assert "analysis" not in detail
     assert "revisions" not in detail
 
     assert brief_response.status_code == 200
     brief = brief_response.json()["data"]
-    assert brief["state"] == "fresh"
-    assert brief["publication"]["selected_story_ids"] == [story_id]
+    assert brief["state"] == "ready"
+    assert len(brief["publication"]["selected_story_ids"]) == 3
     assert brief["publication"]["locale"] == "zh-CN"
     assert brief["publication"]["validation"]["citation_index_lock"] is True
     assert unchanged_brief.status_code == 304
@@ -611,15 +666,15 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
             source_id="authority",
             name="Authority News",
             feed_url="https://authority.test/feed.xml",
-            reporting_origin="authority",
             tier=1,
+            memberships=("economic",),
         ),
         NewsSourceDefinition(
             source_id="standard",
             name="Standard News",
             feed_url="https://standard.test/feed.xml",
-            reporting_origin="standard",
             tier=3,
+            memberships=("diplomatic",),
         ),
     )
 
@@ -647,6 +702,8 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
                 started_at_ms=now_ms,
                 finished_at_ms=now_ms,
                 status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
                 etag=None,
                 last_modified=None,
                 not_modified=False,
@@ -665,6 +722,8 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
                 started_at_ms=now_ms,
                 finished_at_ms=now_ms,
                 status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
                 etag=None,
                 last_modified=None,
                 not_modified=False,
@@ -685,12 +744,15 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
         )
 
     assert complete.status_code == 200
-    groups = complete.json()["data"]["categories"]
-    assert [group["category"] for group in groups] == ["disaster", "diplomatic", "economic"]
-    assert complete.json()["data"]["story_count"] == 3
+    stories = complete.json()["data"]["stories"]
+    assert {story["category"] for story in stories} == {
+        "disaster",
+        "diplomatic",
+        "economic",
+    }
+    assert len(stories) == 3
     assert economic.status_code == 200
-    assert [group["category"] for group in economic.json()["data"]["categories"]] == ["economic"]
-    assert [story["title"] for story in economic.json()["data"]["categories"][0]["stories"]] == [
+    assert [story["title"] for story in economic.json()["data"]["stories"]] == [
         "Federal Reserve changes interest rate policy"
     ]
     assert unsupported.status_code == 400
@@ -1584,9 +1646,9 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     assert "database_unhealthy" not in body["data"]["reasons"]
     assert "news:news_health_query_failed" in body["data"]["reasons"]
     assert body["data"]["db"]["ok"] is True
-    assert body["data"]["news"]["status"] == "unavailable"
+    assert body["data"]["news"]["status"] == "degraded"
     assert set(body["data"]["news"]["layers"]) == {"ingest", "story", "brief"}
-    assert all(layer["status"] == "unavailable" for layer in body["data"]["news"]["layers"].values())
+    assert all(layer["status"] == "degraded" for layer in body["data"]["news"]["layers"].values())
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

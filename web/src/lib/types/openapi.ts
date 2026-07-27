@@ -259,6 +259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get News Status */
+        get: operations["get_news_status_api_news_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/news/stories/{story_id}": {
         parameters: {
             query?: never;
@@ -1974,7 +1991,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "healthy" | "degraded" | "unavailable";
+            status: "warming" | "ready" | "degraded";
         };
         /** NewsHealthLayerData */
         NewsHealthLayerData: {
@@ -1982,7 +1999,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "healthy" | "degraded" | "unavailable";
+            status: "warming" | "ready" | "degraded";
         } & {
             [key: string]: unknown;
         };
@@ -3288,7 +3305,11 @@ export interface operations {
         parameters: {
             query?: {
                 category?: string;
+                level?: string;
+                source_id?: string;
                 sort?: string;
+                limit?: number;
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -3317,6 +3338,26 @@ export interface operations {
         };
     };
     get_news_sources_api_news_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                };
+            };
+        };
+    };
+    get_news_status_api_news_status_get: {
         parameters: {
             query?: never;
             header?: never;

@@ -42,9 +42,10 @@ An enabled AI worker with no configured provider reports an explicit
 unavailable state and makes no model call.
 
 News correctness does not depend on the model. The production defaults are a
-120-second `news_pipeline` interval, a disabled `news_ai_classify` enhancement,
-and a 600-second `news_world_brief` interval with one 60-second total provider
-budget. Source refresh intervals remain source-specific in `config.yaml`.
+120-second deterministic `news_pipeline` interval and a 600-second
+`news_world_brief` interval with one 60-second total provider budget. There is
+no item-level AI worker. Source refresh intervals remain source-specific in
+`config.yaml`.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 

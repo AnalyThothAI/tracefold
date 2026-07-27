@@ -21,10 +21,10 @@ describe("useNewsFeedWithToken", () => {
     const { result } = renderHook(() => useNewsFeedWithToken("token", "economic", "latest"), {
       wrapper: wrapper(),
     });
-    await waitFor(() => expect(result.current.data?.story_count).toBe(1));
+    await waitFor(() => expect(result.current.data?.pages[0].stories).toHaveLength(1));
     expect(category).toBe("economic");
     expect(sort).toBe("latest");
-    expect(result.current.data?.categories[0].stories[0].importance_score).toBe(83);
+    expect(result.current.data?.pages[0].stories[0].importance_score).toBe(83);
   });
 });
 

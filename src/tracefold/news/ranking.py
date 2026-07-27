@@ -211,7 +211,7 @@ def importance_factors(
         "severity_points": round(SEVERITY_VALUES[level] * 0.55, 2),
         "source_tier": tier,
         "source_points": round(SOURCE_TIER_SCORE.get(int(tier), 25) * 0.20, 2),
-        "reporting_origin_count": corroboration_count,
+        "physical_source_count": corroboration_count,
         "scoring_corroboration_count": scoring_corroboration_count,
         "corroboration_points": round(corroboration * 0.15, 2),
         "recency_points": round(recency * 0.10, 2),
@@ -243,7 +243,7 @@ def select_top_stories(
     selected: list[dict[str, Any]] = []
     source_counts: dict[str, int] = {}
     for story in ordered:
-        source = str(story.get("representative_reporting_origin") or story["representative_source_id"])
+        source = str(story["representative_source_id"])
         if source_counts.get(source, 0) >= max_per_source:
             continue
         if len(selected) >= limit:
