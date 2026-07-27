@@ -306,11 +306,11 @@ _DATASETS = (
         "WRBWFRBL",
         module="liquidity_funding",
         label="存款机构准备金余额",
-        unit="billions_usd",
+        unit="millions_usd",
         frequency="weekly",
     ),
     _fred("RRPONTSYD", module="liquidity_funding", label="隔夜逆回购余额", unit="billions_usd", frequency="daily"),
-    _fred("WTREGEN", module="liquidity_funding", label="美国财政部一般账户", unit="billions_usd", frequency="weekly"),
+    _fred("WTREGEN", module="liquidity_funding", label="美国财政部一般账户", unit="millions_usd", frequency="weekly"),
     _fred(
         "SOFR",
         module="liquidity_funding",

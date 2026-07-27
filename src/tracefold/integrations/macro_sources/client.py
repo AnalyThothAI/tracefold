@@ -275,7 +275,7 @@ class MacroSourceClient:
                 continue
             close = _finite_float(raw[4])
             close_at_ms = _optional_int(raw[6])
-            if close is None or close_at_ms is None:
+            if close is None or close_at_ms is None or close_at_ms > received_at_ms:
                 continue
             facts.append(
                 MarketObservationFact(
@@ -287,7 +287,7 @@ class MacroSourceClient:
                     unit=spec.unit,
                     observed_at_ms=close_at_ms,
                     published_at_ms=close_at_ms,
-                    received_at_ms=max(received_at_ms, close_at_ms),
+                    received_at_ms=received_at_ms,
                     trust_tier=spec.trust_tier,
                     source_url=str(response.url),
                     raw_data={"open_time_ms": raw[0], "close": raw[4], "close_time_ms": raw[6]},

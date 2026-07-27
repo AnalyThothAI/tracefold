@@ -230,7 +230,7 @@ def test_0201_removes_stooq_facts_targets_and_derived_state(tmp_path) -> None:
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260727_0201")
 
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         counts = {
@@ -249,3 +249,140 @@ def test_0201_removes_stooq_facts_targets_and_derived_state(tmp_path) -> None:
 
     assert version == "20260727_0201"
     assert set(counts.values()) == {0}
+
+
+def test_0202_removes_open_binance_candles_and_wrong_unit_fred_facts(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260727_0201")
+        conn.execute(
+            """
+            INSERT INTO market_instruments(
+              instrument_id, symbol, name, asset_class, instrument_type, venue,
+              currency, price_unit, created_at_ms
+            )
+            VALUES ('btc', 'BTC', 'Bitcoin', 'crypto', 'spot', 'binance', 'USD', 'usdt', 1);
+            INSERT INTO market_observations(
+              observation_id, instrument_id, dataset_id, source_id, field_name,
+              value_numeric, unit, observed_at_ms, published_at_ms, received_at_ms,
+              trust_tier, source_url, fact_hash, raw_data_json
+            )
+            VALUES
+              (
+                'btc-closed', 'btc', 'binance.btcusdt.spot', 'binance', 'close',
+                65000, 'usdt', 100, 100, 200, 'exchange',
+                'https://api.binance.com/', 'btc-closed-hash', '{}'::jsonb
+              ),
+              (
+                'btc-open', 'btc', 'binance.btcusdt.spot', 'binance', 'close',
+                66000, 'usdt', 9999999999999, 9999999999999, 9999999999999,
+                'exchange', 'https://api.binance.com/', 'btc-open-hash', '{}'::jsonb
+              );
+            INSERT INTO macro_series_facts(
+              fact_id, dataset_id, series_id, reference_date, vintage_date,
+              value_numeric, value_text, unit, published_at_ms, received_at_ms,
+              source_url, fact_hash, raw_data_json
+            )
+            VALUES
+              (
+                'reserve-wrong-unit', 'fred.wrbwfrbl', 'WRBWFRBL',
+                '2026-07-22', '2026-07-27', 3064896, NULL, 'billions_usd',
+                NULL, 200, 'https://fred.stlouisfed.org/', 'reserve-hash', '{}'::jsonb
+              ),
+              (
+                'tga-wrong-unit', 'fred.wtregen', 'WTREGEN',
+                '2026-07-22', '2026-07-27', 829623, NULL, 'billions_usd',
+                NULL, 200, 'https://fred.stlouisfed.org/', 'tga-hash', '{}'::jsonb
+              ),
+              (
+                'rrp-correct-unit', 'fred.rrpontsyd', 'RRPONTSYD',
+                '2026-07-24', '2026-07-27', 11.4, NULL, 'billions_usd',
+                NULL, 200, 'https://fred.stlouisfed.org/', 'rrp-hash', '{}'::jsonb
+              );
+            INSERT INTO macro_acquisition_targets(
+              target_key, dataset_id, partition_key, clock_kind, cursor_json,
+              status, next_due_at_ms, priority, attempt_count, max_attempts,
+              created_at_ms, updated_at_ms
+            )
+            VALUES
+              (
+                'binance.btcusdt.spot:latest', 'binance.btcusdt.spot', 'latest',
+                'intraday_market', '{"observed_at_ms":9999999999999}', 'current',
+                300, 100, 1, 5, 1, 200
+              ),
+              (
+                'fred.wrbwfrbl:latest', 'fred.wrbwfrbl', 'latest',
+                'official_state', '{"reference_date":"2026-07-22"}', 'current',
+                300, 100, 1, 5, 1, 200
+              ),
+              (
+                'fred.wtregen:latest', 'fred.wtregen', 'latest',
+                'official_state', '{"reference_date":"2026-07-22"}', 'current',
+                300, 100, 1, 5, 1, 200
+              );
+            INSERT INTO macro_module_current(
+              module_id, readiness, fact_cutoff_ms, payload_json, payload_hash,
+              updated_at_ms
+            )
+            VALUES ('cross_asset', 'ready', 9999999999999, '{}', 'derived-hash', 200)
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
+        observations = conn.execute(
+            """
+            SELECT observation_id
+              FROM market_observations
+             WHERE dataset_id = 'binance.btcusdt.spot'
+             ORDER BY observation_id
+            """
+        ).fetchall()
+        series = conn.execute(
+            """
+            SELECT fact_id
+              FROM macro_series_facts
+             ORDER BY fact_id
+            """
+        ).fetchall()
+        targets = conn.execute(
+            """
+            SELECT dataset_id, status, cursor_json, attempt_count, last_success_at_ms
+              FROM macro_acquisition_targets
+             ORDER BY dataset_id
+            """
+        ).fetchall()
+        module_count = conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"]
+        with pytest.raises(RaiseException, match="market_observations_append_only"):
+            conn.execute("UPDATE market_observations SET value_numeric = 1 WHERE observation_id = 'btc-closed'")
+        conn.rollback()
+        with pytest.raises(RaiseException, match="macro_series_facts_append_only"):
+            conn.execute("UPDATE macro_series_facts SET value_numeric = 1 WHERE fact_id = 'rrp-correct-unit'")
+        conn.rollback()
+    finally:
+        conn.close()
+
+    assert version == "20260727_0202"
+    assert [row["observation_id"] for row in observations] == ["btc-closed"]
+    assert [row["fact_id"] for row in series] == ["rrp-correct-unit"]
+    assert {row["dataset_id"] for row in targets} == {
+        "binance.btcusdt.spot",
+        "fred.wrbwfrbl",
+        "fred.wtregen",
+    }
+    assert all(
+        row["status"] == "pending"
+        and row["cursor_json"] == {}
+        and row["attempt_count"] == 0
+        and row["last_success_at_ms"] is None
+        for row in targets
+    )
+    assert module_count == 0

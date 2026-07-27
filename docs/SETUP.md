@@ -112,7 +112,7 @@ uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YY
 uv run tracefold macro status
 ```
 
-A good macro status reports Alembic `20260727_0201`, bounded acquisition target
+A good macro status reports Alembic `20260727_0202`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -127,6 +127,9 @@ Migration `20260727_0200` irreversibly drops legacy Macro tables and data
 without migration or backup. Runtime startup does not create or upgrade those
 tables. Migration `20260727_0201` removes the unusable Stooq lane and invalidates
 all derived Macro state before the Nasdaq/Cboe source correction rebuild.
+Migration `20260727_0202` removes still-open Binance daily candles and the two
+FRED liquidity series ingested with incorrect units, resets those targets, and
+invalidates derived Macro state before a clean rebuild.
 Enable the Macro workers only after the migration is current.
 
 A healthy completed-session research run transitions

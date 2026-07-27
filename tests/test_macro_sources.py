@@ -171,6 +171,45 @@ def test_cfe_settlement_uses_current_official_csv_endpoint() -> None:
     assert requests[0].url.params["dt"] == "2026-07-24"
 
 
+def test_binance_spot_ignores_the_still_open_daily_candle() -> None:
+    closed_at_ms = NOW_MS - 1
+    open_candle_close_ms = NOW_MS + 86_400_000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                [NOW_MS - 86_400_000, "1", "2", "0.5", "65000", "10", closed_at_ms],
+                [NOW_MS, "1", "2", "0.5", "66000", "10", open_candle_close_ms],
+            ],
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("binance.btcusdt.spot"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(batch.facts) == 1
+    fact = batch.facts[0]
+    assert isinstance(fact, MarketObservationFact)
+    assert fact.observed_at_ms == closed_at_ms
+    assert fact.received_at_ms == NOW_MS
+    assert batch.cursor["observed_at_ms"] == closed_at_ms
+
+
+def test_fred_liquidity_series_preserve_their_published_units() -> None:
+    assert require_dataset("fred.wrbwfrbl").unit == "millions_usd"
+    assert require_dataset("fred.wtregen").unit == "millions_usd"
+    assert require_dataset("fred.rrpontsyd").unit == "billions_usd"
+
+
 def test_cftc_tff_adapter_emits_official_contract_position_facts() -> None:
     requests: list[httpx.Request] = []
 

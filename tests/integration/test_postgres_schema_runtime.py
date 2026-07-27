@@ -258,7 +258,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260727_0201"
+    assert version == latest_migration_version() == "20260727_0202"
 
 
 def test_news_professional_hard_cut_preserves_source_config_and_resets_old_facts(
@@ -582,7 +582,7 @@ def test_news_correctness_hard_cut_preserves_material_facts_and_rebuilds_identit
         conn.commit()
 
         command.upgrade(config, "head")
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0201"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260727_0202"
     finally:
         conn.close()
 
