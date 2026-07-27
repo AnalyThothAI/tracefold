@@ -30,6 +30,7 @@ _SUPPORTED_WORKERS = frozenset(
         "macro_official_state",
         "macro_official_documents",
         "macro_backfill",
+        "macro_document_analysis",
         "macro_projection",
         "macro_judgment",
         "macro_research",

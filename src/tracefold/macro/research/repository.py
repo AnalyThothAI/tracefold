@@ -495,6 +495,7 @@ class MacroResearchRepository:
             FROM macro_evidence_packs
             WHERE evidence_pack_id = %s
               AND session_date = %s
+              AND schema_version = 'macro_evidence_pack_v2'
               AND judgment_cutoff_ms <= %s
               AND created_at_ms <= %s
             """,
@@ -603,9 +604,9 @@ def _pack_records(pack: dict[str, Any]) -> tuple[MacroEvidenceRecord, ...]:
                 published_at_ms=cutoff_ms,
                 url=None,
                 summary=(
-                    f"{module.get('label') or module_id}; readiness={module.get('readiness')}; "
-                    f"top_changes={len(module.get('top_changes') or ())}; "
-                    f"gaps={len(module.get('gaps') or ())}"
+                    f"{module.get('label') or module_id}; "
+                    f"coverage={dict(module.get('status') or {}).get('coverage')}; "
+                    f"top_changes={len(dict(module.get('summary') or {}).get('top_changes') or ())}"
                 ),
                 payload=dict(module),
                 lineage={
@@ -615,7 +616,9 @@ def _pack_records(pack: dict[str, Any]) -> tuple[MacroEvidenceRecord, ...]:
                 },
             )
         )
-        for fact in module.get("raw_evidence", ()):
+        evidence = module.get("evidence")
+        latest_facts = evidence.get("latest_facts", ()) if isinstance(evidence, Mapping) else ()
+        for fact in latest_facts:
             if not isinstance(fact, Mapping) or not fact.get("fact_ref"):
                 continue
             available_at_ms = int(fact.get("published_at_ms") or fact.get("received_at_ms") or cutoff_ms)

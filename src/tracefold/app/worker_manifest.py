@@ -92,6 +92,11 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         queue_tables=("macro_acquisition_targets",),
     ),
     WorkerManifest(
+        name="macro_document_analysis",
+        start_priority=80,
+        queue_tables=("macro_document_analysis_jobs",),
+    ),
+    WorkerManifest(
         name="macro_projection",
         start_priority=81,
         current_read_model_identities=(

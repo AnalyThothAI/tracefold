@@ -254,7 +254,7 @@ creating this schema and has no downgrade or compatibility lane.
 ### Macro
 
 ```text
-code-owned Dataset Registry
+code-owned Dataset Registry + Coverage Manifest
   -> one of six clock families
   -> macro_acquisition_targets claim
   -> free official / exchange / disclosed proxy adapter
@@ -262,6 +262,11 @@ code-owned Dataset Registry
   -> macro_projection
   -> six macro_module_current rows
   -> persisted-only overview and module reads
+
+official FOMC / speech body + effective-dated role fact
+  -> macro_document_analysis_jobs claim
+  -> immutable evidence-bound document analysis
+  -> institutional stance + officials communication distribution
 
 08:50 America/New_York trading session
   -> cutoff-bounded six-module compilation
@@ -283,21 +288,30 @@ state. Unchanged source content writes zero fact rows while every attempt
 retains a receipt. Revisions append a new fact and never overwrite history.
 
 The Dataset Registry fixes ownership, clock, adapter, trust tier, freshness,
-criticality, and module membership in code. Operator config only enables source
-families and sets runtime cadence/lease/timeout knobs. Dataset and module
-quality are explicit (`current`, `delayed`, `stale`, `backfilling`,
-`unavailable`; `ready`, `degraded`, `blocked`) and are decision metadata, not a
-generic process-readiness gate.
+criticality, and module membership in code. The separate Coverage Manifest
+declares every expected capability, including unimplemented free sources and
+licensed-unavailable sources; omitting a Dataset cannot make coverage green.
+Operator config only enables source families and sets runtime
+cadence/lease/timeout knobs. Coverage (`complete`, `partial`,
+`licensed_unavailable`), Data Health (`current`, `delayed`, `stale`, `invalid`,
+`backfilling`, `unavailable`), and Judgment (`current`, `missing`, `blocked`)
+are independent decision metadata, not a generic process-readiness gate.
 
 The six product modules are `rates_fed`, `economy_inflation`,
-`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. The
-Calculation Registry records every feature's inputs, formula version, windows,
-minimum observations, units, gap policy, freshness, baseline, and output
-shape. The daily judgment fixes six macro dimensions and SPY/TLT/HYG/DXY/GLD/
-USO/BTC/VIX directions to one cutoff-bounded Evidence Pack. DeepAgents receives
-that exact Evidence Pack later in the completed-session research lane; the
-reviewer disposition is `pass`, `revise`, or `block`. A model failure cannot
-hide the six deterministic modules or the daily judgment. PostgreSQL
+`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
+explicit v2 payload; no generic chart-array contract survives. The Calculation
+Registry records every feature's inputs, formula version, windows, minimum
+observations, units, gap policy, freshness, baseline, and output shape.
+Treasury shape, matched breakevens, normalized asset returns, credit ladder
+history, and funding comparisons remain deterministic. Credit exposes spread,
+funding cost, bank supply, quality, and market-liquidity dimensions
+concurrently and never reduces them to a score.
+
+The daily judgment fixes six macro dimensions and SPY/QQQ/IWM/TLT/IEF/LQD/HYG/
+UUP/GLD/USO/BTC/VIX directions to one cutoff-bounded Evidence Pack. DeepAgents
+receives that exact Evidence Pack later in the completed-session research lane;
+the reviewer disposition is `pass`, `revise`, or `block`. A model failure
+cannot hide the six deterministic modules or the daily judgment. PostgreSQL
 checkpoints are resumable execution state, not facts or a second publication
 source. Read requests never invoke providers or the graph.
 

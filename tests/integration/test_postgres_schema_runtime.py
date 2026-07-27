@@ -252,7 +252,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
-    assert version == latest_migration_version() == "20260727_0204"
+    assert version == latest_migration_version() == "20260727_0205"
 
 
 @pytest.mark.skip(reason="superseded historical migration contract")

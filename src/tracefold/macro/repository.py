@@ -5,7 +5,14 @@ import json
 from datetime import date
 from typing import Any
 
-from tracefold.macro.domain import DatasetSpec, DocumentFact, ReleaseFact, SeriesFact
+from tracefold.macro.domain import (
+    DatasetSpec,
+    DocumentFact,
+    FedOfficialRoleFact,
+    ReleaseFact,
+    SeriesFact,
+)
+from tracefold.macro.fed_roles import match_effective_role
 
 
 class MacroRepository:
@@ -152,7 +159,7 @@ class MacroRepository:
               FROM macro_acquisition_targets
               WHERE clock_kind = %s
                 AND status IN (
-                  'pending', 'current', 'delayed', 'stale', 'invalid', 'backfilling'
+                  'pending', 'current', 'delayed', 'backfilling'
                 )
                 AND next_due_at_ms <= %s
                 AND status <> 'unavailable'
@@ -320,6 +327,51 @@ class MacroRepository:
                 fact.content_text,
                 fact_hash,
                 json.dumps(fact.metadata, sort_keys=True),
+            ),
+        )
+        return int(cursor.rowcount)
+
+    def insert_fed_official_role_fact(self, fact: FedOfficialRoleFact) -> int:
+        payload = {
+            "dataset_id": fact.dataset_id,
+            "official_id": fact.official_id,
+            "official_name": fact.official_name,
+            "role_title": fact.role_title,
+            "organization": fact.organization,
+            "effective_start": fact.effective_start.isoformat(),
+            "effective_end": fact.effective_end.isoformat() if fact.effective_end else None,
+            "fomc_participant": fact.fomc_participant,
+            "fomc_voter": fact.fomc_voter,
+            "source_url": fact.source_url,
+        }
+        fact_hash = _payload_hash(payload)
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_fed_official_role_facts(
+              role_fact_id, dataset_id, official_id, official_name, role_title,
+              organization, effective_start, effective_end, fomc_participant,
+              fomc_voter, source_url, received_at_ms, fact_hash, raw_data_json
+            )
+            VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+            )
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                fact.role_fact_id,
+                fact.dataset_id,
+                fact.official_id,
+                fact.official_name,
+                fact.role_title,
+                fact.organization,
+                fact.effective_start,
+                fact.effective_end,
+                fact.fomc_participant,
+                fact.fomc_voter,
+                fact.source_url,
+                int(fact.received_at_ms),
+                fact_hash,
+                json.dumps(fact.raw_data, sort_keys=True),
             ),
         )
         return int(cursor.rowcount)
@@ -520,7 +572,7 @@ class MacroRepository:
               SELECT
                 latest_vintage.*,
                 row_number() OVER (
-                  PARTITION BY dataset_id
+                  PARTITION BY dataset_id, series_id
                   ORDER BY reference_date DESC
                 ) AS row_number
               FROM latest_vintage
@@ -528,7 +580,7 @@ class MacroRepository:
             SELECT *
             FROM ranked
             WHERE row_number <= %s
-            ORDER BY dataset_id, reference_date
+            ORDER BY dataset_id, series_id, reference_date
             """,
             (
                 list(dataset_ids),
@@ -577,6 +629,440 @@ class MacroRepository:
             (list(dataset_ids), received_before_ms),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def fed_official_role_history(
+        self,
+        *,
+        received_before_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_fed_official_role_facts
+            WHERE received_at_ms <= COALESCE(%s::bigint, received_at_ms)
+            ORDER BY effective_start, official_id, role_fact_id
+            """,
+            (received_before_ms,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def document_analysis_history(
+        self,
+        *,
+        received_before_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              analyses.*,
+              'federal_reserve.document.analysis' AS dataset_id,
+              documents.received_at_ms AS received_at_ms,
+              documents.document_type,
+              documents.title,
+              documents.effective_date,
+              documents.published_at_ms,
+              documents.source_url,
+              documents.metadata_json
+            FROM macro_document_analyses AS analyses
+            JOIN macro_documents AS documents USING (document_id)
+            WHERE documents.received_at_ms <= COALESCE(
+              %s::bigint,
+              documents.received_at_ms
+            )
+            ORDER BY documents.effective_date, analyses.created_at_ms, analyses.analysis_id
+            """,
+            (received_before_ms,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def document_analysis_job_state(
+        self,
+        *,
+        received_before_ms: int | None = None,
+    ) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            SELECT
+              count(*)::int AS total,
+              count(*) FILTER (
+                WHERE status IN ('pending', 'claimed', 'retryable')
+              )::int AS open,
+              count(*) FILTER (WHERE status = 'failed')::int AS failed,
+              count(*) FILTER (WHERE status = 'completed')::int AS completed
+            FROM macro_document_analysis_jobs AS jobs
+            JOIN macro_documents AS documents USING (document_id)
+            WHERE documents.received_at_ms <= COALESCE(
+              %s::bigint,
+              documents.received_at_ms
+            )
+              AND (
+                jobs.status = 'completed'
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM macro_document_analyses AS analyses
+                  WHERE analyses.document_id = jobs.document_id
+                    AND analyses.document_hash = jobs.document_hash
+                )
+              )
+            """,
+            (received_before_ms,),
+        ).fetchone()
+        return {
+            "total": int(row["total"]),
+            "open": int(row["open"]),
+            "failed": int(row["failed"]),
+            "completed": int(row["completed"]),
+        }
+
+    def ensure_document_analysis_jobs(
+        self,
+        *,
+        model_name: str,
+        prompt_version: str,
+        max_attempts: int,
+        now_ms: int,
+        fomc_lookback_days: int,
+        speech_lookback_days: int,
+        limit: int = 2_000,
+    ) -> int:
+        rows = self.conn.execute(
+            """
+            SELECT
+              documents.document_id,
+              documents.document_type,
+              documents.effective_date,
+              documents.fact_hash,
+              documents.metadata_json
+            FROM macro_documents AS documents
+            WHERE documents.document_type IN (
+              'statement', 'implementation', 'minutes', 'sep', 'speech'
+            )
+              AND documents.dataset_id IN (
+                'federal_reserve.fomc.documents',
+                'federal_reserve.board.speeches',
+                'federal_reserve.reserve_bank.speeches'
+              )
+              AND (
+                (
+                  documents.dataset_id = 'federal_reserve.fomc.documents'
+                  AND documents.effective_date >= (
+                    to_timestamp(%s::double precision / 1000.0) AT TIME ZONE 'UTC'
+                  )::date - %s::int
+                )
+                OR (
+                  documents.dataset_id IN (
+                    'federal_reserve.board.speeches',
+                    'federal_reserve.reserve_bank.speeches'
+                  )
+                  AND documents.effective_date >= (
+                    to_timestamp(%s::double precision / 1000.0) AT TIME ZONE 'UTC'
+                  )::date - %s::int
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM macro_document_analyses AS analyses
+                WHERE analyses.document_id = documents.document_id
+                  AND analyses.document_hash = COALESCE(
+                    documents.metadata_json ->> 'content_hash',
+                    documents.fact_hash
+                  )
+                  AND analyses.model_name = %s
+                  AND analyses.prompt_version = %s
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM macro_document_analysis_jobs AS jobs
+                WHERE jobs.document_id = documents.document_id
+                  AND jobs.document_hash = COALESCE(
+                    documents.metadata_json ->> 'content_hash',
+                    documents.fact_hash
+                  )
+                  AND jobs.model_name = %s
+                  AND jobs.prompt_version = %s
+              )
+            ORDER BY documents.published_at_ms DESC, documents.document_id
+            LIMIT %s
+            """,
+            (
+                int(now_ms),
+                int(fomc_lookback_days),
+                int(now_ms),
+                int(speech_lookback_days),
+                model_name,
+                prompt_version,
+                model_name,
+                prompt_version,
+                int(limit),
+            ),
+        ).fetchall()
+        role_rows = self.fed_official_role_history()
+        roster_coverage = self.conn.execute(
+            """
+            SELECT
+              (cursor_json ->> 'start_date')::date AS start_date,
+              (cursor_json ->> 'end_date')::date AS end_date
+            FROM macro_acquisition_targets
+            WHERE dataset_id = 'federal_reserve.fomc.documents'
+              AND clock_kind = 'backfill'
+              AND status = 'current'
+              AND cursor_json ? 'start_date'
+              AND cursor_json ? 'end_date'
+            """
+        ).fetchall()
+        written = 0
+        for row in rows:
+            if str(row["document_type"]) == "speech":
+                metadata = row.get("metadata_json") or {}
+                speaker_name = str(metadata.get("speaker_name") or "") if isinstance(metadata, dict) else ""
+                effective_date = row["effective_date"]
+                matched_role = match_effective_role(
+                    speaker_name,
+                    effective_date=effective_date,
+                    role_rows=role_rows,
+                )
+                coverage_complete = any(
+                    coverage["start_date"] <= effective_date <= coverage["end_date"] for coverage in roster_coverage
+                )
+                if matched_role is None and not coverage_complete:
+                    continue
+            document_hash = str((row.get("metadata_json") or {}).get("content_hash") or row["fact_hash"])
+            identity = f"{row['document_id']}|{document_hash}|{model_name}|{prompt_version}"
+            analysis_job_id = "macroda_" + hashlib.sha256(identity.encode()).hexdigest()
+            cursor = self.conn.execute(
+                """
+                INSERT INTO macro_document_analysis_jobs(
+                  analysis_job_id, document_id, document_hash, model_name,
+                  prompt_version, status, next_due_at_ms, attempt_count,
+                  max_attempts, created_at_ms, updated_at_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, 'pending', %s, 0, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    analysis_job_id,
+                    row["document_id"],
+                    document_hash,
+                    model_name,
+                    prompt_version,
+                    int(now_ms),
+                    int(max_attempts),
+                    int(now_ms),
+                    int(now_ms),
+                ),
+            )
+            written += int(cursor.rowcount)
+        return written
+
+    def claim_document_analysis_job(
+        self,
+        *,
+        model_name: str,
+        prompt_version: str,
+        lease_owner: str,
+        lease_ms: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            WITH expired AS (
+              UPDATE macro_document_analysis_jobs
+              SET status = CASE
+                    WHEN attempt_count >= max_attempts THEN 'failed'
+                    ELSE 'retryable'
+                  END,
+                  next_due_at_ms = %s,
+                  leased_until_ms = NULL,
+                  lease_owner = NULL,
+                  last_error_code = 'document_analysis_lease_expired',
+                  updated_at_ms = %s
+              WHERE status = 'claimed'
+                AND leased_until_ms <= %s
+              RETURNING analysis_job_id
+            ), candidate AS (
+              SELECT analysis_job_id
+              FROM macro_document_analysis_jobs
+              WHERE status IN ('pending', 'retryable')
+                AND next_due_at_ms <= %s
+                AND model_name = %s
+                AND prompt_version = %s
+              ORDER BY next_due_at_ms, analysis_job_id
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            )
+            UPDATE macro_document_analysis_jobs AS jobs
+            SET status = 'claimed',
+                leased_until_ms = %s,
+                lease_owner = %s,
+                attempt_count = jobs.attempt_count + 1,
+                updated_at_ms = %s
+            FROM candidate
+            WHERE jobs.analysis_job_id = candidate.analysis_job_id
+            RETURNING jobs.*
+            """,
+            (
+                int(now_ms),
+                int(now_ms),
+                int(now_ms),
+                int(now_ms),
+                model_name,
+                prompt_version,
+                int(now_ms + lease_ms),
+                lease_owner,
+                int(now_ms),
+            ),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def document_analysis_job_document(self, analysis_job_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT documents.*, jobs.analysis_job_id, jobs.document_hash,
+                   jobs.model_name, jobs.prompt_version
+            FROM macro_document_analysis_jobs AS jobs
+            JOIN macro_documents AS documents USING (document_id)
+            WHERE jobs.analysis_job_id = %s
+            """,
+            (analysis_job_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def prior_document_analysis(
+        self,
+        *,
+        effective_date: date,
+        official_id: str | None,
+        document_type: str,
+    ) -> dict[str, Any] | None:
+        if official_id:
+            predicate = "analyses.official_id = %s"
+            value = official_id
+        else:
+            predicate = "analyses.official_id IS NULL AND documents.document_type = %s"
+            value = document_type
+        row = self.conn.execute(
+            f"""
+            SELECT analyses.*, documents.effective_date, documents.title
+            FROM macro_document_analyses AS analyses
+            JOIN macro_documents AS documents USING (document_id)
+            WHERE {predicate}
+              AND documents.effective_date < %s
+              AND analyses.policy_relevance = 'policy_signal'
+              AND analyses.reviewer_disposition = 'pass'
+            ORDER BY documents.effective_date DESC, analyses.created_at_ms DESC
+            LIMIT 1
+            """,
+            (value, effective_date),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def insert_document_analysis(
+        self,
+        *,
+        analysis_id: str,
+        document_id: str,
+        document_hash: str,
+        official_id: str | None,
+        policy_relevance: str,
+        stance: str,
+        confidence: float | None,
+        analysis: dict[str, Any],
+        model_name: str,
+        prompt_version: str,
+        reviewer_disposition: str,
+        created_at_ms: int,
+        payload_hash: str,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_document_analyses(
+              analysis_id, document_id, document_hash, official_id,
+              policy_relevance, stance, confidence, analysis_json,
+              model_name, prompt_version, reviewer_disposition,
+              created_at_ms, payload_hash
+            )
+            VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+              %s, %s, %s, %s, %s
+            )
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                analysis_id,
+                document_id,
+                document_hash,
+                official_id,
+                policy_relevance,
+                stance,
+                confidence,
+                json.dumps(analysis, sort_keys=True),
+                model_name,
+                prompt_version,
+                reviewer_disposition,
+                int(created_at_ms),
+                payload_hash,
+            ),
+        )
+        return int(cursor.rowcount)
+
+    def complete_document_analysis_job(
+        self,
+        *,
+        analysis_job_id: str,
+        lease_owner: str,
+        completed_at_ms: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE macro_document_analysis_jobs
+            SET status = 'completed',
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                last_error_code = NULL,
+                updated_at_ms = %s
+            WHERE analysis_job_id = %s
+              AND status = 'claimed'
+              AND lease_owner = %s
+            RETURNING analysis_job_id
+            """,
+            (int(completed_at_ms), analysis_job_id, lease_owner),
+        ).fetchone()
+        return row is not None
+
+    def fail_document_analysis_job(
+        self,
+        *,
+        job: dict[str, Any],
+        lease_owner: str,
+        error_code: str,
+        next_due_at_ms: int,
+        completed_at_ms: int,
+    ) -> bool:
+        status = "failed" if int(job["attempt_count"]) >= int(job["max_attempts"]) else "retryable"
+        row = self.conn.execute(
+            """
+            UPDATE macro_document_analysis_jobs
+            SET status = %s,
+                next_due_at_ms = %s,
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                last_error_code = %s,
+                updated_at_ms = %s
+            WHERE analysis_job_id = %s
+              AND status = 'claimed'
+              AND lease_owner = %s
+            RETURNING analysis_job_id
+            """,
+            (
+                status,
+                int(next_due_at_ms),
+                error_code,
+                int(completed_at_ms),
+                job["analysis_job_id"],
+                lease_owner,
+            ),
+        ).fetchone()
+        return row is not None
 
     def upsert_feature(
         self,
@@ -637,7 +1123,7 @@ class MacroRepository:
         self,
         *,
         module_id: str,
-        readiness: str,
+        data_health_state: str,
         fact_cutoff_ms: int,
         payload: dict[str, Any],
         payload_hash: str,
@@ -646,11 +1132,11 @@ class MacroRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO macro_module_current(
-              module_id, readiness, fact_cutoff_ms, payload_json, payload_hash, updated_at_ms
+              module_id, data_health_state, fact_cutoff_ms, payload_json, payload_hash, updated_at_ms
             )
             VALUES (%s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT(module_id) DO UPDATE SET
-              readiness = EXCLUDED.readiness,
+              data_health_state = EXCLUDED.data_health_state,
               fact_cutoff_ms = EXCLUDED.fact_cutoff_ms,
               payload_json = EXCLUDED.payload_json,
               payload_hash = EXCLUDED.payload_hash,
@@ -659,7 +1145,7 @@ class MacroRepository:
             """,
             (
                 module_id,
-                readiness,
+                data_health_state,
                 int(fact_cutoff_ms),
                 json.dumps(payload, sort_keys=True),
                 payload_hash,
@@ -723,7 +1209,12 @@ class MacroRepository:
     ) -> dict[str, Any] | None:
         if evidence_pack_id is not None:
             row = self.conn.execute(
-                "SELECT * FROM macro_evidence_packs WHERE evidence_pack_id = %s",
+                """
+                SELECT *
+                FROM macro_evidence_packs
+                WHERE evidence_pack_id = %s
+                  AND schema_version = 'macro_evidence_pack_v2'
+                """,
                 (evidence_pack_id,),
             ).fetchone()
         elif session_date is not None:
@@ -732,6 +1223,7 @@ class MacroRepository:
                 SELECT *
                 FROM macro_evidence_packs
                 WHERE session_date = %s
+                  AND schema_version = 'macro_evidence_pack_v2'
                 ORDER BY judgment_cutoff_ms DESC
                 LIMIT 1
                 """,
@@ -742,6 +1234,7 @@ class MacroRepository:
                 """
                 SELECT *
                 FROM macro_evidence_packs
+                WHERE schema_version = 'macro_evidence_pack_v2'
                 ORDER BY session_date DESC, judgment_cutoff_ms DESC
                 LIMIT 1
                 """
@@ -790,11 +1283,24 @@ class MacroRepository:
     def daily_judgment(self, session_date: date | None = None) -> dict[str, Any] | None:
         if session_date is not None:
             row = self.conn.execute(
-                "SELECT * FROM macro_daily_judgments WHERE session_date = %s",
+                """
+                SELECT *
+                FROM macro_daily_judgments
+                WHERE session_date = %s
+                  AND schema_version = 'macro_daily_judgment_v2'
+                """,
                 (session_date,),
             ).fetchone()
         else:
-            row = self.conn.execute("SELECT * FROM macro_daily_judgments ORDER BY session_date DESC LIMIT 1").fetchone()
+            row = self.conn.execute(
+                """
+                SELECT *
+                FROM macro_daily_judgments
+                WHERE schema_version = 'macro_daily_judgment_v2'
+                ORDER BY session_date DESC
+                LIMIT 1
+                """
+            ).fetchone()
         return dict(row) if row is not None else None
 
 

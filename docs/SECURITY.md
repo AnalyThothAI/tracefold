@@ -35,7 +35,14 @@ The parent may delegate to the declared evidence analyst, cross-asset
 challenger, and skeptical editor as its research requires; Tracefold does not
 force a fixed tool or review sequence.
 
-Every evidence tool is bound to one frozen completed-session scope. It may read
+Fed document analysis is the only event-granular model lane in live Macro. It
+receives one bounded official source body plus effective-dated role/prior-signal
+context, has no provider or web tool, and must return exact excerpts that are
+verified against that body before immutable insertion. Regulation, technology,
+inclusion, and ceremonial material may remain `not_policy_signal`/`no_call`;
+the worker cannot create permanent official labels or a universal score.
+
+Every research evidence tool is bound to one frozen completed-session scope. It may read
 only the immutable Evidence Pack selected by `evidence_pack_id` and prior
 immutable Macro publications. The pack itself was compiled from cutoff-bounded
 persisted Market/Macro facts. Macro Research has no live or hidden News
@@ -48,7 +55,7 @@ and Chinese expression remain Agent-owned; the explicit reviewer may return
 `pass`, `revise`, or `block`.
 
 The overview and six decision-module pages are read-only views over persisted
-module, judgment, and research state. Dataset quality and module readiness are
+module, judgment, and research state. Coverage, Data Health, and Judgment are
 transparent decision metadata, not permission middleware or a process health
 gate. They expose no credentials and make no provider/model call.
 

@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     macro_backfill.add_argument("--dataset", required=True, help="Dataset Registry id")
     macro_backfill.add_argument("--start", required=True, help="history start date (YYYY-MM-DD)")
     macro_backfill.add_argument("--end", required=True, help="history end date (YYYY-MM-DD)")
+    macro_subcommands.add_parser(
+        "backfill-professional",
+        help="enqueue the code-owned professional Macro history policy",
+    )
     macro_retry_research = macro_subcommands.add_parser(
         "retry-research",
         help="grant one additional attempt to a failed Macro research run",

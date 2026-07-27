@@ -174,13 +174,13 @@
         "title": "ApiEnvelope[LiveMarketData]",
         "type": "object"
       },
-      "ApiEnvelope_MacroModuleReadData_": {
+      "ApiEnvelope_MacroCreditReadData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/MacroModuleReadData"
+                "$ref": "#/components/schemas/MacroCreditReadData"
               },
               {
                 "type": "null"
@@ -217,7 +217,145 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[MacroModuleReadData]",
+        "title": "ApiEnvelope[MacroCreditReadData]",
+        "type": "object"
+      },
+      "ApiEnvelope_MacroCrossAssetReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroCrossAssetReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroCrossAssetReadData]",
+        "type": "object"
+      },
+      "ApiEnvelope_MacroEconomyInflationReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroEconomyInflationReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroEconomyInflationReadData]",
+        "type": "object"
+      },
+      "ApiEnvelope_MacroLiquidityFundingReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroLiquidityFundingReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroLiquidityFundingReadData]",
         "type": "object"
       },
       "ApiEnvelope_MacroOverviewReadData_": {
@@ -266,6 +404,52 @@
         "title": "ApiEnvelope[MacroOverviewReadData]",
         "type": "object"
       },
+      "ApiEnvelope_MacroRatesFedReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroRatesFedReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroRatesFedReadData]",
+        "type": "object"
+      },
       "ApiEnvelope_MacroResearchReadData_": {
         "additionalProperties": false,
         "properties": {
@@ -310,6 +494,52 @@
           "ok"
         ],
         "title": "ApiEnvelope[MacroResearchReadData]",
+        "type": "object"
+      },
+      "ApiEnvelope_MacroVolatilityReadData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroVolatilityReadData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[MacroVolatilityReadData]",
         "type": "object"
       },
       "ApiEnvelope_NotificationDeliveriesData_": {
@@ -1365,16 +1595,606 @@
         "title": "LiveMarketData",
         "type": "object"
       },
-      "MacroModuleReadData": {
+      "MacroAssetData": {
         "additionalProperties": false,
         "properties": {
-          "charts": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "asset_class": {
+            "title": "Asset Class",
+            "type": "string"
+          },
+          "change_1d_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1D Pct"
+          },
+          "change_1m_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1M Pct"
+          },
+          "change_1w_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1W Pct"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "instrument_type": {
+            "title": "Instrument Type",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_value": {
+            "title": "Latest Value",
+            "type": "number"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "official",
+              "exchange",
+              "untrusted_proxy"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "symbol",
+          "label",
+          "instrument_type",
+          "asset_class",
+          "latest_value",
+          "unit",
+          "as_of",
+          "change_1d_pct",
+          "change_1w_pct",
+          "change_1m_pct",
+          "trust_tier",
+          "source_url"
+        ],
+        "title": "MacroAssetData",
+        "type": "object"
+      },
+      "MacroBenchmarkData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "asset_class": {
+            "title": "Asset Class",
+            "type": "string"
+          },
+          "change_1m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1M"
+          },
+          "change_1w": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1W"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "evidence_kind": {
+            "title": "Evidence Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Value"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "label",
+          "asset_class",
+          "dataset_id",
+          "evidence_kind",
+          "latest_value",
+          "unit",
+          "as_of",
+          "change_1w",
+          "change_1m",
+          "source_url"
+        ],
+        "title": "MacroBenchmarkData",
+        "type": "object"
+      },
+      "MacroBreakevenPointData": {
+        "additionalProperties": false,
+        "properties": {
+          "breakeven_pct": {
+            "title": "Breakeven Pct",
+            "type": "number"
+          },
+          "tenor": {
+            "title": "Tenor",
+            "type": "string"
+          },
+          "years": {
+            "title": "Years",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tenor",
+          "years",
+          "breakeven_pct"
+        ],
+        "title": "MacroBreakevenPointData",
+        "type": "object"
+      },
+      "MacroBreakevenSnapshotData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MacroBreakevenPointData"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "window": {
+            "enum": [
+              "current",
+              "1w",
+              "1m",
+              "3m"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "as_of",
+          "points"
+        ],
+        "title": "MacroBreakevenSnapshotData",
+        "type": "object"
+      },
+      "MacroChangeData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "change_1m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1M"
+          },
+          "change_1w": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1W"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "magnitude": {
+            "title": "Magnitude",
+            "type": "number"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "label",
+          "as_of",
+          "value",
+          "unit",
+          "change_1w",
+          "change_1m",
+          "magnitude",
+          "source_url"
+        ],
+        "title": "MacroChangeData",
+        "type": "object"
+      },
+      "MacroCorrelationData": {
+        "additionalProperties": false,
+        "properties": {
+          "correlation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation"
+          },
+          "left": {
+            "title": "Left",
+            "type": "string"
+          },
+          "right": {
+            "title": "Right",
+            "type": "string"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "window": {
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "left",
+          "right",
+          "correlation",
+          "sample_count",
+          "window"
+        ],
+        "title": "MacroCorrelationData",
+        "type": "object"
+      },
+      "MacroCoverageCapabilityData": {
+        "additionalProperties": false,
+        "properties": {
+          "capability_id": {
+            "title": "Capability Id",
+            "type": "string"
+          },
+          "dataset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dataset Ids",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "requirement": {
+            "enum": [
+              "required",
+              "supporting",
+              "licensed_unavailable"
+            ],
+            "title": "Requirement",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "missing",
+              "licensed_unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability_id",
+          "label",
+          "requirement",
+          "state",
+          "dataset_ids",
+          "reason"
+        ],
+        "title": "MacroCoverageCapabilityData",
+        "type": "object"
+      },
+      "MacroCoverageData": {
+        "additionalProperties": false,
+        "properties": {
+          "available_capabilities": {
+            "title": "Available Capabilities",
+            "type": "integer"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCoverageCapabilityData"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "expected_capabilities": {
+            "title": "Expected Capabilities",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "licensed_unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "expected_capabilities",
+          "available_capabilities",
+          "capabilities"
+        ],
+        "title": "MacroCoverageData",
+        "type": "object"
+      },
+      "MacroCreditConfirmationsData": {
+        "additionalProperties": false,
+        "properties": {
+          "etfs": {
+            "items": {
+              "$ref": "#/components/schemas/MacroAssetData"
+            },
+            "title": "Etfs",
+            "type": "array"
+          },
+          "positions": {
             "items": {
               "additionalProperties": true,
               "type": "object"
             },
-            "title": "Charts",
+            "title": "Positions",
             "type": "array"
+          },
+          "trace_nav": {
+            "$ref": "#/components/schemas/MacroUnavailableData"
+          }
+        },
+        "required": [
+          "etfs",
+          "positions",
+          "trace_nav"
+        ],
+        "title": "MacroCreditConfirmationsData",
+        "type": "object"
+      },
+      "MacroCreditCycleDimensionData": {
+        "additionalProperties": false,
+        "properties": {
+          "conflicts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "dimension_id": {
+            "enum": [
+              "spread_level_velocity",
+              "funding_cost",
+              "credit_supply",
+              "credit_quality",
+              "market_liquidity"
+            ],
+            "title": "Dimension Id",
+            "type": "string"
+          },
+          "driver": {
+            "title": "Driver",
+            "type": "string"
+          },
+          "evidence_dataset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Dataset Ids",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension_id",
+          "label",
+          "state",
+          "driver",
+          "evidence_dataset_ids",
+          "conflicts"
+        ],
+        "title": "MacroCreditCycleDimensionData",
+        "type": "object"
+      },
+      "MacroCreditFundingCostsData": {
+        "additionalProperties": false,
+        "properties": {
+          "comparisons": {
+            "items": {
+              "$ref": "#/components/schemas/MacroFundingComparisonData"
+            },
+            "title": "Comparisons",
+            "type": "array"
+          },
+          "corporate_yields": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Corporate Yields",
+            "type": "array"
+          },
+          "reference_rates": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Reference Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "corporate_yields",
+          "reference_rates",
+          "comparisons"
+        ],
+        "title": "MacroCreditFundingCostsData",
+        "type": "object"
+      },
+      "MacroCreditReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "bank_lending": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
+          },
+          "confirmations": {
+            "$ref": "#/components/schemas/MacroCreditConfirmationsData"
           },
           "contradictions": {
             "items": {
@@ -1383,18 +2203,15 @@
             "title": "Contradictions",
             "type": "array"
           },
-          "current_state": {
-            "additionalProperties": true,
-            "title": "Current State",
-            "type": "object"
-          },
-          "dataset_states": {
+          "cycle_dimensions": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MacroCreditCycleDimensionData"
             },
-            "title": "Dataset States",
+            "title": "Cycle Dimensions",
             "type": "array"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
           },
           "falsifiers": {
             "items": {
@@ -1403,23 +2220,378 @@
             "title": "Falsifiers",
             "type": "array"
           },
-          "features": {
+          "funding_costs": {
+            "$ref": "#/components/schemas/MacroCreditFundingCostsData"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "loan_quality": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
+          },
+          "module_id": {
+            "const": "credit",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "next_checkpoints": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
             },
-            "title": "Features",
+            "title": "Next Checkpoints",
             "type": "array"
           },
-          "gaps": {
+          "schema_version": {
+            "const": "macro_credit_v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "spread_ladder": {
+            "$ref": "#/components/schemas/MacroCreditSpreadLadderData"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "cycle_dimensions",
+          "spread_ladder",
+          "funding_costs",
+          "bank_lending",
+          "loan_quality",
+          "confirmations"
+        ],
+        "title": "MacroCreditReadData",
+        "type": "object"
+      },
+      "MacroCreditSpreadLadderData": {
+        "additionalProperties": false,
+        "properties": {
+          "rows": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MacroIndicatorData"
             },
-            "title": "Gaps",
+            "title": "Rows",
             "type": "array"
           },
-          "judgment_cutoff_ms": {
+          "tail_gap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tail Gap"
+          },
+          "tail_gap_unit": {
+            "const": "basis_points",
+            "title": "Tail Gap Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rows",
+          "tail_gap",
+          "tail_gap_unit"
+        ],
+        "title": "MacroCreditSpreadLadderData",
+        "type": "object"
+      },
+      "MacroCrossAssetReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "$ref": "#/components/schemas/MacroCrossAssetsData"
+          },
+          "contradictions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "correlations": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCorrelationData"
+            },
+            "title": "Correlations",
+            "type": "array"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "futures": {
+            "$ref": "#/components/schemas/MacroFuturesConfirmationData"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "module_id": {
+            "const": "cross_asset",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "next_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
+            },
+            "title": "Next Checkpoints",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "macro_cross_asset_v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "assets",
+          "correlations",
+          "futures"
+        ],
+        "title": "MacroCrossAssetReadData",
+        "type": "object"
+      },
+      "MacroCrossAssetsData": {
+        "additionalProperties": false,
+        "properties": {
+          "benchmarks": {
+            "items": {
+              "$ref": "#/components/schemas/MacroBenchmarkData"
+            },
+            "title": "Benchmarks",
+            "type": "array"
+          },
+          "normalized": {
+            "items": {
+              "$ref": "#/components/schemas/MacroNormalizedAssetPointData"
+            },
+            "title": "Normalized",
+            "type": "array"
+          },
+          "proxies": {
+            "items": {
+              "$ref": "#/components/schemas/MacroAssetData"
+            },
+            "title": "Proxies",
+            "type": "array"
+          }
+        },
+        "required": [
+          "benchmarks",
+          "proxies",
+          "normalized"
+        ],
+        "title": "MacroCrossAssetsData",
+        "type": "object"
+      },
+      "MacroCurveClassificationData": {
+        "additionalProperties": false,
+        "properties": {
+          "formula_version": {
+            "title": "Formula Version",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "label",
+          "formula_version",
+          "inputs"
+        ],
+        "title": "MacroCurveClassificationData",
+        "type": "object"
+      },
+      "MacroCurvePointData": {
+        "additionalProperties": false,
+        "properties": {
+          "tenor": {
+            "title": "Tenor",
+            "type": "string"
+          },
+          "years": {
+            "title": "Years",
+            "type": "number"
+          },
+          "yield_pct": {
+            "title": "Yield Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tenor",
+          "years",
+          "yield_pct"
+        ],
+        "title": "MacroCurvePointData",
+        "type": "object"
+      },
+      "MacroCurveSnapshotData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCurvePointData"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "window": {
+            "enum": [
+              "current",
+              "1w",
+              "1m",
+              "3m"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "as_of",
+          "points"
+        ],
+        "title": "MacroCurveSnapshotData",
+        "type": "object"
+      },
+      "MacroCurveSpreadPointData": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "value_bp": {
+            "title": "Value Bp",
+            "type": "number"
+          }
+        },
+        "required": [
+          "date",
+          "value_bp"
+        ],
+        "title": "MacroCurveSpreadPointData",
+        "type": "object"
+      },
+      "MacroDataHealthData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_ms": {
+            "title": "As Of Ms",
+            "type": "integer"
+          },
+          "current_datasets": {
+            "title": "Current Datasets",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "current",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "tracked_datasets": {
+            "title": "Tracked Datasets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "current_datasets",
+          "tracked_datasets",
+          "as_of_ms"
+        ],
+        "title": "MacroDataHealthData",
+        "type": "object"
+      },
+      "MacroDatasetStateData": {
+        "additionalProperties": false,
+        "properties": {
+          "critical": {
+            "title": "Critical",
+            "type": "boolean"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_received_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -1428,7 +2600,945 @@
                 "type": "null"
               }
             ],
-            "title": "Judgment Cutoff Ms"
+            "title": "Latest Received At Ms"
+          },
+          "latest_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Reference"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "current",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "official",
+              "exchange",
+              "untrusted_proxy"
+            ],
+            "title": "Trust Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "label",
+          "state",
+          "reason",
+          "critical",
+          "trust_tier",
+          "source_url",
+          "latest_reference",
+          "latest_received_at_ms"
+        ],
+        "title": "MacroDatasetStateData",
+        "type": "object"
+      },
+      "MacroEconomyInflationReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "contradictions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "growth": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
+          },
+          "inflation": {
+            "$ref": "#/components/schemas/MacroReleaseIndicatorSectionData"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "labor": {
+            "$ref": "#/components/schemas/MacroReleaseIndicatorSectionData"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "module_id": {
+            "const": "economy_inflation",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "next_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
+            },
+            "title": "Next Checkpoints",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "macro_economy_inflation_v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "inflation",
+          "labor",
+          "growth"
+        ],
+        "title": "MacroEconomyInflationReadData",
+        "type": "object"
+      },
+      "MacroEvidenceFactData": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Code"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "fact_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Ref"
+          },
+          "published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At Ms"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "series_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series Id"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "fact_ref",
+          "reference",
+          "value",
+          "unit",
+          "published_at_ms",
+          "received_at_ms",
+          "source_url"
+        ],
+        "title": "MacroEvidenceFactData",
+        "type": "object"
+      },
+      "MacroFedCommunicationData": {
+        "additionalProperties": false,
+        "properties": {
+          "institutional_stance": {
+            "$ref": "#/components/schemas/MacroFedInstitutionalStanceData"
+          },
+          "officials_distribution": {
+            "$ref": "#/components/schemas/MacroFedOfficialsDistributionData"
+          },
+          "roster": {
+            "$ref": "#/components/schemas/MacroFedRosterData"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/MacroFedTimelineEventData"
+            },
+            "title": "Timeline",
+            "type": "array"
+          }
+        },
+        "required": [
+          "institutional_stance",
+          "officials_distribution",
+          "timeline",
+          "roster"
+        ],
+        "title": "MacroFedCommunicationData",
+        "type": "object"
+      },
+      "MacroFedEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "claim": {
+            "title": "Claim",
+            "type": "string"
+          },
+          "excerpt": {
+            "title": "Excerpt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt",
+          "claim"
+        ],
+        "title": "MacroFedEvidenceData",
+        "type": "object"
+      },
+      "MacroFedInstitutionalStanceData": {
+        "additionalProperties": false,
+        "properties": {
+          "change_from_prior": {
+            "title": "Change From Prior",
+            "type": "string"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "direction",
+          "change_from_prior",
+          "reason"
+        ],
+        "title": "MacroFedInstitutionalStanceData",
+        "type": "object"
+      },
+      "MacroFedOfficialsDistributionData": {
+        "additionalProperties": false,
+        "properties": {
+          "analyzed_events": {
+            "title": "Analyzed Events",
+            "type": "integer"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "dovish": {
+            "title": "Dovish",
+            "type": "integer"
+          },
+          "hawkish": {
+            "title": "Hawkish",
+            "type": "integer"
+          },
+          "mixed": {
+            "title": "Mixed",
+            "type": "integer"
+          },
+          "neutral": {
+            "title": "Neutral",
+            "type": "integer"
+          },
+          "not_policy_signal": {
+            "title": "Not Policy Signal",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "uncertain": {
+            "title": "Uncertain",
+            "type": "integer"
+          },
+          "window_days": {
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "window_days",
+          "as_of",
+          "hawkish",
+          "neutral",
+          "dovish",
+          "mixed",
+          "not_policy_signal",
+          "uncertain",
+          "analyzed_events"
+        ],
+        "title": "MacroFedOfficialsDistributionData",
+        "type": "object"
+      },
+      "MacroFedRosterData": {
+        "additionalProperties": false,
+        "properties": {
+          "officials": {
+            "items": {
+              "$ref": "#/components/schemas/MacroFedRosterOfficialData"
+            },
+            "title": "Officials",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason",
+          "officials"
+        ],
+        "title": "MacroFedRosterData",
+        "type": "object"
+      },
+      "MacroFedRosterOfficialData": {
+        "additionalProperties": false,
+        "properties": {
+          "effective_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective End"
+          },
+          "effective_start": {
+            "title": "Effective Start",
+            "type": "string"
+          },
+          "fomc_participant": {
+            "title": "Fomc Participant",
+            "type": "boolean"
+          },
+          "fomc_voter": {
+            "title": "Fomc Voter",
+            "type": "boolean"
+          },
+          "official_id": {
+            "title": "Official Id",
+            "type": "string"
+          },
+          "official_name": {
+            "title": "Official Name",
+            "type": "string"
+          },
+          "organization": {
+            "title": "Organization",
+            "type": "string"
+          },
+          "role_fact_id": {
+            "title": "Role Fact Id",
+            "type": "string"
+          },
+          "role_title": {
+            "title": "Role Title",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "official_id",
+          "official_name",
+          "role_title",
+          "organization",
+          "effective_start",
+          "effective_end",
+          "fomc_participant",
+          "fomc_voter",
+          "source_url",
+          "role_fact_id"
+        ],
+        "title": "MacroFedRosterOfficialData",
+        "type": "object"
+      },
+      "MacroFedTimelineAnalysisData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Id"
+          },
+          "change_from_prior": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change From Prior"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/MacroFedEvidenceData"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "policy_relevance": {
+            "title": "Policy Relevance",
+            "type": "string"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Version"
+          },
+          "reviewer_disposition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Disposition"
+          },
+          "stance": {
+            "title": "Stance",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "policy_relevance",
+          "stance",
+          "confidence",
+          "change_from_prior",
+          "evidence",
+          "analysis_id",
+          "model_name",
+          "prompt_version",
+          "reviewer_disposition"
+        ],
+        "title": "MacroFedTimelineAnalysisData",
+        "type": "object"
+      },
+      "MacroFedTimelineEventData": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/MacroFedTimelineAnalysisData"
+          },
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_type": {
+            "title": "Document Type",
+            "type": "string"
+          },
+          "effective_date": {
+            "title": "Effective Date",
+            "type": "string"
+          },
+          "fomc_voter": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fomc Voter"
+          },
+          "official_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Official Id"
+          },
+          "published_at_ms": {
+            "title": "Published At Ms",
+            "type": "integer"
+          },
+          "role_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Title"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "speaker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker Name"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "document_type",
+          "title",
+          "effective_date",
+          "published_at_ms",
+          "source_url",
+          "speaker_name",
+          "official_id",
+          "role_title",
+          "fomc_voter",
+          "analysis"
+        ],
+        "title": "MacroFedTimelineEventData",
+        "type": "object"
+      },
+      "MacroFundingComparisonData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "corporate_dataset_id": {
+            "title": "Corporate Dataset Id",
+            "type": "string"
+          },
+          "formula_version": {
+            "title": "Formula Version",
+            "type": "string"
+          },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reference_dataset_id": {
+            "title": "Reference Dataset Id",
+            "type": "string"
+          },
+          "value_bp": {
+            "title": "Value Bp",
+            "type": "number"
+          }
+        },
+        "required": [
+          "label",
+          "corporate_dataset_id",
+          "reference_dataset_id",
+          "as_of",
+          "value_bp",
+          "formula_version",
+          "input_fact_ids"
+        ],
+        "title": "MacroFundingComparisonData",
+        "type": "object"
+      },
+      "MacroFuturesConfirmationData": {
+        "additionalProperties": false,
+        "properties": {
+          "positions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "vix_settlements": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Vix Settlements",
+            "type": "array"
+          }
+        },
+        "required": [
+          "vix_settlements",
+          "positions"
+        ],
+        "title": "MacroFuturesConfirmationData",
+        "type": "object"
+      },
+      "MacroHistoryPointData": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "date",
+          "value"
+        ],
+        "title": "MacroHistoryPointData",
+        "type": "object"
+      },
+      "MacroIndicatorData": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "change_1m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1M"
+          },
+          "change_1w": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1W"
+          },
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/MacroHistoryPointData"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "history_end": {
+            "title": "History End",
+            "type": "string"
+          },
+          "history_start": {
+            "title": "History Start",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_value": {
+            "title": "Latest Value",
+            "type": "number"
+          },
+          "percentile": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percentile"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "label",
+          "latest_value",
+          "unit",
+          "as_of",
+          "change_1w",
+          "change_1m",
+          "sample_count",
+          "history_start",
+          "history_end",
+          "source_url",
+          "history"
+        ],
+        "title": "MacroIndicatorData",
+        "type": "object"
+      },
+      "MacroIndicatorSectionData": {
+        "additionalProperties": false,
+        "properties": {
+          "indicators": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Indicators",
+            "type": "array"
+          }
+        },
+        "required": [
+          "indicators"
+        ],
+        "title": "MacroIndicatorSectionData",
+        "type": "object"
+      },
+      "MacroJudgmentStateData": {
+        "additionalProperties": false,
+        "properties": {
+          "cutoff_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutoff Ms"
+          },
+          "state": {
+            "enum": [
+              "current",
+              "missing",
+              "blocked"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "cutoff_ms"
+        ],
+        "title": "MacroJudgmentStateData",
+        "type": "object"
+      },
+      "MacroLiquidityFundingReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "balance_sheet": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
+          },
+          "contradictions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "funding": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
           },
           "label": {
             "title": "Label",
@@ -1439,100 +3549,139 @@
             "type": "integer"
           },
           "module_id": {
-            "enum": [
-              "rates_fed",
-              "economy_inflation",
-              "liquidity_funding",
-              "credit",
-              "volatility",
-              "cross_asset"
-            ],
+            "const": "liquidity_funding",
             "title": "Module Id",
             "type": "string"
           },
           "next_checkpoints": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
             },
             "title": "Next Checkpoints",
             "type": "array"
           },
-          "raw_evidence": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Raw Evidence",
-            "type": "array"
-          },
-          "readiness": {
-            "enum": [
-              "ready",
-              "degraded",
-              "blocked"
-            ],
-            "title": "Readiness",
-            "type": "string"
-          },
           "schema_version": {
-            "const": "macro_module_v1",
+            "const": "macro_liquidity_funding_v2",
             "title": "Schema Version",
             "type": "string"
           },
-          "top_changes": {
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "balance_sheet",
+          "funding"
+        ],
+        "title": "MacroLiquidityFundingReadData",
+        "type": "object"
+      },
+      "MacroModuleEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset_states": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MacroDatasetStateData"
             },
-            "title": "Top Changes",
+            "title": "Dataset States",
+            "type": "array"
+          },
+          "latest_facts": {
+            "items": {
+              "$ref": "#/components/schemas/MacroEvidenceFactData"
+            },
+            "title": "Latest Facts",
             "type": "array"
           }
         },
         "required": [
-          "schema_version",
-          "module_id",
-          "label",
-          "readiness",
-          "judgment_cutoff_ms",
-          "latest_fact_at_ms",
-          "current_state",
-          "top_changes",
-          "features",
-          "charts",
-          "contradictions",
-          "falsifiers",
-          "next_checkpoints",
-          "gaps",
           "dataset_states",
-          "raw_evidence"
+          "latest_facts"
         ],
-        "title": "MacroModuleReadData",
+        "title": "MacroModuleEvidenceData",
+        "type": "object"
+      },
+      "MacroModuleStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/MacroCoverageData"
+          },
+          "data_health": {
+            "$ref": "#/components/schemas/MacroDataHealthData"
+          },
+          "judgment": {
+            "$ref": "#/components/schemas/MacroJudgmentStateData"
+          }
+        },
+        "required": [
+          "coverage",
+          "data_health",
+          "judgment"
+        ],
+        "title": "MacroModuleStatusData",
         "type": "object"
       },
       "MacroModuleSummaryData": {
         "additionalProperties": false,
         "properties": {
-          "current_state": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current State"
+          "coverage_gap_count": {
+            "title": "Coverage Gap Count",
+            "type": "integer"
           },
-          "gap_count": {
-            "title": "Gap Count",
+          "coverage_state": {
+            "enum": [
+              "complete",
+              "partial",
+              "licensed_unavailable",
+              "missing"
+            ],
+            "title": "Coverage State",
+            "type": "string"
+          },
+          "data_health_state": {
+            "enum": [
+              "current",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable",
+              "missing"
+            ],
+            "title": "Data Health State",
+            "type": "string"
+          },
+          "health_gap_count": {
+            "title": "Health Gap Count",
             "type": "integer"
           },
           "href": {
             "title": "Href",
             "type": "string"
           },
+          "judgment_state": {
+            "enum": [
+              "current",
+              "missing",
+              "blocked"
+            ],
+            "title": "Judgment State",
+            "type": "string"
+          },
           "label": {
             "title": "Label",
             "type": "string"
@@ -1545,15 +3694,15 @@
             "title": "Module Id",
             "type": "string"
           },
-          "readiness": {
-            "enum": [
-              "ready",
-              "degraded",
-              "blocked",
-              "missing"
-            ],
-            "title": "Readiness",
-            "type": "string"
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "top_changes": {
             "items": {
@@ -1567,14 +3716,97 @@
         "required": [
           "module_id",
           "label",
-          "readiness",
+          "coverage_state",
+          "data_health_state",
+          "judgment_state",
           "latest_fact_at_ms",
-          "current_state",
+          "summary",
           "top_changes",
-          "gap_count",
+          "coverage_gap_count",
+          "health_gap_count",
           "href"
         ],
         "title": "MacroModuleSummaryData",
+        "type": "object"
+      },
+      "MacroModuleSummaryStateData": {
+        "additionalProperties": false,
+        "properties": {
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "interpretation": {
+            "title": "Interpretation",
+            "type": "string"
+          },
+          "top_changes": {
+            "items": {
+              "$ref": "#/components/schemas/MacroChangeData"
+            },
+            "title": "Top Changes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "headline",
+          "interpretation",
+          "top_changes"
+        ],
+        "title": "MacroModuleSummaryStateData",
+        "type": "object"
+      },
+      "MacroNextCheckpointData": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "next_check": {
+            "title": "Next Check",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dataset_id",
+          "label",
+          "state",
+          "next_check"
+        ],
+        "title": "MacroNextCheckpointData",
+        "type": "object"
+      },
+      "MacroNormalizedAssetPointData": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "normalized_value": {
+            "title": "Normalized Value",
+            "type": "number"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "date",
+          "normalized_value"
+        ],
+        "title": "MacroNormalizedAssetPointData",
         "type": "object"
       },
       "MacroOverviewReadData": {
@@ -1588,6 +3820,15 @@
             "title": "Changes Since Judgment",
             "type": "array"
           },
+          "coverage_state": {
+            "enum": [
+              "complete",
+              "partial",
+              "licensed_unavailable"
+            ],
+            "title": "Coverage State",
+            "type": "string"
+          },
           "daily_judgment": {
             "anyOf": [
               {
@@ -1600,6 +3841,18 @@
             ],
             "title": "Daily Judgment"
           },
+          "data_health_state": {
+            "enum": [
+              "current",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable"
+            ],
+            "title": "Data Health State",
+            "type": "string"
+          },
           "judgment_cutoff_ms": {
             "anyOf": [
               {
@@ -1610,6 +3863,15 @@
               }
             ],
             "title": "Judgment Cutoff Ms"
+          },
+          "judgment_state": {
+            "enum": [
+              "current",
+              "missing",
+              "blocked"
+            ],
+            "title": "Judgment State",
+            "type": "string"
           },
           "latest_fact_at_ms": {
             "title": "Latest Fact At Ms",
@@ -1622,15 +3884,6 @@
             "title": "Modules",
             "type": "array"
           },
-          "overall_readiness": {
-            "enum": [
-              "ready",
-              "degraded",
-              "blocked"
-            ],
-            "title": "Overall Readiness",
-            "type": "string"
-          },
           "read_at_ms": {
             "title": "Read At Ms",
             "type": "integer"
@@ -1641,7 +3894,7 @@
             "type": "object"
           },
           "schema_version": {
-            "const": "macro_overview_v1",
+            "const": "macro_overview_v2",
             "title": "Schema Version",
             "type": "string"
           }
@@ -1651,13 +3904,198 @@
           "read_at_ms",
           "judgment_cutoff_ms",
           "latest_fact_at_ms",
-          "overall_readiness",
+          "coverage_state",
+          "data_health_state",
+          "judgment_state",
           "daily_judgment",
           "modules",
           "changes_since_judgment",
           "research"
         ],
         "title": "MacroOverviewReadData",
+        "type": "object"
+      },
+      "MacroPolicyPricingData": {
+        "additionalProperties": false,
+        "properties": {
+          "cme_policy_probabilities": {
+            "$ref": "#/components/schemas/MacroUnavailableData"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rates",
+          "cme_policy_probabilities"
+        ],
+        "title": "MacroPolicyPricingData",
+        "type": "object"
+      },
+      "MacroRatesCurveData": {
+        "additionalProperties": false,
+        "properties": {
+          "breakeven_snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/MacroBreakevenSnapshotData"
+            },
+            "title": "Breakeven Snapshots",
+            "type": "array"
+          },
+          "classification": {
+            "$ref": "#/components/schemas/MacroCurveClassificationData"
+          },
+          "nominal_snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCurveSnapshotData"
+            },
+            "title": "Nominal Snapshots",
+            "type": "array"
+          },
+          "real_snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCurveSnapshotData"
+            },
+            "title": "Real Snapshots",
+            "type": "array"
+          },
+          "spreads": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/MacroCurveSpreadPointData"
+              },
+              "type": "array"
+            },
+            "title": "Spreads",
+            "type": "object"
+          }
+        },
+        "required": [
+          "nominal_snapshots",
+          "real_snapshots",
+          "breakeven_snapshots",
+          "spreads",
+          "classification"
+        ],
+        "title": "MacroRatesCurveData",
+        "type": "object"
+      },
+      "MacroRatesFedReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "contradictions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "curve": {
+            "$ref": "#/components/schemas/MacroRatesCurveData"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "fed": {
+            "$ref": "#/components/schemas/MacroFedCommunicationData"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "module_id": {
+            "const": "rates_fed",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "next_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
+            },
+            "title": "Next Checkpoints",
+            "type": "array"
+          },
+          "policy_pricing": {
+            "$ref": "#/components/schemas/MacroPolicyPricingData"
+          },
+          "positioning": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Positioning",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "macro_rates_fed_v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "curve",
+          "policy_pricing",
+          "fed",
+          "positioning"
+        ],
+        "title": "MacroRatesFedReadData",
+        "type": "object"
+      },
+      "MacroReleaseIndicatorSectionData": {
+        "additionalProperties": false,
+        "properties": {
+          "indicators": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Indicators",
+            "type": "array"
+          },
+          "official_releases": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Official Releases",
+            "type": "array"
+          }
+        },
+        "required": [
+          "indicators",
+          "official_releases"
+        ],
+        "title": "MacroReleaseIndicatorSectionData",
         "type": "object"
       },
       "MacroResearchCitationData": {
@@ -2012,6 +4450,126 @@
           "citation_ids"
         ],
         "title": "MacroResearchSectionData",
+        "type": "object"
+      },
+      "MacroUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "const": "licensed_unavailable",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "title": "MacroUnavailableData",
+        "type": "object"
+      },
+      "MacroVolatilityReadData": {
+        "additionalProperties": false,
+        "properties": {
+          "contradictions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Contradictions",
+            "type": "array"
+          },
+          "cross_asset_implied": {
+            "$ref": "#/components/schemas/MacroIndicatorSectionData"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/MacroModuleEvidenceData"
+          },
+          "falsifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Falsifiers",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latest_fact_at_ms": {
+            "title": "Latest Fact At Ms",
+            "type": "integer"
+          },
+          "module_id": {
+            "const": "volatility",
+            "title": "Module Id",
+            "type": "string"
+          },
+          "next_checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/MacroNextCheckpointData"
+            },
+            "title": "Next Checkpoints",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "macro_volatility_v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+          },
+          "term_structure": {
+            "$ref": "#/components/schemas/MacroVolatilityTermData"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "latest_fact_at_ms",
+          "summary",
+          "contradictions",
+          "falsifiers",
+          "next_checkpoints",
+          "evidence",
+          "schema_version",
+          "module_id",
+          "term_structure",
+          "cross_asset_implied"
+        ],
+        "title": "MacroVolatilityReadData",
+        "type": "object"
+      },
+      "MacroVolatilityTermData": {
+        "additionalProperties": false,
+        "properties": {
+          "spot_and_three_month": {
+            "items": {
+              "$ref": "#/components/schemas/MacroIndicatorData"
+            },
+            "title": "Spot And Three Month",
+            "type": "array"
+          },
+          "spread_history": {
+            "items": {
+              "$ref": "#/components/schemas/MacroHistoryPointData"
+            },
+            "title": "Spread History",
+            "type": "array"
+          }
+        },
+        "required": [
+          "spot_and_three_month",
+          "spread_history"
+        ],
+        "title": "MacroVolatilityTermData",
         "type": "object"
       },
       "NewsHealthData": {
@@ -5536,7 +8094,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroCreditReadData_"
                 }
               }
             },
@@ -5557,7 +8115,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroCrossAssetReadData_"
                 }
               }
             },
@@ -5578,7 +8136,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroEconomyInflationReadData_"
                 }
               }
             },
@@ -5599,7 +8157,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroLiquidityFundingReadData_"
                 }
               }
             },
@@ -5641,7 +8199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroRatesFedReadData_"
                 }
               }
             },
@@ -5712,7 +8270,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_MacroModuleReadData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_MacroVolatilityReadData_"
                 }
               }
             },

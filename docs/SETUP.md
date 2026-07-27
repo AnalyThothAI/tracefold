@@ -101,6 +101,8 @@ Four automatic acquisition workers own distinct clocks:
 `macro_official_documents`. `macro_backfill` is
 disabled by default and processes only operator-created bounded targets.
 `macro_projection` rebuilds six stable current rows from persisted facts;
+`macro_document_analysis` writes immutable evidence-bound FOMC/speech analyses
+and is disabled by default;
 `macro_judgment` seals the 08:50 New York Evidence Pack and daily decision.
 
 For an operator-triggered repair of one bounded dataset window:
@@ -110,7 +112,19 @@ uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YY
 uv run tracefold macro status
 ```
 
-A good macro status reports Alembic `20260727_0203`, bounded acquisition target
+For the one code-owned professional history policy required by the v2 hard cut:
+
+```bash
+uv run tracefold macro backfill-professional
+uv run tracefold macro status
+```
+
+Enable `macro_backfill` until every professional target is `current`; then
+enable `macro_document_analysis` until its durable queue has no open or failed
+jobs. Projection and judgment intentionally remain blocked while required
+history or document analysis is incomplete.
+
+A good macro status reports Alembic `20260727_0205`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -130,6 +144,9 @@ FRED liquidity series ingested with incorrect units, resets those targets, and
 invalidates derived Macro state before a clean rebuild.
 Migration `20260727_0203` removes the redundant intraday clock and rebuilds the
 Binance dataset as a UTC daily close under the settlement worker.
+Migration `20260727_0205` archives v1 Macro publication tables, hard-cuts the
+active lane to v2 Evidence Pack/judgment/research schemas, adds Fed role and
+immutable document-analysis storage, and requires six module-specific payloads.
 Enable the Macro workers only after the migration is current.
 
 A healthy completed-session research run transitions

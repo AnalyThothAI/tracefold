@@ -7,13 +7,15 @@ from datetime import date
 from typing import Any
 
 from tracefold.app.repositories import repositories
-from tracefold.macro import require_dataset
+from tracefold.macro import professional_backfill_policies, require_dataset
 from tracefold.platform.config.settings import load_settings
 
 
 def handle_macro(args: Namespace) -> tuple[int, dict[str, Any]]:
     if args.macro_command == "backfill":
         return _handle_backfill(args)
+    if args.macro_command == "backfill-professional":
+        return _handle_professional_backfill()
     if args.macro_command == "retry-research":
         return _handle_retry_research(args)
     if args.macro_command == "status":
@@ -31,6 +33,8 @@ def _handle_backfill(args: Namespace) -> tuple[int, dict[str, Any]]:
         settings = load_settings(require_ws_token=False)
         now_ms = _now_ms()
         with repositories(settings) as repos, repos.transaction():
+            if spec.instrument_id is not None:
+                repos.macro_market.ensure_instrument(spec, now_ms=now_ms)
             target = repos.macro.enqueue_backfill_target(
                 spec,
                 start_date=start_date,
@@ -41,6 +45,45 @@ def _handle_backfill(args: Namespace) -> tuple[int, dict[str, Any]]:
     except Exception as exc:
         return 1, _error("macro_backfill_failed", exc)
     return 0, {"ok": True, "data": _json_ready(target)}
+
+
+def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
+    try:
+        through_date = date.today()
+        policies = professional_backfill_policies(through_date=through_date)
+        settings = load_settings(require_ws_token=False)
+        now_ms = _now_ms()
+        targets = []
+        with repositories(settings) as repos, repos.transaction():
+            for policy in policies:
+                spec = require_dataset(policy.dataset_id)
+                if spec.instrument_id is not None:
+                    repos.macro_market.ensure_instrument(spec, now_ms=now_ms)
+                target = repos.macro.enqueue_backfill_target(
+                    spec,
+                    start_date=policy.start_date,
+                    end_date=through_date,
+                    now_ms=now_ms,
+                    max_attempts=int(settings.workers.macro_backfill.max_attempts),
+                )
+                targets.append(
+                    {
+                        "dataset_id": policy.dataset_id,
+                        "history_class": policy.history_class,
+                        "partition_key": target["partition_key"],
+                        "status": target["status"],
+                    }
+                )
+    except Exception as exc:
+        return 1, _error("macro_professional_backfill_failed", exc)
+    return 0, {
+        "ok": True,
+        "data": {
+            "through_date": through_date.isoformat(),
+            "target_count": len(targets),
+            "targets": targets,
+        },
+    }
 
 
 def _handle_retry_research(args: Namespace) -> tuple[int, dict[str, Any]]:
@@ -65,6 +108,7 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
             receipts = repos.macro.recent_receipts(limit=20)
             modules = repos.macro.all_modules_current()
             judgment = repos.macro.daily_judgment()
+            document_analysis_jobs = repos.macro.document_analysis_job_state()
             research = repos.macro_research.research_state()
     except Exception as exc:
         return 1, _error("macro_status_unavailable", exc)
@@ -84,13 +128,14 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
                     "modules": [
                         {
                             "module_id": row["module_id"],
-                            "readiness": row["readiness"],
+                            "data_health_state": row["data_health_state"],
                             "fact_cutoff_ms": row["fact_cutoff_ms"],
                             "updated_at_ms": row["updated_at_ms"],
                         }
                         for row in modules
                     ],
                     "daily_judgment": judgment,
+                    "document_analysis_jobs": document_analysis_jobs,
                     "research": research,
                 }
             ),

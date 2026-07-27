@@ -19,14 +19,14 @@ describe("Macro decision workbench", () => {
 
     expect(await screen.findByText("分项压力、尚未共振")).toBeVisible();
     expect(screen.getByText("固定资产方向")).toBeVisible();
-    expect(screen.getByText("今日最重要变化")).toBeVisible();
-    expect(screen.getByText("判断失效条件")).toBeVisible();
-    expect(screen.getByText(/CME利率期货曲线：免费阶段没有合规授权数据/)).toBeVisible();
+    expect(screen.getAllByText("覆盖 部分").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("数据 当前").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("判断 已发布").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /利率与美联储/ })).toBeVisible();
     expect(screen.queryByText("历史窗口")).toBeNull();
   });
 
-  it("renders one typed module with semantic changes, charts, gaps and raw evidence", async () => {
+  it("renders the default cross-asset benchmark and fixed ETF matrix", async () => {
     server.use(
       http.get(/.*\/api\/macro\/cross-asset$/, () =>
         HttpResponse.json({ ok: true, data: macroModuleFixture("cross_asset") }),
@@ -37,8 +37,28 @@ describe("Macro decision workbench", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "大类资产与期货" })).toBeVisible();
-    expect(screen.getByText("CFE VIX期货官方结算")).toBeVisible();
-    expect(screen.getByText(/免费阶段没有合规授权数据/)).toBeVisible();
-    expect(screen.getByText("展开原始证据与 Dataset 状态")).toBeVisible();
+    expect(screen.getByText("WTI Cushing spot")).toBeVisible();
+    expect(screen.getAllByText("SPY")[0]).toBeVisible();
+    expect(screen.getAllByText("USO")[0]).toBeVisible();
+    expect(screen.getByText("展开 Coverage Manifest、Dataset 健康与原始事实")).toBeVisible();
+  });
+
+  it("renders five concurrent credit dimensions without a composite score", async () => {
+    server.use(
+      http.get(/.*\/api\/macro\/credit$/, () =>
+        HttpResponse.json({ ok: true, data: macroModuleFixture("credit") }),
+      ),
+    );
+    renderWithProviders(<MacroModulePage moduleId="credit" token="test-token" />, {
+      route: "/macro/credit",
+    });
+
+    expect(await screen.findByLabelText("信用周期五维结论")).toBeVisible();
+    expect(screen.getByText("利差水平与速度")).toBeVisible();
+    expect(screen.getByText("绝对融资成本")).toBeVisible();
+    expect(screen.getByText("银行供给与需求")).toBeVisible();
+    expect(screen.getByText("实现信用质量")).toBeVisible();
+    expect(screen.getByText("市场流动性")).toBeVisible();
+    expect(screen.queryByText("信用总分")).toBeNull();
   });
 });

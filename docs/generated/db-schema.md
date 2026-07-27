@@ -340,6 +340,58 @@
 | `payload_hash` | `TEXT` | False | `None` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 
+## `macro_daily_judgments_v1_archive`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
+| `latest_fact_at_ms` | `BIGINT` | False | `None` |
+| `judgment_json` | `JSONB` | False | `None` |
+| `memo_text` | `TEXT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `compiler_version` | `TEXT` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_document_analyses`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `analysis_id` | `TEXT` | False | `None` |
+| `document_id` | `TEXT` | False | `None` |
+| `document_hash` | `TEXT` | False | `None` |
+| `official_id` | `TEXT` | True | `None` |
+| `policy_relevance` | `TEXT` | False | `None` |
+| `stance` | `TEXT` | False | `None` |
+| `confidence` | `DOUBLE PRECISION` | True | `None` |
+| `analysis_json` | `JSONB` | False | `None` |
+| `model_name` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `reviewer_disposition` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+
+## `macro_document_analysis_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `analysis_job_id` | `TEXT` | False | `None` |
+| `document_id` | `TEXT` | False | `None` |
+| `document_hash` | `TEXT` | False | `None` |
+| `model_name` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `next_due_at_ms` | `BIGINT` | False | `None` |
+| `leased_until_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `max_attempts` | `INTEGER` | False | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `macro_documents`
 
 | Column | Type | Nullable | Default |
@@ -368,7 +420,33 @@
 | `payload_hash` | `TEXT` | False | `None` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 
+## `macro_event_updates_v1_archive`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_update_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `trigger_release_fact_id` | `TEXT` | False | `None` |
+| `update_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
 ## `macro_evidence_packs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
+| `latest_fact_at_ms` | `BIGINT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `compiler_version` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_evidence_packs_v1_archive`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
@@ -395,16 +473,35 @@
 | `payload_hash` | `TEXT` | False | `None` |
 | `computed_at_ms` | `BIGINT` | False | `None` |
 
+## `macro_fed_official_role_facts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `role_fact_id` | `TEXT` | False | `None` |
+| `dataset_id` | `TEXT` | False | `None` |
+| `official_id` | `TEXT` | False | `None` |
+| `official_name` | `TEXT` | False | `None` |
+| `role_title` | `TEXT` | False | `None` |
+| `organization` | `TEXT` | False | `None` |
+| `effective_start` | `DATE` | False | `None` |
+| `effective_end` | `DATE` | True | `None` |
+| `fomc_participant` | `BOOLEAN` | False | `None` |
+| `fomc_voter` | `BOOLEAN` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `fact_hash` | `TEXT` | False | `None` |
+| `raw_data_json` | `JSONB` | False | `None` |
+
 ## `macro_module_current`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `module_id` | `TEXT` | False | `None` |
-| `readiness` | `TEXT` | False | `None` |
 | `fact_cutoff_ms` | `BIGINT` | False | `None` |
 | `payload_json` | `JSONB` | False | `None` |
 | `payload_hash` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `data_health_state` | `TEXT` | False | `None` |
 
 ## `macro_release_facts`
 
@@ -445,7 +542,44 @@
 | `artifact_hash` | `TEXT` | False | `None` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 
+## `macro_research_publications_v1_archive`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `market_cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `artifact_json` | `JSONB` | False | `None` |
+| `report_markdown` | `TEXT` | False | `None` |
+| `audit_json` | `JSONB` | False | `None` |
+| `reviewer_disposition` | `TEXT` | False | `None` |
+| `model_name` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `workflow_version` | `TEXT` | False | `None` |
+| `artifact_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
 ## `macro_research_runs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `market_cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `'pending'::text` |
+| `sealed_at_ms` | `BIGINT` | False | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `max_attempts` | `INTEGER` | False | `None` |
+| `due_at_ms` | `BIGINT` | False | `None` |
+| `leased_until_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `reviewer_disposition` | `TEXT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `last_error_message` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_research_runs_v1_archive`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|

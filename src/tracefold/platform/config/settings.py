@@ -491,6 +491,26 @@ class MacroResearchWorkerSettings(PerWorkerSettings):
         return normalized
 
 
+class MacroDocumentAnalysisWorkerSettings(PerWorkerSettings):
+    enabled: bool = False
+    interval_seconds: float = Field(default=30.0, ge=0)
+    statement_timeout_seconds: float = Field(default=120.0, ge=0)
+    lease_ms: int = Field(default=600_000, ge=1)
+    retry_ms: int = Field(default=300_000, ge=1)
+    max_attempts: int = Field(default=3, ge=1)
+    model: str = "gpt-5.4-mini"
+    model_request_timeout_seconds: float = Field(default=180.0, ge=1)
+    max_tokens: int = Field(default=6_000, ge=1)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def parse_model(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("macro_document_analysis.model is required")
+        return normalized
+
+
 class MacroAcquisitionWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=300.0, ge=0)
     batch_size: int = Field(default=2, ge=1)
@@ -584,6 +604,9 @@ class WorkersSettings(BaseModel):
         default_factory=lambda: MacroAcquisitionWorkerSettings(enabled=False, interval_seconds=5.0, batch_size=1)
     )
     macro_projection: MacroProjectionWorkerSettings = Field(default_factory=MacroProjectionWorkerSettings)
+    macro_document_analysis: MacroDocumentAnalysisWorkerSettings = Field(
+        default_factory=MacroDocumentAnalysisWorkerSettings
+    )
     macro_judgment: MacroJudgmentWorkerSettings = Field(default_factory=MacroJudgmentWorkerSettings)
     macro_research: MacroResearchWorkerSettings = Field(default_factory=MacroResearchWorkerSettings)
     notification_rule: NotificationRuleWorkerSettings = Field(default_factory=NotificationRuleWorkerSettings)

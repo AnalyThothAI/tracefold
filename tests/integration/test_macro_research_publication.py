@@ -32,9 +32,9 @@ def test_one_session_has_one_immutable_publication_and_replay_writes_zero(
                     session_date=session_date,
                     judgment_cutoff_ms=100,
                     latest_fact_at_ms=100,
-                    schema_version="macro_evidence_pack_v1",
+                    schema_version="macro_evidence_pack_v2",
                     compiler_version="integration-test",
-                    payload={"schema_version": "macro_evidence_pack_v1", "modules": {}},
+                    payload={"schema_version": "macro_evidence_pack_v2", "modules": []},
                     payload_hash="sha256:evidence-pack",
                     created_at_ms=100,
                 )

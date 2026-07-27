@@ -13,6 +13,7 @@ import { apiMock, setupAppRouteTest } from "./routeTestSetup";
 
 describe("daily macro decision workbench", () => {
   afterEach(() => {
+    window.location.hash = "";
     document.body.replaceChildren();
   });
 
@@ -58,15 +59,18 @@ describe("daily macro decision workbench", () => {
     expect(screen.getByRole("heading", { name: "矛盾与反证" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "判断失效条件" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "下一检查点" })).toBeVisible();
-    expect(screen.getByText("展开原始证据与 Dataset 状态")).toBeVisible();
+    expect(screen.getByText("展开 Coverage Manifest、Dataset 健康与原始事实")).toBeVisible();
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(apiPath, { token: "secret" }));
   });
 
-  it("makes licensed futures absence explicit on the cross-asset module", async () => {
+  it("keeps futures confirmation in its fixed hash section", async () => {
+    window.location.hash = "#futures";
     renderAppRoute("/macro/cross-asset");
 
-    expect(await screen.findByText("CFE VIX期货官方结算")).toBeVisible();
-    expect(screen.getByText(/免费阶段没有合规授权数据/)).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "VIX 结算与跨资产 CFTC 仓位" }),
+    ).toBeVisible();
+    expect(screen.getByText("VX/U6")).toBeVisible();
   });
 
   it("renders one persisted Evidence-Pack research document", async () => {

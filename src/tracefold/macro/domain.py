@@ -24,12 +24,15 @@ MacroClockKind = Literal[
     "scheduled_release",
     "official_state",
     "official_document",
+    "derived",
     "backfill",
 ]
 MacroFactFamily = Literal[
     "series",
     "release",
     "document",
+    "official_role",
+    "document_analysis",
     "market_observation",
     "market_position",
     "market_settlement",
@@ -148,6 +151,7 @@ class DocumentFact:
     dataset_id: str
     document_type: Literal[
         "statement",
+        "implementation",
         "minutes",
         "sep",
         "speech",
@@ -162,6 +166,23 @@ class DocumentFact:
     source_url: str
     content_text: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class FedOfficialRoleFact:
+    role_fact_id: str
+    dataset_id: str
+    official_id: str
+    official_name: str
+    role_title: str
+    organization: str
+    effective_start: date
+    effective_end: date | None
+    fomc_participant: bool
+    fomc_voter: bool
+    source_url: str
+    received_at_ms: int
+    raw_data: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +205,7 @@ __all__ = [
     "MACRO_MODULE_LABELS",
     "DatasetSpec",
     "DocumentFact",
+    "FedOfficialRoleFact",
     "FetchBatch",
     "MacroClockKind",
     "MacroFactFamily",

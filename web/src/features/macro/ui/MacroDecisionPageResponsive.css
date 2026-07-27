@@ -12,6 +12,10 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .macro-decision__credit-dimensions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .macro-decision__module-grid,
     .macro-decision__review-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -41,17 +45,9 @@
     }
 
     .macro-decision__dimensions,
+    .macro-decision__credit-dimensions,
     .macro-decision__module-grid,
-    .macro-decision__charts,
     .macro-decision__review-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .macro-decision__chart figcaption {
-      display: grid;
-    }
-
-    .macro-decision__sparkline {
       grid-template-columns: 1fr;
     }
 

@@ -43,6 +43,7 @@ macro_economic_releases
 macro_official_state
 macro_official_documents
 macro_backfill
+macro_document_analysis
 macro_projection
 macro_judgment
 token_image_mirror
@@ -180,14 +181,25 @@ read:
 
 Overview and module reads accept no query parameters. The overview returns the
 latest immutable daily judgment, six module summaries, changes since the
-judgment cutoff, overall readiness, and compact research state. Each module
-returns one stable `macro_module_v1` payload containing current state, largest
-changes, versioned features, bounded charts, contradictions, falsifiers, next
-checkpoints, dataset quality, evidence gaps, and raw fact references.
-Readiness is exactly `ready`, `degraded`, or `blocked`. These reads use
-`macro_module_current` and immutable judgment rows only; they never call a
-provider/model, advance a target, rebuild a projection, or synthesize a
-fallback.
+judgment cutoff, three independent status families, and compact research state.
+Each route returns exactly one matching schema:
+
+- `macro_rates_fed_v2`
+- `macro_economy_inflation_v2`
+- `macro_liquidity_funding_v2`
+- `macro_credit_v2`
+- `macro_volatility_v2`
+- `macro_cross_asset_v2`
+
+Shared fields are limited to identity, clocks, status, summary, contradictions,
+falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
+events, credit ladders, and the ETF comparison matrix are explicit typed
+fields, not generic chart arrays. Coverage is `complete`, `partial`, or
+`licensed_unavailable`; Data Health is `current`, `delayed`, `stale`, `invalid`,
+`backfilling`, or `unavailable`; Judgment is `current`, `missing`, or `blocked`.
+These reads use `macro_module_current` and immutable judgment rows only; they
+never call a provider/model, advance a target, rebuild a projection, or
+synthesize a fallback.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
@@ -198,12 +210,43 @@ facts; macroeconomic series, release events, and official documents are Macro
 facts. The legacy generic evidence route, window parameter, bundle/sync
 surface, `macro_observations`, and unclassified facts do not exist.
 
+The Cross-Asset payload always owns the fixed ETF basket SPY, QQQ, IWM, TLT,
+IEF, LQD, HYG, UUP, GLD, and USO. Nasdaq public history is an explicitly
+`untrusted_proxy` source. WTI is the separate official FRED/EIA
+`DCOILWTICO` benchmark; USO is never relabelled as spot or futures. The Rates
+payload exposes Treasury nominal and real maturity cross-sections for current,
+1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,
+transparent curve-shape inputs, and explicit licensed-unavailable CME
+probabilities.
+
+FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
+Bank speeches retain official full body text and source hashes. SEP PDF text is
+extracted from the official PDF with bounded page/content limits. The
+`macro_document_analysis` worker writes one immutable, model/prompt-versioned,
+exact-evidence-bound analysis per source body after effective-dated role facts
+are available. Institutional FOMC stance and the 90-day officials
+communication distribution remain separate. Non-policy material is
+`not_policy_signal`; no static official label or universal hawk/dove score
+exists. The current immutable-analysis admission window is 550 days for FOMC
+materials and 120 days for speeches. Older official bodies remain durable raw
+evidence and do not block the current Daily Judgment.
+
+Credit exposes IG/BBB/BB/B/CCC OAS, actual-sample history statistics, IG/HY
+effective yields, deterministic comparisons with EFFR and 10Y Treasury, SLOOS
+standards and demand for C&I/CRE/consumer, loan delinquency/charge-off facts,
+and labelled ETF/CFTC confirmations. TRACE/NAV detail remains
+`licensed_unavailable`. FRED's public ICE BofA series exposes only its current
+three-year window, so older ICE history is also declared
+`licensed_unavailable`, never inferred or silently presented as complete. Five
+concurrent credit dimensions are returned; no composite score exists.
+
 On every U.S. trading session at 08:50 `America/New_York`,
-`macro_judgment` seals one cutoff-bounded `macro_evidence_pack_v1` and publishes
-one immutable `macro_daily_judgment_v1` when no critical module is blocked.
+`macro_judgment` seals one cutoff-bounded `macro_evidence_pack_v2` and publishes
+one immutable `macro_daily_judgment_v2` when no critical module is blocked and
+required professional backfills/document analyses are complete.
 The judgment fixes growth, inflation, policy, liquidity, credit, and volatility
-states plus one-week/one-month directions for SPY, TLT, HYG, DXY, GLD, USO,
-BTC, and VIX. It exposes conflicts, invalidation conditions, confidence,
+states plus one-week/one-month directions for SPY, QQQ, IWM, TLT, IEF, LQD,
+HYG, UUP, GLD, USO, BTC, and VIX. It exposes conflicts, invalidation conditions, confidence,
 citations, gaps, and next checkpoints instead of a hidden score.
 
 With no query, `GET /api/macro/research` targets the latest completed U.S.

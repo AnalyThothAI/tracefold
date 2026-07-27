@@ -3,8 +3,8 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import type {
   MacroModuleId,
-  MacroModuleReadData,
   MacroOverviewReadData,
+  MacroTypedModuleReadData,
 } from "../model/macroTypes";
 
 const MODULE_API_PATHS: Record<MacroModuleId, string> = {
@@ -34,7 +34,9 @@ export function useMacroModuleQuery(token: string, moduleId: MacroModuleId) {
   return useQuery({
     queryKey: ["macro", "module", moduleId] as const,
     queryFn: async () => {
-      const response = await getApi<MacroModuleReadData>(MODULE_API_PATHS[moduleId], { token });
+      const response = await getApi<MacroTypedModuleReadData>(MODULE_API_PATHS[moduleId], {
+        token,
+      });
       return response.data;
     },
     enabled: Boolean(token),

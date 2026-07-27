@@ -3,11 +3,14 @@ from __future__ import annotations
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from tracefold.app.llm import configured_chat_model, llm_is_configured
+from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.deepagents.macro_research_deepagent import MacroResearchDeepAgent
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import (
     CompletedSessionMacro,
     MacroAcquisitionWorker,
+    MacroDocumentAnalysisService,
+    MacroDocumentAnalysisWorker,
     MacroJudgmentWorker,
     MacroProjectionWorker,
     MacroResearchWorker,
@@ -63,6 +66,32 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
         )
     else:
         constructed["macro_projection"] = disabled_worker(ctx, "macro_projection")
+
+    analysis_settings = ctx.settings.workers.macro_document_analysis
+    if not analysis_settings.enabled:
+        constructed["macro_document_analysis"] = disabled_worker(ctx, "macro_document_analysis")
+    elif not llm_is_configured(ctx.settings):
+        constructed["macro_document_analysis"] = unavailable_worker(
+            ctx,
+            "macro_document_analysis",
+            "llm_not_configured",
+        )
+    else:
+        model, effective_model = configured_chat_model(ctx.settings, analysis_settings)
+        analysis_agent = FedDocumentAnalysisAgent(model=model, model_name=effective_model)
+        analysis_service = MacroDocumentAnalysisService(
+            db=ctx.db,
+            settings=analysis_settings,
+            agent=analysis_agent,
+            worker_name="macro_document_analysis",
+        )
+        constructed["macro_document_analysis"] = MacroDocumentAnalysisWorker(
+            name="macro_document_analysis",
+            settings=analysis_settings,
+            db=ctx.db,
+            telemetry=ctx.telemetry,
+            service=analysis_service,
+        )
 
     judgment_settings = ctx.settings.workers.macro_judgment
     if judgment_settings.enabled:

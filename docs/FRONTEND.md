@@ -122,9 +122,18 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   dominant pressures, top three changes, fixed asset directions, conflicts,
   invalidations, confidence, gaps, citations, next checkpoints, and research
   state. Each module answers current state, what changed, why it matters,
-  contradictions, falsifiers, next checkpoints, charts, formulas, exact
-  dataset quality, and raw fact lineage. `ready`, `degraded`, and `blocked`
-  describe decision evidence and are never inferred in the browser.
+  contradictions, falsifiers, next checkpoints, typed financial structures,
+  formulas, exact dataset quality, and raw fact lineage. Coverage, Data Health,
+  and Judgment are three independent API fields and are never inferred in the
+  browser. Fixed section selection is represented by the URL hash and survives
+  reload/share without adding routes.
+
+  Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
+  comparison. Rates renders true maturity cross-sections and a detailed tenor
+  table. Fed renders institutional stance, recent officials distribution, then
+  the event timeline. Credit keeps five concurrent dimensions visible above
+  its ladder/funding/banks/quality/confirmation sections and never renders a
+  composite score.
 
   The research page is a Chinese workbench, not a frontend-authored decision
   model. It renders the publication title, executive summary, Agent-ordered
@@ -215,8 +224,10 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the daily
-   judgment, six module cards, readiness/gaps, changes, asset directions, and
+   judgment, six module cards, status triplets/gaps, changes, asset directions, and
    research state readable without horizontal overflow. Verify each module
-   keeps charts, formulas, falsifiers, checkpoints, and source clocks readable.
+   keeps its typed structures, formulas, falsifiers, checkpoints, and source
+   clocks readable. For each module, select a non-default section, reload, and
+   verify the same hash section remains active.
    On `/macro/research`, the audit disclosure is keyboard reachable and the
    selected historical session survives reload.

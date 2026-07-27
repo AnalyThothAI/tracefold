@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 
+import tracefold.integrations.macro_sources.client as macro_source_client
 from tracefold.integrations.macro_sources import (
     MacroSourceClient,
     MacroSourceError,
@@ -43,6 +45,7 @@ def test_fred_csv_uses_explicit_backfill_bounds_and_emits_typed_series_facts() -
         "reference_date": "2026-07-02",
         "start_date": "2026-07-01",
         "end_date": "2026-07-02",
+        "backfill_complete": True,
     }
     assert requests[0].url.params["cosd"] == "2026-07-01"
     assert requests[0].url.params["coed"] == "2026-07-02"
@@ -89,15 +92,60 @@ def test_bls_public_release_adapter_preserves_actual_and_prior() -> None:
     assert latest.estimate_value is None
 
 
-def test_federal_reserve_rss_adapter_emits_immutable_document_fact() -> None:
+def test_federal_reserve_speech_adapter_fetches_official_full_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/newsevents/2026-speeches.htm"):
+            return httpx.Response(
+                200,
+                text=('<a href="/newsevents/speech/example20260727a.htm">Monetary Policy</a>'),
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text=(
+                "<html><title>Monetary Policy - Federal Reserve Board</title>"
+                "<main><h1>Monetary Policy</h1><p>July 27, 2026 "
+                "Chair Example Q. Official At the Policy Forum. "
+                "The policy outlook depends on incoming inflation and labor-market evidence. "
+                * 8
+                + "</p></main></html>"
+            ),
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.board.speeches"),
+            partition_key="latest",
+            cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(batch.facts) == 1
+    document = batch.facts[0]
+    assert isinstance(document, DocumentFact)
+    assert document.document_type == "speech"
+    assert "incoming inflation and labor-market evidence" in document.content_text
+    assert document.metadata["speaker_name"] == "Example Q. Official"
+    assert document.source_url.startswith("https://www.federalreserve.gov/")
+
+
+def test_treasury_curve_adapter_emits_one_series_fact_per_tenor() -> None:
     xml = """<?xml version="1.0" encoding="utf-8"?>
-    <rss version="2.0"><channel><item>
-      <title>Federal Reserve issues FOMC statement</title>
-      <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260727a.htm</link>
-      <guid>monetary20260727a</guid>
-      <pubDate>Mon, 27 Jul 2026 10:00:00 GMT</pubDate>
-      <description><![CDATA[<p>The Committee decided to maintain the target range.</p>]]></description>
-    </item></channel></rss>"""
+    <feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+      xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+      xmlns="http://www.w3.org/2005/Atom">
+      <entry><content type="application/xml"><m:properties>
+        <d:NEW_DATE m:type="Edm.DateTime">2026-07-24T00:00:00</d:NEW_DATE>
+        <d:BC_1MONTH m:type="Edm.Double">4.31</d:BC_1MONTH>
+        <d:BC_2YEAR m:type="Edm.Double">3.88</d:BC_2YEAR>
+        <d:BC_10YEAR m:type="Edm.Double">4.42</d:BC_10YEAR>
+        <d:BC_30YEAR m:type="Edm.Double">4.96</d:BC_30YEAR>
+      </m:properties></content></entry>
+    </feed>"""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=xml, request=request)
@@ -105,7 +153,91 @@ def test_federal_reserve_rss_adapter_emits_immutable_document_fact() -> None:
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
         batch = client.fetch(
-            require_dataset("federal_reserve.monetary_policy.documents"),
+            require_dataset("treasury.daily_nominal_curve"),
+            partition_key="2026-07-24..2026-07-24",
+            cursor={"start_date": "2026-07-24", "end_date": "2026-07-24"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert [(fact.series_id, fact.value_numeric) for fact in batch.facts] == [
+        ("10Y", 4.42),
+        ("1M", 4.31),
+        ("2Y", 3.88),
+        ("30Y", 4.96),
+    ]
+    assert batch.cursor["reference_date"] == "2026-07-24"
+
+
+def test_fomc_calendar_adapter_stores_distinct_full_text_document_types() -> None:
+    calendar = """
+    <html><main>
+      <a href="/newsevents/pressreleases/monetary20260729a.htm">Statement</a>
+      <a href="/newsevents/pressreleases/monetary20260729a1.htm">Implementation Note</a>
+      <a href="/monetarypolicy/fomcminutes20260617.htm">Minutes</a>
+      <a href="/monetarypolicy/fomcprojtabl20260617.htm">Projection Materials</a>
+    </main></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("fomccalendars.htm"):
+            return httpx.Response(200, text=calendar, request=request)
+        return httpx.Response(
+            200,
+            text=(
+                f"<html><title>{request.url.path}</title><main>"
+                "<p>Release Date: July 8, 2026</p>"
+                f"<p>{'Official policy body. ' * 30}</p></main></html>"
+            ),
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.fomc.documents"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert {fact.document_type for fact in batch.facts} == {
+        "statement",
+        "implementation",
+        "minutes",
+        "sep",
+    }
+    assert all(len(fact.content_text) > 200 for fact in batch.facts)
+
+
+def test_fomc_calendar_adapter_extracts_official_sep_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calendar = """
+    <html><main>
+      <a href="/monetarypolicy/files/fomcprojtabl20260617.pdf">
+        Projection Materials
+      </a>
+    </main></html>
+    """
+    monkeypatch.setattr(
+        macro_source_client,
+        "_extract_pdf_text",
+        lambda payload: "Official Summary of Economic Projections. " * 12,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("fomccalendars.htm"):
+            return httpx.Response(200, text=calendar, request=request)
+        return httpx.Response(200, content=b"%PDF-1.7 test", request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.fomc.documents"),
             partition_key="latest",
             cursor={},
             now_ms=NOW_MS,
@@ -116,9 +248,117 @@ def test_federal_reserve_rss_adapter_emits_immutable_document_fact() -> None:
     assert len(batch.facts) == 1
     document = batch.facts[0]
     assert isinstance(document, DocumentFact)
-    assert document.document_type == "statement"
-    assert document.content_text == "The Committee decided to maintain the target range."
-    assert document.source_url.startswith("https://www.federalreserve.gov/")
+    assert document.document_type == "sep"
+    assert document.metadata["body_source"] == "official_pdf"
+    assert len(document.content_text) > 200
+
+
+def test_fomc_minutes_capture_effective_meeting_role_and_voting_records() -> None:
+    calendar = """
+    <html><main>
+      <a href="/monetarypolicy/fomcminutes20260617.htm">Minutes</a>
+    </main></html>
+    """
+    minutes = """
+    <html><title>Minutes</title><main>
+      <p>Release Date: July 8, 2026</p>
+      <p>Official policy body. Official policy body. Official policy body.</p>
+      <p><strong>Attendance</strong><br />
+      Example Chair, Chair<br />
+      2 Example Voter<br />
+      3</p>
+      <p>Example Alternate, Alternate Members of the Committee</p>
+      <p>Example President, Presidents of the Federal Reserve Banks of Example, respectively</p>
+    </main></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=calendar if request.url.path.endswith("fomccalendars.htm") else minutes,
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.fomc.documents"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    document = batch.facts[0]
+    assert isinstance(document, DocumentFact)
+    roles = document.metadata["fomc_role_records"]
+    assert [(role["official_name"], role["fomc_voter"]) for role in roles] == [
+        ("Example Chair", True),
+        ("Example Voter", True),
+        ("Example Alternate", False),
+        ("Example President", False),
+    ]
+
+
+def test_reserve_bank_sitemap_adapter_accepts_only_official_full_speech_pages() -> None:
+    sitemap = """<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url>
+        <loc>https://www.bostonfed.org/news-and-events/speeches/2026/07/policy-outlook</loc>
+        <lastmod>2026-07-24</lastmod>
+      </url>
+      <url>
+        <loc>https://www.bostonfed.org/news-and-events/press-releases/2026/07/other</loc>
+        <lastmod>2026-07-24</lastmod>
+      </url>
+    </urlset>"""
+    speech = """
+    <html><head>
+      <title>Policy Outlook | Federal Reserve Bank of Boston</title>
+      <meta name="author" content="Example President" />
+      <meta property="article:published_time" content="2026-07-24T09:00:00-04:00" />
+    </head><main><h1>Policy Outlook</h1><p>
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    The inflation and employment outlook will guide monetary policy and the policy rate.
+    </p></main></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                text="Sitemap: https://www.bostonfed.org/sitemap.xml\n",
+                request=request,
+            )
+        if request.url.path == "/sitemap.xml":
+            return httpx.Response(200, text=sitemap, request=request)
+        return httpx.Response(200, text=speech, request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.reserve_bank.speeches"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(batch.facts) == 1
+    document = batch.facts[0]
+    assert isinstance(document, DocumentFact)
+    assert document.metadata["speaker_name"] == "Example President"
+    assert document.metadata["body_source"] == "official_reserve_bank_page"
+    assert document.source_url.startswith("https://www.bostonfed.org/")
+    assert len(document.content_text) > 500
 
 
 def test_missing_cfe_daily_file_is_retryable_not_permanently_unavailable() -> None:
@@ -169,6 +409,41 @@ def test_cfe_settlement_uses_current_official_csv_endpoint() -> None:
     assert fact.contract_code == "VX30/N6"
     assert fact.settlement_price == 19.231
     assert requests[0].url.params["dt"] == "2026-07-24"
+
+
+def test_cfe_settlement_skips_a_published_but_empty_current_file() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.params["dt"] == "2026-07-27":
+            return httpx.Response(
+                200,
+                text="Product,Symbol,Expiration Date,Price\n",
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text="Product,Symbol,Expiration Date,Price\nVX,VX30/N6,2026-07-29,19.231\n",
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("cboe.cfe.vx.settlement"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert batch.facts[0].trade_date == date(2026, 7, 24)
+    assert [request.url.params["dt"] for request in requests] == [
+        "2026-07-27",
+        "2026-07-24",
+    ]
 
 
 def test_binance_spot_ignores_the_still_open_daily_candle() -> None:
@@ -315,3 +590,110 @@ def test_disabled_nasdaq_public_source_is_explicitly_unavailable() -> None:
             )
     finally:
         client.close()
+
+
+def test_reserve_bank_speech_discovery_isolates_one_malformed_sitemap() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                text=("Sitemap: https://www.bostonfed.org/broken.xml\nSitemap: https://www.bostonfed.org/valid.xml\n"),
+                request=request,
+            )
+        if request.url.path == "/broken.xml":
+            return httpx.Response(200, text="<html><broken></html>", request=request)
+        if request.url.path == "/valid.xml":
+            return httpx.Response(
+                200,
+                text=(
+                    '<?xml version="1.0"?>'
+                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                    "<url><loc>https://www.bostonfed.org/news-and-events/speeches/"
+                    "1996/07/out-of-range-policy-remarks</loc><lastmod>2026-07-25</lastmod></url>"
+                    "<url><loc>https://www.bostonfed.org/news-and-events/speeches/"
+                    "2026/07/a-stale-policy-remarks</loc><lastmod>2026-07-23</lastmod></url>"
+                    "<url><loc>https://www.bostonfed.org/news-and-events/speeches/"
+                    "2026/07/policy-remarks</loc><lastmod>2026-07-24</lastmod></url>"
+                    "</urlset>"
+                ),
+                request=request,
+            )
+        if request.url.path.endswith("/a-stale-policy-remarks"):
+            return httpx.Response(404, request=request)
+        if request.url.path.endswith("/out-of-range-policy-remarks"):
+            raise AssertionError("out-of-range sitemap URL must not be fetched")
+        if request.url.path.endswith("/policy-remarks"):
+            return httpx.Response(
+                200,
+                text=(
+                    "<html><head><title>Policy Remarks</title>"
+                    '<meta name="date" content="2026-07-24T10:00:00-04:00">'
+                    '<meta name="author" content="Jane Official"></head><body><main>'
+                    + "Monetary policy evidence. " * 40
+                    + "</main></body></html>"
+                ),
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    spec = require_dataset("federal_reserve.reserve_bank.speeches")
+    narrowed_spec = replace(
+        spec,
+        metadata={**spec.metadata, "official_roots": ("https://www.bostonfed.org",)},
+    )
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            narrowed_spec,
+            partition_key="latest",
+            cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(batch.facts) == 1
+    assert batch.facts[0].metadata["speaker_name"] == "Jane Official"
+
+
+def test_reserve_bank_backfill_finishes_after_last_empty_source() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                text=f"Sitemap: https://{request.url.host}/sitemap.xml\n",
+                request=request,
+            )
+        if request.url.path == "/sitemap.xml":
+            return httpx.Response(
+                200,
+                text=('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'),
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    spec = require_dataset("federal_reserve.reserve_bank.speeches")
+    narrowed_spec = replace(
+        spec,
+        metadata={
+            **spec.metadata,
+            "official_roots": (
+                "https://www.bostonfed.org",
+                "https://www.dallasfed.org",
+            ),
+        },
+    )
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            narrowed_spec,
+            partition_key="backfill",
+            cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert batch.facts == ()
+    assert batch.cursor["source_index"] == 0
+    assert batch.cursor["backfill_complete"] is True

@@ -15,25 +15,23 @@ import { Link } from "react-router-dom";
 import { useMacroModuleQuery, useMacroOverviewQuery } from "../api/useMacroDecisionQuery";
 import type {
   MacroAssetDirection,
-  MacroChart,
-  MacroChartPoint,
   MacroChange,
+  MacroCoverageState,
   MacroDailyJudgment,
+  MacroDataHealthState,
+  MacroJudgmentState,
   MacroModuleId,
-  MacroModuleReadData,
   MacroOverviewReadData,
-  MacroReadiness,
+  MacroTypedModuleReadData,
 } from "../model/macroTypes";
+
+import { MacroModuleSections } from "./MacroModuleSections";
 
 import "./MacroDecisionPage.css";
 import "./MacroDecisionEvidence.css";
 import "./MacroDecisionPageResponsive.css";
 
-const MODULE_ROUTES: ReadonlyArray<{
-  id: MacroModuleId;
-  path: string;
-  label: string;
-}> = [
+const MODULE_ROUTES: ReadonlyArray<{ id: MacroModuleId; path: string; label: string }> = [
   { id: "rates_fed", path: "/macro/rates-fed", label: "利率与美联储" },
   { id: "economy_inflation", path: "/macro/economy-inflation", label: "经济与通胀" },
   { id: "liquidity_funding", path: "/macro/liquidity-funding", label: "流动性与融资" },
@@ -54,10 +52,12 @@ export function MacroOverviewPage({ token }: { token: string }) {
     <PageState.Stale updating={query.isFetching && !query.isLoading}>
       <main aria-label="每日宏观决策台" className="macro-decision" data-page-archetype="decision">
         <DecisionHeader
+          coverage={query.data.coverage_state}
+          dataHealth={query.data.data_health_state}
           isFetching={query.isFetching}
-          latestFactAtMs={query.data.latest_fact_at_ms}
+          judgment={query.data.judgment_state}
           judgmentCutoffMs={query.data.judgment_cutoff_ms}
-          readiness={query.data.overall_readiness}
+          latestFactAtMs={query.data.latest_fact_at_ms}
           title="每日宏观决策台"
           onRefresh={() => void query.refetch()}
         />
@@ -80,10 +80,12 @@ export function MacroModulePage({ token, moduleId }: { token: string; moduleId: 
     <PageState.Stale updating={query.isFetching && !query.isLoading}>
       <main aria-label={query.data.label} className="macro-decision" data-page-archetype="decision">
         <DecisionHeader
+          coverage={query.data.status.coverage.state}
+          dataHealth={query.data.status.data_health.state}
           isFetching={query.isFetching}
+          judgment={query.data.status.judgment.state}
+          judgmentCutoffMs={query.data.status.judgment.cutoff_ms}
           latestFactAtMs={query.data.latest_fact_at_ms}
-          judgmentCutoffMs={query.data.judgment_cutoff_ms}
-          readiness={query.data.readiness}
           title={query.data.label}
           onRefresh={() => void query.refetch()}
         />
@@ -96,14 +98,18 @@ export function MacroModulePage({ token, moduleId }: { token: string; moduleId: 
 
 function DecisionHeader({
   title,
-  readiness,
+  coverage,
+  dataHealth,
+  judgment,
   judgmentCutoffMs,
   latestFactAtMs,
   isFetching,
   onRefresh,
 }: {
   title: string;
-  readiness: MacroReadiness;
+  coverage: MacroCoverageState;
+  dataHealth: MacroDataHealthState;
+  judgment: MacroJudgmentState;
   judgmentCutoffMs: number | null;
   latestFactAtMs: number;
   isFetching: boolean;
@@ -114,9 +120,9 @@ function DecisionHeader({
       <div>
         <span>DAILY MACRO DECISION WORKBENCH</span>
         <h1>{title}</h1>
-        <p>事实、定价、矛盾与下一检查点分开呈现；不使用一个总分替代判断。</p>
+        <p>Coverage、实时数据健康和冻结判断分开呈现；不使用一个绿色标签掩盖缺项。</p>
       </div>
-      <ReadinessBadge readiness={readiness} />
+      <StatusTriplet coverage={coverage} dataHealth={dataHealth} judgment={judgment} />
       <dl>
         <div>
           <dt>判断截点</dt>
@@ -132,6 +138,24 @@ function DecisionHeader({
         {isFetching ? "刷新中" : "刷新"}
       </Button>
     </header>
+  );
+}
+
+function StatusTriplet({
+  coverage,
+  dataHealth,
+  judgment,
+}: {
+  coverage: MacroCoverageState;
+  dataHealth: MacroDataHealthState;
+  judgment: MacroJudgmentState;
+}) {
+  return (
+    <div aria-label="模块三类状态" className="macro-decision__status-triplet">
+      <span data-state={coverage}>覆盖 {coverageLabel(coverage)}</span>
+      <span data-state={dataHealth}>数据 {healthLabel(dataHealth)}</span>
+      <span data-state={judgment}>判断 {judgmentLabel(judgment)}</span>
+    </div>
   );
 }
 
@@ -165,31 +189,32 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
           <ShieldAlert aria-hidden="true" />
           <div>
             <h2>今日判断尚未发布</h2>
-            <p>关键模块未就绪时系统保留事实页面，但不会生成新的宏观判断。</p>
+            <p>事实页继续更新，但不会把普通行情刷新伪装成新判断。</p>
           </div>
         </section>
       )}
-
       <section aria-label="六个宏观模块" className="macro-decision__module-grid">
         {data.modules.map((module) => (
           <article className="macro-decision__module-card" key={module.module_id}>
-            <header>
-              <ReadinessBadge
-                readiness={module.readiness === "missing" ? "blocked" : module.readiness}
-              />
-              <small>{module.gap_count} 个缺口</small>
-            </header>
+            <StatusTriplet
+              coverage={module.coverage_state === "missing" ? "partial" : module.coverage_state}
+              dataHealth={
+                module.data_health_state === "missing" ? "invalid" : module.data_health_state
+              }
+              judgment={module.judgment_state}
+            />
             <h2>{module.label}</h2>
-            <p>{textValue(module.current_state?.interpretation) ?? "模块正在首次构建。"}</p>
+            <p>{module.summary?.interpretation ?? "模块正在首次构建。"}</p>
             <ChangeList changes={module.top_changes.slice(0, 2)} compact />
+            <small>
+              {module.coverage_gap_count} 个覆盖缺口 · {module.health_gap_count} 个数据异常
+            </small>
             <Link to={module.href}>
-              打开模块
-              <ArrowRight aria-hidden="true" />
+              打开模块 <ArrowRight aria-hidden="true" />
             </Link>
           </article>
         ))}
       </section>
-
       <ResearchStrip research={data.research} />
     </>
   );
@@ -203,7 +228,7 @@ function JudgmentPanel({ judgment }: { judgment: MacroDailyJudgment }) {
           <span>DAILY JUDGMENT · {judgment.session_date}</span>
           <h2>{judgment.overall_state}</h2>
         </div>
-        <small>证据截点与最新事实独立记录</small>
+        <small>Evidence Pack 已冻结，实时页面不会改写它</small>
       </header>
       <div className="macro-decision__dimensions">
         {Object.entries(judgment.dimensions).map(([dimension, state]) => (
@@ -214,7 +239,6 @@ function JudgmentPanel({ judgment }: { judgment: MacroDailyJudgment }) {
           </article>
         ))}
       </div>
-      <JudgmentEvidence judgment={judgment} />
       <div className="macro-decision__judgment-grid">
         <div>
           <h3>主导压力</h3>
@@ -231,74 +255,6 @@ function JudgmentPanel({ judgment }: { judgment: MacroDailyJudgment }) {
         <AssetDirections directions={judgment.asset_directions} />
       </div>
     </section>
-  );
-}
-
-function JudgmentEvidence({ judgment }: { judgment: MacroDailyJudgment }) {
-  const falsifiers = judgment.falsifiers.flatMap((entry) =>
-    stringArray(entry.items).map((item) => `${moduleLabel(textValue(entry.module_id))}：${item}`),
-  );
-  return (
-    <div className="macro-decision__decision-evidence">
-      <JudgmentEvidenceCard
-        empty="尚无足够历史确认变化。"
-        items={judgment.top_3_changes.map((item) => {
-          const label = textValue(item.label) ?? textValue(item.dataset_id) ?? "宏观事实";
-          const value = numberValue(item.value);
-          const change = numberValue(item.short_change);
-          return `${label}：${value == null ? "—" : formatNumber(value)} ${unitLabel(textValue(item.unit) ?? "")}；短窗 ${formatSigned(change)}`;
-        })}
-        title="今日最重要变化"
-      />
-      <JudgmentEvidenceCard
-        empty="当前没有识别到结构性矛盾。"
-        items={judgment.contradictions.map(
-          (item) =>
-            `${moduleLabel(textValue(item.module_id))}：${textValue(item.text) ?? "等待更多证据"}`,
-        )}
-        title="矛盾与反证"
-      />
-      <JudgmentEvidenceCard empty="暂无预设失效条件。" items={falsifiers} title="判断失效条件" />
-      <JudgmentEvidenceCard
-        empty="当前没有待补检查点。"
-        items={judgment.next_checkpoints.map(
-          (item) =>
-            `${textValue(item.label) ?? textValue(item.dataset_id) ?? moduleLabel(textValue(item.module_id))}：${textValue(item.next_check) ?? "按数据时钟检查"}`,
-        )}
-        title="下一检查点"
-      />
-      <JudgmentEvidenceCard
-        empty="关键数据集均在新鲜度预算内。"
-        items={judgment.gaps.map(
-          (item) =>
-            `${textValue(item.label) ?? textValue(item.dataset_id) ?? "数据集"}：${gapReason(textValue(item.reason))}`,
-        )}
-        title={`数据缺口 · ${judgment.citations.length} 条可追溯事实`}
-      />
-    </div>
-  );
-}
-
-function JudgmentEvidenceCard({
-  title,
-  items,
-  empty,
-}: {
-  title: string;
-  items: string[];
-  empty: string;
-}) {
-  return (
-    <article>
-      <h3>{title}</h3>
-      <ul>
-        {items.length ? (
-          items.slice(0, 6).map((item) => <li key={item}>{item}</li>)
-        ) : (
-          <li>{empty}</li>
-        )}
-      </ul>
-    </article>
   );
 }
 
@@ -343,55 +299,104 @@ function Direction({ value }: { value: MacroAssetDirection["1w"] }) {
   );
 }
 
-function ModuleDetail({ module }: { module: MacroModuleReadData }) {
+function ModuleDetail({ module }: { module: MacroTypedModuleReadData }) {
   return (
     <>
       <section className="macro-decision__state">
         <div>
-          <span>CURRENT STATE</span>
-          <h2>{module.current_state.headline}</h2>
-          <p>{module.current_state.interpretation}</p>
+          <span>CURRENT FACT STATE</span>
+          <h2>{module.summary.headline}</h2>
+          <p>{module.summary.interpretation}</p>
         </div>
         <div>
           <span>最重要变化</span>
-          <ChangeList changes={module.top_changes.slice(0, 3)} />
+          <ChangeList changes={module.summary.top_changes.slice(0, 3)} />
         </div>
       </section>
-
-      <section aria-label="模块图表" className="macro-decision__charts">
-        {module.charts.map((chart) => (
-          <MacroChartFigure chart={chart} key={chart.chart_id} />
-        ))}
-      </section>
-
+      <MacroModuleSections module={module} />
       <section className="macro-decision__review-grid">
         <ReviewList title="矛盾与反证" items={module.contradictions} empty="暂未识别结构性矛盾。" />
         <ReviewList title="判断失效条件" items={module.falsifiers} empty="暂无预设失效条件。" />
-        <CheckpointList items={module.next_checkpoints} />
-        <GapList module={module} />
+        <ReviewList
+          title="下一检查点"
+          items={module.next_checkpoints.map(
+            (item) =>
+              `${textValue(item.label) ?? "数据检查"}：${textValue(item.next_check) ?? "按时钟检查"}`,
+          )}
+          empty="当前没有待补检查点。"
+        />
+        <CoverageSummary module={module} />
       </section>
-
-      <details className="macro-decision__evidence">
-        <summary>展开原始证据与 Dataset 状态</summary>
-        <div className="macro-decision__dataset-list">
-          {module.dataset_states.map((dataset) => (
-            <article data-state={dataset.state} key={dataset.dataset_id}>
-              <div>
-                <strong>{dataset.label}</strong>
-                <small>{dataset.dataset_id}</small>
-              </div>
-              <span>{dataset.state}</span>
-              <time>{dataset.latest_reference ?? "尚无事实"}</time>
-              <a href={dataset.source_url} rel="noreferrer" target="_blank">
-                来源
-                <ExternalLink aria-hidden="true" />
-              </a>
-            </article>
-          ))}
-        </div>
-        <RawEvidence module={module} />
-      </details>
+      <EvidenceDetails module={module} />
     </>
+  );
+}
+
+function CoverageSummary({ module }: { module: MacroTypedModuleReadData }) {
+  const missing = module.status.coverage.capabilities.filter((item) => item.state !== "available");
+  return (
+    <article>
+      <h2>覆盖缺口</h2>
+      <ul>
+        {missing.length ? (
+          missing.map((item) => (
+            <li key={item.capability_id}>
+              {item.label}：{reasonLabel(item.reason ?? item.state)}
+            </li>
+          ))
+        ) : (
+          <li>Coverage Manifest 的预期能力已完整。</li>
+        )}
+      </ul>
+    </article>
+  );
+}
+
+function EvidenceDetails({ module }: { module: MacroTypedModuleReadData }) {
+  return (
+    <details className="macro-decision__evidence">
+      <summary>展开 Coverage Manifest、Dataset 健康与原始事实</summary>
+      <div className="macro-decision__coverage-list">
+        {module.status.coverage.capabilities.map((capability) => (
+          <article data-state={capability.state} key={capability.capability_id}>
+            <strong>{capability.label}</strong>
+            <span>{capability.state}</span>
+            <small>{capability.requirement}</small>
+          </article>
+        ))}
+      </div>
+      <div className="macro-decision__dataset-list">
+        {module.evidence.dataset_states.map((dataset) => (
+          <article data-state={dataset.state} key={dataset.dataset_id}>
+            <div>
+              <strong>{dataset.label}</strong>
+              <small>{dataset.dataset_id}</small>
+            </div>
+            <span>{dataset.state}</span>
+            <time>{dataset.latest_reference ?? "尚无事实"}</time>
+            <a href={dataset.source_url} rel="noreferrer" target="_blank">
+              来源 <ExternalLink aria-hidden="true" />
+            </a>
+          </article>
+        ))}
+      </div>
+      <div className="macro-decision__raw-evidence">
+        <h3>当前原始事实</h3>
+        {module.evidence.latest_facts.map((fact, index) => (
+          <article key={fact.fact_ref ?? `${fact.dataset_id}-${index}`}>
+            <strong>
+              {fact.dataset_id}
+              {fact.series_id ? ` / ${fact.series_id}` : ""}
+            </strong>
+            <span>{fact.reference ?? "—"}</span>
+            <span>{fact.value == null ? "—" : String(fact.value)}</span>
+            <a href={fact.source_url} rel="noreferrer" target="_blank">
+              来源
+            </a>
+          </article>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -406,122 +411,11 @@ function ChangeList({ changes, compact = false }: { changes: MacroChange[]; comp
             {formatNumber(change.value)} {unitLabel(change.unit)}
           </strong>
           <small>
-            {change.short_window} {formatSigned(change.short_change)} · {change.medium_window}{" "}
-            {formatSigned(change.medium_change)}
+            1周 {formatSigned(change.change_1w)} · 1月 {formatSigned(change.change_1m)}
           </small>
         </article>
       ))}
     </div>
-  );
-}
-
-function MacroChartFigure({ chart }: { chart: MacroChart }) {
-  const rows = chart.series
-    .map((datasetId) => ({
-      datasetId,
-      points: chart.points.filter((point) => point.dataset_id === datasetId),
-    }))
-    .filter((row) => row.points.length);
-  return (
-    <figure className="macro-decision__chart">
-      <figcaption>
-        <h2>{chart.title}</h2>
-        <span>各序列独立刻度；窗口由数据频率定义</span>
-      </figcaption>
-      {rows.length ? (
-        rows.map((row) => (
-          <Sparkline datasetId={row.datasetId} key={row.datasetId} points={row.points} />
-        ))
-      ) : (
-        <p>等待有效历史数据。</p>
-      )}
-    </figure>
-  );
-}
-
-function Sparkline({ datasetId, points }: { datasetId: string; points: MacroChartPoint[] }) {
-  const sampled = downsample(points, 120);
-  const values = sampled.map((point) => point.y);
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  const span = maximum - minimum || 1;
-  const path = sampled
-    .map((point, index) => {
-      const x = sampled.length === 1 ? 50 : (index / (sampled.length - 1)) * 100;
-      const y = 38 - ((point.y - minimum) / span) * 34;
-      return `${index ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(" ");
-  const latest = sampled.at(-1);
-  const label = latest?.label ?? datasetId;
-  return (
-    <div className="macro-decision__sparkline">
-      <div>
-        <strong>{label}</strong>
-        <span>{latest ? `${formatNumber(latest.y)} ${unitLabel(latest.unit)}` : "—"}</span>
-      </div>
-      <svg aria-label={`${label} 历史走势`} preserveAspectRatio="none" viewBox="0 0 100 40">
-        <path d={path} />
-      </svg>
-      <small>
-        {sampled[0]?.x} → {latest?.x}
-      </small>
-    </div>
-  );
-}
-
-function RawEvidence({ module }: { module: MacroModuleReadData }) {
-  const labels = new Map(module.dataset_states.map((item) => [item.dataset_id, item.label]));
-  return (
-    <section className="macro-decision__raw-evidence">
-      <h3>当前原始事实</h3>
-      <div role="table">
-        <div role="row">
-          <span role="columnheader">数据 / 合约</span>
-          <span role="columnheader">参考期</span>
-          <span role="columnheader">值</span>
-          <span role="columnheader">可用时间</span>
-          <span role="columnheader">来源</span>
-        </div>
-        {module.raw_evidence.length ? (
-          module.raw_evidence.map((fact, index) => {
-            const datasetId = textValue(fact.dataset_id) ?? "unknown";
-            const label = textValue(fact.label) ?? labels.get(datasetId) ?? datasetId;
-            const value = fact.value;
-            const unit = textValue(fact.unit) ?? "";
-            const receivedAt = numberValue(fact.received_at_ms);
-            const sourceUrl = textValue(fact.source_url);
-            return (
-              <div key={textValue(fact.fact_ref) ?? `${datasetId}-${index}`} role="row">
-                <span role="cell">
-                  <strong>{label}</strong>
-                  <small>{datasetId}</small>
-                </span>
-                <time role="cell">{textValue(fact.reference) ?? "—"}</time>
-                <span role="cell">
-                  {typeof value === "number"
-                    ? `${formatNumber(value)} ${unitLabel(unit)}`
-                    : (textValue(value) ?? "—")}
-                </span>
-                <time role="cell">{formatInstant(receivedAt)}</time>
-                <span role="cell">
-                  {sourceUrl ? (
-                    <a href={sourceUrl} rel="noreferrer" target="_blank">
-                      打开
-                      <ExternalLink aria-hidden="true" />
-                    </a>
-                  ) : (
-                    "—"
-                  )}
-                </span>
-              </div>
-            );
-          })
-        ) : (
-          <p>尚无有效事实。</p>
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -530,45 +424,6 @@ function ReviewList({ title, items, empty }: { title: string; items: string[]; e
     <article>
       <h2>{title}</h2>
       <ul>{items.length ? items.map((item) => <li key={item}>{item}</li>) : <li>{empty}</li>}</ul>
-    </article>
-  );
-}
-
-function CheckpointList({ items }: { items: Record<string, unknown>[] }) {
-  return (
-    <article>
-      <h2>下一检查点</h2>
-      <ul>
-        {items.length ? (
-          items.map((item, index) => (
-            <li key={index}>
-              {textValue(item.label) ?? textValue(item.dataset_id) ?? "数据检查"}：
-              {textValue(item.next_check) ?? "按数据时钟检查"}
-            </li>
-          ))
-        ) : (
-          <li>当前没有待补检查点。</li>
-        )}
-      </ul>
-    </article>
-  );
-}
-
-function GapList({ module }: { module: MacroModuleReadData }) {
-  return (
-    <article>
-      <h2>数据缺口</h2>
-      <ul>
-        {module.gaps.length ? (
-          module.gaps.map((gap, index) => (
-            <li key={index}>
-              {textValue(gap.label) ?? "数据集"}：{gapReason(textValue(gap.reason))}
-            </li>
-          ))
-        ) : (
-          <li>关键数据集均在当前新鲜度预算内。</li>
-        )}
-      </ul>
     </article>
   );
 }
@@ -592,23 +447,29 @@ function ResearchStrip({ research }: { research: MacroOverviewReadData["research
         </div>
       </dl>
       <Link to={research.href}>
-        查看深度研究
-        <ArrowRight aria-hidden="true" />
+        查看深度研究 <ArrowRight aria-hidden="true" />
       </Link>
     </section>
   );
 }
 
-function ReadinessBadge({ readiness }: { readiness: MacroReadiness }) {
-  return (
-    <span className="macro-decision__readiness" data-readiness={readiness}>
-      {readinessLabel(readiness)}
-    </span>
-  );
+function coverageLabel(value: MacroCoverageState) {
+  return { complete: "完整", partial: "部分", licensed_unavailable: "授权缺失" }[value];
 }
 
-function readinessLabel(readiness: MacroReadiness) {
-  return { ready: "就绪", degraded: "降级可读", blocked: "阻止新判断" }[readiness];
+function healthLabel(value: MacroDataHealthState) {
+  return {
+    current: "当前",
+    delayed: "延迟",
+    stale: "陈旧",
+    invalid: "无效",
+    backfilling: "回填中",
+    unavailable: "不可用",
+  }[value];
+}
+
+function judgmentLabel(value: MacroJudgmentState) {
+  return { current: "已发布", missing: "未发布", blocked: "阻塞" }[value];
 }
 
 function researchStateLabel(state: MacroOverviewReadData["research"]["state"]) {
@@ -633,47 +494,19 @@ function dimensionLabel(value: string) {
   );
 }
 
-function gapReason(value: string | null) {
+function reasonLabel(value: string) {
   return (
     {
-      licensed_data_not_configured: "免费阶段没有合规授权数据",
-      no_valid_fact: "尚无有效事实",
-      fact_past_freshness_budget: "超过新鲜度预算",
-      fact_delayed: "数据延迟",
-      module_projection_missing: "模块投影正在初始化",
-    }[value ?? ""] ??
-    value ??
-    "原因待确认"
+      licensed_contract_facts_not_configured: "缺少合规授权的合约事实",
+      licensed_security_level_facts_not_configured: "缺少合规逐笔与 NAV 数据",
+      ice_bofa_history_before_public_three_year_window_unavailable:
+        "FRED 仅公开最近三年 ICE BofA 数据；更早历史需要授权",
+    }[value] ?? value
   );
 }
 
 function textValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
-}
-
-function numberValue(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function moduleLabel(value: string | null): string {
-  return (
-    {
-      rates_fed: "利率与美联储",
-      economy_inflation: "经济与通胀",
-      liquidity_funding: "流动性与融资",
-      credit: "信用市场",
-      volatility: "波动率",
-      cross_asset: "大类资产与期货",
-    }[value ?? ""] ??
-    value ??
-    "宏观模块"
-  );
 }
 
 function formatInstant(value: number | null): string {
@@ -708,14 +541,9 @@ function unitLabel(unit: string) {
       percent_open_interest: "% OI",
       price: "",
       usdt: "USDT",
+      usd_per_barrel: "美元/桶",
       persons: "人",
       thousands_persons: "千人",
     }[unit] ?? unit
   );
-}
-
-function downsample(points: MacroChartPoint[], maximum: number): MacroChartPoint[] {
-  if (points.length <= maximum) return points;
-  const step = (points.length - 1) / (maximum - 1);
-  return Array.from({ length: maximum }, (_, index) => points[Math.round(index * step)]);
 }

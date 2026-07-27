@@ -198,9 +198,11 @@ clock-specific target claim -> provider I/O -> typed fact + source receipt + cur
   -> immutable macro_research_publications row
 ```
 
-The five automatic acquisition workers claim only their own clock family from
+The four automatic acquisition workers claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`; `macro_backfill` claims only
-explicit bounded backfills. Provider I/O happens after claim commit. One
+explicit bounded backfills. `macro backfill-professional` enqueues the
+code-owned Treasury/Fed/credit/ETF/WTI/CFTC history policy in one transaction.
+Provider I/O happens after claim commit. One
 completion transaction appends normalized facts and
 `macro_source_receipts`, advances the cursor, and compare-and-set completes the
 target. An unchanged replay writes zero fact rows and a receipt; a changed
@@ -215,12 +217,23 @@ hash. Do not repair source or calculation errors with a frontend fallback.
 history must stay
 visible.
 
+FOMC/Board/Reserve Bank full-text facts feed
+`macro_document_analysis_jobs`. The worker waits to schedule a speech until an
+effective-dated role match exists or the completed FOMC history backfill proves
+that the speech date has roster coverage. Each claim performs model I/O outside
+the write transaction, validates exact excerpts against the frozen body, then
+atomically inserts the immutable analysis and completes the job. Open jobs make
+the derived analysis dataset `backfilling`; exhausted jobs make it `invalid`
+and block judgment. Restart reclaims expired leases without duplicating
+analysis identity.
+
 `macro_projection` deterministically recomputes the Calculation Registry and
 six stable module rows; unchanged payloads write zero serving rows.
 `macro_judgment` runs after 08:50 `America/New_York` on U.S. trading days,
 compiles only facts received by that cutoff, and does nothing if any critical
-module is blocked. Evidence Pack and daily judgment insertion are immutable
-and replay-safe. They remain readable when DeepAgents is delayed or failed.
+module, required professional backfill, or document-analysis queue is blocked.
+Evidence Pack and daily judgment insertion are immutable and replay-safe. They
+remain readable when DeepAgents research is delayed or failed.
 
 `macro_research` waits for its configured settle delay, creates or re-reads one
 stable completed-session run, and claims at most one due run per iteration.

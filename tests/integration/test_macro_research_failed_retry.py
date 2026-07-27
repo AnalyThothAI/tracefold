@@ -196,7 +196,11 @@ def _insert_evidence_pack(conn, *, session_date: date) -> None:
           evidence_pack_id, session_date, judgment_cutoff_ms, latest_fact_at_ms,
           schema_version, compiler_version, payload_json, payload_hash, created_at_ms
         )
-        VALUES (%s, %s, 100, 100, 'macro_evidence_pack_v1', 'test', '{}'::jsonb, %s, 100)
+        VALUES (
+          %s, %s, 100, 100, 'macro_evidence_pack_v2', 'test',
+          '{"schema_version":"macro_evidence_pack_v2","modules":[]}'::jsonb,
+          %s, 100
+        )
         """,
         (_pack_id(session_date), session_date, f"sha256:{session_date.isoformat()}"),
     )

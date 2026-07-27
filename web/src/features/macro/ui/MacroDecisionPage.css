@@ -10,7 +10,6 @@
   .macro-decision__judgment,
   .macro-decision__module-card,
   .macro-decision__state,
-  .macro-decision__chart,
   .macro-decision__review-grid > article,
   .macro-decision__evidence,
   .macro-decision__research,
@@ -90,31 +89,6 @@
   .macro-decision__module-card a svg,
   .macro-decision__research a svg {
     width: 0.95rem;
-  }
-
-  .macro-decision__readiness {
-    width: fit-content;
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    font-weight: 700;
-    padding: 0.35rem 0.6rem;
-  }
-
-  .macro-decision__readiness[data-readiness="ready"] {
-    border-color: color-mix(in srgb, var(--signal-positive) 55%, transparent);
-    color: var(--signal-positive);
-  }
-
-  .macro-decision__readiness[data-readiness="degraded"] {
-    border-color: color-mix(in srgb, var(--signal-caution) 55%, transparent);
-    color: var(--signal-caution);
-  }
-
-  .macro-decision__readiness[data-readiness="blocked"] {
-    border-color: color-mix(in srgb, var(--signal-negative) 55%, transparent);
-    color: var(--signal-negative);
   }
 
   .macro-decision__nav {
@@ -355,76 +329,6 @@
     padding: 1.1rem;
   }
 
-  .macro-decision__charts {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.8rem;
-  }
-
-  .macro-decision__chart {
-    display: grid;
-    gap: 0.7rem;
-    min-width: 0;
-    margin: 0;
-    padding: 1rem;
-  }
-
-  .macro-decision__chart figcaption {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.8rem;
-  }
-
-  .macro-decision__chart h2 {
-    margin: 0;
-    font-size: 0.9rem;
-  }
-
-  .macro-decision__chart figcaption span,
-  .macro-decision__chart > p {
-    color: var(--text-muted);
-    font-size: 0.66rem;
-  }
-
-  .macro-decision__sparkline {
-    display: grid;
-    grid-template-columns: minmax(8rem, 0.45fr) minmax(10rem, 1fr) auto;
-    align-items: center;
-    gap: 0.55rem;
-    min-width: 0;
-  }
-
-  .macro-decision__sparkline > div {
-    display: grid;
-    min-width: 0;
-  }
-
-  .macro-decision__sparkline strong,
-  .macro-decision__sparkline span,
-  .macro-decision__sparkline small {
-    overflow: hidden;
-    font-size: 0.67rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .macro-decision__sparkline span,
-  .macro-decision__sparkline small {
-    color: var(--text-muted);
-  }
-
-  .macro-decision__sparkline svg {
-    width: 100%;
-    height: 2.5rem;
-  }
-
-  .macro-decision__sparkline path {
-    fill: none;
-    stroke: var(--accent-primary);
-    stroke-width: 1.5;
-    vector-effect: non-scaling-stroke;
-  }
-
   .macro-decision__review-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -495,5 +399,43 @@
     align-items: center;
     gap: 1rem;
     padding: 1.1rem;
+  }
+
+  .macro-decision__status-triplet {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .macro-decision__status-triplet span {
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 0.28rem 0.5rem;
+    color: var(--text-muted);
+    font-size: 0.64rem;
+    line-height: 1;
+  }
+
+  .macro-decision__status-triplet span[data-state="complete"],
+  .macro-decision__status-triplet span[data-state="current"] {
+    border-color: var(--signal-positive-border);
+    color: var(--signal-positive);
+  }
+
+  .macro-decision__status-triplet span[data-state="partial"],
+  .macro-decision__status-triplet span[data-state="delayed"],
+  .macro-decision__status-triplet span[data-state="backfilling"],
+  .macro-decision__status-triplet span[data-state="missing"],
+  .macro-decision__status-triplet span[data-state="licensed_unavailable"] {
+    border-color: var(--signal-caution-border);
+    color: var(--signal-caution);
+  }
+
+  .macro-decision__status-triplet span[data-state="stale"],
+  .macro-decision__status-triplet span[data-state="invalid"],
+  .macro-decision__status-triplet span[data-state="unavailable"],
+  .macro-decision__status-triplet span[data-state="blocked"] {
+    border-color: var(--signal-negative-border);
+    color: var(--signal-negative);
   }
 }

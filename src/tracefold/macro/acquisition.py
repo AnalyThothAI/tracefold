@@ -14,6 +14,7 @@ from tracefold.macro.domain import (
     ReleaseFact,
     SeriesFact,
 )
+from tracefold.macro.fed_roles import derive_fomc_role_facts
 from tracefold.macro.registry import datasets_for_clock, require_dataset
 from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
@@ -122,6 +123,8 @@ class MacroAcquisitionService:
                     inserted += repos.macro.insert_release_fact(fact)
                 elif isinstance(fact, DocumentFact):
                     inserted += repos.macro.insert_document(fact)
+                    for role_fact in derive_fomc_role_facts(fact):
+                        inserted += repos.macro.insert_fed_official_role_fact(role_fact)
                 elif isinstance(fact, MarketObservationFact):
                     inserted += repos.macro_market.insert_observation(fact)
                 elif isinstance(fact, MarketPositionFact):
@@ -149,6 +152,13 @@ class MacroAcquisitionService:
                 batch.cursor,
                 has_facts=bool(batch.facts),
             )
+            target_status = (
+                "current"
+                if backfill_complete and (bool(batch.facts) or self.clock_kind == "backfill")
+                else "delayed"
+                if not batch.facts and self.clock_kind != "backfill"
+                else "backfilling"
+            )
             completed = repos.macro.complete_target(
                 target_key=str(target["target_key"]),
                 lease_owner=self.worker_name,
@@ -160,19 +170,13 @@ class MacroAcquisitionService:
                     else (253_402_300_799_000 if backfill_complete else completed_at_ms)
                 ),
                 completed_at_ms=completed_at_ms,
-                status=(
-                    "current"
-                    if batch.facts and backfill_complete
-                    else "delayed"
-                    if not batch.facts and self.clock_kind != "backfill"
-                    else "backfilling"
-                ),
+                status=target_status,
             )
             if not completed:
                 raise RuntimeError("macro_acquisition_stale_claim")
         return {
             "dataset_id": spec.dataset_id,
-            "status": "current" if batch.facts else "delayed",
+            "status": target_status,
             "rows_seen": len(batch.facts),
             "rows_inserted": inserted,
         }
@@ -200,6 +204,8 @@ def _safe_error(exc: Exception) -> str:
 
 
 def _backfill_complete(cursor: dict[str, Any], *, has_facts: bool) -> bool:
+    if "backfill_complete" in cursor:
+        return bool(cursor["backfill_complete"])
     if not has_facts:
         return True
     end_date = str(cursor.get("end_date") or "")

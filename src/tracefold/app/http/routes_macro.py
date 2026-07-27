@@ -10,7 +10,14 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.macro import MACRO_MODULE_IDS, MACRO_MODULE_LABELS, resolve_completed_session
+from tracefold.macro import (
+    MACRO_MODULE_IDS,
+    MacroModuleId,
+    build_typed_module_payload,
+    resolve_completed_session,
+    resolve_judgment_session,
+    schema_version_for_module,
+)
 
 router = APIRouter()
 
@@ -33,32 +40,53 @@ def macro_overview(request: Request) -> JSONResponse:
     runtime = _authenticated_macro_runtime(request)
     _reject_query_params(request)
     read_at_ms = _now_ms()
+    judgment_session = resolve_judgment_session(now_ms=read_at_ms)
     with runtime.repositories() as repos:
         module_rows = {row["module_id"]: row for row in repos.macro.all_modules_current()}
-        judgment_row = repos.macro.daily_judgment()
+        judgment_row = repos.macro.daily_judgment(judgment_session)
         research_row = repos.macro_research.research_state()
-    modules = [_module_summary(module_id, module_rows.get(module_id)) for module_id in MACRO_MODULE_IDS]
-    readiness_values = {module["readiness"] for module in modules}
-    if "blocked" in readiness_values or "missing" in readiness_values:
-        overall_readiness = "blocked"
-    elif "degraded" in readiness_values:
-        overall_readiness = "degraded"
-    else:
-        overall_readiness = "ready"
+    module_payloads = [
+        _module_payload(module_id, module_rows.get(module_id), judgment_row, read_at_ms)
+        for module_id in MACRO_MODULE_IDS
+    ]
+    modules = [_module_summary(payload) for payload in module_payloads]
+    coverage_values = {module["coverage_state"] for module in modules}
+    coverage_state = (
+        "partial"
+        if "partial" in coverage_values or "missing" in coverage_values
+        else "licensed_unavailable"
+        if "licensed_unavailable" in coverage_values
+        else "complete"
+    )
+    data_health_state = max(
+        (str(module["data_health_state"]) for module in modules),
+        key=lambda value: {
+            "invalid": 6,
+            "unavailable": 5,
+            "stale": 4,
+            "backfilling": 3,
+            "delayed": 2,
+            "current": 1,
+            "missing": 7,
+        }[value],
+    )
+    judgment_state = "current" if judgment_row is not None else "missing"
     judgment = (
         dict(judgment_row["judgment_json"])
         if judgment_row is not None and isinstance(judgment_row.get("judgment_json"), dict)
         else None
     )
     payload = {
-        "schema_version": "macro_overview_v1",
+        "schema_version": "macro_overview_v2",
         "read_at_ms": read_at_ms,
         "judgment_cutoff_ms": (int(judgment_row["judgment_cutoff_ms"]) if judgment_row is not None else None),
         "latest_fact_at_ms": max(
             (int(module["latest_fact_at_ms"]) for module in modules),
             default=0,
         ),
-        "overall_readiness": overall_readiness,
+        "coverage_state": coverage_state,
+        "data_health_state": data_health_state,
+        "judgment_state": judgment_state,
         "daily_judgment": judgment,
         "modules": modules,
         "changes_since_judgment": [
@@ -72,41 +100,81 @@ def macro_overview(request: Request) -> JSONResponse:
     )
 
 
-def _module_route(path: str, module_id: str) -> Any:
-    async def endpoint(request: Request) -> JSONResponse:
-        runtime = _authenticated_macro_runtime(request)
-        _reject_query_params(request)
-        with runtime.repositories() as repos:
-            row = repos.macro.module_current(module_id)
-            judgment = repos.macro.daily_judgment()
-        payload = _module_payload(module_id, row, judgment)
-        return _validated_json(
-            api_schemas.ApiEnvelope[api_schemas.MacroModuleReadData],
-            {"ok": True, "data": payload},
-        )
+def _read_module(request: Request, module_id: str) -> dict[str, Any]:
+    runtime = _authenticated_macro_runtime(request)
+    _reject_query_params(request)
+    read_at_ms = _now_ms()
+    judgment_session = resolve_judgment_session(now_ms=read_at_ms)
+    with runtime.repositories() as repos:
+        row = repos.macro.module_current(module_id)
+        judgment = repos.macro.daily_judgment(judgment_session)
+    return _module_payload(module_id, row, judgment, read_at_ms)
 
-    endpoint.__name__ = f"macro_{module_id}"
-    router.add_api_route(
-        path,
-        endpoint,
-        methods=["GET"],
-        response_model=api_schemas.ApiEnvelope[api_schemas.MacroModuleReadData],
+
+@router.get(
+    "/macro/rates-fed",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroRatesFedReadData],
+)
+def macro_rates_fed(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroRatesFedReadData],
+        {"ok": True, "data": _read_module(request, "rates_fed")},
     )
-    return endpoint
 
 
-macro_rates_fed = _module_route("/macro/rates-fed", "rates_fed")
-macro_economy_inflation = _module_route(
+@router.get(
     "/macro/economy-inflation",
-    "economy_inflation",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroEconomyInflationReadData],
 )
-macro_liquidity_funding = _module_route(
+def macro_economy_inflation(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroEconomyInflationReadData],
+        {"ok": True, "data": _read_module(request, "economy_inflation")},
+    )
+
+
+@router.get(
     "/macro/liquidity-funding",
-    "liquidity_funding",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroLiquidityFundingReadData],
 )
-macro_credit = _module_route("/macro/credit", "credit")
-macro_volatility = _module_route("/macro/volatility", "volatility")
-macro_cross_asset = _module_route("/macro/cross-asset", "cross_asset")
+def macro_liquidity_funding(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroLiquidityFundingReadData],
+        {"ok": True, "data": _read_module(request, "liquidity_funding")},
+    )
+
+
+@router.get(
+    "/macro/credit",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroCreditReadData],
+)
+def macro_credit(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroCreditReadData],
+        {"ok": True, "data": _read_module(request, "credit")},
+    )
+
+
+@router.get(
+    "/macro/volatility",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroVolatilityReadData],
+)
+def macro_volatility(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroVolatilityReadData],
+        {"ok": True, "data": _read_module(request, "volatility")},
+    )
+
+
+@router.get(
+    "/macro/cross-asset",
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroCrossAssetReadData],
+)
+def macro_cross_asset(request: Request) -> JSONResponse:
+    return _validated_json(
+        api_schemas.ApiEnvelope[api_schemas.MacroCrossAssetReadData],
+        {"ok": True, "data": _read_module(request, "cross_asset")},
+    )
 
 
 @router.get(
@@ -155,60 +223,61 @@ def _validate_research_query_params(request: Request) -> None:
 
 
 def _module_payload(
-    module_id: str,
+    module_id: MacroModuleId,
     row: dict[str, Any] | None,
     judgment: dict[str, Any] | None,
+    read_at_ms: int,
 ) -> dict[str, Any]:
-    if row is not None and isinstance(row.get("payload_json"), dict):
+    expected_schema = schema_version_for_module(module_id)
+    if (
+        row is not None
+        and isinstance(row.get("payload_json"), dict)
+        and row["payload_json"].get("schema_version") == expected_schema
+    ):
         payload = dict(row["payload_json"])
     else:
-        payload = {
-            "schema_version": "macro_module_v1",
-            "module_id": module_id,
-            "label": MACRO_MODULE_LABELS[module_id],
-            "readiness": "blocked",
-            "judgment_cutoff_ms": None,
-            "latest_fact_at_ms": 0,
-            "current_state": {
-                "headline": "数据链正在初始化",
-                "dominant_change": None,
-                "feature_count": 0,
-                "interpretation": "等待新事实链完成首次采集与投影。",
-            },
-            "top_changes": [],
-            "features": [],
-            "charts": [],
-            "contradictions": [],
-            "falsifiers": [],
-            "next_checkpoints": [],
-            "gaps": [
-                {
-                    "dataset_id": "module",
-                    "label": "模块投影",
-                    "state": "backfilling",
-                    "reason": "module_projection_missing",
-                    "decision_impact": "blocks_new_judgment",
-                }
-            ],
-            "dataset_states": [],
-            "raw_evidence": [],
-        }
+        payload = build_typed_module_payload(
+            module_id=module_id,
+            now_ms=read_at_ms,
+            series_rows=[],
+            market_rows=[],
+            position_rows=[],
+            settlement_rows=[],
+            release_rows=[],
+            document_rows=[],
+            target_states=[],
+        )
+        payload["summary"]["headline"] = "数据链正在初始化"
+        payload["summary"]["interpretation"] = "等待新事实链完成首次采集与投影。"
     if judgment is not None:
-        payload["judgment_cutoff_ms"] = int(judgment["judgment_cutoff_ms"])
+        payload["status"]["judgment"] = {
+            "state": "current",
+            "cutoff_ms": int(judgment["judgment_cutoff_ms"]),
+        }
+    else:
+        payload["status"]["judgment"] = {
+            "state": "missing",
+            "cutoff_ms": None,
+        }
     return payload
 
 
-def _module_summary(module_id: str, row: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict(row["payload_json"]) if row is not None and isinstance(row.get("payload_json"), dict) else None
+def _module_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    coverage = payload["status"]["coverage"]
+    health = payload["status"]["data_health"]
+    judgment = payload["status"]["judgment"]
     return {
-        "module_id": module_id,
-        "label": MACRO_MODULE_LABELS[module_id],
-        "readiness": str(payload["readiness"]) if payload else "missing",
-        "latest_fact_at_ms": int(payload["latest_fact_at_ms"]) if payload else 0,
-        "current_state": payload.get("current_state") if payload else None,
-        "top_changes": list(payload.get("top_changes") or ()) if payload else [],
-        "gap_count": len(payload.get("gaps") or ()) if payload else 1,
-        "href": _MODULE_HREFS[module_id],
+        "module_id": payload["module_id"],
+        "label": payload["label"],
+        "coverage_state": coverage["state"],
+        "data_health_state": health["state"],
+        "judgment_state": judgment["state"],
+        "latest_fact_at_ms": int(payload["latest_fact_at_ms"]),
+        "summary": payload["summary"],
+        "top_changes": list(payload["summary"]["top_changes"]),
+        "coverage_gap_count": sum(item["state"] != "available" for item in coverage["capabilities"]),
+        "health_gap_count": max(0, int(health["tracked_datasets"]) - int(health["current_datasets"])),
+        "href": _MODULE_HREFS[payload["module_id"]],
     }
 
 

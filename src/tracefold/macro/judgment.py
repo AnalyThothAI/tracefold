@@ -4,27 +4,31 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from datetime import time as clock_time
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from tracefold.macro.calculations import CALCULATION_REGISTRY, calculate_features
 from tracefold.macro.domain import MACRO_MODULE_IDS
-from tracefold.macro.projection import build_module_payload
+from tracefold.macro.module_payloads import build_typed_module_payload
 from tracefold.macro.registry import DATASET_REGISTRY
 from tracefold.macro.research.completed_session import is_us_market_session
 
 _NEW_YORK = ZoneInfo("America/New_York")
 _JUDGMENT_TIME = clock_time(8, 50)
-_PACK_SCHEMA = "macro_evidence_pack_v1"
-_JUDGMENT_SCHEMA = "macro_daily_judgment_v1"
-_COMPILER_VERSION = "macro_decision_compiler_v1"
+_PACK_SCHEMA = "macro_evidence_pack_v2"
+_JUDGMENT_SCHEMA = "macro_daily_judgment_v2"
+_COMPILER_VERSION = "macro_professional_coverage_compiler_v2"
 _FIXED_ASSETS = {
     "SPY": "nasdaq.spy.history",
+    "QQQ": "nasdaq.qqq.history",
+    "IWM": "nasdaq.iwm.history",
     "TLT": "nasdaq.tlt.history",
+    "IEF": "nasdaq.ief.history",
+    "LQD": "nasdaq.lqd.history",
     "HYG": "nasdaq.hyg.history",
-    "DXY": "nasdaq.dxy.history",
+    "UUP": "nasdaq.dxy.history",
     "GLD": "nasdaq.gld.history",
     "USO": "nasdaq.uso.history",
     "BTC": "binance.btcusdt.spot",
@@ -69,13 +73,15 @@ class MacroJudgmentService:
                 }
 
         modules, _features = self._compile_modules(cutoff_ms=cutoff_ms)
-        blocked = [module["module_id"] for module in modules if module["readiness"] == "blocked"]
+        blocked = [module["module_id"] for module in modules if module["status"]["judgment"]["state"] == "blocked"]
         if blocked:
             return {
                 "status": "blocked",
                 "session_date": str(session_date),
                 "blocked_modules": blocked,
             }
+        for module in modules:
+            module["status"]["judgment"] = {"state": "current", "cutoff_ms": cutoff_ms}
 
         latest_fact_at_ms = max((int(module["latest_fact_at_ms"]) for module in modules), default=0)
         pack_payload = {
@@ -102,7 +108,11 @@ class MacroJudgmentService:
                 for spec in CALCULATION_REGISTRY.values()
             ],
             "changes_since_judgment": [
-                {"module_id": module["module_id"], "changes": module["top_changes"][:3]} for module in modules
+                {
+                    "module_id": module["module_id"],
+                    "changes": module["summary"]["top_changes"][:3],
+                }
+                for module in modules
             ],
         }
         pack_hash = _payload_hash(pack_payload)
@@ -153,10 +163,12 @@ class MacroJudgmentService:
         with self._session() as repos, repos.transaction():
             series_rows = repos.macro.series_history(
                 dataset_ids=series_ids,
+                limit_per_dataset=10_000,
                 received_before_ms=cutoff_ms,
             )
             market_rows = repos.macro_market.market_history(
                 dataset_ids=market_ids,
+                limit_per_dataset=2_000,
                 received_before_ms=cutoff_ms,
             )
             position_rows = repos.macro_market.position_history(
@@ -175,10 +187,13 @@ class MacroJudgmentService:
                 dataset_ids=document_ids,
                 received_before_ms=cutoff_ms,
             )
+            role_rows = repos.macro.fed_official_role_history(received_before_ms=cutoff_ms)
+            analysis_rows = repos.macro.document_analysis_history(received_before_ms=cutoff_ms)
+            analysis_job_state = repos.macro.document_analysis_job_state(received_before_ms=cutoff_ms)
             target_states = repos.macro.target_states()
         features = calculate_features(series_rows)
         modules = [
-            build_module_payload(
+            build_typed_module_payload(
                 module_id=module_id,
                 now_ms=cutoff_ms,
                 series_rows=series_rows,
@@ -188,12 +203,12 @@ class MacroJudgmentService:
                 release_rows=release_rows,
                 document_rows=document_rows,
                 target_states=target_states,
-                features=features,
+                role_rows=role_rows,
+                analysis_rows=analysis_rows,
+                analysis_job_state=analysis_job_state,
             )
             for module_id in MACRO_MODULE_IDS
         ]
-        for module in modules:
-            module["judgment_cutoff_ms"] = cutoff_ms
         return modules, features
 
     def _session(self) -> Any:
@@ -226,14 +241,35 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     top_changes = [
         {"module_id": module["module_id"], **change}
         for module in evidence_pack["modules"]
-        for change in module["top_changes"][:1]
+        for change in module["summary"]["top_changes"][:1]
     ]
     contradictions = [
         {"module_id": module["module_id"], "text": text}
         for module in evidence_pack["modules"]
         for text in module["contradictions"]
     ]
-    gaps = [{"module_id": module["module_id"], **gap} for module in evidence_pack["modules"] for gap in module["gaps"]]
+    gaps = [
+        {
+            "module_id": module["module_id"],
+            "label": capability["label"],
+            "reason": capability["reason"] or capability["state"],
+            "capability_id": capability["capability_id"],
+        }
+        for module in evidence_pack["modules"]
+        for capability in module["status"]["coverage"]["capabilities"]
+        if capability["state"] != "available"
+    ]
+    gaps.extend(
+        {
+            "module_id": module["module_id"],
+            "dataset_id": state["dataset_id"],
+            "label": state["label"],
+            "reason": state["reason"],
+        }
+        for module in evidence_pack["modules"]
+        for state in module["evidence"]["dataset_states"]
+        if state["state"] not in {"current", "unavailable"}
+    )
     citations = [
         {
             "citation_id": f"cite_{index + 1}",
@@ -243,7 +279,10 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
             "source_url": fact["source_url"],
         }
         for index, fact in enumerate(
-            fact for module in evidence_pack["modules"] for fact in module["raw_evidence"] if fact["fact_ref"]
+            fact
+            for module in evidence_pack["modules"]
+            for fact in module["evidence"]["latest_facts"]
+            if fact["fact_ref"]
         )
     ]
     return {
@@ -258,9 +297,10 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
         "module_judgments": [
             {
                 "module_id": module["module_id"],
-                "readiness": module["readiness"],
-                "summary": module["current_state"]["headline"],
-                "driver": module["current_state"]["dominant_change"],
+                "coverage_state": module["status"]["coverage"]["state"],
+                "data_health_state": module["status"]["data_health"]["state"],
+                "summary": module["summary"]["headline"],
+                "driver": (module["summary"]["top_changes"] or [None])[0],
             }
             for module in evidence_pack["modules"]
         ],
@@ -314,8 +354,8 @@ def _growth_state(module: dict[str, Any]) -> dict[str, str]:
 
 
 def _inflation_state(module: dict[str, Any]) -> dict[str, str]:
-    cpi = _feature(module, "inflation.cpi_yoy")
-    pce = _feature(module, "inflation.core_pce_yoy")
+    cpi = _year_over_year_for(module["inflation"]["indicators"], "fred.cpiaucsl")
+    pce = _year_over_year_for(module["inflation"]["indicators"], "fred.pcepilfe")
     if cpi is None and pce is None:
         return _state("sticky", "通胀同比特征不足")
     average = sum(value for value in (cpi, pce) if value is not None) / sum(value is not None for value in (cpi, pce))
@@ -349,17 +389,31 @@ def _liquidity_state(module: dict[str, Any]) -> dict[str, str]:
     return _state("neutral", "流动性分项方向不一致")
 
 
-def _credit_state(module: dict[str, Any]) -> dict[str, str]:
-    hy = _change_for(module, "fred.bamlh0a0hym2")
-    if hy is None:
-        return _state("neutral", "高收益利差变化不足")
-    if hy > 0.5:
-        return _state("stressed", "高收益利差短窗口显著走阔")
-    if hy > 0.1:
-        return _state("tightening", "高收益利差走阔")
-    if hy < -0.1:
-        return _state("easing", "高收益利差收窄")
-    return _state("neutral", "信用利差处于区间")
+def _credit_state(module: dict[str, Any]) -> dict[str, Any]:
+    dimensions = list(module["cycle_dimensions"])
+    stressed_states = {"stressed", "tightening", "expensive", "restrictive", "deteriorating"}
+    easing_states = {"easing", "cheap", "improving"}
+    pressured = [dimension for dimension in dimensions if dimension["state"] in stressed_states]
+    easing = [dimension for dimension in dimensions if dimension["state"] in easing_states]
+    conflicts = [conflict for dimension in dimensions for conflict in dimension["conflicts"]]
+    if len(pressured) >= 2:
+        state = "stressed"
+        driver = "；".join(str(dimension["driver"]) for dimension in pressured[:2])
+    elif pressured:
+        state = "tightening"
+        driver = str(pressured[0]["driver"])
+    elif easing:
+        state = "easing"
+        driver = str(easing[0]["driver"])
+    else:
+        state = "neutral"
+        driver = "五个信用维度未形成一致压力"
+    return {
+        "state": state,
+        "driver": driver,
+        "subdimensions": dimensions,
+        "conflicts": conflicts,
+    }
 
 
 def _volatility_state(module: dict[str, Any]) -> dict[str, str]:
@@ -376,17 +430,24 @@ def _volatility_state(module: dict[str, Any]) -> dict[str, str]:
 
 
 def _asset_directions(modules: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    changes = {item["dataset_id"]: item for module in modules.values() for item in module["top_changes"]}
+    cross_asset = modules["cross_asset"]
+    rows = {
+        item["dataset_id"]: item
+        for item in (
+            *cross_asset["assets"]["proxies"],
+            *cross_asset["assets"]["benchmarks"],
+        )
+    }
     result = {}
     for asset, dataset_id in _FIXED_ASSETS.items():
-        change = changes.get(dataset_id)
+        change = rows.get(dataset_id)
         spec = DATASET_REGISTRY[dataset_id]
         if change is None:
             one_week = one_month = "no_call"
             conflicts = ["缺少可用价格历史"]
         else:
-            one_week = _direction(change["short_change"])
-            one_month = _direction(change["medium_change"])
+            one_week = _direction(change.get("change_1w_pct", change.get("change_1w")))
+            one_month = _direction(change.get("change_1m_pct", change.get("change_1m")))
             conflicts = [] if one_week == one_month else ["1周与1月方向不一致"]
         result[asset] = {
             "1w": one_week,
@@ -400,7 +461,7 @@ def _asset_directions(modules: dict[str, dict[str, Any]]) -> dict[str, dict[str,
     return result
 
 
-def _overall_state(dimensions: dict[str, dict[str, str]]) -> str:
+def _overall_state(dimensions: dict[str, dict[str, Any]]) -> str:
     stressed = [
         name
         for name, payload in dimensions.items()
@@ -417,25 +478,30 @@ def _state(state: str, driver: str) -> dict[str, str]:
     return {"state": state, "driver": driver}
 
 
-def _feature(module: dict[str, Any], feature_id: str) -> float | None:
-    for feature in module["features"]:
-        if feature["feature_id"] == feature_id:
-            return float(feature["value_numeric"])
-    return None
-
-
 def _change_for(module: dict[str, Any], dataset_id: str) -> float | None:
-    for change in module["top_changes"]:
-        if change["dataset_id"] == dataset_id and change["short_change"] is not None:
-            return float(change["short_change"])
+    for change in module["summary"]["top_changes"]:
+        if change["dataset_id"] == dataset_id and change["change_1w"] is not None:
+            return float(change["change_1w"])
     return None
 
 
 def _latest_for(module: dict[str, Any], dataset_id: str) -> float | None:
-    for fact in module["raw_evidence"]:
+    for fact in module["evidence"]["latest_facts"]:
         if fact["dataset_id"] == dataset_id and fact["value"] is not None:
             return float(fact["value"])
     return None
+
+
+def _year_over_year_for(indicators: list[dict[str, Any]], dataset_id: str) -> float | None:
+    indicator = next((item for item in indicators if item["dataset_id"] == dataset_id), None)
+    if indicator is None:
+        return None
+    history = indicator["history"]
+    if len(history) < 13:
+        return None
+    latest = float(history[-1]["value"])
+    prior = float(history[-13]["value"])
+    return (latest / prior - 1) * 100 if prior else None
 
 
 def _direction(value: float | None) -> str:
@@ -455,8 +521,22 @@ def _now_ms() -> int:
     return int(time.time() * 1_000)
 
 
+def resolve_judgment_session(*, now_ms: int) -> date:
+    """Return the trading session whose 08:50 judgment should be visible now."""
+
+    instant = datetime.fromtimestamp(int(now_ms) / 1_000, tz=_NEW_YORK)
+    candidate = instant.date()
+    if is_us_market_session(candidate) and instant.timetz().replace(tzinfo=None) >= _JUDGMENT_TIME:
+        return candidate
+    candidate -= timedelta(days=1)
+    while not is_us_market_session(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
 __all__ = [
     "MacroJudgmentService",
     "compile_daily_judgment",
     "render_daily_memo",
+    "resolve_judgment_session",
 ]

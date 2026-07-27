@@ -9,11 +9,12 @@ const macroRoot = join(webRoot, "src/features/macro");
 const srcRoot = join(webRoot, "src");
 
 describe("daily macro decision and research hard cut", () => {
-  it("owns one decision page, one research page, and no generic renderer hierarchy", () => {
+  it("owns typed decision sections, one research page, and no generic renderer hierarchy", () => {
     const files = collectFiles(macroRoot).map((path) => relative(macroRoot, path));
 
     expect(files.filter((path) => path.endsWith(".tsx"))).toEqual([
       "ui/MacroDecisionPage.tsx",
+      "ui/MacroModuleSections.tsx",
       "ui/MacroResearchPage.tsx",
     ]);
     expect(files).not.toContain("shell.ts");
@@ -59,11 +60,14 @@ describe("daily macro decision and research hard cut", () => {
         "/api/macro/research",
       ]),
     );
-    expect(source).not.toMatch(/\/api\/macro\/evidence|MacroLive|history window|window=/i);
+    expect(source).not.toMatch(/\/api\/macro\/evidence|MacroLive|history window|[?&]window=/i);
   });
 
-  it("shows fixed judgment, readiness, gaps and asynchronous Evidence-Pack research", () => {
-    const decision = readFileSync(join(macroRoot, "ui/MacroDecisionPage.tsx"), "utf8");
+  it("shows fixed judgment, separate status planes, gaps and asynchronous Evidence-Pack research", () => {
+    const decision = [
+      readFileSync(join(macroRoot, "ui/MacroDecisionPage.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroModuleSections.tsx"), "utf8"),
+    ].join("\n");
     const research = readFileSync(join(macroRoot, "ui/MacroResearchPage.tsx"), "utf8");
 
     for (const field of [
@@ -72,8 +76,11 @@ describe("daily macro decision and research hard cut", () => {
       "module.contradictions",
       "module.falsifiers",
       "module.next_checkpoints",
-      "module.gaps",
-      "module.dataset_states",
+      "module.status.coverage",
+      "query.data.status.data_health",
+      "query.data.status.judgment",
+      "module.evidence.dataset_states",
+      "module.evidence.latest_facts",
       "research.evidence_pack_id",
       "research.reviewer_disposition",
     ]) {
