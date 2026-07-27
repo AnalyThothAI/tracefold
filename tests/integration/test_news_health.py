@@ -10,7 +10,7 @@ from tests.integration.test_news_brief_state_machine import (
 )
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.news import NewsRepository
+from tracefold.news import NewsFeedEntry, NewsRepository
 
 
 def test_news_health_is_running_for_closed_material_facts_and_due_source(tmp_path) -> None:
@@ -37,6 +37,123 @@ def test_news_health_is_running_for_closed_material_facts_and_due_source(tmp_pat
             "public": "running",
             "ai": "running",
         }
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_news_health_treats_repeat_observation_and_multiple_revisions_as_closed(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        source = _source("revision-closure-wire", "wire_service")
+        repository.sync_sources((source,), now_ms=NOW_MS)
+        initial = NewsFeedEntry(
+            guid="policy-v1",
+            link="https://revision-closure-wire.example/policy",
+            title="Government implements a new semiconductor export policy",
+            summary="The policy takes effect immediately.",
+            published_at_ms=NOW_MS,
+            language="en",
+        )
+        repeat_observation = initial.model_copy(update={"guid": "policy-v1-repeat"})
+        changed_revision = initial.model_copy(
+            update={
+                "guid": "policy-v2",
+                "summary": "The policy takes effect immediately and adds licensing details.",
+            }
+        )
+        for offset_ms, item in enumerate((initial, repeat_observation, changed_revision)):
+            observed_at_ms = NOW_MS + offset_ms * 1_000
+            repository.record_fetch_success(
+                source=source,
+                entries=(item,),
+                started_at_ms=observed_at_ms,
+                finished_at_ms=observed_at_ms,
+                status_code=200,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+            )
+        repository.project_pending_revisions(now_ms=NOW_MS + 3_000, limit=100)
+
+        health = repository.health_snapshot(now_ms=NOW_MS + 4_000)
+
+        assert conn.execute("SELECT count(*) AS count FROM news_feed_observations").fetchone()["count"] == 3
+        assert conn.execute("SELECT count(*) AS count FROM news_article_revisions").fetchone()["count"] == 2
+        assert conn.execute("SELECT count(*) AS count FROM news_story_memberships").fetchone()["count"] == 1
+        assert health["layers"]["material"]["status"] == "running"
+        assert _reason_or_none(health, "observation_revision_orphan") is None
+        assert _reason_or_none(health, "primary_membership_invariant") is None
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_news_health_material_event_tie_break_matches_projector_order(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        source = _source("financial-times", "original_publisher")
+        observed_at_ms = 1_785_080_085_523
+        repository.sync_sources((source,), now_ms=observed_at_ms)
+        repository.record_fetch_success(
+            source=source,
+            entries=(
+                NewsFeedEntry(
+                    guid=(
+                        "CBMihAFBVV95cUxObWtITTNCY3VxMEQxQXBZZ3BOd0h0NUN1dTA5UlI0aUdfeFFL"
+                        "QVU4V1d4b2ZlamltNmZlNkM5NU9WZzNFakRxSDJMeGtGaXlWRmNYcGhtdnQ2YVYy"
+                        "RVA1SjdSZWxRQTU3alcxVUYyVXhXdFEzeDlVNjBKejV6a01TYk1KYXY"
+                    ),
+                    link=(
+                        "https://news.google.com/rss/articles/"
+                        "CBMihAFBVV95cUxObWtITTNCY3VxMEQxQXBZZ3BOd0h0NUN1dTA5UlI0aUdfeFFL"
+                        "QVU4V1d4b2ZlamltNmZlNkM5NU9WZzNFakRxSDJMeGtGaXlWRmNYcGhtdnQ2YVYy"
+                        "RVA1SjdSZWxRQTU3alcxVUYyVXhXdFEzeDlVNjBKejV6a01TYk1KYXY?oc=5"
+                    ),
+                    title="Oil hits $100 and drives global bond sell-off - Financial Times",
+                    summary="Oil hits $100 and drives global bond sell-off Financial Times",
+                    published_at_ms=1_784_865_681_000,
+                    language="en",
+                ),
+                NewsFeedEntry(
+                    guid=(
+                        "CBMihAFBVV95cUxOclF2RTc2cFc2ajlnUjN2blRGYS1vbTNGeTRnNkFKNGduZGpS"
+                        "S05BMnVkY21vcFRkR3BvMDhGZkFuTzFvaUxtc1NDVEJyb180TGcyUkROc2QwYkJR"
+                        "aEJ5eTlOTEdNbVdMbGNhdC1ETnYyUno1dldEeU1Yb3JpVEkxZml4dEM"
+                    ),
+                    link=(
+                        "https://news.google.com/rss/articles/"
+                        "CBMihAFBVV95cUxOclF2RTc2cFc2ajlnUjN2blRGYS1vbTNGeTRnNkFKNGduZGpS"
+                        "S05BMnVkY21vcFRkR3BvMDhGZkFuTzFvaUxtc1NDVEJyb180TGcyUkROc2QwYkJR"
+                        "aEJ5eTlOTEdNbVdMbGNhdC1ETnYyUno1dldEeU1Yb3JpVEkxZml4dEM?oc=5"
+                    ),
+                    title="Oil price surge drives global bond sell-off - Financial Times",
+                    summary="Oil price surge drives global bond sell-off Financial Times",
+                    published_at_ms=1_784_794_970_000,
+                    language="en",
+                ),
+            ),
+            started_at_ms=observed_at_ms,
+            finished_at_ms=observed_at_ms,
+            status_code=200,
+            etag=None,
+            last_modified=None,
+            not_modified=False,
+        )
+        repository.project_pending_revisions(now_ms=observed_at_ms + 1_000, limit=100)
+
+        health = repository.health_snapshot(now_ms=observed_at_ms + 2_000)
+
+        assert conn.execute("SELECT count(*) AS count FROM news_stories").fetchone()["count"] == 1
+        assert conn.execute("SELECT count(*) AS count FROM news_story_material_events").fetchone()["count"] == 2
+        assert health["layers"]["material"]["status"] == "running"
+        assert _reason_or_none(health, "story_material_hash_closure") is None
         conn.commit()
     finally:
         conn.close()
@@ -417,3 +534,12 @@ def _reason(health: dict[str, object], code: str) -> dict[str, object]:
     matches = [reason for reason in reasons if isinstance(reason, dict) and reason.get("code") == code]
     assert len(matches) == 1, (code, reasons)
     return matches[0]
+
+
+def _reason_or_none(health: dict[str, object], code: str) -> dict[str, object] | None:
+    reasons = health["reasons"]
+    assert isinstance(reasons, list)
+    return next(
+        (reason for reason in reasons if isinstance(reason, dict) and reason.get("code") == code),
+        None,
+    )
