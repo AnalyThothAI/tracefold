@@ -27,7 +27,7 @@ from .fed_analysis import (
     FedDocumentAnalysisDraft,
     MacroDocumentAnalysisService,
 )
-from .judgment import resolve_judgment_session
+from .judgment import judgment_cutoff_ms, resolve_judgment_session
 from .judgment_worker import MacroJudgmentWorker
 from .module_payloads import build_typed_module_payload, schema_version_for_module
 from .projection_worker import MacroProjectionWorker
@@ -102,6 +102,7 @@ __all__ = [
     "coverage_for_module",
     "datasets_for_clock",
     "datasets_for_module",
+    "judgment_cutoff_ms",
     "professional_backfill_policies",
     "require_artifact_integrity",
     "require_catalog_in_scope",

@@ -423,18 +423,14 @@
   }
 
   .macro-decision__status-triplet span[data-state="partial"],
-  .macro-decision__status-triplet span[data-state="delayed"],
-  .macro-decision__status-triplet span[data-state="backfilling"],
+  .macro-decision__status-triplet span[data-state="mixed"],
   .macro-decision__status-triplet span[data-state="missing"],
   .macro-decision__status-triplet span[data-state="licensed_unavailable"] {
     border-color: var(--signal-caution-border);
     color: var(--signal-caution);
   }
 
-  .macro-decision__status-triplet span[data-state="stale"],
-  .macro-decision__status-triplet span[data-state="invalid"],
-  .macro-decision__status-triplet span[data-state="unavailable"],
-  .macro-decision__status-triplet span[data-state="blocked"] {
+  .macro-decision__status-triplet span[data-state="unavailable"] {
     border-color: var(--signal-negative-border);
     color: var(--signal-negative);
   }

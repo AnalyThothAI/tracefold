@@ -230,21 +230,39 @@ class GeneralMarketRepository:
             return []
         rows = self.conn.execute(
             """
-            SELECT *
-            FROM (
+            WITH current_revisions AS (
               SELECT
                 settlements.*,
                 row_number() OVER (
-                  PARTITION BY settlements.dataset_id
-                  ORDER BY settlements.trade_date DESC, settlements.contract_code
-                ) AS row_number
+                  PARTITION BY
+                    settlements.dataset_id,
+                    settlements.instrument_id,
+                    settlements.trade_date,
+                    settlements.contract_code
+                  ORDER BY
+                    settlements.received_at_ms DESC,
+                    settlements.published_at_ms DESC NULLS LAST,
+                    settlements.settlement_id DESC
+                ) AS revision_number
               FROM market_settlements AS settlements
               WHERE settlements.dataset_id = ANY(%s)
                 AND settlements.received_at_ms <= COALESCE(
                   %s::bigint,
                   settlements.received_at_ms
                 )
-            ) AS ranked
+            ),
+            ranked AS (
+              SELECT
+                current_revisions.*,
+                row_number() OVER (
+                  PARTITION BY current_revisions.dataset_id
+                  ORDER BY current_revisions.trade_date DESC, current_revisions.contract_code
+                ) AS row_number
+              FROM current_revisions
+              WHERE revision_number = 1
+            )
+            SELECT *
+            FROM ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, trade_date, contract_code
             """,

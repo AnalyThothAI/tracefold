@@ -45,7 +45,7 @@ def _market_row(dataset_id: str, observed_at_ms: int, value: float) -> dict:
     }
 
 
-def _module(module_id: str, **overrides: list[dict]) -> dict:
+def _module(module_id: str, *, now_ms: int = NOW_MS, **overrides: list[dict]) -> dict:
     groups = {
         "series_rows": [],
         "market_rows": [],
@@ -58,7 +58,7 @@ def _module(module_id: str, **overrides: list[dict]) -> dict:
     groups.update(overrides)
     return build_typed_module_payload(
         module_id=module_id,  # type: ignore[arg-type]
-        now_ms=NOW_MS,
+        now_ms=now_ms,
         **groups,
     )
 
@@ -92,7 +92,7 @@ def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
         ],
     )
 
-    assert _dataset_state(module, "fred.dgs2")["state"] == "current"
+    assert _dataset_state(module, "fred.dgs2")["data_state"] == "current"
 
 
 def test_coverage_manifest_keeps_expected_but_unregistered_capability_visible(
@@ -221,25 +221,14 @@ def test_credit_bank_supply_contains_standard_and_demand_for_three_categories() 
 def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison() -> None:
     friday = int(datetime(2026, 7, 24, 20, tzinfo=UTC).timestamp() * 1_000)
     prior = int(datetime(2026, 7, 17, 20, tzinfo=UTC).timestamp() * 1_000)
+    intraday = int(datetime(2026, 7, 27, 11, 55, tzinfo=UTC).timestamp() * 1_000)
     market_rows = []
-    for index, dataset_id in enumerate(
-        (
-            "yfinance.spy.market",
-            "yfinance.qqq.market",
-            "yfinance.iwm.market",
-            "yfinance.tlt.market",
-            "yfinance.ief.market",
-            "yfinance.lqd.market",
-            "yfinance.hyg.market",
-            "yfinance.dxy.market",
-            "yfinance.gld.market",
-            "yfinance.uso.market",
-        )
-    ):
+    for index, instrument_id in enumerate(("spy", "qqq", "iwm", "tlt", "ief", "lqd", "hyg", "dxy", "gld", "uso")):
         market_rows.extend(
             (
-                _market_row(dataset_id, prior, 100 + index),
-                _market_row(dataset_id, friday, 105 + index),
+                _market_row(f"nasdaq.{instrument_id}.daily", prior, 100 + index),
+                _market_row(f"nasdaq.{instrument_id}.daily", friday, 105 + index),
+                _market_row(f"yfinance.{instrument_id}.intraday", intraday, 106 + index),
             )
         )
     module = _module(
@@ -251,7 +240,7 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
                 "partition_key": "latest",
                 "status": "current",
             }
-            for row in market_rows[1::2]
+            for row in market_rows
         ],
     )
 
@@ -279,8 +268,10 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
         "GLD",
         "USO",
     }
-    assert _dataset_state(module, "yfinance.spy.market")["state"] == "stale"
-    assert module["assets"]["proxies"][0]["market_time_ms"] == friday
+    assert _dataset_state(module, "yfinance.spy.intraday")["data_state"] == "current"
+    assert module["assets"]["proxies"][0]["market_time_ms"] == intraday
+    assert module["assets"]["proxies"][0]["history_dataset_id"] == "nasdaq.spy.daily"
+    assert module["assets"]["proxies"][0]["change_1w_pct"] == 5.0
 
 
 def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
@@ -288,12 +279,48 @@ def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
     later = int(datetime(2026, 7, 27, 19, 55, tzinfo=UTC).timestamp() * 1_000)
     module = _module(
         "cross_asset",
+        now_ms=int(datetime(2026, 7, 27, 20, tzinfo=UTC).timestamp() * 1_000),
         market_rows=[
-            _market_row("yfinance.spy.market", later, 110),
-            _market_row("yfinance.spy.market", earlier, 100),
+            _market_row("nasdaq.spy.daily", earlier, 100),
+            _market_row("yfinance.spy.intraday", later, 110),
+            _market_row("yfinance.spy.intraday", earlier, 100),
+        ],
+        target_states=[
+            {
+                "dataset_id": "yfinance.spy.intraday",
+                "partition_key": "latest",
+                "status": "current",
+            }
         ],
     )
 
     spy = module["assets"]["proxies"][0]
+    state = _dataset_state(module, "yfinance.spy.intraday")
     assert spy["latest_value"] == 110
     assert spy["market_time_ms"] == later
+    assert spy["price_kind"] == "intraday"
+    assert state["last_market_at_ms"] == later
+    assert state["data_state"] == "current"
+
+
+def test_closed_equity_market_keeps_the_last_expected_bar_current() -> None:
+    friday_last_bar = int(datetime(2026, 7, 24, 23, 55, tzinfo=UTC).timestamp() * 1_000)
+    sunday = int(datetime(2026, 7, 26, 16, tzinfo=UTC).timestamp() * 1_000)
+    module = _module(
+        "cross_asset",
+        now_ms=sunday,
+        market_rows=[_market_row("yfinance.spy.intraday", friday_last_bar, 110)],
+        target_states=[
+            {
+                "dataset_id": "yfinance.spy.intraday",
+                "partition_key": "latest",
+                "status": "current",
+            }
+        ],
+    )
+
+    state = _dataset_state(module, "yfinance.spy.intraday")
+    assert state["market_state"] == "closed"
+    assert state["data_state"] == "current"
+    assert state["reason"] == "last_expected_bar_present"
+    assert module["status"]["data_health"]["state"] == "mixed"

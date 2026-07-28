@@ -225,21 +225,26 @@ latest immutable daily judgment, six module summaries, changes since the
 judgment cutoff, three independent status families, and compact research state.
 Each route returns exactly one matching schema:
 
-- `macro_rates_fed_v2`
-- `macro_economy_inflation_v2`
-- `macro_liquidity_funding_v2`
-- `macro_credit_v3`
-- `macro_volatility_v2`
-- `macro_cross_asset_v3`
+- `macro_rates_fed_v3`
+- `macro_economy_inflation_v3`
+- `macro_liquidity_funding_v3`
+- `macro_credit_v4`
+- `macro_volatility_v3`
+- `macro_cross_asset_v4`
 
 Shared fields are limited to identity, clocks, status, summary, contradictions,
 falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
 events, credit ladders, and the ETF comparison matrix are explicit typed
 fields, not generic chart arrays. Coverage is `complete`, `partial`, or
-`licensed_unavailable`; Data Health is `current`, `delayed`, `stale`, `invalid`,
-`backfilling`, or `unavailable`; Judgment is `current`, `missing`, or `blocked`.
-The v3 overview also returns the persisted current/blocked judgment publication
-status, reason code, attempted time, blocked modules, and exact dataset gaps.
+`licensed_unavailable`. Module Data Health is `current`, `mixed`, or
+`unavailable`; each Dataset separately exposes data state
+(`current`, `delayed`, `stale`, `invalid`, `backfilling`, `unavailable`),
+market state (`open`, `closed`, `maintenance`, `unknown`, `not_applicable`),
+and source state (`healthy`, `degraded`, `failed`). Judgment is `current` or
+`missing`. The v4 overview always returns the intended judgment session and
+08:50 New York cutoff even before publication; an existing publication status
+is `current` only. Evidence gaps belong to the immutable judgment as `gaps`
+and `no_call`, not to a blocked publication state.
 These reads use `macro_module_current`, `macro_judgment_status`, and immutable
 judgment rows only; they
 never call a provider/model, advance a target, rebuild a projection, or
@@ -256,9 +261,15 @@ surface, `macro_observations`, and unclassified facts do not exist.
 
 The Cross-Asset payload always owns the fixed ETF basket SPY, QQQ, IWM, TLT,
 IEF, LQD, HYG, UUP, GLD, and USO plus ES, NQ, RTY, ZB, ZN, GC, CL, and HG
-major-futures rows and the Yahoo DXY index. Yahoo Finance through the pinned `yfinance` adapter is an
-explicitly `untrusted_proxy`, five-minute best-effort source; each row exposes
-its actual market timestamp and may be delayed. WTI is the separate official FRED/EIA
+major-futures rows and the Yahoo DXY index. ETF rows use Nasdaq public daily
+history for five-year changes, normalization, and correlations, paired with
+Yahoo Finance five-minute prices. Futures pair Yahoo five-minute prices with
+Yahoo continuous-contract daily history. Both Yahoo lanes and Nasdaq public
+history are explicitly `untrusted_proxy`; each row exposes separate history
+and price Dataset IDs, its actual market timestamp, price kind, and source
+lineage. A closed or maintenance market preserves the last expected bar as
+`current`; staleness is measured against the market clock, never wall-clock
+age alone. WTI is the separate official FRED/EIA
 `DCOILWTICO` benchmark; USO is never relabelled as spot or futures. The Rates
 payload exposes Treasury nominal and real maturity cross-sections for current,
 1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,
@@ -288,8 +299,11 @@ concurrent credit dimensions are returned; no composite score exists.
 
 On every U.S. trading session at 08:50 `America/New_York`,
 `macro_judgment` seals one cutoff-bounded `macro_evidence_pack_v2` and publishes
-one immutable `macro_daily_judgment_v2` when no critical module is blocked and
-required professional backfills/document analyses are complete.
+one immutable `macro_daily_judgment_v2`. Missing, delayed, stale, backfilling,
+licensed-unavailable, or unanalyzed evidence is preserved as explicit gaps and
+forces only the affected conclusion to `no_call`; it never suppresses the
+Evidence Pack or judgment row. Only fact/schema/identity/cutoff integrity
+failure may fail closed.
 The judgment fixes growth, inflation, policy, liquidity, credit, and volatility
 states plus one-week/one-month directions for SPY, QQQ, IWM, TLT, IEF, LQD,
 HYG, UUP, GLD, USO, BTC, and VIX. It exposes conflicts, invalidation conditions, confidence,

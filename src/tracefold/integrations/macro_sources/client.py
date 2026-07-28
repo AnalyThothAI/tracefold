@@ -49,6 +49,7 @@ class MacroSourceClient:
         fred_enabled: bool = True,
         cboe_enabled: bool = True,
         cftc_enabled: bool = True,
+        nasdaq_daily_enabled: bool = True,
         yfinance_enabled: bool = True,
         yfinance_history_loader: Any | None = None,
         transport: httpx.BaseTransport | None = None,
@@ -68,6 +69,7 @@ class MacroSourceClient:
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
+        self._nasdaq_daily_enabled = bool(nasdaq_daily_enabled)
         self._yfinance_enabled = bool(yfinance_enabled)
         self._yfinance_history_loader = yfinance_history_loader or _load_yfinance_history
 
@@ -91,12 +93,16 @@ class MacroSourceClient:
             raise MacroSourceUnavailable("cboe_disabled")
         if spec.adapter_id == "cftc_tff" and not self._cftc_enabled:
             raise MacroSourceUnavailable("cftc_disabled")
+        if spec.adapter_id == "nasdaq_history" and not self._nasdaq_daily_enabled:
+            raise MacroSourceUnavailable("nasdaq_daily_disabled")
         if spec.adapter_id == "yfinance_history" and not self._yfinance_enabled:
             raise MacroSourceUnavailable("yfinance_disabled")
         if spec.adapter_id == "fred_csv":
             return self._fetch_fred(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "treasury_curve_xml":
             return self._fetch_treasury_curve(spec, partition_key, cursor, received_at_ms)
+        if spec.adapter_id == "nasdaq_history":
+            return self._fetch_nasdaq_history(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "yfinance_history":
             return self._fetch_yfinance_history(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "binance_spot":
@@ -187,6 +193,87 @@ class MacroSourceClient:
             ),
         )
 
+    def _fetch_nasdaq_history(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        cursor: dict[str, Any],
+        received_at_ms: int,
+    ) -> FetchBatch:
+        received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
+        start_date = _optional_date(cursor.get("start_date"))
+        end_date = _optional_date(cursor.get("end_date"))
+        cursor_date = _optional_date(cursor.get("reference_date")) or start_date
+        lower_bound = start_date or (
+            cursor_date - timedelta(days=7) if cursor_date is not None else _years_before(received_date, 5)
+        )
+        upper_bound = end_date or received_date
+        response = self._client.get(
+            spec.source_url,
+            params={
+                "assetclass": "etf",
+                "fromdate": lower_bound.isoformat(),
+                "todate": upper_bound.isoformat(),
+                "limit": "5000",
+            },
+            headers={"Accept": "application/json, text/plain, */*"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        payload = response.json()
+        status_code = (
+            payload.get("status", {}).get("rCode")
+            if isinstance(payload, dict) and isinstance(payload.get("status"), dict)
+            else None
+        )
+        rows = (
+            payload.get("data", {}).get("tradesTable", {}).get("rows", [])
+            if isinstance(payload, dict) and isinstance(payload.get("data"), dict)
+            else []
+        )
+        if status_code != 200 or not isinstance(rows, list):
+            raise MacroSourceError("nasdaq_history_payload_invalid")
+        facts: list[MarketObservationFact] = []
+        latest_date: date | None = cursor_date
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            observed_date = _optional_us_date(row.get("date"))
+            close = _finite_float(str(row.get("close") or "").replace("$", "").replace(",", ""))
+            if observed_date is None or close is None or spec.instrument_id is None:
+                continue
+            facts.append(
+                MarketObservationFact(
+                    dataset_id=spec.dataset_id,
+                    instrument_id=spec.instrument_id,
+                    source_id=spec.source_id,
+                    field_name="close",
+                    value_numeric=close,
+                    unit=spec.unit,
+                    observed_at_ms=_date_close_ms(observed_date),
+                    published_at_ms=None,
+                    received_at_ms=received_at_ms,
+                    trust_tier=spec.trust_tier,
+                    source_url=str(response.url),
+                    raw_data=dict(row),
+                )
+            )
+            latest_date = max(latest_date or observed_date, observed_date)
+        facts.sort(key=lambda fact: fact.observed_at_ms)
+        if not facts:
+            raise MacroSourceError("nasdaq_history_no_valid_rows")
+        return _batch(
+            spec,
+            partition_key,
+            tuple(facts),
+            response,
+            cursor=_series_cursor(
+                latest_date,
+                start_date=start_date,
+                end_date=end_date,
+                backfill_complete=True if start_date is not None and end_date is not None else None,
+            ),
+        )
+
     def _fetch_yfinance_history(
         self,
         spec: DatasetSpec,
@@ -199,6 +286,8 @@ class MacroSourceClient:
         interval = str(spec.metadata.get("bar_interval") or "5m")
         initial_period = str(spec.metadata.get("initial_period") or "1mo")
         incremental_period = str(spec.metadata.get("incremental_period") or "1d")
+        start_date = _optional_date(cursor.get("start_date"))
+        end_date = _optional_date(cursor.get("end_date"))
         period = incremental_period if _optional_int(cursor.get("observed_at_ms")) is not None else initial_period
         prepost = bool(spec.metadata.get("prepost", True))
         try:
@@ -223,6 +312,11 @@ class MacroSourceClient:
                 continue
             if observed_at.tzinfo is None:
                 observed_at = observed_at.replace(tzinfo=UTC)
+            observed_date = observed_at.astimezone(UTC).date()
+            if start_date is not None and observed_date < start_date:
+                continue
+            if end_date is not None and observed_date > end_date:
+                continue
             observed_at_ms = int(observed_at.astimezone(UTC).timestamp() * 1_000)
             facts.append(
                 MarketObservationFact(
@@ -259,7 +353,12 @@ class MacroSourceClient:
             dataset_id=spec.dataset_id,
             partition_key=partition_key,
             facts=tuple(facts),
-            cursor={"observed_at_ms": facts[-1].observed_at_ms},
+            cursor={
+                "observed_at_ms": facts[-1].observed_at_ms,
+                **({"start_date": start_date.isoformat()} if start_date is not None else {}),
+                **({"end_date": end_date.isoformat()} if end_date is not None else {}),
+                **({"backfill_complete": True} if start_date is not None and end_date is not None else {}),
+            },
             response_hash="sha256:" + hashlib.sha256(response_body.encode()).hexdigest(),
             source_url=spec.source_url,
             diagnostics={
@@ -1239,6 +1338,27 @@ def _optional_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+def _optional_us_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
+def _date_close_ms(value: date) -> int:
+    return int(datetime(value.year, value.month, value.day, 21, tzinfo=UTC).timestamp() * 1_000)
+
+
+def _years_before(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year - years)
+    except ValueError:
+        return value.replace(year=value.year - years, day=28)
 
 
 def _date_open_ms(value: date) -> int:

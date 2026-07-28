@@ -585,7 +585,46 @@ def test_cftc_tff_adapter_emits_official_contract_position_facts() -> None:
     assert "043602" in requests[0].url.params["$where"]
 
 
-def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_period() -> None:
+def test_nasdaq_daily_history_requests_five_year_window_and_emits_daily_facts() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "status": {"rCode": 200},
+                "data": {
+                    "tradesTable": {
+                        "rows": [
+                            {"date": "07/24/2026", "close": "$638.47"},
+                            {"date": "07/23/2026", "close": "$635.34"},
+                        ]
+                    }
+                },
+            },
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("nasdaq.spy.daily"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert [fact.value_numeric for fact in batch.facts] == [635.34, 638.47]
+    assert all(isinstance(fact, MarketObservationFact) for fact in batch.facts)
+    assert requests[0].url.params["fromdate"] == "2021-07-27"
+    assert requests[0].url.params["todate"] == "2026-07-27"
+    assert requests[0].url.params["limit"] == "5000"
+
+
+def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_period() -> None:
     calls: list[dict[str, object]] = []
 
     def load(symbol: str, **kwargs: object) -> pd.DataFrame:
@@ -607,13 +646,13 @@ def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_pe
     client = MacroSourceClient(yfinance_history_loader=load)
     try:
         initial = client.fetch(
-            require_dataset("yfinance.spy.market"),
+            require_dataset("yfinance.spy.intraday"),
             partition_key="latest",
             cursor={},
             now_ms=NOW_MS,
         )
         incremental = client.fetch(
-            require_dataset("yfinance.spy.market"),
+            require_dataset("yfinance.spy.intraday"),
             partition_key="latest",
             cursor=initial.cursor,
             now_ms=NOW_MS,
@@ -633,6 +672,56 @@ def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_pe
     assert incremental.response_hash == initial.response_hash
 
 
+def test_yfinance_daily_continuous_proxy_uses_five_year_then_monthly_period() -> None:
+    calls: list[dict[str, object]] = []
+
+    def load(symbol: str, **kwargs: object) -> pd.DataFrame:
+        calls.append({"symbol": symbol, **kwargs})
+        return pd.DataFrame(
+            {
+                "Open": [6_300.0],
+                "High": [6_350.0],
+                "Low": [6_290.0],
+                "Close": [6_340.5],
+                "Volume": [1_000.0],
+            },
+            index=pd.to_datetime(["2026-07-24T00:00:00Z"], utc=True),
+        )
+
+    client = MacroSourceClient(yfinance_history_loader=load)
+    try:
+        initial = client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+        client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="latest",
+            cursor=initial.cursor,
+            now_ms=NOW_MS,
+        )
+        bounded = client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="2021-07-27..2026-07-27",
+            cursor={"start_date": "2021-07-27", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert calls[0]["period"] == "5y"
+    assert calls[0]["interval"] == "1d"
+    assert calls[0]["prepost"] is False
+    assert calls[1]["period"] == "1mo"
+    assert calls[2]["period"] == "5y"
+    assert initial.facts[0].dataset_id == "yfinance.es_future.daily"
+    assert bounded.cursor["start_date"] == "2021-07-27"
+    assert bounded.cursor["end_date"] == "2026-07-27"
+    assert bounded.cursor["backfill_complete"] is True
+
+
 def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
     client = MacroSourceClient(
         yfinance_enabled=False,
@@ -641,7 +730,7 @@ def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
     try:
         with pytest.raises(MacroSourceUnavailable, match="yfinance_disabled"):
             client.fetch(
-                require_dataset("yfinance.spy.market"),
+                require_dataset("yfinance.spy.intraday"),
                 partition_key="latest",
                 cursor={},
                 now_ms=NOW_MS,

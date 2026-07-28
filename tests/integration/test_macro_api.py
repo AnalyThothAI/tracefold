@@ -25,7 +25,7 @@ def _settings(tmp_path) -> Settings:
     return settings
 
 
-def _module_payload() -> dict:
+def _module_payload(*, data_health_state: str = "unavailable") -> dict:
     payload = build_typed_module_payload(
         module_id="rates_fed",
         now_ms=1_000,
@@ -38,6 +38,9 @@ def _module_payload() -> dict:
         target_states=[],
     )
     payload["summary"]["headline"] = "收益率曲线等待官方回填"
+    payload["status"]["data_health"]["state"] = data_health_state
+    if data_health_state == "current":
+        payload["status"]["data_health"]["current_datasets"] = payload["status"]["data_health"]["tracked_datasets"]
     return payload
 
 
@@ -55,9 +58,9 @@ def test_macro_overview_and_typed_module_routes_are_persisted_only(
         with client.app.state.service.repositories() as repos, repos.transaction():
             repos.macro.upsert_module_current(
                 module_id="rates_fed",
-                data_health_state="invalid",
+                data_health_state="current",
                 fact_cutoff_ms=1_000,
-                payload=_module_payload(),
+                payload=_module_payload(data_health_state="current"),
                 payload_hash="sha256:module",
                 updated_at_ms=1_100,
             )
@@ -108,24 +111,28 @@ def test_macro_overview_and_typed_module_routes_are_persisted_only(
     assert len(overview_data["modules"]) == 6
     assert overview_data["modules"][0]["module_id"] == "rates_fed"
     assert overview_data["modules"][0]["coverage_state"] == "licensed_unavailable"
-    assert overview_data["modules"][0]["data_health_state"] == "invalid"
+    assert overview_data["modules"][0]["data_health_state"] == "current"
+    assert overview_data["data_health_state"] == "mixed"
     assert overview_data["modules"][0]["judgment_state"] == "current"
+    assert overview_data["schema_version"] == "macro_overview_v4"
+    assert overview_data["judgment_session_date"] == "2026-07-27"
+    assert overview_data["judgment_cutoff_ms"] == 1_000
     assert rates.status_code == 200
     assert rates.json()["data"]["summary"]["headline"] == "收益率曲线等待官方回填"
-    assert rates.json()["data"]["schema_version"] == "macro_rates_fed_v2"
+    assert rates.json()["data"]["schema_version"] == "macro_rates_fed_v3"
     assert rates.json()["data"]["policy_pricing"]["cme_policy_probabilities"]["state"] == ("licensed_unavailable")
     assert all(response.status_code == 200 for response in remaining)
     assert [response.json()["data"]["schema_version"] for response in remaining] == [
-        "macro_economy_inflation_v2",
-        "macro_liquidity_funding_v2",
-        "macro_credit_v3",
-        "macro_volatility_v2",
-        "macro_cross_asset_v3",
+        "macro_economy_inflation_v3",
+        "macro_liquidity_funding_v3",
+        "macro_credit_v4",
+        "macro_volatility_v3",
+        "macro_cross_asset_v4",
     ]
     assert all(response.json()["data"]["status"]["judgment"]["state"] == "current" for response in remaining)
 
 
-def test_macro_overview_exposes_persisted_judgment_blocker(
+def test_macro_overview_exposes_session_and_cutoff_when_judgment_is_missing(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -134,42 +141,19 @@ def test_macro_overview_exposes_persisted_judgment_blocker(
     monkeypatch.setattr(routes_macro, "_now_ms", lambda: read_at_ms)
     app = create_app(settings=_settings(tmp_path), start_collector=False)
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
-            repos.macro.upsert_judgment_status(
-                session_date=date(2026, 7, 27),
-                judgment_cutoff_ms=cutoff_ms,
-                state="blocked",
-                reason_code="critical_evidence_blocked",
-                details={
-                    "blocked_modules": ["rates_fed"],
-                    "modules": [
-                        {
-                            "module_id": "rates_fed",
-                            "dataset_gaps": [
-                                {
-                                    "dataset_id": "treasury.daily_nominal_curve",
-                                    "label": "美国国债收益率曲线",
-                                    "state": "stale",
-                                    "reason": "latest_market_fact_before_cutoff",
-                                }
-                            ],
-                        }
-                    ],
-                },
-                attempted_at_ms=read_at_ms,
-            )
-
         overview = client.get("/api/macro/overview", headers=AUTH)
         rates = client.get("/api/macro/rates-fed", headers=AUTH)
 
     assert overview.status_code == 200
     overview_data = overview.json()["data"]
-    assert overview_data["judgment_state"] == "blocked"
+    assert overview_data["schema_version"] == "macro_overview_v4"
+    assert overview_data["judgment_session_date"] == "2026-07-27"
+    assert overview_data["judgment_cutoff_ms"] == cutoff_ms
+    assert overview_data["judgment_state"] == "missing"
     assert overview_data["daily_judgment"] is None
-    assert overview_data["judgment_status"]["reason_code"] == "critical_evidence_blocked"
-    assert overview_data["judgment_status"]["details"]["blocked_modules"] == ["rates_fed"]
+    assert overview_data["judgment_status"] is None
     assert rates.status_code == 200
-    assert rates.json()["data"]["status"]["judgment"]["state"] == "blocked"
+    assert rates.json()["data"]["status"]["judgment"]["state"] == "missing"
 
 
 def test_macro_routes_do_not_present_prior_session_judgment_as_current(

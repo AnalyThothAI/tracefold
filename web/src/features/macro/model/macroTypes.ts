@@ -8,14 +8,17 @@ export type MacroModuleId =
 
 export type JsonObject = Record<string, unknown>;
 export type MacroCoverageState = "complete" | "partial" | "licensed_unavailable";
-export type MacroDataHealthState =
+export type MacroDatasetDataState =
   | "current"
   | "delayed"
   | "stale"
   | "invalid"
   | "backfilling"
   | "unavailable";
-export type MacroJudgmentState = "current" | "missing" | "blocked";
+export type MacroDataHealthState = "current" | "mixed" | "unavailable";
+export type MacroMarketState = "open" | "closed" | "maintenance" | "unknown" | "not_applicable";
+export type MacroSourceState = "healthy" | "degraded" | "failed";
+export type MacroJudgmentState = "current" | "missing";
 
 export type MacroCoverageCapability = {
   capability_id: string;
@@ -38,6 +41,15 @@ export type MacroModuleStatus = {
     current_datasets: number;
     tracked_datasets: number;
     as_of_ms: number;
+    groups: Array<{
+      group_id: string;
+      label: string;
+      data_state: MacroDatasetDataState | "mixed";
+      market_state: MacroMarketState | "mixed";
+      source_state: MacroSourceState | "mixed";
+      current_datasets: number;
+      tracked_datasets: number;
+    }>;
   };
   judgment: {
     state: MacroJudgmentState;
@@ -60,13 +72,18 @@ export type MacroChange = {
 export type MacroDatasetState = {
   dataset_id: string;
   label: string;
-  state: MacroDataHealthState;
+  data_state: MacroDatasetDataState;
+  market_state: MacroMarketState;
+  source_state: MacroSourceState;
   reason: string;
   critical: boolean;
   trust_tier: "official" | "exchange" | "untrusted_proxy";
   source_url: string;
   latest_reference: string | null;
   latest_received_at_ms: number | null;
+  last_market_at_ms: number | null;
+  next_open_ms: number | null;
+  health_group: string;
 };
 
 export type MacroEvidenceFact = {
@@ -100,6 +117,8 @@ export type MacroIndicator = {
 
 export type MacroAssetRow = {
   dataset_id: string;
+  price_dataset_id: string;
+  history_dataset_id: string;
   symbol: string;
   label: string;
   instrument_type: string;
@@ -108,11 +127,13 @@ export type MacroAssetRow = {
   unit: string;
   as_of: string | null;
   market_time_ms: number;
+  price_kind: "intraday" | "daily_close";
   change_1d_pct: number | null;
   change_1w_pct: number | null;
   change_1m_pct: number | null;
   trust_tier: "official" | "exchange" | "untrusted_proxy";
   source_url: string;
+  history_source_url: string;
 };
 
 export type MacroModuleBase = {
@@ -135,7 +156,7 @@ export type MacroModuleBase = {
 };
 
 export type MacroRatesFedReadData = MacroModuleBase & {
-  schema_version: "macro_rates_fed_v2";
+  schema_version: "macro_rates_fed_v3";
   module_id: "rates_fed";
   curve: {
     nominal_snapshots: MacroCurveSnapshot[];
@@ -214,7 +235,7 @@ export type MacroFedTimelineEvent = {
 };
 
 export type MacroEconomyInflationReadData = MacroModuleBase & {
-  schema_version: "macro_economy_inflation_v2";
+  schema_version: "macro_economy_inflation_v3";
   module_id: "economy_inflation";
   inflation: { indicators: MacroIndicator[]; official_releases: JsonObject[] };
   labor: { indicators: MacroIndicator[]; official_releases: JsonObject[] };
@@ -222,14 +243,14 @@ export type MacroEconomyInflationReadData = MacroModuleBase & {
 };
 
 export type MacroLiquidityFundingReadData = MacroModuleBase & {
-  schema_version: "macro_liquidity_funding_v2";
+  schema_version: "macro_liquidity_funding_v3";
   module_id: "liquidity_funding";
   balance_sheet: { indicators: MacroIndicator[] };
   funding: { indicators: MacroIndicator[] };
 };
 
 export type MacroCreditReadData = MacroModuleBase & {
-  schema_version: "macro_credit_v3";
+  schema_version: "macro_credit_v4";
   module_id: "credit";
   cycle_dimensions: Array<{
     dimension_id:
@@ -272,7 +293,7 @@ export type MacroCreditReadData = MacroModuleBase & {
 };
 
 export type MacroVolatilityReadData = MacroModuleBase & {
-  schema_version: "macro_volatility_v2";
+  schema_version: "macro_volatility_v3";
   module_id: "volatility";
   term_structure: {
     spot_and_three_month: MacroIndicator[];
@@ -282,7 +303,7 @@ export type MacroVolatilityReadData = MacroModuleBase & {
 };
 
 export type MacroCrossAssetReadData = MacroModuleBase & {
-  schema_version: "macro_cross_asset_v3";
+  schema_version: "macro_cross_asset_v4";
   module_id: "cross_asset";
   assets: {
     benchmarks: JsonObject[];
@@ -357,9 +378,10 @@ export type MacroDailyJudgment = {
 };
 
 export type MacroOverviewReadData = {
-  schema_version: "macro_overview_v3";
+  schema_version: "macro_overview_v4";
   read_at_ms: number;
-  judgment_cutoff_ms: number | null;
+  judgment_session_date: string;
+  judgment_cutoff_ms: number;
   latest_fact_at_ms: number;
   coverage_state: MacroCoverageState;
   data_health_state: MacroDataHealthState;
@@ -367,7 +389,7 @@ export type MacroOverviewReadData = {
   judgment_status: {
     session_date: string;
     judgment_cutoff_ms: number;
-    state: "blocked" | "current";
+    state: "current";
     reason_code: string;
     details: JsonObject;
     attempted_at_ms: number;

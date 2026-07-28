@@ -307,15 +307,19 @@ declares every expected capability, including unimplemented free sources and
 licensed-unavailable sources; omitting a Dataset cannot make coverage green.
 Operator config only enables source families and sets runtime
 cadence/lease/timeout knobs. Coverage (`complete`, `partial`,
-`licensed_unavailable`), Data Health (`current`, `delayed`, `stale`, `invalid`,
-`backfilling`, `unavailable`), and Judgment (`current`, `missing`, `blocked`)
-are independent decision metadata, not a generic process-readiness gate.
+`licensed_unavailable`), module Data Health (`current`, `mixed`,
+`unavailable`), and Judgment (`current`, `missing`) are independent decision
+metadata, not a generic process-readiness gate. Dataset health has three
+orthogonal axes: data, market clock, and source. Closed and maintenance
+sessions do not age the last expected market bar against wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed payload; credit and cross-asset are v3 after adding exact
-market timestamps and major-futures rows. No generic chart-array contract
-survives. The Calculation
+explicit typed payload. The v3/v4 contracts add exact market timestamps,
+paired daily/intraday Dataset identities, group health, and major-futures rows.
+ETF daily history is the Nasdaq public five-year lane; Yahoo supplies ETF
+intraday prices and paired intraday/daily continuous-contract futures proxies.
+No generic chart-array contract survives. The Calculation
 Registry records every feature's inputs, formula version, windows, minimum
 observations, units, gap policy, freshness, baseline, and output shape.
 Treasury shape, matched breakevens, normalized asset returns, credit ladder
@@ -330,6 +334,10 @@ the reviewer disposition is `pass`, `revise`, or `block`. A model failure
 cannot hide the six deterministic modules or the daily judgment. PostgreSQL
 checkpoints are resumable execution state, not facts or a second publication
 source. Read requests never invoke providers or the graph.
+Evidence completeness is descriptive: missing or unhealthy facts become
+Evidence Pack gaps and affected `no_call` conclusions. It never blocks the
+Evidence Pack, daily judgment, or research for lack of materiality. Only
+identity/schema/cutoff integrity and reviewer integrity remain fail-closed.
 
 ## Safety boundary
 

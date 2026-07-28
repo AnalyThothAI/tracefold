@@ -5,7 +5,7 @@ from datetime import date
 
 from tracefold.macro.registry import DATASET_REGISTRY
 
-REQUIRED_PROFESSIONAL_BACKFILL_DATASETS = frozenset(
+PROFESSIONAL_FIVE_YEAR_DATASETS = frozenset(
     {
         "treasury.daily_nominal_curve",
         "treasury.daily_real_curve",
@@ -13,6 +13,25 @@ REQUIRED_PROFESSIONAL_BACKFILL_DATASETS = frozenset(
         "federal_reserve.board.speeches",
         "federal_reserve.reserve_bank.speeches",
         "binance.btcusdt.spot",
+        "nasdaq.spy.daily",
+        "nasdaq.qqq.daily",
+        "nasdaq.iwm.daily",
+        "nasdaq.tlt.daily",
+        "nasdaq.ief.daily",
+        "nasdaq.lqd.daily",
+        "nasdaq.hyg.daily",
+        "nasdaq.dxy.daily",
+        "nasdaq.gld.daily",
+        "nasdaq.uso.daily",
+        "yfinance.es_future.daily",
+        "yfinance.nq_future.daily",
+        "yfinance.rty_future.daily",
+        "yfinance.zb_future.daily",
+        "yfinance.zn_future.daily",
+        "yfinance.dx_future.daily",
+        "yfinance.gc_future.daily",
+        "yfinance.cl_future.daily",
+        "yfinance.hg_future.daily",
     }
 )
 
@@ -22,7 +41,6 @@ class MacroBackfillPolicy:
     dataset_id: str
     history_class: str
     start_date: date
-    required_for_judgment: bool
     priority: int
 
 
@@ -41,7 +59,7 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
         history_class: str,
         start_date: date,
         *,
-        required_for_judgment: bool,
+        priority: int,
     ) -> None:
         spec = DATASET_REGISTRY[dataset_id]
         if spec.adapter_id == "unavailable" or spec.adapter_id.startswith("derived_"):
@@ -50,17 +68,16 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
             dataset_id=dataset_id,
             history_class=history_class,
             start_date=min(start_date, through_date),
-            required_for_judgment=required_for_judgment,
-            priority=25 if required_for_judgment else 75,
+            priority=priority,
         )
 
     recent_history_start = _years_before(through_date, 5)
-    for dataset_id in REQUIRED_PROFESSIONAL_BACKFILL_DATASETS:
+    for dataset_id in PROFESSIONAL_FIVE_YEAR_DATASETS:
         register(
             dataset_id,
-            "required_trailing_five_years",
+            "trailing_five_years",
             recent_history_start,
-            required_for_judgment=True,
+            priority=25,
         )
 
     for spec in DATASET_REGISTRY.values():
@@ -69,14 +86,14 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
                 spec.dataset_id,
                 "optional_maximum_public_history",
                 date(1900, 1, 1),
-                required_for_judgment=False,
+                priority=75,
             )
 
     register(
         "fred.dcoilwtico",
         "optional_maximum_public_history",
         date(1986, 1, 1),
-        required_for_judgment=False,
+        priority=75,
     )
 
     for spec in DATASET_REGISTRY.values():
@@ -85,14 +102,14 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
                 spec.dataset_id,
                 "optional_full_tff_history",
                 date(2006, 6, 13),
-                required_for_judgment=False,
+                priority=75,
             )
 
     return tuple(policies[key] for key in sorted(policies))
 
 
 __all__ = [
-    "REQUIRED_PROFESSIONAL_BACKFILL_DATASETS",
+    "PROFESSIONAL_FIVE_YEAR_DATASETS",
     "MacroBackfillPolicy",
     "professional_backfill_policies",
 ]

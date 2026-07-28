@@ -19,8 +19,9 @@ export function macroOverviewFixture(): MacroOverviewReadData {
     "cross_asset",
   ];
   return {
-    schema_version: "macro_overview_v3",
+    schema_version: "macro_overview_v4",
     read_at_ms: NOW,
+    judgment_session_date: "2026-07-27",
     judgment_cutoff_ms: NOW - 3_600_000,
     latest_fact_at_ms: NOW - 600_000,
     coverage_state: "partial",
@@ -110,7 +111,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "rates_fed") {
     return {
       ...base,
-      schema_version: "macro_rates_fed_v2",
+      schema_version: "macro_rates_fed_v3",
       module_id: "rates_fed",
       curve: {
         nominal_snapshots: [
@@ -199,7 +200,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "economy_inflation") {
     return {
       ...base,
-      schema_version: "macro_economy_inflation_v2",
+      schema_version: "macro_economy_inflation_v3",
       module_id: "economy_inflation",
       inflation: {
         indicators: [indicator("fred.cpiaucsl", "消费者价格指数", 320)],
@@ -212,7 +213,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "liquidity_funding") {
     return {
       ...base,
-      schema_version: "macro_liquidity_funding_v2",
+      schema_version: "macro_liquidity_funding_v3",
       module_id: "liquidity_funding",
       balance_sheet: { indicators: [indicator("fred.walcl", "美联储总资产", 6_500_000)] },
       funding: { indicators: [indicator("fred.sofr", "SOFR", 4.32)] },
@@ -221,7 +222,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "credit") {
     return {
       ...base,
-      schema_version: "macro_credit_v3",
+      schema_version: "macro_credit_v4",
       module_id: "credit",
       cycle_dimensions: [
         {
@@ -294,7 +295,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       bank_lending: { indicators: [indicator("fred.drtscilm", "C&I标准", 8.1)] },
       loan_quality: { indicators: [indicator("fred.drblacbs", "商业贷款逾期率", 1.34)] },
       confirmations: {
-        etfs: [asset("LQD", "yfinance.lqd.market")],
+        etfs: [asset("LQD", "nasdaq.lqd.daily", "yfinance.lqd.intraday")],
         positions: [],
         trace_nav: {
           state: "licensed_unavailable",
@@ -306,7 +307,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "volatility") {
     return {
       ...base,
-      schema_version: "macro_volatility_v2",
+      schema_version: "macro_volatility_v3",
       module_id: "volatility",
       term_structure: {
         spot_and_three_month: [indicator("fred.vixcls", "VIX", 18)],
@@ -317,7 +318,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   }
   return {
     ...base,
-    schema_version: "macro_cross_asset_v3",
+    schema_version: "macro_cross_asset_v4",
     module_id: "cross_asset",
     assets: {
       benchmarks: [
@@ -334,16 +335,16 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
         },
       ],
       proxies: [
-        asset("SPY", "yfinance.spy.market"),
-        asset("QQQ", "yfinance.qqq.market"),
-        asset("IWM", "yfinance.iwm.market"),
-        asset("TLT", "yfinance.tlt.market"),
-        asset("IEF", "yfinance.ief.market"),
-        asset("LQD", "yfinance.lqd.market"),
-        asset("HYG", "yfinance.hyg.market"),
-        asset("UUP", "yfinance.dxy.market"),
-        asset("GLD", "yfinance.gld.market"),
-        asset("USO", "yfinance.uso.market"),
+        asset("SPY", "nasdaq.spy.daily", "yfinance.spy.intraday"),
+        asset("QQQ", "nasdaq.qqq.daily", "yfinance.qqq.intraday"),
+        asset("IWM", "nasdaq.iwm.daily", "yfinance.iwm.intraday"),
+        asset("TLT", "nasdaq.tlt.daily", "yfinance.tlt.intraday"),
+        asset("IEF", "nasdaq.ief.daily", "yfinance.ief.intraday"),
+        asset("LQD", "nasdaq.lqd.daily", "yfinance.lqd.intraday"),
+        asset("HYG", "nasdaq.hyg.daily", "yfinance.hyg.intraday"),
+        asset("UUP", "nasdaq.dxy.daily", "yfinance.dxy.intraday"),
+        asset("GLD", "nasdaq.gld.daily", "yfinance.gld.intraday"),
+        asset("USO", "nasdaq.uso.daily", "yfinance.uso.intraday"),
       ],
       normalized: [
         { symbol: "SPY", date: "2026-07-17", normalized_value: 100 },
@@ -354,7 +355,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       { left: "SPY", right: "TLT", correlation: -0.25, sample_count: 120, window: "daily" },
     ],
     futures: {
-      market: [asset("ES", "yfinance.es_future.market")],
+      market: [asset("ES", "yfinance.es_future.daily", "yfinance.es_future.intraday")],
       vix_settlements: [{ contract_code: "VX/U6", settlement_price: 19.2 }],
       positions: [],
     },
@@ -401,6 +402,17 @@ function moduleBase(moduleId: MacroModuleId) {
         current_datasets: 1,
         tracked_datasets: 1,
         as_of_ms: NOW,
+        groups: [
+          {
+            group_id: "fixture",
+            label: "Fixture",
+            data_state: "current" as const,
+            market_state: "not_applicable" as const,
+            source_state: "healthy" as const,
+            current_datasets: 1,
+            tracked_datasets: 1,
+          },
+        ],
       },
       judgment: { state: "current" as const, cutoff_ms: NOW - 3_600_000 },
     },
@@ -447,9 +459,15 @@ function indicator(datasetId: string, label: string, value: number): MacroIndica
   };
 }
 
-function asset(symbol: string, datasetId: string): MacroAssetRow {
+function asset(
+  symbol: string,
+  historyDatasetId: string,
+  priceDatasetId = historyDatasetId,
+): MacroAssetRow {
   return {
-    dataset_id: datasetId,
+    dataset_id: historyDatasetId,
+    price_dataset_id: priceDatasetId,
+    history_dataset_id: historyDatasetId,
     symbol,
     label: `${symbol} ETF`,
     instrument_type: "etf",
@@ -458,11 +476,13 @@ function asset(symbol: string, datasetId: string): MacroAssetRow {
     unit: "price",
     as_of: "2026-07-24",
     market_time_ms: NOW - 600_000,
+    price_kind: priceDatasetId.endsWith(".intraday") ? "intraday" : "daily_close",
     change_1d_pct: 0.2,
     change_1w_pct: 1.1,
     change_1m_pct: 2.4,
     trust_tier: "untrusted_proxy",
     source_url: "https://example.com/official",
+    history_source_url: "https://example.com/history",
   };
 }
 

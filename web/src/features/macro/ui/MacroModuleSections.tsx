@@ -601,7 +601,7 @@ function AssetTable({ rows }: { rows: MacroAssetRow[] }) {
   return (
     <div className="macro-decision__semantic-table macro-decision__asset-table" role="table">
       <div role="row">
-        <span role="columnheader">ETF / 类型</span>
+        <span role="columnheader">资产 / 类型</span>
         <span role="columnheader">最新</span>
         <span role="columnheader">1日</span>
         <span role="columnheader">1周</span>
@@ -617,14 +617,21 @@ function AssetTable({ rows }: { rows: MacroAssetRow[] }) {
             </small>
           </span>
           <span role="cell">
-            {formatNumber(row.latest_value)} <small>{formatMarketTime(row.market_time_ms)}</small>
+            {formatNumber(row.latest_value)}
+            <small>
+              {row.price_kind === "intraday" ? "盘中" : "日收盘"} ·{" "}
+              {formatMarketTime(row.market_time_ms)}
+            </small>
           </span>
           <SignedCell value={row.change_1d_pct} />
           <SignedCell value={row.change_1w_pct} />
           <SignedCell value={row.change_1m_pct} />
           <span role="cell">
             <small>{row.trust_tier}</small>
-            <SourceLink href={row.source_url} />
+            <small>{row.price_dataset_id}</small>
+            <SourceLink href={row.source_url} label="价格源" />
+            <small>{row.history_dataset_id}</small>
+            <SourceLink href={row.history_source_url} label="历史源" />
           </span>
         </div>
       ))}
@@ -795,10 +802,10 @@ function EmptyState({ text }: { text: string }) {
   return <p className="macro-decision__empty">{text}</p>;
 }
 
-function SourceLink({ href }: { href: string }) {
+function SourceLink({ href, label = "来源" }: { href: string; label?: string }) {
   return (
     <a href={href} rel="noreferrer" target="_blank">
-      来源 <ExternalLink aria-hidden="true" />
+      {label} <ExternalLink aria-hidden="true" />
     </a>
   );
 }

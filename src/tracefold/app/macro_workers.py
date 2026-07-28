@@ -53,6 +53,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
                 fred_enabled=source_config.fred_enabled,
                 cboe_enabled=source_config.cboe_enabled,
                 cftc_enabled=source_config.cftc_enabled,
+                nasdaq_daily_enabled=source_config.nasdaq_daily_enabled,
                 yfinance_enabled=source_config.yfinance_enabled,
             ),
         )

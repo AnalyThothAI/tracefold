@@ -14,6 +14,7 @@ from tracefold.macro import (
     MACRO_MODULE_IDS,
     MacroModuleId,
     build_typed_module_payload,
+    judgment_cutoff_ms,
     resolve_completed_session,
     resolve_judgment_session,
     schema_version_for_module,
@@ -65,34 +66,27 @@ def macro_overview(request: Request) -> JSONResponse:
         if "licensed_unavailable" in coverage_values
         else "complete"
     )
-    data_health_state = max(
-        (str(module["data_health_state"]) for module in modules),
-        key=lambda value: {
-            "invalid": 6,
-            "unavailable": 5,
-            "stale": 4,
-            "backfilling": 3,
-            "delayed": 2,
-            "current": 1,
-            "missing": 7,
-        }[value],
+    health_values = {module["data_health_state"] for module in modules}
+    data_health_state = (
+        "current" if health_values == {"current"} else "unavailable" if health_values == {"unavailable"} else "mixed"
     )
-    judgment_state = (
-        "current"
-        if judgment_row is not None
-        else "blocked"
-        if judgment_status_row is not None and str(judgment_status_row["state"]) == "blocked"
-        else "missing"
-    )
+    judgment_state = "current" if judgment_row is not None else "missing"
     judgment = (
         dict(judgment_row["judgment_json"])
         if judgment_row is not None and isinstance(judgment_row.get("judgment_json"), dict)
         else None
     )
     payload = {
-        "schema_version": "macro_overview_v3",
+        "schema_version": "macro_overview_v4",
         "read_at_ms": read_at_ms,
-        "judgment_cutoff_ms": (int(judgment_row["judgment_cutoff_ms"]) if judgment_row is not None else None),
+        "judgment_session_date": judgment_session,
+        "judgment_cutoff_ms": (
+            int(judgment_row["judgment_cutoff_ms"])
+            if judgment_row is not None
+            else int(judgment_status_row["judgment_cutoff_ms"])
+            if judgment_status_row is not None
+            else judgment_cutoff_ms(judgment_session)
+        ),
         "latest_fact_at_ms": max(
             (int(module["latest_fact_at_ms"]) for module in modules),
             default=0,
@@ -284,15 +278,9 @@ def _module_payload(
             "cutoff_ms": int(judgment["judgment_cutoff_ms"]),
         }
     else:
-        details = judgment_status.get("details_json") if judgment_status is not None else None
-        blocked_modules = (
-            {str(value) for value in details.get("blocked_modules", [])}
-            if isinstance(details, dict) and isinstance(details.get("blocked_modules"), list)
-            else set()
-        )
         payload["status"]["judgment"] = {
-            "state": "blocked" if module_id in blocked_modules else "missing",
-            "cutoff_ms": None,
+            "state": "missing",
+            "cutoff_ms": (int(judgment_status["judgment_cutoff_ms"]) if judgment_status is not None else None),
         }
     return payload
 

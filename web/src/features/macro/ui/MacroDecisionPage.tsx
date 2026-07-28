@@ -57,6 +57,7 @@ export function MacroOverviewPage({ token }: { token: string }) {
           isFetching={query.isFetching}
           judgment={query.data.judgment_state}
           judgmentCutoffMs={query.data.judgment_cutoff_ms}
+          judgmentSessionDate={query.data.judgment_session_date}
           latestFactAtMs={query.data.latest_fact_at_ms}
           title="每日宏观决策台"
           onRefresh={() => void query.refetch()}
@@ -102,6 +103,7 @@ function DecisionHeader({
   dataHealth,
   judgment,
   judgmentCutoffMs,
+  judgmentSessionDate,
   latestFactAtMs,
   isFetching,
   onRefresh,
@@ -111,6 +113,7 @@ function DecisionHeader({
   dataHealth: MacroDataHealthState;
   judgment: MacroJudgmentState;
   judgmentCutoffMs: number | null;
+  judgmentSessionDate?: string;
   latestFactAtMs: number;
   isFetching: boolean;
   onRefresh: () => void;
@@ -124,6 +127,12 @@ function DecisionHeader({
       </div>
       <StatusTriplet coverage={coverage} dataHealth={dataHealth} judgment={judgment} />
       <dl>
+        {judgmentSessionDate ? (
+          <div>
+            <dt>判断 Session</dt>
+            <dd>{judgmentSessionDate}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>判断截点</dt>
           <dd>{formatInstant(judgmentCutoffMs)}</dd>
@@ -188,7 +197,7 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
         <section className="macro-decision__notice">
           <ShieldAlert aria-hidden="true" />
           <div>
-            <h2>今日判断尚未发布</h2>
+            <h2>{data.judgment_session_date} 判断尚未发布</h2>
             <p>{judgmentStatusMessage(data)}</p>
           </div>
         </section>
@@ -199,7 +208,7 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
             <StatusTriplet
               coverage={module.coverage_state === "missing" ? "partial" : module.coverage_state}
               dataHealth={
-                module.data_health_state === "missing" ? "invalid" : module.data_health_state
+                module.data_health_state === "missing" ? "unavailable" : module.data_health_state
               }
               judgment={module.judgment_state}
             />
@@ -222,46 +231,10 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
 
 function judgmentStatusMessage(data: MacroOverviewReadData): string {
   const status = data.judgment_status;
-  if (!status) return "尚无发布尝试记录；事实页继续更新，但不会把普通行情刷新伪装成新判断。";
-  if (status.reason_code !== "critical_evidence_blocked") {
-    return `发布状态：${status.reason_code}。`;
+  if (!status) {
+    return `冻结截点为 ${formatInstant(data.judgment_cutoff_ms)}；尚无发布尝试记录，证据缺口会写入 no_call，不会阻塞发布。`;
   }
-  const blockedModules = Array.isArray(status.details.blocked_modules)
-    ? status.details.blocked_modules.filter((value): value is string => typeof value === "string")
-    : [];
-  const blockerFacts = judgmentBlockerFacts(status.details.modules);
-  if (blockerFacts.length) {
-    return `冻结截点缺少关键证据：${blockerFacts.join("；")}。`;
-  }
-  return blockedModules.length
-    ? `冻结截点缺少关键证据，阻塞模块：${blockedModules.map(moduleLabel).join("、")}。`
-    : "冻结截点缺少关键证据；详情保留在判断状态记录中。";
-}
-
-function judgmentBlockerFacts(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((moduleValue) => {
-    if (!isRecord(moduleValue)) return [];
-    const moduleId = typeof moduleValue.module_id === "string" ? moduleValue.module_id : "unknown";
-    const gaps = Array.isArray(moduleValue.dataset_gaps) ? moduleValue.dataset_gaps : [];
-    return gaps.slice(0, 3).flatMap((gapValue) => {
-      if (!isRecord(gapValue)) return [];
-      const label =
-        typeof gapValue.label === "string"
-          ? gapValue.label
-          : typeof gapValue.dataset_id === "string"
-            ? gapValue.dataset_id
-            : null;
-      if (!label) return [];
-      const state = typeof gapValue.state === "string" ? gapValue.state : "missing";
-      const reason = typeof gapValue.reason === "string" ? gapValue.reason : null;
-      return [`${moduleLabel(moduleId)}—${label}（${blockerReasonLabel(reason, state)}）`];
-    });
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return `发布状态：${status.reason_code}；冻结截点 ${formatInstant(status.judgment_cutoff_ms)}。`;
 }
 
 function dataStateLabel(value: string): string {
@@ -276,17 +249,6 @@ function dataStateLabel(value: string): string {
       missing: "缺失",
     }[value] ?? value
   );
-}
-
-function blockerReasonLabel(reason: string | null, state: string): string {
-  if (reason === "no_valid_fact") return "冻结截点前无有效事实";
-  if (reason === "derived_fact_pending") return "冻结截点前派生事实未完成";
-  if (reason === "backfill_required") return "冻结截点前所需回填未完成";
-  return dataStateLabel(state);
-}
-
-function moduleLabel(moduleId: string): string {
-  return MODULE_ROUTES.find((route) => route.id === moduleId)?.label ?? moduleId;
 }
 
 function JudgmentPanel({ judgment }: { judgment: MacroDailyJudgment }) {
@@ -434,14 +396,31 @@ function EvidenceDetails({ module }: { module: MacroTypedModuleReadData }) {
           </article>
         ))}
       </div>
+      <div aria-label="分组数据健康" className="macro-decision__coverage-list">
+        {module.status.data_health.groups.map((group) => (
+          <article data-state={group.data_state} key={group.group_id}>
+            <strong>{group.label}</strong>
+            <span>
+              {dataStateLabel(group.data_state)} · {marketStateLabel(group.market_state)} ·{" "}
+              {sourceStateLabel(group.source_state)}
+            </span>
+            <small>
+              {group.current_datasets}/{group.tracked_datasets} 当前
+            </small>
+          </article>
+        ))}
+      </div>
       <div className="macro-decision__dataset-list">
         {module.evidence.dataset_states.map((dataset) => (
-          <article data-state={dataset.state} key={dataset.dataset_id}>
+          <article data-state={dataset.data_state} key={dataset.dataset_id}>
             <div>
               <strong>{dataset.label}</strong>
               <small>{dataset.dataset_id}</small>
             </div>
-            <span>{dataset.state}</span>
+            <span>
+              {dataStateLabel(dataset.data_state)} · {marketStateLabel(dataset.market_state)} ·{" "}
+              {sourceStateLabel(dataset.source_state)}
+            </span>
             <time>{dataset.latest_reference ?? "尚无事实"}</time>
             <a href={dataset.source_url} rel="noreferrer" target="_blank">
               来源 <ExternalLink aria-hidden="true" />
@@ -529,16 +508,29 @@ function coverageLabel(value: MacroCoverageState) {
 function healthLabel(value: MacroDataHealthState) {
   return {
     current: "当前",
-    delayed: "延迟",
-    stale: "陈旧",
-    invalid: "无效",
-    backfilling: "回填中",
+    mixed: "部分异常",
     unavailable: "不可用",
   }[value];
 }
 
 function judgmentLabel(value: MacroJudgmentState) {
-  return { current: "已发布", missing: "未发布", blocked: "阻塞" }[value];
+  return { current: "已发布", missing: "未发布" }[value];
+}
+
+function marketStateLabel(value: string) {
+  return (
+    {
+      open: "开市",
+      closed: "闭市",
+      maintenance: "维护",
+      unknown: "市场时钟未知",
+      not_applicable: "非市场时钟",
+    }[value] ?? value
+  );
+}
+
+function sourceStateLabel(value: string) {
+  return { healthy: "来源正常", degraded: "来源降级", failed: "来源失败" }[value] ?? value;
 }
 
 function researchStateLabel(state: MacroOverviewReadData["research"]["state"]) {

@@ -19,20 +19,20 @@ _NEW_YORK = ZoneInfo("America/New_York")
 _JUDGMENT_TIME = clock_time(8, 50)
 _PACK_SCHEMA = "macro_evidence_pack_v2"
 _JUDGMENT_SCHEMA = "macro_daily_judgment_v2"
-_COMPILER_VERSION = "macro_professional_coverage_compiler_v3"
+_COMPILER_VERSION = "macro_professional_coverage_compiler_v4"
 _FIXED_ASSETS = {
-    "SPY": "yfinance.spy.market",
-    "QQQ": "yfinance.qqq.market",
-    "IWM": "yfinance.iwm.market",
-    "TLT": "yfinance.tlt.market",
-    "IEF": "yfinance.ief.market",
-    "LQD": "yfinance.lqd.market",
-    "HYG": "yfinance.hyg.market",
-    "UUP": "yfinance.dxy.market",
-    "GLD": "yfinance.gld.market",
-    "USO": "yfinance.uso.market",
-    "BTC": "yfinance.btc_yahoo.market",
-    "VIX": "yfinance.vix_index.market",
+    "SPY": "nasdaq.spy.daily",
+    "QQQ": "nasdaq.qqq.daily",
+    "IWM": "nasdaq.iwm.daily",
+    "TLT": "nasdaq.tlt.daily",
+    "IEF": "nasdaq.ief.daily",
+    "LQD": "nasdaq.lqd.daily",
+    "HYG": "nasdaq.hyg.daily",
+    "UUP": "nasdaq.dxy.daily",
+    "GLD": "nasdaq.gld.daily",
+    "USO": "nasdaq.uso.daily",
+    "BTC": "binance.btcusdt.spot",
+    "VIX": "fred.vixcls",
 }
 
 
@@ -81,51 +81,6 @@ class MacroJudgmentService:
                 }
 
         modules, _features = self._compile_modules(cutoff_ms=cutoff_ms)
-        blocked = [module["module_id"] for module in modules if module["status"]["judgment"]["state"] == "blocked"]
-        if blocked:
-            blocker_details = {
-                "blocked_modules": blocked,
-                "modules": [
-                    {
-                        "module_id": module["module_id"],
-                        "coverage_gaps": [
-                            {
-                                "capability_id": capability["capability_id"],
-                                "label": capability["label"],
-                                "reason": capability["reason"] or capability["state"],
-                            }
-                            for capability in module["status"]["coverage"]["capabilities"]
-                            if capability["state"] != "available"
-                        ],
-                        "dataset_gaps": [
-                            {
-                                "dataset_id": state["dataset_id"],
-                                "label": state["label"],
-                                "state": state["state"],
-                                "reason": state["reason"],
-                            }
-                            for state in module["evidence"]["dataset_states"]
-                            if state["state"] not in {"current", "unavailable"}
-                        ],
-                    }
-                    for module in modules
-                    if module["module_id"] in blocked
-                ],
-            }
-            with self._session() as repos, repos.transaction():
-                repos.macro.upsert_judgment_status(
-                    session_date=session_date,
-                    judgment_cutoff_ms=cutoff_ms,
-                    state="blocked",
-                    reason_code="critical_evidence_blocked",
-                    details=blocker_details,
-                    attempted_at_ms=now,
-                )
-            return {
-                "status": "blocked",
-                "session_date": str(session_date),
-                "blocked_modules": blocked,
-            }
         for module in modules:
             module["status"]["judgment"] = {"state": "current", "cutoff_ms": cutoff_ms}
 
@@ -322,7 +277,7 @@ def compile_daily_judgment(evidence_pack: dict[str, Any]) -> dict[str, Any]:
         }
         for module in evidence_pack["modules"]
         for state in module["evidence"]["dataset_states"]
-        if state["state"] not in {"current", "unavailable"}
+        if state["data_state"] != "current"
     )
     citations = [
         {
@@ -399,7 +354,7 @@ def _growth_state(module: dict[str, Any]) -> dict[str, str]:
     payroll = _change_for(module, "fred.payems")
     unemployment = _change_for(module, "fred.unrate")
     if payroll is None and unemployment is None:
-        return _state("stable", "就业与增长事实不足")
+        return _state("no_call", "就业与增长事实不足")
     if (payroll or 0) < 0 or (unemployment or 0) > 0.2:
         return _state("slowing", "就业增量走弱或失业率上升")
     if (payroll or 0) > 0 and (unemployment or 0) <= 0:
@@ -411,7 +366,7 @@ def _inflation_state(module: dict[str, Any]) -> dict[str, str]:
     cpi = _year_over_year_for(module["inflation"]["indicators"], "fred.cpiaucsl")
     pce = _year_over_year_for(module["inflation"]["indicators"], "fred.pcepilfe")
     if cpi is None and pce is None:
-        return _state("sticky", "通胀同比特征不足")
+        return _state("no_call", "通胀同比特征不足")
     average = sum(value for value in (cpi, pce) if value is not None) / sum(value is not None for value in (cpi, pce))
     if average > 3.0:
         return _state("sticky", "主要通胀同比仍高于2%目标")
@@ -423,7 +378,7 @@ def _inflation_state(module: dict[str, Any]) -> dict[str, str]:
 def _policy_state(module: dict[str, Any]) -> dict[str, str]:
     dgs2 = _change_for(module, "fred.dgs2")
     if dgs2 is None:
-        return _state("transition", "短端利率变化不足")
+        return _state("no_call", "短端利率变化不足")
     if dgs2 > 0.15:
         return _state("tightening", "2年期收益率短窗口上行")
     if dgs2 < -0.15:
@@ -435,7 +390,7 @@ def _liquidity_state(module: dict[str, Any]) -> dict[str, str]:
     fed_assets = _change_for(module, "fred.walcl")
     reserves = _change_for(module, "fred.wrbwfrbl")
     if fed_assets is None and reserves is None:
-        return _state("neutral", "央行资产与准备金变化不足")
+        return _state("no_call", "央行资产与准备金变化不足")
     if (fed_assets or 0) > 0 and (reserves or 0) >= 0:
         return _state("expanding", "央行资产或准备金增加")
     if (fed_assets or 0) < 0 and (reserves or 0) < 0:
@@ -459,9 +414,12 @@ def _credit_state(module: dict[str, Any]) -> dict[str, Any]:
     elif easing:
         state = "easing"
         driver = str(easing[0]["driver"])
-    else:
+    elif any(dimension["state"] not in {"insufficient", "licensed_unavailable"} for dimension in dimensions):
         state = "neutral"
         driver = "五个信用维度未形成一致压力"
+    else:
+        state = "no_call"
+        driver = "信用维度事实不足"
     return {
         "state": state,
         "driver": driver,
@@ -473,7 +431,7 @@ def _credit_state(module: dict[str, Any]) -> dict[str, Any]:
 def _volatility_state(module: dict[str, Any]) -> dict[str, str]:
     vix = _latest_for(module, "fred.vixcls")
     if vix is None:
-        return _state("normal", "VIX事实不足")
+        return _state("no_call", "VIX事实不足")
     if vix >= 30:
         return _state("stressed", "VIX高于30")
     if vix >= 22:
@@ -588,9 +546,16 @@ def resolve_judgment_session(*, now_ms: int) -> date:
     return candidate
 
 
+def judgment_cutoff_ms(session_date: date) -> int:
+    if not is_us_market_session(session_date):
+        raise ValueError(f"macro_judgment_market_session_required:{session_date.isoformat()}")
+    return int(datetime.combine(session_date, _JUDGMENT_TIME, tzinfo=_NEW_YORK).timestamp() * 1_000)
+
+
 __all__ = [
     "MacroJudgmentService",
     "compile_daily_judgment",
+    "judgment_cutoff_ms",
     "render_daily_memo",
     "resolve_judgment_session",
 ]

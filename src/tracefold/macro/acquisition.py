@@ -118,7 +118,7 @@ class MacroAcquisitionService:
         if self.clock_kind == "backfill":
             target_cursor = target.get("cursor_json")
             if isinstance(target_cursor, dict):
-                for key in ("history_class", "required_for_judgment"):
+                for key in ("history_class",):
                     if key in target_cursor:
                         completed_cursor[key] = target_cursor[key]
         inserted = 0

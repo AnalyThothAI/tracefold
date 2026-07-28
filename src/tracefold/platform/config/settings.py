@@ -191,6 +191,7 @@ class MacroSourcesConfig(BaseModel):
     fred_enabled: bool = True
     cboe_enabled: bool = True
     cftc_enabled: bool = True
+    nasdaq_daily_enabled: bool = True
     yfinance_enabled: bool = True
     request_timeout_seconds: float = Field(default=60.0, ge=1)
     user_agent: str = "TracefoldMacro/1.0 research@localhost"
@@ -441,7 +442,7 @@ class WorkersSettings(BaseModel):
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=32, retry_ms=300_000)
     )
     macro_settlements: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=2)
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=32)
     )
     macro_economic_releases: MacroAcquisitionWorkerSettings = Field(
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=4)
@@ -611,6 +612,7 @@ providers:
     fred_enabled: true
     cboe_enabled: true
     cftc_enabled: true
+    nasdaq_daily_enabled: true
     yfinance_enabled: true
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"

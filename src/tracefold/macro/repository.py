@@ -76,7 +76,6 @@ class MacroRepository:
         now_ms: int,
         max_attempts: int,
         history_class: str | None = None,
-        required_for_judgment: bool = False,
         priority: int = 50,
     ) -> dict[str, Any]:
         if start_date > end_date:
@@ -118,7 +117,6 @@ class MacroRepository:
                         "start_date": start_date.isoformat(),
                         "end_date": end_date.isoformat(),
                         "history_class": history_class,
-                        "required_for_judgment": required_for_judgment,
                     },
                     sort_keys=True,
                 ),
@@ -140,7 +138,6 @@ class MacroRepository:
         start_date: date,
         end_date: date,
         history_class: str,
-        required_for_judgment: bool,
         priority: int,
         now_ms: int,
     ) -> dict[str, Any] | None:
@@ -165,8 +162,7 @@ class MacroRepository:
             )
             UPDATE macro_acquisition_targets AS target
             SET cursor_json = target.cursor_json || jsonb_build_object(
-                  'history_class', %s::text,
-                  'required_for_judgment', %s::boolean
+                  'history_class', %s::text
                 ),
                 priority = %s,
                 updated_at_ms = %s
@@ -179,7 +175,6 @@ class MacroRepository:
                 start_date,
                 end_date,
                 history_class,
-                required_for_judgment,
                 int(priority),
                 int(now_ms),
             ),

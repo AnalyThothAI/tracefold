@@ -764,6 +764,10 @@ export interface components {
             change_1w_pct: number | null;
             /** Dataset Id */
             dataset_id: string;
+            /** History Dataset Id */
+            history_dataset_id: string;
+            /** History Source Url */
+            history_source_url: string;
             /** Instrument Type */
             instrument_type: string;
             /** Label */
@@ -772,6 +776,13 @@ export interface components {
             latest_value: number;
             /** Market Time Ms */
             market_time_ms: number;
+            /** Price Dataset Id */
+            price_dataset_id: string;
+            /**
+             * Price Kind
+             * @enum {string}
+             */
+            price_kind: "intraday" | "daily_close";
             /** Source Url */
             source_url: string;
             /** Symbol */
@@ -962,7 +973,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_credit_v3";
+            schema_version: "macro_credit_v4";
             spread_ladder: components["schemas"]["MacroCreditSpreadLadderData"];
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
@@ -1005,7 +1016,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_cross_asset_v3";
+            schema_version: "macro_cross_asset_v4";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1065,11 +1076,39 @@ export interface components {
             as_of_ms: number;
             /** Current Datasets */
             current_datasets: number;
+            /** Groups */
+            groups: components["schemas"]["MacroDataHealthGroupData"][];
             /**
              * State
              * @enum {string}
              */
-            state: "current" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable";
+            state: "current" | "mixed" | "unavailable";
+            /** Tracked Datasets */
+            tracked_datasets: number;
+        };
+        /** MacroDataHealthGroupData */
+        MacroDataHealthGroupData: {
+            /** Current Datasets */
+            current_datasets: number;
+            /**
+             * Data State
+             * @enum {string}
+             */
+            data_state: "current" | "mixed" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable";
+            /** Group Id */
+            group_id: string;
+            /** Label */
+            label: string;
+            /**
+             * Market State
+             * @enum {string}
+             */
+            market_state: "open" | "closed" | "maintenance" | "unknown" | "not_applicable" | "mixed";
+            /**
+             * Source State
+             * @enum {string}
+             */
+            source_state: "healthy" | "degraded" | "failed" | "mixed";
             /** Tracked Datasets */
             tracked_datasets: number;
         };
@@ -1077,23 +1116,39 @@ export interface components {
         MacroDatasetStateData: {
             /** Critical */
             critical: boolean;
+            /**
+             * Data State
+             * @enum {string}
+             */
+            data_state: "current" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable";
             /** Dataset Id */
             dataset_id: string;
+            /** Health Group */
+            health_group: string;
             /** Label */
             label: string;
+            /** Last Market At Ms */
+            last_market_at_ms: number | null;
             /** Latest Received At Ms */
             latest_received_at_ms: number | null;
             /** Latest Reference */
             latest_reference: string | null;
-            /** Reason */
-            reason: string;
-            /** Source Url */
-            source_url: string;
             /**
-             * State
+             * Market State
              * @enum {string}
              */
-            state: "current" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable";
+            market_state: "open" | "closed" | "maintenance" | "unknown" | "not_applicable";
+            /** Next Open Ms */
+            next_open_ms: number | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Source State
+             * @enum {string}
+             */
+            source_state: "healthy" | "degraded" | "failed";
+            /** Source Url */
+            source_url: string;
             /**
              * Trust Tier
              * @enum {string}
@@ -1125,7 +1180,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_economy_inflation_v2";
+            schema_version: "macro_economy_inflation_v3";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1370,9 +1425,9 @@ export interface components {
             session_date: string;
             /**
              * State
-             * @enum {string}
+             * @constant
              */
-            state: "blocked" | "current";
+            state: "current";
         };
         /** MacroJudgmentStateData */
         MacroJudgmentStateData: {
@@ -1382,7 +1437,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "current" | "missing" | "blocked";
+            state: "current" | "missing";
         };
         /** MacroLiquidityFundingReadData */
         MacroLiquidityFundingReadData: {
@@ -1408,7 +1463,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_liquidity_funding_v2";
+            schema_version: "macro_liquidity_funding_v3";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1438,7 +1493,7 @@ export interface components {
              * Data Health State
              * @enum {string}
              */
-            data_health_state: "current" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable" | "missing";
+            data_health_state: "current" | "mixed" | "unavailable" | "missing";
             /** Health Gap Count */
             health_gap_count: number;
             /** Href */
@@ -1447,7 +1502,7 @@ export interface components {
              * Judgment State
              * @enum {string}
              */
-            judgment_state: "current" | "missing" | "blocked";
+            judgment_state: "current" | "missing";
             /** Label */
             label: string;
             /** Latest Fact At Ms */
@@ -1508,14 +1563,19 @@ export interface components {
              * Data Health State
              * @enum {string}
              */
-            data_health_state: "current" | "delayed" | "stale" | "invalid" | "backfilling" | "unavailable";
+            data_health_state: "current" | "mixed" | "unavailable";
             /** Judgment Cutoff Ms */
-            judgment_cutoff_ms: number | null;
+            judgment_cutoff_ms: number;
+            /**
+             * Judgment Session Date
+             * Format: date
+             */
+            judgment_session_date: string;
             /**
              * Judgment State
              * @enum {string}
              */
-            judgment_state: "current" | "missing" | "blocked";
+            judgment_state: "current" | "missing";
             judgment_status: components["schemas"]["MacroJudgmentPublicationStatusData"] | null;
             /** Latest Fact At Ms */
             latest_fact_at_ms: number;
@@ -1531,7 +1591,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_overview_v3";
+            schema_version: "macro_overview_v4";
         };
         /** MacroPolicyPricingData */
         MacroPolicyPricingData: {
@@ -1582,7 +1642,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_rates_fed_v2";
+            schema_version: "macro_rates_fed_v3";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1750,7 +1810,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_volatility_v2";
+            schema_version: "macro_volatility_v3";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
             term_structure: components["schemas"]["MacroVolatilityTermData"];

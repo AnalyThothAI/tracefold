@@ -161,15 +161,26 @@ class MacroCoverageData(ExactApiSchema):
     capabilities: list[MacroCoverageCapabilityData]
 
 
+class MacroDataHealthGroupData(ExactApiSchema):
+    group_id: str
+    label: str
+    data_state: Literal["current", "mixed", "delayed", "stale", "invalid", "backfilling", "unavailable"]
+    market_state: Literal["open", "closed", "maintenance", "unknown", "not_applicable", "mixed"]
+    source_state: Literal["healthy", "degraded", "failed", "mixed"]
+    current_datasets: int
+    tracked_datasets: int
+
+
 class MacroDataHealthData(ExactApiSchema):
-    state: Literal["current", "delayed", "stale", "invalid", "backfilling", "unavailable"]
+    state: Literal["current", "mixed", "unavailable"]
     current_datasets: int
     tracked_datasets: int
     as_of_ms: int
+    groups: list[MacroDataHealthGroupData]
 
 
 class MacroJudgmentStateData(ExactApiSchema):
-    state: Literal["current", "missing", "blocked"]
+    state: Literal["current", "missing"]
     cutoff_ms: int | None
 
 
@@ -205,13 +216,18 @@ class MacroChangeData(ExactApiSchema):
 class MacroDatasetStateData(ExactApiSchema):
     dataset_id: str
     label: str
-    state: Literal["current", "delayed", "stale", "invalid", "backfilling", "unavailable"]
+    data_state: Literal["current", "delayed", "stale", "invalid", "backfilling", "unavailable"]
+    market_state: Literal["open", "closed", "maintenance", "unknown", "not_applicable"]
+    source_state: Literal["healthy", "degraded", "failed"]
     reason: str
     critical: bool
     trust_tier: Literal["official", "exchange", "untrusted_proxy"]
     source_url: str
     latest_reference: str | None
     latest_received_at_ms: int | None
+    last_market_at_ms: int | None
+    next_open_ms: int | None
+    health_group: str
 
 
 class MacroEvidenceFactData(ExactApiSchema):
@@ -257,6 +273,8 @@ class MacroIndicatorData(ExactApiSchema):
 
 class MacroAssetData(ExactApiSchema):
     dataset_id: str
+    price_dataset_id: str
+    history_dataset_id: str
     symbol: str
     label: str
     instrument_type: str
@@ -265,11 +283,13 @@ class MacroAssetData(ExactApiSchema):
     unit: str
     as_of: str | None
     market_time_ms: int
+    price_kind: Literal["intraday", "daily_close"]
     change_1d_pct: float | None
     change_1w_pct: float | None
     change_1m_pct: float | None
     trust_tier: Literal["official", "exchange", "untrusted_proxy"]
     source_url: str
+    history_source_url: str
 
 
 class _MacroModuleBaseData(ExactApiSchema):
@@ -416,7 +436,7 @@ class MacroFedCommunicationData(ExactApiSchema):
 
 
 class MacroRatesFedReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_rates_fed_v2"]
+    schema_version: Literal["macro_rates_fed_v3"]
     module_id: Literal["rates_fed"]
     curve: MacroRatesCurveData
     policy_pricing: MacroPolicyPricingData
@@ -433,7 +453,7 @@ class MacroReleaseIndicatorSectionData(MacroIndicatorSectionData):
 
 
 class MacroEconomyInflationReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_economy_inflation_v2"]
+    schema_version: Literal["macro_economy_inflation_v3"]
     module_id: Literal["economy_inflation"]
     inflation: MacroReleaseIndicatorSectionData
     labor: MacroReleaseIndicatorSectionData
@@ -441,7 +461,7 @@ class MacroEconomyInflationReadData(_MacroModuleBaseData):
 
 
 class MacroLiquidityFundingReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_liquidity_funding_v2"]
+    schema_version: Literal["macro_liquidity_funding_v3"]
     module_id: Literal["liquidity_funding"]
     balance_sheet: MacroIndicatorSectionData
     funding: MacroIndicatorSectionData
@@ -491,7 +511,7 @@ class MacroCreditCycleDimensionData(ExactApiSchema):
 
 
 class MacroCreditReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_credit_v3"]
+    schema_version: Literal["macro_credit_v4"]
     module_id: Literal["credit"]
     cycle_dimensions: list[MacroCreditCycleDimensionData]
     spread_ladder: MacroCreditSpreadLadderData
@@ -507,7 +527,7 @@ class MacroVolatilityTermData(ExactApiSchema):
 
 
 class MacroVolatilityReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_volatility_v2"]
+    schema_version: Literal["macro_volatility_v3"]
     module_id: Literal["volatility"]
     term_structure: MacroVolatilityTermData
     cross_asset_implied: MacroIndicatorSectionData
@@ -553,7 +573,7 @@ class MacroFuturesConfirmationData(ExactApiSchema):
 
 
 class MacroCrossAssetReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_cross_asset_v3"]
+    schema_version: Literal["macro_cross_asset_v4"]
     module_id: Literal["cross_asset"]
     assets: MacroCrossAssetsData
     correlations: list[MacroCorrelationData]
@@ -566,14 +586,11 @@ class MacroModuleSummaryData(ExactApiSchema):
     coverage_state: Literal["complete", "partial", "licensed_unavailable", "missing"]
     data_health_state: Literal[
         "current",
-        "delayed",
-        "stale",
-        "invalid",
-        "backfilling",
+        "mixed",
         "unavailable",
         "missing",
     ]
-    judgment_state: Literal["current", "missing", "blocked"]
+    judgment_state: Literal["current", "missing"]
     latest_fact_at_ms: int
     summary: MacroModuleSummaryStateData | None
     top_changes: list[JsonObject]
@@ -585,20 +602,21 @@ class MacroModuleSummaryData(ExactApiSchema):
 class MacroJudgmentPublicationStatusData(ExactApiSchema):
     session_date: date
     judgment_cutoff_ms: int
-    state: Literal["blocked", "current"]
+    state: Literal["current"]
     reason_code: str
     details: JsonObject
     attempted_at_ms: int
 
 
 class MacroOverviewReadData(ExactApiSchema):
-    schema_version: Literal["macro_overview_v3"]
+    schema_version: Literal["macro_overview_v4"]
     read_at_ms: int
-    judgment_cutoff_ms: int | None
+    judgment_session_date: date
+    judgment_cutoff_ms: int
     latest_fact_at_ms: int
     coverage_state: Literal["complete", "partial", "licensed_unavailable"]
-    data_health_state: Literal["current", "delayed", "stale", "invalid", "backfilling", "unavailable"]
-    judgment_state: Literal["current", "missing", "blocked"]
+    data_health_state: Literal["current", "mixed", "unavailable"]
+    judgment_state: Literal["current", "missing"]
     judgment_status: MacroJudgmentPublicationStatusData | None
     daily_judgment: JsonObject | None
     modules: list[MacroModuleSummaryData]

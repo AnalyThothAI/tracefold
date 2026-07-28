@@ -26,44 +26,19 @@ describe("Macro decision workbench", () => {
     expect(screen.queryByText("历史窗口")).toBeNull();
   });
 
-  it("renders the persisted root cause when the daily judgment is blocked", async () => {
+  it("renders the explicit session and non-blocking gap policy when judgment is missing", async () => {
     const overview = macroOverviewFixture();
     overview.daily_judgment = null;
-    overview.judgment_state = "blocked";
-    overview.judgment_status = {
-      session_date: "2026-07-27",
-      judgment_cutoff_ms: overview.judgment_cutoff_ms ?? overview.read_at_ms,
-      state: "blocked",
-      reason_code: "critical_evidence_blocked",
-      details: {
-        blocked_modules: ["rates_fed"],
-        modules: [
-          {
-            module_id: "rates_fed",
-            dataset_gaps: [
-              {
-                dataset_id: "federal_reserve.document.analysis",
-                label: "政策文件不可变分析",
-                state: "backfilling",
-                reason: "derived_fact_pending",
-              },
-            ],
-          },
-        ],
-      },
-      attempted_at_ms: overview.read_at_ms,
-    };
+    overview.judgment_state = "missing";
+    overview.judgment_status = null;
     server.use(
       http.get(/.*\/api\/macro\/overview$/, () => HttpResponse.json({ ok: true, data: overview })),
     );
     renderWithProviders(<MacroOverviewPage token="test-token" />, { route: "/macro" });
 
-    expect(await screen.findByRole("heading", { name: "今日判断尚未发布" })).toBeVisible();
-    expect(
-      screen.getByText(
-        "冻结截点缺少关键证据：利率与美联储—政策文件不可变分析（冻结截点前派生事实未完成）。",
-      ),
-    ).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "2026-07-27 判断尚未发布" })).toBeVisible();
+    expect(screen.getByText(/证据缺口会写入 no_call，不会阻塞发布/)).toBeVisible();
+    expect(screen.getByText("判断 Session")).toBeVisible();
   });
 
   it("renders the default cross-asset benchmark and fixed ETF matrix", async () => {
@@ -80,6 +55,9 @@ describe("Macro decision workbench", () => {
     expect(screen.getByText("WTI Cushing spot")).toBeVisible();
     expect(screen.getAllByText("SPY")[0]).toBeVisible();
     expect(screen.getAllByText("USO")[0]).toBeVisible();
+    expect(screen.getByText("yfinance.spy.intraday")).toBeVisible();
+    expect(screen.getByText("nasdaq.spy.daily")).toBeVisible();
+    expect(screen.getAllByText("盘中", { exact: false }).length).toBeGreaterThan(0);
     expect(screen.getByText("展开 Coverage Manifest、Dataset 健康与原始事实")).toBeVisible();
   });
 

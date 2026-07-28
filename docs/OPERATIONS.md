@@ -192,10 +192,10 @@ already stamped at the baseline is left intact.
 
 Macro:
 
-The `20260728_0210` baseline contains the current professional Macro fact,
-coverage, module, judgment, research, and Fed evidence contracts. Immutable v1
-publication archives remain material history; no runtime reads or writers use
-them.
+The `20260728_0210` baseline plus the `20260728_0211` hard-cut migration
+contains the current professional Macro fact, coverage, module, judgment,
+research, and Fed evidence contracts. Immutable v1 publication archives remain
+material history; no runtime reads or writers use them.
 
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
@@ -209,20 +209,21 @@ clock-specific target claim -> provider I/O -> typed fact + source receipt + cur
 The five automatic acquisition workers claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`; `macro_backfill` claims only
 explicit bounded backfills. `macro backfill-professional` enqueues the
-code-owned Treasury/Fed/credit/WTI/BTC/CFTC history policy in one transaction.
-Treasury curves, FOMC materials, policy speeches, and completed BTC settlements
-use a readiness-critical trailing five-year backfill window. Yfinance intraday
-targets request one month initially and one rolling day thereafter; they are
-not professional-history backfills. Older history is optional enrichment and must not delay
-the current workbench. Credit and WTI may retain longer reliable public history
-because their bounded single-source histories are inexpensive and materially
-improve regime context. The durable target cursor records
-`required_for_judgment`; only code-owned currently required targets gate module
-health and publication. An operator-created repair, retired requirement, or
-optional deep-history target remains observable but non-blocking.
-Required five-year targets also have a lower numeric queue priority than
-optional deep history, so a large enrichment crawl cannot sit ahead of current
-professional readiness. Before creating a new target, the professional command
+code-owned Treasury/Fed/credit/WTI/BTC/CFTC/ETF/futures history policy in one
+transaction. Treasury curves, FOMC materials, policy speeches, completed BTC
+settlements, fixed ETF Nasdaq daily datasets, and Yahoo futures daily
+continuous proxies use a trailing five-year backfill window. Yahoo intraday
+targets request one month initially and one rolling day thereafter. Credit and
+WTI may retain longer reliable public history because their bounded
+single-source histories are inexpensive and materially improve regime context.
+The daily-settlement worker defaults to a batch of 32 so one cold-start cycle
+covers the complete automatic daily registry instead of spreading it across
+multiple six-hour intervals.
+Every backfill remains observable in Dataset health but is non-blocking for
+module projection, Evidence Pack, judgment, and research publication.
+Five-year targets have a lower numeric queue priority than optional deep
+history, so a large enrichment crawl cannot sit ahead of current five-year
+coverage. Before creating a new target, the professional command
 promotes an already-current target whose durable cursor covers the requested
 window; a four-day boundary change must not trigger a duplicate multi-year
 fetch.
@@ -237,9 +238,11 @@ Diagnose a missing metric in this order: Dataset Registry identity, acquisition
 target state/lease, last receipt/error, persisted fact clocks
 (reference/published/received), module dataset state/gap, then current-row
 hash. Do not repair source or calculation errors with a frontend fallback.
-`unavailable` licensed curves and `untrusted_proxy` Yahoo cross-asset/futures
-history must stay
-visible.
+`unavailable` licensed curves and `untrusted_proxy` Nasdaq/Yahoo cross-asset
+history must stay visible. For market datasets, diagnose data state, market
+state, and source state independently. A closed or maintenance market with its
+last expected bar is current, while a healthy source can still serve stale
+data and a failed source can leave a current last expected bar.
 
 FOMC/Board/Reserve Bank full-text facts feed
 `macro_document_analysis_jobs`. The worker waits to schedule a speech until an
@@ -247,18 +250,20 @@ effective-dated role match exists or the completed FOMC history backfill proves
 that the speech date has roster coverage. Each claim performs model I/O outside
 the write transaction, validates exact excerpts against the frozen body, then
 atomically inserts the immutable analysis and completes the job. Open jobs make
-the derived analysis dataset `backfilling`; exhausted jobs make it `invalid`
-and block judgment. Restart reclaims expired leases without duplicating
-analysis identity.
+the derived analysis dataset `backfilling`; exhausted jobs make it `invalid`.
+Either state is carried into the next judgment as a gap and affected
+conclusions become `no_call`. Restart reclaims expired leases without
+duplicating analysis identity.
 
 `macro_projection` deterministically recomputes the Calculation Registry and
 six stable module rows; unchanged payloads write zero serving rows.
 `macro_judgment` runs after 08:50 `America/New_York` on U.S. trading days,
-compiles only facts received by that cutoff, and does nothing if any critical
-module, required professional backfill, or document-analysis queue is blocked.
-Every attempt persists `macro_judgment_status`; a blocked overview therefore
-names the blocked modules and exact coverage/dataset gaps instead of showing an
-unexplained missing judgment.
+compiles only facts received by that cutoff, always seals the Evidence Pack,
+and publishes the judgment even when evidence is incomplete. Missing or
+unhealthy evidence produces explicit gaps and dimension/asset `no_call`
+outputs; it is not a publication gate. `macro_judgment_status` records only a
+successfully published current judgment. Before publication, the overview
+still exposes the intended session and deterministic cutoff.
 Evidence Pack and daily judgment insertion are immutable and replay-safe. They
 remain readable when DeepAgents research is delayed or failed.
 
@@ -271,7 +276,9 @@ All model and evidence-tool I/O occurs outside a database write transaction.
 The Agent decides its research plan, evidence selection, subagent delegation,
 counterevidence, gaps, and final Chinese narrative. A separate reviewer returns
 `pass`, `revise`, or `block`; revise permits one corrected artifact pass and
-block prevents publication without hiding the daily judgment or modules.
+block prevents publication only for artifact integrity/reviewer failure, not
+because the Evidence Pack lacks materiality or complete coverage. Research
+does not hide the daily judgment or modules.
 
 The production `AsyncPostgresSaver` is opened through an async context factory
 for each graph invocation and uses the run's frozen scope ID as the stable

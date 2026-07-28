@@ -123,13 +123,18 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   and Judgment are three independent API fields and are never inferred in the
   browser. Fixed section selection is represented by the URL hash and survives
   reload/share without adding routes.
-  When the judgment is blocked, the overview renders the persisted blocked
-  modules and exact dataset gaps from `judgment_status`; it does not invent a
-  frontend root cause.
+  The overview always renders the intended judgment session and deterministic
+  08:50 cutoff. Before publication it says the judgment is missing; after
+  publication, incomplete evidence appears inside the judgment as gaps and
+  `no_call`, never as a frontend-authored blocker.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
-  comparison and best-effort major-futures/USD-index rows. Every proxy row displays its
-  actual market timestamp rather than the HTTP receipt time. Rates renders true maturity cross-sections and a detailed tenor
+  comparison and best-effort major-futures/USD-index rows. ETF and futures rows
+  distinguish five-year daily history from intraday price datasets and display
+  the actual market timestamp rather than the HTTP receipt time. Dataset
+  details show data, market, and source state independently plus group health;
+  closed and maintenance sessions are not painted stale merely because wall
+  time advanced. Rates renders true maturity cross-sections and a detailed tenor
   table. Fed renders institutional stance, recent officials distribution, then
   the event timeline. Credit keeps five concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a

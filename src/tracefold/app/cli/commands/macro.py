@@ -64,7 +64,6 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                     start_date=policy.start_date,
                     end_date=through_date,
                     history_class=policy.history_class,
-                    required_for_judgment=policy.required_for_judgment,
                     priority=policy.priority,
                     now_ms=now_ms,
                 )
@@ -76,14 +75,12 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                         now_ms=now_ms,
                         max_attempts=int(settings.workers.macro_backfill.max_attempts),
                         history_class=policy.history_class,
-                        required_for_judgment=policy.required_for_judgment,
                         priority=policy.priority,
                     )
                 targets.append(
                     {
                         "dataset_id": policy.dataset_id,
                         "history_class": policy.history_class,
-                        "required_for_judgment": policy.required_for_judgment,
                         "priority": policy.priority,
                         "partition_key": target["partition_key"],
                         "status": target["status"],

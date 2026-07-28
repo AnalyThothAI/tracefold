@@ -5,6 +5,7 @@ from types import MappingProxyType
 from tracefold.macro.domain import DatasetSpec, MacroModuleId
 
 _FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+_NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
 _TREASURY_XML = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
 _DAILY_FRESHNESS_SECONDS = 172_800
 _WEEKLY_FRESHNESS_SECONDS = 950_400
@@ -53,7 +54,44 @@ def _fred(
     )
 
 
-def _yfinance_market(
+def _nasdaq_daily(
+    symbol: str,
+    instrument_id: str,
+    *,
+    label: str,
+    asset_class: str,
+) -> DatasetSpec:
+    return DatasetSpec(
+        dataset_id=f"nasdaq.{instrument_id}.daily",
+        module_id="cross_asset",
+        clock_kind="daily_settlement",
+        fact_family="market_observation",
+        adapter_id="nasdaq_history",
+        source_id="nasdaq_public",
+        source_url=_NASDAQ_HISTORY.format(symbol=symbol),
+        label=f"{label}日线",
+        series_id=symbol,
+        unit="price",
+        frequency="daily",
+        freshness_seconds=_DAILY_FRESHNESS_SECONDS,
+        refresh_seconds=21_600,
+        trust_tier="untrusted_proxy",
+        instrument_id=f"{instrument_id}_daily",
+        symbol=symbol,
+        instrument_name=f"{label}日线",
+        asset_class=asset_class,
+        instrument_type="etf",
+        venue="Nasdaq public website",
+        metadata={
+            "role": "five_year_daily_history",
+            "history_years": 5,
+            "health_group": "etf_daily",
+            "contract": "unsupported_public_website_endpoint",
+        },
+    )
+
+
+def _yfinance_intraday(
     provider_symbol: str,
     instrument_id: str,
     *,
@@ -62,9 +100,10 @@ def _yfinance_market(
     asset_class: str,
     instrument_type: str,
     freshness_seconds: int = 3_600,
+    market_calendar: str = "us_equity_extended",
 ) -> DatasetSpec:
     return DatasetSpec(
-        dataset_id=f"yfinance.{instrument_id}.market",
+        dataset_id=f"yfinance.{instrument_id}.intraday",
         module_id="cross_asset",
         clock_kind="intraday_market",
         fact_family="market_observation",
@@ -90,7 +129,58 @@ def _yfinance_market(
             "initial_period": "1mo",
             "incremental_period": "1d",
             "prepost": True,
+            "market_calendar": market_calendar,
+            "health_group": (
+                "futures_intraday"
+                if market_calendar == "us_futures"
+                else "continuous_intraday"
+                if market_calendar == "continuous"
+                else "etf_intraday"
+            ),
             "contract": "unofficial_yahoo_finance_wrapper",
+        },
+    )
+
+
+def _yfinance_daily(
+    provider_symbol: str,
+    instrument_id: str,
+    *,
+    symbol: str,
+    label: str,
+    asset_class: str,
+    instrument_type: str,
+) -> DatasetSpec:
+    return DatasetSpec(
+        dataset_id=f"yfinance.{instrument_id}.daily",
+        module_id="cross_asset",
+        clock_kind="daily_settlement",
+        fact_family="market_observation",
+        adapter_id="yfinance_history",
+        source_id="yahoo_finance",
+        source_url=f"https://finance.yahoo.com/quote/{provider_symbol}",
+        label=f"{label}连续合约日线",
+        series_id=provider_symbol,
+        unit="price",
+        frequency="daily",
+        freshness_seconds=_DAILY_FRESHNESS_SECONDS,
+        refresh_seconds=21_600,
+        trust_tier="untrusted_proxy",
+        instrument_id=f"{instrument_id}_daily",
+        symbol=symbol,
+        instrument_name=f"{label}连续合约日线",
+        asset_class=asset_class,
+        instrument_type=instrument_type,
+        venue="Yahoo Finance",
+        metadata={
+            "role": "five_year_continuous_proxy_history",
+            "bar_interval": "1d",
+            "initial_period": "5y",
+            "incremental_period": "1mo",
+            "prepost": False,
+            "history_years": 5,
+            "health_group": "futures_daily",
+            "contract": "unofficial_yahoo_finance_continuous_contract",
         },
     )
 
@@ -657,7 +747,17 @@ _DATASETS = (
             ),
         },
     ),
-    _yfinance_market(
+    _nasdaq_daily("SPY", "spy", label="SPDR标普500 ETF", asset_class="equity"),
+    _nasdaq_daily("QQQ", "qqq", label="Invesco纳斯达克100 ETF", asset_class="equity"),
+    _nasdaq_daily("IWM", "iwm", label="iShares罗素2000 ETF", asset_class="equity"),
+    _nasdaq_daily("TLT", "tlt", label="iShares 20年以上美国国债ETF", asset_class="rates"),
+    _nasdaq_daily("IEF", "ief", label="iShares 7–10年美国国债ETF", asset_class="rates"),
+    _nasdaq_daily("LQD", "lqd", label="iShares投资级公司债ETF", asset_class="credit"),
+    _nasdaq_daily("HYG", "hyg", label="iShares高收益公司债ETF", asset_class="credit"),
+    _nasdaq_daily("UUP", "dxy", label="美元指数代理（UUP）", asset_class="fx"),
+    _nasdaq_daily("GLD", "gld", label="SPDR黄金ETF", asset_class="commodity"),
+    _nasdaq_daily("USO", "uso", label="美国原油基金", asset_class="commodity"),
+    _yfinance_intraday(
         "SPY",
         "spy",
         symbol="SPY",
@@ -665,7 +765,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "QQQ",
         "qqq",
         symbol="QQQ",
@@ -673,7 +773,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "IWM",
         "iwm",
         symbol="IWM",
@@ -681,7 +781,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "TLT",
         "tlt",
         symbol="TLT",
@@ -689,7 +789,7 @@ _DATASETS = (
         asset_class="rates",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "IEF",
         "ief",
         symbol="IEF",
@@ -697,7 +797,7 @@ _DATASETS = (
         asset_class="rates",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "LQD",
         "lqd",
         symbol="LQD",
@@ -705,7 +805,7 @@ _DATASETS = (
         asset_class="credit",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "HYG",
         "hyg",
         symbol="HYG",
@@ -713,7 +813,7 @@ _DATASETS = (
         asset_class="credit",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "UUP",
         "dxy",
         symbol="UUP",
@@ -721,7 +821,7 @@ _DATASETS = (
         asset_class="fx",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "GLD",
         "gld",
         symbol="GLD",
@@ -729,7 +829,7 @@ _DATASETS = (
         asset_class="commodity",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "USO",
         "uso",
         symbol="USO",
@@ -737,7 +837,7 @@ _DATASETS = (
         asset_class="commodity",
         instrument_type="etf",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "BTC-USD",
         "btc_yahoo",
         symbol="BTC",
@@ -745,8 +845,9 @@ _DATASETS = (
         asset_class="crypto",
         instrument_type="spot",
         freshness_seconds=1_800,
+        market_calendar="continuous",
     ),
-    _yfinance_market(
+    _yfinance_intraday(
         "^VIX",
         "vix_index",
         symbol="VIX",
@@ -755,7 +856,88 @@ _DATASETS = (
         instrument_type="index",
         freshness_seconds=86_400,
     ),
-    _yfinance_market(
+    _yfinance_intraday(
+        "ES=F",
+        "es_future",
+        symbol="ES",
+        label="E-mini S&P 500 Futures",
+        asset_class="equity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "NQ=F",
+        "nq_future",
+        symbol="NQ",
+        label="E-mini Nasdaq 100 Futures",
+        asset_class="equity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "RTY=F",
+        "rty_future",
+        symbol="RTY",
+        label="E-mini Russell 2000 Futures",
+        asset_class="equity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "ZB=F",
+        "zb_future",
+        symbol="ZB",
+        label="U.S. Treasury Bond Futures",
+        asset_class="rates",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "ZN=F",
+        "zn_future",
+        symbol="ZN",
+        label="10-Year U.S. Treasury Note Futures",
+        asset_class="rates",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "DX-Y.NYB",
+        "dx_future",
+        symbol="DXY",
+        label="U.S. Dollar Index",
+        asset_class="fx",
+        instrument_type="index",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "GC=F",
+        "gc_future",
+        symbol="GC",
+        label="Gold Futures",
+        asset_class="commodity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "CL=F",
+        "cl_future",
+        symbol="CL",
+        label="WTI Crude Oil Futures",
+        asset_class="commodity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_intraday(
+        "HG=F",
+        "hg_future",
+        symbol="HG",
+        label="Copper Futures",
+        asset_class="commodity",
+        instrument_type="future",
+        market_calendar="us_futures",
+    ),
+    _yfinance_daily(
         "ES=F",
         "es_future",
         symbol="ES",
@@ -763,7 +945,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "NQ=F",
         "nq_future",
         symbol="NQ",
@@ -771,7 +953,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "RTY=F",
         "rty_future",
         symbol="RTY",
@@ -779,7 +961,7 @@ _DATASETS = (
         asset_class="equity",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "ZB=F",
         "zb_future",
         symbol="ZB",
@@ -787,7 +969,7 @@ _DATASETS = (
         asset_class="rates",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "ZN=F",
         "zn_future",
         symbol="ZN",
@@ -795,7 +977,7 @@ _DATASETS = (
         asset_class="rates",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "DX-Y.NYB",
         "dx_future",
         symbol="DXY",
@@ -803,7 +985,7 @@ _DATASETS = (
         asset_class="fx",
         instrument_type="index",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "GC=F",
         "gc_future",
         symbol="GC",
@@ -811,7 +993,7 @@ _DATASETS = (
         asset_class="commodity",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "CL=F",
         "cl_future",
         symbol="CL",
@@ -819,7 +1001,7 @@ _DATASETS = (
         asset_class="commodity",
         instrument_type="future",
     ),
-    _yfinance_market(
+    _yfinance_daily(
         "HG=F",
         "hg_future",
         symbol="HG",

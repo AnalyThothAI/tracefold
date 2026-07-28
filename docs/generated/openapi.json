@@ -1239,6 +1239,14 @@
             "title": "Dataset Id",
             "type": "string"
           },
+          "history_dataset_id": {
+            "title": "History Dataset Id",
+            "type": "string"
+          },
+          "history_source_url": {
+            "title": "History Source Url",
+            "type": "string"
+          },
           "instrument_type": {
             "title": "Instrument Type",
             "type": "string"
@@ -1254,6 +1262,18 @@
           "market_time_ms": {
             "title": "Market Time Ms",
             "type": "integer"
+          },
+          "price_dataset_id": {
+            "title": "Price Dataset Id",
+            "type": "string"
+          },
+          "price_kind": {
+            "enum": [
+              "intraday",
+              "daily_close"
+            ],
+            "title": "Price Kind",
+            "type": "string"
           },
           "source_url": {
             "title": "Source Url",
@@ -1279,6 +1299,8 @@
         },
         "required": [
           "dataset_id",
+          "price_dataset_id",
+          "history_dataset_id",
           "symbol",
           "label",
           "instrument_type",
@@ -1287,11 +1309,13 @@
           "unit",
           "as_of",
           "market_time_ms",
+          "price_kind",
           "change_1d_pct",
           "change_1w_pct",
           "change_1m_pct",
           "trust_tier",
-          "source_url"
+          "source_url",
+          "history_source_url"
         ],
         "title": "MacroAssetData",
         "type": "object"
@@ -1841,7 +1865,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_credit_v3",
+            "const": "macro_credit_v4",
             "title": "Schema Version",
             "type": "string"
           },
@@ -1965,7 +1989,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_cross_asset_v3",
+            "const": "macro_cross_asset_v4",
             "title": "Schema Version",
             "type": "string"
           },
@@ -2144,13 +2168,17 @@
             "title": "Current Datasets",
             "type": "integer"
           },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/MacroDataHealthGroupData"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
           "state": {
             "enum": [
               "current",
-              "delayed",
-              "stale",
-              "invalid",
-              "backfilling",
+              "mixed",
               "unavailable"
             ],
             "title": "State",
@@ -2165,9 +2193,77 @@
           "state",
           "current_datasets",
           "tracked_datasets",
-          "as_of_ms"
+          "as_of_ms",
+          "groups"
         ],
         "title": "MacroDataHealthData",
+        "type": "object"
+      },
+      "MacroDataHealthGroupData": {
+        "additionalProperties": false,
+        "properties": {
+          "current_datasets": {
+            "title": "Current Datasets",
+            "type": "integer"
+          },
+          "data_state": {
+            "enum": [
+              "current",
+              "mixed",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable"
+            ],
+            "title": "Data State",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "market_state": {
+            "enum": [
+              "open",
+              "closed",
+              "maintenance",
+              "unknown",
+              "not_applicable",
+              "mixed"
+            ],
+            "title": "Market State",
+            "type": "string"
+          },
+          "source_state": {
+            "enum": [
+              "healthy",
+              "degraded",
+              "failed",
+              "mixed"
+            ],
+            "title": "Source State",
+            "type": "string"
+          },
+          "tracked_datasets": {
+            "title": "Tracked Datasets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "label",
+          "data_state",
+          "market_state",
+          "source_state",
+          "current_datasets",
+          "tracked_datasets"
+        ],
+        "title": "MacroDataHealthGroupData",
         "type": "object"
       },
       "MacroDatasetStateData": {
@@ -2177,13 +2273,40 @@
             "title": "Critical",
             "type": "boolean"
           },
+          "data_state": {
+            "enum": [
+              "current",
+              "delayed",
+              "stale",
+              "invalid",
+              "backfilling",
+              "unavailable"
+            ],
+            "title": "Data State",
+            "type": "string"
+          },
           "dataset_id": {
             "title": "Dataset Id",
+            "type": "string"
+          },
+          "health_group": {
+            "title": "Health Group",
             "type": "string"
           },
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "last_market_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Market At Ms"
           },
           "latest_received_at_ms": {
             "anyOf": [
@@ -2207,24 +2330,43 @@
             ],
             "title": "Latest Reference"
           },
+          "market_state": {
+            "enum": [
+              "open",
+              "closed",
+              "maintenance",
+              "unknown",
+              "not_applicable"
+            ],
+            "title": "Market State",
+            "type": "string"
+          },
+          "next_open_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Open Ms"
+          },
           "reason": {
             "title": "Reason",
             "type": "string"
           },
-          "source_url": {
-            "title": "Source Url",
+          "source_state": {
+            "enum": [
+              "healthy",
+              "degraded",
+              "failed"
+            ],
+            "title": "Source State",
             "type": "string"
           },
-          "state": {
-            "enum": [
-              "current",
-              "delayed",
-              "stale",
-              "invalid",
-              "backfilling",
-              "unavailable"
-            ],
-            "title": "State",
+          "source_url": {
+            "title": "Source Url",
             "type": "string"
           },
           "trust_tier": {
@@ -2240,13 +2382,18 @@
         "required": [
           "dataset_id",
           "label",
-          "state",
+          "data_state",
+          "market_state",
+          "source_state",
           "reason",
           "critical",
           "trust_tier",
           "source_url",
           "latest_reference",
-          "latest_received_at_ms"
+          "latest_received_at_ms",
+          "last_market_at_ms",
+          "next_open_ms",
+          "health_group"
         ],
         "title": "MacroDatasetStateData",
         "type": "object"
@@ -2301,7 +2448,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_economy_inflation_v2",
+            "const": "macro_economy_inflation_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -3111,10 +3258,7 @@
             "type": "string"
           },
           "state": {
-            "enum": [
-              "blocked",
-              "current"
-            ],
+            "const": "current",
             "title": "State",
             "type": "string"
           }
@@ -3147,8 +3291,7 @@
           "state": {
             "enum": [
               "current",
-              "missing",
-              "blocked"
+              "missing"
             ],
             "title": "State",
             "type": "string"
@@ -3208,7 +3351,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_liquidity_funding_v2",
+            "const": "macro_liquidity_funding_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -3302,10 +3445,7 @@
           "data_health_state": {
             "enum": [
               "current",
-              "delayed",
-              "stale",
-              "invalid",
-              "backfilling",
+              "mixed",
               "unavailable",
               "missing"
             ],
@@ -3323,8 +3463,7 @@
           "judgment_state": {
             "enum": [
               "current",
-              "missing",
-              "blocked"
+              "missing"
             ],
             "title": "Judgment State",
             "type": "string"
@@ -3491,31 +3630,25 @@
           "data_health_state": {
             "enum": [
               "current",
-              "delayed",
-              "stale",
-              "invalid",
-              "backfilling",
+              "mixed",
               "unavailable"
             ],
             "title": "Data Health State",
             "type": "string"
           },
           "judgment_cutoff_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Judgment Cutoff Ms"
+            "title": "Judgment Cutoff Ms",
+            "type": "integer"
+          },
+          "judgment_session_date": {
+            "format": "date",
+            "title": "Judgment Session Date",
+            "type": "string"
           },
           "judgment_state": {
             "enum": [
               "current",
-              "missing",
-              "blocked"
+              "missing"
             ],
             "title": "Judgment State",
             "type": "string"
@@ -3551,7 +3684,7 @@
             "type": "object"
           },
           "schema_version": {
-            "const": "macro_overview_v3",
+            "const": "macro_overview_v4",
             "title": "Schema Version",
             "type": "string"
           }
@@ -3559,6 +3692,7 @@
         "required": [
           "schema_version",
           "read_at_ms",
+          "judgment_session_date",
           "judgment_cutoff_ms",
           "latest_fact_at_ms",
           "coverage_state",
@@ -3700,7 +3834,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_rates_fed_v2",
+            "const": "macro_rates_fed_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -4174,7 +4308,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_volatility_v2",
+            "const": "macro_volatility_v3",
             "title": "Schema Version",
             "type": "string"
           },

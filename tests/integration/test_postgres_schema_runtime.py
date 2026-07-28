@@ -330,7 +330,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert "is_watched" not in radar_rank_source_columns
-    assert version == latest_migration_version() == "20260728_0210"
+    assert version == latest_migration_version() == "20260728_0211"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -355,4 +355,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260728_0210"
+    assert version == latest_migration_version() == "20260728_0211"

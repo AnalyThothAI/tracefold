@@ -29,7 +29,7 @@ class MacroJudgmentWorker(WorkerBase):
         status = str(result["status"])
         return WorkerResult(
             processed=1 if status == "published" else 0,
-            skipped=1 if status in {"not_due", "exists", "blocked"} else 0,
+            skipped=1 if status in {"not_due", "exists"} else 0,
             failed=1 if status == "failed" else 0,
             notes=result,
         )

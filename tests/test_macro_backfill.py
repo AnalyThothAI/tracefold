@@ -12,36 +12,36 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
     through_date = date(2026, 7, 27)
     policies = {policy.dataset_id: policy for policy in professional_backfill_policies(through_date=through_date)}
 
-    required_recent_history = {
+    five_year_history = {
         "treasury.daily_nominal_curve",
         "treasury.daily_real_curve",
         "federal_reserve.fomc.documents",
         "federal_reserve.board.speeches",
         "federal_reserve.reserve_bank.speeches",
+        "nasdaq.spy.daily",
+        "nasdaq.qqq.daily",
+        "yfinance.es_future.daily",
+        "yfinance.hg_future.daily",
     }
-    assert all(policies[dataset_id].start_date == date(2021, 7, 27) for dataset_id in required_recent_history)
-    assert all(
-        policies[dataset_id].history_class == "required_trailing_five_years" for dataset_id in required_recent_history
-    )
+    assert all(policies[dataset_id].start_date == date(2021, 7, 27) for dataset_id in five_year_history)
+    assert all(policies[dataset_id].history_class == "trailing_five_years" for dataset_id in five_year_history)
     assert policies["fred.dcoilwtico"].start_date == date(1986, 1, 1)
-    assert policies["fred.dcoilwtico"].required_for_judgment is False
     assert policies["cftc.tff.credit_positions"].start_date == date(2006, 6, 13)
-    assert policies["cftc.tff.credit_positions"].required_for_judgment is False
 
-    expected_market_proxies = {
-        "yfinance.spy.market",
-        "yfinance.qqq.market",
-        "yfinance.iwm.market",
-        "yfinance.tlt.market",
-        "yfinance.ief.market",
-        "yfinance.lqd.market",
-        "yfinance.hyg.market",
-        "yfinance.dxy.market",
-        "yfinance.gld.market",
-        "yfinance.uso.market",
+    expected_intraday_proxies = {
+        "yfinance.spy.intraday",
+        "yfinance.qqq.intraday",
+        "yfinance.iwm.intraday",
+        "yfinance.tlt.intraday",
+        "yfinance.ief.intraday",
+        "yfinance.lqd.intraday",
+        "yfinance.hyg.intraday",
+        "yfinance.dxy.intraday",
+        "yfinance.gld.intraday",
+        "yfinance.uso.intraday",
     }
-    assert expected_market_proxies.isdisjoint(policies)
-    assert expected_market_proxies <= DATASET_REGISTRY.keys()
+    assert expected_intraday_proxies.isdisjoint(policies)
+    assert expected_intraday_proxies <= DATASET_REGISTRY.keys()
 
 
 def test_wti_daily_observations_use_the_official_weekly_release_freshness() -> None:
@@ -79,9 +79,6 @@ def test_professional_backfill_includes_every_public_credit_series_and_no_placeh
     assert "licensed.credit.trace_nav" not in policies
     assert "federal_reserve.document.analysis" not in policies
     assert all(policy.start_date <= date(2026, 7, 27) for policy in policies.values())
-    assert all(
-        not policy.required_for_judgment for policy in policies.values() if policy.history_class.startswith("optional_")
-    )
     assert all(policy.priority == 75 for policy in policies.values() if policy.history_class.startswith("optional_"))
 
 
@@ -92,7 +89,7 @@ def test_macro_cli_exposes_one_professional_backfill_command() -> None:
     assert args.macro_command == "backfill-professional"
 
 
-def test_only_readiness_required_backfills_block_module_health() -> None:
+def test_history_backfill_is_visible_but_never_becomes_a_judgment_gate() -> None:
     now_ms = 1_785_139_200_000
     spec = DATASET_REGISTRY["treasury.daily_nominal_curve"]
     latest_target = {
@@ -107,23 +104,20 @@ def test_only_readiness_required_backfills_block_module_health() -> None:
         "received_at_ms": now_ms,
     }
 
-    def state_for(required_for_judgment: bool) -> dict[str, object]:
-        backfill_target = {
-            "dataset_id": spec.dataset_id,
-            "partition_key": "2021-07-27..2026-07-27",
-            "clock_kind": "backfill",
-            "status": "backfilling",
-            "cursor_json": {"required_for_judgment": required_for_judgment},
-        }
-        return _dataset_states(
-            (spec,),
-            [latest_target, backfill_target],
-            [fact],
-            now_ms,
-            analysis_job_state=None,
-        )[0]
+    backfill_target = {
+        "dataset_id": spec.dataset_id,
+        "partition_key": "2021-07-27..2026-07-27",
+        "clock_kind": "backfill",
+        "status": "backfilling",
+        "cursor_json": {"history_class": "trailing_five_years"},
+    }
+    state = _dataset_states(
+        (spec,),
+        [latest_target, backfill_target],
+        [fact],
+        now_ms,
+        analysis_job_state=None,
+    )[0]
 
-    assert state_for(False)["state"] == "current"
-    required_state = state_for(True)
-    assert required_state["state"] == "backfilling"
-    assert required_state["reason"] == "required_history_backfill_incomplete"
+    assert state["data_state"] == "backfilling"
+    assert state["reason"] == "history_backfill_incomplete"

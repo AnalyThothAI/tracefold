@@ -89,9 +89,11 @@ Public Data API for official series/releases, Federal Reserve RSS for official
 policy documents, CFTC TFF Futures Only for rates/credit/cross-asset positioning,
 Cboe CFE settlement files for VIX futures, Binance public spot klines for the
 completed UTC BTC settlement, and the pinned `yfinance` wrapper over Yahoo
-Finance for best-effort five-minute ETFs, BTC, VIX, and major futures.
+Finance for best-effort five-minute ETFs, BTC, VIX, and major futures plus
+five-year daily continuous-futures proxies. Nasdaq public ETF history supplies
+the separate five-year daily ETF lane.
 `providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-and yfinance independently and owns only request timeout/user-agent transport
+Nasdaq daily, and yfinance independently and owns only request timeout/user-agent transport
 settings. It does not own dataset membership, formulas, freshness, or
 scheduling. Licensed CME rates futures prices/curves remain an explicit
 `unavailable` dataset until an authorized provider is configured; the service
@@ -114,30 +116,30 @@ uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YY
 uv run tracefold macro status
 ```
 
-For the one code-owned professional history policy required by the v2 hard cut:
+For the code-owned five-year history policy:
 
 ```bash
 uv run tracefold macro backfill-professional
 uv run tracefold macro status
 ```
 
-The readiness-critical Treasury, FOMC, speech, and completed BTC-settlement
-backfill window is the most recent five years. Yfinance is not a professional
-backfill source: first acquisition requests one month of five-minute bars and
-subsequent acquisition requests the rolling day. Older deep history is
-optional enrichment and does not block Coverage, projection, or Daily
-Judgment. Credit and WTI retain longer reliable public history where one
+Treasury, FOMC, speech, completed BTC settlement, fixed ETF Nasdaq daily, and
+Yahoo continuous-futures daily datasets use the most recent five years.
+Yahoo intraday acquisition requests one month of five-minute bars initially
+and the rolling day thereafter. Older deep history is optional enrichment.
+No backfill or evidence-completeness state blocks Coverage, projection,
+Evidence Pack, Daily Judgment, or Research; gaps remain explicit and affected
+conclusions become `no_call`. Credit and WTI retain longer reliable public history where one
 bounded source response makes that history cheap and material to percentile
 context.
 
-Enable `macro_backfill` until every readiness-required professional target is
-`current`; optional deep-history targets may continue without blocking the
-workbench. Then
+Enable `macro_backfill` until the desired five-year targets are `current`;
+incomplete targets remain visible without blocking the workbench. Then
 enable `macro_document_analysis` until its durable queue has no open or failed
-jobs. Projection and judgment intentionally remain blocked while required
-history or document analysis is incomplete.
+jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
+publication.
 
-A good macro status reports Alembic `20260728_0210`, bounded acquisition target
+A good macro status reports Alembic `20260728_0211`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
@@ -148,10 +150,11 @@ After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
 immutable Evidence Packs and daily judgments, `macro_research_runs`, immutable
 `macro_research_publications`, and the LangGraph PostgreSQL checkpoint tables.
-`20260728_0210` is the current-schema baseline. A new empty database creates
-only this schema; it does not replay retired tables, compatibility columns,
-historical backfills, or intermediate contracts. A database already stamped at
-`20260728_0210` is recognized as current and is not rebuilt. The retained
+`20260728_0210` remains the compact current-schema baseline and
+`20260728_0211` is the required hard-cut head. A new empty database applies the
+baseline and head without replaying retired runtime tables, compatibility
+columns, historical backfills, or intermediate contracts. A database stamped
+at `20260728_0210` migrates forward once. The retained
 `*_v1_archive` tables contain material immutable publication history and are
 not runtime compatibility lanes.
 Enable the Macro workers only after the migration is current.
