@@ -7,6 +7,7 @@ from alembic import command
 from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.macro import MacroResearchRepository
 from tracefold.platform.postgres.postgres_migrations import alembic_config
@@ -19,13 +20,9 @@ NOW_MS = 500
 def test_failed_research_retry_is_bounded_atomic_and_terminal_safe(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
-        conn.execute("CREATE SCHEMA public")
-        conn.execute("GRANT ALL ON SCHEMA public TO public")
-        conn.commit()
+        migrate(conn)
         config = alembic_config()
         config.attributes["database_url"] = _test_postgres_dsn()
-        command.upgrade(config, "head")
 
         _insert_evidence_pack(conn, session_date=SESSION_DATE)
         _insert_evidence_pack(conn, session_date=PUBLISHED_DATE)
@@ -63,7 +60,7 @@ def test_failed_research_retry_is_bounded_atomic_and_terminal_safe(tmp_path) -> 
             )
         conn.rollback()
         with pytest.raises(RuntimeError, match="irreversible"):
-            command.downgrade(config, "20260727_0199")
+            command.downgrade(config, "base")
     finally:
         conn.close()
 

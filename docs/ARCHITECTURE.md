@@ -260,9 +260,9 @@ The complete live News storage boundary is exactly eleven tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,
 `news_feed_observations`, `news_items`, `news_stories`,
 `news_story_members`, `news_story_aliases`, `news_brief_runs`,
-`news_brief_publications`, and `news_brief_current`. Migration
-`20260727_0205` destructively drops every prior `news_*` table before creating
-this schema and has no downgrade or compatibility lane.
+`news_brief_publications`, and `news_brief_current`. The
+`20260728_0210` current-schema baseline creates only this News model on an empty
+database and has no downgrade or compatibility lane.
 
 ### Macro
 

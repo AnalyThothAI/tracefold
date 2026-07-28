@@ -68,7 +68,9 @@ describe("daily macro decision workbench", () => {
     renderAppRoute("/macro/cross-asset");
 
     expect(
-      await screen.findByRole("heading", { name: "VIX 结算与跨资产 CFTC 仓位" }),
+      await screen.findByRole("heading", {
+        name: "主要期货、美元指数、VIX 结算与跨资产 CFTC 仓位",
+      }),
     ).toBeVisible();
     expect(screen.getByText("VX/U6")).toBeVisible();
   });

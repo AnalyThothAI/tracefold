@@ -170,10 +170,10 @@ the model.
 
 #### News WorldMonitor hard-cut runbook
 
-Migration `20260727_0205` is intentionally destructive. It drops every
-existing `news_*` table and creates the exact eleven-table WorldMonitor-backed
-schema. The operator accepted no backup, no downgrade, no ID redirect, no
-dual writer, and no compatibility read.
+The `20260728_0210` current-schema baseline creates the exact eleven-table
+WorldMonitor-backed News schema on an empty database. It contains no prior News
+schema, ID redirect, dual writer, or compatibility read. An existing database
+already stamped at the baseline is left intact.
 
 1. Stop the service so no older News worker can write during the cut.
 2. Confirm the intended checkout and current Alembic version.
@@ -192,10 +192,10 @@ dual writer, and no compatibility read.
 
 Macro:
 
-Migration `20260727_0207` is the irreversible Macro professional-coverage hard
-cut layered after the News production cut. It archives v1 Macro publications,
-creates the typed v2 publication lane and Fed evidence tables, and clears the
-generic module read model for a deterministic rebuild.
+The `20260728_0210` baseline contains the current professional Macro fact,
+coverage, module, judgment, research, and Fed evidence contracts. Immutable v1
+publication archives remain material history; no runtime reads or writers use
+them.
 
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor

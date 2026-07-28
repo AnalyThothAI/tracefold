@@ -49,7 +49,7 @@ providers:
     fred_enabled: true
     cboe_enabled: true
     cftc_enabled: true
-    nasdaq_public_enabled: true
+    yfinance_enabled: true
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"
 

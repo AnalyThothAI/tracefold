@@ -148,23 +148,12 @@ After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
 immutable Evidence Packs and daily judgments, `macro_research_runs`, immutable
 `macro_research_publications`, and the LangGraph PostgreSQL checkpoint tables.
-Migration `20260727_0200` irreversibly drops legacy Macro tables and data
-without migration or backup. Runtime startup does not create or upgrade those
-tables. Migration `20260727_0201` removes the unusable Stooq lane and invalidates
-all derived Macro state before the Nasdaq/Cboe source correction rebuild.
-Migration `20260727_0202` removes still-open Binance daily candles and the two
-FRED liquidity series ingested with incorrect units, resets those targets, and
-invalidates derived Macro state before a clean rebuild.
-Migration `20260727_0203` removes the redundant intraday clock and rebuilds the
-Binance dataset as a UTC daily close under the settlement worker.
-Migration `20260727_0207` archives v1 Macro publication tables, hard-cuts the
-active lane to v2 Evidence Pack/judgment/research schemas, adds Fed role and
-immutable document-analysis storage, and requires six module-specific payloads.
-Migration `20260728_0209` restores the dedicated intraday market clock, retires
-Nasdaq acquisition targets, clears derived module rows for a typed rebuild, and
-adds the persisted judgment publication-status/root-cause read model.
-Migration `20260728_0210` advances the Credit and Cross-Asset current-row
-constraints to their v3 live-market payloads.
+`20260728_0210` is the current-schema baseline. A new empty database creates
+only this schema; it does not replay retired tables, compatibility columns,
+historical backfills, or intermediate contracts. A database already stamped at
+`20260728_0210` is recognized as current and is not rebuilt. The retained
+`*_v1_archive` tables contain material immutable publication history and are
+not runtime compatibility lanes.
 Enable the Macro workers only after the migration is current.
 
 A healthy completed-session research run transitions

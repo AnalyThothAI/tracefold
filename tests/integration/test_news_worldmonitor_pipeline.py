@@ -6,14 +6,12 @@ from typing import Any
 
 import httpx
 import pytest
-from alembic import command
 
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
 )
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.integrations.news_feeds import RssFeedReader
 from tracefold.news import (
     NewsBriefDraft,
@@ -28,7 +26,6 @@ from tracefold.news import (
     default_sources,
 )
 from tracefold.news.brief import brief_fingerprint
-from tracefold.platform.postgres.postgres_migrations import alembic_config, latest_migration_version
 
 NOW_MS = 1_779_000_000_000
 
@@ -1203,63 +1200,5 @@ def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
             "news_brief_publications",
             "news_brief_current",
         }
-    finally:
-        conn.close()
-
-
-def test_destructive_migration_clears_old_news_only_and_preserves_non_news_state(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
-        conn.execute("CREATE SCHEMA public")
-        conn.execute("GRANT ALL ON SCHEMA public TO public")
-        conn.commit()
-        config = alembic_config()
-        config.attributes["database_url"] = _test_postgres_dsn()
-        command.upgrade(config, "20260727_0204")
-        conn.execute(
-            """
-            CREATE TABLE release_non_news_sentinel (
-              sentinel_id text PRIMARY KEY,
-              payload text NOT NULL
-            );
-            INSERT INTO release_non_news_sentinel(sentinel_id, payload)
-            VALUES ('keep-me', 'non-news-domain-state');
-            INSERT INTO news_sources (
-              source_id, name, feed_url, reporting_origin, tier, lang,
-              enabled, refresh_interval_seconds, next_fetch_at_ms,
-              created_at_ms, updated_at_ms
-            )
-            VALUES (
-              'old-source', 'Old Source', 'https://old.example/rss',
-              'old-source', 2, 'en', true, 120, 0, 1, 1
-            )
-            """
-        )
-        conn.commit()
-
-        command.upgrade(config, "head")
-
-        sentinel = conn.execute(
-            """
-            SELECT payload
-              FROM release_non_news_sentinel
-             WHERE sentinel_id = 'keep-me'
-            """
-        ).fetchone()
-        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert sentinel == {"payload": "non-news-domain-state"}
-        assert version == {"version_num": latest_migration_version()}
-        assert conn.execute("SELECT count(*) AS count FROM news_sources").fetchone() == {"count": 0}
-        assert conn.execute(
-            """
-            SELECT count(*) AS count
-              FROM pg_tables
-             WHERE schemaname = 'public'
-               AND tablename LIKE 'news_%backup%'
-            """
-        ).fetchone() == {"count": 0}
     finally:
         conn.close()
