@@ -5,7 +5,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SOURCE_INVENTORY_VERSION = "worldmonitor_full_intel_plus_crypto_f73de5b7"
+SOURCE_INVENTORY_VERSION = "us_finance_global_politics_crypto_v1"
 STORY_IDENTITY_VERSION = "worldmonitor_story_identity_f73de5b7"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_f73de5b7"
 IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_physical_source"

@@ -446,21 +446,47 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
              WHERE dataset_id = 'binance.btcusdt.spot'
             """
         ).fetchone()
-        with pytest.raises(CheckViolation, match="clock_kind_check"):
-            conn.execute(
-                """
-                INSERT INTO macro_acquisition_targets(
-                  target_key, dataset_id, partition_key, clock_kind, cursor_json,
-                  status, next_due_at_ms, priority, attempt_count, max_attempts,
-                  created_at_ms, updated_at_ms
-                )
-                VALUES (
-                  'retired-intraday', 'retired.intraday', 'latest',
-                  'intraday_market', '{}', 'pending', 0, 100, 0, 5, 1, 1
-                )
-                """
+        conn.execute(
+            """
+            INSERT INTO macro_acquisition_targets(
+              target_key, dataset_id, partition_key, clock_kind, cursor_json,
+              status, next_due_at_ms, priority, attempt_count, max_attempts,
+              created_at_ms, updated_at_ms
             )
-        conn.rollback()
+            VALUES (
+              'yfinance.spy.market:latest', 'yfinance.spy.market', 'latest',
+              'intraday_market', '{}', 'pending', 0, 100, 0, 5, 1, 1
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO macro_judgment_status(
+              session_date, judgment_cutoff_ms, state, reason_code,
+              details_json, payload_hash, attempted_at_ms, updated_at_ms
+            )
+            VALUES (
+              '2026-07-27', 100, 'blocked', 'critical_evidence_blocked',
+              '{"blocked_modules":["rates_fed"]}'::jsonb, 'sha256:blocked',
+              200, 200
+            )
+            """
+        )
+        conn.commit()
+        intraday_target = conn.execute(
+            """
+            SELECT clock_kind, status
+              FROM macro_acquisition_targets
+             WHERE dataset_id = 'yfinance.spy.market'
+            """
+        ).fetchone()
+        judgment_status = conn.execute(
+            """
+            SELECT state, reason_code, details_json
+              FROM macro_judgment_status
+             WHERE session_date = '2026-07-27'
+            """
+        ).fetchone()
     finally:
         conn.close()
 
@@ -472,6 +498,89 @@ def test_0203_rebuilds_binance_daily_close_on_the_settlement_clock(tmp_path) -> 
         "cursor_json": {},
         "attempt_count": 0,
     }
+    assert intraday_target == {"clock_kind": "intraday_market", "status": "pending"}
+    assert judgment_status == {
+        "state": "blocked",
+        "reason_code": "critical_evidence_blocked",
+        "details_json": {"blocked_modules": ["rates_fed"]},
+    }
+
+
+def test_0210_enforces_live_market_v3_module_contracts(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        config = alembic_config()
+        config.attributes["database_url"] = _test_postgres_dsn()
+        command.upgrade(config, "20260728_0209")
+        conn.execute(
+            """
+            INSERT INTO macro_module_current(
+              module_id, data_health_state, fact_cutoff_ms,
+              payload_json, payload_hash, updated_at_ms
+            )
+            VALUES
+              (
+                'credit', 'current', 100,
+                '{"schema_version":"macro_credit_v2"}'::jsonb,
+                'sha256:credit-v2', 100
+              ),
+              (
+                'cross_asset', 'current', 100,
+                '{"schema_version":"macro_cross_asset_v2"}'::jsonb,
+                'sha256:cross-v2', 100
+              )
+            """
+        )
+        conn.commit()
+        command.upgrade(config, "head")
+        assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone() == {"count": 0}
+        conn.execute(
+            """
+            INSERT INTO macro_module_current(
+              module_id, data_health_state, fact_cutoff_ms,
+              payload_json, payload_hash, updated_at_ms
+            )
+            VALUES
+              (
+                'credit', 'current', 200,
+                '{"schema_version":"macro_credit_v3"}'::jsonb,
+                'sha256:credit-v3', 200
+              ),
+              (
+                'cross_asset', 'current', 200,
+                '{"schema_version":"macro_cross_asset_v3"}'::jsonb,
+                'sha256:cross-v3', 200
+              )
+            """
+        )
+        conn.commit()
+        with pytest.raises(CheckViolation, match="typed_schema_check"):
+            conn.execute(
+                """
+                UPDATE macro_module_current
+                   SET payload_json = '{"schema_version":"macro_credit_v2"}'::jsonb
+                 WHERE module_id = 'credit'
+                """
+            )
+        conn.rollback()
+        versions = conn.execute(
+            """
+            SELECT module_id, payload_json ->> 'schema_version' AS schema_version
+              FROM macro_module_current
+             ORDER BY module_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert [dict(row) for row in versions] == [
+        {"module_id": "credit", "schema_version": "macro_credit_v3"},
+        {"module_id": "cross_asset", "schema_version": "macro_cross_asset_v3"},
+    ]
 
 
 def test_0207_archives_v1_publications_and_enforces_typed_v2_contracts(

@@ -393,13 +393,41 @@ def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
     assert validation["line_fallbacks"] == [2]
 
 
-def test_source_inventory_adds_wallstengine_without_changing_worldmonitor_policy() -> None:
+def test_source_inventory_is_the_confirmed_us_finance_global_politics_hard_cut() -> None:
     sources = default_sources()
-    assert len(sources) == 118
-    assert sum(len(source.memberships) for source in sources) == 121
-    assert sum("intel" in source.memberships for source in sources) == 24
+    assert len(sources) == 73
+    assert sum(len(source.memberships) for source in sources) == 73
+    assert sum("intel" in source.memberships for source in sources) == 12
     assert any(source.name == "6551NEWS" and source.lang == "zh" for source in sources)
     assert sum("crypto" in source.memberships for source in sources) == 16
+    assert {source.name for source in sources if source.memberships[0] in {"asia", "middleeast"}} == {
+        "Al Jazeera",
+        "Nikkei Asia",
+        "South China Morning Post",
+        "Xinhua",
+    }
+    assert not {
+        "Guardian World",
+        "CNN World",
+        "NPR News",
+        "PBS NewsHour",
+        "ABC News",
+        "CBS News",
+        "NBC News",
+        "The Hill",
+        "Yahoo Finance",
+        "CNA",
+        "NDTV",
+        "The Hindu",
+        "Foreign Policy",
+        "Foreign Affairs",
+        "Atlantic Council",
+        "CSIS",
+        "OCCRP",
+    } & {source.name for source in sources}
+    trump = next(source for source in sources if source.name == "Trump - Truth Social")
+    assert trump.tier == 1
+    assert trump.memberships == ("politics",)
     wallstengine = next(source for source in sources if source.name == "WallStEngine")
     assert wallstengine.feed_url == (
         "http://rsshub:1200/twitter/user/wallstengine/"
@@ -412,11 +440,7 @@ def test_source_inventory_adds_wallstengine_without_changing_worldmonitor_policy
     assert wallstengine.lang == "en"
     assert wallstengine.memberships == ("finance",)
     assert wallstengine.refresh_interval_seconds == 120
-    assert {source.name: source.memberships for source in sources if len(source.memberships) > 1} == {
-        "Atlantic Council": ("intel", "thinktanks"),
-        "Foreign Affairs": ("intel", "thinktanks"),
-        "Foreign Policy": ("intel", "thinktanks"),
-    }
+    assert not any(len(source.memberships) > 1 for source in sources)
     manifest = [
         {
             "source_id": source.source_id,
@@ -434,4 +458,4 @@ def test_source_inventory_adds_wallstengine_without_changing_worldmonitor_policy
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode()
-    assert hashlib.sha256(encoded).hexdigest() == ("694b4574889e1c6f17c98806161918b6e58754bb5bb59f2987f35a3412973274")
+    assert hashlib.sha256(encoded).hexdigest() == ("5ef085d74d7c9fb7019858c270e8fbe73e783f02533e9c4699f6fdc4d178f1be")

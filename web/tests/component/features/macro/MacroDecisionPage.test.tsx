@@ -26,6 +26,46 @@ describe("Macro decision workbench", () => {
     expect(screen.queryByText("历史窗口")).toBeNull();
   });
 
+  it("renders the persisted root cause when the daily judgment is blocked", async () => {
+    const overview = macroOverviewFixture();
+    overview.daily_judgment = null;
+    overview.judgment_state = "blocked";
+    overview.judgment_status = {
+      session_date: "2026-07-27",
+      judgment_cutoff_ms: overview.judgment_cutoff_ms ?? overview.read_at_ms,
+      state: "blocked",
+      reason_code: "critical_evidence_blocked",
+      details: {
+        blocked_modules: ["rates_fed"],
+        modules: [
+          {
+            module_id: "rates_fed",
+            dataset_gaps: [
+              {
+                dataset_id: "federal_reserve.document.analysis",
+                label: "政策文件不可变分析",
+                state: "backfilling",
+                reason: "derived_fact_pending",
+              },
+            ],
+          },
+        ],
+      },
+      attempted_at_ms: overview.read_at_ms,
+    };
+    server.use(
+      http.get(/.*\/api\/macro\/overview$/, () => HttpResponse.json({ ok: true, data: overview })),
+    );
+    renderWithProviders(<MacroOverviewPage token="test-token" />, { route: "/macro" });
+
+    expect(await screen.findByRole("heading", { name: "今日判断尚未发布" })).toBeVisible();
+    expect(
+      screen.getByText(
+        "冻结截点缺少关键证据：利率与美联储—政策文件不可变分析（冻结截点前派生事实未完成）。",
+      ),
+    ).toBeVisible();
+  });
+
   it("renders the default cross-asset benchmark and fixed ETF matrix", async () => {
     server.use(
       http.get(/.*\/api\/macro\/cross-asset$/, () =>

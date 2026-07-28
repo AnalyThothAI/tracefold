@@ -42,7 +42,7 @@ An enabled AI worker with no configured provider reports an explicit
 unavailable state and makes no model call.
 
 News correctness does not depend on the model. The production defaults are a
-120-second deterministic `news_pipeline` interval and a 600-second
+120-second deterministic `news_pipeline` interval and a 300-second
 `news_world_brief` interval with one 60-second total provider budget. There is
 no item-level AI worker. Source refresh intervals remain source-specific in
 `config.yaml`.
@@ -87,18 +87,19 @@ keys, provider passwords, or full config payloads into docs or chat.
 Macro acquisition uses free, keyless sources first: FRED public CSV and BLS
 Public Data API for official series/releases, Federal Reserve RSS for official
 policy documents, CFTC TFF Futures Only for rates/credit/cross-asset positioning,
-Cboe CFE settlement files for VIX futures, Binance public spot klines for BTC,
-and explicitly labelled Nasdaq public previous-close history for the remaining
-cross-asset prices.
+Cboe CFE settlement files for VIX futures, Binance public spot klines for the
+completed UTC BTC settlement, and the pinned `yfinance` wrapper over Yahoo
+Finance for best-effort five-minute ETFs, BTC, VIX, and major futures.
 `providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-and Nasdaq public history independently and owns only request timeout/user-agent transport
+and yfinance independently and owns only request timeout/user-agent transport
 settings. It does not own dataset membership, formulas, freshness, or
 scheduling. Licensed CME rates futures prices/curves remain an explicit
 `unavailable` dataset until an authorized provider is configured; the service
 never fills that gap with a fake proxy.
 
-Four automatic acquisition workers own distinct clocks:
-`macro_settlements`, `macro_economic_releases`, `macro_official_state`, and
+Five automatic acquisition workers own distinct clocks:
+`macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
+`macro_official_state`, and
 `macro_official_documents`. `macro_backfill` is
 disabled by default and processes only operator-created bounded targets.
 `macro_projection` rebuilds six stable current rows from persisted facts;
@@ -120,10 +121,10 @@ uv run tracefold macro backfill-professional
 uv run tracefold macro status
 ```
 
-The readiness-critical Treasury, FOMC, speech, and BTC backfill window is the
-most recent five years. Nasdaq ETF `latest` acquisition already requests and
-persists the complete five-year window in one response, so the professional
-command does not enqueue a duplicate ETF backfill. Older deep history is
+The readiness-critical Treasury, FOMC, speech, and completed BTC-settlement
+backfill window is the most recent five years. Yfinance is not a professional
+backfill source: first acquisition requests one month of five-minute bars and
+subsequent acquisition requests the rolling day. Older deep history is
 optional enrichment and does not block Coverage, projection, or Daily
 Judgment. Credit and WTI retain longer reliable public history where one
 bounded source response makes that history cheap and material to percentile
@@ -136,12 +137,12 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Projection and judgment intentionally remain blocked while required
 history or document analysis is incomplete.
 
-A good macro status reports Alembic `20260727_0207`, bounded acquisition target
+A good macro status reports Alembic `20260728_0210`, bounded acquisition target
 states, recent source receipts, all six module rows, and the latest daily
 judgment/research states. Diagnose a missing value by dataset ID through its
 target, last receipt, fact family, and module gap. A public-source timeout,
-weekend settlement lag, unavailable licensed CME dataset, or delayed Nasdaq
-public history is a visible quality state; it is not a frontend defect.
+weekend settlement lag, unavailable licensed CME dataset, or delayed Yahoo
+market proxy is a visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
@@ -159,6 +160,11 @@ Binance dataset as a UTC daily close under the settlement worker.
 Migration `20260727_0207` archives v1 Macro publication tables, hard-cuts the
 active lane to v2 Evidence Pack/judgment/research schemas, adds Fed role and
 immutable document-analysis storage, and requires six module-specific payloads.
+Migration `20260728_0209` restores the dedicated intraday market clock, retires
+Nasdaq acquisition targets, clears derived module rows for a typed rebuild, and
+adds the persisted judgment publication-status/root-cause read model.
+Migration `20260728_0210` advances the Credit and Cross-Asset current-row
+constraints to their v3 live-market payloads.
 Enable the Macro workers only after the migration is current.
 
 A healthy completed-session research run transitions

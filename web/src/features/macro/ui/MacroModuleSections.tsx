@@ -393,9 +393,10 @@ function CrossAssetSections({
       <section className="macro-decision__semantic-section">
         <SectionHeading
           eyebrow="FUTURES CONFIRMATION"
-          title="VIX 结算与跨资产 CFTC 仓位"
-          description="期货数据只作确认；本 Issue 不建设 WTI 曲线或原油 CFTC 模型。"
+          title="主要期货、美元指数、VIX 结算与跨资产 CFTC 仓位"
+          description="盘中行情采用 Yahoo Finance 最佳可用代理；官方结算与周度仓位仍单独保留。"
         />
+        <AssetTable rows={module.futures.market} />
         <ObjectTable rows={[...module.futures.vix_settlements, ...module.futures.positions]} />
       </section>
     );
@@ -616,7 +617,7 @@ function AssetTable({ rows }: { rows: MacroAssetRow[] }) {
             </small>
           </span>
           <span role="cell">
-            {formatNumber(row.latest_value)} <small>{row.as_of}</small>
+            {formatNumber(row.latest_value)} <small>{formatMarketTime(row.market_time_ms)}</small>
           </span>
           <SignedCell value={row.change_1d_pct} />
           <SignedCell value={row.change_1w_pct} />
@@ -820,6 +821,16 @@ function formatNumber(value: number): string {
 function formatSigned(value: number | null): string {
   if (value == null) return "—";
   return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
+}
+
+function formatMarketTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
 }
 
 function numberLabel(value: unknown): string {

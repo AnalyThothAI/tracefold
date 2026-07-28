@@ -435,6 +435,57 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
         conn.close()
 
 
+def test_source_inventory_hard_cut_disables_and_unserves_retired_sources(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        retained = source("reuters", "Reuters")
+        retired = source("regional-general", "Regional General", tier=4, memberships=("asia",))
+        with conn.transaction():
+            repository.sync_sources((retained, retired), now_ms=NOW_MS)
+            record(
+                repository,
+                retained,
+                guid="retained",
+                title="Federal Reserve signals policy decision",
+                published_at_ms=NOW_MS - 60_000,
+            )
+            record(
+                repository,
+                retired,
+                guid="retired",
+                title="Local festival opens in regional capital",
+                published_at_ms=NOW_MS - 30_000,
+            )
+            assert repository.rebuild_stories(now_ms=NOW_MS)["stories"] == 2
+
+        with conn.transaction():
+            repository.sync_sources((retained,), now_ms=NOW_MS + 1)
+            projection = repository.rebuild_stories(now_ms=NOW_MS + 1)
+
+        assert projection["stories"] == 1
+        assert conn.execute(
+            "SELECT enabled FROM news_sources WHERE source_id = %s",
+            (retired.source_id,),
+        ).fetchone() == {"enabled": False}
+        assert conn.execute(
+            "SELECT active FROM news_items WHERE source_id = %s",
+            (retired.source_id,),
+        ).fetchone() == {"active": False}
+        assert [row["source_id"] for row in repository.list_sources()["items"]] == [retained.source_id]
+        feed = repository.list_feed()
+        assert len(feed["stories"]) == 1
+        assert feed["stories"][0]["source_id"] == retained.source_id
+        assert all(
+            candidate["representative_source_id"] == retained.source_id for candidate in repository.brief_candidates()
+        )
+    finally:
+        conn.close()
+
+
 def test_wallstengine_uses_ordinary_item_story_classification_and_brief_rules(
     tmp_path,
 ) -> None:

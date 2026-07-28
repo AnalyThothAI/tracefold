@@ -770,6 +770,8 @@ export interface components {
             label: string;
             /** Latest Value */
             latest_value: number;
+            /** Market Time Ms */
+            market_time_ms: number;
             /** Source Url */
             source_url: string;
             /** Symbol */
@@ -960,7 +962,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_credit_v2";
+            schema_version: "macro_credit_v3";
             spread_ladder: components["schemas"]["MacroCreditSpreadLadderData"];
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
@@ -1003,7 +1005,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_cross_asset_v2";
+            schema_version: "macro_cross_asset_v3";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1297,6 +1299,8 @@ export interface components {
         };
         /** MacroFuturesConfirmationData */
         MacroFuturesConfirmationData: {
+            /** Market */
+            market: components["schemas"]["MacroAssetData"][];
             /** Positions */
             positions: {
                 [key: string]: unknown;
@@ -1346,6 +1350,29 @@ export interface components {
         MacroIndicatorSectionData: {
             /** Indicators */
             indicators: components["schemas"]["MacroIndicatorData"][];
+        };
+        /** MacroJudgmentPublicationStatusData */
+        MacroJudgmentPublicationStatusData: {
+            /** Attempted At Ms */
+            attempted_at_ms: number;
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
+            /** Judgment Cutoff Ms */
+            judgment_cutoff_ms: number;
+            /** Reason Code */
+            reason_code: string;
+            /**
+             * Session Date
+             * Format: date
+             */
+            session_date: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "blocked" | "current";
         };
         /** MacroJudgmentStateData */
         MacroJudgmentStateData: {
@@ -1489,6 +1516,7 @@ export interface components {
              * @enum {string}
              */
             judgment_state: "current" | "missing" | "blocked";
+            judgment_status: components["schemas"]["MacroJudgmentPublicationStatusData"] | null;
             /** Latest Fact At Ms */
             latest_fact_at_ms: number;
             /** Modules */
@@ -1503,7 +1531,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_overview_v2";
+            schema_version: "macro_overview_v3";
         };
         /** MacroPolicyPricingData */
         MacroPolicyPricingData: {

@@ -22,9 +22,9 @@ _SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
     "rates_fed": "macro_rates_fed_v2",
     "economy_inflation": "macro_economy_inflation_v2",
     "liquidity_funding": "macro_liquidity_funding_v2",
-    "credit": "macro_credit_v2",
+    "credit": "macro_credit_v3",
     "volatility": "macro_volatility_v2",
-    "cross_asset": "macro_cross_asset_v2",
+    "cross_asset": "macro_cross_asset_v3",
 }
 _HEALTH_ORDER = {
     "invalid": 6,
@@ -35,16 +35,27 @@ _HEALTH_ORDER = {
     "current": 1,
 }
 _ETF_IDS = (
-    "nasdaq.spy.history",
-    "nasdaq.qqq.history",
-    "nasdaq.iwm.history",
-    "nasdaq.tlt.history",
-    "nasdaq.ief.history",
-    "nasdaq.lqd.history",
-    "nasdaq.hyg.history",
-    "nasdaq.dxy.history",
-    "nasdaq.gld.history",
-    "nasdaq.uso.history",
+    "yfinance.spy.market",
+    "yfinance.qqq.market",
+    "yfinance.iwm.market",
+    "yfinance.tlt.market",
+    "yfinance.ief.market",
+    "yfinance.lqd.market",
+    "yfinance.hyg.market",
+    "yfinance.dxy.market",
+    "yfinance.gld.market",
+    "yfinance.uso.market",
+)
+_FUTURES_IDS = (
+    "yfinance.es_future.market",
+    "yfinance.nq_future.market",
+    "yfinance.rty_future.market",
+    "yfinance.zb_future.market",
+    "yfinance.zn_future.market",
+    "yfinance.dx_future.market",
+    "yfinance.gc_future.market",
+    "yfinance.cl_future.market",
+    "yfinance.hg_future.market",
 )
 _NEW_YORK = ZoneInfo("America/New_York")
 _DAY_MS = 86_400_000
@@ -83,7 +94,7 @@ def build_typed_module_payload(
         )
         if str(row["dataset_id"]) in dataset_ids
     ]
-    latest_fact_at_ms = max((int(row["received_at_ms"]) for row in module_facts), default=0)
+    latest_fact_at_ms = max((_fact_clock_ms(row) for row in module_facts), default=0)
     dataset_states = _dataset_states(
         specs,
         target_states,
@@ -472,7 +483,7 @@ def _credit_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
         "confirmations": {
             "etfs": _asset_rows(
                 groups["market_rows"],
-                ("nasdaq.lqd.history", "nasdaq.hyg.history"),
+                ("yfinance.lqd.market", "yfinance.hyg.market"),
             ),
             "positions": _position_rows(groups["position_rows"], "cftc.tff.credit_positions"),
             "trace_nav": {
@@ -684,21 +695,31 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     )
     proxy_rows = _asset_rows(market_rows, _ETF_IDS)
     proxy_by_dataset = {row["dataset_id"]: row for row in proxy_rows}
+    bitcoin_rows = _asset_rows(market_rows, ("yfinance.btc_yahoo.market",))
+    vix_rows = _asset_rows(market_rows, ("yfinance.vix_index.market",))
     wti = _indicator_rows(series_rows, ("fred.dcoilwtico",))
-    vix = _indicator_rows(series_rows, ("fred.vixcls",))
-    btc = _asset_rows(market_rows, ("binance.btcusdt.spot",))
     benchmarks = [
-        _benchmark("S&P 500", "equity", "nasdaq.spy.history", proxy_by_dataset.get("nasdaq.spy.history")),
-        _benchmark("Nasdaq 100", "equity", "nasdaq.qqq.history", proxy_by_dataset.get("nasdaq.qqq.history")),
-        _benchmark("Russell 2000", "equity", "nasdaq.iwm.history", proxy_by_dataset.get("nasdaq.iwm.history")),
-        _benchmark("Treasury duration", "rates", "nasdaq.tlt.history", proxy_by_dataset.get("nasdaq.tlt.history")),
-        _benchmark("IG credit", "credit", "nasdaq.lqd.history", proxy_by_dataset.get("nasdaq.lqd.history")),
-        _benchmark("HY credit", "credit", "nasdaq.hyg.history", proxy_by_dataset.get("nasdaq.hyg.history")),
-        _benchmark("U.S. dollar", "fx", "nasdaq.dxy.history", proxy_by_dataset.get("nasdaq.dxy.history")),
-        _benchmark("Gold", "commodity", "nasdaq.gld.history", proxy_by_dataset.get("nasdaq.gld.history")),
+        _benchmark("S&P 500", "equity", "yfinance.spy.market", proxy_by_dataset.get("yfinance.spy.market")),
+        _benchmark("Nasdaq 100", "equity", "yfinance.qqq.market", proxy_by_dataset.get("yfinance.qqq.market")),
+        _benchmark("Russell 2000", "equity", "yfinance.iwm.market", proxy_by_dataset.get("yfinance.iwm.market")),
+        _benchmark("Treasury duration", "rates", "yfinance.tlt.market", proxy_by_dataset.get("yfinance.tlt.market")),
+        _benchmark("IG credit", "credit", "yfinance.lqd.market", proxy_by_dataset.get("yfinance.lqd.market")),
+        _benchmark("HY credit", "credit", "yfinance.hyg.market", proxy_by_dataset.get("yfinance.hyg.market")),
+        _benchmark("U.S. dollar", "fx", "yfinance.dxy.market", proxy_by_dataset.get("yfinance.dxy.market")),
+        _benchmark("Gold", "commodity", "yfinance.gld.market", proxy_by_dataset.get("yfinance.gld.market")),
         _benchmark("WTI Cushing spot", "commodity", "fred.dcoilwtico", wti[0] if wti else None, official=True),
-        _benchmark("Bitcoin", "crypto", "binance.btcusdt.spot", btc[0] if btc else None, official=True),
-        _benchmark("VIX", "volatility", "fred.vixcls", vix[0] if vix else None, official=True),
+        _benchmark(
+            "Bitcoin",
+            "crypto",
+            "yfinance.btc_yahoo.market",
+            bitcoin_rows[0] if bitcoin_rows else None,
+        ),
+        _benchmark(
+            "VIX",
+            "volatility",
+            "yfinance.vix_index.market",
+            vix_rows[0] if vix_rows else None,
+        ),
     ]
     return {
         "assets": {
@@ -708,6 +729,7 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "correlations": comparison["correlations"],
         "futures": {
+            "market": _asset_rows(market_rows, _FUTURES_IDS),
             "vix_settlements": _settlement_rows(groups["settlement_rows"], "cboe.cfe.vx.settlement"),
             "positions": _position_rows(groups["position_rows"], "cftc.tff.cross_asset_positions"),
         },
@@ -922,6 +944,7 @@ def _asset_rows(
                 "asset_class": spec.asset_class,
                 "unit": spec.unit,
                 "trust_tier": spec.trust_tier,
+                "market_time_ms": int(item["market_time_ms"]),
             }
         )
     return output

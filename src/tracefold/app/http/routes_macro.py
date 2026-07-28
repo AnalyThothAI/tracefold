@@ -44,9 +44,16 @@ def macro_overview(request: Request) -> JSONResponse:
     with runtime.repositories() as repos:
         module_rows = {row["module_id"]: row for row in repos.macro.all_modules_current()}
         judgment_row = repos.macro.daily_judgment(judgment_session)
+        judgment_status_row = repos.macro.judgment_status(judgment_session)
         research_row = repos.macro_research.research_state()
     module_payloads = [
-        _module_payload(module_id, module_rows.get(module_id), judgment_row, read_at_ms)
+        _module_payload(
+            module_id,
+            module_rows.get(module_id),
+            judgment_row,
+            judgment_status_row,
+            read_at_ms,
+        )
         for module_id in MACRO_MODULE_IDS
     ]
     modules = [_module_summary(payload) for payload in module_payloads]
@@ -70,14 +77,20 @@ def macro_overview(request: Request) -> JSONResponse:
             "missing": 7,
         }[value],
     )
-    judgment_state = "current" if judgment_row is not None else "missing"
+    judgment_state = (
+        "current"
+        if judgment_row is not None
+        else "blocked"
+        if judgment_status_row is not None and str(judgment_status_row["state"]) == "blocked"
+        else "missing"
+    )
     judgment = (
         dict(judgment_row["judgment_json"])
         if judgment_row is not None and isinstance(judgment_row.get("judgment_json"), dict)
         else None
     )
     payload = {
-        "schema_version": "macro_overview_v2",
+        "schema_version": "macro_overview_v3",
         "read_at_ms": read_at_ms,
         "judgment_cutoff_ms": (int(judgment_row["judgment_cutoff_ms"]) if judgment_row is not None else None),
         "latest_fact_at_ms": max(
@@ -87,6 +100,7 @@ def macro_overview(request: Request) -> JSONResponse:
         "coverage_state": coverage_state,
         "data_health_state": data_health_state,
         "judgment_state": judgment_state,
+        "judgment_status": _judgment_status_payload(judgment_status_row),
         "daily_judgment": judgment,
         "modules": modules,
         "changes_since_judgment": [
@@ -100,6 +114,19 @@ def macro_overview(request: Request) -> JSONResponse:
     )
 
 
+def _judgment_status_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "session_date": row["session_date"],
+        "judgment_cutoff_ms": int(row["judgment_cutoff_ms"]),
+        "state": str(row["state"]),
+        "reason_code": str(row["reason_code"]),
+        "details": dict(row["details_json"] or {}),
+        "attempted_at_ms": int(row["attempted_at_ms"]),
+    }
+
+
 def _read_module(request: Request, module_id: str) -> dict[str, Any]:
     runtime = _authenticated_macro_runtime(request)
     _reject_query_params(request)
@@ -108,7 +135,8 @@ def _read_module(request: Request, module_id: str) -> dict[str, Any]:
     with runtime.repositories() as repos:
         row = repos.macro.module_current(module_id)
         judgment = repos.macro.daily_judgment(judgment_session)
-    return _module_payload(module_id, row, judgment, read_at_ms)
+        judgment_status = repos.macro.judgment_status(judgment_session)
+    return _module_payload(module_id, row, judgment, judgment_status, read_at_ms)
 
 
 @router.get(
@@ -226,6 +254,7 @@ def _module_payload(
     module_id: MacroModuleId,
     row: dict[str, Any] | None,
     judgment: dict[str, Any] | None,
+    judgment_status: dict[str, Any] | None,
     read_at_ms: int,
 ) -> dict[str, Any]:
     expected_schema = schema_version_for_module(module_id)
@@ -255,8 +284,14 @@ def _module_payload(
             "cutoff_ms": int(judgment["judgment_cutoff_ms"]),
         }
     else:
+        details = judgment_status.get("details_json") if judgment_status is not None else None
+        blocked_modules = (
+            {str(value) for value in details.get("blocked_modules", [])}
+            if isinstance(details, dict) and isinstance(details.get("blocked_modules"), list)
+            else set()
+        )
         payload["status"]["judgment"] = {
-            "state": "missing",
+            "state": "blocked" if module_id in blocked_modules else "missing",
             "cutoff_ms": None,
         }
     return payload

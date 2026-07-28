@@ -28,20 +28,20 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
     assert policies["cftc.tff.credit_positions"].start_date == date(2006, 6, 13)
     assert policies["cftc.tff.credit_positions"].required_for_judgment is False
 
-    expected_etfs = {
-        "nasdaq.spy.history",
-        "nasdaq.qqq.history",
-        "nasdaq.iwm.history",
-        "nasdaq.tlt.history",
-        "nasdaq.ief.history",
-        "nasdaq.lqd.history",
-        "nasdaq.hyg.history",
-        "nasdaq.dxy.history",
-        "nasdaq.gld.history",
-        "nasdaq.uso.history",
+    expected_market_proxies = {
+        "yfinance.spy.market",
+        "yfinance.qqq.market",
+        "yfinance.iwm.market",
+        "yfinance.tlt.market",
+        "yfinance.ief.market",
+        "yfinance.lqd.market",
+        "yfinance.hyg.market",
+        "yfinance.dxy.market",
+        "yfinance.gld.market",
+        "yfinance.uso.market",
     }
-    assert expected_etfs.isdisjoint(policies)
-    assert expected_etfs <= DATASET_REGISTRY.keys()
+    assert expected_market_proxies.isdisjoint(policies)
+    assert expected_market_proxies <= DATASET_REGISTRY.keys()
 
 
 def test_wti_daily_observations_use_the_official_weekly_release_freshness() -> None:

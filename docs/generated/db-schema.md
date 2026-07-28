@@ -471,6 +471,19 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
 
+## `macro_judgment_status`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `reason_code` | `TEXT` | False | `None` |
+| `details_json` | `JSONB` | False | `'{}'::jsonb` |
+| `payload_hash` | `TEXT` | False | `None` |
+| `attempted_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `macro_module_current`
 
 | Column | Type | Nullable | Default |

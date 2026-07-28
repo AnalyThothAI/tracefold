@@ -191,7 +191,7 @@ class MacroSourcesConfig(BaseModel):
     fred_enabled: bool = True
     cboe_enabled: bool = True
     cftc_enabled: bool = True
-    nasdaq_public_enabled: bool = True
+    yfinance_enabled: bool = True
     request_timeout_seconds: float = Field(default=60.0, ge=1)
     user_agent: str = "TracefoldMacro/1.0 research@localhost"
 
@@ -410,7 +410,7 @@ class NewsPipelineWorkerSettings(PerWorkerSettings):
 
 
 class NewsWorldBriefWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=600.0, ge=0)
+    interval_seconds: float = Field(default=300.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     max_attempts: int = Field(default=3, ge=1, le=10)
     model: str = "deepseek-chat"
@@ -436,6 +436,9 @@ class WorkersSettings(BaseModel):
     token_profile_current: TokenProfileCurrentWorkerSettings = Field(default_factory=TokenProfileCurrentWorkerSettings)
     token_radar_projection: TokenRadarProjectionWorkerSettings = Field(
         default_factory=TokenRadarProjectionWorkerSettings
+    )
+    macro_intraday_market: MacroAcquisitionWorkerSettings = Field(
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=32, retry_ms=300_000)
     )
     macro_settlements: MacroAcquisitionWorkerSettings = Field(
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=2)
@@ -608,7 +611,7 @@ providers:
     fred_enabled: true
     cboe_enabled: true
     cftc_enabled: true
-    nasdaq_public_enabled: true
+    yfinance_enabled: true
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"
 

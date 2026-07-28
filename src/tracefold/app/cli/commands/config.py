@@ -83,7 +83,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "fred_enabled": settings.providers.macro_sources.fred_enabled,
                         "cboe_enabled": settings.providers.macro_sources.cboe_enabled,
                         "cftc_enabled": settings.providers.macro_sources.cftc_enabled,
-                        "nasdaq_public_enabled": settings.providers.macro_sources.nasdaq_public_enabled,
+                        "yfinance_enabled": settings.providers.macro_sources.yfinance_enabled,
                     },
                 },
                 "workers": settings.workers.model_dump(mode="json"),

@@ -4,6 +4,7 @@ import csv
 import gzip
 import hashlib
 import io
+import json
 import math
 import re
 import time
@@ -16,6 +17,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import requests
+import yfinance as yf
 from defusedxml import ElementTree
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -47,7 +49,8 @@ class MacroSourceClient:
         fred_enabled: bool = True,
         cboe_enabled: bool = True,
         cftc_enabled: bool = True,
-        nasdaq_public_enabled: bool = True,
+        yfinance_enabled: bool = True,
+        yfinance_history_loader: Any | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         headers = {"User-Agent": user_agent, "Accept": "text/csv,application/json"}
@@ -65,7 +68,8 @@ class MacroSourceClient:
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
-        self._nasdaq_public_enabled = bool(nasdaq_public_enabled)
+        self._yfinance_enabled = bool(yfinance_enabled)
+        self._yfinance_history_loader = yfinance_history_loader or _load_yfinance_history
 
     def close(self) -> None:
         self._client.close()
@@ -87,14 +91,14 @@ class MacroSourceClient:
             raise MacroSourceUnavailable("cboe_disabled")
         if spec.adapter_id == "cftc_tff" and not self._cftc_enabled:
             raise MacroSourceUnavailable("cftc_disabled")
-        if spec.adapter_id == "nasdaq_history" and not self._nasdaq_public_enabled:
-            raise MacroSourceUnavailable("nasdaq_public_disabled")
+        if spec.adapter_id == "yfinance_history" and not self._yfinance_enabled:
+            raise MacroSourceUnavailable("yfinance_disabled")
         if spec.adapter_id == "fred_csv":
             return self._fetch_fred(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "treasury_curve_xml":
             return self._fetch_treasury_curve(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "nasdaq_history":
-            return self._fetch_nasdaq_history(spec, partition_key, cursor, received_at_ms)
+        if spec.adapter_id == "yfinance_history":
+            return self._fetch_yfinance_history(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "binance_spot":
             return self._fetch_binance_spot(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "cfe_settlement":
@@ -183,54 +187,43 @@ class MacroSourceClient:
             ),
         )
 
-    def _fetch_nasdaq_history(
+    def _fetch_yfinance_history(
         self,
         spec: DatasetSpec,
         partition_key: str,
         cursor: dict[str, Any],
         received_at_ms: int,
     ) -> FetchBatch:
-        received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
-        start_date = _optional_date(cursor.get("start_date"))
-        end_date = _optional_date(cursor.get("end_date"))
-        cursor_date = _optional_date(cursor.get("reference_date")) or start_date
-        lower_bound = start_date or (
-            cursor_date - timedelta(days=7) if cursor_date is not None else received_date - timedelta(days=1_825)
-        )
-        upper_bound = end_date or received_date
-        response = self._client.get(
-            spec.source_url,
-            params={
-                "assetclass": "etf",
-                "fromdate": lower_bound.isoformat(),
-                "todate": upper_bound.isoformat(),
-                "limit": "5000",
-            },
-            headers={"Accept": "application/json, text/plain, */*"},
-        )
-        _require_success(response, source_id=spec.source_id)
-        payload = response.json()
-        status_code = (
-            payload.get("status", {}).get("rCode")
-            if isinstance(payload, dict) and isinstance(payload.get("status"), dict)
-            else None
-        )
-        rows = (
-            payload.get("data", {}).get("tradesTable", {}).get("rows", [])
-            if isinstance(payload, dict) and isinstance(payload.get("data"), dict)
-            else []
-        )
-        if status_code != 200 or not isinstance(rows, list):
-            raise MacroSourceError("nasdaq_history_payload_invalid")
+        if spec.instrument_id is None:
+            raise MacroSourceError("yfinance_instrument_missing")
+        interval = str(spec.metadata.get("bar_interval") or "5m")
+        initial_period = str(spec.metadata.get("initial_period") or "1mo")
+        incremental_period = str(spec.metadata.get("incremental_period") or "1d")
+        period = incremental_period if _optional_int(cursor.get("observed_at_ms")) is not None else initial_period
+        prepost = bool(spec.metadata.get("prepost", True))
+        try:
+            frame = self._yfinance_history_loader(
+                spec.series_id,
+                period=period,
+                interval=interval,
+                prepost=prepost,
+                timeout=self._timeout_seconds,
+            )
+        except Exception as exc:
+            raise MacroSourceError(f"yfinance_history_failed:{type(exc).__name__}") from exc
+        if bool(getattr(frame, "empty", True)) or "Close" not in frame:
+            raise MacroSourceError("yfinance_history_empty")
         facts: list[MarketObservationFact] = []
-        latest_date: date | None = cursor_date
-        for row in rows:
-            if not isinstance(row, dict):
+        for timestamp, row in frame.iterrows():
+            close = _finite_float(row.get("Close"))
+            if close is None:
                 continue
-            observed_date = _optional_us_date(row.get("date"))
-            close = _finite_float(str(row.get("close") or "").replace("$", "").replace(",", ""))
-            if observed_date is None or close is None or spec.instrument_id is None:
+            observed_at = timestamp.to_pydatetime() if hasattr(timestamp, "to_pydatetime") else timestamp
+            if not isinstance(observed_at, datetime):
                 continue
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=UTC)
+            observed_at_ms = int(observed_at.astimezone(UTC).timestamp() * 1_000)
             facts.append(
                 MarketObservationFact(
                     dataset_id=spec.dataset_id,
@@ -239,29 +232,45 @@ class MacroSourceClient:
                     field_name="close",
                     value_numeric=close,
                     unit=spec.unit,
-                    observed_at_ms=_date_close_ms(observed_date),
+                    observed_at_ms=observed_at_ms,
                     published_at_ms=None,
                     received_at_ms=received_at_ms,
                     trust_tier=spec.trust_tier,
-                    source_url=str(response.url),
-                    raw_data=dict(row),
+                    source_url=spec.source_url,
+                    raw_data={
+                        "provider_symbol": spec.series_id,
+                        "interval": interval,
+                        "open": _finite_float(row.get("Open")),
+                        "high": _finite_float(row.get("High")),
+                        "low": _finite_float(row.get("Low")),
+                        "close": close,
+                        "volume": _finite_float(row.get("Volume")),
+                    },
                 )
             )
-            latest_date = max(latest_date or observed_date, observed_date)
         facts.sort(key=lambda fact: fact.observed_at_ms)
         if not facts:
-            raise MacroSourceError("nasdaq_history_no_valid_rows")
-        return _batch(
-            spec,
-            partition_key,
-            tuple(facts),
-            response,
-            cursor=_series_cursor(
-                latest_date,
-                start_date=start_date,
-                end_date=end_date,
-                backfill_complete=True if start_date is not None and end_date is not None else None,
-            ),
+            raise MacroSourceError("yfinance_history_no_valid_rows")
+        response_body = json.dumps(
+            [(fact.observed_at_ms, fact.value_numeric) for fact in facts],
+            separators=(",", ":"),
+        )
+        return FetchBatch(
+            dataset_id=spec.dataset_id,
+            partition_key=partition_key,
+            facts=tuple(facts),
+            cursor={"observed_at_ms": facts[-1].observed_at_ms},
+            response_hash="sha256:" + hashlib.sha256(response_body.encode()).hexdigest(),
+            source_url=spec.source_url,
+            diagnostics={
+                "provider": "yfinance",
+                "provider_symbol": spec.series_id,
+                "period": period,
+                "interval": interval,
+                "prepost": prepost,
+                "latest_market_at_ms": facts[-1].observed_at_ms,
+                "provider_delay_seconds": max(0, (received_at_ms - facts[-1].observed_at_ms) // 1_000),
+            },
         )
 
     def _fetch_treasury_curve(
@@ -1194,6 +1203,25 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _load_yfinance_history(
+    symbol: str,
+    *,
+    period: str,
+    interval: str,
+    prepost: bool,
+    timeout: float,
+) -> Any:
+    return yf.Ticker(symbol).history(
+        period=period,
+        interval=interval,
+        prepost=prepost,
+        auto_adjust=False,
+        actions=False,
+        repair=False,
+        timeout=timeout,
+    )
+
+
 def _optional_int(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
@@ -1211,20 +1239,6 @@ def _optional_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
-
-
-def _optional_us_date(value: Any) -> date | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.strptime(text, "%m/%d/%Y").date()
-    except ValueError:
-        return None
-
-
-def _date_close_ms(value: date) -> int:
-    return int(datetime(value.year, value.month, value.day, 21, tzinfo=UTC).timestamp() * 1_000)
 
 
 def _date_open_ms(value: date) -> int:

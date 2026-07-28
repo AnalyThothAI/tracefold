@@ -37,7 +37,7 @@ class MacroProjectionService:
         document_ids = tuple(spec.dataset_id for spec in all_specs if spec.fact_family == "document")
         with self._session() as repos, repos.transaction():
             series_rows = repos.macro.series_history(dataset_ids=series_ids, limit_per_dataset=10_000)
-            market_rows = repos.macro_market.market_history(dataset_ids=market_ids, limit_per_dataset=2_000)
+            market_rows = repos.macro_market.market_history(dataset_ids=market_ids, limit_per_dataset=5_000)
             position_rows = repos.macro_market.position_history(dataset_ids=position_ids)
             settlement_rows = repos.macro_market.settlement_history(dataset_ids=settlement_ids)
             release_rows = repos.macro.release_history(dataset_ids=release_ids)

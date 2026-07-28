@@ -1383,6 +1383,67 @@ class MacroRepository:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def upsert_judgment_status(
+        self,
+        *,
+        session_date: date,
+        judgment_cutoff_ms: int,
+        state: str,
+        reason_code: str,
+        details: dict[str, Any],
+        attempted_at_ms: int,
+    ) -> int:
+        payload_hash = _payload_hash(
+            {
+                "session_date": str(session_date),
+                "judgment_cutoff_ms": int(judgment_cutoff_ms),
+                "state": state,
+                "reason_code": reason_code,
+                "details": details,
+            }
+        )
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_judgment_status(
+              session_date, judgment_cutoff_ms, state, reason_code,
+              details_json, payload_hash, attempted_at_ms, updated_at_ms
+            )
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            ON CONFLICT(session_date) DO UPDATE SET
+              judgment_cutoff_ms = EXCLUDED.judgment_cutoff_ms,
+              state = EXCLUDED.state,
+              reason_code = EXCLUDED.reason_code,
+              details_json = EXCLUDED.details_json,
+              payload_hash = EXCLUDED.payload_hash,
+              attempted_at_ms = EXCLUDED.attempted_at_ms,
+              updated_at_ms = EXCLUDED.updated_at_ms
+            WHERE macro_judgment_status.payload_hash
+                  IS DISTINCT FROM EXCLUDED.payload_hash
+            """,
+            (
+                session_date,
+                int(judgment_cutoff_ms),
+                state,
+                reason_code,
+                json.dumps(details, sort_keys=True),
+                payload_hash,
+                int(attempted_at_ms),
+                int(attempted_at_ms),
+            ),
+        )
+        return int(cursor.rowcount)
+
+    def judgment_status(self, session_date: date) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+              FROM macro_judgment_status
+             WHERE session_date = %s
+            """,
+            (session_date,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
 
 def _payload_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)

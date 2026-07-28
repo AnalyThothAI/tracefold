@@ -184,7 +184,13 @@ after a complete valid publication transaction succeeds.
 `story`, and `brief`. Deterministic Story cards remain readable while a Brief
 is running, failed, insufficient, or stale.
 
-The code-owned inventory contains 118 physical sources and 121 memberships.
+The code-owned inventory contains 73 physical sources and 73 memberships.
+It retains every crypto source, the focused US finance/government/politics
+set, global event/security/energy/crisis coverage, and the explicit Nikkei
+Asia, SCMP, Xinhua, and Al Jazeera regional exceptions. General regional feeds
+are disabled and cannot remain active Stories or Brief candidates after the
+next deterministic rebuild. Trump Truth Social is a tier-1 first-party source
+under the ordinary Story and Brief rules.
 WallStEngine is an ordinary English tier-4 Finance source acquired from the
 internal RSSHub sidecar. Classification reads its RSS title only; quote text
 in the description does not affect category. Source membership does not force
@@ -222,9 +228,9 @@ Each route returns exactly one matching schema:
 - `macro_rates_fed_v2`
 - `macro_economy_inflation_v2`
 - `macro_liquidity_funding_v2`
-- `macro_credit_v2`
+- `macro_credit_v3`
 - `macro_volatility_v2`
-- `macro_cross_asset_v2`
+- `macro_cross_asset_v3`
 
 Shared fields are limited to identity, clocks, status, summary, contradictions,
 falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
@@ -232,7 +238,10 @@ events, credit ladders, and the ETF comparison matrix are explicit typed
 fields, not generic chart arrays. Coverage is `complete`, `partial`, or
 `licensed_unavailable`; Data Health is `current`, `delayed`, `stale`, `invalid`,
 `backfilling`, or `unavailable`; Judgment is `current`, `missing`, or `blocked`.
-These reads use `macro_module_current` and immutable judgment rows only; they
+The v3 overview also returns the persisted current/blocked judgment publication
+status, reason code, attempted time, blocked modules, and exact dataset gaps.
+These reads use `macro_module_current`, `macro_judgment_status`, and immutable
+judgment rows only; they
 never call a provider/model, advance a target, rebuild a projection, or
 synthesize a fallback.
 
@@ -246,8 +255,10 @@ facts. The legacy generic evidence route, window parameter, bundle/sync
 surface, `macro_observations`, and unclassified facts do not exist.
 
 The Cross-Asset payload always owns the fixed ETF basket SPY, QQQ, IWM, TLT,
-IEF, LQD, HYG, UUP, GLD, and USO. Nasdaq public history is an explicitly
-`untrusted_proxy` source. WTI is the separate official FRED/EIA
+IEF, LQD, HYG, UUP, GLD, and USO plus ES, NQ, RTY, ZB, ZN, GC, CL, and HG
+major-futures rows and the Yahoo DXY index. Yahoo Finance through the pinned `yfinance` adapter is an
+explicitly `untrusted_proxy`, five-minute best-effort source; each row exposes
+its actual market timestamp and may be delayed. WTI is the separate official FRED/EIA
 `DCOILWTICO` benchmark; USO is never relabelled as spot or futures. The Rates
 payload exposes Treasury nominal and real maturity cross-sections for current,
 1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,

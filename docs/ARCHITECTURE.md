@@ -167,7 +167,7 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
 `f73de5b7`, not an independent editorial ontology:
 
 ```text
-118 physical RSS/RSSHub sources / 121 logical memberships
+73 physical RSS/RSSHub sources / 73 logical memberships
   -> conditional direct fetch, then public-HTTPS-only relay fallback
   -> ETag / Last-Modified, first five entries
   -> immutable FeedObservation before admission
@@ -181,6 +181,14 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
   -> /api/news/feed + /api/news/stories/{story_id}
      + /api/news/brief + /api/news/sources + /api/news/status
 ```
+
+The serving inventory is deliberately US-finance and global-event focused:
+all crypto sources remain; US government/finance/politics, professional
+technology/AI/layoff coverage, event-oriented security/intelligence, energy,
+and crisis sources remain; Nikkei Asia, SCMP, Xinhua, and Al Jazeera are the
+explicit regional exceptions. General local/regional news feeds are retired
+from serving. Trump Truth Social is a tier-1 first-party source and enters the
+ordinary Story/Brief lane without a separate corroboration gate.
 
 `news_pipeline` is the only NewsItem/Story writer. It synchronizes the
 code-owned source catalog, claims due sources, performs concurrent provider I/O
@@ -244,6 +252,9 @@ Publication history is immutable; failed runs cannot replace last-known-good.
 exposes `unavailable`, `insufficient_material`, `running`, `ready`,
 `stale_fallback`, or `failed` honestly. `running` requires a current database
 run with an unexpired lease and heartbeat.
+The deterministic pipeline runs every 120 seconds and the Brief worker every
+300 seconds by default, giving a two-minute Story target and a five-minute
+Chinese Brief target when providers respond within budget.
 
 The complete live News storage boundary is exactly eleven tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,
@@ -281,8 +292,9 @@ completed-session macro_research_runs bound to that Evidence Pack
   -> persisted-only research read
 ```
 
-The acquisition clock families are `daily_settlement`, `scheduled_release`,
-`official_state`, `official_document`, and explicit `backfill`. They are
+The acquisition clock families are `intraday_market`, `daily_settlement`,
+`scheduled_release`, `official_state`, `official_document`, and explicit
+`backfill`. They are
 separate workers over one target table, not a uniform
 bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
 transactions; completion atomically writes facts, receipt, cursor, and target
@@ -301,7 +313,9 @@ are independent decision metadata, not a generic process-readiness gate.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit v2 payload; no generic chart-array contract survives. The Calculation
+explicit typed payload; credit and cross-asset are v3 after adding exact
+market timestamps and major-futures rows. No generic chart-array contract
+survives. The Calculation
 Registry records every feature's inputs, formula version, windows, minimum
 observations, units, gap policy, freshness, baseline, and output shape.
 Treasury shape, matched breakevens, normalized asset returns, credit ladder

@@ -41,7 +41,7 @@ def _market_row(dataset_id: str, observed_at_ms: int, value: float) -> dict:
         "observed_at_ms": observed_at_ms,
         "published_at_ms": observed_at_ms,
         "received_at_ms": NOW_MS,
-        "source_url": "https://api.nasdaq.com/",
+        "source_url": "https://finance.yahoo.com/",
     }
 
 
@@ -224,16 +224,16 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
     market_rows = []
     for index, dataset_id in enumerate(
         (
-            "nasdaq.spy.history",
-            "nasdaq.qqq.history",
-            "nasdaq.iwm.history",
-            "nasdaq.tlt.history",
-            "nasdaq.ief.history",
-            "nasdaq.lqd.history",
-            "nasdaq.hyg.history",
-            "nasdaq.dxy.history",
-            "nasdaq.gld.history",
-            "nasdaq.uso.history",
+            "yfinance.spy.market",
+            "yfinance.qqq.market",
+            "yfinance.iwm.market",
+            "yfinance.tlt.market",
+            "yfinance.ief.market",
+            "yfinance.lqd.market",
+            "yfinance.hyg.market",
+            "yfinance.dxy.market",
+            "yfinance.gld.market",
+            "yfinance.uso.market",
         )
     ):
         market_rows.extend(
@@ -279,4 +279,21 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
         "GLD",
         "USO",
     }
-    assert _dataset_state(module, "nasdaq.spy.history")["state"] == "current"
+    assert _dataset_state(module, "yfinance.spy.market")["state"] == "stale"
+    assert module["assets"]["proxies"][0]["market_time_ms"] == friday
+
+
+def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
+    earlier = int(datetime(2026, 7, 27, 14, tzinfo=UTC).timestamp() * 1_000)
+    later = int(datetime(2026, 7, 27, 19, 55, tzinfo=UTC).timestamp() * 1_000)
+    module = _module(
+        "cross_asset",
+        market_rows=[
+            _market_row("yfinance.spy.market", later, 110),
+            _market_row("yfinance.spy.market", earlier, 100),
+        ],
+    )
+
+    spy = module["assets"]["proxies"][0]
+    assert spy["latest_value"] == 110
+    assert spy["market_time_ms"] == later

@@ -107,6 +107,7 @@ export type MacroAssetRow = {
   latest_value: number;
   unit: string;
   as_of: string | null;
+  market_time_ms: number;
   change_1d_pct: number | null;
   change_1w_pct: number | null;
   change_1m_pct: number | null;
@@ -228,7 +229,7 @@ export type MacroLiquidityFundingReadData = MacroModuleBase & {
 };
 
 export type MacroCreditReadData = MacroModuleBase & {
-  schema_version: "macro_credit_v2";
+  schema_version: "macro_credit_v3";
   module_id: "credit";
   cycle_dimensions: Array<{
     dimension_id:
@@ -281,7 +282,7 @@ export type MacroVolatilityReadData = MacroModuleBase & {
 };
 
 export type MacroCrossAssetReadData = MacroModuleBase & {
-  schema_version: "macro_cross_asset_v2";
+  schema_version: "macro_cross_asset_v3";
   module_id: "cross_asset";
   assets: {
     benchmarks: JsonObject[];
@@ -295,7 +296,7 @@ export type MacroCrossAssetReadData = MacroModuleBase & {
     sample_count: number;
     window: string;
   }>;
-  futures: { vix_settlements: JsonObject[]; positions: JsonObject[] };
+  futures: { market: MacroAssetRow[]; vix_settlements: JsonObject[]; positions: JsonObject[] };
 };
 
 export type MacroTypedModuleReadData =
@@ -356,13 +357,21 @@ export type MacroDailyJudgment = {
 };
 
 export type MacroOverviewReadData = {
-  schema_version: "macro_overview_v2";
+  schema_version: "macro_overview_v3";
   read_at_ms: number;
   judgment_cutoff_ms: number | null;
   latest_fact_at_ms: number;
   coverage_state: MacroCoverageState;
   data_health_state: MacroDataHealthState;
   judgment_state: MacroJudgmentState;
+  judgment_status: {
+    session_date: string;
+    judgment_cutoff_ms: number;
+    state: "blocked" | "current";
+    reason_code: string;
+    details: JsonObject;
+    attempted_at_ms: number;
+  } | null;
   daily_judgment: MacroDailyJudgment | null;
   modules: MacroModuleSummary[];
   changes_since_judgment: JsonObject[];

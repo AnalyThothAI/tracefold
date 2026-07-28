@@ -20,6 +20,7 @@ MacroModuleId = Literal[
     "cross_asset",
 ]
 MacroClockKind = Literal[
+    "intraday_market",
     "daily_settlement",
     "scheduled_release",
     "official_state",

@@ -13,6 +13,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.macro import FetchBatch, SeriesFact, require_dataset
 from tracefold.macro.acquisition import MacroAcquisitionService
+from tracefold.market import MarketObservationFact
 
 
 class _TestDb:
@@ -57,6 +58,46 @@ class _FixedFredClient:
             response_hash="sha256:fixed",
             source_url=spec.source_url,
             http_status=200,
+        )
+
+    def close(self) -> None:
+        return None
+
+
+class _FixedYFinanceClient:
+    def fetch(
+        self,
+        spec: Any,
+        *,
+        partition_key: str,
+        cursor: dict[str, Any],
+        now_ms: int | None = None,
+    ) -> FetchBatch:
+        received_at_ms = int(now_ms or 0)
+        observed_at_ms = received_at_ms - 900_000
+        return FetchBatch(
+            dataset_id=spec.dataset_id,
+            partition_key=partition_key,
+            facts=(
+                MarketObservationFact(
+                    dataset_id=spec.dataset_id,
+                    instrument_id=str(spec.instrument_id),
+                    source_id=spec.source_id,
+                    field_name="close",
+                    value_numeric=738.5,
+                    unit=spec.unit,
+                    observed_at_ms=observed_at_ms,
+                    published_at_ms=None,
+                    received_at_ms=received_at_ms,
+                    trust_tier=spec.trust_tier,
+                    source_url=spec.source_url,
+                    raw_data={"provider_symbol": spec.series_id, "interval": "5m"},
+                ),
+            ),
+            cursor={"observed_at_ms": observed_at_ms},
+            response_hash="sha256:yfinance-fixed",
+            source_url=spec.source_url,
+            diagnostics={"provider": "yfinance", "provider_delay_seconds": 900},
         )
 
     def close(self) -> None:
@@ -174,6 +215,83 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
     assert legacy_tables == []
 
 
+def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        clock = _Clock()
+        clock.now = 2_000_000
+        service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_intraday_market",
+            clock_kind="intraday_market",
+            settings=SimpleNamespace(
+                max_attempts=3,
+                lease_ms=60_000,
+                retry_ms=300_000,
+                statement_timeout_seconds=30,
+            ),
+            source_client=_FixedYFinanceClient(),
+            clock_ms=clock,
+        )
+        assert service.ensure_targets() > 0
+        conn.execute(
+            """
+            UPDATE macro_acquisition_targets
+            SET next_due_at_ms = CASE
+              WHEN target_key = 'yfinance.spy.market:latest' THEN 0
+              ELSE 253402300799000
+            END
+            WHERE clock_kind = 'intraday_market'
+            """
+        )
+        conn.commit()
+
+        result = service.run_once()
+        observation = conn.execute(
+            """
+            SELECT dataset_id, instrument_id, source_id, value_numeric,
+                   observed_at_ms, received_at_ms, trust_tier
+              FROM market_observations
+             WHERE dataset_id = 'yfinance.spy.market'
+            """
+        ).fetchone()
+        target = conn.execute(
+            """
+            SELECT status, cursor_json, last_success_at_ms
+              FROM macro_acquisition_targets
+             WHERE target_key = 'yfinance.spy.market:latest'
+            """
+        ).fetchone()
+        receipt = conn.execute(
+            """
+            SELECT status, rows_seen, rows_inserted, diagnostics_json
+              FROM macro_source_receipts
+             WHERE dataset_id = 'yfinance.spy.market'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result is not None
+    assert result["status"] == "current"
+    assert result["rows_inserted"] == 1
+    assert observation["dataset_id"] == "yfinance.spy.market"
+    assert observation["instrument_id"] == "spy"
+    assert observation["source_id"] == "yahoo_finance"
+    assert float(observation["value_numeric"]) == 738.5
+    assert observation["trust_tier"] == "untrusted_proxy"
+    assert target["status"] == "current"
+    assert target["cursor_json"]["observed_at_ms"] == observation["observed_at_ms"]
+    assert target["last_success_at_ms"] >= observation["received_at_ms"]
+    assert receipt["status"] == "ok"
+    assert receipt["rows_seen"] == 1
+    assert receipt["rows_inserted"] == 1
+    assert receipt["diagnostics_json"]["provider"] == "yfinance"
+
+
 def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -182,7 +300,7 @@ def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
             assert repos.macro.series_history(dataset_ids=("fred.dgs10",)) == []
             assert repos.macro.release_history(dataset_ids=("bls.cpi.release",)) == []
             assert repos.macro.document_history(dataset_ids=("federal_reserve.fomc.documents",)) == []
-            assert repos.macro_market.market_history(dataset_ids=("nasdaq.spy.history",)) == []
+            assert repos.macro_market.market_history(dataset_ids=("yfinance.spy.market",)) == []
             assert repos.macro_market.settlement_history(dataset_ids=("cboe.cfe.vx.settlement",)) == []
             assert repos.macro_market.position_history(dataset_ids=("cftc.tff.rates_positions",)) == []
     finally:

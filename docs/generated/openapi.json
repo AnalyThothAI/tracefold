@@ -1251,6 +1251,10 @@
             "title": "Latest Value",
             "type": "number"
           },
+          "market_time_ms": {
+            "title": "Market Time Ms",
+            "type": "integer"
+          },
           "source_url": {
             "title": "Source Url",
             "type": "string"
@@ -1282,6 +1286,7 @@
           "latest_value",
           "unit",
           "as_of",
+          "market_time_ms",
           "change_1d_pct",
           "change_1w_pct",
           "change_1m_pct",
@@ -1836,7 +1841,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_credit_v2",
+            "const": "macro_credit_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -1960,7 +1965,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "macro_cross_asset_v2",
+            "const": "macro_cross_asset_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -2915,6 +2920,13 @@
       "MacroFuturesConfirmationData": {
         "additionalProperties": false,
         "properties": {
+          "market": {
+            "items": {
+              "$ref": "#/components/schemas/MacroAssetData"
+            },
+            "title": "Market",
+            "type": "array"
+          },
           "positions": {
             "items": {
               "additionalProperties": true,
@@ -2933,6 +2945,7 @@
           }
         },
         "required": [
+          "market",
           "vix_settlements",
           "positions"
         ],
@@ -3070,6 +3083,51 @@
           "indicators"
         ],
         "title": "MacroIndicatorSectionData",
+        "type": "object"
+      },
+      "MacroJudgmentPublicationStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted_at_ms": {
+            "title": "Attempted At Ms",
+            "type": "integer"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "judgment_cutoff_ms": {
+            "title": "Judgment Cutoff Ms",
+            "type": "integer"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "session_date": {
+            "format": "date",
+            "title": "Session Date",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "blocked",
+              "current"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_date",
+          "judgment_cutoff_ms",
+          "state",
+          "reason_code",
+          "details",
+          "attempted_at_ms"
+        ],
+        "title": "MacroJudgmentPublicationStatusData",
         "type": "object"
       },
       "MacroJudgmentStateData": {
@@ -3462,6 +3520,16 @@
             "title": "Judgment State",
             "type": "string"
           },
+          "judgment_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroJudgmentPublicationStatusData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "latest_fact_at_ms": {
             "title": "Latest Fact At Ms",
             "type": "integer"
@@ -3483,7 +3551,7 @@
             "type": "object"
           },
           "schema_version": {
-            "const": "macro_overview_v2",
+            "const": "macro_overview_v3",
             "title": "Schema Version",
             "type": "string"
           }
@@ -3496,6 +3564,7 @@
           "coverage_state",
           "data_health_state",
           "judgment_state",
+          "judgment_status",
           "daily_judgment",
           "modules",
           "changes_since_judgment",

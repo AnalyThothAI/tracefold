@@ -189,7 +189,7 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
           <ShieldAlert aria-hidden="true" />
           <div>
             <h2>今日判断尚未发布</h2>
-            <p>事实页继续更新，但不会把普通行情刷新伪装成新判断。</p>
+            <p>{judgmentStatusMessage(data)}</p>
           </div>
         </section>
       )}
@@ -218,6 +218,75 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
       <ResearchStrip research={data.research} />
     </>
   );
+}
+
+function judgmentStatusMessage(data: MacroOverviewReadData): string {
+  const status = data.judgment_status;
+  if (!status) return "尚无发布尝试记录；事实页继续更新，但不会把普通行情刷新伪装成新判断。";
+  if (status.reason_code !== "critical_evidence_blocked") {
+    return `发布状态：${status.reason_code}。`;
+  }
+  const blockedModules = Array.isArray(status.details.blocked_modules)
+    ? status.details.blocked_modules.filter((value): value is string => typeof value === "string")
+    : [];
+  const blockerFacts = judgmentBlockerFacts(status.details.modules);
+  if (blockerFacts.length) {
+    return `冻结截点缺少关键证据：${blockerFacts.join("；")}。`;
+  }
+  return blockedModules.length
+    ? `冻结截点缺少关键证据，阻塞模块：${blockedModules.map(moduleLabel).join("、")}。`
+    : "冻结截点缺少关键证据；详情保留在判断状态记录中。";
+}
+
+function judgmentBlockerFacts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((moduleValue) => {
+    if (!isRecord(moduleValue)) return [];
+    const moduleId = typeof moduleValue.module_id === "string" ? moduleValue.module_id : "unknown";
+    const gaps = Array.isArray(moduleValue.dataset_gaps) ? moduleValue.dataset_gaps : [];
+    return gaps.slice(0, 3).flatMap((gapValue) => {
+      if (!isRecord(gapValue)) return [];
+      const label =
+        typeof gapValue.label === "string"
+          ? gapValue.label
+          : typeof gapValue.dataset_id === "string"
+            ? gapValue.dataset_id
+            : null;
+      if (!label) return [];
+      const state = typeof gapValue.state === "string" ? gapValue.state : "missing";
+      const reason = typeof gapValue.reason === "string" ? gapValue.reason : null;
+      return [`${moduleLabel(moduleId)}—${label}（${blockerReasonLabel(reason, state)}）`];
+    });
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function dataStateLabel(value: string): string {
+  return (
+    {
+      current: "当前",
+      delayed: "延迟",
+      stale: "陈旧",
+      invalid: "无效",
+      backfilling: "回填中",
+      unavailable: "不可用",
+      missing: "缺失",
+    }[value] ?? value
+  );
+}
+
+function blockerReasonLabel(reason: string | null, state: string): string {
+  if (reason === "no_valid_fact") return "冻结截点前无有效事实";
+  if (reason === "derived_fact_pending") return "冻结截点前派生事实未完成";
+  if (reason === "backfill_required") return "冻结截点前所需回填未完成";
+  return dataStateLabel(state);
+}
+
+function moduleLabel(moduleId: string): string {
+  return MODULE_ROUTES.find((route) => route.id === moduleId)?.label ?? moduleId;
 }
 
 function JudgmentPanel({ judgment }: { judgment: MacroDailyJudgment }) {

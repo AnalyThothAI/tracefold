@@ -19,20 +19,20 @@ _NEW_YORK = ZoneInfo("America/New_York")
 _JUDGMENT_TIME = clock_time(8, 50)
 _PACK_SCHEMA = "macro_evidence_pack_v2"
 _JUDGMENT_SCHEMA = "macro_daily_judgment_v2"
-_COMPILER_VERSION = "macro_professional_coverage_compiler_v2"
+_COMPILER_VERSION = "macro_professional_coverage_compiler_v3"
 _FIXED_ASSETS = {
-    "SPY": "nasdaq.spy.history",
-    "QQQ": "nasdaq.qqq.history",
-    "IWM": "nasdaq.iwm.history",
-    "TLT": "nasdaq.tlt.history",
-    "IEF": "nasdaq.ief.history",
-    "LQD": "nasdaq.lqd.history",
-    "HYG": "nasdaq.hyg.history",
-    "UUP": "nasdaq.dxy.history",
-    "GLD": "nasdaq.gld.history",
-    "USO": "nasdaq.uso.history",
-    "BTC": "binance.btcusdt.spot",
-    "VIX": "fred.vixcls",
+    "SPY": "yfinance.spy.market",
+    "QQQ": "yfinance.qqq.market",
+    "IWM": "yfinance.iwm.market",
+    "TLT": "yfinance.tlt.market",
+    "IEF": "yfinance.ief.market",
+    "LQD": "yfinance.lqd.market",
+    "HYG": "yfinance.hyg.market",
+    "UUP": "yfinance.dxy.market",
+    "GLD": "yfinance.gld.market",
+    "USO": "yfinance.uso.market",
+    "BTC": "yfinance.btc_yahoo.market",
+    "VIX": "yfinance.vix_index.market",
 }
 
 
@@ -66,6 +66,14 @@ class MacroJudgmentService:
         with self._session() as repos, repos.transaction():
             existing = repos.macro.daily_judgment(session_date)
             if existing is not None:
+                repos.macro.upsert_judgment_status(
+                    session_date=session_date,
+                    judgment_cutoff_ms=cutoff_ms,
+                    state="current",
+                    reason_code="judgment_published",
+                    details={"evidence_pack_id": existing["evidence_pack_id"]},
+                    attempted_at_ms=now,
+                )
                 return {
                     "status": "exists",
                     "session_date": str(session_date),
@@ -75,6 +83,44 @@ class MacroJudgmentService:
         modules, _features = self._compile_modules(cutoff_ms=cutoff_ms)
         blocked = [module["module_id"] for module in modules if module["status"]["judgment"]["state"] == "blocked"]
         if blocked:
+            blocker_details = {
+                "blocked_modules": blocked,
+                "modules": [
+                    {
+                        "module_id": module["module_id"],
+                        "coverage_gaps": [
+                            {
+                                "capability_id": capability["capability_id"],
+                                "label": capability["label"],
+                                "reason": capability["reason"] or capability["state"],
+                            }
+                            for capability in module["status"]["coverage"]["capabilities"]
+                            if capability["state"] != "available"
+                        ],
+                        "dataset_gaps": [
+                            {
+                                "dataset_id": state["dataset_id"],
+                                "label": state["label"],
+                                "state": state["state"],
+                                "reason": state["reason"],
+                            }
+                            for state in module["evidence"]["dataset_states"]
+                            if state["state"] not in {"current", "unavailable"}
+                        ],
+                    }
+                    for module in modules
+                    if module["module_id"] in blocked
+                ],
+            }
+            with self._session() as repos, repos.transaction():
+                repos.macro.upsert_judgment_status(
+                    session_date=session_date,
+                    judgment_cutoff_ms=cutoff_ms,
+                    state="blocked",
+                    reason_code="critical_evidence_blocked",
+                    details=blocker_details,
+                    attempted_at_ms=now,
+                )
             return {
                 "status": "blocked",
                 "session_date": str(session_date),
@@ -144,6 +190,14 @@ class MacroJudgmentService:
                 payload_hash=judgment_hash,
                 published_at_ms=now,
             )
+            repos.macro.upsert_judgment_status(
+                session_date=session_date,
+                judgment_cutoff_ms=cutoff_ms,
+                state="current",
+                reason_code="judgment_published",
+                details={"evidence_pack_id": pack_id},
+                attempted_at_ms=now,
+            )
         return {
             "status": "published" if judgment_written else "exists",
             "session_date": str(session_date),
@@ -168,7 +222,7 @@ class MacroJudgmentService:
             )
             market_rows = repos.macro_market.market_history(
                 dataset_ids=market_ids,
-                limit_per_dataset=2_000,
+                limit_per_dataset=5_000,
                 received_before_ms=cutoff_ms,
             )
             position_rows = repos.macro_market.position_history(

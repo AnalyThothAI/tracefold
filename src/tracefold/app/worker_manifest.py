@@ -67,6 +67,11 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         ),
     ),
     WorkerManifest(
+        name="macro_intraday_market",
+        start_priority=74,
+        queue_tables=("macro_acquisition_targets",),
+    ),
+    WorkerManifest(
         name="macro_settlements",
         start_priority=75,
         queue_tables=("macro_acquisition_targets",),
@@ -107,7 +112,10 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
     WorkerManifest(
         name="macro_judgment",
         start_priority=82,
-        current_read_model_identities=(("macro_daily_judgments", ("session_date",)),),
+        current_read_model_identities=(
+            ("macro_daily_judgments", ("session_date",)),
+            ("macro_judgment_status", ("session_date",)),
+        ),
     ),
     WorkerManifest(
         name="token_image_mirror",

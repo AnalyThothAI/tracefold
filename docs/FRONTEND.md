@@ -123,9 +123,13 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   and Judgment are three independent API fields and are never inferred in the
   browser. Fixed section selection is represented by the URL hash and survives
   reload/share without adding routes.
+  When the judgment is blocked, the overview renders the persisted blocked
+  modules and exact dataset gaps from `judgment_status`; it does not invent a
+  frontend root cause.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
-  comparison. Rates renders true maturity cross-sections and a detailed tenor
+  comparison and best-effort major-futures/USD-index rows. Every proxy row displays its
+  actual market timestamp rather than the HTTP receipt time. Rates renders true maturity cross-sections and a detailed tenor
   table. Fed renders institutional stance, recent officials distribution, then
   the event timeline. Credit keeps five concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a

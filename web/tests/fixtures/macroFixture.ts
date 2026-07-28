@@ -19,13 +19,21 @@ export function macroOverviewFixture(): MacroOverviewReadData {
     "cross_asset",
   ];
   return {
-    schema_version: "macro_overview_v2",
+    schema_version: "macro_overview_v3",
     read_at_ms: NOW,
     judgment_cutoff_ms: NOW - 3_600_000,
     latest_fact_at_ms: NOW - 600_000,
     coverage_state: "partial",
     data_health_state: "current",
     judgment_state: "current",
+    judgment_status: {
+      session_date: "2026-07-27",
+      judgment_cutoff_ms: NOW - 3_600_000,
+      state: "current",
+      reason_code: "published",
+      details: {},
+      attempted_at_ms: NOW - 3_000_000,
+    },
     daily_judgment: {
       schema_version: "macro_daily_judgment_v2",
       session_date: "2026-07-27",
@@ -213,7 +221,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "credit") {
     return {
       ...base,
-      schema_version: "macro_credit_v2",
+      schema_version: "macro_credit_v3",
       module_id: "credit",
       cycle_dimensions: [
         {
@@ -286,7 +294,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       bank_lending: { indicators: [indicator("fred.drtscilm", "C&I标准", 8.1)] },
       loan_quality: { indicators: [indicator("fred.drblacbs", "商业贷款逾期率", 1.34)] },
       confirmations: {
-        etfs: [asset("LQD", "nasdaq.lqd.history")],
+        etfs: [asset("LQD", "yfinance.lqd.market")],
         positions: [],
         trace_nav: {
           state: "licensed_unavailable",
@@ -309,7 +317,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   }
   return {
     ...base,
-    schema_version: "macro_cross_asset_v2",
+    schema_version: "macro_cross_asset_v3",
     module_id: "cross_asset",
     assets: {
       benchmarks: [
@@ -326,16 +334,16 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
         },
       ],
       proxies: [
-        asset("SPY", "nasdaq.spy.history"),
-        asset("QQQ", "nasdaq.qqq.history"),
-        asset("IWM", "nasdaq.iwm.history"),
-        asset("TLT", "nasdaq.tlt.history"),
-        asset("IEF", "nasdaq.ief.history"),
-        asset("LQD", "nasdaq.lqd.history"),
-        asset("HYG", "nasdaq.hyg.history"),
-        asset("UUP", "nasdaq.dxy.history"),
-        asset("GLD", "nasdaq.gld.history"),
-        asset("USO", "nasdaq.uso.history"),
+        asset("SPY", "yfinance.spy.market"),
+        asset("QQQ", "yfinance.qqq.market"),
+        asset("IWM", "yfinance.iwm.market"),
+        asset("TLT", "yfinance.tlt.market"),
+        asset("IEF", "yfinance.ief.market"),
+        asset("LQD", "yfinance.lqd.market"),
+        asset("HYG", "yfinance.hyg.market"),
+        asset("UUP", "yfinance.dxy.market"),
+        asset("GLD", "yfinance.gld.market"),
+        asset("USO", "yfinance.uso.market"),
       ],
       normalized: [
         { symbol: "SPY", date: "2026-07-17", normalized_value: 100 },
@@ -346,6 +354,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       { left: "SPY", right: "TLT", correlation: -0.25, sample_count: 120, window: "daily" },
     ],
     futures: {
+      market: [asset("ES", "yfinance.es_future.market")],
       vix_settlements: [{ contract_code: "VX/U6", settlement_price: 19.2 }],
       positions: [],
     },
@@ -448,6 +457,7 @@ function asset(symbol: string, datasetId: string): MacroAssetRow {
     latest_value: 100,
     unit: "price",
     as_of: "2026-07-24",
+    market_time_ms: NOW - 600_000,
     change_1d_pct: 0.2,
     change_1w_pct: 1.1,
     change_1m_pct: 2.4,

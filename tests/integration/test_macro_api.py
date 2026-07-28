@@ -118,11 +118,58 @@ def test_macro_overview_and_typed_module_routes_are_persisted_only(
     assert [response.json()["data"]["schema_version"] for response in remaining] == [
         "macro_economy_inflation_v2",
         "macro_liquidity_funding_v2",
-        "macro_credit_v2",
+        "macro_credit_v3",
         "macro_volatility_v2",
-        "macro_cross_asset_v2",
+        "macro_cross_asset_v3",
     ]
     assert all(response.json()["data"]["status"]["judgment"]["state"] == "current" for response in remaining)
+
+
+def test_macro_overview_exposes_persisted_judgment_blocker(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    read_at_ms = int(datetime(2026, 7, 27, 13, tzinfo=UTC).timestamp() * 1_000)
+    cutoff_ms = int(datetime(2026, 7, 27, 12, 50, tzinfo=UTC).timestamp() * 1_000)
+    monkeypatch.setattr(routes_macro, "_now_ms", lambda: read_at_ms)
+    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    with TestClient(app) as client:
+        with client.app.state.service.repositories() as repos, repos.transaction():
+            repos.macro.upsert_judgment_status(
+                session_date=date(2026, 7, 27),
+                judgment_cutoff_ms=cutoff_ms,
+                state="blocked",
+                reason_code="critical_evidence_blocked",
+                details={
+                    "blocked_modules": ["rates_fed"],
+                    "modules": [
+                        {
+                            "module_id": "rates_fed",
+                            "dataset_gaps": [
+                                {
+                                    "dataset_id": "treasury.daily_nominal_curve",
+                                    "label": "美国国债收益率曲线",
+                                    "state": "stale",
+                                    "reason": "latest_market_fact_before_cutoff",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                attempted_at_ms=read_at_ms,
+            )
+
+        overview = client.get("/api/macro/overview", headers=AUTH)
+        rates = client.get("/api/macro/rates-fed", headers=AUTH)
+
+    assert overview.status_code == 200
+    overview_data = overview.json()["data"]
+    assert overview_data["judgment_state"] == "blocked"
+    assert overview_data["daily_judgment"] is None
+    assert overview_data["judgment_status"]["reason_code"] == "critical_evidence_blocked"
+    assert overview_data["judgment_status"]["details"]["blocked_modules"] == ["rates_fed"]
+    assert rates.status_code == 200
+    assert rates.json()["data"]["status"]["judgment"]["state"] == "blocked"
 
 
 def test_macro_routes_do_not_present_prior_session_judgment_as_current(

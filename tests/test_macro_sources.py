@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import httpx
+import pandas as pd
 import pytest
 
 import tracefold.integrations.macro_sources.client as macro_source_client
@@ -584,55 +585,63 @@ def test_cftc_tff_adapter_emits_official_contract_position_facts() -> None:
     assert "043602" in requests[0].url.params["$where"]
 
 
-def test_nasdaq_public_history_emits_previous_close_facts() -> None:
-    requests: list[httpx.Request] = []
+def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_period() -> None:
+    calls: list[dict[str, object]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "status": {"rCode": 200},
-                "data": {
-                    "tradesTable": {
-                        "rows": [
-                            {"date": "07/24/2026", "close": "$738.93"},
-                            {"date": "07/23/2026", "close": "$735.34"},
-                        ]
-                    }
-                },
+    def load(symbol: str, **kwargs: object) -> pd.DataFrame:
+        calls.append({"symbol": symbol, **kwargs})
+        return pd.DataFrame(
+            {
+                "Open": [735.0, 738.0],
+                "High": [736.0, 739.0],
+                "Low": [734.0, 737.0],
+                "Close": [735.34, 738.93],
+                "Volume": [1_000.0, 2_000.0],
             },
-            request=request,
+            index=pd.to_datetime(
+                ["2026-07-27T19:50:00-04:00", "2026-07-27T19:55:00-04:00"],
+                utc=True,
+            ),
         )
 
-    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    client = MacroSourceClient(yfinance_history_loader=load)
     try:
-        batch = client.fetch(
-            require_dataset("nasdaq.spy.history"),
+        initial = client.fetch(
+            require_dataset("yfinance.spy.market"),
             partition_key="latest",
             cursor={},
+            now_ms=NOW_MS,
+        )
+        incremental = client.fetch(
+            require_dataset("yfinance.spy.market"),
+            partition_key="latest",
+            cursor=initial.cursor,
             now_ms=NOW_MS,
         )
     finally:
         client.close()
 
-    assert len(batch.facts) == 2
-    assert all(isinstance(fact, MarketObservationFact) for fact in batch.facts)
-    assert [fact.value_numeric for fact in batch.facts] == [735.34, 738.93]
-    assert batch.cursor["reference_date"] == "2026-07-24"
-    assert requests[0].url.params["assetclass"] == "etf"
-    assert requests[0].url.params["limit"] == "5000"
+    assert len(initial.facts) == 2
+    assert all(isinstance(fact, MarketObservationFact) for fact in initial.facts)
+    assert [fact.value_numeric for fact in initial.facts] == [735.34, 738.93]
+    assert initial.cursor == {"observed_at_ms": initial.facts[-1].observed_at_ms}
+    assert initial.diagnostics["latest_market_at_ms"] == initial.facts[-1].observed_at_ms
+    assert initial.facts[-1].source_id == "yahoo_finance"
+    assert initial.facts[-1].raw_data["interval"] == "5m"
+    assert calls[0]["period"] == "1mo"
+    assert calls[1]["period"] == "1d"
+    assert incremental.response_hash == initial.response_hash
 
 
-def test_disabled_nasdaq_public_source_is_explicitly_unavailable() -> None:
+def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
     client = MacroSourceClient(
-        nasdaq_public_enabled=False,
+        yfinance_enabled=False,
         transport=httpx.MockTransport(lambda request: httpx.Response(500, request=request)),
     )
     try:
-        with pytest.raises(MacroSourceUnavailable, match="nasdaq_public_disabled"):
+        with pytest.raises(MacroSourceUnavailable, match="yfinance_disabled"):
             client.fetch(
-                require_dataset("nasdaq.spy.history"),
+                require_dataset("yfinance.spy.market"),
                 partition_key="latest",
                 cursor={},
                 now_ms=NOW_MS,

@@ -264,6 +264,7 @@ class MacroAssetData(ExactApiSchema):
     latest_value: float
     unit: str
     as_of: str | None
+    market_time_ms: int
     change_1d_pct: float | None
     change_1w_pct: float | None
     change_1m_pct: float | None
@@ -490,7 +491,7 @@ class MacroCreditCycleDimensionData(ExactApiSchema):
 
 
 class MacroCreditReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_credit_v2"]
+    schema_version: Literal["macro_credit_v3"]
     module_id: Literal["credit"]
     cycle_dimensions: list[MacroCreditCycleDimensionData]
     spread_ladder: MacroCreditSpreadLadderData
@@ -546,12 +547,13 @@ class MacroCorrelationData(ExactApiSchema):
 
 
 class MacroFuturesConfirmationData(ExactApiSchema):
+    market: list[MacroAssetData]
     vix_settlements: list[JsonObject]
     positions: list[JsonObject]
 
 
 class MacroCrossAssetReadData(_MacroModuleBaseData):
-    schema_version: Literal["macro_cross_asset_v2"]
+    schema_version: Literal["macro_cross_asset_v3"]
     module_id: Literal["cross_asset"]
     assets: MacroCrossAssetsData
     correlations: list[MacroCorrelationData]
@@ -580,14 +582,24 @@ class MacroModuleSummaryData(ExactApiSchema):
     href: str
 
 
+class MacroJudgmentPublicationStatusData(ExactApiSchema):
+    session_date: date
+    judgment_cutoff_ms: int
+    state: Literal["blocked", "current"]
+    reason_code: str
+    details: JsonObject
+    attempted_at_ms: int
+
+
 class MacroOverviewReadData(ExactApiSchema):
-    schema_version: Literal["macro_overview_v2"]
+    schema_version: Literal["macro_overview_v3"]
     read_at_ms: int
     judgment_cutoff_ms: int | None
     latest_fact_at_ms: int
     coverage_state: Literal["complete", "partial", "licensed_unavailable"]
     data_health_state: Literal["current", "delayed", "stale", "invalid", "backfilling", "unavailable"]
     judgment_state: Literal["current", "missing", "blocked"]
+    judgment_status: MacroJudgmentPublicationStatusData | None
     daily_judgment: JsonObject | None
     modules: list[MacroModuleSummaryData]
     changes_since_judgment: list[JsonObject]

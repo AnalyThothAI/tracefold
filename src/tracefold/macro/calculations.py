@@ -236,16 +236,16 @@ _CALCULATIONS = (
         "cross_asset.normalized_returns",
         "cross_asset",
         (
-            "nasdaq.spy.history",
-            "nasdaq.qqq.history",
-            "nasdaq.iwm.history",
-            "nasdaq.tlt.history",
-            "nasdaq.ief.history",
-            "nasdaq.lqd.history",
-            "nasdaq.hyg.history",
-            "nasdaq.dxy.history",
-            "nasdaq.gld.history",
-            "nasdaq.uso.history",
+            "yfinance.spy.market",
+            "yfinance.qqq.market",
+            "yfinance.iwm.market",
+            "yfinance.tlt.market",
+            "yfinance.ief.market",
+            "yfinance.lqd.market",
+            "yfinance.hyg.market",
+            "yfinance.dxy.market",
+            "yfinance.gld.market",
+            "yfinance.uso.market",
         ),
         "normalized_to_100_v1",
         "index",
@@ -262,16 +262,16 @@ _CALCULATIONS = (
         "cross_asset.return_correlations",
         "cross_asset",
         (
-            "nasdaq.spy.history",
-            "nasdaq.qqq.history",
-            "nasdaq.iwm.history",
-            "nasdaq.tlt.history",
-            "nasdaq.ief.history",
-            "nasdaq.lqd.history",
-            "nasdaq.hyg.history",
-            "nasdaq.dxy.history",
-            "nasdaq.gld.history",
-            "nasdaq.uso.history",
+            "yfinance.spy.market",
+            "yfinance.qqq.market",
+            "yfinance.iwm.market",
+            "yfinance.tlt.market",
+            "yfinance.ief.market",
+            "yfinance.lqd.market",
+            "yfinance.hyg.market",
+            "yfinance.dxy.market",
+            "yfinance.gld.market",
+            "yfinance.uso.market",
         ),
         "pearson_daily_returns_v1",
         "correlation",
@@ -453,6 +453,7 @@ def calculate_market_statistics(
                 "latest_value": float(latest["value_numeric"]),
                 "unit": str(latest["unit"]),
                 "as_of": _market_reference(latest),
+                "market_time_ms": int(latest["observed_at_ms"]),
                 "change_1d_pct": _market_pct_change(rows, 1),
                 "change_1w_pct": _market_pct_change(rows, 7),
                 "change_1m_pct": _market_pct_change(rows, 30),
@@ -875,8 +876,12 @@ def _market_reference(row: dict[str, Any]) -> str:
     return value.isoformat() if value is not None else ""
 
 
-def _market_order(row: dict[str, Any]) -> tuple[str, int]:
-    return (_market_reference(row), int(row["received_at_ms"]))
+def _market_order(row: dict[str, Any]) -> tuple[str, int, int]:
+    return (
+        _market_reference(row),
+        int(row.get("observed_at_ms") or 0),
+        int(row["received_at_ms"]),
+    )
 
 
 def _correlation(left: list[float], right: list[float]) -> float | None:

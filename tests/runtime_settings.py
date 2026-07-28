@@ -20,6 +20,7 @@ def disabled_workers_settings() -> WorkersSettings:
 def runtime_workers_settings() -> WorkersSettings:
     workers = WorkersSettings()
     disabled_macro_workers = (
+        "macro_intraday_market",
         "macro_settlements",
         "macro_economic_releases",
         "macro_official_state",

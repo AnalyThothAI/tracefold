@@ -24,6 +24,7 @@ from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_wo
 from tracefold.platform.workers.worker_base import WorkerBase
 
 _ACQUISITION_WORKERS = {
+    "macro_intraday_market": "intraday_market",
     "macro_settlements": "daily_settlement",
     "macro_economic_releases": "scheduled_release",
     "macro_official_state": "official_state",
@@ -52,7 +53,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
                 fred_enabled=source_config.fred_enabled,
                 cboe_enabled=source_config.cboe_enabled,
                 cftc_enabled=source_config.cftc_enabled,
-                nasdaq_public_enabled=source_config.nasdaq_public_enabled,
+                yfinance_enabled=source_config.yfinance_enabled,
             ),
         )
 

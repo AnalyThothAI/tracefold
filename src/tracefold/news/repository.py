@@ -661,9 +661,25 @@ class NewsRepository:
         scoring_now_ms = now_ms - (now_ms % _SCORING_EPOCH_MS)
         self.conn.execute(
             """
-            UPDATE news_items
-               SET active = (published_at_ms >= %s)
-             WHERE active IS DISTINCT FROM (published_at_ms >= %s)
+            UPDATE news_items AS item
+               SET active = (
+                 item.published_at_ms >= %s
+                 AND EXISTS (
+                   SELECT 1
+                     FROM news_sources AS source
+                    WHERE source.source_id = item.source_id
+                      AND source.enabled
+                 )
+               )
+             WHERE active IS DISTINCT FROM (
+               item.published_at_ms >= %s
+               AND EXISTS (
+                 SELECT 1
+                   FROM news_sources AS source
+                  WHERE source.source_id = item.source_id
+                    AND source.enabled
+               )
+             )
             """,
             (cutoff_ms, cutoff_ms),
         )
@@ -674,7 +690,7 @@ class NewsRepository:
                 SELECT i.*, s.name AS source_name, s.tier
                   FROM news_items i
                   JOIN news_sources s ON s.source_id = i.source_id
-                 WHERE i.active
+                 WHERE i.active AND s.enabled
                  ORDER BY i.published_at_ms, i.item_id
                 """
             ).fetchall()
@@ -1424,6 +1440,7 @@ class NewsRepository:
                  ORDER BY finished_at_ms DESC, fetch_id DESC
                  LIMIT 1
               ) f ON true
+             WHERE s.enabled
              ORDER BY s.tier, s.name, s.source_id
             """
         ).fetchall()
@@ -1439,7 +1456,9 @@ class NewsRepository:
               JOIN news_sources src
                 ON src.source_id = st.representative_source_id
               JOIN news_items item ON item.item_id = st.representative_item_id
-             WHERE st.active AND NOT item.brief_excluded
+             WHERE st.active
+               AND src.enabled
+               AND NOT item.brief_excluded
             """
         ).fetchall()
         return select_top_stories(rows, limit=8, max_per_source=3)

@@ -100,7 +100,7 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-118 physical sources / 121 logical memberships
+73 physical sources / 73 logical memberships
   -> NewsPipelineWorker
   -> FetchReceipt + immutable FeedObservation + NewsItem
   -> full active-window cluster + Story/member/alias projection
@@ -131,7 +131,7 @@ full-window projection. Unchanged items, membership, and Story fingerprints
 write zero serving rows. The hourly persisted recency epoch prevents a
 two-minute worker tick from masquerading as a Story revision.
 
-`news_world_brief` runs every 600 seconds by default. It exits before any
+`news_world_brief` runs every 300 seconds by default. It exits before any
 model call when fewer than three Stories, fewer than two physical sources, or
 an unchanged ordered Story fingerprint is observed. On provider or validation
 failure it records the failed run and keeps the last-known-good current
@@ -183,8 +183,8 @@ dual writer, and no compatibility read.
    latest head.
 5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
    service.
-6. Verify exactly eleven `news_*` tables, 118 synchronized physical sources,
-   121 memberships, a terminal attempt for every source, fresh receipts and
+6. Verify exactly eleven `news_*` tables, 73 synchronized physical sources,
+   73 memberships, a terminal attempt for every source, fresh receipts and
    observations, non-empty NewsItems and Stories, membership closure, the five
    HTTP routes, ETag `304`, a truthful Brief state, and zero old routes.
 7. Leave the deployment stopped and repair forward if any acceptance check
@@ -206,14 +206,14 @@ clock-specific target claim -> provider I/O -> typed fact + source receipt + cur
   -> immutable macro_research_publications row
 ```
 
-The four automatic acquisition workers claim only their own clock family from
+The five automatic acquisition workers claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`; `macro_backfill` claims only
 explicit bounded backfills. `macro backfill-professional` enqueues the
 code-owned Treasury/Fed/credit/WTI/BTC/CFTC history policy in one transaction.
-Treasury curves, FOMC materials, policy speeches, and BTC use a
-readiness-critical trailing five-year backfill window. Nasdaq ETF `latest`
-acquisition already requests the complete five-year window, so no duplicate ETF
-backfill is created. Older history is optional enrichment and must not delay
+Treasury curves, FOMC materials, policy speeches, and completed BTC settlements
+use a readiness-critical trailing five-year backfill window. Yfinance intraday
+targets request one month initially and one rolling day thereafter; they are
+not professional-history backfills. Older history is optional enrichment and must not delay
 the current workbench. Credit and WTI may retain longer reliable public history
 because their bounded single-source histories are inexpensive and materially
 improve regime context. The durable target cursor records
@@ -237,7 +237,7 @@ Diagnose a missing metric in this order: Dataset Registry identity, acquisition
 target state/lease, last receipt/error, persisted fact clocks
 (reference/published/received), module dataset state/gap, then current-row
 hash. Do not repair source or calculation errors with a frontend fallback.
-`unavailable` licensed futures and `untrusted_proxy` Nasdaq public cross-asset
+`unavailable` licensed curves and `untrusted_proxy` Yahoo cross-asset/futures
 history must stay
 visible.
 
@@ -256,6 +256,9 @@ six stable module rows; unchanged payloads write zero serving rows.
 `macro_judgment` runs after 08:50 `America/New_York` on U.S. trading days,
 compiles only facts received by that cutoff, and does nothing if any critical
 module, required professional backfill, or document-analysis queue is blocked.
+Every attempt persists `macro_judgment_status`; a blocked overview therefore
+names the blocked modules and exact coverage/dataset gaps instead of showing an
+unexplained missing judgment.
 Evidence Pack and daily judgment insertion are immutable and replay-safe. They
 remain readable when DeepAgents research is delayed or failed.
 
