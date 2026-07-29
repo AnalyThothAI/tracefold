@@ -751,7 +751,7 @@ function ModuleWorkbench({
 function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }) {
   const thesisContext = module.thesis_context;
   const summaryInterpretation = module.summary.interpretation;
-  const thesisAnalysis = thesisContext.analysis;
+  const thesisAnalysis = thesisContext.reader_narrative?.text ?? null;
   const hasThesisContext =
     thesisContext.role ||
     thesisAnalysis ||

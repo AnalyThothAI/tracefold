@@ -1270,13 +1270,58 @@
         "title": "MacroAlternative",
         "type": "object"
       },
+      "MacroAlternativePresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "causal_edges": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCausalEdgePresentation"
+            },
+            "title": "Causal Edges",
+            "type": "array"
+          },
+          "conflicting_evidence_refs": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicting Evidence Refs",
+            "type": "array"
+          },
+          "supporting_evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supporting Evidence Refs",
+            "type": "array"
+          },
+          "thesis": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
+          "title": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
+          "trigger_conditions": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCondition"
+            },
+            "title": "Trigger Conditions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "title",
+          "thesis",
+          "causal_edges",
+          "supporting_evidence_refs",
+          "trigger_conditions"
+        ],
+        "title": "MacroAlternativePresentation",
+        "type": "object"
+      },
       "MacroAssetHorizonPresentation": {
         "additionalProperties": false,
         "properties": {
-          "causal_channel": {
-            "title": "Causal Channel",
-            "type": "string"
-          },
           "checkpoints": {
             "default": [],
             "items": {
@@ -1357,6 +1402,9 @@
             "title": "Outlook Direction",
             "type": "string"
           },
+          "reader_rationale": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
           "reason": {
             "anyOf": [
               {
@@ -1381,7 +1429,7 @@
           "momentum_state",
           "momentum_value",
           "outlook_direction",
-          "causal_channel",
+          "reader_rationale",
           "confidence",
           "reason"
         ],
@@ -1603,6 +1651,29 @@
           "evidence_refs"
         ],
         "title": "MacroCausalEdge",
+        "type": "object"
+      },
+      "MacroCausalEdgePresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "mechanism": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "target_label": {
+            "title": "Target Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_label",
+          "mechanism",
+          "target_label"
+        ],
+        "title": "MacroCausalEdgePresentation",
         "type": "object"
       },
       "MacroChangeData": {
@@ -1866,10 +1937,6 @@
       "MacroClaimAssetImplication": {
         "additionalProperties": false,
         "properties": {
-          "causal_channel": {
-            "title": "Causal Channel",
-            "type": "string"
-          },
           "checkpoints": {
             "default": [],
             "items": {
@@ -1929,6 +1996,9 @@
             "title": "Horizon",
             "type": "string"
           },
+          "reader_rationale": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
           "symbol": {
             "title": "Symbol",
             "type": "string"
@@ -1938,10 +2008,63 @@
           "symbol",
           "horizon",
           "direction",
-          "causal_channel",
+          "reader_rationale",
           "confidence"
         ],
         "title": "MacroClaimAssetImplication",
+        "type": "object"
+      },
+      "MacroClaimModuleEvidencePresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "conflicting_evidence_refs": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Conflicting Evidence Refs",
+            "type": "array"
+          },
+          "module_id": {
+            "enum": [
+              "rates_fed",
+              "economy_inflation",
+              "liquidity_funding",
+              "credit",
+              "volatility",
+              "cross_asset"
+            ],
+            "title": "Module Id",
+            "type": "string"
+          },
+          "reader_narrative": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
+          "role": {
+            "enum": [
+              "driver",
+              "confirming",
+              "contradicting",
+              "uncertain"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "supporting_evidence_refs": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Supporting Evidence Refs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "module_id",
+          "role",
+          "reader_narrative"
+        ],
+        "title": "MacroClaimModuleEvidencePresentation",
         "type": "object"
       },
       "MacroClaimPresentation": {
@@ -1953,6 +2076,13 @@
               "$ref": "#/components/schemas/MacroClaimAssetImplication"
             },
             "title": "Asset Implications",
+            "type": "array"
+          },
+          "causal_edges": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCausalEdgePresentation"
+            },
+            "title": "Causal Edges",
             "type": "array"
           },
           "checkpoints": {
@@ -1991,9 +2121,15 @@
             "title": "Falsifiers",
             "type": "array"
           },
+          "module_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/MacroClaimModuleEvidencePresentation"
+            },
+            "title": "Module Evidence",
+            "type": "array"
+          },
           "statement": {
-            "title": "Statement",
-            "type": "string"
+            "$ref": "#/components/schemas/MacroReaderNarrative"
           },
           "supporting_evidence_refs": {
             "items": {
@@ -2006,6 +2142,8 @@
         "required": [
           "claim_id",
           "statement",
+          "causal_edges",
+          "module_evidence",
           "supporting_evidence_refs"
         ],
         "title": "MacroClaimPresentation",
@@ -5326,6 +5464,23 @@
         "title": "MacroMainline",
         "type": "object"
       },
+      "MacroMainlinePresentation": {
+        "additionalProperties": false,
+        "properties": {
+          "thesis": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          },
+          "title": {
+            "$ref": "#/components/schemas/MacroReaderNarrative"
+          }
+        },
+        "required": [
+          "title",
+          "thesis"
+        ],
+        "title": "MacroMainlinePresentation",
+        "type": "object"
+      },
       "MacroMarketFactData": {
         "additionalProperties": false,
         "properties": {
@@ -5746,17 +5901,6 @@
       "MacroModuleThesisContextData": {
         "additionalProperties": false,
         "properties": {
-          "analysis": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis"
-          },
           "annotations": {
             "items": {
               "$ref": "#/components/schemas/MacroConditionAnnotation"
@@ -5788,6 +5932,16 @@
               }
             ],
             "title": "Cutoff Ms"
+          },
+          "reader_narrative": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroReaderNarrative"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reason": {
             "anyOf": [
@@ -5853,7 +6007,7 @@
           "session_date",
           "cutoff_ms",
           "role",
-          "analysis",
+          "reader_narrative",
           "claim_ids",
           "supporting_evidence_refs",
           "conflicting_evidence_refs",
@@ -6443,6 +6597,16 @@
       "MacroOverviewReadData": {
         "additionalProperties": false,
         "properties": {
+          "alternative_presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroAlternativePresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "asset_presentation": {
             "items": {
               "$ref": "#/components/schemas/MacroAssetPresentation"
@@ -6493,6 +6657,16 @@
               }
             ]
           },
+          "mainline_presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroMainlinePresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "modules": {
             "items": {
               "$ref": "#/components/schemas/MacroModuleSummaryData"
@@ -6525,7 +6699,7 @@
             ]
           },
           "schema_version": {
-            "const": "macro_overview_v6",
+            "const": "macro_overview_v7",
             "title": "Schema Version",
             "type": "string"
           },
@@ -6585,8 +6759,10 @@
           "thesis",
           "run",
           "fallback",
+          "mainline_presentation",
           "asset_presentation",
           "claim_presentation",
+          "alternative_presentation",
           "live_delta",
           "outcome_replay",
           "modules",
@@ -7349,6 +7525,31 @@
           "thesis_context"
         ],
         "title": "MacroRatesFedReadData",
+        "type": "object"
+      },
+      "MacroReaderNarrative": {
+        "additionalProperties": false,
+        "properties": {
+          "origin": {
+            "enum": [
+              "publication",
+              "structured_fallback"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "origin"
+        ],
+        "title": "MacroReaderNarrative",
         "type": "object"
       },
       "MacroReason": {
@@ -8266,6 +8467,16 @@
       "MacroThesisDetailReadData": {
         "additionalProperties": false,
         "properties": {
+          "alternative_presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroAlternativePresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "appendix": {
             "anyOf": [
               {
@@ -8327,6 +8538,16 @@
               }
             ]
           },
+          "mainline_presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroMainlinePresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "outcome_replay": {
             "anyOf": [
               {
@@ -8363,7 +8584,7 @@
             ]
           },
           "schema_version": {
-            "const": "macro_thesis_detail_v2",
+            "const": "macro_thesis_detail_v3",
             "title": "Schema Version",
             "type": "string"
           },
@@ -8399,8 +8620,10 @@
           "reason",
           "thesis",
           "fallback",
+          "mainline_presentation",
           "asset_presentation",
           "claim_presentation",
+          "alternative_presentation",
           "live_delta",
           "outcome_replay",
           "appendix",

@@ -19,7 +19,10 @@ test("renders one immutable Macro Thesis history workbench", async ({ page }) =>
   await expect(page.getByRole("heading", { name: "资产影响" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "核心矛盾与解决条件" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "十二资产条件附录" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "判断" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "备选解释：增长重新加速吸收利率冲击" }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "已发布研究叙事" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "不可变主线历史" })).toBeVisible();
 
   const audit = page.locator(".macro-research-audit");

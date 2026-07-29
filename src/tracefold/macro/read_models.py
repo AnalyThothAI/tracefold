@@ -109,12 +109,17 @@ class MacroOutcomeReplayRead(ExactMacroModel):
     input_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
+class MacroReaderNarrative(ExactMacroModel):
+    text: str = Field(min_length=1, max_length=8_000)
+    origin: Literal["publication", "structured_fallback"]
+
+
 class MacroAssetHorizonPresentation(ExactMacroModel):
     horizon: Literal["1w", "1m"]
     momentum_state: Literal["up", "down", "flat", "insufficient"]
     momentum_value: float | None
     outlook_direction: Literal["bullish", "bearish", "neutral", "no_call"]
-    causal_channel: str
+    reader_rationale: MacroReaderNarrative
     confidence: Literal["low", "medium", "high"]
     supporting_evidence_refs: tuple[str, ...] = ()
     conflicting_evidence_refs: tuple[str, ...] = ()
@@ -134,11 +139,25 @@ class MacroAssetPresentation(ExactMacroModel):
     horizons: tuple[MacroAssetHorizonPresentation, MacroAssetHorizonPresentation]
 
 
+class MacroCausalEdgePresentation(ExactMacroModel):
+    source_label: str
+    mechanism: MacroReaderNarrative
+    target_label: str
+
+
+class MacroClaimModuleEvidencePresentation(ExactMacroModel):
+    module_id: MacroModuleId
+    role: Literal["driver", "confirming", "contradicting", "uncertain"]
+    reader_narrative: MacroReaderNarrative
+    supporting_evidence_refs: tuple[str, ...] = ()
+    conflicting_evidence_refs: tuple[str, ...] = ()
+
+
 class MacroClaimAssetImplication(ExactMacroModel):
     symbol: str
     horizon: Literal["1w", "1m"]
     direction: Literal["bullish", "bearish", "neutral", "no_call"]
-    causal_channel: str
+    reader_rationale: MacroReaderNarrative
     confidence: Literal["low", "medium", "high"]
     evidence_links: tuple[str, ...] = ()
     confirmation_triggers: tuple[MacroCondition, ...] = ()
@@ -148,13 +167,29 @@ class MacroClaimAssetImplication(ExactMacroModel):
 
 class MacroClaimPresentation(ExactMacroModel):
     claim_id: str
-    statement: str
+    statement: MacroReaderNarrative
+    causal_edges: tuple[MacroCausalEdgePresentation, ...]
+    module_evidence: tuple[MacroClaimModuleEvidencePresentation, ...]
     supporting_evidence_refs: tuple[str, ...]
     conflicting_evidence_refs: tuple[str, ...] = ()
     conditions: tuple[MacroCondition, ...] = ()
     falsifiers: tuple[MacroCondition, ...] = ()
     checkpoints: tuple[MacroCondition, ...] = ()
     asset_implications: tuple[MacroClaimAssetImplication, ...] = ()
+
+
+class MacroAlternativePresentation(ExactMacroModel):
+    title: MacroReaderNarrative
+    thesis: MacroReaderNarrative
+    causal_edges: tuple[MacroCausalEdgePresentation, ...]
+    supporting_evidence_refs: tuple[str, ...]
+    conflicting_evidence_refs: tuple[str, ...] = ()
+    trigger_conditions: tuple[MacroCondition, ...]
+
+
+class MacroMainlinePresentation(ExactMacroModel):
+    title: MacroReaderNarrative
+    thesis: MacroReaderNarrative
 
 
 class MacroConditionAnnotation(ExactMacroModel):
@@ -813,7 +848,7 @@ def project_claim_presentation(publication: Mapping[str, Any] | None) -> tuple[M
                         symbol=asset.symbol,
                         horizon=outlook.horizon,
                         direction=outlook.direction,
-                        causal_channel=outlook.causal_channel,
+                        reader_rationale=_reader_asset_rationale(asset, outlook),
                         confidence=outlook.confidence,
                         evidence_links=evidence_links,
                         confirmation_triggers=outlook.confirmation_triggers,
@@ -824,7 +859,22 @@ def project_claim_presentation(publication: Mapping[str, Any] | None) -> tuple[M
         output.append(
             MacroClaimPresentation(
                 claim_id=claim.claim_id,
-                statement=claim.statement,
+                statement=_reader_narrative(
+                    claim.statement,
+                    fallback="本论点的完整冻结原文含技术身份；可读论证请结合下方因果链与证据引用。",
+                ),
+                causal_edges=tuple(_reader_causal_edge(edge) for edge in claim.causal_edges),
+                module_evidence=tuple(
+                    MacroClaimModuleEvidencePresentation(
+                        module_id=assessment.module_id,
+                        role=assessment.role,
+                        reader_narrative=_reader_module_assessment(assessment),
+                        supporting_evidence_refs=assessment.supporting_evidence_refs,
+                        conflicting_evidence_refs=assessment.conflicting_evidence_refs,
+                    )
+                    for assessment in thesis.module_assessments
+                    if claim.claim_id in assessment.claim_ids
+                ),
                 supporting_evidence_refs=claim.supporting_evidence_refs,
                 conflicting_evidence_refs=claim.conflicting_evidence_refs,
                 conditions=claim.conditions,
@@ -842,6 +892,63 @@ def project_claim_presentation(publication: Mapping[str, Any] | None) -> tuple[M
             )
         )
     return tuple(output)
+
+
+def project_mainline_presentation(
+    publication: Mapping[str, Any] | None,
+) -> MacroMainlinePresentation | None:
+    if publication is None:
+        return None
+    mainline = MacroThesisV1.model_validate(publication).mainline
+    return MacroMainlinePresentation(
+        title=_reader_narrative(
+            mainline.title,
+            fallback="本期宏观主线",
+        ),
+        thesis=_reader_narrative(
+            mainline.thesis,
+            fallback="冻结主线原文含技术身份；请从论点、证据、反证与条件链阅读本期判断。",
+        ),
+    )
+
+
+def project_alternative_presentation(
+    publication: Mapping[str, Any] | None,
+) -> MacroAlternativePresentation | None:
+    if publication is None:
+        return None
+    alternative = MacroThesisV1.model_validate(publication).alternative_explanation
+    if alternative is None:
+        return None
+    return MacroAlternativePresentation(
+        title=_reader_narrative(
+            alternative.title,
+            fallback="已登记的备选解释",
+        ),
+        thesis=_reader_narrative(
+            alternative.thesis,
+            fallback="备选解释原文含技术身份；其成立条件与证据引用如下。",
+        ),
+        causal_edges=tuple(_reader_causal_edge(edge) for edge in alternative.causal_edges),
+        supporting_evidence_refs=alternative.supporting_evidence_refs,
+        conflicting_evidence_refs=alternative.conflicting_evidence_refs,
+        trigger_conditions=alternative.trigger_conditions,
+    )
+
+
+def project_module_reader_narrative(
+    publication: Mapping[str, Any] | None,
+    *,
+    module_id: MacroModuleId,
+) -> MacroReaderNarrative | None:
+    if publication is None:
+        return None
+    thesis = MacroThesisV1.model_validate(publication)
+    assessment = next(
+        (item for item in thesis.module_assessments if item.module_id == module_id),
+        None,
+    )
+    return _reader_module_assessment(assessment) if assessment is not None else None
 
 
 def project_module_annotations(
@@ -984,7 +1091,7 @@ def _asset_horizon_presentation(asset: Any, horizon: Literal["1w", "1m"]) -> Mac
         momentum_state=momentum_state,
         momentum_value=momentum_value,
         outlook_direction=outlook.direction,
-        causal_channel=outlook.causal_channel,
+        reader_rationale=_reader_asset_rationale(asset, outlook),
         confidence=outlook.confidence,
         supporting_evidence_refs=outlook.supporting_evidence_refs,
         conflicting_evidence_refs=outlook.conflicting_evidence_refs,
@@ -993,6 +1100,98 @@ def _asset_horizon_presentation(asset: Any, horizon: Literal["1w", "1m"]) -> Mac
         checkpoints=outlook.checkpoints,
         reason=reason,
     )
+
+
+_READER_CAUSAL_NODE_LABELS: dict[str, str] = {
+    **{str(module_id): label for module_id, label in MACRO_MODULE_LABELS.items()},
+    "equity_valuation": "股票估值",
+    "duration_assets": "久期资产",
+    "risk_assets": "风险资产",
+}
+
+_READER_RESERVED_FRAGMENTS: tuple[str, ...] = (
+    "macro-module:",
+    "Evidence ref ",
+    "no_call",
+    "degraded",
+    "unavailable",
+    "insufficient",
+    "binding_id",
+    "claim_id",
+    "dataset_id",
+    "analysis:",
+    "sha256:",
+    "worker:",
+    *MACRO_MODULE_IDS,
+    *_READER_CAUSAL_NODE_LABELS,
+)
+
+
+def _reader_text_is_safe(value: str) -> bool:
+    text = value.strip()
+    return bool(text) and "_" not in text and all(fragment not in text for fragment in _READER_RESERVED_FRAGMENTS)
+
+
+def _reader_narrative(value: str, *, fallback: str) -> MacroReaderNarrative:
+    if _reader_text_is_safe(value):
+        return MacroReaderNarrative(text=value.strip(), origin="publication")
+    return MacroReaderNarrative(text=fallback, origin="structured_fallback")
+
+
+def _reader_causal_node(value: str, *, fallback: str) -> str:
+    if value in _READER_CAUSAL_NODE_LABELS:
+        return _READER_CAUSAL_NODE_LABELS[value]
+    return value.strip() if _reader_text_is_safe(value) else fallback
+
+
+def _reader_causal_edge(edge: Any) -> MacroCausalEdgePresentation:
+    return MacroCausalEdgePresentation(
+        source_label=_reader_causal_node(edge.source, fallback="宏观驱动"),
+        mechanism=_reader_narrative(edge.mechanism, fallback="通过已登记的宏观传导机制"),
+        target_label=_reader_causal_node(edge.target, fallback="资产定价结果"),
+    )
+
+
+def _reader_module_assessment(assessment: Any) -> MacroReaderNarrative:
+    role_label = {
+        "driver": "驱动证据",
+        "confirming": "确认信号",
+        "contradicting": "反向证据",
+        "uncertain": "待确认信号",
+    }[assessment.role]
+    fallback = (
+        f"{MACRO_MODULE_LABELS[assessment.module_id]}作为本论点的{role_label}；"
+        f"本次档案登记 {len(assessment.supporting_evidence_refs)} 条支持证据"
+        f"与 {len(assessment.conflicting_evidence_refs)} 条反向证据。"
+    )
+    return _reader_narrative(assessment.analysis, fallback=fallback)
+
+
+def _reader_asset_rationale(asset: Any, outlook: Any) -> MacroReaderNarrative:
+    horizon_label = "1 周" if outlook.horizon == "1w" else "1 个月"
+    momentum_state = asset.momentum.momentum_1w if outlook.horizon == "1w" else asset.momentum.momentum_1m
+    momentum_value = asset.momentum.return_1w_pct if outlook.horizon == "1w" else asset.momentum.return_1m_pct
+    if momentum_state == "insufficient":
+        return MacroReaderNarrative(
+            text=f"{asset.symbol} 的{horizon_label}事实动量缺失，因此本期不形成方向判断。",
+            origin="structured_fallback",
+        )
+    momentum_label = {"up": "上行", "down": "下行", "flat": "横盘"}[momentum_state]
+    value_text = f"（{momentum_value:+.2f}%）" if momentum_value is not None else ""
+    direction_label = {
+        "bullish": "偏多",
+        "bearish": "偏空",
+        "neutral": "中性",
+        "no_call": "证据不足，暂不判断",
+    }[outlook.direction]
+    fallback = (
+        f"{asset.symbol} 的{horizon_label}事实动量{momentum_label}{value_text}；"
+        f"已发布判断为{direction_label}，登记 {len(outlook.supporting_evidence_refs)} 条支持证据"
+        f"与 {len(outlook.conflicting_evidence_refs)} 条反向证据。"
+    )
+    if outlook.direction == "no_call":
+        return MacroReaderNarrative(text=fallback, origin="structured_fallback")
+    return _reader_narrative(outlook.causal_channel, fallback=fallback)
 
 
 def _live_delta_scope_key(
@@ -1201,20 +1400,28 @@ def _outcome_reason(
 
 
 __all__ = [
+    "MacroAlternativePresentation",
     "MacroAssetHorizonPresentation",
     "MacroAssetPresentation",
+    "MacroCausalEdgePresentation",
     "MacroClaimAssetImplication",
+    "MacroClaimModuleEvidencePresentation",
     "MacroClaimPresentation",
     "MacroConditionAnnotation",
     "MacroLiveDeltaItemRead",
     "MacroLiveDeltaRead",
     "MacroLiveDeltaScope",
+    "MacroMainlinePresentation",
     "MacroOutcomeAssetResultRead",
     "MacroOutcomeHorizonRead",
     "MacroOutcomeReplayRead",
+    "MacroReaderNarrative",
+    "project_alternative_presentation",
     "project_asset_presentation",
     "project_claim_presentation",
     "project_live_delta_for_read",
+    "project_mainline_presentation",
     "project_module_annotations",
+    "project_module_reader_narrative",
     "project_outcome_replay_for_read",
 ]

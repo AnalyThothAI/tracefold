@@ -17,10 +17,13 @@ from tracefold.macro import (
     MacroModuleId,
     MacroReason,
     macro_reason,
+    project_alternative_presentation,
     project_asset_presentation,
     project_claim_presentation,
     project_live_delta_for_read,
+    project_mainline_presentation,
     project_module_annotations,
+    project_module_reader_narrative,
     project_outcome_replay_for_read,
     project_publication_appendix,
     resolve_thesis_session,
@@ -111,7 +114,7 @@ def macro_overview(request: Request) -> JSONResponse:
         for module_id in MACRO_MODULE_IDS
     ]
     payload = {
-        "schema_version": "macro_overview_v6",
+        "schema_version": "macro_overview_v7",
         "read_at_ms": read_at_ms,
         "transport": {
             "state": "current",
@@ -132,8 +135,18 @@ def macro_overview(request: Request) -> JSONResponse:
         "thesis": thesis,
         "run": _run_payload(requested_state, reason=thesis_reason),
         "fallback": fallback,
+        "mainline_presentation": (
+            mainline.model_dump(mode="json")
+            if (mainline := project_mainline_presentation(thesis)) is not None
+            else None
+        ),
         "asset_presentation": [item.model_dump(mode="json") for item in project_asset_presentation(thesis)],
         "claim_presentation": [item.model_dump(mode="json") for item in project_claim_presentation(thesis)],
+        "alternative_presentation": (
+            alternative.model_dump(mode="json")
+            if (alternative := project_alternative_presentation(thesis)) is not None
+            else None
+        ),
         "live_delta": live_delta,
         "outcome_replay": outcome_replay,
         "modules": modules,
@@ -298,7 +311,7 @@ def macro_research(
         read_at_ms=read_at_ms,
     )
     payload = {
-        "schema_version": "macro_thesis_detail_v2",
+        "schema_version": "macro_thesis_detail_v3",
         "state": _detail_state(
             requested_state,
             requested_session=target_session,
@@ -314,8 +327,18 @@ def macro_research(
             fallback_row=fallback_row,
             requested_session=target_session,
         ),
+        "mainline_presentation": (
+            mainline.model_dump(mode="json")
+            if (mainline := project_mainline_presentation(thesis)) is not None
+            else None
+        ),
         "asset_presentation": [item.model_dump(mode="json") for item in project_asset_presentation(thesis)],
         "claim_presentation": [item.model_dump(mode="json") for item in project_claim_presentation(thesis)],
+        "alternative_presentation": (
+            alternative.model_dump(mode="json")
+            if (alternative := project_alternative_presentation(thesis)) is not None
+            else None
+        ),
         "live_delta": live_delta,
         "outcome_replay": outcome_replay,
         "appendix": appendix,
@@ -634,7 +657,7 @@ def _module_thesis_context(
             "session_date": None,
             "cutoff_ms": None,
             "role": None,
-            "analysis": None,
+            "reader_narrative": None,
             "claim_ids": [],
             "supporting_evidence_refs": [],
             "conflicting_evidence_refs": [],
@@ -655,7 +678,11 @@ def _module_thesis_context(
         "session_date": displayed_session_date,
         "cutoff_ms": int(thesis["cutoff_ms"]),
         "role": assessment.get("role") if assessment is not None else None,
-        "analysis": assessment.get("analysis") if assessment is not None else None,
+        "reader_narrative": (
+            narrative.model_dump(mode="json")
+            if (narrative := project_module_reader_narrative(thesis, module_id=module_id)) is not None
+            else None
+        ),
         "claim_ids": list(assessment.get("claim_ids") or ()) if assessment is not None else [],
         "supporting_evidence_refs": (
             list(assessment.get("supporting_evidence_refs") or ()) if assessment is not None else []

@@ -93,7 +93,7 @@ function mainlineFalsifierFixture(conditionId: string): MacroCondition {
 export function macroOverviewFixture(): MacroOverviewReadData {
   const thesis = macroThesisFixture();
   return {
-    schema_version: "macro_overview_v6",
+    schema_version: "macro_overview_v7",
     read_at_ms: NOW,
     transport: {
       state: "current",
@@ -127,8 +127,10 @@ export function macroOverviewFixture(): MacroOverviewReadData {
       session_date: null,
       cutoff_ms: null,
     },
+    mainline_presentation: macroMainlinePresentationFixture(thesis),
     asset_presentation: macroAssetPresentationFixture(thesis),
     claim_presentation: macroClaimPresentationFixture(thesis),
+    alternative_presentation: macroAlternativePresentationFixture(thesis),
     live_delta: macroLiveDeltaFixture(thesis),
     outcome_replay: macroOutcomeReplayFixture(thesis),
     modules: MODULE_IDS.map((moduleId) => {
@@ -427,7 +429,10 @@ function macroAssetPresentationFixture(
       momentum_value:
         outlook.horizon === "1w" ? asset.momentum.return_1w_pct : asset.momentum.return_1m_pct,
       outlook_direction: outlook.direction,
-      causal_channel: outlook.causal_channel,
+      reader_rationale: {
+        text: outlook.causal_channel,
+        origin: "publication" as const,
+      },
       confidence: outlook.confidence,
       supporting_evidence_refs: outlook.supporting_evidence_refs,
       conflicting_evidence_refs: outlook.conflicting_evidence_refs,
@@ -465,7 +470,30 @@ function macroClaimPresentationFixture(
 ): MacroOverviewReadData["claim_presentation"] {
   return thesis.mainline.claims.map((claim) => ({
     claim_id: claim.claim_id,
-    statement: claim.statement,
+    statement: {
+      text: claim.statement,
+      origin: "publication",
+    },
+    causal_edges: claim.causal_edges.map((edge) => ({
+      source_label: edge.source,
+      mechanism: {
+        text: edge.mechanism,
+        origin: "publication",
+      },
+      target_label: edge.target,
+    })),
+    module_evidence: thesis.module_assessments
+      .filter((assessment) => assessment.claim_ids.includes(claim.claim_id))
+      .map((assessment) => ({
+        module_id: assessment.module_id,
+        role: assessment.role,
+        reader_narrative: {
+          text: assessment.analysis,
+          origin: "publication",
+        },
+        supporting_evidence_refs: assessment.supporting_evidence_refs,
+        conflicting_evidence_refs: assessment.conflicting_evidence_refs,
+      })),
     supporting_evidence_refs: claim.supporting_evidence_refs,
     conflicting_evidence_refs: claim.conflicting_evidence_refs,
     conditions: claim.conditions,
@@ -476,7 +504,10 @@ function macroClaimPresentationFixture(
         symbol: asset.symbol,
         horizon: outlook.horizon,
         direction: outlook.direction,
-        causal_channel: outlook.causal_channel,
+        reader_rationale: {
+          text: outlook.causal_channel,
+          origin: "publication",
+        },
         confidence: outlook.confidence,
         evidence_links: [...outlook.supporting_evidence_refs, ...outlook.conflicting_evidence_refs],
         confirmation_triggers: outlook.confirmation_triggers,
@@ -485,6 +516,50 @@ function macroClaimPresentationFixture(
       })),
     ),
   }));
+}
+
+function macroAlternativePresentationFixture(
+  thesis: MacroThesisV1,
+): MacroOverviewReadData["alternative_presentation"] {
+  const alternative = thesis.alternative_explanation;
+  return alternative
+    ? {
+        title: {
+          text: alternative.title,
+          origin: "publication",
+        },
+        thesis: {
+          text: alternative.thesis,
+          origin: "publication",
+        },
+        causal_edges: alternative.causal_edges.map((edge) => ({
+          source_label: edge.source,
+          mechanism: {
+            text: edge.mechanism,
+            origin: "publication",
+          },
+          target_label: edge.target,
+        })),
+        supporting_evidence_refs: alternative.supporting_evidence_refs,
+        conflicting_evidence_refs: alternative.conflicting_evidence_refs,
+        trigger_conditions: alternative.trigger_conditions,
+      }
+    : null;
+}
+
+function macroMainlinePresentationFixture(
+  thesis: MacroThesisV1,
+): NonNullable<MacroOverviewReadData["mainline_presentation"]> {
+  return {
+    title: {
+      text: thesis.mainline.title,
+      origin: "publication",
+    },
+    thesis: {
+      text: thesis.mainline.thesis,
+      origin: "publication",
+    },
+  };
 }
 
 function macroLiveDeltaFixture(
@@ -1339,7 +1414,7 @@ export function macroResearchFixture(
           recovery: state === "failed" ? "operator_action" : undefined,
         });
   return {
-    schema_version: "macro_thesis_detail_v2",
+    schema_version: "macro_thesis_detail_v3",
     state,
     requested_session_date: "2026-07-27",
     current_session_date: state === "historical" ? "2026-07-28" : "2026-07-27",
@@ -1358,8 +1433,10 @@ export function macroResearchFixture(
       session_date: null,
       cutoff_ms: null,
     },
+    mainline_presentation: thesis ? macroMainlinePresentationFixture(thesis) : null,
     asset_presentation: thesis ? macroAssetPresentationFixture(thesis) : [],
     claim_presentation: thesis ? macroClaimPresentationFixture(thesis) : [],
+    alternative_presentation: thesis ? macroAlternativePresentationFixture(thesis) : null,
     live_delta: thesis && state === "current" ? macroOverviewFixture().live_delta : null,
     outcome_replay: thesis && state === "current" ? macroOverviewFixture().outcome_replay : null,
     appendix: thesis ? macroPublicationAppendixFixture(thesis) : null,
@@ -1695,8 +1772,13 @@ function moduleBase(moduleId: MacroModuleId): ModuleBaseFixture {
       session_date: "2026-07-27",
       cutoff_ms: NOW - 3_600_000,
       role: moduleId === "rates_fed" ? ("driver" as const) : ("confirming" as const),
-      analysis:
-        moduleId === "rates_fed" ? "该模块提供主线驱动证据。" : "该模块用于确认或反驳已发布主线。",
+      reader_narrative: {
+        text:
+          moduleId === "rates_fed"
+            ? "该模块提供主线驱动证据。"
+            : "该模块用于确认或反驳已发布主线。",
+        origin: "publication" as const,
+      },
       claim_ids: ["claim-rates"],
       supporting_evidence_refs: [`macro-module:2026-07-27:${moduleId}`],
       conflicting_evidence_refs: [],

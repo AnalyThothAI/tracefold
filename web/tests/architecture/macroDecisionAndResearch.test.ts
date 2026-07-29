@@ -95,9 +95,11 @@ describe("daily macro decision and research hard cut", () => {
 
     for (const field of [
       "thesis.mainline",
+      "data.mainline_presentation",
       "thesis.core_tensions",
       "thesis.changes_from_prior",
       "data.asset_presentation",
+      "data.claim_presentation",
       "asset.horizons",
       "asset.group === group.id",
       "data.live_delta",
@@ -118,17 +120,25 @@ describe("daily macro decision and research hard cut", () => {
       expect(decision).toContain(field);
     }
     for (const field of [
-      "thesis.mainline.claims.map",
+      "claims.map",
       "thesis.core_tensions.map",
-      "claimPresentation?.asset_implications",
-      "thesis.module_assessments.filter",
+      "claim.asset_implications",
+      "claim.module_evidence",
       "thesis.review.findings.map",
       "thesis.provenance",
-      "thesis.narrative_sections.map",
       "outcomeReplay?.horizons.map",
     ]) {
       expect(research).toContain(field);
     }
+    expect(decision).not.toMatch(
+      /assessment\.analysis|horizon\.causal_channel|thesisContext\.analysis/,
+    );
+    expect(research).not.toMatch(
+      /role\.analysis|asset\.causal_channel|thesis\.module_assessments|thesis\.narrative_sections/,
+    );
+    expect(`${decision}\n${research}`).not.toMatch(
+      /\.replace\([^)]*(?:macro-module|no_call|degraded)/,
+    );
   });
 
   it("keeps both feature surfaces namespaced and responsive", () => {

@@ -435,7 +435,13 @@ function Overview({ data }: { data: MacroOverviewReadData }) {
   return (
     <>
       {data.fallback.state === "available" ? <FallbackBoundary data={data} /> : null}
-      <MainlinePanel liveDelta={data.live_delta} thesis={data.thesis} />
+      <MainlinePanel
+        alternative={data.alternative_presentation}
+        claims={data.claim_presentation}
+        liveDelta={data.live_delta}
+        mainline={data.mainline_presentation!}
+        thesis={data.thesis}
+      />
       <TensionsPanel thesis={data.thesis} />
       <ChangesPanel thesis={data.thesis} />
       <AssetViews assets={data.asset_presentation} thesis={data.thesis} />
@@ -474,10 +480,16 @@ function FallbackBoundary({ data }: { data: MacroOverviewReadData }) {
 
 function MainlinePanel({
   thesis,
+  claims,
+  alternative,
   liveDelta,
+  mainline,
 }: {
   thesis: MacroThesisV1;
+  claims: MacroOverviewReadData["claim_presentation"];
+  alternative: MacroOverviewReadData["alternative_presentation"];
   liveDelta: MacroOverviewReadData["live_delta"];
+  mainline: NonNullable<MacroOverviewReadData["mainline_presentation"]>;
 }) {
   return (
     <section className="macro-decision__judgment">
@@ -486,8 +498,8 @@ function MainlinePanel({
           <span>
             MAINLINE · {thesis.session_date} · {horizonLabel(thesis.mainline.horizon)}
           </span>
-          <h2>{thesis.mainline.title}</h2>
-          <p>{thesis.mainline.thesis}</p>
+          <h2>{mainline.title.text}</h2>
+          <p>{mainline.thesis.text}</p>
         </div>
         <small>
           {stanceLabel(thesis.mainline.stance)} · {stageLabel(thesis.mainline.stage)} ·{" "}
@@ -496,20 +508,20 @@ function MainlinePanel({
       </header>
       <div className="macro-decision__mainline-workbench">
         <div aria-label="宏观主线因果链" className="macro-decision__causal-chain">
-          {thesis.mainline.claims.map((claim, index) => (
+          {claims.map((claim, index) => (
             <article key={claim.claim_id}>
               <header>
                 <span>论点 {index + 1}</span>
-                <strong>{claim.statement}</strong>
+                <strong>{claim.statement.text}</strong>
               </header>
               <div>
                 {claim.causal_edges.map((edge) => (
-                  <p key={`${claim.claim_id}:${edge.source}:${edge.target}`}>
-                    <strong>{edge.source}</strong>
+                  <p key={`${claim.claim_id}:${edge.source_label}:${edge.target_label}`}>
+                    <strong>{edge.source_label}</strong>
                     <ArrowRight aria-hidden="true" />
-                    <span>{edge.mechanism}</span>
+                    <span>{edge.mechanism.text}</span>
                     <ArrowRight aria-hidden="true" />
-                    <strong>{edge.target}</strong>
+                    <strong>{edge.target_label}</strong>
                   </p>
                 ))}
               </div>
@@ -558,19 +570,19 @@ function MainlinePanel({
               <ConditionThresholdSummary condition={thesis.mainline.checkpoints[0]!} />
             </article>
           ) : null}
-          {thesis.alternative_explanation ? (
+          {alternative ? (
             <article data-state="weakening">
               <span>唯一备选路径</span>
-              <strong>{thesis.alternative_explanation.title}</strong>
-              <small>{thesis.alternative_explanation.thesis}</small>
+              <strong>{alternative.title.text}</strong>
+              <small>{alternative.thesis.text}</small>
               <InlineCitationLabels
                 label="支持"
-                refs={thesis.alternative_explanation.supporting_evidence_refs}
+                refs={alternative.supporting_evidence_refs}
                 thesis={thesis}
               />
               <InlineCitationLabels
                 label="反证"
-                refs={thesis.alternative_explanation.conflicting_evidence_refs}
+                refs={alternative.conflicting_evidence_refs}
                 thesis={thesis}
               />
             </article>
@@ -846,7 +858,7 @@ function HorizonCell({
       </strong>
       <small>{confidenceLabel(horizon.confidence)}</small>
       {group === "actionable" ? (
-        <small className="macro-decision__asset-cause">理由：{horizon.causal_channel}</small>
+        <small className="macro-decision__asset-cause">理由：{horizon.reader_rationale.text}</small>
       ) : null}
       {horizon.reason ? <small>{horizon.reason.message}</small> : null}
       {group === "evidence_gap" && horizon.reason ? (
@@ -874,7 +886,7 @@ function AssetHorizonReason({
     <section className="macro-decision__asset-horizon">
       <p>
         <strong>{horizonLabel(horizon.horizon)}：</strong>
-        {horizon.causal_channel}
+        {horizon.reader_rationale.text}
       </p>
       <div className="macro-decision__asset-source">
         <strong>事实动量来源</strong>
@@ -1253,15 +1265,13 @@ function ModuleEvidenceIndex({ data }: { data: MacroOverviewReadData }) {
       </header>
       {data.thesis ? (
         <div className="macro-decision__claim-evidence">
-          {data.thesis.mainline.claims.map((claim, index) => {
-            const assessments = data.thesis!.module_assessments.filter((assessment) =>
-              assessment.claim_ids.includes(claim.claim_id),
-            );
+          {data.claim_presentation.map((claim, index) => {
+            const assessments = claim.module_evidence;
             return (
               <article key={claim.claim_id}>
                 <header>
                   <span>论点 {index + 1}</span>
-                  <h3>{claim.statement}</h3>
+                  <h3>{claim.statement.text}</h3>
                 </header>
                 <ul>
                   {assessments.map((assessment) => {
@@ -1273,7 +1283,7 @@ function ModuleEvidenceIndex({ data }: { data: MacroOverviewReadData }) {
                           <strong>
                             {module.label} · {moduleRoleLabel(assessment.role)}
                           </strong>
-                          <p>{assessment.analysis}</p>
+                          <p>{assessment.reader_narrative.text}</p>
                           {module.summary?.top_changes[0] ? (
                             <small>
                               最新变化：{module.summary.top_changes[0].label}{" "}

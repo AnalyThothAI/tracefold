@@ -67,6 +67,53 @@ describe("Macro Thesis workbench", () => {
     expect(await axe(view.container)).toHaveNoViolations();
   });
 
+  it("renders only the server reader projection when the immutable Thesis contains machine text", async () => {
+    const overview = macroOverviewFixture();
+    if (!overview.thesis || !overview.mainline_presentation) {
+      throw new Error("published overview fixture is missing");
+    }
+    overview.thesis.mainline.title = "rates_fed no_call";
+    overview.thesis.mainline.thesis = "macro-module:2026-07-27:rates_fed";
+    overview.thesis.mainline.claims[0]!.statement = "equity_valuation";
+    overview.thesis.module_assessments[0]!.analysis = "数据 degraded · macro-module:rates_fed";
+    overview.thesis.assets[0]!.outlook_1w.causal_channel = "cross_asset no_call";
+    overview.mainline_presentation.title = {
+      text: "读者主线标题",
+      origin: "structured_fallback",
+    };
+    overview.mainline_presentation.thesis = {
+      text: "从论点、证据、反证与条件链阅读本期判断。",
+      origin: "structured_fallback",
+    };
+    overview.claim_presentation[0]!.statement = {
+      text: "利率条件通过贴现率影响股票估值。",
+      origin: "structured_fallback",
+    };
+    overview.claim_presentation[0]!.module_evidence[0]!.reader_narrative = {
+      text: "利率与美联储作为本论点的驱动证据。",
+      origin: "structured_fallback",
+    };
+    overview.asset_presentation[0]!.horizons[0]!.reader_rationale = {
+      text: "SPY 的一周事实动量与方向条件已分开登记。",
+      origin: "structured_fallback",
+    };
+    server.use(
+      http.get(/.*\/api\/macro\/overview$/, () => HttpResponse.json({ ok: true, data: overview })),
+    );
+
+    renderWithProviders(<MacroOverviewPage token="test-token" />, { route: "/macro" });
+
+    const judgment = (await screen.findByRole("heading", { name: "读者主线标题" })).closest(
+      "section",
+    );
+    const evidence = screen.getByRole("heading", { name: "主线证据入口" }).closest("section");
+    if (!judgment || !evidence) throw new Error("reader projection sections did not render");
+    expect(judgment).toHaveTextContent("利率条件通过贴现率影响股票估值。");
+    expect(judgment).not.toHaveTextContent(/rates_fed|no_call|macro-module:|equity_valuation/);
+    expect(evidence).toHaveTextContent("利率与美联储作为本论点的驱动证据。");
+    expect(evidence).not.toHaveTextContent(/degraded|macro-module:|rates_fed/);
+  });
+
   it("expands each asset into reader-facing fact identity, support, and counterevidence", async () => {
     const overview = macroOverviewFixture();
     const spy = overview.asset_presentation.find((asset) => asset.symbol === "SPY");
@@ -74,7 +121,10 @@ describe("Macro Thesis workbench", () => {
     spy.horizons = [
       {
         ...spy.horizons[0],
-        causal_channel: "证据不足，暂不判断；利率与大类资产条件尚未形成同向确认。",
+        reader_rationale: {
+          text: "证据不足，暂不判断；利率与大类资产条件尚未形成同向确认。",
+          origin: "structured_fallback",
+        },
       },
       spy.horizons[1],
     ];
@@ -389,7 +439,7 @@ describe("Macro Thesis workbench", () => {
               session_date: null,
               cutoff_ms: null,
               role: null,
-              analysis: null,
+              reader_narrative: null,
               claim_ids: [],
               supporting_evidence_refs: [],
               conflicting_evidence_refs: [],
@@ -457,7 +507,10 @@ describe("Macro Thesis workbench", () => {
       state: "historical",
       session_date: "2026-07-26",
       cutoff_ms: Date.parse("2026-07-26T12:50:00.000Z"),
-      analysis: historicalAnalysis,
+      reader_narrative: {
+        text: historicalAnalysis,
+        origin: "publication",
+      },
       reason: {
         code: "module_context_uses_prior_publication",
         message: "该模块角色来自最近一份历史 Thesis，不代表 requested session 已发布。",

@@ -774,10 +774,24 @@ export interface components {
             /** Trigger Conditions */
             trigger_conditions: components["schemas"]["MacroCondition"][];
         };
+        /** MacroAlternativePresentation */
+        MacroAlternativePresentation: {
+            /** Causal Edges */
+            causal_edges: components["schemas"]["MacroCausalEdgePresentation"][];
+            /**
+             * Conflicting Evidence Refs
+             * @default []
+             */
+            conflicting_evidence_refs: string[];
+            /** Supporting Evidence Refs */
+            supporting_evidence_refs: string[];
+            thesis: components["schemas"]["MacroReaderNarrative"];
+            title: components["schemas"]["MacroReaderNarrative"];
+            /** Trigger Conditions */
+            trigger_conditions: components["schemas"]["MacroCondition"][];
+        };
         /** MacroAssetHorizonPresentation */
         MacroAssetHorizonPresentation: {
-            /** Causal Channel */
-            causal_channel: string;
             /**
              * Checkpoints
              * @default []
@@ -820,6 +834,7 @@ export interface components {
              * @enum {string}
              */
             outlook_direction: "bullish" | "bearish" | "neutral" | "no_call";
+            reader_rationale: components["schemas"]["MacroReaderNarrative"];
             reason: components["schemas"]["MacroReason"] | null;
             /**
              * Supporting Evidence Refs
@@ -898,6 +913,14 @@ export interface components {
             /** Target */
             target: string;
         };
+        /** MacroCausalEdgePresentation */
+        MacroCausalEdgePresentation: {
+            mechanism: components["schemas"]["MacroReaderNarrative"];
+            /** Source Label */
+            source_label: string;
+            /** Target Label */
+            target_label: string;
+        };
         /** MacroChangeData */
         MacroChangeData: {
             /** As Of */
@@ -972,8 +995,6 @@ export interface components {
         };
         /** MacroClaimAssetImplication */
         MacroClaimAssetImplication: {
-            /** Causal Channel */
-            causal_channel: string;
             /**
              * Checkpoints
              * @default []
@@ -1009,8 +1030,33 @@ export interface components {
              * @enum {string}
              */
             horizon: "1w" | "1m";
+            reader_rationale: components["schemas"]["MacroReaderNarrative"];
             /** Symbol */
             symbol: string;
+        };
+        /** MacroClaimModuleEvidencePresentation */
+        MacroClaimModuleEvidencePresentation: {
+            /**
+             * Conflicting Evidence Refs
+             * @default []
+             */
+            conflicting_evidence_refs: string[];
+            /**
+             * Module Id
+             * @enum {string}
+             */
+            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
+            reader_narrative: components["schemas"]["MacroReaderNarrative"];
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "driver" | "confirming" | "contradicting" | "uncertain";
+            /**
+             * Supporting Evidence Refs
+             * @default []
+             */
+            supporting_evidence_refs: string[];
         };
         /** MacroClaimPresentation */
         MacroClaimPresentation: {
@@ -1019,6 +1065,8 @@ export interface components {
              * @default []
              */
             asset_implications: components["schemas"]["MacroClaimAssetImplication"][];
+            /** Causal Edges */
+            causal_edges: components["schemas"]["MacroCausalEdgePresentation"][];
             /**
              * Checkpoints
              * @default []
@@ -1041,8 +1089,9 @@ export interface components {
              * @default []
              */
             falsifiers: components["schemas"]["MacroCondition"][];
-            /** Statement */
-            statement: string;
+            /** Module Evidence */
+            module_evidence: components["schemas"]["MacroClaimModuleEvidencePresentation"][];
+            statement: components["schemas"]["MacroReaderNarrative"];
             /** Supporting Evidence Refs */
             supporting_evidence_refs: string[];
         };
@@ -2227,6 +2276,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** MacroMainlinePresentation */
+        MacroMainlinePresentation: {
+            thesis: components["schemas"]["MacroReaderNarrative"];
+            title: components["schemas"]["MacroReaderNarrative"];
+        };
         /** MacroMarketFactData */
         MacroMarketFactData: {
             /**
@@ -2341,8 +2395,6 @@ export interface components {
         };
         /** MacroModuleThesisContextData */
         MacroModuleThesisContextData: {
-            /** Analysis */
-            analysis: string | null;
             /** Annotations */
             annotations: components["schemas"]["MacroConditionAnnotation"][];
             /** Claim Ids */
@@ -2351,6 +2403,7 @@ export interface components {
             conflicting_evidence_refs: string[];
             /** Cutoff Ms */
             cutoff_ms: number | null;
+            reader_narrative: components["schemas"]["MacroReaderNarrative"] | null;
             reason: components["schemas"]["MacroReason"] | null;
             /** Role */
             role: ("driver" | "confirming" | "contradicting" | "uncertain") | null;
@@ -2553,6 +2606,7 @@ export interface components {
         };
         /** MacroOverviewReadData */
         MacroOverviewReadData: {
+            alternative_presentation: components["schemas"]["MacroAlternativePresentation"] | null;
             /** Asset Presentation */
             asset_presentation: components["schemas"]["MacroAssetPresentation"][];
             /** Claim Presentation */
@@ -2566,6 +2620,7 @@ export interface components {
             /** Latest Fact At Ms */
             latest_fact_at_ms: number;
             live_delta: components["schemas"]["MacroLiveDeltaRead"] | null;
+            mainline_presentation: components["schemas"]["MacroMainlinePresentation"] | null;
             /** Modules */
             modules: components["schemas"]["MacroModuleSummaryData"][];
             outcome_replay: components["schemas"]["MacroOutcomeReplayRead"] | null;
@@ -2576,7 +2631,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_overview_v6";
+            schema_version: "macro_overview_v7";
             /**
              * Session Date
              * Format: date
@@ -2835,6 +2890,16 @@ export interface components {
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
             thesis_context: components["schemas"]["MacroModuleThesisContextData"];
+        };
+        /** MacroReaderNarrative */
+        MacroReaderNarrative: {
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "publication" | "structured_fallback";
+            /** Text */
+            text: string;
         };
         /** MacroReason */
         MacroReason: {
@@ -3113,6 +3178,7 @@ export interface components {
         };
         /** MacroThesisDetailReadData */
         MacroThesisDetailReadData: {
+            alternative_presentation: components["schemas"]["MacroAlternativePresentation"] | null;
             appendix: components["schemas"]["MacroPublicationAppendixRead"] | null;
             /** Asset Presentation */
             asset_presentation: components["schemas"]["MacroAssetPresentation"][];
@@ -3129,6 +3195,7 @@ export interface components {
             /** History */
             history: components["schemas"]["MacroPublicationHistoryItemData"][];
             live_delta: components["schemas"]["MacroLiveDeltaRead"] | null;
+            mainline_presentation: components["schemas"]["MacroMainlinePresentation"] | null;
             outcome_replay: components["schemas"]["MacroOutcomeReplayRead"] | null;
             reason: components["schemas"]["MacroReason"] | null;
             /**
@@ -3141,7 +3208,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_thesis_detail_v2";
+            schema_version: "macro_thesis_detail_v3";
             /**
              * State
              * @enum {string}

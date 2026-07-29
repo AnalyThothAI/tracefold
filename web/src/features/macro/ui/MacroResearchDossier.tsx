@@ -1,6 +1,4 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 import {
   assetDirectionLabel,
@@ -14,9 +12,11 @@ import {
   stanceLabel,
 } from "../model/macroPresentation";
 import type {
+  MacroAlternativePresentation,
   MacroAssetPresentation,
   MacroClaimPresentation,
   MacroLiveDeltaReadData,
+  MacroMainlinePresentation,
   MacroOutcomeReplayReadData,
   MacroThesisDetailReadData,
   MacroThesisV1,
@@ -37,6 +37,8 @@ export function MacroResearchDossier({
   thesis,
   assets,
   claims,
+  alternative,
+  mainline,
   liveDelta,
   outcomeReplay,
   appendix,
@@ -45,6 +47,8 @@ export function MacroResearchDossier({
   thesis: MacroThesisV1;
   assets: MacroAssetPresentation[];
   claims: MacroClaimPresentation[];
+  alternative: MacroAlternativePresentation | null;
+  mainline: MacroMainlinePresentation;
   liveDelta: MacroLiveDeltaReadData | null;
   outcomeReplay: MacroOutcomeReplayReadData | null;
   appendix: MacroThesisDetailReadData["appendix"];
@@ -58,8 +62,8 @@ export function MacroResearchDossier({
           <span>
             {state === "current" ? "CURRENT" : "HISTORICAL"} · {thesis.session_date}
           </span>
-          <h2 id="macro-research-title">{thesis.mainline.title}</h2>
-          <p>{thesis.mainline.thesis}</p>
+          <h2 id="macro-research-title">{mainline.title.text}</h2>
+          <p>{mainline.thesis.text}</p>
         </div>
         <dl>
           <div>
@@ -88,7 +92,7 @@ export function MacroResearchDossier({
 
       <nav aria-label="档案论点" className="macro-research-claim-nav">
         <span>论点索引</span>
-        {thesis.mainline.claims.map((claim, index) => (
+        {claims.map((claim, index) => (
           <a href={`#macro-claim-${index + 1}`} key={claim.claim_id}>
             论点 {index + 1}
           </a>
@@ -96,19 +100,12 @@ export function MacroResearchDossier({
       </nav>
 
       <div className="macro-research-sections">
-        {thesis.mainline.claims.map((claim, index) => (
-          <ClaimArgument
-            claim={claim}
-            claimPresentation={claims.find((item) => item.claim_id === claim.claim_id) ?? null}
-            index={index}
-            key={claim.claim_id}
-            thesis={thesis}
-          />
+        {claims.map((claim, index) => (
+          <ClaimArgument claim={claim} index={index} key={claim.claim_id} thesis={thesis} />
         ))}
-        {thesis.alternative_explanation ? <AlternativeArgument thesis={thesis} /> : null}
+        {alternative ? <AlternativeArgument alternative={alternative} thesis={thesis} /> : null}
         {thesis.core_tensions.length ? <TensionLedger thesis={thesis} /> : null}
         {thesis.changes_from_prior.length ? <ChangeLedger thesis={thesis} /> : null}
-        {thesis.narrative_sections.length ? <NarrativeLedger thesis={thesis} /> : null}
         <AssetLedger assets={assets} />
         {state === "current" ? (
           <LiveDeltaLedger liveDelta={liveDelta} thesis={thesis} />
@@ -153,36 +150,32 @@ export function MacroResearchDossier({
 
 function ClaimArgument({
   claim,
-  claimPresentation,
   index,
   thesis,
 }: {
-  claim: MacroThesisV1["mainline"]["claims"][number];
-  claimPresentation: MacroClaimPresentation | null;
+  claim: MacroClaimPresentation;
   index: number;
   thesis: MacroThesisV1;
 }) {
-  const moduleEvidence = thesis.module_assessments.filter((role) =>
-    role.claim_ids.includes(claim.claim_id),
-  );
-  const assetImplications = claimPresentation?.asset_implications ?? [];
-  const falsifiers = claimPresentation?.falsifiers ?? [];
-  const checkpoints = claimPresentation?.checkpoints ?? [];
+  const moduleEvidence = claim.module_evidence;
+  const assetImplications = claim.asset_implications;
+  const falsifiers = claim.falsifiers;
+  const checkpoints = claim.checkpoints;
   return (
     <section className="macro-research-claim" id={`macro-claim-${index + 1}`}>
       <header>
         <span>CLAIM {index + 1}</span>
-        <h3>{claim.statement}</h3>
+        <h3>{claim.statement.text}</h3>
       </header>
       {claim.causal_edges.length ? (
         <div aria-label={`论点 ${index + 1} 因果链`} className="macro-research-causal-chain">
           {claim.causal_edges.map((edge) => (
-            <p key={`${claim.claim_id}:${edge.source}:${edge.target}`}>
-              <strong>{edge.source}</strong>
+            <p key={`${claim.claim_id}:${edge.source_label}:${edge.target_label}`}>
+              <strong>{edge.source_label}</strong>
               <span aria-hidden="true">→</span>
-              <span>{edge.mechanism}</span>
+              <span>{edge.mechanism.text}</span>
               <span aria-hidden="true">→</span>
-              <strong>{edge.target}</strong>
+              <strong>{edge.target_label}</strong>
             </p>
           ))}
         </div>
@@ -207,7 +200,7 @@ function ClaimArgument({
               <strong>
                 {moduleLabel(role.module_id)} · {moduleRoleLabel(role.role)}
               </strong>
-              <p>{role.analysis}</p>
+              <p>{role.reader_narrative.text}</p>
             </article>
           ))}
         </div>
@@ -222,7 +215,7 @@ function ClaimArgument({
                   {asset.symbol} · {horizonLabel(asset.horizon)}
                 </strong>
                 <span>
-                  {asset.causal_channel} · {assetDirectionLabel(asset.direction)} ·{" "}
+                  {asset.reader_rationale.text} · {assetDirectionLabel(asset.direction)} ·{" "}
                   {confidenceLabel(asset.confidence)}
                 </span>
                 <EvidenceReferences refs={asset.evidence_links} thesis={thesis} title="资产证据" />
@@ -251,18 +244,26 @@ function ClaimArgument({
   );
 }
 
-function AlternativeArgument({ thesis }: { thesis: MacroThesisV1 }) {
-  const alternative = thesis.alternative_explanation!;
+function AlternativeArgument({
+  alternative,
+  thesis,
+}: {
+  alternative: MacroAlternativePresentation;
+  thesis: MacroThesisV1;
+}) {
   return (
     <section className="macro-research-alternative">
       <header>
         <span>ALTERNATIVE</span>
-        <h3>备选解释：{alternative.title}</h3>
+        <h3>备选解释：{alternative.title.text}</h3>
       </header>
-      <p>{alternative.thesis}</p>
+      <p>{alternative.thesis.text}</p>
       {alternative.causal_edges.map((edge) => (
-        <p className="macro-research-inline-chain" key={`${edge.source}:${edge.target}`}>
-          {edge.source} → {edge.mechanism} → {edge.target}
+        <p
+          className="macro-research-inline-chain"
+          key={`${edge.source_label}:${edge.target_label}`}
+        >
+          {edge.source_label} → {edge.mechanism.text} → {edge.target_label}
         </p>
       ))}
       <div className="macro-research-claim-evidence">
@@ -343,39 +344,6 @@ function ChangeLedger({ thesis }: { thesis: MacroThesisV1 }) {
           </li>
         ))}
       </ol>
-    </section>
-  );
-}
-
-function NarrativeLedger({ thesis }: { thesis: MacroThesisV1 }) {
-  return (
-    <section>
-      <h3>已发布研究叙事</h3>
-      {thesis.narrative_sections.map((section) => (
-        <article key={section.section_id}>
-          <h4>{section.title}</h4>
-          <div
-            aria-label={`${section.title}叙事内容`}
-            className="macro-research-markdown"
-            role="region"
-          >
-            <ReactMarkdown
-              components={{
-                h1: ({ children }) => <h5>{children}</h5>,
-                h2: ({ children }) => <h5>{children}</h5>,
-                h3: ({ children }) => <h5>{children}</h5>,
-                h4: ({ children }) => <h6>{children}</h6>,
-                h5: ({ children }) => <h6>{children}</h6>,
-                h6: ({ children }) => <h6>{children}</h6>,
-              }}
-              remarkPlugins={[remarkGfm]}
-            >
-              {section.markdown}
-            </ReactMarkdown>
-          </div>
-          <EvidenceReferences refs={section.evidence_refs} thesis={thesis} title="本节引用" />
-        </article>
-      ))}
     </section>
   );
 }

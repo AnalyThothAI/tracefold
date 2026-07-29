@@ -93,7 +93,10 @@ describe("daily macro decision workbench", () => {
     expect(screen.getByRole("heading", { name: "资产影响" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "关联主线失效条件" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "关联下一检查点" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "判断" })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "备选解释：增长重新加速吸收利率冲击" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "已发布研究叙事" })).toBeNull();
     expect(screen.getByText("mth_fixture")).toBeVisible();
     expect(screen.getAllByRole("link", { name: /查看来源/ }).length).toBeGreaterThan(0);
     expect(screen.queryByText(/发布方向 偏空/)).toBeNull();

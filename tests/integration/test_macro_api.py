@@ -270,13 +270,14 @@ def test_macro_overview_modules_and_research_read_one_persisted_thesis(
 
     assert overview.status_code == 200
     overview_data = overview.json()["data"]
-    assert overview_data["schema_version"] == "macro_overview_v6"
+    assert overview_data["schema_version"] == "macro_overview_v7"
     assert overview_data["transport"]["state"] == "current"
     assert overview_data["session_date"] == "2026-07-27"
     assert overview_data["displayed_session_date"] == "2026-07-27"
     assert overview_data["thesis_state"] == "published"
     assert overview_data["thesis_reason"] is None
     assert overview_data["thesis"]["publication_id"] == publication["publication_id"]
+    assert overview_data["mainline_presentation"]["title"]["origin"] == "publication"
     assert "status" not in overview_data["live_delta"]
     assert overview_data["live_delta"]["mainline_validity"] == "insufficient"
     assert overview_data["live_delta"]["scopes"][0]["label"] == "整体主线"
@@ -287,6 +288,8 @@ def test_macro_overview_modules_and_research_read_one_persisted_thesis(
     assert len(overview_data["thesis"]["assets"]) == 12
     assert len(overview_data["asset_presentation"]) == 12
     assert overview_data["claim_presentation"][0]["asset_implications"]
+    assert "causal_channel" not in overview_data["asset_presentation"][0]["horizons"][0]
+    assert "reader_rationale" in overview_data["asset_presentation"][0]["horizons"][0]
     assert overview_data["outcome_replay"]["schema_version"] == "macro_outcome_replay_read_v1"
     assert overview_data["outcome_replay"]["horizons"][0]["reason"]["next_check_at_ms"]
     assert len(overview_data["modules"]) == 6
@@ -297,17 +300,21 @@ def test_macro_overview_modules_and_research_read_one_persisted_thesis(
     assert overview_data["data_quality"]["current_health_state"] == "degraded"
     assert research.status_code == 200
     research_data = research.json()["data"]
-    assert research_data["schema_version"] == "macro_thesis_detail_v2"
+    assert research_data["schema_version"] == "macro_thesis_detail_v3"
     assert research_data["thesis"]["publication_id"] == publication["publication_id"]
     assert research_data["state"] == "current"
     assert research_data["displayed_session_date"] == "2026-07-27"
     assert research_data["appendix"]["publication_id"] == publication["publication_id"]
+    assert research_data["mainline_presentation"] == overview_data["mainline_presentation"]
     assert research_data["appendix"]["data_quality"]["current_health_state"] == "current"
     assert len(research_data["appendix"]["source_lineage"]) == 6
     rates_lineage = research_data["appendix"]["source_lineage"][0]
     assert rates_lineage["observed_at_ms"] == CUTOFF_MS - 1_000
     assert rates_lineage["published_at_ms"] is None
     assert rates_lineage["received_at_ms"] == CUTOFF_MS - 1_000
+    rates_data = rates.json()["data"]
+    assert "analysis" not in rates_data["thesis_context"]
+    assert rates_data["thesis_context"]["reader_narrative"]["text"]
     assert research_data["appendix"]["reconciliation_receipts"][0]["concept_id"] == "test.rates"
     assert set(research_data["history"][0]) == {
         "publication_id",
@@ -351,7 +358,7 @@ def test_macro_overview_exposes_current_session_when_thesis_is_missing(
 
     assert overview.status_code == 200
     overview_data = overview.json()["data"]
-    assert overview_data["schema_version"] == "macro_overview_v6"
+    assert overview_data["schema_version"] == "macro_overview_v7"
     assert overview_data["session_date"] == "2026-07-27"
     assert overview_data["cutoff_ms"] == cutoff_ms
     assert overview_data["thesis_state"] == "missing"

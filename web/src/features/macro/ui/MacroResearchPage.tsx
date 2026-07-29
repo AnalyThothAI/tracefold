@@ -84,10 +84,12 @@ export function MacroResearchPage({ token }: { token: string }) {
         />
         {data.thesis ? (
           <MacroResearchDossier
+            alternative={data.alternative_presentation}
             appendix={data.appendix}
             assets={data.asset_presentation}
             claims={data.claim_presentation}
             liveDelta={data.live_delta}
+            mainline={data.mainline_presentation!}
             outcomeReplay={data.outcome_replay}
             state={data.state}
             thesis={data.thesis}

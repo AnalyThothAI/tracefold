@@ -29,6 +29,7 @@ from tracefold.macro.read_models import (
     MacroLiveDeltaItemRead,
     MacroOutcomeAssetResultRead,
     MacroOutcomeHorizonRead,
+    project_alternative_presentation,
     project_asset_presentation,
     project_claim_presentation,
     project_live_delta_for_read,
@@ -753,6 +754,59 @@ def test_reader_projects_claim_asset_links_and_typed_outcome_reasons() -> None:
         token not in reader_reason_text
         for token in ("no_call", "canonical", "checkpoint", "publication", "Outcome Replay", "worker")
     )
+
+
+def test_reader_projection_localizes_machine_text_without_mutating_publication() -> None:
+    publication_payload = _directional_publication().model_dump(mode="json")
+    original_payload = deepcopy(publication_payload)
+    claim = publication_payload["mainline"]["claims"][0]
+    claim["causal_edges"][0]["source"] = "rates_fed"
+    claim["causal_edges"][0]["target"] = "equity_valuation"
+    publication_payload["module_assessments"][0]["analysis"] = (
+        "美元指数数据degraded。证据来源：macro-module:2026-07-27:rates_fed。"
+    )
+    publication_payload["assets"][0]["outlook_1w"]["direction"] = "no_call"
+    publication_payload["assets"][0]["outlook_1w"]["confidence"] = "low"
+    publication_payload["assets"][0]["outlook_1w"]["causal_channel"] = (
+        "支持：cross_asset；冲突：economy_inflation；结论 no_call。"
+    )
+    publication_payload["assets"][0]["outlook_1w"]["supporting_evidence_refs"] = []
+    publication_payload["assets"][0]["outlook_1w"]["confirmation_triggers"] = []
+    publication_payload["assets"][0]["outlook_1w"]["falsifiers"] = []
+    publication_payload["assets"][0]["outlook_1w"]["checkpoints"] = []
+    polluted_payload = deepcopy(publication_payload)
+
+    claims = project_claim_presentation(publication_payload)
+    assets = project_asset_presentation(publication_payload)
+    alternative = project_alternative_presentation(publication_payload)
+
+    assert claims[0].causal_edges[0].source_label == "利率与美联储"
+    assert claims[0].causal_edges[0].target_label == "股票估值"
+    assert claims[0].module_evidence[0].reader_narrative.origin == "structured_fallback"
+    assert claims[0].module_evidence[0].reader_narrative.text == (
+        "利率与美联储作为本论点的驱动证据；本次档案登记 1 条支持证据与 0 条反向证据。"
+    )
+    assert assets[0].horizons[0].reader_rationale.text == (
+        "SPY 的1 周事实动量上行（+1.00%）；已发布判断为证据不足，暂不判断，登记 0 条支持证据与 1 条反向证据。"
+    )
+    assert claims[0].asset_implications[0].reader_rationale == assets[0].horizons[0].reader_rationale
+    assert alternative is None
+    visible_reader_text = " ".join(
+        (
+            claims[0].statement.text,
+            claims[0].causal_edges[0].source_label,
+            claims[0].causal_edges[0].mechanism.text,
+            claims[0].causal_edges[0].target_label,
+            claims[0].module_evidence[0].reader_narrative.text,
+            assets[0].horizons[0].reader_rationale.text,
+        )
+    )
+    assert all(
+        token not in visible_reader_text
+        for token in ("rates_fed", "cross_asset", "economy_inflation", "macro-module:", "no_call", "degraded")
+    )
+    assert publication_payload == polluted_payload
+    assert original_payload != publication_payload
 
 
 def test_publication_appendix_keeps_all_authoritative_fact_clocks() -> None:

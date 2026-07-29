@@ -105,7 +105,7 @@ export function AssetLedger({ assets }: { assets: MacroAssetPresentation[] }) {
                       </div>
                       <div>
                         <dt>1W 条件展望</dt>
-                        <dd>{oneWeek.causal_channel}</dd>
+                        <dd>{oneWeek.reader_rationale.text}</dd>
                       </div>
                       <div>
                         <dt>1M 事实动量</dt>
@@ -116,7 +116,7 @@ export function AssetLedger({ assets }: { assets: MacroAssetPresentation[] }) {
                       </div>
                       <div>
                         <dt>1M 条件展望</dt>
-                        <dd>{oneMonth.causal_channel}</dd>
+                        <dd>{oneMonth.reader_rationale.text}</dd>
                       </div>
                     </dl>
                     {oneWeek.reason ? <ReasonDetails reason={oneWeek.reason} /> : null}

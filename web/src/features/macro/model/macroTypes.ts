@@ -60,7 +60,9 @@ export type MacroLiveDeltaItem = MacroSchemas["MacroLiveDeltaItemRead"];
 export type MacroLiveDeltaReadData = MacroSchemas["MacroLiveDeltaRead"];
 export type MacroAssetHorizonPresentation = MacroSchemas["MacroAssetHorizonPresentation"];
 export type MacroAssetPresentation = MacroSchemas["MacroAssetPresentation"];
+export type MacroAlternativePresentation = MacroSchemas["MacroAlternativePresentation"];
 export type MacroClaimPresentation = MacroSchemas["MacroClaimPresentation"];
+export type MacroMainlinePresentation = MacroSchemas["MacroMainlinePresentation"];
 export type MacroOutcomeReplayReadData = MacroSchemas["MacroOutcomeReplayRead"];
 
 export type MacroModuleSummary = MacroSchemas["MacroModuleSummaryData"];

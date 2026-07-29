@@ -4,7 +4,7 @@ import { macroModuleFixture } from "@tests/fixtures/macroFixture";
 import { afterEach, describe, expect, it } from "vitest";
 
 const EMPTY_THESIS_CONTEXT = {
-  analysis: null,
+  reader_narrative: null,
   annotations: [],
   claim_ids: [],
   conflicting_evidence_refs: [],

@@ -162,118 +162,6 @@
     margin: 0 0 0.7rem;
   }
 
-  .macro-research-markdown {
-    max-width: 100%;
-    min-width: 0;
-    color: var(--text-primary);
-    line-height: 1.75;
-    overflow-x: auto;
-    overflow-wrap: anywhere;
-  }
-
-  .macro-research-markdown > :first-child {
-    margin-top: 0;
-  }
-
-  .macro-research-markdown > :last-child {
-    margin-bottom: 0;
-  }
-
-  .macro-research-markdown :is(h1, h2, h3, h4, h5, h6) {
-    margin: 1rem 0 0.45rem;
-    font-size: 1rem;
-  }
-
-  .macro-research-markdown p {
-    margin: 0.65rem 0;
-  }
-
-  .macro-research-markdown :is(ul, ol) {
-    margin: 0.65rem 0;
-    padding-left: 1.5rem;
-  }
-
-  .macro-research-markdown li + li {
-    margin-top: 0.35rem;
-  }
-
-  .macro-research-markdown li > :first-child {
-    margin-top: 0;
-  }
-
-  .macro-research-markdown li > :last-child {
-    margin-bottom: 0;
-  }
-
-  .macro-research-markdown input[type="checkbox"] {
-    margin: 0 0.45rem 0 0;
-    accent-color: var(--accent-primary);
-  }
-
-  .macro-research-markdown blockquote {
-    margin: 0.85rem 0;
-    border-left: 3px solid var(--border-strong);
-    color: var(--text-muted);
-    padding: 0.15rem 0 0.15rem 0.9rem;
-  }
-
-  .macro-research-markdown table {
-    width: 100%;
-    min-width: 30rem;
-    border-collapse: collapse;
-    margin: 0.85rem 0;
-  }
-
-  .macro-research-markdown :is(th, td) {
-    border: 1px solid var(--border-subtle);
-    padding: 0.5rem 0.65rem;
-    text-align: left;
-    vertical-align: top;
-  }
-
-  .macro-research-markdown th {
-    background: var(--surface-raised);
-    font-weight: 650;
-  }
-
-  .macro-research-markdown :not(pre) > code {
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-    font-family: var(--font-mono);
-    font-size: 0.85em;
-    padding: 0.08rem 0.3rem;
-  }
-
-  .macro-research-markdown pre {
-    max-width: 100%;
-    overflow-x: auto;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-    margin: 0.85rem 0;
-    padding: 0.75rem;
-  }
-
-  .macro-research-markdown pre code {
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    overflow-wrap: normal;
-    white-space: pre;
-  }
-
-  .macro-research-markdown a {
-    text-decoration: underline;
-    text-decoration-thickness: 0.08em;
-    text-underline-offset: 0.16em;
-  }
-
-  .macro-research-markdown hr {
-    border: 0;
-    border-top: 1px solid var(--border-subtle);
-    margin: 1rem 0;
-  }
-
   .macro-research-gaps,
   .macro-research-citations,
   .macro-research-audit {
@@ -436,19 +324,6 @@
 
     .macro-research-citations li > a {
       grid-column: 1;
-    }
-
-    .macro-research-markdown {
-      overflow-x: visible;
-    }
-
-    .macro-research-markdown table {
-      min-width: 0;
-      table-layout: fixed;
-    }
-
-    .macro-research-markdown :is(th, td) {
-      overflow-wrap: anywhere;
     }
   }
 }

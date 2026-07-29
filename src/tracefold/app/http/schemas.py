@@ -7,12 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tracefold.macro import (
     MACRO_THESIS_ASSETS,
+    MacroAlternativePresentation,
     MacroAssetPresentation,
     MacroClaimPresentation,
     MacroConditionAnnotation,
     MacroLiveDeltaRead,
+    MacroMainlinePresentation,
     MacroOutcomeReplayRead,
     MacroPublicationAppendixRead,
+    MacroReaderNarrative,
     MacroReason,
     MacroThesisV1,
 )
@@ -279,7 +282,7 @@ class MacroModuleThesisContextData(ExactApiSchema):
     session_date: date | None
     cutoff_ms: int | None
     role: Literal["driver", "confirming", "contradicting", "uncertain"] | None
-    analysis: str | None
+    reader_narrative: MacroReaderNarrative | None
     claim_ids: list[str]
     supporting_evidence_refs: list[str]
     conflicting_evidence_refs: list[str]
@@ -837,7 +840,7 @@ class MacroPublicationFallbackContextData(ExactApiSchema):
 
 
 class MacroOverviewReadData(ExactApiSchema):
-    schema_version: Literal["macro_overview_v6"]
+    schema_version: Literal["macro_overview_v7"]
     read_at_ms: int
     transport: MacroTransportStateData
     session_date: date
@@ -858,8 +861,10 @@ class MacroOverviewReadData(ExactApiSchema):
     thesis: MacroThesisV1 | None
     run: MacroThesisRunData | None
     fallback: MacroPublicationFallbackContextData
+    mainline_presentation: MacroMainlinePresentation | None
     asset_presentation: list[MacroAssetPresentation]
     claim_presentation: list[MacroClaimPresentation]
+    alternative_presentation: MacroAlternativePresentation | None
     live_delta: MacroLiveDeltaRead | None
     outcome_replay: MacroOutcomeReplayRead | None
     modules: list[MacroModuleSummaryData]
@@ -871,6 +876,12 @@ class MacroOverviewReadData(ExactApiSchema):
         expected = MACRO_THESIS_ASSETS if self.thesis is not None else ()
         if symbols != expected:
             raise ValueError("macro_overview_asset_presentation_order")
+        if (self.mainline_presentation is None) != (self.thesis is None):
+            raise ValueError("macro_overview_mainline_presentation_mismatch")
+        if (self.alternative_presentation is None) != (
+            self.thesis is None or self.thesis.alternative_explanation is None
+        ):
+            raise ValueError("macro_overview_alternative_presentation_mismatch")
         return self
 
 
@@ -897,7 +908,7 @@ class MacroPublicationHistoryItemData(ExactApiSchema):
 
 
 class MacroThesisDetailReadData(ExactApiSchema):
-    schema_version: Literal["macro_thesis_detail_v2"]
+    schema_version: Literal["macro_thesis_detail_v3"]
     state: Literal[
         "current",
         "historical",
@@ -912,8 +923,10 @@ class MacroThesisDetailReadData(ExactApiSchema):
     reason: MacroReason | None
     thesis: MacroThesisV1 | None
     fallback: MacroPublicationFallbackContextData
+    mainline_presentation: MacroMainlinePresentation | None
     asset_presentation: list[MacroAssetPresentation]
     claim_presentation: list[MacroClaimPresentation]
+    alternative_presentation: MacroAlternativePresentation | None
     live_delta: MacroLiveDeltaRead | None
     outcome_replay: MacroOutcomeReplayRead | None
     appendix: MacroPublicationAppendixRead | None
@@ -928,6 +941,12 @@ class MacroThesisDetailReadData(ExactApiSchema):
             raise ValueError("macro_research_asset_presentation_order")
         if self.thesis is None and self.appendix is not None:
             raise ValueError("macro_research_appendix_without_publication")
+        if (self.mainline_presentation is None) != (self.thesis is None):
+            raise ValueError("macro_research_mainline_presentation_mismatch")
+        if (self.alternative_presentation is None) != (
+            self.thesis is None or self.thesis.alternative_explanation is None
+        ):
+            raise ValueError("macro_research_alternative_presentation_mismatch")
         if self.thesis is not None:
             if self.appendix is None:
                 raise ValueError("macro_research_publication_appendix_required")
