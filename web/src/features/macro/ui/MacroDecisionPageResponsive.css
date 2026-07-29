@@ -69,12 +69,11 @@
     }
 
     .macro-decision__nav {
-      display: none;
+      display: flex;
     }
 
     .macro-decision__mobile-nav {
-      display: grid;
-      gap: 0.2rem;
+      display: none;
     }
 
     .macro-decision__mobile-nav span {

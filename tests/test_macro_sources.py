@@ -571,7 +571,9 @@ def test_cfe_settlement_uses_current_official_csv_endpoint() -> None:
     assert len(batch.facts) == 1
     fact = batch.facts[0]
     assert isinstance(fact, MarketSettlementFact)
+    assert fact.fact_schema_version == "market_settlement_v2"
     assert fact.contract_code == "VX30/N6"
+    assert fact.contract_expiration_date == date(2026, 7, 29)
     assert fact.settlement_price == 19.231
     assert requests[0].url.params["dt"] == "2026-07-24"
 

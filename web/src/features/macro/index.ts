@@ -1,18 +1,21 @@
 export { useMacroModuleQuery, useMacroOverviewQuery } from "./api/useMacroDecisionQuery";
 export { useMacroResearchQuery } from "./api/useMacroResearchQuery";
 export type {
-  MacroAssetView,
+  MacroArchiveThesis,
   MacroChange,
   MacroCondition,
-  MacroLiveDeltaReadData,
+  MacroLiveDeltaV2,
   MacroModuleId,
   MacroModuleRouteReadData,
+  MacroOutcomeReplayV2,
   MacroOverviewReadData,
-  MacroOutcomeReplayReadData,
   MacroReason,
+  MacroResearchReadData,
+  MacroThesisArchiveDetailReadData,
   MacroThesisDetailReadData,
   MacroThesisRunData,
   MacroThesisV1,
+  MacroThesisV2,
   MacroTypedModuleReadData,
 } from "./model/macroTypes";
 export { MacroModulePage, MacroOverviewPage } from "./ui/MacroDecisionPage";

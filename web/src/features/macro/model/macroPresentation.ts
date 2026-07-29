@@ -1,10 +1,10 @@
 import type {
   MacroCondition,
-  MacroLiveDeltaReadData,
+  MacroLiveDeltaV2,
   MacroModuleId,
-  MacroOutcomeReplayReadData,
+  MacroOutcomeReplayV2,
   MacroThesisRunData,
-  MacroThesisV1,
+  MacroThesisV2,
 } from "./macroTypes";
 
 export function formatInstant(value: number | null): string {
@@ -25,15 +25,18 @@ export function formatSigned(value: number | null): string {
   return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
 }
 
-export function stanceLabel(value: MacroThesisV1["mainline"]["stance"]): string {
+export function stanceLabel(value: MacroThesisV2["mainline"]["stance"]): string {
   return { call: "形成判断", no_call: "证据不足，暂不判断" }[value];
 }
 
-export function confidenceLabel(value: MacroThesisV1["mainline"]["confidence"]): string {
+export function confidenceLabel(
+  value: MacroThesisV2["mainline"]["confidence"] | null | undefined,
+): string {
+  if (!value) return "未声明置信度";
   return { high: "高置信度", low: "低置信度", medium: "中等置信度" }[value];
 }
 
-export function stageLabel(value: MacroThesisV1["mainline"]["stage"]): string {
+export function stageLabel(value: MacroThesisV2["mainline"]["stage"]): string {
   return {
     developing: "发展中",
     emerging: "形成中",
@@ -46,7 +49,6 @@ export function stageLabel(value: MacroThesisV1["mainline"]["stage"]): string {
 export function horizonLabel(value: string): string {
   return (
     {
-      "1d": "1 日",
       "1m": "1 个月",
       "1w": "1 周",
       "1w_to_1m": "1 周至 1 个月",
@@ -66,65 +68,53 @@ export function moduleLabel(value: MacroModuleId): string {
 }
 
 export function moduleRoleLabel(
-  value: MacroThesisV1["module_assessments"][number]["role"],
+  value: MacroThesisV2["module_assessments"][number]["role"] | "not_material",
 ): string {
   return {
     confirming: "确认",
     contradicting: "反证",
     driver: "驱动",
+    not_material: "本次不重要",
     uncertain: "待确认",
   }[value];
 }
 
 export function changeStatusLabel(
-  value: MacroThesisV1["changes_from_prior"][number]["status"],
+  value: MacroThesisV2["material_changes"][number]["status"],
 ): string {
   return {
     new: "新增",
     reversed: "反转",
     strengthened: "增强",
-    unchanged: "未变",
     weakened: "减弱",
   }[value];
 }
 
-export function leadingSideLabel(value: string, sideA: string, sideB: string): string {
-  return (
-    { balanced: "双方均衡", side_a: sideA, side_b: sideB, uncertain: "尚不确定" }[value] ??
-    "尚不确定"
-  );
-}
-
 export function assetDirectionLabel(
-  value: MacroThesisV1["assets"][number]["outlook_1w"]["direction"],
+  value: MacroThesisV2["asset_outlooks"][number]["direction"],
 ): string {
-  return {
-    bearish: "偏空",
-    bullish: "偏多",
-    neutral: "中性",
-    no_call: "证据不足，暂不判断",
-  }[value];
+  return { bearish: "偏空", bullish: "偏多", neutral: "中性" }[value];
 }
 
-export function momentumLabel(
-  value: MacroThesisV1["assets"][number]["momentum"]["momentum_1w"],
-): string {
+export function momentumLabel(value: MacroThesisV2["assets"][number]["momentum_1w"]): string {
   return { down: "下行", flat: "持平", insufficient: "动量证据不足", up: "上行" }[value];
 }
 
-export function conditionEffectLabel(value: MacroCondition["effect"]): string {
+export function conditionKindLabel(value: MacroCondition["kind"]): string {
   return {
-    confirming: "确认条件",
-    invalidation_triggered: "失效条件",
+    checkpoint: "事件检查点",
+    confirmation: "确认条件",
+    falsifier: "失效条件",
     weakening: "削弱条件",
   }[value];
 }
 
 export function operatorLabel(value: MacroCondition["operator"]): string {
-  return { abs_gte: "绝对值 ≥", gt: ">", gte: "≥", lt: "<", lte: "≤" }[value];
+  if (!value) return "事件";
+  return { gt: ">", gte: "≥", lt: "<", lte: "≤" }[value];
 }
 
-export function liveDeltaLabel(value: MacroLiveDeltaReadData["mainline_validity"]): string {
+export function liveDeltaLabel(value: MacroLiveDeltaV2["mainline_validity"]): string {
   return {
     confirming: "正在确认",
     insufficient: "新增证据不足",
@@ -135,17 +125,9 @@ export function liveDeltaLabel(value: MacroLiveDeltaReadData["mainline_validity"
 }
 
 export function outcomeStatusLabel(
-  value: MacroOutcomeReplayReadData["horizons"][number]["status"],
+  value: MacroOutcomeReplayV2["horizons"][number]["status"],
 ): string {
   return { evaluated: "已评估", insufficient: "到期但证据不足", pending: "等待到期" }[value];
-}
-
-export function gapAxisLabel(value: MacroThesisV1["gaps"][number]["axis"]): string {
-  return {
-    coverage: "覆盖缺口",
-    current_health: "当前数据异常",
-    history_depth: "历史深度不足",
-  }[value];
 }
 
 export function runStatusLabel(value: MacroThesisRunData["status"]): string {
@@ -153,20 +135,12 @@ export function runStatusLabel(value: MacroThesisRunData["status"]): string {
     {
       config_error: "配置错误",
       failed: "失败",
+      missing: "尚无运行",
+      not_published: "未发布",
       pending: "等待运行",
       published: "已发布",
       retryable: "等待重试",
       running: "生成中",
     }[value] ?? "状态未知"
-  );
-}
-
-export function runErrorLabel(value: string): string {
-  return (
-    {
-      macro_thesis_configuration_error: "研究配置不可用",
-      macro_thesis_generation_error: "研究生成失败",
-      macro_thesis_review_error: "独立审阅失败",
-    }[value] ?? "未分类发布错误"
   );
 }

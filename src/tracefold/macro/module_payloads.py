@@ -27,8 +27,8 @@ _SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
     "economy_inflation": "macro_economy_inflation_v5",
     "liquidity_funding": "macro_liquidity_funding_v5",
     "credit": "macro_credit_v7",
-    "volatility": "macro_volatility_v6",
-    "cross_asset": "macro_cross_asset_v6",
+    "volatility": "macro_volatility_v7",
+    "cross_asset": "macro_cross_asset_v7",
 }
 _ETF_DAILY_IDS = (
     "nasdaq.spy.daily",
@@ -230,6 +230,13 @@ def _dataset_states(
     analysis_job_state: dict[str, int] | None,
     backfill_worker_enabled: bool,
 ) -> list[dict[str, Any]]:
+    required_dataset_ids = {
+        dataset_id
+        for spec in specs
+        for capability in coverage_for_module(spec.module_id)
+        if capability.requirement == "required"
+        for dataset_id in capability.dataset_ids
+    }
     targets_by_dataset: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in targets:
         targets_by_dataset[str(row["dataset_id"])].append(row)
@@ -240,6 +247,12 @@ def _dataset_states(
             latest_by_dataset[dataset_id] = row
     states = []
     for spec in specs:
+        required_for_current = spec.dataset_id in required_dataset_ids and spec.source_role not in {
+            "history",
+            "intraday_proxy",
+            "reconciliation_only",
+        }
+        required_for_history = _history_required(spec)
         dataset_targets = targets_by_dataset.get(spec.dataset_id, [])
         target = next(
             (row for row in dataset_targets if str(row.get("partition_key")) == "latest"),
@@ -291,6 +304,15 @@ def _dataset_states(
             current_health = "unavailable"
             current_reason = "acquisition_target_missing"
             source_state = "failed"
+        elif str(target.get("status") or "") in {
+            "stale",
+            "unavailable",
+            "invalid",
+            "failed",
+        }:
+            current_health = "degraded" if latest is not None else "unavailable"
+            current_reason = "source_terminal_stale"
+            source_state = "failed"
         elif latest is None:
             current_health = "unavailable"
             current_reason = "no_valid_fact"
@@ -322,6 +344,8 @@ def _dataset_states(
             target.get("next_due_at_ms") if target is not None else None,
             market.next_open_ms if market is not None else None,
         )
+        if current_reason == "source_terminal_stale":
+            current_next_check_at_ms = None
         history_next_check_at_ms = min(
             (int(row["next_due_at_ms"]) for row in active_backfills if row.get("next_due_at_ms") is not None),
             default=None,
@@ -331,6 +355,8 @@ def _dataset_states(
                 "dataset_id": spec.dataset_id,
                 "concept_id": spec.concept_id,
                 "source_role": spec.source_role,
+                "required_for_current": required_for_current,
+                "required_for_history": required_for_history,
                 "label": spec.label,
                 "current_health": current_health,
                 "history_depth": history_state,
@@ -346,6 +372,7 @@ def _dataset_states(
                     code=history_reason,
                     dataset_id=spec.dataset_id,
                     history_depth=history_state,
+                    required_for_history=required_for_history,
                     worker_enabled=backfill_worker_enabled,
                     next_check_at_ms=history_next_check_at_ms,
                 ),
@@ -372,7 +399,7 @@ def _source_state(target: dict[str, Any] | None) -> str:
     status = str(target.get("status") or "")
     if status == "current":
         return "healthy"
-    if status in {"unavailable", "invalid"}:
+    if status in {"stale", "unavailable", "invalid", "failed"}:
         return "failed"
     return "degraded"
 
@@ -385,6 +412,7 @@ _CURRENT_REASON_MESSAGES = {
     "derived_fact_delayed": "派生事实已超过预期 freshness 预算。",
     "within_freshness_budget": "当前事实位于 Dataset freshness 预算内。",
     "acquisition_target_missing": "Dataset 缺少 acquisition target，无法自动采集。",
+    "source_terminal_stale": "Dataset 来源已进入 stale 终态，不会自动重试。",
     "no_valid_fact": "Dataset 尚无可用于判断的有效事实。",
     "expected_fact_missing": "预期事实未在最大 freshness 预算内到达。",
     "expected_fact_delayed": "预期事实尚未到达，当前事实已延迟。",
@@ -399,6 +427,7 @@ _HISTORY_REASON_MESSAGES = {
     "history_facts_missing": "该 feature 所需历史事实缺失。",
     "expected_history_window_present": "该 feature 的最小历史窗口已满足。",
     "expected_history_window_incomplete": "该 feature 的最小历史窗口尚未满足。",
+    "history_backfill_terminal": "required 历史回填已进入终态，不会自动重试。",
 }
 
 
@@ -410,7 +439,10 @@ def _dataset_current_reason(
     next_check_at_ms: int | None,
 ) -> dict[str, object]:
     healthy = current_health == "current"
-    operator_action = code == "acquisition_target_missing"
+    operator_action = code in {
+        "acquisition_target_missing",
+        "source_terminal_stale",
+    }
     return macro_reason(
         code=code,
         message=_CURRENT_REASON_MESSAGES[code],
@@ -421,8 +453,10 @@ def _dataset_current_reason(
         next_action=(
             None
             if healthy
+            else "由操作员检查并恢复该 Dataset；系统不会自动重试。"
+            if code == "source_terminal_stale"
             else "创建 acquisition target 后重新投影模块。"
-            if operator_action
+            if code == "acquisition_target_missing"
             else "等待下一次采集或派生投影，并复核该 Dataset。"
         ),
         next_check_at_ms=next_check_at_ms,
@@ -434,22 +468,40 @@ def _dataset_history_reason(
     code: str,
     dataset_id: str,
     history_depth: str,
+    required_for_history: bool,
     worker_enabled: bool,
     next_check_at_ms: int | None,
 ) -> dict[str, object]:
+    if not required_for_history and history_depth != "not_required":
+        complete = history_depth == "complete"
+        return macro_reason(
+            code=("optional_maximum_history_complete" if complete else "optional_maximum_history_incomplete"),
+            message=(
+                "可选最大公开历史已完整，仅作为审计信息。"
+                if complete
+                else "可选最大公开历史尚未完整，仅作为审计信息，不影响当前判断。"
+            ),
+            impact="none",
+            retryable=False,
+            recovery="none",
+            next_check_at_ms=next_check_at_ms,
+        )
     complete = history_depth in {"complete", "not_required"}
     requires_backfill = code in {"history_backfill_incomplete", "history_backfill_has_no_valid_fact"}
+    terminal = code == "history_backfill_terminal"
     paused = requires_backfill and not worker_enabled
     return macro_reason(
         code=("history_backfill_paused" if paused else code),
         message=("历史回填 worker 已停用；当前历史深度不会自动推进。" if paused else _HISTORY_REASON_MESSAGES[code]),
         impact="none" if complete else "blocked" if history_depth == "insufficient" else "limited",
         affected_dataset_ids=() if complete else (dataset_id,),
-        retryable=not complete,
-        recovery="none" if complete else "operator_action" if paused else "automatic",
+        retryable=not complete and not terminal,
+        recovery=("none" if complete else "operator_action" if paused or terminal else "automatic"),
         next_action=(
             None
             if complete
+            else "检查 required 历史目标最后错误，修复来源后显式重新入队。"
+            if terminal
             else "启用 macro_backfill worker 或由操作员执行回填。"
             if paused
             else "等待历史回填或补充满足该 feature 最小窗口的事实。"
@@ -466,13 +518,18 @@ def _dataset_history_depth(
     active_backfills: list[dict[str, Any]],
 ) -> tuple[str, str]:
     backfills = [row for row in targets if str(row.get("clock_kind")) == "backfill"]
-    history_required = bool(backfills) or spec.source_role == "history" or bool(spec.metadata.get("history_years"))
-    if not history_required:
+    if not _history_tracked(spec):
         return "not_required", "no_history_requirement"
 
     dated_facts = sorted(value for row in facts if (value := _fact_date(row)) is not None)
-    if backfills and all(str(row.get("status")) == "current" for row in backfills):
-        return "complete", "configured_history_range_complete"
+    expected_years = int(spec.metadata.get("history_years") or 5)
+    covered_days = (dated_facts[-1] - dated_facts[0]).days if dated_facts else 0
+    if covered_days >= expected_years * 365 - 14:
+        return "complete", "expected_history_window_present"
+    if any(str(row.get("status") or "") in {"stale", "unavailable", "invalid", "failed"} for row in backfills):
+        return (
+            ("partial", "history_backfill_terminal") if dated_facts else ("insufficient", "history_backfill_terminal")
+        )
     if active_backfills:
         return (
             ("partial", "history_backfill_incomplete")
@@ -481,16 +538,19 @@ def _dataset_history_depth(
         )
     if not dated_facts:
         return "insufficient", "history_facts_missing"
-
-    expected_years = int(spec.metadata.get("history_years") or 5)
-    covered_days = (dated_facts[-1] - dated_facts[0]).days
-    if covered_days >= expected_years * 365 - 14:
-        return "complete", "expected_history_window_present"
     return "partial", "expected_history_window_incomplete"
 
 
+def _history_required(spec: DatasetSpec) -> bool:
+    return spec.source_role == "history"
+
+
+def _history_tracked(spec: DatasetSpec) -> bool:
+    return _history_required(spec) or bool(spec.metadata.get("history_years"))
+
+
 def _current_health(dataset_states: list[dict[str, Any]]) -> dict[str, Any]:
-    tracked = [item for item in dataset_states if item["source_role"] != "history"]
+    tracked = [item for item in dataset_states if item["required_for_current"]]
     current_datasets = sum(item["current_health"] == "current" for item in tracked)
     state = "current" if current_datasets == len(tracked) else "unavailable" if current_datasets == 0 else "degraded"
     return {
@@ -506,7 +566,7 @@ def _current_health(dataset_states: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _history_depth(dataset_states: list[dict[str, Any]]) -> dict[str, Any]:
-    tracked = [state for state in dataset_states if state["history_depth"] != "not_required"]
+    tracked = [state for state in dataset_states if state["required_for_history"]]
     if not tracked:
         state = "not_required"
     elif all(item["history_depth"] == "complete" for item in tracked):
@@ -528,7 +588,7 @@ def _backfill_execution(
     *,
     worker_enabled: bool,
 ) -> dict[str, Any]:
-    dataset_ids = {spec.dataset_id for spec in specs}
+    dataset_ids = {spec.dataset_id for spec in specs if _history_required(spec)}
     backfills = [
         row
         for row in targets
@@ -1014,6 +1074,10 @@ def _volatility_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
         "term_structure": {
             "spot_and_three_month": _indicator_rows(series_rows, ("fred.vixcls", "fred.vxvcls")),
             "spread_history": _paired_difference_history(vix, vxv),
+            "official_vx_curve": _settlement_rows(
+                groups["settlement_rows"],
+                "cboe.cfe.vx.settlement",
+            ),
         },
         "cross_asset_implied": {
             "indicators": _indicator_rows(
@@ -1149,7 +1213,6 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
         "correlations": comparison["correlations"],
         "futures": {
             "return_matrix": futures_return_matrix,
-            "vix_settlements": _settlement_rows(groups["settlement_rows"], "cboe.cfe.vx.settlement"),
             "positions": _position_rows(groups["position_rows"], "cftc.tff.cross_asset_positions"),
         },
     }
@@ -1505,18 +1568,28 @@ def _position_rows(rows: list[dict[str, Any]], dataset_id: str) -> list[dict[str
 
 
 def _settlement_rows(rows: list[dict[str, Any]], dataset_id: str) -> list[dict[str, Any]]:
+    candidates = [row for row in rows if row["dataset_id"] == dataset_id]
+    latest_trade_date = max(
+        (row["trade_date"] for row in candidates),
+        default=None,
+    )
     matching = sorted(
-        (row for row in rows if row["dataset_id"] == dataset_id),
-        key=lambda row: (row["trade_date"], str(row["contract_code"])),
-        reverse=True,
+        (row for row in candidates if row["trade_date"] == latest_trade_date),
+        key=lambda row: (
+            row["contract_expiration_date"],
+            str(row["contract_code"]),
+        ),
     )
     return [
         {
             "trade_date": str(row["trade_date"]),
             "contract_code": row["contract_code"],
+            "contract_expiration_date": str(row["contract_expiration_date"]),
             "settlement_price": float(row["settlement_price"]),
             "open_interest": row.get("open_interest"),
             "volume": row.get("volume"),
+            "published_at_ms": (int(row["published_at_ms"]) if row.get("published_at_ms") is not None else None),
+            "received_at_ms": int(row["received_at_ms"]),
             "source_url": row["source_url"],
         }
         for row in matching[:30]
@@ -1526,6 +1599,8 @@ def _settlement_rows(rows: list[dict[str, Any]], dataset_id: str) -> list[dict[s
 def _current_settlement_revisions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     revisions: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
+        if row.get("fact_schema_version") != "market_settlement_v2":
+            continue
         key = (
             str(row["dataset_id"]),
             str(row.get("instrument_id") or ""),

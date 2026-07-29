@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
 from tracefold.app.llm import (
     configured_chat_model,
     litellm_proxy_model_name,
@@ -10,7 +8,6 @@ from tracefold.app.llm import (
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.deepagents.macro_thesis_deepagent import (
     MacroThesisDeepAgent,
-    MacroThesisIndependentReviewer,
     require_supported_macro_thesis_model,
 )
 from tracefold.integrations.macro_sources import MacroSourceClient
@@ -21,10 +18,6 @@ from tracefold.macro import (
     MacroProjectionWorker,
     MacroThesisService,
     MacroThesisWorker,
-)
-from tracefold.platform.postgres.postgres_client import (
-    local_docker_host_dsn,
-    with_password_from_file,
 )
 from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_worker, unavailable_worker
 from tracefold.platform.workers.worker_base import WorkerBase
@@ -110,47 +103,25 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
             thesis_settings.model,
             base_url=ctx.settings.llm.base_url,
         )
-        effective_reviewer_model = litellm_proxy_model_name(
-            thesis_settings.reviewer_model,
-            base_url=ctx.settings.llm.base_url,
-        )
         configuration_error: str | None = None
         if not llm_is_configured(ctx.settings):
             configuration_error = "llm_not_configured"
         else:
             try:
                 require_supported_macro_thesis_model(effective_model)
-                require_supported_macro_thesis_model(effective_reviewer_model)
             except ValueError as exc:
                 configuration_error = str(exc)
         agent = None
-        reviewer = None
         if configuration_error is None:
             model, effective_model = configured_chat_model(ctx.settings, thesis_settings)
-            reviewer_settings = thesis_settings.model_copy(update={"model": thesis_settings.reviewer_model})
-            reviewer_model, effective_reviewer_model = configured_chat_model(ctx.settings, reviewer_settings)
-            checkpoint_dsn = _checkpoint_dsn(ctx)
-
-            def checkpointer_context_factory() -> object:
-                return AsyncPostgresSaver.from_conn_string(checkpoint_dsn)
-
             agent = MacroThesisDeepAgent(
                 model=model,
                 model_name=effective_model,
-                checkpointer_context_factory=checkpointer_context_factory,
-                graph_recursion_limit=thesis_settings.graph_recursion_limit,
-            )
-            reviewer = MacroThesisIndependentReviewer(
-                model=reviewer_model,
-                model_name=effective_reviewer_model,
-                checkpointer_context_factory=checkpointer_context_factory,
-                graph_recursion_limit=thesis_settings.graph_recursion_limit,
             )
         service = MacroThesisService(
             db=ctx.db,
             settings=thesis_settings,
             agent=agent,
-            reviewer=reviewer,
             configuration_error=configuration_error,
             backfill_worker_enabled=bool(ctx.settings.workers.macro_backfill.enabled),
             worker_name="macro_thesis",
@@ -163,16 +134,6 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
             service=service,
         )
     return constructed
-
-
-def _checkpoint_dsn(ctx: WorkerFactoryContext) -> str:
-    postgres = ctx.settings.storage.postgres
-    return local_docker_host_dsn(
-        with_password_from_file(
-            postgres.dsn,
-            ctx.settings.postgres_password_file,
-        )
-    )
 
 
 __all__ = ["construct_macro_workers"]

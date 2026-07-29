@@ -108,8 +108,10 @@ disabled by default and processes only operator-created bounded targets.
 `macro_projection` rebuilds six stable current rows from persisted facts;
 `macro_document_analysis` writes immutable evidence-bound FOMC/speech analyses
 and is disabled by default;
-`macro_thesis` seals the 08:50 New York Evidence Pack, runs the research graph
-and independent Reviewer, and publishes the one immutable daily Thesis.
+`macro_thesis` seals the 08:50 New York Evidence Pack, compiles one bounded
+`MacroResearchInputV1`, performs exactly one native structured model invocation
+per durable attempt through the Thin DeepAgent profile, and publishes at most
+one immutable v2 Thesis for the session.
 
 For an operator-triggered repair of one bounded dataset window:
 
@@ -141,9 +143,12 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
 publication.
 
-A good macro status reports Alembic `20260728_0213`, bounded acquisition target
+A good macro status reports Alembic `20260729_0216`, bounded acquisition target
 states, recent source and reconciliation receipts, all six module rows, and the
-latest Thesis/Live Delta/Outcome Replay states. Diagnose a missing value by
+current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
+read-only frozen-corpus readiness: nine distinct real sessions are required
+before baseline/candidate model runs. Historical v1 rows never satisfy current
+status. Diagnose a missing value by
 concept ID and source role through its target, receipt, fact family, and three
 module quality axes. A public-source timeout, weekend settlement lag, or
 delayed Yahoo proxy is a visible quality state; it is not a frontend defect.
@@ -151,9 +156,10 @@ delayed Yahoo proxy is a visible quality state; it is not a frontend defect.
 After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
 immutable Evidence Packs, Thesis runs/reviews/publications, Live Delta, Outcome
-Replay, and the LangGraph PostgreSQL checkpoint tables.
+Replay, append-only Research Inputs, and the retained historical review/checkpoint
+tables.
 `20260728_0210` remains the compact current-schema baseline and
-`20260728_0213` is the required hard-cut head. A new empty database applies the
+`20260729_0216` is the required hard-cut head. A new empty database applies the
 baseline and head without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
 at `20260728_0210` migrates forward once; retired Judgment/Research tables and
@@ -161,16 +167,17 @@ paid-data placeholders are dropped rather than archived.
 Enable the Macro workers only after the migration is current.
 
 A healthy Thesis run transitions
-`pending -> running -> published`; transient model/tool failures transition to
+`pending -> running -> published`; transient provider/model failures transition to
 `retryable`, exhausted attempts to `failed`, invalid models to `config_error`,
-and a second non-pass integrity review to terminal `not_published`. Unsupported
+and one of the four publication gates may produce terminal `not_published`.
+Unsupported
 configuration reaches `config_error` with `attempt_count=0`. The overview, six typed module
 reads, and `/api/macro/research` are persisted-only and never trigger a
 provider, model, target advance, projection rebuild, or write.
 
-The enabled worker gives Research and Reviewer separate deterministic
-checkpoint thread identities. Checkpoints remain execution state in PostgreSQL,
-not publication content or a serving fallback.
+The Thin profile has no Reviewer invocation, tool loop, subagent, workspace, or
+checkpoint write. Historical v1 Reviewer rows remain immutable audit records;
+the migration removes only retired Macro Thesis checkpoint control rows.
 
 The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands

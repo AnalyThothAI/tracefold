@@ -2,1218 +2,673 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import date
-from unittest.mock import Mock
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pytest
-from langchain.agents.middleware import TodoListMiddleware
-from langchain.agents.middleware.types import ModelRequest
-from langchain_core.messages import SystemMessage
+from langchain.agents.structured_output import ProviderStrategy
 from pydantic import ValidationError
 
-from tracefold.app.http import routes_macro
 from tracefold.integrations.deepagents.macro_thesis_deepagent import (
-    _AnalysisDraft,
-    _compile_analysis_draft,
-    _graph_config,
-    _MacroThesisRequestBoundary,
-    _module_research_view,
-    _research_context,
-    register_macro_thesis_harness_profile,
+    MacroThesisDeepAgent,
     require_supported_macro_thesis_model,
 )
-from tracefold.macro.assets import MACRO_ASSET_DATASETS
-from tracefold.macro.domain import MACRO_MODULE_IDS, MACRO_MODULE_LABELS
-from tracefold.macro.read_models import (
-    MacroAssetHorizonPresentation,
-    MacroLiveDeltaItemRead,
-    MacroOutcomeAssetResultRead,
-    MacroOutcomeHorizonRead,
-    project_alternative_presentation,
-    project_asset_presentation,
-    project_claim_presentation,
-    project_live_delta_for_read,
-    project_module_annotations,
-    project_outcome_replay_for_read,
-    project_publication_appendix,
-)
-from tracefold.macro.reasons import macro_reason
-from tracefold.macro.thesis import (
-    MACRO_THESIS_ASSETS,
-    MacroAssetOutlook,
-    MacroCausalEdge,
-    MacroCondition,
-    MacroHorizonOutlook,
-    MacroMainline,
-    MacroModuleRole,
-    MacroMomentum,
-    MacroNarrativeSection,
-    MacroOutcomeAssetResult,
-    MacroOutcomeHorizon,
-    MacroTension,
-    MacroTensionSide,
-    MacroThesisBodyDraft,
-    MacroThesisClaim,
-    MacroThesisReviewFailure,
-    MacroThesisReviewV1,
-    build_publication,
-    compile_evidence_pack_v3,
-    evaluate_live_delta,
-    evaluate_outcome_replay,
-    payload_hash,
-    pending_outcome_replay,
-    run_thesis_review_cycle,
-)
+from tracefold.macro.assets import MACRO_ASSET_DATASETS, MACRO_THESIS_ASSETS
+from tracefold.macro.domain import MACRO_MODULE_IDS
+from tracefold.macro.thesis import compile_evidence_pack_v3
 from tracefold.macro.thesis_service import _classify_error
+from tracefold.macro.thesis_v2 import (
+    MACRO_CONDITION_FAMILY_PREFIXES,
+    MAX_CONDITION_CANDIDATES,
+    MAX_EXACT_EVIDENCE_REFS,
+    MAX_RESEARCH_INPUT_BYTES,
+    CandidateDraftEnvelope,
+    MacroDraftAssetOutlook,
+    MacroDraftCausalEdge,
+    MacroDraftConditionUse,
+    MacroDraftMainline,
+    MacroResearchInputV1,
+    MacroThesisDraftV2,
+    MetricConditionCandidate,
+    PublicationGateFailure,
+    canonical_json_bytes,
+    compile_candidate_publication_v2,
+    compile_research_input_v1,
+    evaluate_live_delta_v2,
+    evaluate_outcome_replay_v2,
+    project_current_recovery,
+)
 
-SESSION = date(2026, 7, 27)
-CUTOFF_MS = 1_785_157_800_000
+SESSION = date(2026, 7, 28)
+CUTOFF_MS = int(datetime(2026, 7, 28, 12, 50, tzinfo=UTC).timestamp() * 1_000)
 
 
-def _modules() -> tuple[dict, ...]:
-    output = []
+def _modules(
+    *,
+    facts_per_module: int = 1,
+    real_rate_history_count: int = 0,
+) -> tuple[dict[str, Any], ...]:
+    output: list[dict[str, Any]] = []
     for module_id in MACRO_MODULE_IDS:
         dataset_id = "fred.dgs2" if module_id == "rates_fed" else f"test.{module_id}"
-        output.append(
-            {
-                "schema_version": f"test:{module_id}",
-                "module_id": module_id,
-                "label": module_id,
-                "latest_fact_at_ms": CUTOFF_MS - 1_000,
-                "status": {
-                    "coverage": {"state": "complete"},
-                    "current_health": {"state": "current"},
-                    "history_depth": {"state": "not_required"},
-                },
-                "summary": {
-                    "top_changes": [
-                        {
-                            "dataset_id": dataset_id,
-                            "metrics": {"change_1w_bp": 30.0},
-                            "as_of": "2026-07-27",
-                        }
-                    ]
-                },
-                "next_checkpoints": [],
-                "evidence": {
-                    "dataset_states": [{"dataset_id": dataset_id}],
-                    "latest_facts": [
-                        {
-                            "fact_ref": f"fact:{module_id}",
-                            "dataset_id": dataset_id,
-                            "observed_at_ms": CUTOFF_MS - 1_000,
-                            "published_at_ms": None,
-                            "received_at_ms": CUTOFF_MS - 1_000,
-                        }
-                    ],
-                },
+        states = [_dataset_state(dataset_id)]
+        facts = [_fact(f"fact:{module_id}", dataset_id, value=1.0)]
+        for index in range(1, facts_per_module):
+            extra_id = f"test.{module_id}.{index:02d}"
+            states.append(_dataset_state(extra_id))
+            facts.append(_fact(f"fact:{module_id}:{index:02d}", extra_id, value=float(index)))
+        module: dict[str, Any] = {
+            "schema_version": f"test:{module_id}",
+            "module_id": module_id,
+            "label": module_id,
+            "latest_fact_at_ms": CUTOFF_MS - 1_000,
+            "status": {
+                "coverage": {"state": "complete"},
+                "current_health": {"state": "current"},
+                "history_depth": {"state": "complete"},
+            },
+            "summary": {
+                "top_changes": [
+                    {
+                        "dataset_id": dataset_id,
+                        "concept_id": dataset_id,
+                        "source_role": "canonical",
+                        "label": f"{module_id} material change",
+                        "value": 1.0,
+                        "unit": "percent",
+                        "metrics": {"change_1w_bp": 30.0},
+                        "as_of": SESSION.isoformat(),
+                    }
+                ]
+            },
+            "next_checkpoints": [],
+            "evidence": {
+                "dataset_states": states,
+                "latest_facts": facts,
+                "asset_changes": [],
+                "reconciliation_receipts": [],
+            },
+        }
+        if module_id == "rates_fed" and real_rate_history_count:
+            history = [
+                {
+                    "date": (SESSION - timedelta(days=real_rate_history_count - index)).isoformat(),
+                    "value": 1.0 + index / 100,
+                }
+                for index in range(real_rate_history_count)
+            ]
+            module["real_rate_history"] = {
+                "dataset_id": "fred.dfii10",
+                "history": history,
             }
-        )
-    return tuple(output)
+            module["evidence"]["dataset_states"].append(_dataset_state("fred.dfii10"))
+            module["evidence"]["latest_facts"].append(
+                _fact("fact:rates-real10y", "fred.dfii10", value=history[-1]["value"])
+            )
+        output.append(module)
 
-
-def _pack():
-    return compile_evidence_pack_v3(
-        session_date=SESSION,
-        cutoff_ms=CUTOFF_MS,
-        sealed_at_ms=CUTOFF_MS + 1_000,
-        modules=_modules(),
-        prior_publication=None,
-    )
-
-
-def _modules_with_complete_assets() -> tuple[dict, ...]:
-    modules = deepcopy(_modules())
-    by_module = {str(module["module_id"]): module for module in modules}
+    by_module = {str(module["module_id"]): module for module in output}
     for index, symbol in enumerate(MACRO_THESIS_ASSETS, start=1):
         module_id = "volatility" if symbol == "VIX" else "cross_asset"
-        by_module[module_id]["evidence"].setdefault("asset_changes", []).append(
+        dataset_id = MACRO_ASSET_DATASETS[symbol]
+        module = by_module[module_id]
+        module["evidence"]["asset_changes"].append(
             {
-                "dataset_id": MACRO_ASSET_DATASETS[symbol],
+                "dataset_id": dataset_id,
                 "metrics": {
                     "return_1w_pct": float(index),
                     "return_1m_pct": float(index * 2),
                 },
-                "as_of": "2026-07-27",
+                "as_of": SESSION.isoformat(),
             }
         )
-        by_module[module_id]["evidence"]["latest_facts"].append(
-            {
-                "fact_ref": f"asset-fact:{symbol}",
-                "dataset_id": MACRO_ASSET_DATASETS[symbol],
-                "observed_at_ms": CUTOFF_MS - 1_000,
-                "published_at_ms": CUTOFF_MS - 900,
-                "received_at_ms": CUTOFF_MS - 800,
-            }
-        )
-    return modules
+        module["evidence"]["dataset_states"].append(_dataset_state(dataset_id))
+        module["evidence"]["latest_facts"].append(_fact(f"asset-fact:{symbol}", dataset_id, value=100.0 + index))
+    return tuple(output)
 
 
-def _directional_analysis() -> _AnalysisDraft:
-    return _AnalysisDraft.model_validate(
-        {
-            "mainline": {
-                "stance": "call",
-                "title": "利率冲击主导短期定价",
-                "thesis": "利率变化是当前跨资产重定价的主导矛盾。",
-                "stage": "developing",
-                "confidence": "medium",
-                "horizon": "1w",
-                "claim": "2Y 利率上行形成估值压力。",
-                "causal_source": "2Y 利率上行",
-                "causal_mechanism": "贴现率上升",
-                "causal_target": "风险资产估值承压",
-                "supporting_modules": ["rates_fed"],
-                "conflicting_modules": ["credit"],
-            },
-            "module_assessments": [
-                {
-                    "module_id": module_id,
-                    "role": "driver" if module_id == "rates_fed" else "confirming",
-                    "analysis": f"{MACRO_MODULE_LABELS[module_id]}对主线提供冻结证据。",
-                }
-                for module_id in MACRO_MODULE_IDS
-            ],
-            "asset_outlooks": [
-                {
-                    "symbol": symbol,
-                    "direction_1w": "bearish",
-                    "channel_1w": "贴现率冲击经由资产自身动量传导。",
-                    "confidence_1w": "medium",
-                    "direction_1m": "bearish",
-                    "channel_1m": "贴现率冲击经由资产自身动量传导。",
-                    "confidence_1m": "medium",
-                    "supporting_modules": ["rates_fed"],
-                    "conflicting_modules": ["credit"],
-                }
-                for symbol in MACRO_THESIS_ASSETS
-            ],
-        }
-    )
+def _dataset_state(dataset_id: str) -> dict[str, Any]:
+    return {
+        "dataset_id": dataset_id,
+        "concept_id": dataset_id,
+        "source_role": "decision_primary",
+        "required_for_current": True,
+        "required_for_history": False,
+        "critical": True,
+        "label": dataset_id,
+        "current_health": "current",
+        "history_depth": "not_required",
+        "source_url": "https://example.test/source",
+    }
 
 
-def _directional_publication():
-    pack = compile_evidence_pack_v3(
+def _fact(fact_ref: str, dataset_id: str, *, value: float) -> dict[str, Any]:
+    return {
+        "fact_ref": fact_ref,
+        "dataset_id": dataset_id,
+        "reference": SESSION.isoformat(),
+        "value": value,
+        "unit": "percent",
+        "source_url": "https://example.test/source",
+        "observed_at_ms": CUTOFF_MS - 3_000,
+        "published_at_ms": CUTOFF_MS - 2_000,
+        "received_at_ms": CUTOFF_MS - 1_000,
+    }
+
+
+def _pack(*, modules: tuple[dict[str, Any], ...] | None = None):
+    return compile_evidence_pack_v3(
         session_date=SESSION,
         cutoff_ms=CUTOFF_MS,
         sealed_at_ms=CUTOFF_MS + 1_000,
-        modules=_modules_with_complete_assets(),
-        prior_publication=None,
-    )
-    draft = _compile_analysis_draft(
-        analysis=_directional_analysis(),
-        evidence_pack=pack,
-    )
-    review = MacroThesisReviewV1(
-        draft_hash=payload_hash(draft.model_dump(mode="json")),
-        disposition="pass",
-        findings=("完整资产证据与条件绑定已复核",),
-        invocation_id="complete-assets-review",
-        model_name="openai/gpt-5.4-mini",
-        prompt_version="review-v1",
-    )
-    return build_publication(
-        evidence_pack=pack,
-        draft=draft,
-        review=review,
-        research_provenance={
-            "invocation_id": "complete-assets-research",
-            "model_name": "openai/gpt-5.4-mini",
-            "prompt_version": "research-v1",
-        },
-        published_at_ms=CUTOFF_MS + 2_000,
-    )
-
-
-def test_evidence_pack_uses_complete_asset_facts_not_top_change_preview() -> None:
-    pack = compile_evidence_pack_v3(
-        session_date=SESSION,
-        cutoff_ms=CUTOFF_MS,
-        sealed_at_ms=CUTOFF_MS + 1_000,
-        modules=_modules_with_complete_assets(),
+        modules=modules or _modules(),
         prior_publication=None,
     )
 
-    assert tuple(momentum.symbol for momentum in pack.momentum) == MACRO_THESIS_ASSETS
-    assert all(momentum.source_dataset_id is not None for momentum in pack.momentum)
-    assert all(momentum.momentum_1w == "up" for momentum in pack.momentum)
-    vix = next(momentum for momentum in pack.momentum if momentum.symbol == "VIX")
-    assert vix.source_dataset_id == MACRO_ASSET_DATASETS["VIX"]
-    assert vix.return_1w_pct == 12
 
-
-def test_asset_conditions_bind_to_the_module_that_owns_the_asset_fact() -> None:
-    publication = _directional_publication()
-    spy = next(asset for asset in publication.assets if asset.symbol == "SPY")
-    vix = next(asset for asset in publication.assets if asset.symbol == "VIX")
-
-    assert {condition.module_id for condition in spy.outlook_1w.confirmation_triggers} == {"cross_asset"}
-    assert {condition.module_id for condition in vix.outlook_1w.confirmation_triggers} == {"volatility"}
-    annotations = project_module_annotations(
-        publication.model_dump(mode="json"),
-        module_id="volatility",
-    )
-    assert any(
-        item.binding_id == "asset:VIX:1w"
-        and item.kind == "confirmation"
-        and item.condition.dataset_id == MACRO_ASSET_DATASETS["VIX"]
-        for item in annotations
-    )
-
-
-def test_analysis_compiler_forces_all_assets_to_no_call_when_mainline_has_no_call() -> None:
-    analysis = _AnalysisDraft.model_validate(
-        {
-            "mainline": {
-                "stance": "no_call",
-                "title": "证据尚未形成可交易主线",
-                "thesis": "六个模块之间仍有关键冲突，暂不输出方向判断。",
-                "stage": "uncertain",
-                "confidence": "low",
-                "horizon": "1w_to_1m",
-                "claim": "当前证据只能支持继续观察。",
-                "causal_source": "宏观证据冲突",
-                "causal_mechanism": "驱动模块没有形成同向确认",
-                "causal_target": "风险资产方向不确定",
-                "supporting_modules": ["rates_fed"],
-                "conflicting_modules": ["credit"],
-            },
-            "module_assessments": [
-                {
-                    "module_id": module_id,
-                    "role": "uncertain",
-                    "analysis": f"{MACRO_MODULE_LABELS[module_id]}尚未形成方向确认。",
-                }
-                for module_id in MACRO_MODULE_IDS
-            ],
-            "asset_outlooks": [
-                {
-                    "symbol": symbol,
-                    "direction_1w": "bullish",
-                    "channel_1w": "模型提出方向，但主线没有形成。",
-                    "confidence_1w": "high",
-                    "direction_1m": "bearish",
-                    "channel_1m": "模型提出方向，但主线没有形成。",
-                    "confidence_1m": "high",
-                    "supporting_modules": ["rates_fed"],
-                    "conflicting_modules": ["credit"],
-                }
-                for symbol in MACRO_THESIS_ASSETS
-            ],
-        }
-    )
-
-    compiled = _compile_analysis_draft(analysis=analysis, evidence_pack=_pack())
-
-    assert compiled.mainline.stance == "no_call"
-    assert all(asset.outlook_1w.direction == "no_call" for asset in compiled.asset_outlooks)
-    assert all(asset.outlook_1m.direction == "no_call" for asset in compiled.asset_outlooks)
-    assert all(asset.outlook_1w.confidence == "low" for asset in compiled.asset_outlooks)
-    assert all(asset.outlook_1m.confidence == "low" for asset in compiled.asset_outlooks)
-    assert all(
-        "no_call" not in outlook.causal_channel
-        for asset in compiled.asset_outlooks
-        for outlook in (asset.outlook_1w, asset.outlook_1m)
-    )
-    assert tuple(
-        section.title for section in compiled.narrative_sections if section.section_id.startswith("module-")
-    ) == tuple(f"{MACRO_MODULE_LABELS[module_id]}模块判断" for module_id in MACRO_MODULE_IDS)
-
-
-def _draft() -> MacroThesisBodyDraft:
-    module_refs = {module_id: f"macro-module:{SESSION.isoformat()}:{module_id}" for module_id in MACRO_MODULE_IDS}
-    confirming = MacroCondition(
-        condition_id="claim-rates-confirm",
+def _research_input(
+    *,
+    pack=None,
+    candidate_scopes: tuple[str, ...] = ("mainline", "alternative", "tension", "asset"),
+) -> MacroResearchInputV1:
+    base = compile_research_input_v1(pack or _pack())
+    evidence_ref = base.modules[0].exact_evidence_refs[0]
+    candidate = MetricConditionCandidate(
+        candidate_id="rates.curve10y2y:rates.curve_10y2y:gt0",
         module_id="rates_fed",
-        dataset_id="fred.dgs2",
-        metric_name="change_1w_bp",
-        operator="gte",
-        threshold=25,
-        effect="confirming",
-        rationale="2Y 周变化达到阈值",
+        dataset_id="rates.curve_10y2y",
+        metric="value",
+        unit="basis_points",
+        operator="gt",
+        threshold=0.0,
+        frozen_value=25.0,
+        as_of=SESSION.isoformat(),
+        historical_percentile_rank=None,
+        quantile_window=None,
+        sample_count=1,
+        allowed_kinds=("confirmation", "weakening", "falsifier"),
+        allowed_scopes=candidate_scopes,
+        meaning="10Y-2Y curve is above zero",
+        evidence_refs=(evidence_ref,),
     )
-    falsifier = MacroCondition(
-        condition_id="falsifier-rates",
-        module_id="rates_fed",
-        dataset_id="fred.dgs2",
-        metric_name="change_1w_bp",
-        operator="lte",
-        threshold=-25,
-        effect="invalidation_triggered",
-        rationale="2Y 周变化反向",
-    )
-    checkpoint = MacroCondition(
-        condition_id="checkpoint-rates",
-        module_id="rates_fed",
-        dataset_id="fred.dgs2",
-        metric_name="change_1w_bp",
-        operator="gte",
-        threshold=20,
-        effect="confirming",
-        rationale="利率变化延续",
-    )
-    tension_trigger = MacroCondition(
-        condition_id="tension-credit-resolve",
-        module_id="rates_fed",
-        dataset_id="fred.dgs2",
-        metric_name="change_1w_bp",
-        operator="lte",
-        threshold=0,
-        effect="weakening",
-        rationale="利率压力消退将解决信用未确认的张力",
-    )
+    payload = base.model_dump(mode="json")
+    payload["condition_candidates"] = [candidate.model_dump(mode="json")]
+    payload["allowed_condition_ids"] = [candidate.candidate_id]
+    payload["modules"][0]["condition_candidate_ids"] = [candidate.candidate_id]
+    return MacroResearchInputV1.model_validate(payload)
 
-    def no_call_outlook(symbol: str, horizon: str) -> MacroHorizonOutlook:
-        return MacroHorizonOutlook(
-            horizon=horizon,
-            direction="no_call",
-            causal_channel=f"{symbol} 当前证据不足，等待利率与信用共同确认。",
-            supporting_evidence_refs=(module_refs["rates_fed"],),
-            conflicting_evidence_refs=(module_refs["credit"],),
-            confidence="low",
-        )
 
-    return MacroThesisBodyDraft(
-        mainline=MacroMainline(
+def _draft(
+    research_input: MacroResearchInputV1 | None = None,
+    *,
+    condition_scope: str = "mainline",
+) -> MacroThesisDraftV2:
+    research_input = research_input or _research_input()
+    evidence_ref = research_input.modules[0].exact_evidence_refs[0]
+    outlook = MacroDraftAssetOutlook(
+        outlook_id="outlook-spy-1w",
+        symbol="SPY",
+        horizon="1w",
+        outlook_context="mainline",
+        direction="bearish",
+        causal_transmission="Higher discount rates pressure equity duration.",
+        supporting_evidence_refs=(evidence_ref,),
+        conflicting_evidence_refs=(),
+        confidence=None,
+    )
+    scope_id = "outlook-spy-1w" if condition_scope == "asset" else "mainline"
+    condition_use = MacroDraftConditionUse(
+        candidate_id=research_input.allowed_condition_ids[0],
+        kind="confirmation",
+        scope_kind=condition_scope,
+        scope_id=scope_id,
+        symbol="SPY" if condition_scope == "asset" else None,
+        horizon="1w" if condition_scope == "asset" else None,
+        rationale="The declared curve predicate tests the causal transmission.",
+        evidence_refs=(evidence_ref,),
+    )
+    return MacroThesisDraftV2(
+        session_date=research_input.session_date,
+        cutoff_ms=research_input.cutoff_ms,
+        evidence_pack_id=research_input.evidence_pack_id,
+        research_input_id=research_input.input_id,
+        mainline=MacroDraftMainline(
             stance="call",
-            title="利率冲击主导短期定价",
-            thesis="利率变化是当前跨资产重定价的主导矛盾。",
+            title="Curve pressure remains the material macro driver",
+            thesis="The rates impulse is transmitting through discount rates.",
             stage="developing",
-            confidence="medium",
             horizon="1w",
-            claims=(
-                MacroThesisClaim(
-                    claim_id="claim-rates",
-                    statement="2Y 利率上行形成估值压力。",
-                    causal_edges=(
-                        MacroCausalEdge(
-                            source="2Y 利率上行",
-                            mechanism="贴现率上升",
-                            target="风险资产估值承压",
-                            evidence_refs=(module_refs["rates_fed"],),
-                            conflicting_evidence_refs=(module_refs["credit"],),
-                        ),
-                    ),
-                    supporting_evidence_refs=(module_refs["rates_fed"],),
-                    conflicting_evidence_refs=(module_refs["credit"],),
-                    conditions=(confirming,),
+            confidence=None,
+            causal_edges=(
+                MacroDraftCausalEdge(
+                    edge_id="edge-rates-equity",
+                    source="2Y Treasury yield",
+                    mechanism="higher discount rate",
+                    target="equity duration",
+                    evidence_refs=(evidence_ref,),
+                    conflicting_evidence_refs=(),
                 ),
             ),
-            supporting_evidence_refs=(module_refs["rates_fed"],),
-            conflicting_evidence_refs=(module_refs["credit"],),
-            falsifiers=(falsifier,),
-            checkpoints=(checkpoint,),
+            supporting_evidence_refs=(evidence_ref,),
+            conflicting_evidence_refs=(),
+            no_call_reason=None,
         ),
-        core_tensions=(
-            MacroTension(
-                tension_id="tension-credit",
-                statement="信用尚未确认利率压力。",
-                side_a=MacroTensionSide(
-                    label="利率压力",
-                    statement="2Y 利率上行压制估值。",
-                    evidence_refs=(module_refs["rates_fed"],),
-                ),
-                side_b=MacroTensionSide(
-                    label="信用韧性",
-                    statement="信用尚未发生系统性走弱。",
-                    evidence_refs=(module_refs["credit"],),
-                ),
-                leading_side="side_a",
-                lagging_signal="信用利差仍未确认。",
-                unresolved_reason="融资成本与信用风险尚未同步共振。",
-                resolution_triggers=(tension_trigger,),
-            ),
+        alternative=None,
+        tensions=(),
+        module_assessments=(
+            {
+                "module_id": "rates_fed",
+                "role": "driver",
+                "analysis": "Rates provide the material causal impulse.",
+                "evidence_refs": (evidence_ref,),
+            },
         ),
-        module_assessments=tuple(
-            MacroModuleRole(
-                module_id=module_id,
-                role="driver" if module_id == "rates_fed" else "confirming",
-                analysis=f"{MACRO_MODULE_LABELS[module_id]}模块作用",
-                claim_ids=("claim-rates",),
-                supporting_evidence_refs=(module_refs[module_id],),
-            )
-            for module_id in MACRO_MODULE_IDS
+        material_changes=(
+            {
+                "change_id": "change-rates",
+                "status": "strengthened",
+                "statement": "The weekly rates move strengthened.",
+                "evidence_refs": (evidence_ref,),
+            },
         ),
-        asset_outlooks=tuple(
-            MacroAssetOutlook(
-                symbol=symbol,
-                outlook_1w=no_call_outlook(symbol, "1w"),
-                outlook_1m=no_call_outlook(symbol, "1m"),
-            )
-            for symbol in MACRO_THESIS_ASSETS
-        ),
-        narrative_sections=(
-            MacroNarrativeSection(
-                section_id="market-mainline",
-                title="市场主线",
-                markdown="利率冲击仍是当前主导变量，信用是关键反证。",
-                evidence_refs=(
-                    module_refs["rates_fed"],
-                    module_refs["credit"],
-                ),
-            ),
-        ),
+        asset_outlooks=(outlook,),
+        condition_uses=(condition_use,),
+    )
+
+
+def _envelope(
+    research_input: MacroResearchInputV1 | None = None,
+    *,
+    mapping: dict[str, Any] | None = None,
+) -> CandidateDraftEnvelope:
+    research_input = research_input or _research_input()
+    return CandidateDraftEnvelope(
+        attempt_id=f"macro-thesis:{SESSION}:attempt:1",
+        provider_response_id="response-test-1",
+        provider_name="test-provider",
+        model_name="test-model",
+        profile_version=research_input.profile_version,
+        prompt_version=research_input.prompt_version,
+        research_input_id=research_input.input_id,
+        research_input_hash=research_input.input_hash,
+        raw_structured_mapping=mapping or _draft(research_input).model_dump(mode="json"),
+        received_at_ms=CUTOFF_MS + 2_000,
+        model_calls=1,
+    )
+
+
+def _publication(*, condition_scope: str = "mainline"):
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    draft = _draft(research_input, condition_scope=condition_scope)
+    return compile_candidate_publication_v2(
+        envelope=_envelope(research_input, mapping=draft.model_dump(mode="json")),
+        research_input=research_input,
+        evidence_pack=pack,
+        published_at_ms=CUTOFF_MS + 3_000,
     )
 
 
 class _Agent:
-    def __init__(self) -> None:
+    def __init__(self, mapping_mutator=None) -> None:
         self.calls = 0
+        self.mapping_mutator = mapping_mutator
 
-    async def draft(self, **_kwargs):
+    async def draft(self, *, research_input, attempt_id):
         self.calls += 1
-        return _draft(), {
-            "invocation_id": f"agent-{self.calls}",
-            "model_name": "openai/gpt-5.4-mini",
-            "prompt_version": "research-v1",
-        }
+        mapping = _draft(research_input).model_dump(mode="json")
+        if self.mapping_mutator is not None:
+            self.mapping_mutator(mapping)
+        return _envelope(research_input, mapping=mapping).model_copy(update={"attempt_id": attempt_id})
 
 
-class _Reviewer:
-    def __init__(self, dispositions: list[str]) -> None:
-        self.dispositions = dispositions
-        self.calls = 0
-
-    async def review(self, *, draft_hash: str, **_kwargs):
-        disposition = self.dispositions[self.calls]
-        self.calls += 1
-        return MacroThesisReviewV1(
-            draft_hash=draft_hash,
-            disposition=disposition,
-            findings=("检查完成",),
-            required_changes=("补充反证",) if disposition != "pass" else (),
-            invocation_id=f"review-{self.calls}",
-            model_name="openai/gpt-5.4-mini",
-            prompt_version="review-v1",
-        )
-
-
-def test_review_cycle_binds_independent_review_and_allows_one_revision() -> None:
-    agent = _Agent()
-    reviewer = _Reviewer(["revise", "pass"])
-
-    publication, reviews = asyncio.run(
-        run_thesis_review_cycle(
-            evidence_pack=_pack(),
-            agent=agent,
-            reviewer=reviewer,
-            published_at_ms=CUTOFF_MS + 2_000,
-        )
-    )
-
-    assert agent.calls == 2
-    assert reviewer.calls == 2
-    assert len(reviews) == 2
-    assert publication.review.invocation_id == "review-2"
-    assert publication.review.draft_hash == payload_hash(_draft().model_dump(mode="json"))
-    assert publication.schema_version == "macro_thesis_v1"
-    assert len(publication.module_assessments) == 6
-    assert tuple(asset.symbol for asset in publication.assets) == MACRO_THESIS_ASSETS
-
-
-def test_review_cycle_never_allows_a_second_revision() -> None:
-    with pytest.raises(
-        MacroThesisReviewFailure,
-        match="macro_thesis_reviewer_not_passed_after_revision",
-    ) as failure:
-        asyncio.run(
-            run_thesis_review_cycle(
-                evidence_pack=_pack(),
-                agent=_Agent(),
-                reviewer=_Reviewer(["revise", "revise"]),
-                published_at_ms=CUTOFF_MS + 2_000,
-            )
-        )
-    assert tuple(review.disposition for review in failure.value.reviews) == (
-        "revise",
-        "revise",
-    )
-
-
-def test_delta_pack_compares_against_the_prior_sealed_pack() -> None:
-    prior_modules = deepcopy(_modules())
-    prior_modules[0]["summary"]["top_changes"][0]["metrics"]["change_1w_bp"] = 10.0
-    prior_pack = compile_evidence_pack_v3(
-        session_date=SESSION,
-        cutoff_ms=CUTOFF_MS,
-        sealed_at_ms=CUTOFF_MS + 1_000,
-        modules=prior_modules,
-        prior_publication=None,
-    )
-
-    current_pack = compile_evidence_pack_v3(
-        session_date=date(2026, 7, 28),
-        cutoff_ms=CUTOFF_MS + 86_400_000,
-        sealed_at_ms=CUTOFF_MS + 86_401_000,
-        modules=_modules(),
-        prior_publication={"publication_id": "mth_prior"},
-        prior_evidence_pack=prior_pack.model_dump(mode="json"),
-    )
-
-    changes = {(change["module_id"], change["dataset_id"]): change for change in current_pack.delta_pack["changes"]}
-    assert current_pack.delta_pack["state"] == "compared"
-    assert current_pack.delta_pack["comparison_basis"] == "prior_evidence_pack"
-    assert changes[("rates_fed", "fred.dgs2")]["status"] == "changed"
-    assert changes[("rates_fed", "fred.dgs2")]["prior"]["metrics"]["change_1w_bp"] == 10.0
-    assert changes[("rates_fed", "fred.dgs2")]["current"]["metrics"]["change_1w_bp"] == 30.0
-
-
-def test_thesis_shape_enforces_at_most_three_tensions() -> None:
-    payload = _draft().model_dump(mode="python")
-    payload["core_tensions"] = tuple(payload["core_tensions"]) * 4
-    with pytest.raises(ValidationError):
-        MacroThesisBodyDraft.model_validate(payload)
-
-
-def test_live_delta_is_deterministic_and_binds_claim_checkpoint() -> None:
-    publication, _ = asyncio.run(
-        run_thesis_review_cycle(
-            evidence_pack=_pack(),
-            agent=_Agent(),
-            reviewer=_Reviewer(["pass"]),
-            published_at_ms=CUTOFF_MS + 2_000,
-        )
-    )
-
-    initial_delta = evaluate_live_delta(
-        publication=publication,
-        modules=_modules(),
-        evaluated_at_ms=CUTOFF_MS + 3_000,
-    )
-    post_cutoff_modules = deepcopy(_modules())
-    post_cutoff_modules[0]["latest_fact_at_ms"] = CUTOFF_MS + 2_000
-    post_cutoff_modules[0]["evidence"]["latest_facts"][0]["observed_at_ms"] = CUTOFF_MS + 1_400
-    post_cutoff_modules[0]["evidence"]["latest_facts"][0]["published_at_ms"] = CUTOFF_MS + 1_500
-    post_cutoff_modules[0]["evidence"]["latest_facts"][0]["received_at_ms"] = CUTOFF_MS + 1_900
-    delta = evaluate_live_delta(
-        publication=publication,
-        modules=post_cutoff_modules,
-        evaluated_at_ms=CUTOFF_MS + 3_000,
-    )
-    replay = pending_outcome_replay(
-        publication=publication,
-        evaluated_at_ms=CUTOFF_MS + 3_000,
-    )
-
-    assert initial_delta.status == "insufficient"
-    assert all(item.reason_code == "post_cutoff_fact_missing" for item in initial_delta.items)
-    assert initial_delta.live_delta_id == delta.live_delta_id
-    assert initial_delta.input_hash != delta.input_hash
-    assert delta.schema_version == "macro_live_delta_v1"
-    assert delta.status == "confirming"
-    assert delta.matched_claim_ids == ("claim-rates",)
-    assert delta.matched_checkpoint_ids == ("checkpoint-rates",)
-    assert delta.matched_falsifier_ids == ()
-    assert {item.observed_at_ms for item in delta.items if item.dataset_id == "fred.dgs2"} == {CUTOFF_MS + 1_400}
-    delta_read = project_live_delta_for_read(
-        payload=delta.model_dump(mode="json"),
-        publication=publication.model_dump(mode="json"),
-    )
-    assert {item.observed_at_ms for scope in delta_read.scopes for item in scope.items} == {CUTOFF_MS + 1_400}
-    assert delta.module_fact_cutoff_ms == CUTOFF_MS + 1_400
-    assert {item.observation_cutoff_ms for scope in delta_read.scopes for item in scope.items} == {CUTOFF_MS}
-    mainline_items = {
-        item.condition_id: item for scope in delta_read.scopes if scope.scope == "mainline" for item in scope.items
-    }
-    assert next(scope for scope in delta_read.scopes if scope.scope == "mainline").label == "整体主线"
-    assert mainline_items["falsifier-rates"].reason.affected_claim_ids == ("claim-rates",)
-    assert mainline_items["checkpoint-rates"].reason.affected_claim_ids == ("claim-rates",)
-    assert replay.schema_version == "macro_outcome_replay_v1"
-    assert all(horizon.status == "pending" for horizon in replay.horizons)
-
-
-def test_live_delta_never_promotes_a_condition_from_an_unbound_module_clock() -> None:
-    publication, _ = asyncio.run(
-        run_thesis_review_cycle(
-            evidence_pack=_pack(),
-            agent=_Agent(),
-            reviewer=_Reviewer(["pass"]),
-            published_at_ms=CUTOFF_MS + 2_000,
-        )
-    )
-    modules = deepcopy(_modules())
-    modules[0]["latest_fact_at_ms"] = CUTOFF_MS + 10_000
-    fact = modules[0]["evidence"]["latest_facts"][0]
-    fact["observed_at_ms"] = CUTOFF_MS
-    fact["published_at_ms"] = CUTOFF_MS + 8_000
-    fact["received_at_ms"] = CUTOFF_MS + 9_000
-
-    pre_cutoff = evaluate_live_delta(
-        publication=publication,
-        modules=modules,
-        evaluated_at_ms=CUTOFF_MS + 11_000,
-    )
-    assert pre_cutoff.status == "insufficient"
-    assert all(item.status == "insufficient" for item in pre_cutoff.items)
-    assert all(item.reason_code == "post_cutoff_fact_missing" for item in pre_cutoff.items)
-    assert {item.observed_at_ms for item in pre_cutoff.items} == {CUTOFF_MS}
-
-    fact.pop("observed_at_ms")
-    fact.pop("published_at_ms")
-    fact.pop("received_at_ms")
-    missing = evaluate_live_delta(
-        publication=publication,
-        modules=modules,
-        evaluated_at_ms=CUTOFF_MS + 12_000,
-    )
-    assert missing.status == "insufficient"
-    assert all(item.reason_code == "post_cutoff_fact_missing" for item in missing.items)
-    assert {item.observed_at_ms for item in missing.items} == {None}
-
-    fact["published_at_ms"] = CUTOFF_MS + 13_000
-    fact["received_at_ms"] = CUTOFF_MS + 14_000
-    published_fallback = evaluate_live_delta(
-        publication=publication,
-        modules=modules,
-        evaluated_at_ms=CUTOFF_MS + 15_000,
-    )
-    assert published_fallback.status == "confirming"
-    assert {item.observed_at_ms for item in published_fallback.items} == {CUTOFF_MS + 13_000}
-
-    fact.pop("published_at_ms")
-    received_fallback = evaluate_live_delta(
-        publication=publication,
-        modules=modules,
-        evaluated_at_ms=CUTOFF_MS + 15_000,
-    )
-    assert received_fallback.status == "confirming"
-    assert {item.observed_at_ms for item in received_fallback.items} == {CUTOFF_MS + 14_000}
-
-
-def test_live_delta_read_keeps_asset_confirmation_out_of_mainline_validity() -> None:
-    publication = _directional_publication()
-    post_cutoff_modules = deepcopy(_modules_with_complete_assets())
-    for module in post_cutoff_modules:
-        module["latest_fact_at_ms"] = CUTOFF_MS + 3_000
-        for fact in module["evidence"]["latest_facts"]:
-            fact["observed_at_ms"] = CUTOFF_MS + 3_000
-            fact["published_at_ms"] = CUTOFF_MS + 3_100
-            fact["received_at_ms"] = CUTOFF_MS + 3_200
-    post_cutoff_modules[0]["summary"]["top_changes"][0]["metrics"]["change_1w_bp"] = 0.0
-    stored = evaluate_live_delta(
-        publication=publication,
-        modules=post_cutoff_modules,
-        evaluated_at_ms=CUTOFF_MS + 4_000,
-    )
-    read = project_live_delta_for_read(
-        payload=stored.model_dump(mode="json"),
-        publication=publication.model_dump(mode="json"),
-    )
-    payload = read.model_dump(mode="json")
-    spy_scope = next(scope for scope in read.scopes if scope.scope_id == "asset:SPY:1w")
-
-    assert stored.status == "confirming"
-    assert "status" not in payload
-    assert read.mainline_validity == "unrelated"
-    assert read.matched_claim_ids == ()
-    assert read.matched_falsifier_ids == ()
-    assert read.matched_checkpoint_ids == ()
-    assert spy_scope.status == "confirming"
-    assert spy_scope.label == "SPY · 1 周"
-    assert spy_scope.items[0].unit is not None
-    assert spy_scope.items[0].observed_at_ms == CUTOFF_MS + 3_000
-    assert spy_scope.items[0].observation_cutoff_ms == CUTOFF_MS
-    assert spy_scope.items[0].rationale
-    assert spy_scope.items[0].reason.code == "condition_threshold_matched"
-
-    retired_payload = stored.model_dump(mode="json")
-    for item in retired_payload["items"]:
-        item.pop("observed_at_ms")
-    with pytest.raises(ValidationError):
-        project_live_delta_for_read(
-            payload=retired_payload,
-            publication=publication.model_dump(mode="json"),
-        )
-
-
-def test_reader_projects_claim_asset_links_and_typed_outcome_reasons() -> None:
-    publication = _directional_publication()
-    publication_payload = publication.model_dump(mode="json")
-    claims = project_claim_presentation(publication_payload)
-    assets = project_asset_presentation(publication_payload)
-    outcome = project_outcome_replay_for_read(
-        pending_outcome_replay(
-            publication=publication,
-            evaluated_at_ms=CUTOFF_MS + 3_000,
-        ).model_dump(mode="json")
-    )
-
-    assert claims[0].asset_implications
-    assert tuple(condition.condition_id for condition in claims[0].falsifiers) == ("mainline-falsifier",)
-    assert tuple(condition.condition_id for condition in claims[0].checkpoints) == ("mainline-checkpoint",)
-    assert set(assets[0].claim_ids) == {claims[0].claim_id}
-    assert outcome.schema_version == "macro_outcome_replay_read_v1"
-    assert outcome.source_schema_version == "macro_outcome_replay_v1"
-    assert outcome.horizons[0].source_reason_code == "horizon_not_expired"
-    assert outcome.horizons[0].reason.next_check_at_ms == outcome.horizons[0].expires_at_ms
-    assert outcome.horizons[1].asset_results[0].reason.affected_dataset_ids == (MACRO_ASSET_DATASETS["SPY"],)
-    reader_reason_text = " ".join(
-        value for horizon in outcome.horizons for value in (horizon.reason.message, horizon.reason.next_action) if value
-    )
-    assert all(
-        token not in reader_reason_text
-        for token in ("no_call", "canonical", "checkpoint", "publication", "Outcome Replay", "worker")
-    )
-
-
-def test_reader_projection_localizes_machine_text_without_mutating_publication() -> None:
-    publication_payload = _directional_publication().model_dump(mode="json")
-    original_payload = deepcopy(publication_payload)
-    claim = publication_payload["mainline"]["claims"][0]
-    claim["causal_edges"][0]["source"] = "rates_fed"
-    claim["causal_edges"][0]["target"] = "equity_valuation"
-    publication_payload["module_assessments"][0]["analysis"] = (
-        "美元指数数据degraded。证据来源：macro-module:2026-07-27:rates_fed。"
-    )
-    publication_payload["assets"][0]["outlook_1w"]["direction"] = "no_call"
-    publication_payload["assets"][0]["outlook_1w"]["confidence"] = "low"
-    publication_payload["assets"][0]["outlook_1w"]["causal_channel"] = (
-        "支持：cross_asset；冲突：economy_inflation；结论 no_call。"
-    )
-    publication_payload["assets"][0]["outlook_1w"]["supporting_evidence_refs"] = []
-    publication_payload["assets"][0]["outlook_1w"]["confirmation_triggers"] = []
-    publication_payload["assets"][0]["outlook_1w"]["falsifiers"] = []
-    publication_payload["assets"][0]["outlook_1w"]["checkpoints"] = []
-    polluted_payload = deepcopy(publication_payload)
-
-    claims = project_claim_presentation(publication_payload)
-    assets = project_asset_presentation(publication_payload)
-    alternative = project_alternative_presentation(publication_payload)
-
-    assert claims[0].causal_edges[0].source_label == "利率与美联储"
-    assert claims[0].causal_edges[0].target_label == "股票估值"
-    assert claims[0].module_evidence[0].reader_narrative.origin == "structured_fallback"
-    assert claims[0].module_evidence[0].reader_narrative.text == (
-        "利率与美联储作为本论点的驱动证据；本次档案登记 1 条支持证据与 0 条反向证据。"
-    )
-    assert assets[0].horizons[0].reader_rationale.text == (
-        "SPY 的1 周事实动量上行（+1.00%）；已发布判断为证据不足，暂不判断，登记 0 条支持证据与 1 条反向证据。"
-    )
-    assert claims[0].asset_implications[0].reader_rationale == assets[0].horizons[0].reader_rationale
-    assert alternative is None
-    visible_reader_text = " ".join(
-        (
-            claims[0].statement.text,
-            claims[0].causal_edges[0].source_label,
-            claims[0].causal_edges[0].mechanism.text,
-            claims[0].causal_edges[0].target_label,
-            claims[0].module_evidence[0].reader_narrative.text,
-            assets[0].horizons[0].reader_rationale.text,
-        )
-    )
-    assert all(
-        token not in visible_reader_text
-        for token in ("rates_fed", "cross_asset", "economy_inflation", "macro-module:", "no_call", "degraded")
-    )
-    assert publication_payload == polluted_payload
-    assert original_payload != publication_payload
-
-
-def test_publication_appendix_keeps_all_authoritative_fact_clocks() -> None:
+def test_evidence_pack_uses_complete_asset_facts_not_top_change_preview() -> None:
     pack = _pack()
-    publication, _ = asyncio.run(
-        run_thesis_review_cycle(
-            evidence_pack=pack,
-            agent=_Agent(),
-            reviewer=_Reviewer(["pass"]),
-            published_at_ms=CUTOFF_MS + 2_000,
-        )
+
+    assert tuple(momentum.symbol for momentum in pack.momentum) == MACRO_THESIS_ASSETS
+    assert all(momentum.source_dataset_id is not None for momentum in pack.momentum)
+    assert all(momentum.momentum_1w == "up" for momentum in pack.momentum)
+    assert pack.momentum[-1].symbol == "VIX"
+    assert pack.momentum[-1].source_dataset_id == "fred.vixcls"
+
+
+def test_research_input_is_deterministic_bounded_and_round_robin() -> None:
+    pack = _pack(modules=_modules(facts_per_module=20))
+    first = compile_research_input_v1(pack)
+    second = compile_research_input_v1(pack)
+
+    assert first == second
+    assert first.input_hash == second.input_hash
+    assert tuple(module.module_id for module in first.modules) == MACRO_MODULE_IDS
+    assert tuple(momentum.symbol for momentum in first.momentum) == MACRO_THESIS_ASSETS
+    assert len(first.exact_evidence) <= MAX_EXACT_EVIDENCE_REFS
+    assert len(first.condition_candidates) <= MAX_CONDITION_CANDIDATES
+    assert len(canonical_json_bytes(first.model_dump(mode="json"))) <= MAX_RESEARCH_INPUT_BYTES
+    assert all(len(module.driver_candidates) <= 3 for module in first.modules)
+    assert all(len(module.material_changes) <= 2 for module in first.modules)
+    assert all(len(module.counter_signal_candidates) <= 2 for module in first.modules)
+    assert all(len(module.exact_evidence_refs) <= 6 for module in first.modules)
+    assert all(len(module.condition_candidate_ids) <= 4 for module in first.modules)
+    first_round = tuple(item.module_id for item in first.exact_evidence[:6])
+    assert first_round == MACRO_MODULE_IDS
+    assert first.omitted_count["exact_evidence"] > 0
+
+
+def test_condition_registry_is_the_exact_closed_family_set() -> None:
+    assert MACRO_CONDITION_FAMILY_PREFIXES == (
+        "rates.curve10y2y",
+        "rates.real10y.tail",
+        "economy.release_surprise",
+        "economy.release_revision",
+        "economy.cpi_yoy.tail",
+        "economy.payroll.tail",
+        "liquidity.net_4w.tail",
+        "liquidity.sofr_iorb",
+        "credit.hy_ig_gap.tail",
+        "credit.ccc_bb_gap.tail",
+        "vol.vix_vxv_zero",
+        "vol.vx_front2_zero",
+        "cross.corr.tail",
+        "cross.return1m.tail",
     )
 
-    appendix = project_publication_appendix(
-        publication=publication.model_dump(mode="json"),
-        evidence_pack=pack.model_dump(mode="json"),
-    )
-    rates = next(item for item in appendix.source_lineage if item.dataset_id == "fred.dgs2")
 
-    assert rates.observed_at_ms == CUTOFF_MS - 1_000
-    assert rates.published_at_ms is None
-    assert rates.received_at_ms == CUTOFF_MS - 1_000
+def test_five_year_tail_candidates_require_at_least_twenty_samples() -> None:
+    insufficient = compile_research_input_v1(_pack(modules=_modules(real_rate_history_count=19)))
+    sufficient = compile_research_input_v1(_pack(modules=_modules(real_rate_history_count=20)))
+
+    assert not any(item.candidate_id.startswith("rates.real10y.tail:") for item in insufficient.condition_candidates)
+    tail = [item for item in sufficient.condition_candidates if item.candidate_id.startswith("rates.real10y.tail:")]
+    assert {item.candidate_id.rsplit(":", maxsplit=1)[-1] for item in tail} == {
+        "leq20",
+        "geq80",
+    }
+    assert all(item.quantile_window == "five_years" for item in tail)
+    assert all(item.sample_count == 20 for item in tail)
 
 
-def test_publication_gap_reason_extracts_typed_message_instead_of_dict_text() -> None:
-    modules = deepcopy(_modules())
-    modules[0]["evidence"]["dataset_states"] = [
-        {
-            "dataset_id": "fred.dgs2",
-            "source_role": "decision_primary",
-            "current_health": "unavailable",
-            "history_depth": "insufficient",
-            "current_reason": macro_reason(
-                code="no_valid_fact",
-                message="该 Dataset 尚无有效事实。",
-                impact="blocked",
-                affected_dataset_ids=("fred.dgs2",),
-                retryable=True,
-                recovery="automatic",
-                next_action="等待下一次采集。",
-            ),
-            "history_reason": macro_reason(
-                code="history_facts_missing",
-                message="该 Dataset 的历史事实缺失。",
-                impact="blocked",
-                affected_dataset_ids=("fred.dgs2",),
-                retryable=True,
-                recovery="automatic",
-                next_action="等待历史回填。",
-            ),
-        }
-    ]
-    pack = compile_evidence_pack_v3(
-        session_date=SESSION,
-        cutoff_ms=CUTOFF_MS,
-        sealed_at_ms=CUTOFF_MS + 1_000,
-        modules=modules,
-        prior_publication=None,
-    )
+def test_sparse_draft_does_not_require_six_modules_or_twelve_assets() -> None:
     draft = _draft()
-    review = MacroThesisReviewV1(
-        draft_hash=payload_hash(draft.model_dump(mode="json")),
-        disposition="pass",
-        findings=("缺口原因可读性已复核",),
-        invocation_id="gap-reason-review",
-        model_name="openai/gpt-5.4-mini",
-        prompt_version="review-v1",
-    )
-    publication = build_publication(
-        evidence_pack=pack,
-        draft=draft,
-        review=review,
-        research_provenance={
-            "invocation_id": "gap-reason-research",
-            "model_name": "openai/gpt-5.4-mini",
-            "prompt_version": "research-v1",
-        },
-        published_at_ms=CUTOFF_MS + 2_000,
-    )
 
-    reasons = [gap.reason for gap in publication.gaps if gap.dataset_id == "fred.dgs2"]
-    assert "该 Dataset 尚无有效事实。 [no_valid_fact]" in reasons
-    assert "该 Dataset 的历史事实缺失。 [history_facts_missing]" in reasons
-    assert all("{" not in reason and "'code'" not in reason for reason in reasons)
+    assert len(draft.mainline.causal_edges) == 1
+    assert len(draft.module_assessments) == 1
+    assert tuple(item.symbol for item in draft.asset_outlooks) == ("SPY",)
+    assert draft.mainline.confidence is None
 
 
-def test_nullable_macro_values_are_required_in_public_read_contracts() -> None:
-    required_by_model = {
-        MacroMomentum: {
-            "return_1w_pct",
-            "return_1m_pct",
-            "source_dataset_id",
-            "as_of",
-        },
-        MacroOutcomeAssetResult: {
-            "realized_return_pct",
-            "direction_correct",
-        },
-        MacroOutcomeHorizon: {
-            "realized_return_pct",
-            "direction_correct",
-            "asset_results",
-        },
-        MacroAssetHorizonPresentation: {
-            "momentum_value",
-            "reason",
-        },
-        MacroOutcomeAssetResultRead: {
-            "realized_return_pct",
-            "direction_correct",
-        },
-        MacroOutcomeHorizonRead: {
-            "realized_return_pct",
-            "direction_correct",
-            "asset_results",
-        },
-        MacroLiveDeltaItemRead: {
-            "observed_value",
-            "observed_at_ms",
-        },
-    }
+def test_directional_and_no_call_shapes_fail_closed() -> None:
+    research_input = _research_input()
+    payload = _draft(research_input).model_dump(mode="json")
+    payload["mainline"]["causal_edges"] = []
+    with pytest.raises(ValidationError, match="directional_edge_count"):
+        MacroThesisDraftV2.model_validate(payload)
 
-    for model, expected in required_by_model.items():
-        assert expected <= set(model.model_json_schema()["required"])
+    payload = _draft(research_input).model_dump(mode="json")
+    payload["mainline"]["stance"] = "no_call"
+    payload["mainline"]["no_call_reason"] = "Evidence is mixed."
+    with pytest.raises(ValidationError, match="no_call_edges_forbidden"):
+        MacroThesisDraftV2.model_validate(payload)
 
 
-def test_unsupported_codex_model_is_terminal_configuration_error() -> None:
-    assert require_supported_macro_thesis_model("openai/gpt-5.4-mini") == "openai/gpt-5.4-mini"
-    with pytest.raises(ValueError, match="macro_thesis_unsupported_model"):
-        require_supported_macro_thesis_model("openai/gpt-5.6-terra")
+def test_same_candidate_can_only_be_selected_once_per_scope() -> None:
+    research_input = _research_input()
+    payload = _draft(research_input).model_dump(mode="json")
+    payload["condition_uses"].append(deepcopy(payload["condition_uses"][0]))
+
+    with pytest.raises(ValidationError, match="duplicate_condition_use"):
+        MacroThesisDraftV2.model_validate(payload)
 
 
-def test_deepagent_graph_has_a_hard_step_limit() -> None:
-    assert _graph_config("research:pack:draft", recursion_limit=48) == {
-        "configurable": {"thread_id": "research:pack:draft"},
-        "recursion_limit": 48,
-    }
-    with pytest.raises(
-        ValueError,
-        match="macro_thesis_graph_recursion_limit_invalid",
-    ):
-        _graph_config("research:pack:draft", recursion_limit=1_000)
+def test_publication_compiler_owns_parse_conditions_and_sparse_output() -> None:
+    publication = _publication()
 
-    class GraphRecursionError(RuntimeError):
-        pass
-
-    assert _classify_error(GraphRecursionError("Recursion limit of 48 reached")) == (
-        "macro_thesis_agent_step_limit",
-        False,
-        "not_published",
-    )
+    assert publication.schema_version == "macro_thesis_v2"
+    assert publication.mainline.confidence is None
+    assert tuple(item.symbol for item in publication.assets) == MACRO_THESIS_ASSETS
+    assert tuple(item.display_order for item in publication.assets) == tuple(range(12))
+    assert tuple(item.symbol for item in publication.asset_outlooks) == ("SPY",)
+    assert len(publication.citations) == 1
+    assert len(publication.conditions) == 1
+    assert publication.conditions[0].candidate_id.startswith("rates.curve10y2y:")
+    assert publication.conditions[0].threshold == 0
 
 
-def test_thesis_reason_distinguishes_run_lifecycle_failure_classes() -> None:
-    cutoff_ms = CUTOFF_MS
-    provider_code, provider_retryable, _ = _classify_error(TimeoutError("provider timeout"))
-    reviewer_code, reviewer_retryable, reviewer_status = _classify_error(RuntimeError("macro_thesis_reviewer_block"))
-    step_code, step_retryable, step_status = _classify_error(RuntimeError("recursion limit reached"))
-    config_code, config_retryable, config_status = _classify_error(RuntimeError("unsupported_model"))
+def test_unparseable_mapping_is_contract_gate() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    envelope = _envelope(research_input, mapping={"schema_version": "macro_thesis_draft_v2"})
 
-    cases = (
-        (
-            None,
-            "macro_thesis_run_missing",
-            "operator_action",
-            True,
-            None,
-        ),
-        (
-            {"status": "pending", "due_at_ms": cutoff_ms},
-            "macro_thesis_pending",
-            "automatic",
-            True,
-            cutoff_ms,
-        ),
-        (
-            {"status": "running", "leased_until_ms": cutoff_ms + 5_000},
-            "macro_thesis_running",
-            "automatic",
-            True,
-            cutoff_ms + 5_000,
-        ),
-        (
-            {
-                "status": "retryable",
-                "last_error_code": provider_code,
-                "due_at_ms": cutoff_ms + 10_000,
-            },
-            "macro_thesis_provider_transient",
-            "automatic",
-            True,
-            cutoff_ms + 10_000,
-        ),
-        (
-            {"status": reviewer_status, "last_error_code": reviewer_code},
-            "macro_thesis_reviewer_block",
-            "next_session",
-            False,
-            None,
-        ),
-        (
-            {"status": step_status, "last_error_code": step_code},
-            "macro_thesis_agent_step_limit",
-            "next_session",
-            False,
-            None,
-        ),
-        (
-            {"status": config_status, "last_error_code": config_code},
-            "macro_thesis_configuration_error",
-            "operator_action",
-            False,
-            None,
-        ),
-        (
-            {"status": "failed", "last_error_code": provider_code},
-            "macro_thesis_provider_retry_exhausted",
-            "next_session",
-            False,
-            None,
-        ),
-    )
-
-    assert provider_retryable is True
-    assert reviewer_retryable is False
-    assert step_retryable is False
-    assert config_retryable is False
-    for row, code, recovery, retryable, next_check_at_ms in cases:
-        reason = routes_macro._thesis_reason(
-            row,
-            session_date=SESSION,
-            cutoff_ms=cutoff_ms,
-            read_at_ms=cutoff_ms + 1_000,
+    with pytest.raises(PublicationGateFailure) as caught:
+        compile_candidate_publication_v2(
+            envelope=envelope,
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
         )
-        assert reason is not None
-        assert reason["code"] == code
-        assert reason["recovery"] == recovery
-        assert reason["retryable"] is retryable
-        assert reason["next_check_at_ms"] == next_check_at_ms
+
+    assert caught.value.category == "contract_validity"
+    assert caught.value.code == "macro_thesis_contract_schema_invalid"
 
 
-def test_transient_provider_reason_keeps_module_context_generating() -> None:
-    reason = routes_macro._thesis_reason(
-        {
-            "status": "retryable",
-            "last_error_code": "macro_thesis_provider_transient",
-            "due_at_ms": CUTOFF_MS + 10_000,
-        },
-        session_date=SESSION,
-        cutoff_ms=CUTOFF_MS,
-        read_at_ms=CUTOFF_MS + 1_000,
-    )
-
-    context = routes_macro._module_thesis_context(
-        "rates_fed",
-        thesis=None,
-        displayed_session_date=None,
-        requested_session_date=SESSION,
-        requested_reason=reason,
-    )
-
-    assert reason is not None
-    assert reason["code"] == "macro_thesis_provider_transient"
-    assert context["state"] == "generating"
-
-
-def test_macro_thesis_deepagent_registers_exact_fileless_single_graph_profile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registrations: list[tuple[str, object]] = []
-    monkeypatch.setattr(
-        "tracefold.integrations.deepagents.macro_thesis_deepagent.register_harness_profile",
-        lambda key, profile: registrations.append((key, profile)),
-    )
-    model = Mock()
-    model._get_ls_params.return_value = {"ls_provider": "litellm"}
-
-    key = register_macro_thesis_harness_profile(
-        model=model,
-        model_name="openai/deepseek-v4-flash",
-    )
-
-    assert key == "litellm:openai/deepseek-v4-flash"
-    assert len(registrations) == 1
-    _, profile = registrations[0]
-    assert profile.excluded_tools == frozenset(
-        {
-            "edit_file",
-            "execute",
-            "glob",
-            "grep",
-            "ls",
-            "read_file",
-            "task",
-            "write_file",
-            "write_todos",
-        }
-    )
-    assert profile.general_purpose_subagent.enabled is False
-    assert profile.excluded_middleware == frozenset(
-        {
-            TodoListMiddleware,
-            "SummarizationMiddleware",
-        }
-    )
-
-
-def test_macro_thesis_uses_compact_embedded_sealed_evidence() -> None:
-    view = _module_research_view(
-        module={
-            "module_id": "rates_fed",
-            "summary": {"top_changes": [{"dataset_id": "fred.dgs2"}]},
-            "curve": {
-                "indicators": [
-                    {
-                        "dataset_id": "fred.dgs2",
-                        "value": 4.2,
-                        "history": [{"date": "2026-07-25", "value": 4.1}],
-                    }
-                ]
-            },
-            "evidence": {
-                "latest_facts": [
-                    {
-                        "fact_ref": "macro-series:fred.dgs2:2026-07-27",
-                        "dataset_id": "fred.dgs2",
-                    }
-                ],
-                "dataset_states": [{"dataset_id": "fred.dgs2"}],
-                "reconciliation_receipts": [{"receipt_id": "receipt"}],
-            },
-        },
-        evidence_ref="macro-module:2026-07-27:rates_fed",
-    )
-
-    assert "history" not in str(view)
-    assert "evidence" not in view["module"]
-    context = _research_context(_pack())
-    assert len(str(context)) < 200_000
-    assert len(context["modules"]) == 6
-    assert context["allowed_evidence_refs"]
-
-
-def test_macro_thesis_request_boundary_removes_generic_prompt_and_tools() -> None:
-    observed: dict[str, object] = {}
-    request = ModelRequest(
-        model=None,  # type: ignore[arg-type]
-        messages=[],
-        system_message=SystemMessage(content="generic deep agent prompt"),
-        tools=[
-            {"name": "read_file"},
-            {"name": "task"},
-            {"name": "MacroThesisBodyDraft"},
-        ],
-    )
-
-    def handler(bounded: ModelRequest) -> object:
-        observed["system"] = bounded.system_message.text
-        observed["tools"] = [tool["name"] for tool in bounded.tools if isinstance(tool, dict)]
-        return object()
-
-    _MacroThesisRequestBoundary("sealed macro prompt").wrap_model_call(
-        request,
-        handler,  # type: ignore[arg-type]
-    )
-    assert observed == {
-        "system": "sealed macro prompt",
-        "tools": ["MacroThesisBodyDraft"],
-    }
-
-
-def test_outcome_replay_stays_pending_until_horizon_then_uses_persisted_prices() -> None:
-    publication, _ = asyncio.run(
-        run_thesis_review_cycle(
-            evidence_pack=_pack(),
-            agent=_Agent(),
-            reviewer=_Reviewer(["pass"]),
-            published_at_ms=CUTOFF_MS + 2_000,
+def test_parseable_gate_priority_is_time_then_evidence_then_contract() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    mapping = _draft(research_input).model_dump(mode="json")
+    mapping["session_date"] = "2026-07-27"
+    mapping["mainline"]["causal_edges"][0]["evidence_refs"] = ["outside-pack"]
+    mapping["condition_uses"][0]["candidate_id"] = "unknown-condition"
+    with pytest.raises(PublicationGateFailure) as time_failure:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=mapping),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
         )
+    assert time_failure.value.category == "time_identity"
+
+    mapping["session_date"] = SESSION.isoformat()
+    with pytest.raises(PublicationGateFailure) as evidence_failure:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=mapping),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert evidence_failure.value.category == "evidence_closure"
+
+    mapping["mainline"]["causal_edges"][0]["evidence_refs"] = [research_input.allowed_evidence_ids[0]]
+    with pytest.raises(PublicationGateFailure) as contract_failure:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=mapping),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert contract_failure.value.category == "contract_validity"
+
+
+def test_envelope_input_binding_is_time_identity_gate() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    envelope = _envelope(research_input).model_copy(update={"research_input_id": "mri1_wrong"})
+
+    with pytest.raises(PublicationGateFailure) as caught:
+        compile_candidate_publication_v2(
+            envelope=envelope,
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert caught.value.category == "time_identity"
+    assert "envelope_research_input_id_mismatch" in caught.value.diagnostics
+
+
+def test_live_delta_identity_is_immutable_and_asset_scope_does_not_elevate_mainline() -> None:
+    publication = _publication(condition_scope="asset")
+    modules = _modules()
+    first = evaluate_live_delta_v2(
+        publication=publication,
+        modules=modules,
+        evaluated_at_ms=CUTOFF_MS + 10_000,
     )
+    same_input_later = evaluate_live_delta_v2(
+        publication=publication,
+        modules=modules,
+        evaluated_at_ms=CUTOFF_MS + 20_000,
+    )
+    changed = deepcopy(modules)
+    changed[0]["latest_fact_at_ms"] = CUTOFF_MS + 30_000
+    new_input = evaluate_live_delta_v2(
+        publication=publication,
+        modules=changed,
+        evaluated_at_ms=CUTOFF_MS + 30_000,
+    )
+
+    assert first.live_delta_id == same_input_later.live_delta_id
+    assert first.input_hash == same_input_later.input_hash
+    assert new_input.live_delta_id != first.live_delta_id
+    assert first.mainline_validity == "insufficient"
+    assert first.items[0].scope_kind == "asset"
+
+
+def test_outcome_replay_only_evaluates_declared_material_1w_or_1m_outlooks() -> None:
+    publication = _publication()
+    expires = CUTOFF_MS + 7 * 86_400_000
     rows = [
         {
             "dataset_id": "nasdaq.spy.daily",
-            "observed_at_ms": publication.published_at_ms,
-            "received_at_ms": publication.published_at_ms,
+            "observed_at_ms": CUTOFF_MS,
             "value_numeric": 100.0,
         },
         {
             "dataset_id": "nasdaq.spy.daily",
-            "observed_at_ms": publication.published_at_ms + 86_400_000,
-            "received_at_ms": publication.published_at_ms + 86_400_000,
-            "value_numeric": 101.0,
+            "observed_at_ms": expires,
+            "value_numeric": 95.0,
+        },
+        {
+            "dataset_id": "nasdaq.qqq.daily",
+            "observed_at_ms": expires,
+            "value_numeric": 200.0,
         },
     ]
-
-    pending = evaluate_outcome_replay(
+    replay = evaluate_outcome_replay_v2(
         publication=publication,
         market_rows=rows,
-        evaluated_at_ms=publication.published_at_ms + 1_000,
-    )
-    evaluated = evaluate_outcome_replay(
-        publication=publication,
-        market_rows=rows,
-        evaluated_at_ms=publication.published_at_ms + 86_400_000,
+        evaluated_at_ms=expires,
     )
 
-    assert all(item.status == "pending" for item in pending.horizons)
-    assert evaluated.horizons[0].status == "evaluated"
-    assert evaluated.horizons[0].realized_return_pct == 1.0
-    assert evaluated.horizons[1].status == "pending"
+    assert tuple(item.horizon for item in replay.horizons) == ("1w",)
+    assert tuple(result.symbol for horizon in replay.horizons for result in horizon.asset_results) == ("SPY",)
+    assert replay.horizons[0].asset_results[0].direction_correct is True
+
+
+def test_recovery_keeps_publication_and_current_fact_clocks_separate() -> None:
+    publication = _publication()
+    modules = deepcopy(_modules())
+    spy = next(row for row in modules[-1]["evidence"]["asset_changes"] if row["dataset_id"] == "nasdaq.spy.daily")
+    spy["metrics"]["return_1m_pct"] = None
+    recovery = project_current_recovery(publication=publication, modules=modules)
+    spy_recovery = next(item for item in recovery if item.scope_id == "SPY")
+    qqq_recovery = next(item for item in recovery if item.scope_id == "QQQ")
+
+    assert spy_recovery.state == "degraded"
+    assert spy_recovery.publication.value is not None
+    assert spy_recovery.current.value is None
+    assert qqq_recovery.state == "unchanged"
+
+
+class _FakeModel:
+    def _get_ls_params(self):
+        return {"ls_provider": "fake-provider"}
+
+
+class _Graph:
+    def __init__(self, *, graph_kwargs, mapping) -> None:
+        self.graph_kwargs = graph_kwargs
+        self.mapping = mapping
+        self.input = None
+        self.config = None
+
+    async def ainvoke(self, input, *, config=None):
+        self.input = input
+        self.config = config
+        self.graph_kwargs["middleware"][0]._claim()
+        return {"structured_response": self.mapping, "response_id": "provider-response-1"}
+
+
+def test_thin_deepagent_uses_one_graph_one_model_call_and_native_mapping() -> None:
+    research_input = _research_input()
+    captured: dict[str, Any] = {}
+
+    def factory(**kwargs):
+        graph = _Graph(
+            graph_kwargs=kwargs,
+            mapping=_draft(research_input).model_dump(mode="json"),
+        )
+        captured["kwargs"] = kwargs
+        captured["graph"] = graph
+        return graph
+
+    adapter = MacroThesisDeepAgent(
+        model=_FakeModel(),
+        model_name="test-model-thin",
+        agent_factory=factory,
+        clock_ms=lambda: CUTOFF_MS + 2_000,
+    )
+    envelope = asyncio.run(adapter.draft(research_input=research_input, attempt_id="attempt-thin-1"))
+    kwargs = captured["kwargs"]
+    graph = captured["graph"]
+
+    assert kwargs["tools"] == ()
+    assert kwargs["subagents"] == ()
+    assert kwargs["checkpointer"] is None
+    assert isinstance(kwargs["response_format"], ProviderStrategy)
+    assert '"properties"' not in kwargs["system_prompt"]
+    assert graph.input["messages"][0]["content"] == canonical_json_bytes(research_input.model_dump(mode="json")).decode(
+        "utf-8"
+    )
+    assert envelope.model_calls == 1
+    assert envelope.raw_structured_mapping["schema_version"] == "macro_thesis_draft_v2"
+    assert envelope.provider_response_id == "provider-response-1"
+
+
+def test_thin_deepagent_fails_before_envelope_without_exactly_one_model_call() -> None:
+    research_input = _research_input()
+
+    class _NoCallGraph:
+        async def ainvoke(self, input, *, config=None):
+            return {
+                "structured_response": _draft(research_input).model_dump(mode="json"),
+                "response_id": "response-no-call",
+            }
+
+    adapter = MacroThesisDeepAgent(
+        model=_FakeModel(),
+        model_name="test-model-no-call",
+        agent_factory=lambda **_kwargs: _NoCallGraph(),
+    )
+    with pytest.raises(RuntimeError, match="model_call_count_invalid"):
+        asyncio.run(adapter.draft(research_input=research_input, attempt_id="attempt-1"))
+
+
+def test_pre_draft_failures_are_run_states_not_publication_gates() -> None:
+    assert _classify_error(RuntimeError("invalid_api_key")) == (
+        "macro_thesis_configuration_error",
+        False,
+        "config_error",
+    )
+    assert _classify_error(RuntimeError("macro_thesis_provider_structured_mapping_missing")) == (
+        "macro_thesis_provider_no_mapping",
+        False,
+        "failed",
+    )
+    timeout_code, retryable, terminal = _classify_error(TimeoutError("provider timeout"))
+    assert timeout_code == "macro_thesis_timeouterror"
+    assert retryable is True
+    assert terminal == "failed"
+
+
+def test_codex_models_are_not_accepted_for_macro_research() -> None:
+    assert require_supported_macro_thesis_model("openai/gpt-5.4-mini") == ("openai/gpt-5.4-mini")
+    with pytest.raises(ValueError, match="unsupported_model"):
+        require_supported_macro_thesis_model("openai/gpt-5.6-codex")

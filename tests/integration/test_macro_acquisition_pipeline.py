@@ -314,11 +314,13 @@ def test_settlement_history_collapses_revisions_at_the_requested_cutoff(tmp_path
         spec = require_dataset("cboe.cfe.vx.settlement")
         assert spec.instrument_id is not None
         common = {
+            "fact_schema_version": "market_settlement_v2",
             "dataset_id": spec.dataset_id,
             "instrument_id": spec.instrument_id,
             "source_id": spec.source_id,
             "trade_date": date(2026, 7, 27),
             "contract_code": "VX/U6",
+            "contract_expiration_date": date(2026, 9, 16),
             "open_interest": 10_000.0,
             "volume": 5_000.0,
             "unit": spec.unit,

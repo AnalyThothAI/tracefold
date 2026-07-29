@@ -350,12 +350,10 @@ class MacroThesisWorkerSettings(PerWorkerSettings):
     retry_ms: int = Field(default=900_000, ge=1)
     max_attempts: int = Field(default=3, ge=1)
     model: str = "gpt-5.4-mini"
-    reviewer_model: str = "gpt-5.4-mini"
     model_request_timeout_seconds: float = Field(default=480.0, ge=1)
-    max_tokens: int = Field(default=12_000, ge=1)
-    graph_recursion_limit: int = Field(default=48, ge=8, le=128)
+    max_tokens: int = Field(default=6_000, ge=1)
 
-    @field_validator("model", "reviewer_model", mode="before")
+    @field_validator("model", mode="before")
     @classmethod
     def parse_model(cls, value: Any) -> str:
         normalized = str(value or "").strip()

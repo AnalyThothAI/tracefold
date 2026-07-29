@@ -181,8 +181,61 @@ def test_implemented_fed_capabilities_exclude_unavailable_licensed_products() ->
     assert capabilities["fed.document_analysis"]["state"] == "available"
     assert "rates.cme_policy_futures" not in capabilities
     assert all(spec.adapter_id != "unavailable" for spec in DATASET_REGISTRY.values())
+    assert DATASET_REGISTRY["cboe.cfe.vx.settlement"].module_id == "volatility"
+    assert DATASET_REGISTRY["nasdaq.spy.daily"].module_id == "cross_asset"
+    assert DATASET_REGISTRY["yfinance.spy.intraday"].module_id == "cross_asset"
     assert all(capability.requirement in {"required", "supporting"} for capability in COVERAGE_MANIFEST.values())
     assert "licensed_unavailable" not in json.dumps(module, sort_keys=True)
+
+
+def test_official_vx_curve_is_expiry_sorted_owned_only_by_volatility_and_keeps_source_clock() -> None:
+    rows = [
+        {
+            "settlement_id": "vx-sep",
+            "fact_schema_version": "market_settlement_v2",
+            "dataset_id": "cboe.cfe.vx.settlement",
+            "instrument_id": "vx_future",
+            "trade_date": date(2026, 7, 27),
+            "contract_code": "VXU26",
+            "contract_expiration_date": date(2026, 9, 16),
+            "settlement_price": 17.2,
+            "open_interest": 90_000,
+            "volume": 30_000,
+            "published_at_ms": NOW_MS - 2_000,
+            "received_at_ms": NOW_MS - 1_000,
+            "source_url": "https://www.cboe.com/vx.csv",
+            "fact_hash": "sha256:vx-sep",
+        },
+        {
+            "settlement_id": "vx-aug",
+            "fact_schema_version": "market_settlement_v2",
+            "dataset_id": "cboe.cfe.vx.settlement",
+            "instrument_id": "vx_future",
+            "trade_date": date(2026, 7, 27),
+            "contract_code": "VXQ26",
+            "contract_expiration_date": date(2026, 8, 19),
+            "settlement_price": 16.2,
+            "open_interest": 120_000,
+            "volume": 45_000,
+            "published_at_ms": NOW_MS - 2_000,
+            "received_at_ms": NOW_MS - 1_000,
+            "source_url": "https://www.cboe.com/vx.csv",
+            "fact_hash": "sha256:vx-aug",
+        },
+    ]
+
+    volatility = _module("volatility", settlement_rows=rows)
+    cross_asset = _module("cross_asset", settlement_rows=rows)
+    curve = volatility["term_structure"]["official_vx_curve"]
+
+    assert [item["contract_expiration_date"] for item in curve] == [
+        "2026-08-19",
+        "2026-09-16",
+    ]
+    assert curve[0]["published_at_ms"] == NOW_MS - 2_000
+    assert curve[0]["received_at_ms"] == NOW_MS - 1_000
+    assert all(item["dataset_id"] != "cboe.cfe.vx.settlement" for item in cross_asset["evidence"]["latest_facts"])
+    assert "term_structure" not in cross_asset
 
 
 def test_fed_institutional_stance_separates_reader_reason_from_analysis_identity() -> None:
@@ -584,7 +637,8 @@ def test_closed_equity_market_keeps_the_last_expected_bar_current() -> None:
     assert state["market_state"] == "closed"
     assert state["current_health"] == "current"
     assert state["current_reason"]["code"] == "last_expected_bar_present"
-    assert module["status"]["current_health"]["state"] == "degraded"
+    assert state["required_for_current"] is False
+    assert module["status"]["current_health"]["state"] == "unavailable"
 
 
 def test_next_checkpoints_never_emit_reasonless_critical_placeholders() -> None:

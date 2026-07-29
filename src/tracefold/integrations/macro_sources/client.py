@@ -561,9 +561,11 @@ class MacroSourceClient:
                     "price",
                     "finalsettlement",
                 )
+                contract_expiration_date = _optional_date(row.get("expirationdate"))
                 if (
                     not contract_code
                     or settlement is None
+                    or contract_expiration_date is None
                     or spec.instrument_id is None
                     or (
                         str(product or "").upper() != spec.series_id
@@ -573,11 +575,13 @@ class MacroSourceClient:
                     continue
                 facts.append(
                     MarketSettlementFact(
+                        fact_schema_version="market_settlement_v2",
                         dataset_id=spec.dataset_id,
                         instrument_id=spec.instrument_id,
                         source_id=spec.source_id,
                         trade_date=candidate,
                         contract_code=contract_code.upper(),
+                        contract_expiration_date=contract_expiration_date,
                         settlement_price=settlement,
                         open_interest=_first_float(row, "openinterest", "oi"),
                         volume=_first_float(row, "volume", "totalvolume"),

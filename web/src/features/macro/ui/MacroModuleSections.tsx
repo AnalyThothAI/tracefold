@@ -193,7 +193,7 @@ function useHashSection(sections: readonly Section[]) {
 
 function RatesSection({ module, active }: { module: MacroRatesFedReadData; active: string }) {
   if (active === "policy") {
-    const indicators = parseIndicators(module.policy_pricing);
+    const indicators = parseIndicators(module.policy_pricing.rates);
     return (
       <ModuleWorkbench
         description="EFFR、目标区间、SOFR 与 Treasury 短长端使用各自事实序列，不生成缺少底层合约的 FedWatch 近似概率。"
@@ -607,12 +607,13 @@ function VolatilitySection({
   const term = asRecord(module.term_structure);
   const indicators = parseIndicators(readRecords(term, "spot_and_three_month"));
   const spread = parseHistory(term.spread_history);
+  const officialVxCurve = readRecords(term, "official_vx_curve");
   return (
     <ModuleWorkbench
-      description="这是 VIX 现货与三个月 VIX 的关系，不把两个点夸大为完整期货期限曲线。"
-      eyebrow="SPOT–3M RELATIONSHIP"
+      description="现货与三个月 VIX 用于时间序列比较；完整期货曲线只读取带官方到期日的 CFE 结算，不用合约代码猜到期。"
+      eyebrow="VOLATILITY TERM STRUCTURE"
       module={module}
-      title="VIX 现货–3M 关系"
+      title="VIX 期限结构"
     >
       <ModuleTimeSeriesChart
         module={module}
@@ -628,6 +629,7 @@ function VolatilitySection({
         unit="index_points"
       />
       <MacroIndicatorTable indicators={indicators} />
+      <SettlementTable rows={officialVxCurve} />
     </ModuleWorkbench>
   );
 }
@@ -689,7 +691,7 @@ function CrossAssetSection({
     const positions = parsePositions(readRecords(futures, "positions"));
     return (
       <ModuleWorkbench
-        description="期货市场、VIX 官方结算与 CFTC 周度仓位分层呈现，不混用来源时钟。"
+        description="连续期货市场与 CFTC 周度仓位分层呈现，不混用来源时钟；VIX 官方期限曲线由波动率模块负责。"
         eyebrow="FUTURES CONFIRMATION"
         module={module}
         title="期货市场与仓位确认"
@@ -701,7 +703,6 @@ function CrossAssetSection({
           title="跨资产 CFTC 净仓位"
           unit="percent_open_interest"
         />
-        <SettlementTable rows={readRecords(futures, "vix_settlements")} />
       </ModuleWorkbench>
     );
   }
@@ -751,14 +752,6 @@ function ModuleWorkbench({
 function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }) {
   const thesisContext = module.thesis_context;
   const summaryInterpretation = module.summary.interpretation;
-  const thesisAnalysis = thesisContext.reader_narrative?.text ?? null;
-  const hasThesisContext =
-    thesisContext.role ||
-    thesisAnalysis ||
-    thesisContext.claim_ids.length ||
-    thesisContext.supporting_evidence_refs.length ||
-    thesisContext.conflicting_evidence_refs.length ||
-    thesisContext.reason;
   return (
     <aside aria-label="图表决策注释" className="macro-decision__annotation-rail">
       <header>
@@ -771,61 +764,30 @@ function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }
         {module.summary.headline ? <small>{module.summary.headline}</small> : null}
         {summaryInterpretation ? <small>{summaryInterpretation}</small> : null}
       </article>
-      {hasThesisContext ? (
-        <article
-          data-context-state={thesisContext.state}
-          data-state={thesisContext.role === "contradicting" ? "weakening" : undefined}
-        >
-          <span>与主线关系</span>
-          {thesisContext.role ? <strong>{thesisRoleLabel(thesisContext.role)}</strong> : null}
-          {thesisContext.state === "historical" ? (
-            <>
-              <small>状态：历史主线</small>
-              <small>发布交易日：{thesisContext.session_date ?? "未提供"}</small>
-              <small>
-                Thesis 截点：
-                {thesisContext.cutoff_ms != null
-                  ? formatInstant(thesisContext.cutoff_ms)
-                  : "未提供"}
-              </small>
-            </>
-          ) : null}
-          {thesisAnalysis ? <small>{thesisAnalysis}</small> : null}
-          {thesisContext.state === "historical" ? (
-            <small>边界原因：{thesisContext.reason?.message ?? "接口未提供历史上下文原因。"}</small>
-          ) : thesisContext.reason ? (
-            <small>{thesisContext.reason.message}</small>
-          ) : null}
-          {thesisContext.claim_ids.length ||
-          thesisContext.supporting_evidence_refs.length ||
-          thesisContext.conflicting_evidence_refs.length ? (
-            <details>
-              <summary>
-                查看绑定审计（论点 {thesisContext.claim_ids.length} · 支持{" "}
-                {thesisContext.supporting_evidence_refs.length} · 冲突{" "}
-                {thesisContext.conflicting_evidence_refs.length}）
-              </summary>
-              <ul>
-                {thesisContext.claim_ids.map((id) => (
-                  <li key={`claim:${id}`}>
-                    <small>claim · {id}</small>
-                  </li>
-                ))}
-                {thesisContext.supporting_evidence_refs.map((id) => (
-                  <li key={`support:${id}`}>
-                    <small>support · {id}</small>
-                  </li>
-                ))}
-                {thesisContext.conflicting_evidence_refs.map((id) => (
-                  <li key={`conflict:${id}`}>
-                    <small>conflict · {id}</small>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ) : null}
-        </article>
-      ) : null}
+      <article
+        data-context-state={thesisContext.state}
+        data-state={thesisContext.role === "contradicting" ? "weakening" : undefined}
+      >
+        <span>当前 Thesis 关系</span>
+        <strong>{thesisRoleLabel(thesisContext.role)}</strong>
+        {thesisContext.assessment ? <small>{thesisContext.assessment.analysis}</small> : null}
+        {thesisContext.reason ? <small>{thesisContext.reason.message}</small> : null}
+        <small>
+          闭集条件 {thesisContext.conditions.length} · 恢复观察 {thesisContext.recovery.length}
+        </small>
+        {thesisContext.assessment?.evidence_refs.length ? (
+          <details>
+            <summary>查看实际引用证据</summary>
+            <ul>
+              {thesisContext.assessment.evidence_refs.map((id) => (
+                <li key={id}>
+                  <small>{id}</small>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </article>
       {module.summary.top_changes.length ? (
         <article data-state="change">
           <span>关键变化</span>
@@ -1274,26 +1236,36 @@ function PositionSourceList({ rows }: { rows: ReturnType<typeof parsePositions> 
 function SettlementTable({ rows }: { rows: JsonObject[] }) {
   if (!rows.length) return null;
   return (
-    <details className="macro-decision__settlements">
+    <details className="macro-decision__settlements" open>
       <summary>VIX 官方结算（最近 {rows.length} 条）</summary>
       <div role="table">
         <div role="row">
           <span role="columnheader">交易日</span>
           <span role="columnheader">合约</span>
+          <span role="columnheader">官方到期日</span>
           <span role="columnheader">结算</span>
           <span role="columnheader">持仓 / 成交</span>
+          <span role="columnheader">来源时钟</span>
         </div>
         {rows.map((row, index) => (
           <div
-            key={`${readText(row, "trade_date")}:${readText(row, "contract_code")}:${index}`}
+            key={`${readText(row, "trade_date")}:${readText(row, "contract_code")}:${readText(row, "contract_expiration_date")}:${index}`}
             role="row"
           >
             <span role="cell">{readText(row, "trade_date") ?? "—"}</span>
             <span role="cell">{readText(row, "contract_code") ?? "—"}</span>
+            <span role="cell">{readText(row, "contract_expiration_date") ?? "—"}</span>
             <span role="cell">{formatOptional(readNumber(row, "settlement_price"), "")}</span>
             <span role="cell">
               {formatOptional(readNumber(row, "open_interest"), "")} /{" "}
               {formatOptional(readNumber(row, "volume"), "")}
+            </span>
+            <span role="cell">
+              发布{" "}
+              {readNumber(row, "published_at_ms")
+                ? formatInstant(readNumber(row, "published_at_ms") ?? 0)
+                : "—"}
+              <small>接收 {formatInstant(readNumber(row, "received_at_ms") ?? 0)}</small>
             </span>
           </div>
         ))}
@@ -1353,33 +1325,32 @@ function moduleChartAnnotations(
   const thesisConditions =
     cutoffDate == null || cutoffInstant == null
       ? []
-      : module.thesis_context.annotations.flatMap((annotation) => {
-          const condition = annotation.condition;
-          if (!visibleDatasetIds.has(condition.dataset_id)) return [];
+      : module.thesis_context.conditions.flatMap((condition) => {
+          if (!condition.dataset_id || !visibleDatasetIds.has(condition.dataset_id)) return [];
           const label =
-            annotation.kind === "falsifier"
+            condition.kind === "falsifier"
               ? "主线失效阈值"
-              : annotation.kind === "checkpoint"
+              : condition.kind === "checkpoint"
                 ? "下一检查点"
                 : "主线确认条件";
           const tone =
-            annotation.kind === "falsifier"
+            condition.kind === "falsifier"
               ? ("invalidation" as const)
-              : annotation.kind === "checkpoint"
+              : condition.kind === "checkpoint"
                 ? ("checkpoint" as const)
-                : condition.effect === "weakening"
+                : condition.kind === "weakening"
                   ? ("weakening" as const)
                   : ("confirming" as const);
           return [
             {
-              id: `thesis:${annotation.binding_type}:${annotation.binding_id}:${annotation.kind}:${condition.condition_id}`,
+              id: `thesis:${condition.scope_kind}:${condition.scope_id}:${condition.kind}:${condition.condition_id}`,
               date: cutoffDate,
               detail: condition.rationale,
               label,
               seriesId: condition.dataset_id,
               sourceTimestamp: cutoffInstant,
               tone,
-              value: condition.threshold,
+              value: condition.threshold ?? undefined,
             },
           ];
         });
@@ -1466,6 +1437,7 @@ function thesisRoleLabel(value: NonNullable<MacroTypedModuleReadData["thesis_con
       confirming: "确认主线",
       contradicting: "反驳主线",
       driver: "驱动主线",
+      not_material: "本次不重要",
       uncertain: "关系未定",
     }[value] ?? "关系未解释"
   );

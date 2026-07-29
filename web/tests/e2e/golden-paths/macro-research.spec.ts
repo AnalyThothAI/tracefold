@@ -12,36 +12,33 @@ test("renders one immutable Macro Thesis history workbench", async ({ page }) =>
 
   await expect(page.getByRole("heading", { level: 1, name: "Macro Thesis 档案" })).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 2, name: "实际利率上行主导短期风险资产定价" }),
+    page.getByRole("heading", {
+      level: 2,
+      name: "真实利率回落正在缓和风险资产的贴现压力",
+    }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "返回主线总览" })).toHaveAttribute("href", "/macro");
-  await expect(page.getByText("CLAIM 1")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "资产影响" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "核心矛盾与解决条件" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "十二资产条件附录" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "返回当前主线" })).toHaveAttribute("href", "/macro");
   await expect(
-    page.getByRole("heading", { name: "备选解释：增长重新加速吸收利率冲击" }),
+    page.getByRole("heading", { name: "十二资产事实固定呈现，展望只在有传导时出现" }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "已发布研究叙事" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "不可变主线历史" })).toBeVisible();
+  await expect(page.locator("[data-asset-fact]")).toHaveCount(12);
+  await expect(page.getByRole("heading", { name: "证据、缺口与生成身份" })).toBeVisible();
+  await expect(page.getByText("2 条实际引用证据")).toBeVisible();
+  await expect(page.getByText("0 个冻结缺口")).toBeVisible();
+  await expect(page.getByText("macro_thesis_workflow_v2")).toBeVisible();
+  await expect(page.getByText("test-model")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "不可变 publication 历史" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态与四类 gate" })).toBeVisible();
 
-  const audit = page.locator(".macro-research-audit");
-  await expect(audit).not.toHaveAttribute("open", "");
-  await audit.locator("summary").click();
-  await expect(audit).toHaveAttribute("open", "");
-  await expect(page.getByText("macro_thesis_workflow_v1")).toBeVisible();
-  await expect(page.getByText("research-fixture")).toBeVisible();
-  await expect(audit).not.toContainText(/^\s*\{/);
-
-  await expect(page.getByRole("main", { name: "Macro Thesis 档案" })).not.toContainText(
-    /macro_daily_judgment|licensed_unavailable|买入|卖出|仓位/,
+  await expect(page.locator(".macro-research-workbench")).not.toContainText(
+    /macro_daily_judgment|licensed_unavailable|Reviewer|买入|卖出|仓位/,
   );
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [
     ".macro-research-workbench",
-    ".macro-research-document",
-    ".macro-research-sections",
     ".macro-research-citations",
+    { selector: ".macro-thesis-report__asset-table", allowHorizontalOverflow: true },
+    { selector: ".macro-thesis-report__recovery", allowHorizontalOverflow: true },
   ]);
   await expectNoUnhandledApiRequests(page);
 });

@@ -6,17 +6,21 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from tracefold.macro.thesis import (
-    MacroEvidencePackV3,
-    MacroLiveDeltaV1,
-    MacroOutcomeReplayV1,
-    MacroThesisReviewV1,
-    MacroThesisV1,
+from tracefold.macro.thesis import MacroEvidencePackV3
+from tracefold.macro.thesis_v2 import (
+    MacroLiveDeltaV2,
+    MacroOutcomeReplayV2,
+    MacroResearchInputV1,
+    MacroThesisV2,
 )
 
 
+class MacroPublicationWriteConflict(RuntimeError):
+    pass
+
+
 class MacroThesisRepository:
-    """PostgreSQL lifecycle for one immutable daily Thesis and deterministic follow-ups."""
+    """One durable run lifecycle, v2 current publications, and immutable v1/v2 archive."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -55,6 +59,56 @@ class MacroThesisRepository:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def evaluation_evidence_packs(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT packs.*
+            FROM macro_thesis_runs AS runs
+            JOIN macro_evidence_packs AS packs
+              ON packs.evidence_pack_id = runs.evidence_pack_id
+            WHERE packs.schema_version = 'macro_evidence_pack_v3'
+            ORDER BY runs.session_date, packs.evidence_pack_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_research_input(self, research_input: MacroResearchInputV1) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_research_inputs(
+              research_input_id, evidence_pack_id, session_date, cutoff_ms,
+              schema_version, profile_version, prompt_version, payload_json, input_hash
+            )
+            VALUES (
+              %s, %s, %s, %s, 'macro_research_input_v1', %s, %s, %s, %s
+            )
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                research_input.input_id,
+                research_input.evidence_pack_id,
+                research_input.session_date,
+                int(research_input.cutoff_ms),
+                research_input.profile_version,
+                research_input.prompt_version,
+                Jsonb(research_input.model_dump(mode="json")),
+                research_input.input_hash,
+            ),
+        )
+        return int(cursor.rowcount)
+
+    def research_input(self, research_input_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_research_inputs
+            WHERE research_input_id = %s
+              AND schema_version = 'macro_research_input_v1'
+            """,
+            (research_input_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def ensure_run(
         self,
         *,
@@ -85,6 +139,54 @@ class MacroThesisRepository:
         )
         return int(cursor.rowcount)
 
+    def bind_research_input(
+        self,
+        *,
+        session_date: date,
+        research_input: MacroResearchInputV1,
+        now_ms: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE macro_thesis_runs
+            SET research_input_id = %s,
+                research_input_hash = %s,
+                updated_at_ms = %s
+            WHERE session_date = %s
+              AND status = 'pending'
+              AND attempt_count = 0
+              AND evidence_pack_id = %s
+              AND research_input_id IS NULL
+            RETURNING session_date
+            """,
+            (
+                research_input.input_id,
+                research_input.input_hash,
+                int(now_ms),
+                session_date,
+                research_input.evidence_pack_id,
+            ),
+        ).fetchone()
+        if row is not None:
+            return True
+        existing = self.conn.execute(
+            """
+            SELECT 1
+            FROM macro_thesis_runs
+            WHERE session_date = %s
+              AND evidence_pack_id = %s
+              AND research_input_id = %s
+              AND research_input_hash = %s
+            """,
+            (
+                session_date,
+                research_input.evidence_pack_id,
+                research_input.input_id,
+                research_input.input_hash,
+            ),
+        ).fetchone()
+        return existing is not None
+
     def claim_run(
         self,
         *,
@@ -99,6 +201,8 @@ class MacroThesisRepository:
               SELECT session_date
               FROM macro_thesis_runs
               WHERE session_date = %s
+                AND research_input_id IS NOT NULL
+                AND research_input_hash IS NOT NULL
                 AND (
                   (status IN ('pending', 'retryable') AND due_at_ms <= %s)
                   OR (status = 'running' AND leased_until_ms <= %s)
@@ -113,6 +217,8 @@ class MacroThesisRepository:
                 lease_owner = %s,
                 last_error_code = NULL,
                 last_error_message = NULL,
+                last_gate_category = NULL,
+                last_candidate_hash = NULL,
                 updated_at_ms = %s
             FROM candidate
             WHERE runs.session_date = candidate.session_date
@@ -158,47 +264,12 @@ class MacroThesisRepository:
             is not None
         )
 
-    def record_review(
+    def publish_v2(
         self,
         *,
-        session_date: date,
-        review: MacroThesisReviewV1,
-        review_sequence: int,
-        created_at_ms: int,
-    ) -> int:
-        review_id = f"{session_date.isoformat()}:{review.invocation_id}"
-        cursor = self.conn.execute(
-            """
-            INSERT INTO macro_thesis_reviews(
-              review_id, session_date, review_sequence, draft_hash, disposition,
-              review_json, invocation_id, model_name, prompt_version, created_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                review_id,
-                session_date,
-                int(review_sequence),
-                review.draft_hash,
-                review.disposition,
-                Jsonb(review.model_dump(mode="json")),
-                review.invocation_id,
-                review.model_name,
-                review.prompt_version,
-                int(created_at_ms),
-            ),
-        )
-        return int(cursor.rowcount)
-
-    def publish(
-        self,
-        *,
-        publication: MacroThesisV1,
+        publication: MacroThesisV2,
         lease_owner: str,
     ) -> bool:
-        publication_payload = publication.model_dump(mode="json")
-        publication_hash = publication.content_hash
         inserted = self.conn.execute(
             """
             INSERT INTO macro_thesis_publications(
@@ -208,29 +279,45 @@ class MacroThesisRepository:
             )
             SELECT
               %s, runs.session_date, runs.cutoff_ms, runs.evidence_pack_id,
-              'macro_thesis_v1', %s, %s, %s, %s, %s
+              'macro_thesis_v2', %s, %s, NULL, NULL, %s
             FROM macro_thesis_runs AS runs
             WHERE runs.session_date = %s
               AND runs.status = 'running'
               AND runs.lease_owner = %s
               AND runs.evidence_pack_hash = %s
+              AND runs.research_input_id = %s
+              AND runs.research_input_hash = %s
             ON CONFLICT DO NOTHING
             RETURNING publication_id
             """,
             (
                 publication.publication_id,
-                Jsonb(publication_payload),
-                publication_hash,
-                publication.review.invocation_id,
-                publication.review.draft_hash,
+                Jsonb(publication.model_dump(mode="json")),
+                publication.content_hash,
                 int(publication.published_at_ms),
                 publication.session_date,
                 _required_text(lease_owner, "lease_owner"),
                 publication.evidence_pack_hash,
+                publication.research_input_id,
+                publication.research_input_hash,
             ),
         ).fetchone()
         if inserted is None:
-            return False
+            existing = self.conn.execute(
+                """
+                SELECT publication_id, thesis_hash
+                FROM macro_thesis_publications
+                WHERE session_date = %s
+                """,
+                (publication.session_date,),
+            ).fetchone()
+            if (
+                existing is not None
+                and existing["publication_id"] == publication.publication_id
+                and existing["thesis_hash"] == publication.content_hash
+            ):
+                return False
+            raise MacroPublicationWriteConflict("macro_thesis_write_identity_conflict")
         completed = self.conn.execute(
             """
             UPDATE macro_thesis_runs
@@ -252,7 +339,7 @@ class MacroThesisRepository:
             ),
         ).fetchone()
         if completed is None:
-            raise RuntimeError("macro_thesis_run_completion_failed")
+            raise MacroPublicationWriteConflict("macro_thesis_write_run_completion_failed")
         return True
 
     def mark_error(
@@ -263,9 +350,11 @@ class MacroThesisRepository:
         error_code: str,
         error_message: str,
         retryable: bool,
-        terminal_status: str = "config_error",
+        terminal_status: str,
         retry_ms: int,
         now_ms: int,
+        gate_category: str | None = None,
+        candidate_hash: str | None = None,
     ) -> str:
         if terminal_status not in {"config_error", "not_published", "failed"}:
             raise ValueError("macro_thesis_terminal_status_invalid")
@@ -282,6 +371,8 @@ class MacroThesisRepository:
                 lease_owner = NULL,
                 last_error_code = %s,
                 last_error_message = %s,
+                last_gate_category = %s,
+                last_candidate_hash = %s,
                 updated_at_ms = %s
             WHERE session_date = %s
               AND status = 'running'
@@ -295,6 +386,8 @@ class MacroThesisRepository:
                 int(now_ms) + int(retry_ms),
                 _required_text(error_code, "error_code")[:120],
                 _required_text(error_message, "error_message").replace("\n", " ")[:2_000],
+                gate_category,
+                candidate_hash,
                 int(now_ms),
                 session_date,
                 lease_owner,
@@ -304,18 +397,21 @@ class MacroThesisRepository:
             raise RuntimeError("macro_thesis_run_error_owner_mismatch")
         return str(row["status"])
 
-    def mark_configuration_error_before_attempt(
+    def mark_preflight_error(
         self,
         *,
         session_date: date,
+        status: str,
         error_code: str,
         error_message: str,
         now_ms: int,
     ) -> bool:
+        if status not in {"failed", "config_error"}:
+            raise ValueError("macro_thesis_preflight_status_invalid")
         row = self.conn.execute(
             """
             UPDATE macro_thesis_runs
-            SET status = 'config_error',
+            SET status = %s,
                 last_error_code = %s,
                 last_error_message = %s,
                 updated_at_ms = %s
@@ -325,6 +421,7 @@ class MacroThesisRepository:
             RETURNING session_date
             """,
             (
+                status,
                 _required_text(error_code, "error_code")[:120],
                 _required_text(error_message, "error_message").replace("\n", " ")[:2_000],
                 int(now_ms),
@@ -333,21 +430,36 @@ class MacroThesisRepository:
         ).fetchone()
         return row is not None
 
+    def archive_publication(self, session_date: date) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM macro_thesis_publications WHERE session_date = %s",
+            (session_date,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def current_publication_v2(self, session_date: date) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_thesis_publications
+            WHERE session_date = %s
+              AND schema_version = 'macro_thesis_v2'
+            """,
+            (session_date,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def publication(self, session_date: date | None = None) -> dict[str, Any] | None:
-        if session_date is None:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_thesis_publications
-                ORDER BY session_date DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                "SELECT * FROM macro_thesis_publications WHERE session_date = %s",
-                (session_date,),
-            ).fetchone()
+        if session_date is not None:
+            return self.archive_publication(session_date)
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_thesis_publications
+            ORDER BY session_date DESC
+            LIMIT 1
+            """
+        ).fetchone()
         return dict(row) if row is not None else None
 
     def prior_publication(self, session_date: date) -> dict[str, Any] | None:
@@ -365,52 +477,57 @@ class MacroThesisRepository:
 
     def state(self, session_date: date | None = None) -> dict[str, Any] | None:
         if session_date is None:
-            session_row = self.conn.execute(
-                "SELECT MAX(session_date) AS session_date FROM macro_thesis_runs"
+            row = self.conn.execute(
+                """
+                SELECT
+                  runs.*,
+                  publications.schema_version,
+                  publications.thesis_json,
+                  publications.thesis_hash,
+                  publications.reviewer_invocation_id,
+                  publications.reviewer_draft_hash,
+                  publications.published_at_ms
+                FROM macro_thesis_runs AS runs
+                LEFT JOIN macro_thesis_publications AS publications USING (session_date)
+                ORDER BY runs.session_date DESC
+                LIMIT 1
+                """
             ).fetchone()
-            session_date = session_row["session_date"] if session_row is not None else None
-        if session_date is None:
-            return None
-        row = self.conn.execute(
-            """
-            SELECT
-              runs.*,
-              publications.schema_version,
-              publications.thesis_json,
-              publications.thesis_hash,
-              publications.reviewer_invocation_id,
-              publications.reviewer_draft_hash,
-              publications.published_at_ms
-            FROM macro_thesis_runs AS runs
-            LEFT JOIN macro_thesis_publications AS publications USING (session_date)
-            WHERE runs.session_date = %s
-            """,
-            (session_date,),
-        ).fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                SELECT
+                  runs.*,
+                  publications.schema_version,
+                  publications.thesis_json,
+                  publications.thesis_hash,
+                  publications.reviewer_invocation_id,
+                  publications.reviewer_draft_hash,
+                  publications.published_at_ms
+                FROM macro_thesis_runs AS runs
+                LEFT JOIN macro_thesis_publications AS publications USING (session_date)
+                WHERE runs.session_date = %s
+                """,
+                (session_date,),
+            ).fetchone()
         return dict(row) if row is not None else None
 
-    def insert_live_delta(self, delta: MacroLiveDeltaV1) -> int:
+    def insert_live_delta(self, delta: MacroLiveDeltaV2) -> int:
         cursor = self.conn.execute(
             """
             INSERT INTO macro_live_deltas(
               live_delta_id, publication_id, evaluated_at_ms, module_fact_cutoff_ms,
               schema_version, status, payload_json, input_hash
             )
-            VALUES (%s, %s, %s, %s, 'macro_live_delta_v1', %s, %s, %s)
-            ON CONFLICT (live_delta_id) DO UPDATE
-            SET evaluated_at_ms = EXCLUDED.evaluated_at_ms,
-                module_fact_cutoff_ms = EXCLUDED.module_fact_cutoff_ms,
-                status = EXCLUDED.status,
-                payload_json = EXCLUDED.payload_json,
-                input_hash = EXCLUDED.input_hash
-            WHERE macro_live_deltas.input_hash IS DISTINCT FROM EXCLUDED.input_hash
+            VALUES (%s, %s, %s, %s, 'macro_live_delta_v2', %s, %s, %s)
+            ON CONFLICT DO NOTHING
             """,
             (
                 delta.live_delta_id,
                 delta.publication_id,
                 int(delta.evaluated_at_ms),
                 int(delta.module_fact_cutoff_ms),
-                delta.status,
+                delta.mainline_validity,
                 Jsonb(delta.model_dump(mode="json")),
                 delta.input_hash,
             ),
@@ -423,6 +540,7 @@ class MacroThesisRepository:
             SELECT *
             FROM macro_live_deltas
             WHERE publication_id = %s
+              AND schema_version = 'macro_live_delta_v2'
             ORDER BY evaluated_at_ms DESC, live_delta_id DESC
             LIMIT 1
             """,
@@ -430,14 +548,14 @@ class MacroThesisRepository:
         ).fetchone()
         return dict(row) if row is not None else None
 
-    def insert_outcome_replay(self, replay: MacroOutcomeReplayV1) -> int:
+    def insert_outcome_replay(self, replay: MacroOutcomeReplayV2) -> int:
         cursor = self.conn.execute(
             """
             INSERT INTO macro_outcome_replays(
               replay_id, publication_id, evaluated_at_ms, schema_version,
               payload_json, input_hash
             )
-            VALUES (%s, %s, %s, 'macro_outcome_replay_v1', %s, %s)
+            VALUES (%s, %s, %s, 'macro_outcome_replay_v2', %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -456,6 +574,7 @@ class MacroThesisRepository:
             SELECT *
             FROM macro_outcome_replays
             WHERE publication_id = %s
+              AND schema_version = 'macro_outcome_replay_v2'
             ORDER BY evaluated_at_ms DESC, replay_id DESC
             LIMIT 1
             """,
@@ -494,4 +613,8 @@ def _required_text(value: object, field_name: str) -> str:
     return normalized
 
 
-__all__ = ["MacroThesisRepository", "publication_payload"]
+__all__ = [
+    "MacroPublicationWriteConflict",
+    "MacroThesisRepository",
+    "publication_payload",
+]

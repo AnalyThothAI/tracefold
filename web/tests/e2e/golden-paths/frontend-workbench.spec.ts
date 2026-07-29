@@ -59,6 +59,8 @@ test("freezes the Macro decision dashboard and completed-session research workbe
     await expect(page).toHaveScreenshot(`macro-${name}.png`, {
       animations: "disabled",
       caret: "hide",
+      mask: [page.locator(".topbar-anomaly")],
+      maskColor: "#182332",
       scale: "css",
     });
   }

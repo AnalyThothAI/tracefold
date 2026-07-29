@@ -188,6 +188,13 @@ _COVERAGE = (
         ("fred.vixcls", "fred.vxvcls", "fred.vxncls", "fred.gvzcls", "fred.ovxcls"),
     ),
     CoverageSpec(
+        "volatility.official_vx_curve",
+        "volatility",
+        "带官方到期日的 CFE VIX 期货结算曲线",
+        "required",
+        ("cboe.cfe.vx.settlement",),
+    ),
+    CoverageSpec(
         "cross_asset.etf_matrix",
         "cross_asset",
         "固定十只 ETF 盘中代理矩阵",
@@ -279,9 +286,9 @@ _COVERAGE = (
     CoverageSpec(
         "cross_asset.futures_confirmation",
         "cross_asset",
-        "VIX 期货结算与跨资产 CFTC 仓位",
+        "跨资产 CFTC 仓位",
         "supporting",
-        ("cboe.cfe.vx.settlement", "cftc.tff.cross_asset_positions"),
+        ("cftc.tff.cross_asset_positions",),
     ),
 )
 

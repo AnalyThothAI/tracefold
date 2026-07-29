@@ -2,15 +2,11 @@ import type { components } from "@lib/types/openapi";
 
 type MacroSchemas = components["schemas"];
 
-/**
- * Local helper for extensible module payload fragments. All public HTTP shapes
- * below are aliases to the generated OpenAPI contract.
- */
 export type JsonObject = Record<string, unknown>;
 
 export type MacroReason = MacroSchemas["MacroReason"];
-export type MacroCondition = MacroSchemas["MacroCondition"];
-export type MacroModuleId = MacroCondition["module_id"];
+export type MacroCondition = MacroSchemas["MacroCompiledCondition"];
+export type MacroModuleId = MacroSchemas["MacroDraftModuleAssessment"]["module_id"];
 
 export type MacroCoverageCapability = MacroSchemas["MacroCoverageCapabilityData"];
 export type MacroCoverage = MacroSchemas["MacroCoverageData"];
@@ -35,7 +31,6 @@ export type MacroCreditReadData = MacroSchemas["MacroCreditReadData"];
 export type MacroVolatilityReadData = MacroSchemas["MacroVolatilityReadData"];
 export type MacroCrossAssetReadData = MacroSchemas["MacroCrossAssetReadData"];
 
-/** Local union used by the shared module workbench. Its members are generated. */
 export type MacroTypedModuleReadData =
   | MacroRatesFedReadData
   | MacroEconomyInflationReadData
@@ -45,29 +40,20 @@ export type MacroTypedModuleReadData =
   | MacroCrossAssetReadData;
 
 export type MacroModuleUnavailableReadData = MacroSchemas["MacroModuleUnavailableData"];
-
-/** Local union matching the six module endpoints' generated response members. */
 export type MacroModuleRouteReadData = MacroTypedModuleReadData | MacroModuleUnavailableReadData;
 
-export type MacroThesisClaim = MacroSchemas["MacroThesisClaim"];
-export type MacroModuleRole = MacroSchemas["MacroModuleRole"];
-export type MacroMomentum = MacroSchemas["MacroMomentum"];
-export type MacroHorizonOutlook = MacroSchemas["MacroHorizonOutlook"];
-export type MacroAssetView = MacroSchemas["MacroAssetView"];
 export type MacroThesisV1 = MacroSchemas["MacroThesisV1"];
-
-export type MacroLiveDeltaItem = MacroSchemas["MacroLiveDeltaItemRead"];
-export type MacroLiveDeltaReadData = MacroSchemas["MacroLiveDeltaRead"];
-export type MacroAssetHorizonPresentation = MacroSchemas["MacroAssetHorizonPresentation"];
-export type MacroAssetPresentation = MacroSchemas["MacroAssetPresentation"];
-export type MacroAlternativePresentation = MacroSchemas["MacroAlternativePresentation"];
-export type MacroClaimPresentation = MacroSchemas["MacroClaimPresentation"];
-export type MacroMainlinePresentation = MacroSchemas["MacroMainlinePresentation"];
-export type MacroOutcomeReplayReadData = MacroSchemas["MacroOutcomeReplayRead"];
+export type MacroThesisV2 = MacroSchemas["MacroThesisV2"];
+export type MacroArchiveThesis = MacroThesisV1 | MacroThesisV2;
+export type MacroLiveDeltaV2 = MacroSchemas["MacroLiveDeltaV2"];
+export type MacroOutcomeReplayV2 = MacroSchemas["MacroOutcomeReplayV2"];
+export type MacroRecoveryItem = MacroSchemas["MacroRecoveryItem"];
 
 export type MacroModuleSummary = MacroSchemas["MacroModuleSummaryData"];
-export type MacroPublicationFallback = MacroSchemas["MacroPublicationFallbackContextData"];
 export type MacroThesisRunData = MacroSchemas["MacroThesisRunData"];
 export type MacroThesisState = MacroSchemas["MacroOverviewReadData"]["thesis_state"];
 export type MacroOverviewReadData = MacroSchemas["MacroOverviewReadData"];
 export type MacroThesisDetailReadData = MacroSchemas["MacroThesisDetailReadData"];
+export type MacroThesisArchiveDetailReadData = MacroSchemas["MacroThesisArchiveDetailReadData"];
+export type MacroResearchReadData = MacroThesisDetailReadData | MacroThesisArchiveDetailReadData;
+export type MacroPublicationHistoryItem = MacroSchemas["MacroPublicationHistoryItemData"];

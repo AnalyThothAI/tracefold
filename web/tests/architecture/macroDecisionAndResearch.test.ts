@@ -16,10 +16,8 @@ describe("daily macro decision and research hard cut", () => {
       "ui/MacroCharts.tsx",
       "ui/MacroDecisionPage.tsx",
       "ui/MacroModuleSections.tsx",
-      "ui/MacroResearchAppendices.tsx",
-      "ui/MacroResearchDossier.tsx",
-      "ui/MacroResearchEvidence.tsx",
       "ui/MacroResearchPage.tsx",
+      "ui/MacroThesisReport.tsx",
     ]);
     expect(files).not.toContain("shell.ts");
     expect(files.some((path) => path.includes("/pages/"))).toBe(false);
@@ -85,56 +83,47 @@ describe("daily macro decision and research hard cut", () => {
     const decision = [
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.tsx"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroModuleSections.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroThesisReport.tsx"), "utf8"),
     ].join("\n");
     const research = [
       readFileSync(join(macroRoot, "ui/MacroResearchPage.tsx"), "utf8"),
-      readFileSync(join(macroRoot, "ui/MacroResearchDossier.tsx"), "utf8"),
-      readFileSync(join(macroRoot, "ui/MacroResearchAppendices.tsx"), "utf8"),
-      readFileSync(join(macroRoot, "ui/MacroResearchEvidence.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroThesisReport.tsx"), "utf8"),
     ].join("\n");
 
     for (const field of [
       "thesis.mainline",
-      "data.mainline_presentation",
-      "thesis.core_tensions",
-      "thesis.changes_from_prior",
-      "data.asset_presentation",
-      "data.claim_presentation",
-      "asset.horizons",
-      "asset.group === group.id",
+      "thesis.tensions",
+      "thesis.material_changes",
+      "thesis.asset_outlooks",
       "data.live_delta",
-      "data.live_delta.mainline_validity",
-      "data.live_delta?.scopes",
-      "thesis.mainline.falsifiers",
-      "thesis.mainline.checkpoints",
-      "data.thesis?.gaps",
+      "data.outcome_replay",
+      "data.recovery",
       "module.contradictions",
       "module.falsifiers",
       "module.next_checkpoints",
-      "module.status.coverage",
       "module.status.current_health",
       "module.status.history_depth",
-      "module.evidence.dataset_states",
-      "module.evidence.latest_facts",
+      "module.coverage_state",
+      "module.current_health_state",
+      "module.history_depth_state",
+      "module.summary.top_changes",
+      "module.thesis_context.conditions",
     ]) {
       expect(decision).toContain(field);
     }
     for (const field of [
-      "claims.map",
-      "thesis.core_tensions.map",
-      "claim.asset_implications",
-      "claim.module_evidence",
-      "thesis.review.findings.map",
+      "thesis.mainline.causal_edges.map",
+      "thesis.tensions.map",
+      "thesis.assets.map",
+      "thesis.asset_outlooks.filter",
+      "thesis.conditions.map",
       "thesis.provenance",
-      "outcomeReplay?.horizons.map",
+      "outcomeReplay.horizons.map",
     ]) {
       expect(research).toContain(field);
     }
-    expect(decision).not.toMatch(
-      /assessment\.analysis|horizon\.causal_channel|thesisContext\.analysis/,
-    );
-    expect(research).not.toMatch(
-      /role\.analysis|asset\.causal_channel|thesis\.module_assessments|thesis\.narrative_sections/,
+    expect(`${decision}\n${research}`).not.toMatch(
+      /data\.fallback|\.fallback\.|reviewer_model|review\.findings/,
     );
     expect(`${decision}\n${research}`).not.toMatch(
       /\.replace\([^)]*(?:macro-module|no_call|degraded)/,
@@ -145,13 +134,13 @@ describe("daily macro decision and research hard cut", () => {
     const researchCss = [
       readFileSync(join(macroRoot, "ui/MacroResearchPage.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroResearchDossier.css"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroThesisReport.css"), "utf8"),
     ].join("\n");
     const decisionCss = [
       readFileSync(join(macroRoot, "ui/MacroCharts.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionBrief.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionOverview.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.css"), "utf8"),
-      readFileSync(join(macroRoot, "ui/MacroDecisionEvidence.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionPageResponsive.css"), "utf8"),
     ].join("\n");
     const researchSelectors = selectors(researchCss);
@@ -164,9 +153,12 @@ describe("daily macro decision and research hard cut", () => {
     expect(decisionCss).toMatch(
       /\.macro-decision\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
     );
-    expect(researchSelectors.every((selector) => selector.startsWith("macro-research-"))).toBe(
-      true,
-    );
+    expect(
+      researchSelectors.every(
+        (selector) =>
+          selector.startsWith("macro-research-") || selector.startsWith("macro-thesis-report"),
+      ),
+    ).toBe(true);
     expect(
       decisionSelectors.every(
         (selector) => selector.startsWith("macro-decision") || selector.startsWith("macro-chart"),

@@ -284,12 +284,12 @@ official FOMC / speech body + effective-dated role fact
 08:50 America/New_York trading session
   -> cutoff-bounded six-module compilation
   -> immutable macro_evidence_pack_v3
-  -> one checkpointed research graph
-  -> one independent reviewer invocation bound to the exact draft hash
-  -> at most one evidence-bound revision
-  -> one immutable macro_thesis_v1 publication
-  -> deterministic Macro Live Delta and Outcome Replay
-  -> persisted-only overview, module, and Thesis history reads
+  -> bounded immutable macro_research_input_v1
+  -> one Thin DeepAgent graph / exactly one native structured model call
+  -> time, evidence, contract, and write gates
+  -> one immutable macro_thesis_v2 publication
+  -> immutable Macro Live Delta v2 / Outcome Replay v2 snapshots
+  -> current-only v2 reads and explicit immutable v1/v2 archive reads
 ```
 
 The acquisition clock families are `intraday_market`, `daily_settlement`,
@@ -320,13 +320,15 @@ release clock, never substituted with receipt time.
 Coverage (`complete`, `partial`), Current Health (`current`, `degraded`,
 `unavailable`), and History Depth (`complete`, `partial`, `insufficient`,
 `not_required`) are independent descriptive axes. Optional history cannot
-degrade current-state health. Dataset rows also expose market and source state;
+degrade current-state health or reader-facing History Depth; it remains in the
+audit appendix. Dataset rows also expose market and source state;
 closed and maintenance sessions do not age the last expected market bar against
 wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed v4/v5 payload, deterministic module-specific analysis, exact
+explicit typed payload (`rates/economy/liquidity` v5, credit/volatility/cross
+asset v7), deterministic module-specific analysis, exact
 market timestamps, natural publication cadence, source roles, importance
 ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
 revision, and publication time distinct. ETF daily history is the Nasdaq public
@@ -343,29 +345,40 @@ history, and funding comparisons remain deterministic. Credit exposes spread,
 funding cost, bank supply, and borrower quality concurrently and never reduces
 them to a score.
 
-The Thesis is the only product-level Macro judgment. It contains exactly one
-market mainline, at most one alternative, at most three real tensions, explicit
-changes from the prior Thesis, and the role of all six modules. Momentum and
-conditional outlook remain separate for exactly SPY, QQQ, IWM, TLT, IEF, LQD,
-HYG, UUP, GLD, USO, BTC, and VIX. Every claim closes to exact Evidence Pack
-citations, falsifiers, checkpoints, horizon, and confidence. The independent
-Reviewer sees the frozen pack and exact draft hash, returns `pass`, `revise`, or
-`block`, and can authorize at most one revision. Unsupported coding-agent model
-identities are terminal configuration errors.
+The Thesis is the only product-level Macro judgment. A deterministic bounded
+ResearchInput preserves typed structures, exact cutoff-frozen facts, gaps,
+prior material delta, catalysts, all twelve asset momentum rows, and a closed
+condition-candidate registry without choosing the conclusion. The Thin model
+returns one call/no-call mainline, one to three causal edges for a call, at most
+one alternative, at most three tensions, sparse module assessments, and only
+material asset outlooks. The deterministic compiler closes citations,
+conditions, hashes, and stable IDs. Momentum and conditional outlook remain
+separate for exactly SPY, QQQ, IWM, TLT, IEF, LQD, HYG, UUP, GLD, USO, BTC,
+and VIX; non-material assets keep facts and a short deterministic no-call
+reason instead of model filler.
+
+The production graph is one Thin `create_deep_agent` composition with exactly
+one provider-native structured model invocation per durable attempt. Business
+tools, subagents, filesystem, todo, task, execute, search, summarization, and
+checkpoint writes are absent. Reviewer is not a production gate or invocation;
+existing v1 review rows remain immutable archive audit. The only post-envelope
+publication gates are time identity, evidence closure, contract validity, and
+write safety.
 
 Post-publication updates never mutate the Thesis. Macro Live Delta only reports
 condition-bound strengthening, weakening, or invalidation against cited
 evidence; its public read projection preserves mainline, alternative, tension,
 and asset scopes, and only mainline bindings determine mainline validity.
-Outcome Replay evaluates the Thesis at its declared horizon. Model failure
-cannot hide the six deterministic modules or the last immutable Thesis. Reads
-keep the requested session state separate from any explicitly historical
-displayed publication, and one unavailable module degrades only its evidence
-slot rather than the whole Thesis read. PostgreSQL checkpoints are resumable
-execution state, not facts or a second publication source. Read requests never
-invoke providers or either graph. Evidence completeness is descriptive and can
-produce `no_call`; only identity/schema/cutoff/citation/reviewer integrity
-remains fail-closed.
+Event checkpoints never affect mainline validity. Outcome Replay emits only
+declared 1W/1M horizons and only corresponding material outlook assets.
+Current Recovery separately compares publication-time and current canonical
+fact availability without changing the Thesis hash. Current routes resolve one
+session and never inject a prior publication; older v1/v2 Thesis is available
+only by explicit archive selection. One unavailable module degrades only its
+evidence scope. Read requests never invoke providers or the graph. Missing
+evidence, no-call, partial history, confidence, report length, Reviewer
+absence, and offline score are descriptive rather than extra publication
+gates.
 
 ## Safety boundary
 

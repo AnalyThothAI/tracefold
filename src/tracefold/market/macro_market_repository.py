@@ -91,7 +91,11 @@ class GeneralMarketRepository:
         settlement_id = (
             "mktset_"
             + hashlib.sha256(
-                (f"{fact.dataset_id}|{fact.instrument_id}|{fact.trade_date}|{fact.contract_code}|{fact_hash}").encode()
+                (
+                    f"{fact.dataset_id}|{fact.instrument_id}|{fact.trade_date}|"
+                    f"{fact.contract_code}|{fact.fact_schema_version}|"
+                    f"{fact.contract_expiration_date}|{fact_hash}"
+                ).encode()
             ).hexdigest()
         )
         cursor = self.conn.execute(
@@ -99,10 +103,12 @@ class GeneralMarketRepository:
             INSERT INTO market_settlements(
               settlement_id, instrument_id, dataset_id, source_id, trade_date,
               contract_code, settlement_price, open_interest, volume, unit,
-              published_at_ms, received_at_ms, source_url, fact_hash, raw_data_json
+              published_at_ms, received_at_ms, source_url, fact_hash, raw_data_json,
+              fact_schema_version, contract_expiration_date
             )
             VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s::jsonb, %s, %s
             )
             ON CONFLICT DO NOTHING
             """,
@@ -122,6 +128,8 @@ class GeneralMarketRepository:
                 fact.source_url,
                 fact_hash,
                 json.dumps(fact.raw_data, sort_keys=True),
+                fact.fact_schema_version,
+                fact.contract_expiration_date,
             ),
         )
         return int(cursor.rowcount)
@@ -246,6 +254,7 @@ class GeneralMarketRepository:
                 ) AS revision_number
               FROM market_settlements AS settlements
               WHERE settlements.dataset_id = ANY(%s)
+                AND settlements.fact_schema_version = 'market_settlement_v2'
                 AND settlements.received_at_ms <= COALESCE(
                   %s::bigint,
                   settlements.received_at_ms
@@ -256,7 +265,10 @@ class GeneralMarketRepository:
                 current_revisions.*,
                 row_number() OVER (
                   PARTITION BY current_revisions.dataset_id
-                  ORDER BY current_revisions.trade_date DESC, current_revisions.contract_code
+                  ORDER BY
+                    current_revisions.trade_date DESC,
+                    current_revisions.contract_expiration_date,
+                    current_revisions.contract_code
                 ) AS row_number
               FROM current_revisions
               WHERE revision_number = 1
@@ -264,7 +276,7 @@ class GeneralMarketRepository:
             SELECT *
             FROM ranked
             WHERE row_number <= %s
-            ORDER BY dataset_id, trade_date, contract_code
+            ORDER BY dataset_id, trade_date, contract_expiration_date, contract_code
             """,
             (
                 list(dataset_ids),
@@ -327,10 +339,12 @@ def _observation_payload(fact: MarketObservationFact) -> dict[str, Any]:
 
 def _settlement_payload(fact: MarketSettlementFact) -> dict[str, Any]:
     return {
+        "fact_schema_version": fact.fact_schema_version,
         "dataset_id": fact.dataset_id,
         "instrument_id": fact.instrument_id,
         "trade_date": str(fact.trade_date),
         "contract_code": fact.contract_code,
+        "contract_expiration_date": str(fact.contract_expiration_date),
         "settlement_price": fact.settlement_price,
         "open_interest": fact.open_interest,
         "volume": fact.volume,

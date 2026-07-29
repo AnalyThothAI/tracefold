@@ -372,6 +372,7 @@
   .macro-decision__settlements,
   .macro-decision__timeline {
     min-width: 0;
+    max-width: 100%;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
@@ -394,7 +395,8 @@
     margin-top: 0.65rem;
   }
 
-  .macro-decision__source-table {
+  .macro-decision__source-table,
+  .macro-decision__settlements {
     overflow-x: auto;
   }
 
@@ -406,7 +408,7 @@
   }
 
   .macro-decision__settlements [role="row"] {
-    grid-template-columns: repeat(4, minmax(8rem, 1fr));
+    grid-template-columns: repeat(5, minmax(8rem, 1fr));
   }
 
   .macro-decision__source-table [role="row"]:first-child,

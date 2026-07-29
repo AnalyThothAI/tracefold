@@ -221,19 +221,22 @@ read:
 
 Overview and module reads accept no query parameters. The overview returns the
 intended 08:50 New York requested session, the immutable Thesis when available,
-an explicitly historical displayed publication when fallback context exists,
-server-owned twelve-asset presentation groups, scoped Live Delta, Outcome
-Replay, six typed module availability summaries, three independent
-data-quality axes, backfill execution state, typed reasons, and an explicit
-current/stale transport state.
+server-owned twelve-asset fact/outlook/recovery rows, scoped Live Delta,
+Outcome Replay, six typed module availability summaries, three independent
+data-quality axes, backfill execution state, and typed reasons. It never
+includes a prior-publication fallback. HTTP loading, stale cache, disabled
+query, and error are frontend transport states rather than Thesis states.
 Each route returns exactly one matching schema:
 
+- overview: `macro_overview_v8`
+- current research: `macro_thesis_detail_v4`
+- explicit archive: `macro_thesis_archive_detail_v2`
 - `macro_rates_fed_v5`
 - `macro_economy_inflation_v5`
 - `macro_liquidity_funding_v5`
 - `macro_credit_v7`
-- `macro_volatility_v6`
-- `macro_cross_asset_v6`
+- `macro_volatility_v7`
+- `macro_cross_asset_v7`
 
 Shared fields are limited to identity, clocks, status, summary, contradictions,
 falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
@@ -242,13 +245,14 @@ fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
 Health is `current`, `degraded`, or `unavailable`; History Depth is `complete`,
 `partial`, `insufficient`, or `not_required`. Each Dataset additionally exposes
 market state and source state. Optional history cannot lower Current Health.
+Only declared required windows affect reader-facing History Depth; optional
+maximum public history remains audit-only.
 The Macro overview read always returns the intended Thesis session and
 deterministic cutoff, even before publication. Its Thesis state is one of
 `published`, `pending`, `running`, `retryable`, `failed`, `config_error`,
-`not_published`, or `missing`. Requested state and displayed publication
-identity are separate. A prior immutable publication may be included only as
-labelled fallback context; it never changes the requested state or becomes a
-fallback publication. One missing or schema-mismatched module produces a typed
+`not_published`, or `missing`. A `published` current state requires a v2
+publication whose session exactly matches the resolved session. One missing or
+schema-mismatched module produces a typed
 unavailable slot and lowers Evidence Health rather than failing the entire
 overview or dossier. These reads use `macro_module_current` and immutable
 Thesis tables only; they never call a provider/model, advance a target, rebuild
@@ -295,6 +299,13 @@ payload exposes Treasury nominal and real maturity cross-sections for current,
 and transparent curve-shape inputs. Paid CME probability gaps are not part of
 the supported contract.
 
+Volatility exclusively owns the official CFE VX settlement curve. A served
+`market_settlement_v2` fact requires the official `Expiration Date`; schema
+version and expiration participate in both fact hash and settlement identity.
+Provable legacy raw rows receive a new append-only v2 revision while the v1 row
+remains unchanged. Unprovable v1 rows stay audit-only and are never sorted by a
+guessed contract-code expiry. Cross-Asset does not duplicate this curve.
+
 FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
 Bank speeches retain official full body text and source hashes. SEP PDF text is
 extracted from the official PDF with bounded page/content limits. The
@@ -315,58 +326,58 @@ returned; no composite score exists. Paid TRACE/NAV and unavailable historical
 ICE placeholders were deleted from the product contract.
 
 On every U.S. trading session at 08:50 `America/New_York`,
-`macro_thesis` seals one cutoff-bounded `macro_evidence_pack_v3`, invokes one
-DeepAgents research graph, and sends the exact frozen pack plus exact draft
-hash to a separately invoked Reviewer graph. `revise` permits exactly one
-evidence-bound correction; a second non-pass result makes the session
-`not_published`.
-Unsupported coding-agent model identities are terminal `config_error` states.
-Research and Reviewer graphs also have a bounded step budget; exhausting it is
-terminal `not_published`, never an indefinitely heartbeating run.
-Publication requires schema, identity, cutoff, citation closure, draft-hash,
-and reviewer integrity.
+`macro_thesis` seals one cutoff-bounded `macro_evidence_pack_v3` and projects
+one immutable `macro_research_input_v1`. Each module contributes at most three
+driver candidates, two material changes, two counter-signals, six exact refs,
+and four conditions; the global input is capped at 64 exact refs, 32
+conditions, and 64 KiB. Input compilation failure is a stable pre-model
+`failed` run.
 
-The immutable `macro_thesis_v1` contains exactly one market mainline, at most
-one alternative, at most three tensions, explicit changes from the prior
-Thesis, and an analysis role for all six modules. It keeps deterministic
-momentum separate from conditional outlook for exactly SPY, QQQ, IWM, TLT, IEF,
-LQD, HYG, UUP, GLD, USO, BTC, and VIX. Every material claim carries evidence
-references, causal chain, falsifiers, checkpoints, horizon, and confidence.
-Incomplete evidence stays explicit and can produce `no_call`; it does not
-create a fabricated conclusion.
+The only production execution path is `macro_thesis_thin_v1`: one
+`create_deep_agent` graph invocation and exactly one provider-native structured
+model invocation per durable attempt. It has no business tools, subagents,
+filesystem, todo, task, execute, search, summarization, checkpoint write,
+Reviewer, or revision loop. Provider configuration/authentication, timeout,
+refusal, and missing structured mapping are pre-draft run errors.
 
-`macro_live_delta_v1` is a deterministic post-publication comparison against
-the Thesis conditions and cited datasets. Its read projection keeps mainline,
-alternative, tension, and asset scopes separate; mainline validity is derived
-only from mainline claim, falsifier, and checkpoint bindings. Asset
-confirmation cannot promote the mainline state. Live Delta may report
-confirming, weakening, or invalidation, but cannot rewrite the Thesis. The
-deterministic `macro_outcome_replay_v1` evaluates declared 1D/1W/1M horizons
-after they mature and remains a separate record.
+A provider-success envelope is publishable only through the closed four-gate
+set: time identity, evidence closure, contract validity, and write safety.
+Their parseable primary order is time, evidence, contract, then write.
+Confidence, no-call, history partial, best-effort gaps, report length, Reviewer
+absence, and offline evaluation are not additional runtime gates.
+
+The immutable `macro_thesis_v2` contains one call/no-call mainline, one to
+three causal edges for a call, at most one alternative, at most three tensions,
+sparse material module assessments, sparse material asset outlooks, compiled
+citations/conditions, and all twelve deterministic frozen asset snapshots in
+stable order. Non-material assets retain canonical momentum/current facts and
+a short read-projection no-call reason; the model does not generate 12×2
+filler. Existing `macro_thesis_v1` bytes/hashes remain available only through
+explicit archive reads.
+
+`macro_live_delta_v2` is an immutable post-publication snapshot whose ID binds
+publication and deterministic current-fact input hash. It keeps mainline,
+alternative, tension, and asset scopes separate; only mainline metric
+conditions determine mainline validity, while event checkpoints use a separate
+state. `macro_outcome_replay_v2` uses the same append-only identity rule,
+emits only declared 1W/1M horizons (`1w_to_1m` expands to both), and includes
+only assets with a corresponding material outlook. Current Recovery is an
+independent rebuildable projection. None of these changes the Thesis hash.
 
 With no query, `GET /api/macro/research` targets the current intended 08:50
 U.S. trading session and never relabels the previous publication. Optional
 `session_date=YYYY-MM-DD` selects one explicit session. This is the same Thesis
-product as the overview, rendered as a claim-first dossier rather than a second
-research narrative. The persisted-only response returns requested state,
-requested and displayed session dates, immutable Thesis, publication-bound
-Live Delta and Outcome Replay for the exact current publication, typed reason,
-bounded run status, immutable publication history, separate generation
-attempts, and `macro_publication_appendix_v1`. The appendix is projected only
-from the publication's immutable Evidence Pack and freezes data quality, source
-lineage, and reconciliation receipts at publication time; it does not read
-current module projections. Historical publications and explicitly labelled
-fallback publications return `null` for Live Delta and Outcome Replay while
-retaining their own frozen appendix. When the requested session lacks a
-publication it may also carry the latest immutable Thesis as explicit
-historical fallback context; the requested state remains `generating`,
-`not_published`, `failed`, or `missing`.
+product as the overview. Without a date it returns
+`macro_thesis_detail_v4` and only a matching current v2 Thesis. With a date it
+returns `macro_thesis_archive_detail_v2`, whose state is `historical` or
+`missing` and whose Thesis is discriminated as original v1 or v2. Archive
+payload/hash identity is unchanged; current Recovery is outside the immutable
+payload. Current history items use `macro_publication_history_item_v2`.
 
 The read endpoint does not invoke a model or provider, search facts, resume a
 graph, run a repair, or synthesize a fallback publication. Missing remains a
-typed successful requested state; any separately displayed older publication
-retains its original identity, cutoff, and historical label. Unmatched Macro
-API paths return the ordinary application `404` response.
+typed successful state and never carries an older Thesis. Unmatched Macro API
+paths return the ordinary application `404` response.
 
 ### Token images
 
@@ -403,11 +414,19 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 - service/config: `serve`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- Macro: `macro backfill|retry-research|status`;
+- Macro: `macro backfill|backfill-professional|status`;
 - read models: `recent`, `search`, `asset-flow`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
+
+`macro status` resolves the current publication session first and never selects
+the latest historical run as a substitute. Its Thesis summary exposes only the
+current v2 state and identity; a same-session v1 row is `not_published`.
+`offline_evaluation` is a read-only projection over immutable Evidence Packs:
+it reports the exact nine-real-session shortfall or the selected 12-case corpus,
+but never invokes a model, writes an evaluation row, or becomes a daily
+publication gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

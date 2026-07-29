@@ -4,7 +4,7 @@ from datetime import date
 
 from tracefold.app.cli.parser import build_parser
 from tracefold.macro.backfill import professional_backfill_policies
-from tracefold.macro.module_payloads import _dataset_states
+from tracefold.macro.module_payloads import _current_health, _dataset_states, _history_depth
 from tracefold.macro.registry import DATASET_REGISTRY
 
 
@@ -91,11 +91,11 @@ def test_macro_cli_exposes_one_professional_backfill_command() -> None:
 
 def test_history_backfill_is_visible_but_never_becomes_a_judgment_gate() -> None:
     now_ms = 1_785_139_200_000
-    spec = DATASET_REGISTRY["treasury.daily_nominal_curve"]
+    spec = DATASET_REGISTRY["nasdaq.spy.daily"]
     latest_target = {
         "dataset_id": spec.dataset_id,
         "partition_key": "latest",
-        "clock_kind": "official_state",
+        "clock_kind": spec.clock_kind,
         "status": "current",
     }
     fact = {
@@ -123,4 +123,81 @@ def test_history_backfill_is_visible_but_never_becomes_a_judgment_gate() -> None
     assert state["current_health"] == "current"
     assert state["current_reason"]["code"] == "within_freshness_budget"
     assert state["history_depth"] == "partial"
-    assert state["history_reason"]["code"] == "history_backfill_incomplete"
+    assert state["required_for_history"] is False
+    assert state["history_reason"]["code"] == "optional_maximum_history_incomplete"
+    assert state["history_reason"]["impact"] == "none"
+
+
+def test_terminal_best_effort_proxy_stays_local_and_does_not_degrade_current_health() -> None:
+    now_ms = 1_785_139_200_000
+    spec = DATASET_REGISTRY["yfinance.spy.intraday"]
+    state = _dataset_states(
+        (spec,),
+        [
+            {
+                "dataset_id": spec.dataset_id,
+                "partition_key": "latest",
+                "clock_kind": spec.clock_kind,
+                "status": "stale",
+                "next_due_at_ms": now_ms + 300_000,
+                "last_error_code": "provider_exhausted",
+            }
+        ],
+        [],
+        now_ms,
+        analysis_job_state=None,
+        backfill_worker_enabled=False,
+    )[0]
+
+    assert state["current_health"] == "unavailable"
+    assert state["current_reason"]["code"] == "source_terminal_stale"
+    assert state["current_reason"]["recovery"] == "operator_action"
+    assert state["current_reason"]["next_check_at_ms"] is None
+    assert state["required_for_current"] is False
+    assert _current_health([state])["state"] == "current"
+
+
+def test_optional_maximum_public_history_is_audit_only() -> None:
+    now_ms = 1_785_139_200_000
+    spec = DATASET_REGISTRY["nasdaq.spy.daily"]
+    fact = {
+        "dataset_id": spec.dataset_id,
+        "observation_id": "spy-history-fact",
+        "observed_at_ms": now_ms - 86_400_000,
+        "published_at_ms": now_ms - 86_400_000,
+        "received_at_ms": now_ms - 1_000,
+        "value_numeric": 635.0,
+        "unit": spec.unit,
+        "source_url": spec.source_url,
+    }
+    states = _dataset_states(
+        (spec,),
+        [
+            {
+                "dataset_id": spec.dataset_id,
+                "partition_key": "latest",
+                "clock_kind": spec.clock_kind,
+                "status": "current",
+                "next_due_at_ms": now_ms + 86_400_000,
+            },
+            {
+                "dataset_id": spec.dataset_id,
+                "partition_key": "2021-07-29..2026-07-29",
+                "clock_kind": "backfill",
+                "status": "backfilling",
+                "cursor_json": {"history_class": "maximum_public"},
+                "next_due_at_ms": now_ms + 60_000,
+            },
+        ],
+        [fact],
+        now_ms,
+        analysis_job_state=None,
+        backfill_worker_enabled=True,
+    )
+    state = states[0]
+
+    assert state["required_for_history"] is False
+    assert state["history_depth"] == "partial"
+    assert state["history_reason"]["code"] == "optional_maximum_history_incomplete"
+    assert state["history_reason"]["impact"] == "none"
+    assert _history_depth(states)["state"] == "not_required"

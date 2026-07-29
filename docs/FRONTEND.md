@@ -115,22 +115,20 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `session_date=YYYY-MM-DD` survives hard reload and sharing. It is not a
   second Macro narrative.
 
-  The overview is a 30-second decision brief with one fixed order: requested
-  versus displayed session state when exceptional, market mainline, strongest
-  evidence and real tensions, changes from the prior Thesis, twelve assets in
-  server-owned `actionable`/`watch`/`evidence_gap` groups, scoped Live Delta,
-  falsifiers/checkpoints/Outcome Replay, compact Evidence Health, then Data
-  Quality. It does not render six equal module-role cards. Module evidence is
-  attached to the claim it supports or contradicts; the compact health summary
-  is the only overview-wide module index.
+  The overview is a 30-second decision brief with one fixed order: current
+  session/publication state, call/no-call mainline, material changes, one to
+  three causal edges, strongest support/counterevidence, real tensions, sparse
+  material outlook plus all twelve asset facts/recovery, catalysts/conditions,
+  scoped Live Delta/Outcome Replay, then compact provenance/data-quality
+  audit. It does not render six equal narratives or 12×2 model filler.
 
   The intended 08:50 session and deterministic cutoff remain explicit. When the
-  requested current session has no publication, the API may also supply the
-  latest immutable publication as clearly historical fallback context. The UI
-  must show both requested and displayed sessions and must never relabel that
-  publication as current. Current/stale transport state is separate from
-  content fallback, Coverage, Current Health, History Depth, and backfill
-  execution; the browser never infers any of these states from wall-clock age.
+  requested current session has no publication, the UI shows its exact
+  `pending`, `running`, `retryable`, `failed`, `config_error`,
+  `not_published`, or `missing` state and never injects an older Thesis.
+  Historical v1/v2 publications are available only after an explicit dated
+  research selection. Current/stale transport state is separate from Thesis
+  state, Coverage, Current Health, History Depth, and backfill execution.
 
   Each module is a typed evidence workbench. A thin shared header answers
   current conclusion, latest change, as-of, data health, and relationship to the
@@ -140,7 +138,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   contradictions/falsifiers/checkpoints/gaps four-card footer and no fixed
   business interpretation. Release modules distinguish expected, actual,
   surprise, revision, source publication time, and receipt time. Optional
-  history can lower only History Depth, never Current Health.
+  required history can lower only the declared feature's History Depth, never
+  Current Health. Optional maximum history stays in the audit disclosure.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
   comparison and best-effort major-futures/USD-index rows. ETF and futures rows
@@ -152,30 +151,31 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   table. Fed renders institutional stance, recent officials distribution, then
   the event timeline. Credit keeps four concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a
-  composite score.
+  composite score. Volatility owns the official-expiry CFE VX settlement curve;
+  Cross-Asset does not duplicate it.
 
-  The research page is a claim-first dossier, not the overview with more fields.
-  It renders each claim as statement, reasoning, supporting evidence,
-  counterevidence, asset implications, falsifiers, checkpoints, citations, and
-  relevant replay. Reviewer/run/source-lineage detail lives in an audit
-  appendix. It provides a real link back to the overview and keeps publication
-  history separate from generation attempts. The browser does not classify
-  evidence sufficiency, infer direction/confidence, score or group assets,
-  merge source identities, aggregate Live Delta, select fallback content, or
-  recompute conclusions.
+  The research page renders the same v2 report for the current session and an
+  explicit immutable v1/v2 archive envelope for a dated session. It provides a
+  real link back to the overview and keeps publication history separate from
+  run status. Old Reviewer fields are labelled audit-only and never presented
+  as current approval. The browser does not classify evidence sufficiency,
+  infer direction/confidence, score or group assets, merge source identities,
+  aggregate Live Delta, select fallback content, or recompute conclusions.
 
-  Current, historical, fallback, generating, not-published, failed, and missing
-  states remain visually distinct. Every non-success state displays its typed
+  Current business states and archive `historical/missing` remain visually
+  distinct. Every non-success state displays its typed
   reason, affected scope, retryability, recovery action, and a next check only
-  when one is actually scheduled. Generating state polls only the persisted
-  read; it never starts or resumes an Agent. A historical or fallback document
-  is labelled with requested and displayed session dates and is never
-  relabelled as current. Run attempts and sanitized errors are supporting
-  status, not Thesis content.
+  when one is actually scheduled. Persisted pending/running states may poll the
+  read but never start or resume an Agent. Run status and sanitized errors are
+  supporting metadata, not Thesis content.
 
   At desktop, tablet, and mobile widths the document becomes labelled stacked
   content without horizontal page scrolling or hover-only material evidence.
-- **Page state.** Loading, empty, stale, and error surfaces should use `PageState.*` so skeletons, error alerts, and retry actions stay consistent.
+- **Page state.** Only an active first HTTP request may show Loading.
+  Bootstrap pending/error, disabled query, transport error, same-session stale
+  cache, and Thesis business states use distinct `PageState.*` surfaces with a
+  truthful retry/recovery action. A disabled token query must never leave an
+  infinite skeleton.
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `RadarControls`, `PageState`, `TokenProfileCard`, `DecisionTag`, `CompactPanel`, and the research case-file components own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.

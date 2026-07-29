@@ -46,8 +46,14 @@ export function createAppRouteObjects(): RouteObject[] {
                 const { MacroOverviewPage } = await import("@features/macro");
                 return {
                   Component: function MacroOverviewRoute() {
-                    const { token } = useShellRouteContext();
-                    return <MacroOverviewPage token={token} />;
+                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
+                    return (
+                      <MacroOverviewPage
+                        bootstrapError={bootstrapError}
+                        bootstrapLoading={bootstrapLoading}
+                        token={token}
+                      />
+                    );
                   },
                 };
               },
@@ -58,8 +64,14 @@ export function createAppRouteObjects(): RouteObject[] {
                 const { MacroResearchPage } = await import("@features/macro");
                 return {
                   Component: function MacroResearchRoute() {
-                    const { token } = useShellRouteContext();
-                    return <MacroResearchPage token={token} />;
+                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
+                    return (
+                      <MacroResearchPage
+                        bootstrapError={bootstrapError}
+                        bootstrapLoading={bootstrapLoading}
+                        token={token}
+                      />
+                    );
                   },
                 };
               },
@@ -79,8 +91,15 @@ export function createAppRouteObjects(): RouteObject[] {
                 const { MacroModulePage } = await import("@features/macro");
                 return {
                   Component: function MacroModuleRoute() {
-                    const { token } = useShellRouteContext();
-                    return <MacroModulePage moduleId={moduleId} token={token} />;
+                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
+                    return (
+                      <MacroModulePage
+                        bootstrapError={bootstrapError}
+                        bootstrapLoading={bootstrapLoading}
+                        moduleId={moduleId}
+                        token={token}
+                      />
+                    );
                   },
                 };
               },

@@ -3,10 +3,12 @@ from __future__ import annotations
 import pytest
 from alembic import command
 from psycopg.errors import CheckViolation
+from sqlalchemy.exc import ProgrammingError
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.market.macro_market_repository import GeneralMarketRepository
 from tracefold.platform.postgres.postgres_migrations import (
     alembic_config,
     latest_migration_version,
@@ -140,6 +142,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 """
             ).fetchall()
         }
+        macro_research_input_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'macro_research_inputs'
+                """
+            ).fetchall()
+        }
         news_source_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -170,6 +183,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'market_tick_current'
+                """
+            ).fetchall()
+        }
+        market_settlement_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'market_settlements'
                 """
             ).fetchall()
         }
@@ -275,6 +299,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "macro_feature_series",
         "macro_module_current",
         "macro_evidence_packs",
+        "macro_research_inputs",
         "macro_thesis_runs",
         "macro_thesis_reviews",
         "macro_thesis_publications",
@@ -293,6 +318,8 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "cutoff_ms",
         "evidence_pack_id",
         "evidence_pack_hash",
+        "research_input_id",
+        "research_input_hash",
         "status",
         "attempt_count",
         "max_attempts",
@@ -302,8 +329,21 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "publication_id",
         "last_error_code",
         "last_error_message",
+        "last_gate_category",
+        "last_candidate_hash",
         "created_at_ms",
         "updated_at_ms",
+    }
+    assert macro_research_input_columns == {
+        "research_input_id",
+        "evidence_pack_id",
+        "session_date",
+        "cutoff_ms",
+        "schema_version",
+        "profile_version",
+        "prompt_version",
+        "payload_json",
+        "input_hash",
     }
     assert news_source_columns == {
         "source_id",
@@ -338,6 +378,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
+    assert {"fact_schema_version", "contract_expiration_date"} <= market_settlement_columns
     assert {"matched_handles_json", "is_watched", "matched_at_ms"}.isdisjoint(event_columns)
     assert "is_watched" not in event_entity_columns
     assert {"scope", "social_heat_watched_mentions", "cohort_public_followup_authors"}.isdisjoint(radar_feature_columns)
@@ -346,7 +387,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert "is_watched" not in radar_rank_source_columns
-    assert version == latest_migration_version() == "20260729_0215"
+    assert version == latest_migration_version() == "20260729_0216"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -371,7 +412,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260729_0215"
+    assert version == latest_migration_version() == "20260729_0216"
 
 
 def test_macro_reader_hard_cut_deletes_old_projections_and_requires_reprojection(
@@ -521,7 +562,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260729_0215"
+        assert version == "20260729_0216"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """
@@ -567,5 +608,264 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
             """
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def test_macro_thin_v2_migration_appends_only_provable_cfe_revisions(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        command.upgrade(config, "20260729_0215")
+        conn.execute(
+            """
+            INSERT INTO market_instruments(
+              instrument_id, symbol, name, asset_class, instrument_type,
+              venue, currency, price_unit, source_metadata_json, created_at_ms
+            ) VALUES (
+              'cfe.vx', 'VX', 'CFE VIX futures', 'volatility', 'future',
+              'CFE', 'USD', 'index_points', '{}'::jsonb, 1
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO market_settlements(
+              settlement_id, instrument_id, dataset_id, source_id, trade_date,
+              contract_code, settlement_price, open_interest, volume, unit,
+              published_at_ms, received_at_ms, source_url, fact_hash, raw_data_json
+            ) VALUES
+            (
+              'legacy-provable', 'cfe.vx', 'cboe.cfe.vx.settlement', 'cfe',
+              '2026-07-28', 'VXQ6', 18.25, 100, 50, 'index_points',
+              10, 20, 'https://www.cboe.com/', 'sha256:legacy-provable',
+              '{"Expiration Date":"2026-08-19","Contract":"VXQ6"}'::jsonb
+            ),
+            (
+              'legacy-unprovable', 'cfe.vx', 'cboe.cfe.vx.settlement', 'cfe',
+              '2026-07-28', 'VXU6', 19.10, 90, 40, 'index_points',
+              10, 20, 'https://www.cboe.com/', 'sha256:legacy-unprovable',
+              '{"Contract":"VXU6"}'::jsonb
+            )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        facts = conn.execute(
+            """
+            SELECT settlement_id, contract_code, fact_schema_version,
+                   contract_expiration_date, fact_hash
+            FROM market_settlements
+            ORDER BY fact_schema_version, contract_code
+            """
+        ).fetchall()
+        served = GeneralMarketRepository(conn).settlement_history(dataset_ids=("cboe.cfe.vx.settlement",))
+    finally:
+        conn.close()
+
+    assert len(facts) == 3
+    assert {
+        (row["settlement_id"], row["fact_schema_version"])
+        for row in facts
+        if row["fact_schema_version"] == "market_settlement_v1"
+    } == {
+        ("legacy-provable", "market_settlement_v1"),
+        ("legacy-unprovable", "market_settlement_v1"),
+    }
+    v2 = next(row for row in facts if row["fact_schema_version"] == "market_settlement_v2")
+    assert v2["settlement_id"] != "legacy-provable"
+    assert v2["fact_hash"] != "sha256:legacy-provable"
+    assert str(v2["contract_expiration_date"]) == "2026-08-19"
+    assert [row["contract_code"] for row in served] == ["VXQ6"]
+
+
+def test_macro_thin_v2_migration_preserves_v1_and_cleans_only_macro_control_state(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        command.upgrade(config, "20260729_0215")
+        conn.execute(
+            """
+            INSERT INTO macro_evidence_packs(
+              evidence_pack_id, session_date, cutoff_ms, sealed_at_ms,
+              source_max_received_at_ms, schema_version, payload_json, payload_hash
+            ) VALUES (
+              'mep3_migration_fixture', '2026-07-28', 1000, 1000, 1000,
+              'macro_evidence_pack_v3', '{"fixture":"v1"}'::jsonb, 'sha256:v1-pack'
+            );
+            INSERT INTO macro_thesis_runs(
+              session_date, cutoff_ms, evidence_pack_id, evidence_pack_hash,
+              status, attempt_count, max_attempts, due_at_ms,
+              created_at_ms, updated_at_ms
+            ) VALUES (
+              '2026-07-28', 1000, 'mep3_migration_fixture', 'sha256:v1-pack',
+              'pending', 0, 2, 1000, 1000, 1000
+            );
+            UPDATE macro_thesis_runs
+            SET status = 'running',
+                attempt_count = 1,
+                leased_until_ms = 9999999999999,
+                lease_owner = 'migration-fixture-owner',
+                updated_at_ms = 1100
+            WHERE session_date = '2026-07-28';
+            INSERT INTO macro_thesis_reviews(
+              review_id, session_date, review_sequence, draft_hash, disposition,
+              review_json, invocation_id, model_name, prompt_version, created_at_ms
+            ) VALUES (
+              'review-v1-fixture', '2026-07-28', 1, 'sha256:v1-draft', 'pass',
+              '{"disposition":"pass"}'::jsonb, 'review-invocation-v1',
+              'legacy-model', 'legacy-prompt', 1200
+            );
+            INSERT INTO macro_thesis_publications(
+              publication_id, session_date, cutoff_ms, evidence_pack_id,
+              schema_version, thesis_json, thesis_hash, reviewer_invocation_id,
+              reviewer_draft_hash, published_at_ms
+            ) VALUES (
+              'publication-v1-fixture', '2026-07-28', 1000, 'mep3_migration_fixture',
+              'macro_thesis_v1', '{"nested":{"b":2,"a":1},"schema_version":"macro_thesis_v1"}'::jsonb,
+              'sha256:v1-thesis', 'review-invocation-v1', 'sha256:v1-draft', 1300
+            );
+            UPDATE macro_thesis_runs
+            SET status = 'published',
+                publication_id = 'publication-v1-fixture',
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                updated_at_ms = 1300
+            WHERE session_date = '2026-07-28';
+
+            INSERT INTO macro_evidence_packs(
+              evidence_pack_id, session_date, cutoff_ms, sealed_at_ms,
+              source_max_received_at_ms, schema_version, payload_json, payload_hash
+            ) VALUES (
+              'mep3_active_lease_fixture', '2026-07-29', 1000, 1000, 1000,
+              'macro_evidence_pack_v3', '{"fixture":"active-lease"}'::jsonb,
+              'sha256:active-lease-pack'
+            );
+            INSERT INTO macro_thesis_runs(
+              session_date, cutoff_ms, evidence_pack_id, evidence_pack_hash,
+              status, attempt_count, max_attempts, due_at_ms,
+              created_at_ms, updated_at_ms
+            ) VALUES (
+              '2026-07-29', 1000, 'mep3_active_lease_fixture',
+              'sha256:active-lease-pack', 'pending', 0, 2, 1000, 1000, 1000
+            );
+            UPDATE macro_thesis_runs
+            SET status = 'running',
+                attempt_count = 1,
+                leased_until_ms = 9999999999999,
+                lease_owner = 'active-cutover-owner',
+                updated_at_ms = 1400
+            WHERE session_date = '2026-07-29';
+
+            INSERT INTO checkpoints(
+              thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata
+            ) VALUES
+              ('research:mep3_fixture', '', 'macro-checkpoint', '{"v":1}'::jsonb, '{}'::jsonb),
+              ('other:workflow', '', 'other-checkpoint', '{"v":1}'::jsonb, '{}'::jsonb);
+            INSERT INTO checkpoint_writes(
+              thread_id, checkpoint_ns, checkpoint_id, task_id, idx,
+              channel, type, blob, task_path
+            ) VALUES
+              ('review:mep3_fixture', '', 'macro-checkpoint', 'task', 0,
+               'messages', 'bytes', decode('00', 'hex'), ''),
+              ('other:workflow', '', 'other-checkpoint', 'task', 0,
+               'messages', 'bytes', decode('00', 'hex'), '');
+            INSERT INTO checkpoint_blobs(
+              thread_id, checkpoint_ns, channel, version, type, blob
+            ) VALUES
+              ('research:mep3_fixture', '', 'messages', '1', 'bytes', decode('00', 'hex')),
+              ('other:workflow', '', 'messages', '1', 'bytes', decode('00', 'hex'));
+            """
+        )
+        conn.commit()
+        before = conn.execute(
+            """
+            SELECT encode(convert_to(thesis_json::text, 'UTF8'), 'hex') AS payload_bytes,
+                   thesis_hash, reviewer_invocation_id, reviewer_draft_hash
+            FROM macro_thesis_publications
+            WHERE publication_id = 'publication-v1-fixture'
+            """
+        ).fetchone()
+
+        with pytest.raises(ProgrammingError, match="macro_thesis_active_lease_blocks_v2_cutover"):
+            command.upgrade(config, "head")
+        conn.rollback()
+
+        conn.execute(
+            """
+            UPDATE macro_thesis_runs
+            SET leased_until_ms = 0,
+                updated_at_ms = 1500
+            WHERE session_date = '2026-07-29'
+            """
+        )
+        conn.commit()
+        command.upgrade(config, "head")
+
+        after = conn.execute(
+            """
+            SELECT encode(convert_to(thesis_json::text, 'UTF8'), 'hex') AS payload_bytes,
+                   thesis_hash, reviewer_invocation_id, reviewer_draft_hash
+            FROM macro_thesis_publications
+            WHERE publication_id = 'publication-v1-fixture'
+            """
+        ).fetchone()
+        assert after == before
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS count
+                FROM checkpoints
+                WHERE thread_id LIKE 'research:mep3_%'
+                   OR thread_id LIKE 'review:mep3_%'
+                """
+            ).fetchone()["count"]
+            == 0
+        )
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS count
+                FROM checkpoint_writes
+                WHERE thread_id LIKE 'research:mep3_%'
+                   OR thread_id LIKE 'review:mep3_%'
+                """
+            ).fetchone()["count"]
+            == 0
+        )
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS count
+                FROM checkpoint_blobs
+                WHERE thread_id LIKE 'research:mep3_%'
+                   OR thread_id LIKE 'review:mep3_%'
+                """
+            ).fetchone()["count"]
+            == 0
+        )
+        for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+            assert (
+                conn.execute(f"SELECT count(*) AS count FROM {table} WHERE thread_id = 'other:workflow'").fetchone()[
+                    "count"
+                ]
+                == 1
+            )
     finally:
         conn.close()

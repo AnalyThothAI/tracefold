@@ -460,6 +460,20 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
 
+## `macro_research_inputs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `research_input_id` | `TEXT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `cutoff_ms` | `BIGINT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `profile_version` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `input_hash` | `TEXT` | False | `None` |
+
 ## `macro_series_facts`
 
 | Column | Type | Nullable | Default |
@@ -508,8 +522,8 @@
 | `schema_version` | `TEXT` | False | `None` |
 | `thesis_json` | `JSONB` | False | `None` |
 | `thesis_hash` | `TEXT` | False | `None` |
-| `reviewer_invocation_id` | `TEXT` | False | `None` |
-| `reviewer_draft_hash` | `TEXT` | False | `None` |
+| `reviewer_invocation_id` | `TEXT` | True | `None` |
+| `reviewer_draft_hash` | `TEXT` | True | `None` |
 | `published_at_ms` | `BIGINT` | False | `None` |
 
 ## `macro_thesis_reviews`
@@ -546,6 +560,10 @@
 | `last_error_message` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `research_input_id` | `TEXT` | True | `None` |
+| `research_input_hash` | `TEXT` | True | `None` |
+| `last_gate_category` | `TEXT` | True | `None` |
+| `last_candidate_hash` | `TEXT` | True | `None` |
 
 ## `market_instruments`
 
@@ -621,6 +639,8 @@
 | `source_url` | `TEXT` | False | `None` |
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
+| `fact_schema_version` | `TEXT` | False | `None` |
+| `contract_expiration_date` | `DATE` | True | `None` |
 
 ## `market_tick_current`
 

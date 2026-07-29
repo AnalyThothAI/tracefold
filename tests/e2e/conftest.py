@@ -27,6 +27,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 E2E_WS_TOKEN = "e2e-token"
+E2E_MACRO_NOW_MS = "1785247200000"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -65,6 +66,28 @@ def _docker_available() -> bool:
 @pytest.fixture(scope="session")
 def e2e_ws_token() -> str:
     return os.environ.get("TRACEFOLD_E2E_WS_TOKEN", E2E_WS_TOKEN)
+
+
+@pytest.fixture(scope="session")
+def e2e_frontend_dist() -> Path:
+    """Build the real React application that FastAPI serves in the full-stack lane."""
+    web_root = ROOT / "web"
+    result = subprocess.run(
+        ["npm", "run", "build"],
+        cwd=str(web_root),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    dist = web_root / "dist"
+    if result.returncode != 0 or not (dist / "index.html").exists():
+        pytest.fail(
+            "e2e frontend build failed; full-stack acceptance cannot use a mock or preview substitute.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            pytrace=False,
+        )
+    return dist
 
 
 @pytest.fixture(scope="session")
@@ -143,7 +166,12 @@ def _wait_for_port_in_log(log_path: Path, proc: subprocess.Popen[bytes], timeout
 
 
 @pytest.fixture(scope="session")
-def e2e_uvicorn(e2e_postgres: str, e2e_ws_token: str, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def e2e_uvicorn(
+    e2e_frontend_dist: Path,
+    e2e_postgres: str,
+    e2e_ws_token: str,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[str]:
     """Spawn uvicorn in a subprocess; yield base URL like http://127.0.0.1:PORT.
 
     The subprocess's stdout/stderr is redirected directly to a file (no pipe
@@ -154,6 +182,8 @@ def e2e_uvicorn(e2e_postgres: str, e2e_ws_token: str, tmp_path_factory: pytest.T
         **os.environ,
         "TRACEFOLD_POSTGRES_DSN": e2e_postgres,
         "TRACEFOLD_E2E_WS_TOKEN": e2e_ws_token,
+        "TRACEFOLD_E2E_FIXED_NOW_MS": E2E_MACRO_NOW_MS,
+        "TRACEFOLD_FRONTEND_DIST": str(e2e_frontend_dist),
         "PYTHONPATH": str(ROOT / "src"),
     }
     log_dir = tmp_path_factory.mktemp("e2e-uvicorn")

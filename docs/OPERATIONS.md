@@ -192,20 +192,20 @@ already stamped at the baseline is left intact.
 
 Macro:
 
-The `20260728_0210` baseline plus the irreversible `20260728_0212` hard-cut
-and `20260728_0213` lifecycle-completion migrations
-migration contains the current Macro fact, coverage, module, Thesis, Live
-Delta, Outcome Replay, and Fed evidence contracts. It deletes the retired
-Judgment/Research tables and paid-data placeholders; there is no archive or
-compatibility read lane.
+The `20260728_0210` baseline plus irreversible migrations through
+`20260729_0216` contain the current Macro fact, coverage, module,
+ResearchInput, Thesis v2, Live Delta v2, Outcome Replay v2, and Fed evidence
+contracts. Current reads have one v2 path. Existing v1 publications remain
+byte-for-byte immutable and are available only through explicit archive reads.
 
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
   -> macro_projection -> six macro_module_current rows
   -> 08:50 New York macro_evidence_pack_v3
-  -> research graph -> independent reviewer bound to the draft hash
-  -> at most one revision -> immutable macro_thesis_v1
-  -> deterministic macro_live_delta_v1 and macro_outcome_replay_v1
+  -> deterministic bounded macro_research_input_v1
+  -> one Thin DeepAgent graph invocation -> exactly one model invocation
+  -> four publication gates -> immutable macro_thesis_v2
+  -> immutable macro_live_delta_v2 and macro_outcome_replay_v2 snapshots
 ```
 
 The five automatic acquisition workers claim only their own clock family from
@@ -221,8 +221,10 @@ single-source histories are inexpensive and materially improve regime context.
 The daily-settlement worker defaults to a batch of 32 so one cold-start cycle
 covers the complete automatic daily registry instead of spreading it across
 multiple six-hour intervals.
-Every backfill remains observable in History Depth but is non-blocking for
-Current Health, module projection, Evidence Pack, and Thesis publication.
+Declared required windows remain observable in reader-facing History Depth but
+are non-blocking outside the feature or claim that needs them. Optional maximum
+public history and its execution state remain in the audit appendix and cannot
+lower Current Health or enter Thesis prose.
 Five-year targets have a lower numeric queue priority than optional deep
 history, so a large enrichment crawl cannot sit ahead of current five-year
 coverage. Before creating a new target, the professional command
@@ -252,8 +254,8 @@ effective-dated role match exists or the completed FOMC history backfill proves
 that the speech date has roster coverage. Each claim performs model I/O outside
 the write transaction, validates exact excerpts against the frozen body, then
 atomically inserts the immutable analysis and completes the job. Open or
-exhausted jobs are visible in the affected Dataset Current Health and can force
-a Thesis claim to `no_call`. Restart reclaims expired leases without
+exhausted jobs remain visible in the affected evidence scope; they do not
+become a global publication gate. Restart reclaims expired leases without
 duplicating analysis identity.
 
 `macro_projection` deterministically recomputes the Calculation Registry and
@@ -261,50 +263,64 @@ six stable module rows; unchanged payloads write zero serving rows.
 `macro_thesis` runs after 08:50 `America/New_York` on U.S. trading days, creates
 or re-reads one stable session run, and claims at most one due run per
 iteration. Before model work it freezes the session, cutoff, pack identity,
-six ordered module payloads, prior Thesis, delta/catalyst packs, twelve-asset
-momentum, and evidence references. Only facts received by the cutoff may enter.
-All graph I/O occurs outside a database write transaction. The Evidence Pack
-remains complete in PostgreSQL; one compact module decision view and its
-allowed evidence refs are embedded as a frozen invocation input.
+six ordered module payloads, prior material delta, catalysts, twelve-asset
+momentum, exact fact references, and the closed condition-candidate registry.
+Only facts authoritative by the cutoff may enter. `MacroResearchInputV1` is
+deterministic and capped at 64 exact refs, 32 conditions, and 64 KiB. Input
+compilation failure becomes a stable pre-model `failed` run with
+`attempt_count=0`.
 
-The research graph must return exactly one mainline, at most one alternative,
-at most three tensions, six module roles, prior-Thesis changes, and twelve
-condition-bound asset outlooks. A separately invoked Reviewer graph receives
-the exact frozen Evidence Pack and exact draft hash. `revise` permits one
-corrected draft and one final review; any second non-pass result leaves the
-session terminal `not_published`. `pass` publication, Reviewer record, and run transition are
-atomic. Missing evidence can produce `no_call`; schema, identity, cutoff,
-citation, draft-hash, or Reviewer failure closes the lane. A model name ending
-in `-terra`, `-sol`, or `codex` is a terminal `config_error`, not a retryable
-provider failure.
+The only production adapter is the Thin profile. Each durable attempt performs
+one `create_deep_agent` graph invocation and exactly one provider-native
+structured model invocation. The model receives no business tools, subagents,
+filesystem, todo, task, execute, search, summarization, or checkpoint surface.
+It returns one call/no-call mainline, one to three causal edges for a call, at
+most one alternative, at most three tensions, sparse material module
+assessments, and only material asset outlooks. Code owns exact citations,
+closed condition predicates, stable IDs, and the twelve-asset fact
+presentation.
 
-Both the research and Reviewer graphs are bounded by
-`macro_thesis.graph_recursion_limit` (default 48, allowed 8–128). Reaching the
-bound is terminal `not_published` with `macro_thesis_agent_step_limit`; lease
-heartbeats do not turn a tool or structured-output loop into an unbounded run.
-The research invocation is a single graph: its exact-model DeepAgents harness
-profile disables the general-purpose subagent and hides filesystem, todo,
-`execute`, and `task` tools. A child graph therefore cannot escape the root
-step budget.
-
-The production `AsyncPostgresSaver` uses the run's frozen scope ID as the
-stable LangGraph `thread_id`. Checkpoint tables are execution state, not Macro
-facts or serving surfaces; Alembic owns their DDL. Macro Thesis has no runtime
-workspace directory.
+After a provider-success envelope, rejection is exhausted by four gates:
+time/identity, evidence closure, contract validity, and write safety.
+Confidence, no-call, partial history, Reviewer absence, report length, and
+offline scores are not runtime gates. Provider configuration/authentication,
+timeout, refusal, or missing structured mapping are pre-draft run failures.
+There is no Reviewer revision loop or attempt-internal retry loop. Macro Thesis
+has no runtime workspace and the Thin profile writes no checkpoint rows.
 
 Run states are `pending`, `running`, `retryable`, `failed`, `config_error`,
 `not_published`, and `published`. Leases are owner-bound crash-recovery TTLs.
 External/runtime failures retry within the configured budget; invalid model
 configuration transitions before a claim and keeps `attempt_count=0`. The
-session-keyed pack, reviews, publication, and Outcome Replay reject mutation.
-Live Delta is the single-writer stable publication-keyed current read model and
-updates only when its deterministic input hash changes. Replaying a published
-session performs zero model calls and zero publication writes.
+session-keyed pack, ResearchInput, publication, Live Delta, and Outcome Replay
+reject mutation. A repeated deterministic evaluation input writes zero rows;
+a changed input appends a new ID derived from publication plus input hash.
+Replaying a published session performs zero model calls and zero publication
+writes.
 
 Post-publication cycles update only deterministic Live Delta and Outcome Replay.
 Live Delta evaluates declared Thesis conditions against new persisted facts;
-Outcome Replay waits for each declared horizon and records evaluated or
-insufficient outcomes. Neither path edits or republishes the Thesis.
+event checkpoints have their own state and do not affect mainline validity.
+Outcome Replay creates only declared 1W/1M checkpoints and includes only assets
+with a corresponding material outlook. Recovery separately explains
+publication-time versus current fact availability. None of these paths edits
+or republishes the Thesis.
+
+Before applying `20260729_0216` to production, freeze and human-sign
+`macro_thin_profile_eval_v1`: six module cases, three distinct mixed sessions,
+and three derived gap cases. Baseline and candidate use the same production
+model twice. Candidate factual/citation/condition errors veto release; its
+worst causal, counterevidence, and material-asset recall cannot regress, and at
+least one of causal sufficiency, counterevidence recall, or duplicate-claim
+count must improve. The deterministic evaluator reports eligibility only; the
+research owner records the final cutover decision. Insufficient real sessions
+blocks migration rather than introducing synthetic directional cases.
+`uv run tracefold macro status` reports this as
+`offline_evaluation.state=insufficient_real_sessions` with the exact available
+and missing real-session counts. Once nine sessions exist it deterministically
+compiles bounded Research Inputs and either reports the 12 selected case IDs or
+`selection_blocked` with the failed corpus rule. This status read performs no
+provider call and no write.
 
 ## Operator actions and retention
 
