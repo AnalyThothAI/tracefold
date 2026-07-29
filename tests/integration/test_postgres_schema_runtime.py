@@ -33,6 +33,15 @@ RETIRED_BACKEND_TABLES = {
     "macro_judgment_jobs",
     "macro_judgment_publications",
     "macro_judgment_outcomes",
+    "macro_daily_judgments",
+    "macro_daily_judgments_v1_archive",
+    "macro_judgment_status",
+    "macro_event_updates",
+    "macro_event_updates_v1_archive",
+    "macro_research_runs",
+    "macro_research_runs_v1_archive",
+    "macro_research_publications",
+    "macro_research_publications_v1_archive",
     "macro_sync_runs",
     "macro_sync_state",
     "macro_sync_windows",
@@ -102,7 +111,7 @@ LEGACY_NEWS_TABLES = {
 }
 
 
-def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(tmp_path) -> None:
+def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -112,14 +121,14 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
             ).fetchall()
         }
-        macro_research_run_columns = {
+        macro_thesis_run_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'macro_research_runs'
+                  AND table_name = 'macro_thesis_runs'
                 """
             ).fetchall()
         }
@@ -134,14 +143,14 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
                 """
             ).fetchall()
         }
-        macro_research_publication_columns = {
+        macro_thesis_publication_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'macro_research_publications'
+                  AND table_name = 'macro_thesis_publications'
                 """
             ).fetchall()
         }
@@ -258,10 +267,11 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "macro_feature_series",
         "macro_module_current",
         "macro_evidence_packs",
-        "macro_daily_judgments",
-        "macro_event_updates",
-        "macro_research_runs",
-        "macro_research_publications",
+        "macro_thesis_runs",
+        "macro_thesis_reviews",
+        "macro_thesis_publications",
+        "macro_live_deltas",
+        "macro_outcome_replays",
         "checkpoint_migrations",
         "checkpoints",
         "checkpoint_blobs",
@@ -270,18 +280,18 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert tables >= PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
-    assert macro_research_run_columns == {
+    assert macro_thesis_run_columns == {
         "session_date",
-        "market_cutoff_ms",
+        "cutoff_ms",
         "evidence_pack_id",
+        "evidence_pack_hash",
         "status",
-        "sealed_at_ms",
         "attempt_count",
         "max_attempts",
         "due_at_ms",
         "leased_until_ms",
         "lease_owner",
-        "reviewer_disposition",
+        "publication_id",
         "last_error_code",
         "last_error_message",
         "created_at_ms",
@@ -307,18 +317,16 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
         "created_at_ms",
         "updated_at_ms",
     }
-    assert macro_research_publication_columns == {
+    assert macro_thesis_publication_columns == {
+        "publication_id",
         "session_date",
-        "market_cutoff_ms",
+        "cutoff_ms",
         "evidence_pack_id",
-        "artifact_json",
-        "report_markdown",
-        "audit_json",
-        "reviewer_disposition",
-        "model_name",
-        "prompt_version",
-        "workflow_version",
-        "artifact_hash",
+        "schema_version",
+        "thesis_json",
+        "thesis_hash",
+        "reviewer_invocation_id",
+        "reviewer_draft_hash",
         "published_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
@@ -330,7 +338,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_research(
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert "is_watched" not in radar_rank_source_columns
-    assert version == latest_migration_version() == "20260728_0211"
+    assert version == latest_migration_version() == "20260728_0213"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -355,4 +363,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260728_0211"
+    assert version == latest_migration_version() == "20260728_0213"

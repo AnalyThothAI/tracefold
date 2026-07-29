@@ -39,6 +39,15 @@ MacroFactFamily = Literal[
     "market_settlement",
 ]
 MacroTrustTier = MarketTrustTier
+MacroSourceRole = Literal[
+    "decision_primary",
+    "history",
+    "release",
+    "intraday_proxy",
+    "reconciliation_only",
+    "official_document",
+    "derived",
+]
 
 
 class MacroSourceError(RuntimeError):
@@ -84,6 +93,8 @@ MACRO_MODULE_LABELS: dict[MacroModuleId, str] = {
 @dataclass(frozen=True, slots=True)
 class DatasetSpec:
     dataset_id: str
+    concept_id: str
+    source_role: MacroSourceRole
     module_id: MacroModuleId
     clock_kind: MacroClockKind
     fact_family: MacroFactFamily
@@ -134,7 +145,7 @@ class ReleaseFact:
     series_id: str
     reference_period: str
     scheduled_at_ms: int | None
-    published_at_ms: int
+    published_at_ms: int | None
     received_at_ms: int
     actual_value: float | None
     prior_value: float | None
@@ -213,6 +224,7 @@ __all__ = [
     "MacroModuleId",
     "MacroSourceClientProtocol",
     "MacroSourceError",
+    "MacroSourceRole",
     "MacroSourceUnavailable",
     "MacroTrustTier",
     "MarketObservationFact",

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 
-from tracefold.macro import module_payloads, resolve_judgment_session
+from tracefold.macro import (
+    NATURAL_CHANGE_REGISTRY,
+    module_payloads,
+    natural_change_calculation,
+    resolve_thesis_session,
+)
+from tracefold.macro.coverage import COVERAGE_MANIFEST
+from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.module_payloads import build_typed_module_payload
+from tracefold.macro.registry import DATASET_REGISTRY
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
 
@@ -67,16 +76,16 @@ def _dataset_state(module: dict, dataset_id: str) -> dict:
     return next(item for item in module["evidence"]["dataset_states"] if item["dataset_id"] == dataset_id)
 
 
-def test_judgment_session_rolls_at_0850_new_york_and_skips_closed_days() -> None:
+def test_thesis_session_rolls_at_0850_new_york_and_skips_closed_days() -> None:
     before_due = int(datetime(2026, 7, 27, 12, 49, tzinfo=UTC).timestamp() * 1_000)
     at_due = int(datetime(2026, 7, 27, 12, 50, tzinfo=UTC).timestamp() * 1_000)
     sunday = int(datetime(2026, 7, 26, 16, tzinfo=UTC).timestamp() * 1_000)
     observed_holiday = int(datetime(2026, 7, 3, 16, tzinfo=UTC).timestamp() * 1_000)
 
-    assert resolve_judgment_session(now_ms=before_due) == date(2026, 7, 24)
-    assert resolve_judgment_session(now_ms=at_due) == date(2026, 7, 27)
-    assert resolve_judgment_session(now_ms=sunday) == date(2026, 7, 24)
-    assert resolve_judgment_session(now_ms=observed_holiday) == date(2026, 7, 2)
+    assert resolve_thesis_session(now_ms=before_due) == date(2026, 7, 24)
+    assert resolve_thesis_session(now_ms=at_due) == date(2026, 7, 27)
+    assert resolve_thesis_session(now_ms=sunday) == date(2026, 7, 24)
+    assert resolve_thesis_session(now_ms=observed_holiday) == date(2026, 7, 2)
 
 
 def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
@@ -92,7 +101,7 @@ def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
         ],
     )
 
-    assert _dataset_state(module, "fred.dgs2")["data_state"] == "current"
+    assert _dataset_state(module, "fred.dgs2")["current_health"] == "current"
 
 
 def test_coverage_manifest_keeps_expected_but_unregistered_capability_visible(
@@ -108,15 +117,39 @@ def test_coverage_manifest_keeps_expected_but_unregistered_capability_visible(
     assert capabilities["fed.reserve_bank_speeches"]["state"] == "missing"
 
 
-def test_implemented_fed_capabilities_are_distinct_from_licensed_unavailable() -> None:
+def test_implemented_fed_capabilities_exclude_unavailable_licensed_products() -> None:
     module = _module("rates_fed")
     capabilities = {item["capability_id"]: item for item in module["status"]["coverage"]["capabilities"]}
 
-    assert module["status"]["coverage"]["state"] == "licensed_unavailable"
+    assert module["status"]["coverage"]["state"] == "complete"
     assert capabilities["fed.reserve_bank_speeches"]["state"] == "available"
     assert capabilities["fed.roster"]["state"] == "available"
     assert capabilities["fed.document_analysis"]["state"] == "available"
-    assert capabilities["rates.cme_policy_futures"]["state"] == "licensed_unavailable"
+    assert "rates.cme_policy_futures" not in capabilities
+    assert all(spec.adapter_id != "unavailable" for spec in DATASET_REGISTRY.values())
+    assert all(capability.requirement in {"required", "supporting"} for capability in COVERAGE_MANIFEST.values())
+    assert "licensed_unavailable" not in json.dumps(module, sort_keys=True)
+
+
+def test_natural_change_registry_covers_every_registered_dataset() -> None:
+    assert set(NATURAL_CHANGE_REGISTRY) == set(DATASET_REGISTRY)
+    release = natural_change_calculation("bls.cpi.release")
+    assert release.revision_policy == "explicit_revised_prior_only"
+    assert release.surprise_policy == "explicit_consensus_only"
+    assert release.output_schema == "macro_natural_change_v1"
+
+
+def test_economy_release_sources_are_canonical_and_fred_is_history_only() -> None:
+    expected = {
+        "economy.gdp": ("bea.gdp.release", "fred.gdpc1"),
+        "economy.pce": ("bea.pce.release", "fred.pcepi"),
+        "economy.core_pce": ("bea.core_pce.release", "fred.pcepilfe"),
+    }
+    for concept_id, (release_id, history_id) in expected.items():
+        assert DATASET_REGISTRY[release_id].concept_id == concept_id
+        assert DATASET_REGISTRY[release_id].source_role == "release"
+        assert DATASET_REGISTRY[history_id].concept_id == concept_id
+        assert DATASET_REGISTRY[history_id].source_role == "history"
 
 
 def test_rates_payload_contains_true_curve_snapshots_spreads_and_shape() -> None:
@@ -158,6 +191,68 @@ def test_rates_payload_contains_true_curve_snapshots_spreads_and_shape() -> None
     assert module["curve"]["classification"]["state"] == "bear_steepening"
 
 
+def test_liquidity_payload_exposes_server_calculated_sofr_iorb_spread_history() -> None:
+    module = _module(
+        "liquidity_funding",
+        series_rows=[
+            _series_row(
+                dataset_id=dataset_id,
+                reference_date=reference_date,
+                value=value,
+            )
+            for dataset_id, values in (
+                ("fred.sofr", (4.30, 4.35)),
+                ("fred.iorb", (4.40, 4.40)),
+            )
+            for reference_date, value in zip(
+                (date(2026, 7, 17), date(2026, 7, 24)),
+                values,
+                strict=True,
+            )
+        ],
+    )
+
+    assert module["funding"]["sofr_minus_iorb_bp_history"] == [
+        {"date": "2026-07-17", "value": -10.0},
+        {"date": "2026-07-24", "value": -5.0},
+    ]
+
+
+def test_volatility_payload_exposes_server_normalized_cross_asset_history() -> None:
+    module = _module(
+        "volatility",
+        series_rows=[
+            _series_row(
+                dataset_id=dataset_id,
+                reference_date=reference_date,
+                value=value,
+            )
+            for dataset_id, values in (
+                ("fred.vxncls", (20.0, 22.0)),
+                ("fred.gvzcls", (15.0, 18.0)),
+                ("fred.ovxcls", (30.0, 27.0)),
+            )
+            for reference_date, value in zip(
+                (date(2026, 7, 17), date(2026, 7, 24)),
+                values,
+                strict=True,
+            )
+        ],
+    )
+
+    normalized = module["cross_asset_implied"]["normalized"]
+    assert normalized[0] == {
+        "symbol": "VXN",
+        "date": "2026-07-17",
+        "normalized_value": 100.0,
+    }
+    assert normalized[-1] == {
+        "symbol": "OVX",
+        "date": "2026-07-24",
+        "normalized_value": 90.0,
+    }
+
+
 def test_credit_payload_exposes_rating_ladder_sample_size_and_no_composite_score() -> None:
     dataset_ids = (
         "fred.bamlc0a0cm",
@@ -184,9 +279,8 @@ def test_credit_payload_exposes_rating_ladder_sample_size_and_no_composite_score
         "funding_cost",
         "credit_supply",
         "credit_quality",
-        "market_liquidity",
     ]
-    assert module["cycle_dimensions"][-1]["state"] == "licensed_unavailable"
+    assert "trace_nav" not in module["confirmations"]
     assert "score" not in module
     assert "composite_score" not in module["spread_ladder"]
 
@@ -268,10 +362,12 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
         "GLD",
         "USO",
     }
-    assert _dataset_state(module, "yfinance.spy.intraday")["data_state"] == "current"
-    assert module["assets"]["proxies"][0]["market_time_ms"] == intraday
+    assert module["assets"]["benchmarks"][0]["symbol"] == "SPY"
+    assert _dataset_state(module, "yfinance.spy.intraday")["current_health"] == "current"
+    assert module["assets"]["proxies"][0]["sources"]["intraday_proxy"]["market_time_ms"] == intraday
     assert module["assets"]["proxies"][0]["history_dataset_id"] == "nasdaq.spy.daily"
-    assert module["assets"]["proxies"][0]["change_1w_pct"] == 5.0
+    assert module["assets"]["proxies"][0]["sources"]["history"]["change_1w_pct"] == 5.0
+    assert module["assets"]["proxies"][0]["sources"]["identity_policy"] == "separate_source_facts_no_blend"
 
 
 def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
@@ -296,11 +392,11 @@ def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
 
     spy = module["assets"]["proxies"][0]
     state = _dataset_state(module, "yfinance.spy.intraday")
-    assert spy["latest_value"] == 110
-    assert spy["market_time_ms"] == later
-    assert spy["price_kind"] == "intraday"
+    assert spy["sources"]["intraday_proxy"]["latest_value"] == 110
+    assert spy["sources"]["intraday_proxy"]["market_time_ms"] == later
+    assert spy["selection_policy"] == "decision_primary_only_no_fallback"
     assert state["last_market_at_ms"] == later
-    assert state["data_state"] == "current"
+    assert state["current_health"] == "current"
 
 
 def test_closed_equity_market_keeps_the_last_expected_bar_current() -> None:
@@ -321,6 +417,143 @@ def test_closed_equity_market_keeps_the_last_expected_bar_current() -> None:
 
     state = _dataset_state(module, "yfinance.spy.intraday")
     assert state["market_state"] == "closed"
-    assert state["data_state"] == "current"
-    assert state["reason"] == "last_expected_bar_present"
-    assert module["status"]["data_health"]["state"] == "mixed"
+    assert state["current_health"] == "current"
+    assert state["current_reason"] == "last_expected_bar_present"
+    assert module["status"]["current_health"]["state"] == "degraded"
+
+
+def test_natural_change_metrics_follow_dataset_cadence_and_are_comparable() -> None:
+    daily_rows = [
+        _series_row(
+            dataset_id="fred.dgs2",
+            reference_date=date(2026, 7, day),
+            value=value,
+        )
+        for day, value in ((1, 4.0), (20, 4.1), (27, 4.25))
+    ]
+    monthly_rows = [
+        _series_row(
+            dataset_id="fred.cpiaucsl",
+            reference_date=date(2025 + (month - 1) // 12, (month - 1) % 12 + 1, 1),
+            value=300 + month,
+        )
+        for month in range(1, 15)
+    ]
+
+    rates = _module("rates_fed", series_rows=daily_rows)
+    economy = _module("economy_inflation", series_rows=monthly_rows)
+    rates_change = next(change for change in rates["summary"]["top_changes"] if change["dataset_id"] == "fred.dgs2")
+    cpi_change = next(change for change in economy["summary"]["top_changes"] if change["dataset_id"] == "fred.cpiaucsl")
+
+    assert rates_change["cadence"] == "daily"
+    assert set(rates_change["metrics"]) == {"change_1d_bp", "change_1w_bp", "change_1m_bp"}
+    assert rates_change["metric_unit"] == "basis_points"
+    assert cpi_change["cadence"] == "monthly"
+    assert set(cpi_change["metrics"]) == {"mom_pct", "three_month_annualized_pct", "yoy_pct"}
+    assert cpi_change["metric_unit"] == "percent"
+    assert rates_change["importance_rank"] >= 1
+    assert rates_change["importance_factors"]["standardized_magnitude"] >= 0
+    assert "importance_explanation" in rates_change
+
+
+def test_natural_change_does_not_relabel_out_of_window_or_missing_period_data() -> None:
+    daily = _module(
+        "rates_fed",
+        series_rows=[
+            _series_row(
+                dataset_id="fred.dgs2",
+                reference_date=date(2026, 7, 20),
+                value=4.0,
+            ),
+            _series_row(
+                dataset_id="fred.dgs2",
+                reference_date=date(2026, 7, 27),
+                value=4.25,
+            ),
+        ],
+    )
+    daily_change = next(change for change in daily["summary"]["top_changes"] if change["dataset_id"] == "fred.dgs2")
+    assert daily_change["metrics"]["change_1d_bp"] is None
+    assert daily_change["metrics"]["change_1w_bp"] == 25.0
+
+    monthly = _module(
+        "economy_inflation",
+        series_rows=[
+            _series_row(
+                dataset_id="fred.cpiaucsl",
+                reference_date=date(2026, 5, 1),
+                value=300,
+            ),
+            _series_row(
+                dataset_id="fred.cpiaucsl",
+                reference_date=date(2026, 7, 1),
+                value=303,
+            ),
+        ],
+    )
+    monthly_change = next(
+        change for change in monthly["summary"]["top_changes"] if change["dataset_id"] == "fred.cpiaucsl"
+    )
+    assert monthly_change["metrics"]["mom_pct"] is None
+
+
+def test_reconciliation_receipt_selects_primary_without_blending_proxy_identity() -> None:
+    observed = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
+    module = _module(
+        "cross_asset",
+        market_rows=[
+            _market_row("binance.btcusdt.spot", observed, 117_000),
+            _market_row("yfinance.btc_yahoo.intraday", observed, 117_100),
+        ],
+    )
+    receipt = next(item for item in module["evidence"]["reconciliation_receipts"] if item["concept_id"] == "market.btc")
+    bitcoin = next(item for item in module["assets"]["benchmarks"] if item["label"] == "Bitcoin")
+
+    assert receipt["selected_dataset_id"] == "binance.btcusdt.spot"
+    assert receipt["selection_policy"] == "decision_primary_only_no_fallback"
+    assert receipt["identity_policy"] == "separate_source_facts_no_blend"
+    assert bitcoin["sources"]["decision_primary"]["dataset_id"] == "binance.btcusdt.spot"
+    assert bitcoin["sources"]["intraday_proxy"]["dataset_id"] == "yfinance.btc_yahoo.intraday"
+    assert "latest_value" not in bitcoin
+
+
+def test_fomc_roster_uses_non_overlapping_effective_snapshots() -> None:
+    rows = [
+        {
+            "official_id": "a",
+            "official_name": "Alice Example",
+            "effective_start": date(2026, 1, 1),
+            "effective_end": None,
+            "received_at_ms": 1,
+            "role_fact_id": "old-a",
+        },
+        {
+            "official_id": "b",
+            "official_name": "Bob Example",
+            "effective_start": date(2026, 1, 1),
+            "effective_end": None,
+            "received_at_ms": 1,
+            "role_fact_id": "old-b",
+        },
+        {
+            "official_id": "b",
+            "official_name": "Bob Example",
+            "effective_start": date(2026, 3, 1),
+            "effective_end": None,
+            "received_at_ms": 2,
+            "role_fact_id": "new-b",
+        },
+    ]
+
+    effective = effective_roster_rows(rows)
+    assert {row["effective_end"] for row in effective if row["effective_start"] == date(2026, 1, 1)} == {
+        date(2026, 2, 28)
+    }
+    assert match_effective_role("Alice Example", effective_date=date(2026, 3, 2), role_rows=rows) is None
+    current_bob = match_effective_role(
+        "Bob Example",
+        effective_date=date(2026, 3, 2),
+        role_rows=rows,
+    )
+    assert current_bob is not None
+    assert current_bob["role_fact_id"] == "new-b"

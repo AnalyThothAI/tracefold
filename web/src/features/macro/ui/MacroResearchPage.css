@@ -375,13 +375,36 @@
     padding-top: 0.75rem;
   }
 
-  .macro-research-audit pre {
-    max-width: 100%;
-    overflow: auto;
+  .macro-research-provenance {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 0.45rem;
+    margin: 0;
+  }
+
+  .macro-research-provenance > div {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+    border: 1px solid var(--border-faint);
     border-radius: var(--radius-md);
     background: var(--surface-raised);
-    font-size: 0.72rem;
-    padding: 0.75rem;
+    padding: 0.65rem;
+  }
+
+  .macro-research-provenance dt {
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+  }
+
+  .macro-research-provenance dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    overflow-wrap: anywhere;
   }
 
   @media (max-width: 767px) {

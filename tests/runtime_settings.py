@@ -28,8 +28,7 @@ def runtime_workers_settings() -> WorkersSettings:
         "macro_backfill",
         "macro_document_analysis",
         "macro_projection",
-        "macro_judgment",
-        "macro_research",
+        "macro_thesis",
         "news_pipeline",
         "news_world_brief",
     )

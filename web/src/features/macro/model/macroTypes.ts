@@ -1,3 +1,5 @@
+export type JsonObject = Record<string, unknown>;
+
 export type MacroModuleId =
   | "rates_fed"
   | "economy_inflation"
@@ -6,76 +8,95 @@ export type MacroModuleId =
   | "volatility"
   | "cross_asset";
 
-export type JsonObject = Record<string, unknown>;
-export type MacroCoverageState = "complete" | "partial" | "licensed_unavailable";
-export type MacroDatasetDataState =
-  | "current"
-  | "delayed"
-  | "stale"
-  | "invalid"
-  | "backfilling"
-  | "unavailable";
-export type MacroDataHealthState = "current" | "mixed" | "unavailable";
-export type MacroMarketState = "open" | "closed" | "maintenance" | "unknown" | "not_applicable";
-export type MacroSourceState = "healthy" | "degraded" | "failed";
-export type MacroJudgmentState = "current" | "missing";
+export type MacroCoverageState = "complete" | "partial";
+export type MacroCurrentHealthState = "current" | "degraded" | "unavailable";
+export type MacroHistoryDepthState = "complete" | "partial" | "insufficient" | "not_required";
+export type MacroThesisState =
+  | "published"
+  | "pending"
+  | "running"
+  | "retryable"
+  | "failed"
+  | "config_error"
+  | "not_published"
+  | "missing";
 
 export type MacroCoverageCapability = {
   capability_id: string;
   label: string;
-  requirement: "required" | "supporting" | "licensed_unavailable";
-  state: "available" | "missing" | "licensed_unavailable";
+  requirement: "required" | "supporting";
+  state: "available" | "missing";
   dataset_ids: string[];
   reason: string | null;
 };
 
-export type MacroModuleStatus = {
-  coverage: {
-    state: MacroCoverageState;
-    expected_capabilities: number;
-    available_capabilities: number;
-    capabilities: MacroCoverageCapability[];
-  };
-  data_health: {
-    state: MacroDataHealthState;
-    current_datasets: number;
-    tracked_datasets: number;
-    as_of_ms: number;
-    groups: Array<{
-      group_id: string;
-      label: string;
-      data_state: MacroDatasetDataState | "mixed";
-      market_state: MacroMarketState | "mixed";
-      source_state: MacroSourceState | "mixed";
-      current_datasets: number;
-      tracked_datasets: number;
-    }>;
-  };
-  judgment: {
-    state: MacroJudgmentState;
-    cutoff_ms: number | null;
-  };
+export type MacroCoverage = {
+  state: MacroCoverageState;
+  expected_capabilities: number;
+  available_capabilities: number;
+  capabilities: MacroCoverageCapability[];
+};
+
+export type MacroCurrentHealthGroup = {
+  group_id: string;
+  label: string;
+  current_health: MacroCurrentHealthState | "mixed";
+  market_state: "open" | "closed" | "maintenance" | "unknown" | "not_applicable" | "mixed";
+  source_state: "healthy" | "degraded" | "failed" | "not_applicable" | "mixed";
+  current_datasets: number;
+  tracked_datasets: number;
+};
+
+export type MacroCurrentHealth = {
+  state: MacroCurrentHealthState;
+  current_datasets: number;
+  tracked_datasets: number;
+  as_of_ms: number;
+  groups: MacroCurrentHealthGroup[];
+};
+
+export type MacroHistoryDepth = {
+  state: MacroHistoryDepthState;
+  complete_datasets: number;
+  tracked_datasets: number;
 };
 
 export type MacroChange = {
   dataset_id: string;
+  concept_id: string;
+  source_role: string;
   label: string;
   as_of: string | null;
   value: number;
   unit: string;
-  change_1w: number | null;
-  change_1m: number | null;
-  magnitude: number;
+  cadence: string;
+  metrics: Record<string, number | null>;
+  metric_unit: string;
+  primary_change: number | null;
+  importance_rank: number;
+  importance_factors: {
+    standardized_magnitude: number;
+    surprise_magnitude: number;
+    revision_magnitude: number;
+    decision_relevance: number;
+    trust_tier: "official" | "exchange" | "untrusted_proxy";
+    fact_clock_ms: number;
+  };
+  importance_explanation: string;
   source_url: string;
 };
 
 export type MacroDatasetState = {
   dataset_id: string;
+  concept_id: string;
+  source_role: string;
   label: string;
-  data_state: MacroDatasetDataState;
-  market_state: MacroMarketState;
-  source_state: MacroSourceState;
-  reason: string;
+  current_health: MacroCurrentHealthState;
+  history_depth: MacroHistoryDepthState;
+  market_state: "open" | "closed" | "maintenance" | "unknown" | "not_applicable";
+  source_state: "healthy" | "degraded" | "failed" | "not_applicable";
+  current_reason: string;
+  history_reason: string;
   critical: boolean;
   trust_tier: "official" | "exchange" | "untrusted_proxy";
   source_url: string;
@@ -99,47 +120,14 @@ export type MacroEvidenceFact = {
   source_url: string;
 };
 
-export type MacroIndicator = {
-  dataset_id: string;
-  label: string;
-  latest_value: number;
-  unit: string;
-  as_of: string;
-  change_1w: number | null;
-  change_1m: number | null;
-  sample_count: number;
-  history_start: string;
-  history_end: string;
-  source_url: string;
-  percentile?: number | null;
-  history: Array<{ date: string; value: number }>;
-};
-
-export type MacroAssetRow = {
-  dataset_id: string;
-  price_dataset_id: string;
-  history_dataset_id: string;
-  symbol: string;
-  label: string;
-  instrument_type: string;
-  asset_class: string;
-  latest_value: number;
-  unit: string;
-  as_of: string | null;
-  market_time_ms: number;
-  price_kind: "intraday" | "daily_close";
-  change_1d_pct: number | null;
-  change_1w_pct: number | null;
-  change_1m_pct: number | null;
-  trust_tier: "official" | "exchange" | "untrusted_proxy";
-  source_url: string;
-  history_source_url: string;
-};
-
-export type MacroModuleBase = {
+type MacroModuleBase = {
   module_id: MacroModuleId;
   label: string;
-  status: MacroModuleStatus;
+  status: {
+    coverage: MacroCoverage;
+    current_health: MacroCurrentHealth;
+    history_depth: MacroHistoryDepth;
+  };
   latest_fact_at_ms: number;
   summary: {
     headline: string;
@@ -148,176 +136,68 @@ export type MacroModuleBase = {
   };
   contradictions: string[];
   falsifiers: string[];
-  next_checkpoints: JsonObject[];
+  next_checkpoints: Array<{
+    dataset_id: string;
+    label: string;
+    current_health: string;
+    history_depth: string;
+    next_check: string;
+  }>;
   evidence: {
     dataset_states: MacroDatasetState[];
     latest_facts: MacroEvidenceFact[];
+    reconciliation_receipts: JsonObject[];
   };
 };
 
 export type MacroRatesFedReadData = MacroModuleBase & {
-  schema_version: "macro_rates_fed_v3";
+  schema_version: "macro_rates_fed_v4";
   module_id: "rates_fed";
-  curve: {
-    nominal_snapshots: MacroCurveSnapshot[];
-    real_snapshots: MacroCurveSnapshot[];
-    breakeven_snapshots: Array<{
-      window: string;
-      as_of: string;
-      points: Array<{ tenor: string; years: number; breakeven_pct: number }>;
-    }>;
-    spreads: Record<string, Array<{ date: string; value_bp: number }>>;
-    classification: {
-      state: string;
-      label: string;
-      formula_version: string;
-      inputs: Record<string, string | number | null>;
-    };
-  };
-  policy_pricing: {
-    rates: MacroIndicator[];
-    cme_policy_probabilities: { state: "licensed_unavailable"; reason: string };
-  };
-  fed: {
-    institutional_stance: {
-      state: string;
-      direction: string;
-      change_from_prior: string;
-      reason: string;
-    };
-    officials_distribution: {
-      state: string;
-      window_days: number;
-      as_of: string | null;
-      hawkish: number;
-      neutral: number;
-      dovish: number;
-      mixed: number;
-      not_policy_signal: number;
-      uncertain: number;
-      analyzed_events: number;
-    };
-    timeline: MacroFedTimelineEvent[];
-    roster: { state: string; reason: string; officials: JsonObject[] };
-  };
+  curve: JsonObject;
+  policy_pricing: JsonObject;
+  fed: JsonObject;
   positioning: JsonObject[];
 };
 
-export type MacroCurveSnapshot = {
-  window: "current" | "1w" | "1m" | "3m";
-  as_of: string;
-  points: Array<{ tenor: string; years: number; yield_pct: number }>;
-};
-
-export type MacroFedTimelineEvent = {
-  document_id: string;
-  document_type: string;
-  title: string;
-  effective_date: string;
-  published_at_ms: number;
-  source_url: string;
-  speaker_name: string | null;
-  official_id: string | null;
-  role_title: string | null;
-  fomc_voter: boolean | null;
-  analysis: {
-    state: string;
-    policy_relevance: string;
-    stance: string;
-    confidence: number | null;
-    change_from_prior: string | null;
-    evidence: JsonObject[];
-    analysis_id: string | null;
-    model_name: string | null;
-    prompt_version: string | null;
-    reviewer_disposition: string | null;
-  };
-};
-
 export type MacroEconomyInflationReadData = MacroModuleBase & {
-  schema_version: "macro_economy_inflation_v3";
+  schema_version: "macro_economy_inflation_v4";
   module_id: "economy_inflation";
-  inflation: { indicators: MacroIndicator[]; official_releases: JsonObject[] };
-  labor: { indicators: MacroIndicator[]; official_releases: JsonObject[] };
-  growth: { indicators: MacroIndicator[] };
+  inflation: JsonObject;
+  labor: JsonObject;
+  growth: JsonObject;
 };
 
 export type MacroLiquidityFundingReadData = MacroModuleBase & {
-  schema_version: "macro_liquidity_funding_v3";
+  schema_version: "macro_liquidity_funding_v4";
   module_id: "liquidity_funding";
-  balance_sheet: { indicators: MacroIndicator[] };
-  funding: { indicators: MacroIndicator[] };
+  balance_sheet: JsonObject;
+  funding: JsonObject;
 };
 
 export type MacroCreditReadData = MacroModuleBase & {
-  schema_version: "macro_credit_v4";
+  schema_version: "macro_credit_v5";
   module_id: "credit";
-  cycle_dimensions: Array<{
-    dimension_id:
-      | "spread_level_velocity"
-      | "funding_cost"
-      | "credit_supply"
-      | "credit_quality"
-      | "market_liquidity";
-    label: string;
-    state: string;
-    driver: string;
-    evidence_dataset_ids: string[];
-    conflicts: string[];
-  }>;
-  spread_ladder: {
-    rows: MacroIndicator[];
-    tail_gap: number | null;
-    tail_gap_unit: "basis_points";
-  };
-  funding_costs: {
-    corporate_yields: MacroIndicator[];
-    reference_rates: MacroIndicator[];
-    comparisons: Array<{
-      label: string;
-      corporate_dataset_id: string;
-      reference_dataset_id: string;
-      as_of: string;
-      value_bp: number;
-      formula_version: string;
-      input_fact_ids: string[];
-    }>;
-  };
-  bank_lending: { indicators: MacroIndicator[] };
-  loan_quality: { indicators: MacroIndicator[] };
-  confirmations: {
-    etfs: MacroAssetRow[];
-    positions: JsonObject[];
-    trace_nav: { state: "licensed_unavailable"; reason: string };
-  };
+  cycle_dimensions: JsonObject[];
+  spread_ladder: JsonObject;
+  funding_costs: JsonObject;
+  bank_lending: JsonObject;
+  loan_quality: JsonObject;
+  confirmations: JsonObject;
 };
 
 export type MacroVolatilityReadData = MacroModuleBase & {
-  schema_version: "macro_volatility_v3";
+  schema_version: "macro_volatility_v4";
   module_id: "volatility";
-  term_structure: {
-    spot_and_three_month: MacroIndicator[];
-    spread_history: Array<{ date: string; value: number }>;
-  };
-  cross_asset_implied: { indicators: MacroIndicator[] };
+  term_structure: JsonObject;
+  cross_asset_implied: JsonObject;
 };
 
 export type MacroCrossAssetReadData = MacroModuleBase & {
-  schema_version: "macro_cross_asset_v4";
+  schema_version: "macro_cross_asset_v5";
   module_id: "cross_asset";
-  assets: {
-    benchmarks: JsonObject[];
-    proxies: MacroAssetRow[];
-    normalized: Array<{ symbol: string; date: string; normalized_value: number }>;
-  };
-  correlations: Array<{
-    left: string;
-    right: string;
-    correlation: number | null;
-    sample_count: number;
-    window: string;
-  }>;
-  futures: { market: MacroAssetRow[]; vix_settlements: JsonObject[]; positions: JsonObject[] };
+  assets: JsonObject;
+  correlations: JsonObject[];
+  futures: JsonObject;
 };
 
 export type MacroTypedModuleReadData =
@@ -328,143 +208,285 @@ export type MacroTypedModuleReadData =
   | MacroVolatilityReadData
   | MacroCrossAssetReadData;
 
+export type MacroCondition = {
+  condition_id: string;
+  module_id: MacroModuleId;
+  dataset_id: string;
+  metric_name: string;
+  operator: "gt" | "gte" | "lt" | "lte" | "abs_gte";
+  threshold: number;
+  effect: "confirming" | "weakening" | "invalidation_triggered";
+  rationale: string;
+};
+
+export type MacroThesisClaim = {
+  claim_id: string;
+  statement: string;
+  causal_edges: Array<{
+    source: string;
+    mechanism: string;
+    target: string;
+    evidence_refs: string[];
+    conflicting_evidence_refs: string[];
+  }>;
+  supporting_evidence_refs: string[];
+  conflicting_evidence_refs: string[];
+  conditions: MacroCondition[];
+};
+
+export type MacroModuleRole = {
+  module_id: MacroModuleId;
+  role: "driver" | "confirming" | "contradicting" | "uncertain";
+  analysis: string;
+  claim_ids: string[];
+  supporting_evidence_refs: string[];
+  conflicting_evidence_refs: string[];
+};
+
+export type MacroMomentum = {
+  symbol: string;
+  momentum_1w: "up" | "down" | "flat" | "insufficient";
+  momentum_1m: "up" | "down" | "flat" | "insufficient";
+  return_1w_pct: number | null;
+  return_1m_pct: number | null;
+  source_dataset_id: string | null;
+  as_of: string | null;
+};
+
+export type MacroHorizonOutlook = {
+  horizon: "1w" | "1m";
+  direction: "bullish" | "bearish" | "neutral" | "no_call";
+  causal_channel: string;
+  supporting_evidence_refs: string[];
+  conflicting_evidence_refs: string[];
+  confirmation_triggers: MacroCondition[];
+  falsifiers: MacroCondition[];
+  checkpoints: MacroCondition[];
+  confidence: "low" | "medium" | "high";
+};
+
+export type MacroAssetView = {
+  symbol: string;
+  momentum: MacroMomentum;
+  outlook_1w: MacroHorizonOutlook;
+  outlook_1m: MacroHorizonOutlook;
+};
+
+export type MacroThesisV1 = {
+  schema_version: "macro_thesis_v1";
+  publication_id: string;
+  session_date: string;
+  cutoff_ms: number;
+  evidence_pack_id: string;
+  evidence_pack_hash: string;
+  prior_publication_id: string | null;
+  mainline: {
+    stance: "call" | "no_call";
+    title: string;
+    thesis: string;
+    stage: "emerging" | "developing" | "mature" | "reversing" | "uncertain";
+    confidence: "low" | "medium" | "high";
+    horizon: "1w" | "1m" | "1w_to_1m";
+    claims: MacroThesisClaim[];
+    supporting_evidence_refs: string[];
+    conflicting_evidence_refs: string[];
+    falsifiers: MacroCondition[];
+    checkpoints: MacroCondition[];
+  };
+  alternative_explanation: {
+    title: string;
+    thesis: string;
+    causal_edges: MacroThesisClaim["causal_edges"];
+    supporting_evidence_refs: string[];
+    conflicting_evidence_refs: string[];
+    trigger_conditions: MacroCondition[];
+  } | null;
+  core_tensions: Array<{
+    tension_id: string;
+    statement: string;
+    side_a: { label: string; statement: string; evidence_refs: string[] };
+    side_b: { label: string; statement: string; evidence_refs: string[] };
+    leading_side: "side_a" | "side_b" | "balanced" | "uncertain";
+    lagging_signal: string;
+    unresolved_reason: string;
+    resolution_triggers: MacroCondition[];
+  }>;
+  changes_from_prior: Array<{
+    change_id: string;
+    status: "new" | "strengthened" | "weakened" | "reversed" | "unchanged";
+    statement: string;
+    evidence_refs: string[];
+  }>;
+  module_assessments: MacroModuleRole[];
+  assets: MacroAssetView[];
+  gaps: Array<{
+    gap_id: string;
+    module_id: MacroModuleId;
+    dataset_id: string;
+    axis: "coverage" | "current_health" | "history_depth";
+    state: string;
+    reason: string;
+    affected_claim_ids: string[];
+  }>;
+  citations: Array<{
+    evidence_ref: string;
+    module_id: MacroModuleId;
+    dataset_id: string | null;
+    source_role: string | null;
+    label: string;
+    reference: string | null;
+    published_at_ms: number | null;
+    received_at_ms: number | null;
+    source_url: string | null;
+  }>;
+  narrative_sections: Array<{
+    section_id: string;
+    title: string;
+    markdown: string;
+    evidence_refs: string[];
+  }>;
+  review: {
+    draft_hash: string;
+    disposition: "pass";
+    findings: string[];
+    required_changes: string[];
+    invocation_id: string;
+    model_name: string;
+    prompt_version: string;
+  };
+  provenance: {
+    draft_hash: string;
+    research_invocation_id: string;
+    research_model: string;
+    reviewer_model: string;
+    research_prompt_version: string;
+    reviewer_prompt_version: string;
+    workflow_version: "macro_thesis_workflow_v1";
+  };
+  published_at_ms: number;
+};
+
+export type MacroLiveDeltaV1 = {
+  schema_version: "macro_live_delta_v1";
+  live_delta_id: string;
+  publication_id: string;
+  evaluated_at_ms: number;
+  module_fact_cutoff_ms: number;
+  status: "confirming" | "weakening" | "invalidation_triggered" | "unrelated" | "insufficient";
+  matched_claim_ids: string[];
+  matched_falsifier_ids: string[];
+  matched_checkpoint_ids: string[];
+  items: Array<{
+    binding_type: "claim" | "falsifier" | "checkpoint";
+    binding_id: string;
+    condition_id: string;
+    status: "confirming" | "weakening" | "invalidation_triggered" | "unrelated" | "insufficient";
+    dataset_id: string;
+    metric_name: string;
+    observed_value: number | null;
+    operator: MacroCondition["operator"];
+    threshold: number;
+    reason_code: string;
+  }>;
+  reason_codes: string[];
+  input_hash: string;
+};
+
+export type MacroOutcomeReplayV1 = {
+  schema_version: "macro_outcome_replay_v1";
+  replay_id: string;
+  publication_id: string;
+  evaluated_at_ms: number;
+  horizons: Array<{
+    horizon: "1d" | "1w" | "1m";
+    expires_at_ms: number;
+    status: "pending" | "evaluated" | "insufficient";
+    benchmark_symbol: string;
+    realized_return_pct: number | null;
+    direction_correct: boolean | null;
+    reason_code: string;
+    asset_results: Array<{
+      symbol: string;
+      horizon: "1w" | "1m";
+      expires_at_ms: number;
+      status: "pending" | "evaluated" | "insufficient";
+      published_direction: "bullish" | "bearish" | "neutral" | "no_call";
+      realized_return_pct: number | null;
+      direction_correct: boolean | null;
+      reason_code: string;
+    }>;
+  }>;
+  input_hash: string;
+};
+
 export type MacroModuleSummary = {
   module_id: MacroModuleId;
   label: string;
-  coverage_state: MacroCoverageState | "missing";
-  data_health_state: MacroDataHealthState | "missing";
-  judgment_state: MacroJudgmentState;
+  role: MacroModuleRole["role"] | null;
+  coverage_state: MacroCoverageState;
+  current_health_state: MacroCurrentHealthState;
+  history_depth_state: MacroHistoryDepthState;
   latest_fact_at_ms: number;
-  summary: MacroModuleBase["summary"] | null;
-  top_changes: MacroChange[];
+  summary: MacroModuleBase["summary"];
   coverage_gap_count: number;
-  health_gap_count: number;
+  current_health_gap_count: number;
+  history_gap_count: number;
   href: string;
 };
 
-export type MacroDimension = {
-  state: string;
-  driver: string;
-  subdimensions?: JsonObject[];
-  conflicts?: string[];
-};
-
-export type MacroAssetDirection = {
-  "1w": "up" | "down" | "range" | "no_call";
-  "1m": "up" | "down" | "range" | "no_call";
-  drivers: string[];
-  conflicts: string[];
-  invalidation: string;
-  confidence: "low" | "medium" | "high";
-  dataset_id: string;
-};
-
-export type MacroDailyJudgment = {
-  schema_version: "macro_daily_judgment_v2";
-  session_date: string;
-  judgment_cutoff_ms: number;
-  latest_fact_at_ms: number;
-  overall_state: string;
-  dominant_pressures: JsonObject[];
-  top_3_changes: JsonObject[];
-  dimensions: Record<string, MacroDimension>;
-  module_judgments: JsonObject[];
-  asset_directions: Record<string, MacroAssetDirection>;
-  contradictions: JsonObject[];
-  falsifiers: JsonObject[];
-  next_checkpoints: JsonObject[];
-  gaps: JsonObject[];
-  citations: JsonObject[];
-};
-
 export type MacroOverviewReadData = {
-  schema_version: "macro_overview_v4";
+  schema_version: "macro_overview_v5";
   read_at_ms: number;
-  judgment_session_date: string;
-  judgment_cutoff_ms: number;
+  transport: {
+    state: "current" | "stale";
+    last_successful_read_at_ms: number;
+    reason: string | null;
+  };
+  session_date: string;
+  cutoff_ms: number;
   latest_fact_at_ms: number;
-  coverage_state: MacroCoverageState;
-  data_health_state: MacroDataHealthState;
-  judgment_state: MacroJudgmentState;
-  judgment_status: {
-    session_date: string;
-    judgment_cutoff_ms: number;
-    state: "current";
-    reason_code: string;
-    details: JsonObject;
-    attempted_at_ms: number;
-  } | null;
-  daily_judgment: MacroDailyJudgment | null;
+  thesis_state: MacroThesisState;
+  thesis: MacroThesisV1 | null;
+  live_delta: MacroLiveDeltaV1 | null;
+  outcome_replay: MacroOutcomeReplayV1 | null;
   modules: MacroModuleSummary[];
-  changes_since_judgment: JsonObject[];
-  research: {
-    state: "current" | "generating" | "failed" | "missing";
-    session_date: string | null;
-    evidence_pack_id: string | null;
-    market_cutoff_ms: number | null;
-    title: string | null;
-    executive_summary: string | null;
-    reviewer_disposition: "pass" | "revise" | "block" | null;
-    href: "/macro/research";
+  data_quality: {
+    coverage_state: MacroCoverageState;
+    current_health_state: MacroCurrentHealthState;
+    history_depth_state: MacroHistoryDepthState;
+    coverage_gap_count: number;
+    current_health_gap_count: number;
+    history_gap_count: number;
   };
 };
 
-export type MacroResearchSectionData = {
-  section_id: string;
-  title: string;
-  body_markdown: string;
-  citation_ids: string[];
-};
-
-export type MacroResearchEvidenceGapData = {
-  gap_id: string;
-  summary: string;
-  details: string | null;
-  citation_ids: string[];
-};
-
-export type MacroResearchCitationData = {
-  citation_id: string;
-  source_type: string;
-  source_ref: string;
-  source_label: string;
-  observed_at: string | null;
-  published_at_ms: number | null;
-  available_at_ms: number | null;
-  source_url: string | null;
-  lineage: Record<string, unknown>;
-};
-
-export type MacroResearchPublicationData = {
-  schema_version: string;
+export type MacroThesisRunData = {
   session_date: string;
-  market_cutoff_ms: number;
-  evidence_pack_id: string;
-  title: string;
-  executive_summary: string;
-  sections: MacroResearchSectionData[];
-  evidence_gaps: MacroResearchEvidenceGapData[];
-  citations: MacroResearchCitationData[];
-  reviewer_disposition: "pass" | "revise" | "block";
-  reviewer_notes: string[];
-  audit: Record<string, unknown>;
-  published_at_ms: number | null;
-};
-
-export type MacroResearchRunData = {
-  session_date: string;
-  evidence_pack_id: string;
   status: string;
+  evidence_pack_id: string;
   attempt_count: number;
   max_attempts: number;
-  last_error: string | null;
+  error_code: string | null;
+  error_message: string | null;
   updated_at_ms: number;
 };
 
-export type MacroResearchReadData = {
-  state: "current" | "historical" | "generating" | "failed" | "missing";
+export type MacroThesisDetailReadData = {
+  state: "current" | "historical" | "generating" | "not_published" | "failed" | "missing";
   requested_session_date: string;
   current_session_date: string;
-  publication: MacroResearchPublicationData | null;
-  run: MacroResearchRunData | null;
+  thesis: MacroThesisV1 | null;
+  live_delta: MacroLiveDeltaV1 | null;
+  outcome_replay: MacroOutcomeReplayV1 | null;
+  run: MacroThesisRunData | null;
+  history: Array<{
+    publication_id: string;
+    session_date: string;
+    cutoff_ms: number;
+    published_at_ms: number;
+    title: string;
+    stance: "call" | "no_call";
+    confidence: "low" | "medium" | "high";
+    horizon: "1w" | "1m" | "1w_to_1m";
+  }>;
 };

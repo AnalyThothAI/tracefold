@@ -119,5 +119,7 @@ def test_history_backfill_is_visible_but_never_becomes_a_judgment_gate() -> None
         analysis_job_state=None,
     )[0]
 
-    assert state["data_state"] == "backfilling"
-    assert state["reason"] == "history_backfill_incomplete"
+    assert state["current_health"] == "current"
+    assert state["current_reason"] == "within_freshness_budget"
+    assert state["history_depth"] == "partial"
+    assert state["history_reason"] == "history_backfill_in_progress"

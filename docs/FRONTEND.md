@@ -110,23 +110,27 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `/macro/liquidity-funding`, `/macro/credit`, `/macro/volatility`, and
   `/macro/cross-asset` are the six typed decision modules backed by matching
   `/api/macro/*` routes. They do not accept a generic window parameter.
-  `/macro/research` is the separate completed-session research workbench backed
-  by `/api/macro/research`; its optional `session_date=YYYY-MM-DD` likewise
-  survives hard reload and sharing.
+  `/macro/research` is the history/detail view of the same immutable Thesis
+  product backed by `/api/macro/research`; its optional
+  `session_date=YYYY-MM-DD` survives hard reload and sharing. It is not a
+  second Macro narrative.
 
-  The overview leads with the 08:50 New York judgment: six macro dimensions,
-  dominant pressures, top three changes, fixed asset directions, conflicts,
-  invalidations, confidence, gaps, citations, next checkpoints, and research
-  state. Each module answers current state, what changed, why it matters,
-  contradictions, falsifiers, next checkpoints, typed financial structures,
-  formulas, exact dataset quality, and raw fact lineage. Coverage, Data Health,
-  and Judgment are three independent API fields and are never inferred in the
-  browser. Fixed section selection is represented by the URL hash and survives
-  reload/share without adding routes.
-  The overview always renders the intended judgment session and deterministic
-  08:50 cutoff. Before publication it says the judgment is missing; after
-  publication, incomplete evidence appears inside the judgment as gaps and
-  `no_call`, never as a frontend-authored blocker.
+  The overview has one fixed decision order: market mainline, real tensions,
+  changes from the prior Thesis, twelve assets with momentum kept separate from
+  conditional outlook, Live Delta/falsifiers/checkpoints/Outcome Replay, the
+  role and analysis of all six modules, then data quality. It always renders the
+  intended Thesis session and deterministic 08:50 cutoff. Before publication it
+  shows the persisted run state; after publication it renders the immutable
+  Thesis exactly. Current/stale transport state is separate from Coverage,
+  Current Health, and History Depth and is never inferred from wall-clock age in
+  the browser.
+
+  Each module answers current state, changes on the Dataset's natural cadence,
+  why the changes matter, contradictions, falsifiers, next checkpoints, typed
+  financial structures, formulas, source roles, reconciliation receipts, exact
+  data quality, and raw fact lineage. Release modules distinguish expected,
+  actual, surprise, revision, source publication time, and receipt time.
+  Optional history can lower only History Depth, never Current Health.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
   comparison and best-effort major-futures/USD-index rows. ETF and futures rows
@@ -136,31 +140,24 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   closed and maintenance sessions are not painted stale merely because wall
   time advanced. Rates renders true maturity cross-sections and a detailed tenor
   table. Fed renders institutional stance, recent officials distribution, then
-  the event timeline. Credit keeps five concurrent dimensions visible above
+  the event timeline. Credit keeps four concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a
   composite score.
 
-  The research page is a Chinese workbench, not a frontend-authored decision
-  model. It renders the publication title, executive summary, Agent-ordered
-  sections, Evidence Pack ID, evidence gaps, citations, reviewer disposition
-  and notes, audit metadata, session, and market cutoff exactly from the API.
-  The browser does not prescribe
-  sections, classify evidence sufficiency, infer direction/confidence, score
-  assets, or recompute conclusions.
+  The research page renders the selected immutable Thesis, its Reviewer
+  disposition, Live Delta, Outcome Replay, run status, and publication history
+  exactly from the API. The browser does not classify evidence sufficiency,
+  infer direction/confidence, score assets, merge source identities, or
+  recompute conclusions.
 
   Current, historical, generating, failed, and missing states remain visually
   distinct. Generating state polls only the persisted read; it never starts or
   resumes an Agent. A historical document is labelled with both requested and
   current completed-session dates and is never relabelled as current. Run
-  attempts and sanitized errors are supporting status, not research content.
+  attempts and sanitized errors are supporting status, not Thesis content.
 
-  Citations show their stable citation ID, source label/type, observation date,
-  material `source_ref`, and source URL when available. Evidence gaps stay
-  first-class rather than being converted into a frontend warning threshold.
-  Reviewer notes and bounded runtime audit live in a keyboard-accessible
-  disclosure. At desktop, tablet, and mobile widths the document becomes
-  labelled stacked content without horizontal page scrolling or hover-only
-  material evidence.
+  At desktop, tablet, and mobile widths the document becomes labelled stacked
+  content without horizontal page scrolling or hover-only material evidence.
 - **Page state.** Loading, empty, stale, and error surfaces should use `PageState.*` so skeletons, error alerts, and retry actions stay consistent.
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `RadarControls`, `PageState`, `TokenProfileCard`, `DecisionTag`, `CompactPanel`, and the research case-file components own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.

@@ -1,0 +1,334 @@
+@layer app.features {
+  .macro-chart {
+    display: grid;
+    gap: 0.7rem;
+    min-width: 0;
+    margin: 0;
+    border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--surface-raised) 72%, transparent),
+        transparent
+      ),
+      var(--surface-panel);
+    padding: 0.9rem;
+  }
+
+  .macro-chart > figcaption {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.8rem;
+    min-width: 0;
+  }
+
+  .macro-chart > figcaption > div:first-child {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .macro-chart > figcaption strong {
+    color: var(--text-primary);
+    font-size: 0.86rem;
+  }
+
+  .macro-chart > figcaption span,
+  .macro-chart__readout,
+  .macro-chart__empty {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  .macro-chart__range,
+  .macro-chart__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .macro-chart__range {
+    flex: 0 0 auto;
+  }
+
+  .macro-chart__range button,
+  .macro-chart__legend button {
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: transparent;
+    padding: 0.28rem 0.52rem;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 0.64rem;
+    cursor: pointer;
+  }
+
+  .macro-chart__range button[aria-pressed="true"] {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  .macro-chart__legend button::before,
+  .macro-chart__legend > span::before {
+    width: 0.55rem;
+    height: 0.18rem;
+    border-radius: 999px;
+    background: var(--series-color);
+    content: "";
+  }
+
+  .macro-chart__legend button,
+  .macro-chart__legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .macro-chart__legend button[aria-pressed="false"] {
+    opacity: 0.42;
+    text-decoration: line-through;
+  }
+
+  .macro-chart__canvas {
+    width: 100%;
+    height: 17.875rem;
+    min-width: 0;
+    overflow: hidden;
+    cursor: crosshair;
+  }
+
+  .macro-chart__readout {
+    min-height: 1.05rem;
+    margin: 0;
+    font-family: var(--font-mono);
+  }
+
+  .macro-chart__readout[data-pinned] {
+    color: var(--accent-primary);
+  }
+
+  .macro-chart__empty {
+    display: grid;
+    place-items: center;
+    min-height: 8rem;
+    margin: 0;
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .macro-chart > svg {
+    width: 100%;
+    min-width: 0;
+    max-height: 20rem;
+  }
+
+  .macro-chart__grid-line {
+    stroke: color-mix(in srgb, var(--border-subtle) 65%, transparent);
+    stroke-width: 1;
+  }
+
+  .macro-chart__axis-label {
+    fill: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .macro-chart__curve-line {
+    fill: none;
+    stroke: var(--series-color);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.5;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .macro-chart__curve-line[data-window="1w"] {
+    stroke-dasharray: 6 3;
+  }
+
+  .macro-chart__curve-line[data-window="1m"] {
+    stroke-dasharray: 3 3;
+  }
+
+  .macro-chart__curve-line[data-window="3m"] {
+    stroke-dasharray: 1 4;
+  }
+
+  .macro-chart__baseline {
+    stroke: color-mix(in srgb, var(--text-muted) 70%, transparent);
+    stroke-dasharray: 3 3;
+    stroke-width: 1;
+  }
+
+  .macro-chart__bar {
+    fill: var(--series-color);
+    opacity: 0.88;
+  }
+
+  .macro-chart__data {
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+    padding-top: 0.55rem;
+  }
+
+  .macro-chart__data > summary {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+
+  .macro-chart__table {
+    display: grid;
+    min-width: 0;
+    margin-top: 0.55rem;
+    overflow-x: auto;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+  }
+
+  .macro-chart__table [role="row"] {
+    display: grid;
+    grid-template-columns: minmax(8rem, 1.2fr) minmax(7rem, 0.8fr) minmax(8rem, 1fr);
+    min-width: 26rem;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .macro-chart__table [role="row"]:first-child {
+    border-top: 0;
+    background: var(--surface-raised);
+  }
+
+  .macro-chart__table--indicators [role="row"] {
+    grid-template-columns:
+      minmax(12rem, 1.5fr) repeat(3, minmax(5rem, 0.7fr)) minmax(6rem, 0.8fr)
+      minmax(7rem, 0.9fr);
+    min-width: 50rem;
+  }
+
+  .macro-chart__table [role="cell"],
+  .macro-chart__table [role="columnheader"] {
+    display: grid;
+    align-content: center;
+    gap: 0.15rem;
+    min-width: 0;
+    padding: 0.5rem;
+    color: var(--text-muted);
+    font-size: 0.67rem;
+    overflow-wrap: anywhere;
+  }
+
+  .macro-chart__table [role="columnheader"] {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .macro-chart__table [role="cell"] strong {
+    color: var(--text-primary);
+  }
+
+  .macro-chart__table [role="cell"] small {
+    color: var(--text-muted);
+  }
+
+  .macro-chart__table [role="cell"] a {
+    color: var(--accent-primary);
+    text-decoration: none;
+  }
+
+  .macro-chart__table [data-sign="up"] {
+    color: var(--signal-positive);
+  }
+
+  .macro-chart__table [data-sign="down"] {
+    color: var(--signal-negative);
+  }
+
+  .macro-chart__release-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 0.55rem;
+  }
+
+  .macro-chart__release-strip article {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    border-left: 2px solid var(--accent-border);
+    background: var(--surface-raised);
+    padding: 0.65rem;
+  }
+
+  .macro-chart__release-strip span,
+  .macro-chart__release-strip small {
+    color: var(--text-muted);
+    font-size: 0.65rem;
+  }
+
+  .macro-chart__release-strip a {
+    color: var(--accent-primary);
+    font-size: 0.65rem;
+    text-decoration: none;
+  }
+
+  .macro-chart__heatmap {
+    display: grid;
+    grid-template-columns: minmax(3rem, 0.6fr) repeat(
+        calc(var(--heatmap-columns) - 1),
+        minmax(2.9rem, 1fr)
+      );
+    gap: 2px;
+    min-width: max-content;
+    overflow-x: auto;
+  }
+
+  .macro-chart__heatmap > span,
+  .macro-chart__heatmap > strong {
+    display: grid;
+    place-items: center;
+    min-height: 2.65rem;
+    border-radius: 0.18rem;
+    font-family: var(--font-mono);
+    font-size: 0.61rem;
+  }
+
+  .macro-chart__heatmap > strong {
+    color: var(--text-muted);
+  }
+
+  .macro-chart__heatmap > span {
+    background: rgba(var(--heat-color), var(--heat-alpha));
+    color: var(--text-primary);
+  }
+
+  .macro-chart__heatmap > span[data-empty] {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 767px) {
+    .macro-chart {
+      padding: 0.72rem;
+    }
+
+    .macro-chart > figcaption {
+      display: grid;
+    }
+
+    .macro-chart__canvas {
+      height: 15rem;
+    }
+
+    .macro-chart--curve > svg,
+    .macro-chart--bars > svg {
+      min-width: 34rem;
+    }
+
+    .macro-chart--curve,
+    .macro-chart--bars {
+      overflow-x: auto;
+    }
+  }
+}

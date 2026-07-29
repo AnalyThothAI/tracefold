@@ -13,7 +13,6 @@ from tests.postgres_test_utils import (
 )
 from tracefold.macro import FetchBatch, SeriesFact, require_dataset
 from tracefold.macro.acquisition import MacroAcquisitionService
-from tracefold.macro.judgment import MacroJudgmentService
 from tracefold.market import MarketObservationFact, MarketSettlementFact
 
 
@@ -364,43 +363,6 @@ def test_settlement_history_collapses_revisions_at_the_requested_cutoff(tmp_path
     assert len(historical) == 1
     assert float(historical[0]["settlement_price"]) == 19.2
     assert historical[0]["received_at_ms"] == 100
-
-
-def test_daily_judgment_publishes_no_call_with_empty_evidence_instead_of_blocking(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        reset_postgres_schema(conn)
-        now_ms = 1_785_157_200_000  # 2026-07-27 09:00 America/New_York
-        service = MacroJudgmentService(
-            db=_TestDb(conn),
-            settings=SimpleNamespace(statement_timeout_seconds=30),
-        )
-
-        result = service.publish_due(now_ms=now_ms)
-        judgment = conn.execute(
-            """
-            SELECT judgment_json
-              FROM macro_daily_judgments
-             WHERE session_date = '2026-07-27'
-            """
-        ).fetchone()
-        status = conn.execute(
-            """
-            SELECT state, reason_code
-              FROM macro_judgment_status
-             WHERE session_date = '2026-07-27'
-            """
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert result["status"] == "published"
-    assert judgment is not None
-    assert judgment["judgment_json"]["dimensions"]["growth"]["state"] == "no_call"
-    assert judgment["judgment_json"]["gaps"]
-    assert dict(status) == {"state": "current", "reason_code": "judgment_published"}
 
 
 def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path) -> None:

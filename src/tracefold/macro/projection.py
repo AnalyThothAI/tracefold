@@ -77,7 +77,8 @@ class MacroProjectionService:
                 )
                 module_writes += repos.macro.upsert_module_current(
                     module_id=module_id,
-                    data_health_state=str(payload["status"]["data_health"]["state"]),
+                    current_health_state=str(payload["status"]["current_health"]["state"]),
+                    history_depth_state=str(payload["status"]["history_depth"]["state"]),
                     fact_cutoff_ms=int(payload["latest_fact_at_ms"]),
                     payload=payload,
                     payload_hash=_payload_hash(payload),

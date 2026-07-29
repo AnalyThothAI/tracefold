@@ -342,24 +342,25 @@ class TokenRadarProjectionWorkerSettings(PerWorkerSettings):
         return tuple(_split_values(value))
 
 
-class MacroResearchWorkerSettings(PerWorkerSettings):
+class MacroThesisWorkerSettings(PerWorkerSettings):
     enabled: bool = False
     interval_seconds: float = Field(default=300.0, ge=0)
-    settle_delay_seconds: int = Field(default=1_800, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     lease_ms: int = Field(default=900_000, ge=1)
     retry_ms: int = Field(default=900_000, ge=1)
     max_attempts: int = Field(default=3, ge=1)
     model: str = "gpt-5.4-mini"
+    reviewer_model: str = "gpt-5.4-mini"
     model_request_timeout_seconds: float = Field(default=480.0, ge=1)
     max_tokens: int = Field(default=12_000, ge=1)
+    graph_recursion_limit: int = Field(default=48, ge=8, le=128)
 
-    @field_validator("model", mode="before")
+    @field_validator("model", "reviewer_model", mode="before")
     @classmethod
     def parse_model(cls, value: Any) -> str:
         normalized = str(value or "").strip()
         if not normalized:
-            raise ValueError("macro_research.model is required")
+            raise ValueError("macro_thesis model is required")
         return normalized
 
 
@@ -393,11 +394,6 @@ class MacroAcquisitionWorkerSettings(PerWorkerSettings):
 
 
 class MacroProjectionWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=300.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class MacroJudgmentWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=300.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
@@ -460,8 +456,7 @@ class WorkersSettings(BaseModel):
     macro_document_analysis: MacroDocumentAnalysisWorkerSettings = Field(
         default_factory=MacroDocumentAnalysisWorkerSettings
     )
-    macro_judgment: MacroJudgmentWorkerSettings = Field(default_factory=MacroJudgmentWorkerSettings)
-    macro_research: MacroResearchWorkerSettings = Field(default_factory=MacroResearchWorkerSettings)
+    macro_thesis: MacroThesisWorkerSettings = Field(default_factory=MacroThesisWorkerSettings)
     news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
     news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
 

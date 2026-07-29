@@ -304,36 +304,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `macro_daily_judgments`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
-| `latest_fact_at_ms` | `BIGINT` | False | `None` |
-| `judgment_json` | `JSONB` | False | `None` |
-| `memo_text` | `TEXT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `compiler_version` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_daily_judgments_v1_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
-| `latest_fact_at_ms` | `BIGINT` | False | `None` |
-| `judgment_json` | `JSONB` | False | `None` |
-| `memo_text` | `TEXT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `compiler_version` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
 ## `macro_document_analyses`
 
 | Column | Type | Nullable | Default |
@@ -387,57 +357,18 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `metadata_json` | `JSONB` | False | `None` |
 
-## `macro_event_updates`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_update_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `trigger_release_fact_id` | `TEXT` | False | `None` |
-| `update_json` | `JSONB` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_event_updates_v1_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_update_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `trigger_release_fact_id` | `TEXT` | False | `None` |
-| `update_json` | `JSONB` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
 ## `macro_evidence_packs`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `evidence_pack_id` | `TEXT` | False | `None` |
 | `session_date` | `DATE` | False | `None` |
-| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
-| `latest_fact_at_ms` | `BIGINT` | False | `None` |
+| `cutoff_ms` | `BIGINT` | False | `None` |
+| `sealed_at_ms` | `BIGINT` | False | `None` |
+| `source_max_received_at_ms` | `BIGINT` | False | `None` |
 | `schema_version` | `TEXT` | False | `None` |
-| `compiler_version` | `TEXT` | False | `None` |
 | `payload_json` | `JSONB` | False | `None` |
 | `payload_hash` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_evidence_packs_v1_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
-| `latest_fact_at_ms` | `BIGINT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `compiler_version` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `macro_feature_series`
 
@@ -471,18 +402,18 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
 
-## `macro_judgment_status`
+## `macro_live_deltas`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `judgment_cutoff_ms` | `BIGINT` | False | `None` |
-| `state` | `TEXT` | False | `None` |
-| `reason_code` | `TEXT` | False | `None` |
-| `details_json` | `JSONB` | False | `'{}'::jsonb` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `attempted_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
+| `live_delta_id` | `TEXT` | False | `None` |
+| `publication_id` | `TEXT` | False | `None` |
+| `evaluated_at_ms` | `BIGINT` | False | `None` |
+| `module_fact_cutoff_ms` | `BIGINT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `input_hash` | `TEXT` | False | `None` |
 
 ## `macro_module_current`
 
@@ -493,7 +424,19 @@
 | `payload_json` | `JSONB` | False | `None` |
 | `payload_hash` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `data_health_state` | `TEXT` | False | `None` |
+| `current_health_state` | `TEXT` | False | `None` |
+| `history_depth_state` | `TEXT` | False | `None` |
+
+## `macro_outcome_replays`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `replay_id` | `TEXT` | False | `None` |
+| `publication_id` | `TEXT` | False | `None` |
+| `evaluated_at_ms` | `BIGINT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `input_hash` | `TEXT` | False | `None` |
 
 ## `macro_release_facts`
 
@@ -505,7 +448,7 @@
 | `series_id` | `TEXT` | False | `None` |
 | `reference_period` | `TEXT` | False | `None` |
 | `scheduled_at_ms` | `BIGINT` | True | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
+| `published_at_ms` | `BIGINT` | True | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `actual_value` | `DOUBLE PRECISION` | True | `None` |
 | `prior_value` | `DOUBLE PRECISION` | True | `None` |
@@ -516,80 +459,6 @@
 | `source_url` | `TEXT` | False | `None` |
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
-
-## `macro_research_publications`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `market_cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `artifact_json` | `JSONB` | False | `None` |
-| `report_markdown` | `TEXT` | False | `None` |
-| `audit_json` | `JSONB` | False | `None` |
-| `reviewer_disposition` | `TEXT` | False | `None` |
-| `model_name` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `workflow_version` | `TEXT` | False | `None` |
-| `artifact_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_research_publications_v1_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `market_cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `artifact_json` | `JSONB` | False | `None` |
-| `report_markdown` | `TEXT` | False | `None` |
-| `audit_json` | `JSONB` | False | `None` |
-| `reviewer_disposition` | `TEXT` | False | `None` |
-| `model_name` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `workflow_version` | `TEXT` | False | `None` |
-| `artifact_hash` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_research_runs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `market_cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `'pending'::text` |
-| `sealed_at_ms` | `BIGINT` | False | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `max_attempts` | `INTEGER` | False | `None` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `reviewer_disposition` | `TEXT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `last_error_message` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_research_runs_v1_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `market_cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `'pending'::text` |
-| `sealed_at_ms` | `BIGINT` | False | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `max_attempts` | `INTEGER` | False | `None` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `reviewer_disposition` | `TEXT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `last_error_message` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `macro_series_facts`
 
@@ -627,6 +496,56 @@
 | `error_code` | `TEXT` | True | `None` |
 | `error_message` | `TEXT` | True | `None` |
 | `diagnostics_json` | `JSONB` | False | `None` |
+
+## `macro_thesis_publications`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `publication_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `schema_version` | `TEXT` | False | `None` |
+| `thesis_json` | `JSONB` | False | `None` |
+| `thesis_hash` | `TEXT` | False | `None` |
+| `reviewer_invocation_id` | `TEXT` | False | `None` |
+| `reviewer_draft_hash` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_thesis_reviews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `review_id` | `TEXT` | False | `None` |
+| `session_date` | `DATE` | False | `None` |
+| `review_sequence` | `INTEGER` | False | `None` |
+| `draft_hash` | `TEXT` | False | `None` |
+| `disposition` | `TEXT` | False | `None` |
+| `review_json` | `JSONB` | False | `None` |
+| `invocation_id` | `TEXT` | False | `None` |
+| `model_name` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `macro_thesis_runs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_date` | `DATE` | False | `None` |
+| `cutoff_ms` | `BIGINT` | False | `None` |
+| `evidence_pack_id` | `TEXT` | False | `None` |
+| `evidence_pack_hash` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `'pending'::text` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `max_attempts` | `INTEGER` | False | `None` |
+| `due_at_ms` | `BIGINT` | False | `None` |
+| `leased_until_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `publication_id` | `TEXT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `last_error_message` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `market_instruments`
 

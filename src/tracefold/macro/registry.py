@@ -7,6 +7,7 @@ from tracefold.macro.domain import DatasetSpec, MacroModuleId
 _FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
 _TREASURY_XML = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+_BEA_CURRENT_RELEASES = "https://www.bea.gov/news/current-releases"
 _DAILY_FRESHNESS_SECONDS = 172_800
 _WEEKLY_FRESHNESS_SECONDS = 950_400
 _MONTHLY_FRESHNESS_SECONDS = 7_948_800
@@ -30,9 +31,13 @@ def _fred(
     freshness_seconds: int | None = None,
     refresh_seconds: int = 21_600,
     critical: bool = False,
+    concept_id: str | None = None,
+    source_role: str = "decision_primary",
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=f"fred.{series_id.lower()}",
+        concept_id=concept_id or f"fred.{series_id.lower()}",
+        source_role=source_role,  # type: ignore[arg-type]
         module_id=module,
         clock_kind=clock,  # type: ignore[arg-type]
         fact_family="series",
@@ -63,6 +68,8 @@ def _nasdaq_daily(
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=f"nasdaq.{instrument_id}.daily",
+        concept_id=f"market.{instrument_id}",
+        source_role="decision_primary",
         module_id="cross_asset",
         clock_kind="daily_settlement",
         fact_family="market_observation",
@@ -101,9 +108,12 @@ def _yfinance_intraday(
     instrument_type: str,
     freshness_seconds: int = 3_600,
     market_calendar: str = "us_equity_extended",
+    concept_id: str | None = None,
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=f"yfinance.{instrument_id}.intraday",
+        concept_id=concept_id or f"market.{instrument_id.removesuffix('_yahoo')}",
+        source_role="intraday_proxy",
         module_id="cross_asset",
         clock_kind="intraday_market",
         fact_family="market_observation",
@@ -150,9 +160,13 @@ def _yfinance_daily(
     label: str,
     asset_class: str,
     instrument_type: str,
+    concept_id: str | None = None,
+    source_role: str = "decision_primary",
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=f"yfinance.{instrument_id}.daily",
+        concept_id=concept_id or f"market.{instrument_id}",
+        source_role=source_role,  # type: ignore[arg-type]
         module_id="cross_asset",
         clock_kind="daily_settlement",
         fact_family="market_observation",
@@ -194,6 +208,8 @@ def _treasury_curve(
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=dataset_id,
+        concept_id="rates.real_curve" if "real" in curve_type else "rates.nominal_curve",
+        source_role="decision_primary",
         module_id="rates_fed",
         clock_kind="official_state",
         fact_family="series",
@@ -215,33 +231,6 @@ def _treasury_curve(
     )
 
 
-def _unavailable(
-    dataset_id: str,
-    *,
-    module: MacroModuleId,
-    label: str,
-    reason: str,
-    source_url: str,
-) -> DatasetSpec:
-    return DatasetSpec(
-        dataset_id=dataset_id,
-        module_id=module,
-        clock_kind="official_document",
-        fact_family="document",
-        adapter_id="unavailable",
-        source_id="unavailable",
-        source_url=source_url,
-        label=label,
-        series_id=dataset_id.upper().replace(".", "_"),
-        unit="unavailable",
-        frequency="event",
-        freshness_seconds=86_400,
-        refresh_seconds=86_400,
-        critical=False,
-        metadata={"unavailable_reason": reason},
-    )
-
-
 def _bls_release(
     series_id: str,
     *,
@@ -252,6 +241,8 @@ def _bls_release(
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=dataset_id,
+        concept_id=f"economy.{dataset_id.removeprefix('bls.').removesuffix('.release')}",
+        source_role="release",
         module_id="economy_inflation",
         clock_kind="scheduled_release",
         fact_family="release",
@@ -273,6 +264,43 @@ def _bls_release(
     )
 
 
+def _bea_release(
+    *,
+    dataset_id: str,
+    concept_id: str,
+    release_family: str,
+    metric: str,
+    label: str,
+    frequency: str,
+) -> DatasetSpec:
+    return DatasetSpec(
+        dataset_id=dataset_id,
+        concept_id=concept_id,
+        source_role="release",
+        module_id="economy_inflation",
+        clock_kind="scheduled_release",
+        fact_family="release",
+        adapter_id="bea_release_page",
+        source_id="bea",
+        source_url=_BEA_CURRENT_RELEASES,
+        label=label,
+        series_id=metric.upper(),
+        unit="percent",
+        frequency=frequency,
+        freshness_seconds=(_MONTHLY_FRESHNESS_SECONDS if frequency == "monthly" else _QUARTERLY_FRESHNESS_SECONDS),
+        refresh_seconds=21_600,
+        critical=True,
+        metadata={
+            "official_owner": "U.S. Bureau of Economic Analysis",
+            "importance_tier": 3,
+            "role": "official_release_catalyst",
+            "release_family": release_family,
+            "metric": metric,
+            "contract": "public_official_release_page",
+        },
+    )
+
+
 def _cftc_tff(
     dataset_id: str,
     *,
@@ -282,6 +310,8 @@ def _cftc_tff(
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=dataset_id,
+        concept_id=dataset_id.removesuffix("_positions"),
+        source_role="reconciliation_only",
         module_id=module,
         clock_kind="scheduled_release",
         fact_family="market_position",
@@ -339,10 +369,44 @@ _DATASETS = (
             "TC_30YEAR": "30Y",
         },
     ),
-    _fred("DGS2", module="rates_fed", label="2年期美国国债收益率", unit="percent", frequency="daily", critical=True),
-    _fred("DGS10", module="rates_fed", label="10年期美国国债收益率", unit="percent", frequency="daily", critical=True),
-    _fred("DGS30", module="rates_fed", label="30年期美国国债收益率", unit="percent", frequency="daily"),
-    _fred("DFII10", module="rates_fed", label="10年期实际利率", unit="percent", frequency="daily"),
+    _fred(
+        "DGS2",
+        module="rates_fed",
+        label="2年期美国国债收益率",
+        unit="percent",
+        frequency="daily",
+        critical=True,
+        concept_id="rates.nominal_curve",
+        source_role="history",
+    ),
+    _fred(
+        "DGS10",
+        module="rates_fed",
+        label="10年期美国国债收益率",
+        unit="percent",
+        frequency="daily",
+        critical=True,
+        concept_id="rates.nominal_curve",
+        source_role="history",
+    ),
+    _fred(
+        "DGS30",
+        module="rates_fed",
+        label="30年期美国国债收益率",
+        unit="percent",
+        frequency="daily",
+        concept_id="rates.nominal_curve",
+        source_role="history",
+    ),
+    _fred(
+        "DFII10",
+        module="rates_fed",
+        label="10年期实际利率",
+        unit="percent",
+        frequency="daily",
+        concept_id="rates.real_curve",
+        source_role="history",
+    ),
     _fred("T10YIE", module="rates_fed", label="10年期盈亏平衡通胀率", unit="percent", frequency="daily"),
     _fred("EFFR", module="rates_fed", label="有效联邦基金利率", unit="percent", frequency="daily", critical=True),
     _fred("DFEDTARU", module="rates_fed", label="联邦基金目标上限", unit="percent", frequency="daily"),
@@ -356,6 +420,8 @@ _DATASETS = (
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
+        concept_id="economy.cpi",
+        source_role="history",
     ),
     _fred(
         "CPILFESL",
@@ -365,6 +431,8 @@ _DATASETS = (
         frequency="monthly",
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
+        concept_id="economy.core_cpi",
+        source_role="history",
     ),
     _fred(
         "PCEPI",
@@ -375,6 +443,8 @@ _DATASETS = (
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
+        concept_id="economy.pce",
+        source_role="history",
     ),
     _fred(
         "PCEPILFE",
@@ -384,6 +454,8 @@ _DATASETS = (
         frequency="monthly",
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
+        concept_id="economy.core_pce",
+        source_role="history",
     ),
     _fred(
         "GDPC1",
@@ -393,6 +465,8 @@ _DATASETS = (
         frequency="quarterly",
         clock="scheduled_release",
         freshness_seconds=_QUARTERLY_FRESHNESS_SECONDS,
+        concept_id="economy.gdp",
+        source_role="history",
     ),
     _fred(
         "UNRATE",
@@ -403,6 +477,8 @@ _DATASETS = (
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
+        concept_id="economy.unemployment",
+        source_role="history",
     ),
     _fred(
         "PAYEMS",
@@ -413,6 +489,8 @@ _DATASETS = (
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         critical=True,
+        concept_id="economy.payrolls",
+        source_role="history",
     ),
     _fred(
         "ICSA",
@@ -422,6 +500,8 @@ _DATASETS = (
         frequency="weekly",
         clock="scheduled_release",
         freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
+        concept_id="economy.initial_claims",
+        source_role="decision_primary",
     ),
     _fred(
         "RSAFS",
@@ -431,6 +511,8 @@ _DATASETS = (
         frequency="monthly",
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
+        concept_id="economy.retail_sales",
+        source_role="decision_primary",
     ),
     _fred(
         "INDPRO",
@@ -440,6 +522,8 @@ _DATASETS = (
         frequency="monthly",
         clock="scheduled_release",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
+        concept_id="economy.industrial_production",
+        source_role="decision_primary",
     ),
     _bls_release(
         "CUUR0000SA0",
@@ -468,6 +552,30 @@ _DATASETS = (
         label="BLS非农就业官方发布事实",
         unit="thousands_persons",
         importance_tier=3,
+    ),
+    _bea_release(
+        dataset_id="bea.gdp.release",
+        concept_id="economy.gdp",
+        release_family="gdp",
+        metric="real_gdp",
+        label="BEA实际GDP官方发布事实",
+        frequency="quarterly",
+    ),
+    _bea_release(
+        dataset_id="bea.pce.release",
+        concept_id="economy.pce",
+        release_family="pce",
+        metric="pce",
+        label="BEA PCE价格指数官方发布事实",
+        frequency="monthly",
+    ),
+    _bea_release(
+        dataset_id="bea.core_pce.release",
+        concept_id="economy.core_pce",
+        release_family="pce",
+        metric="core_pce",
+        label="BEA核心PCE价格指数官方发布事实",
+        frequency="monthly",
     ),
     _cftc_tff(
         "cftc.tff.rates_positions",
@@ -626,13 +734,23 @@ _DATASETS = (
             "221605": "Bloomberg HY Credit",
         },
     ),
-    _fred("VIXCLS", module="volatility", label="VIX现货指数", unit="index", frequency="daily", critical=True),
+    _fred(
+        "VIXCLS",
+        module="volatility",
+        label="VIX现货指数",
+        unit="index",
+        frequency="daily",
+        critical=True,
+        concept_id="market.vix_index",
+    ),
     _fred("VXVCLS", module="volatility", label="3个月VIX指数", unit="index", frequency="daily"),
     _fred("VXNCLS", module="volatility", label="纳斯达克100波动率指数", unit="index", frequency="daily"),
     _fred("GVZCLS", module="volatility", label="黄金ETF波动率指数", unit="index", frequency="daily"),
     _fred("OVXCLS", module="volatility", label="原油ETF波动率指数", unit="index", frequency="daily"),
     DatasetSpec(
         dataset_id="federal_reserve.fomc.documents",
+        concept_id="fed.policy_documents",
+        source_role="official_document",
         module_id="rates_fed",
         clock_kind="official_document",
         fact_family="document",
@@ -654,6 +772,8 @@ _DATASETS = (
     ),
     DatasetSpec(
         dataset_id="federal_reserve.board.speeches",
+        concept_id="fed.policy_communications",
+        source_role="official_document",
         module_id="rates_fed",
         clock_kind="official_document",
         fact_family="document",
@@ -675,6 +795,8 @@ _DATASETS = (
     ),
     DatasetSpec(
         dataset_id="federal_reserve.reserve_bank.speeches",
+        concept_id="fed.policy_communications",
+        source_role="official_document",
         module_id="rates_fed",
         clock_kind="official_document",
         fact_family="document",
@@ -709,6 +831,8 @@ _DATASETS = (
     ),
     DatasetSpec(
         dataset_id="federal_reserve.fomc.roster",
+        concept_id="fed.fomc_roster",
+        source_role="derived",
         module_id="rates_fed",
         clock_kind="derived",
         fact_family="official_role",
@@ -726,6 +850,8 @@ _DATASETS = (
     ),
     DatasetSpec(
         dataset_id="federal_reserve.document.analysis",
+        concept_id="fed.policy_document_analysis",
+        source_role="derived",
         module_id="rates_fed",
         clock_kind="derived",
         fact_family="document_analysis",
@@ -1017,9 +1143,12 @@ _DATASETS = (
         frequency="daily",
         freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
         critical=True,
+        concept_id="market.wti",
     ),
     DatasetSpec(
         dataset_id="binance.btcusdt.spot",
+        concept_id="market.btc",
+        source_role="decision_primary",
         module_id="cross_asset",
         clock_kind="daily_settlement",
         fact_family="market_observation",
@@ -1042,6 +1171,8 @@ _DATASETS = (
     ),
     DatasetSpec(
         dataset_id="cboe.cfe.vx.settlement",
+        concept_id="market.vx_future",
+        source_role="decision_primary",
         module_id="cross_asset",
         clock_kind="daily_settlement",
         fact_family="market_settlement",
@@ -1073,33 +1204,22 @@ _DATASETS = (
             "133741": "Bitcoin",
         },
     ),
-    _unavailable(
-        "cme.rates.futures.curves",
-        module="rates_fed",
-        label="CME利率期货曲线",
-        reason="licensed_contract_facts_not_configured",
-        source_url="https://www.cmegroup.com/market-data.html",
-    ),
-    _unavailable(
-        "licensed.credit.trace_nav",
-        module="credit",
-        label="TRACE逐笔与ETF NAV溢折价",
-        reason="licensed_security_level_facts_not_configured",
-        source_url="https://www.finra.org/finra-data/fixed-income",
-    ),
-    _unavailable(
-        "licensed.credit.ice_bofa_full_history",
-        module="credit",
-        label="ICE BofA信用指数三年前完整历史",
-        reason="ice_bofa_history_before_public_three_year_window_unavailable",
-        source_url="https://fred.stlouisfed.org/series/BAMLC0A0CM",
-    ),
 )
 
 DATASET_REGISTRY = MappingProxyType({spec.dataset_id: spec for spec in _DATASETS})
 
 if len(DATASET_REGISTRY) != len(_DATASETS):
     raise RuntimeError("macro_dataset_registry_duplicate_id")
+
+_SPECS_BY_CONCEPT: dict[str, list[DatasetSpec]] = {}
+for _spec in _DATASETS:
+    _SPECS_BY_CONCEPT.setdefault(_spec.concept_id, []).append(_spec)
+for _concept_id, _concept_specs in _SPECS_BY_CONCEPT.items():
+    _canonical = [spec for spec in _concept_specs if spec.source_role in {"decision_primary", "release"}]
+    if len(_canonical) > 1:
+        raise RuntimeError("macro_dataset_registry_multiple_canonical_sources:" + _concept_id)
+    if any(spec.source_role in {"history", "intraday_proxy"} for spec in _concept_specs) and not _canonical:
+        raise RuntimeError("macro_dataset_registry_canonical_source_missing:" + _concept_id)
 
 
 def datasets_for_clock(clock_kind: str) -> tuple[DatasetSpec, ...]:

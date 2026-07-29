@@ -1,7 +1,7 @@
 import { getApi } from "@lib/api/client";
 import { useQuery } from "@tanstack/react-query";
 
-import type { MacroResearchReadData } from "../model/macroTypes";
+import type { MacroThesisDetailReadData } from "../model/macroTypes";
 
 export function useMacroResearchQuery({
   sessionDate,
@@ -13,7 +13,7 @@ export function useMacroResearchQuery({
   return useQuery({
     queryKey: ["macro", "research", sessionDate ?? "latest"] as const,
     queryFn: async () => {
-      const response = await getApi<MacroResearchReadData>("/api/macro/research", {
+      const response = await getApi<MacroThesisDetailReadData>("/api/macro/research", {
         token,
         params: { session_date: sessionDate },
       });

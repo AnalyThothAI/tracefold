@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from datetime import timedelta
 from typing import Any
 
 from tracefold.macro.domain import DocumentFact, FedOfficialRoleFact
@@ -76,13 +77,22 @@ def match_effective_role(
     normalized = normalize_official_name(speaker_name or "")
     if not normalized:
         return None
+    effective_rows = effective_roster_rows(role_rows)
+    eligible_starts = [
+        row["effective_start"]
+        for row in effective_rows
+        if row.get("effective_start") is not None and row["effective_start"] <= effective_date
+    ]
+    if not eligible_starts:
+        return None
+    active_start = max(eligible_starts)
     candidates = []
-    for row in role_rows:
+    for row in effective_rows:
         if normalize_official_name(str(row.get("official_name") or "")) != normalized:
             continue
         start = row.get("effective_start")
         end = row.get("effective_end")
-        if start is None or start > effective_date:
+        if start != active_start:
             continue
         if end is not None and end < effective_date:
             continue
@@ -99,6 +109,19 @@ def match_effective_role(
     )
 
 
+def effective_roster_rows(role_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    starts = sorted({row["effective_start"] for row in role_rows if row.get("effective_start") is not None})
+    next_start = {start: starts[index + 1] for index, start in enumerate(starts[:-1])}
+    output = []
+    for row in role_rows:
+        normalized = dict(row)
+        start = normalized.get("effective_start")
+        if start in next_start:
+            normalized["effective_end"] = next_start[start] - timedelta(days=1)
+        output.append(normalized)
+    return output
+
+
 def _text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
@@ -110,6 +133,7 @@ def _official_name(value: Any) -> str:
 
 __all__ = [
     "derive_fomc_role_facts",
+    "effective_roster_rows",
     "match_effective_role",
     "normalize_official_name",
     "official_id_for_name",

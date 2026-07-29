@@ -192,18 +192,20 @@ already stamped at the baseline is left intact.
 
 Macro:
 
-The `20260728_0210` baseline plus the `20260728_0211` hard-cut migration
-contains the current professional Macro fact, coverage, module, judgment,
-research, and Fed evidence contracts. Immutable v1 publication archives remain
-material history; no runtime reads or writers use them.
+The `20260728_0210` baseline plus the irreversible `20260728_0212` hard-cut
+and `20260728_0213` lifecycle-completion migrations
+migration contains the current Macro fact, coverage, module, Thesis, Live
+Delta, Outcome Replay, and Fed evidence contracts. It deletes the retired
+Judgment/Research tables and paid-data placeholders; there is no archive or
+compatibility read lane.
 
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
   -> macro_projection -> six macro_module_current rows
-  -> 08:50 New York Evidence Pack -> immutable daily judgment
-  -> completed-session macro_research_runs claim bound to that pack
-  -> DeepAgents graph + reviewer with durable PostgreSQL checkpoint
-  -> immutable macro_research_publications row
+  -> 08:50 New York macro_evidence_pack_v3
+  -> research graph -> independent reviewer bound to the draft hash
+  -> at most one revision -> immutable macro_thesis_v1
+  -> deterministic macro_live_delta_v1 and macro_outcome_replay_v1
 ```
 
 The five automatic acquisition workers claim only their own clock family from
@@ -219,8 +221,8 @@ single-source histories are inexpensive and materially improve regime context.
 The daily-settlement worker defaults to a batch of 32 so one cold-start cycle
 covers the complete automatic daily registry instead of spreading it across
 multiple six-hour intervals.
-Every backfill remains observable in Dataset health but is non-blocking for
-module projection, Evidence Pack, judgment, and research publication.
+Every backfill remains observable in History Depth but is non-blocking for
+Current Health, module projection, Evidence Pack, and Thesis publication.
 Five-year targets have a lower numeric queue priority than optional deep
 history, so a large enrichment crawl cannot sit ahead of current five-year
 coverage. Before creating a new target, the professional command
@@ -234,81 +236,75 @@ target. An unchanged replay writes zero fact rows and a receipt; a changed
 value appends a revision. One failed source cannot head-of-line block another
 clock or target.
 
-Diagnose a missing metric in this order: Dataset Registry identity, acquisition
-target state/lease, last receipt/error, persisted fact clocks
-(reference/published/received), module dataset state/gap, then current-row
-hash. Do not repair source or calculation errors with a frontend fallback.
-`unavailable` licensed curves and `untrusted_proxy` Nasdaq/Yahoo cross-asset
-history must stay visible. For market datasets, diagnose data state, market
-state, and source state independently. A closed or maintenance market with its
-last expected bar is current, while a healthy source can still serve stale
-data and a failed source can leave a current last expected bar.
+Diagnose a missing metric in this order: Registry `concept_id` and
+`source_role`, acquisition target state/lease, last receipt/error, persisted
+fact clocks (reference/published/received), reconciliation receipt, module
+Coverage/Current Health/History Depth, then current-row hash. Do not repair
+source or calculation errors with a frontend fallback. Paid-only capabilities
+are not product rows. `untrusted_proxy` Nasdaq/Yahoo rows remain explicitly
+labelled. A closed or maintenance market with its last expected bar is current,
+while a healthy source can still serve degraded data and a failed source can
+leave a current last expected bar.
 
 FOMC/Board/Reserve Bank full-text facts feed
 `macro_document_analysis_jobs`. The worker waits to schedule a speech until an
 effective-dated role match exists or the completed FOMC history backfill proves
 that the speech date has roster coverage. Each claim performs model I/O outside
 the write transaction, validates exact excerpts against the frozen body, then
-atomically inserts the immutable analysis and completes the job. Open jobs make
-the derived analysis dataset `backfilling`; exhausted jobs make it `invalid`.
-Either state is carried into the next judgment as a gap and affected
-conclusions become `no_call`. Restart reclaims expired leases without
+atomically inserts the immutable analysis and completes the job. Open or
+exhausted jobs are visible in the affected Dataset Current Health and can force
+a Thesis claim to `no_call`. Restart reclaims expired leases without
 duplicating analysis identity.
 
 `macro_projection` deterministically recomputes the Calculation Registry and
 six stable module rows; unchanged payloads write zero serving rows.
-`macro_judgment` runs after 08:50 `America/New_York` on U.S. trading days,
-compiles only facts received by that cutoff, always seals the Evidence Pack,
-and publishes the judgment even when evidence is incomplete. Missing or
-unhealthy evidence produces explicit gaps and dimension/asset `no_call`
-outputs; it is not a publication gate. `macro_judgment_status` records only a
-successfully published current judgment. Before publication, the overview
-still exposes the intended session and deterministic cutoff.
-Evidence Pack and daily judgment insertion are immutable and replay-safe. They
-remain readable when DeepAgents research is delayed or failed.
+`macro_thesis` runs after 08:50 `America/New_York` on U.S. trading days, creates
+or re-reads one stable session run, and claims at most one due run per
+iteration. Before model work it freezes the session, cutoff, pack identity,
+six ordered module payloads, prior Thesis, delta/catalyst packs, twelve-asset
+momentum, and evidence references. Only facts received by the cutoff may enter.
+All graph I/O occurs outside a database write transaction. The Evidence Pack
+remains complete in PostgreSQL; one compact module decision view and its
+allowed evidence refs are embedded as a frozen invocation input.
 
-`macro_research` waits for its configured settle delay, creates or re-reads one
-stable completed-session run, and claims at most one due run per iteration.
-The run freezes `session_date`, Evidence Pack ID, pack cutoff, and seal time
-before model work. The later completed-session schedule never widens the
-Evidence Pack's morning fact cutoff.
-All model and evidence-tool I/O occurs outside a database write transaction.
-The Agent decides its research plan, evidence selection, subagent delegation,
-counterevidence, gaps, and final Chinese narrative. A separate reviewer returns
-`pass`, `revise`, or `block`; revise permits one corrected artifact pass and
-block prevents publication only for artifact integrity/reviewer failure, not
-because the Evidence Pack lacks materiality or complete coverage. Research
-does not hide the daily judgment or modules.
+The research graph must return exactly one mainline, at most one alternative,
+at most three tensions, six module roles, prior-Thesis changes, and twelve
+condition-bound asset outlooks. A separately invoked Reviewer graph receives
+the exact frozen Evidence Pack and exact draft hash. `revise` permits one
+corrected draft and one final review; any second non-pass result leaves the
+session terminal `not_published`. `pass` publication, Reviewer record, and run transition are
+atomic. Missing evidence can produce `no_call`; schema, identity, cutoff,
+citation, draft-hash, or Reviewer failure closes the lane. A model name ending
+in `-terra`, `-sol`, or `codex` is a terminal `config_error`, not a retryable
+provider failure.
 
-The production `AsyncPostgresSaver` is opened through an async context factory
-for each graph invocation and uses the run's frozen scope ID as the stable
-LangGraph `thread_id`. `checkpoints`, `checkpoint_blobs`, and
-`checkpoint_writes` preserve resumable graph state across worker/process
-restarts; `checkpoint_migrations` records the installed checkpointer schema.
-These tables are runtime execution state, not Macro facts or a serving surface.
-Alembic owns their DDL; application startup never runs checkpointer setup.
-`~/.tracefold/macro-agent-workspaces/<scope>/` is the matching persistent
-calculation workspace for native `execute`; it can be inspected or rebuilt
-from frozen evidence and is not a publication source.
+Both the research and Reviewer graphs are bounded by
+`macro_thesis.graph_recursion_limit` (default 48, allowed 8–128). Reaching the
+bound is terminal `not_published` with `macro_thesis_agent_step_limit`; lease
+heartbeats do not turn a tool or structured-output loop into an unbounded run.
+The research invocation is a single graph: its exact-model DeepAgents harness
+profile disables the general-purpose subagent and hides filesystem, todo,
+`execute`, and `task` tools. A child graph therefore cannot escape the root
+step budget.
 
-Run states are `pending`, `running`, `retryable`, `failed`, and `published`.
-While a checkpointed Agent invocation is alive, the worker renews its
-owner-bound lease every one-third of the configured lease duration. The lease
-is therefore a crash-recovery TTL, not a whole-research runtime limit. If the
-owner compare-and-set fails, that process cancels its local analysis and never
-publishes or records failure as the stale owner. Expired leases are reclaimed
-while attempts remain. External/runtime failures become `retryable`; exhaustion
-becomes `failed` with a sanitized error.
-Publication insertion and the transition to `published` are atomic. The
-session-keyed publication rejects update and delete; it closes to the exact
-Evidence Pack, cutoff, citations, and reviewer disposition. Replaying a
-published session performs zero model calls and zero publication writes.
+The production `AsyncPostgresSaver` uses the run's frozen scope ID as the
+stable LangGraph `thread_id`. Checkpoint tables are execution state, not Macro
+facts or serving surfaces; Alembic owns their DDL. Macro Thesis has no runtime
+workspace directory.
 
-`uv run tracefold macro retry-research --session-date YYYY-MM-DD` is the only
-manual recovery from `failed`. It atomically grants one immediately due
-attempt, clears the old lease/error, and returns an auditable JSON receipt.
-Missing, non-failed, or already-published sessions are explicit errors rather
-than hidden state changes.
+Run states are `pending`, `running`, `retryable`, `failed`, `config_error`,
+`not_published`, and `published`. Leases are owner-bound crash-recovery TTLs.
+External/runtime failures retry within the configured budget; invalid model
+configuration transitions before a claim and keeps `attempt_count=0`. The
+session-keyed pack, reviews, publication, and Outcome Replay reject mutation.
+Live Delta is the single-writer stable publication-keyed current read model and
+updates only when its deterministic input hash changes. Replaying a published
+session performs zero model calls and zero publication writes.
+
+Post-publication cycles update only deterministic Live Delta and Outcome Replay.
+Live Delta evaluates declared Thesis conditions against new persisted facts;
+Outcome Replay waits for each declared horizon and records evaluated or
+insufficient outcomes. Neither path edits or republishes the Thesis.
 
 ## Operator actions and retention
 

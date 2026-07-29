@@ -13,6 +13,7 @@ describe("daily macro decision and research hard cut", () => {
     const files = collectFiles(macroRoot).map((path) => relative(macroRoot, path));
 
     expect(files.filter((path) => path.endsWith(".tsx"))).toEqual([
+      "ui/MacroCharts.tsx",
       "ui/MacroDecisionPage.tsx",
       "ui/MacroModuleSections.tsx",
       "ui/MacroResearchPage.tsx",
@@ -22,6 +23,10 @@ describe("daily macro decision and research hard cut", () => {
     expect(files.some((path) => /(registry|catalog|universal[-_]?renderer)/i.test(path))).toBe(
       false,
     );
+    const sections = readFileSync(join(macroRoot, "ui/MacroModuleSections.tsx"), "utf8");
+    expect(macroText()).not.toMatch(/StructuredValue|JSON\.stringify|ObjectTable/);
+    expect(sections).toContain("useHashSection");
+    expect(sections).toContain("MacroTimeSeriesChart");
   });
 
   it("wires the overview, research, and six typed module routes", () => {
@@ -60,10 +65,10 @@ describe("daily macro decision and research hard cut", () => {
         "/api/macro/research",
       ]),
     );
-    expect(source).not.toMatch(/\/api\/macro\/evidence|MacroLive|history window|[?&]window=/i);
+    expect(source).not.toMatch(/\/api\/macro\/evidence|history window|[?&]window=/i);
   });
 
-  it("shows fixed judgment, separate status planes, gaps and asynchronous Evidence-Pack research", () => {
+  it("shows one Thesis, deterministic delta, separate quality planes, and immutable history", () => {
     const decision = [
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.tsx"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroModuleSections.tsx"), "utf8"),
@@ -71,27 +76,38 @@ describe("daily macro decision and research hard cut", () => {
     const research = readFileSync(join(macroRoot, "ui/MacroResearchPage.tsx"), "utf8");
 
     for (const field of [
-      "judgment.asset_directions",
-      "judgment.dimensions",
+      "thesis.mainline",
+      "thesis.core_tensions",
+      "thesis.changes_from_prior",
+      "thesis.assets",
+      "asset.momentum.momentum_1w",
+      "asset.outlook_1w",
+      "asset.outlook_1m",
+      "data.live_delta",
+      "thesis.mainline.falsifiers",
+      "thesis.mainline.checkpoints",
+      "data.thesis?.module_assessments",
+      "data.thesis?.gaps",
       "module.contradictions",
       "module.falsifiers",
       "module.next_checkpoints",
       "module.status.coverage",
-      "query.data.status.data_health",
-      "query.data.status.judgment",
+      "module.status.current_health",
+      "module.status.history_depth",
       "module.evidence.dataset_states",
       "module.evidence.latest_facts",
-      "research.evidence_pack_id",
-      "research.reviewer_disposition",
     ]) {
       expect(decision).toContain(field);
     }
     for (const field of [
-      "publication.sections.map",
-      "publication.evidence_gaps.map",
-      "publication.citations.map",
-      "publication.reviewer_notes.map",
-      "publication.audit",
+      "thesis.mainline.claims.map",
+      "thesis.core_tensions.map",
+      "thesis.assets.map",
+      "thesis.module_assessments.map",
+      "thesis.review.findings.map",
+      "thesis.provenance",
+      "thesis.narrative_sections.map",
+      "outcomeReplay?.horizons.map",
     ]) {
       expect(research).toContain(field);
     }
@@ -100,6 +116,8 @@ describe("daily macro decision and research hard cut", () => {
   it("keeps both feature surfaces namespaced and responsive", () => {
     const researchCss = readFileSync(join(macroRoot, "ui/MacroResearchPage.css"), "utf8");
     const decisionCss = [
+      readFileSync(join(macroRoot, "ui/MacroCharts.css"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroDecisionOverview.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionEvidence.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionPageResponsive.css"), "utf8"),
@@ -111,10 +129,17 @@ describe("daily macro decision and research hard cut", () => {
     expect(researchCss).toContain("@media (max-width: 767px)");
     expect(decisionCss).toContain("@layer app.features");
     expect(decisionCss).toContain("@media (max-width: 767px)");
+    expect(decisionCss).toMatch(
+      /\.macro-decision\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
     expect(researchSelectors.every((selector) => selector.startsWith("macro-research-"))).toBe(
       true,
     );
-    expect(decisionSelectors.every((selector) => selector.startsWith("macro-decision"))).toBe(true);
+    expect(
+      decisionSelectors.every(
+        (selector) => selector.startsWith("macro-decision") || selector.startsWith("macro-chart"),
+      ),
+    ).toBe(true);
   });
 });
 

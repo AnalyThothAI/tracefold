@@ -62,7 +62,7 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
         priority: int,
     ) -> None:
         spec = DATASET_REGISTRY[dataset_id]
-        if spec.adapter_id == "unavailable" or spec.adapter_id.startswith("derived_"):
+        if spec.adapter_id.startswith("derived_"):
             return
         policies[dataset_id] = MacroBackfillPolicy(
             dataset_id=dataset_id,

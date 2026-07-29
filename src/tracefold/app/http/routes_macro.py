@@ -8,21 +8,21 @@ from fastapi.responses import JSONResponse
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
-from tracefold.app.http.exceptions import ApiBadRequest
+from tracefold.app.http.exceptions import ApiBadRequest, ApiUnavailable
 from tracefold.app.http.responses import _validated_json
 from tracefold.macro import (
     MACRO_MODULE_IDS,
     MacroModuleId,
-    build_typed_module_payload,
-    judgment_cutoff_ms,
-    resolve_completed_session,
-    resolve_judgment_session,
+    resolve_thesis_session,
     schema_version_for_module,
+    thesis_cutoff_ms,
 )
 
 router = APIRouter()
 
 _GENERATING_RUN_STATES = frozenset({"pending", "running", "retryable"})
+_FAILED_RUN_STATES = frozenset({"failed", "config_error"})
+_NOT_PUBLISHED_RUN_STATES = frozenset({"not_published"})
 _MODULE_HREFS = {
     "rates_fed": "/macro/rates-fed",
     "economy_inflation": "/macro/economy-inflation",
@@ -41,66 +41,42 @@ def macro_overview(request: Request) -> JSONResponse:
     runtime = _authenticated_macro_runtime(request)
     _reject_query_params(request)
     read_at_ms = _now_ms()
-    judgment_session = resolve_judgment_session(now_ms=read_at_ms)
+    session_date = resolve_thesis_session(now_ms=read_at_ms)
     with runtime.repositories() as repos:
         module_rows = {row["module_id"]: row for row in repos.macro.all_modules_current()}
-        judgment_row = repos.macro.daily_judgment(judgment_session)
-        judgment_status_row = repos.macro.judgment_status(judgment_session)
-        research_row = repos.macro_research.research_state()
-    module_payloads = [
-        _module_payload(
-            module_id,
-            module_rows.get(module_id),
-            judgment_row,
-            judgment_status_row,
-            read_at_ms,
-        )
-        for module_id in MACRO_MODULE_IDS
+        thesis_state = repos.macro_thesis.state(session_date)
+        live_delta, outcome_replay = _follow_up_payloads(repos, thesis_state)
+
+    module_payloads = [_module_payload(module_id, module_rows.get(module_id)) for module_id in MACRO_MODULE_IDS]
+    thesis = _thesis_payload(thesis_state)
+    role_by_module = {
+        str(item["module_id"]): str(item["role"])
+        for item in (thesis or {}).get("module_assessments", ())
+        if isinstance(item, dict) and item.get("module_id") and item.get("role")
+    }
+    modules = [
+        _module_summary(payload, role=role_by_module.get(str(payload["module_id"]))) for payload in module_payloads
     ]
-    modules = [_module_summary(payload) for payload in module_payloads]
-    coverage_values = {module["coverage_state"] for module in modules}
-    coverage_state = (
-        "partial"
-        if "partial" in coverage_values or "missing" in coverage_values
-        else "licensed_unavailable"
-        if "licensed_unavailable" in coverage_values
-        else "complete"
-    )
-    health_values = {module["data_health_state"] for module in modules}
-    data_health_state = (
-        "current" if health_values == {"current"} else "unavailable" if health_values == {"unavailable"} else "mixed"
-    )
-    judgment_state = "current" if judgment_row is not None else "missing"
-    judgment = (
-        dict(judgment_row["judgment_json"])
-        if judgment_row is not None and isinstance(judgment_row.get("judgment_json"), dict)
-        else None
-    )
     payload = {
-        "schema_version": "macro_overview_v4",
+        "schema_version": "macro_overview_v5",
         "read_at_ms": read_at_ms,
-        "judgment_session_date": judgment_session,
-        "judgment_cutoff_ms": (
-            int(judgment_row["judgment_cutoff_ms"])
-            if judgment_row is not None
-            else int(judgment_status_row["judgment_cutoff_ms"])
-            if judgment_status_row is not None
-            else judgment_cutoff_ms(judgment_session)
-        ),
+        "transport": {
+            "state": "current",
+            "last_successful_read_at_ms": read_at_ms,
+            "reason": None,
+        },
+        "session_date": session_date,
+        "cutoff_ms": (int(thesis_state["cutoff_ms"]) if thesis_state is not None else thesis_cutoff_ms(session_date)),
         "latest_fact_at_ms": max(
             (int(module["latest_fact_at_ms"]) for module in modules),
             default=0,
         ),
-        "coverage_state": coverage_state,
-        "data_health_state": data_health_state,
-        "judgment_state": judgment_state,
-        "judgment_status": _judgment_status_payload(judgment_status_row),
-        "daily_judgment": judgment,
+        "thesis_state": _overview_thesis_state(thesis_state),
+        "thesis": thesis,
+        "live_delta": live_delta,
+        "outcome_replay": outcome_replay,
         "modules": modules,
-        "changes_since_judgment": [
-            {"module_id": module["module_id"], "changes": module["top_changes"][:3]} for module in modules
-        ],
-        "research": _compact_research_payload(research_row),
+        "data_quality": _data_quality_overview(modules),
     }
     return _validated_json(
         api_schemas.ApiEnvelope[api_schemas.MacroOverviewReadData],
@@ -108,29 +84,12 @@ def macro_overview(request: Request) -> JSONResponse:
     )
 
 
-def _judgment_status_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    return {
-        "session_date": row["session_date"],
-        "judgment_cutoff_ms": int(row["judgment_cutoff_ms"]),
-        "state": str(row["state"]),
-        "reason_code": str(row["reason_code"]),
-        "details": dict(row["details_json"] or {}),
-        "attempted_at_ms": int(row["attempted_at_ms"]),
-    }
-
-
-def _read_module(request: Request, module_id: str) -> dict[str, Any]:
+def _read_module(request: Request, module_id: MacroModuleId) -> dict[str, Any]:
     runtime = _authenticated_macro_runtime(request)
     _reject_query_params(request)
-    read_at_ms = _now_ms()
-    judgment_session = resolve_judgment_session(now_ms=read_at_ms)
     with runtime.repositories() as repos:
         row = repos.macro.module_current(module_id)
-        judgment = repos.macro.daily_judgment(judgment_session)
-        judgment_status = repos.macro.judgment_status(judgment_session)
-    return _module_payload(module_id, row, judgment, judgment_status, read_at_ms)
+    return _module_payload(module_id, row)
 
 
 @router.get(
@@ -201,7 +160,7 @@ def macro_cross_asset(request: Request) -> JSONResponse:
 
 @router.get(
     "/macro/research",
-    response_model=api_schemas.ApiEnvelope[api_schemas.MacroResearchReadData],
+    response_model=api_schemas.ApiEnvelope[api_schemas.MacroThesisDetailReadData],
 )
 def macro_research(
     request: Request,
@@ -209,19 +168,28 @@ def macro_research(
 ) -> JSONResponse:
     runtime = _authenticated_macro_runtime(request)
     _validate_research_query_params(request)
-    current_session = resolve_completed_session(
-        now_ms=_now_ms(),
-        settle_delay_seconds=0,
-    )
+    current_session = resolve_thesis_session(now_ms=_now_ms())
     target_session = session_date or current_session
     with runtime.repositories() as repos:
-        payload = _research_payload(
-            repos.macro_research.research_state(target_session),
+        row = repos.macro_thesis.state(target_session)
+        live_delta, outcome_replay = _follow_up_payloads(repos, row)
+        history = [_history_payload(item) for item in repos.macro_thesis.publications(limit=30)]
+    payload = {
+        "state": _detail_state(
+            row,
             requested_session=target_session,
             current_session=current_session,
-        )
+        ),
+        "requested_session_date": target_session,
+        "current_session_date": current_session,
+        "thesis": _thesis_payload(row),
+        "live_delta": live_delta,
+        "outcome_replay": outcome_replay,
+        "run": _run_payload(row),
+        "history": history,
+    }
     return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.MacroResearchReadData],
+        api_schemas.ApiEnvelope[api_schemas.MacroThesisDetailReadData],
         {"ok": True, "data": payload},
     )
 
@@ -247,9 +215,6 @@ def _validate_research_query_params(request: Request) -> None:
 def _module_payload(
     module_id: MacroModuleId,
     row: dict[str, Any] | None,
-    judgment: dict[str, Any] | None,
-    judgment_status: dict[str, Any] | None,
-    read_at_ms: int,
 ) -> dict[str, Any]:
     expected_schema = schema_version_for_module(module_id)
     if (
@@ -257,156 +222,158 @@ def _module_payload(
         and isinstance(row.get("payload_json"), dict)
         and row["payload_json"].get("schema_version") == expected_schema
     ):
-        payload = dict(row["payload_json"])
-    else:
-        payload = build_typed_module_payload(
-            module_id=module_id,
-            now_ms=read_at_ms,
-            series_rows=[],
-            market_rows=[],
-            position_rows=[],
-            settlement_rows=[],
-            release_rows=[],
-            document_rows=[],
-            target_states=[],
-        )
-        payload["summary"]["headline"] = "数据链正在初始化"
-        payload["summary"]["interpretation"] = "等待新事实链完成首次采集与投影。"
-    if judgment is not None:
-        payload["status"]["judgment"] = {
-            "state": "current",
-            "cutoff_ms": int(judgment["judgment_cutoff_ms"]),
-        }
-    else:
-        payload["status"]["judgment"] = {
-            "state": "missing",
-            "cutoff_ms": (int(judgment_status["judgment_cutoff_ms"]) if judgment_status is not None else None),
-        }
-    return payload
+        return dict(row["payload_json"])
+    if row is None:
+        raise ApiUnavailable(f"macro_module_not_materialized:{module_id}")
+    raise ApiUnavailable(f"macro_module_schema_mismatch:{module_id}")
 
 
-def _module_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    coverage = payload["status"]["coverage"]
-    health = payload["status"]["data_health"]
-    judgment = payload["status"]["judgment"]
+def _module_summary(
+    payload: dict[str, Any],
+    *,
+    role: str | None,
+) -> dict[str, Any]:
+    status = dict(payload["status"])
+    coverage = dict(status["coverage"])
+    current_health = dict(status["current_health"])
+    history_depth = dict(status["history_depth"])
     return {
         "module_id": payload["module_id"],
         "label": payload["label"],
+        "role": role,
         "coverage_state": coverage["state"],
-        "data_health_state": health["state"],
-        "judgment_state": judgment["state"],
+        "current_health_state": current_health["state"],
+        "history_depth_state": history_depth["state"],
         "latest_fact_at_ms": int(payload["latest_fact_at_ms"]),
         "summary": payload["summary"],
-        "top_changes": list(payload["summary"]["top_changes"]),
         "coverage_gap_count": sum(item["state"] != "available" for item in coverage["capabilities"]),
-        "health_gap_count": max(0, int(health["tracked_datasets"]) - int(health["current_datasets"])),
-        "href": _MODULE_HREFS[payload["module_id"]],
+        "current_health_gap_count": max(
+            0,
+            int(current_health["tracked_datasets"]) - int(current_health["current_datasets"]),
+        ),
+        "history_gap_count": max(
+            0,
+            int(history_depth["tracked_datasets"]) - int(history_depth["complete_datasets"]),
+        ),
+        "href": _MODULE_HREFS[str(payload["module_id"])],
     }
 
 
-def _compact_research_payload(row: dict[str, Any] | None) -> dict[str, Any]:
-    artifact = row.get("artifact_json") if row is not None else None
-    if isinstance(artifact, dict):
-        return {
-            "state": "current",
-            "session_date": artifact.get("session_date"),
-            "evidence_pack_id": row.get("evidence_pack_id"),
-            "market_cutoff_ms": artifact.get("market_cutoff_ms"),
-            "title": artifact.get("title"),
-            "executive_summary": artifact.get("executive_summary"),
-            "reviewer_disposition": artifact.get("reviewer_disposition"),
-            "href": "/macro/research",
-        }
-    run_status = str(row.get("run_status") or "") if row is not None else ""
-    state = "generating" if run_status in _GENERATING_RUN_STATES else "failed" if run_status == "failed" else "missing"
+def _data_quality_overview(modules: list[dict[str, Any]]) -> dict[str, Any]:
+    coverage_states = [str(module["coverage_state"]) for module in modules]
+    current_states = [str(module["current_health_state"]) for module in modules]
+    history_states = [
+        str(module["history_depth_state"]) for module in modules if module["history_depth_state"] != "not_required"
+    ]
+    coverage_state = "complete" if set(coverage_states) == {"complete"} else "partial"
+    if set(current_states) == {"current"}:
+        current_health_state = "current"
+    elif set(current_states) == {"unavailable"}:
+        current_health_state = "unavailable"
+    else:
+        current_health_state = "degraded"
+    if not history_states:
+        history_depth_state = "not_required"
+    elif set(history_states) == {"complete"}:
+        history_depth_state = "complete"
+    elif set(history_states) == {"insufficient"}:
+        history_depth_state = "insufficient"
+    else:
+        history_depth_state = "partial"
     return {
-        "state": state,
-        "session_date": row.get("session_date") if row is not None else None,
-        "evidence_pack_id": row.get("evidence_pack_id") if row is not None else None,
-        "market_cutoff_ms": row.get("market_cutoff_ms") if row is not None else None,
-        "title": None,
-        "executive_summary": None,
-        "reviewer_disposition": row.get("run_reviewer_disposition") if row is not None else None,
-        "href": "/macro/research",
+        "coverage_state": coverage_state,
+        "current_health_state": current_health_state,
+        "history_depth_state": history_depth_state,
+        "coverage_gap_count": sum(int(module["coverage_gap_count"]) for module in modules),
+        "current_health_gap_count": sum(int(module["current_health_gap_count"]) for module in modules),
+        "history_gap_count": sum(int(module["history_gap_count"]) for module in modules),
     }
 
 
-def _research_payload(
+def _overview_thesis_state(row: dict[str, Any] | None) -> str:
+    if row is None:
+        return "missing"
+    if isinstance(row.get("thesis_json"), dict):
+        return "published"
+    status = str(row.get("status") or "missing")
+    if status in (_GENERATING_RUN_STATES | _FAILED_RUN_STATES | _NOT_PUBLISHED_RUN_STATES):
+        return status
+    return "missing"
+
+
+def _detail_state(
     row: dict[str, Any] | None,
     *,
     requested_session: date,
     current_session: date,
-) -> dict[str, Any]:
+) -> str:
     if row is None:
-        return {
-            "state": "missing",
-            "requested_session_date": requested_session,
-            "current_session_date": current_session,
-            "publication": None,
-            "run": None,
-        }
-    publication = _publication_payload(row)
-    if publication is not None:
-        state = "current" if requested_session == current_session else "historical"
-    elif str(row.get("run_status") or "") in _GENERATING_RUN_STATES:
-        state = "generating"
-    elif str(row.get("run_status") or "") == "failed":
-        state = "failed"
-    else:
-        state = "missing"
-    return {
-        "state": state,
-        "requested_session_date": requested_session,
-        "current_session_date": current_session,
-        "publication": publication,
-        "run": _run_payload(row),
-    }
+        return "missing"
+    if isinstance(row.get("thesis_json"), dict):
+        return "current" if requested_session == current_session else "historical"
+    status = str(row.get("status") or "")
+    if status in _GENERATING_RUN_STATES:
+        return "generating"
+    if status in _FAILED_RUN_STATES:
+        return "failed"
+    if status in _NOT_PUBLISHED_RUN_STATES:
+        return "not_published"
+    return "missing"
 
 
-def _publication_payload(row: dict[str, Any]) -> dict[str, Any] | None:
-    artifact = row.get("artifact_json")
-    if not isinstance(artifact, dict):
+def _thesis_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None or not isinstance(row.get("thesis_json"), dict):
+        return None
+    return dict(row["thesis_json"])
+
+
+def _follow_up_payloads(
+    repos: Any,
+    state: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if state is None or not state.get("publication_id"):
+        return None, None
+    publication_id = str(state["publication_id"])
+    live_row = repos.macro_thesis.latest_live_delta(publication_id)
+    outcome_row = repos.macro_thesis.latest_outcome_replay(publication_id)
+    live_delta = (
+        dict(live_row["payload_json"])
+        if live_row is not None and isinstance(live_row.get("payload_json"), dict)
+        else None
+    )
+    outcome_replay = (
+        dict(outcome_row["payload_json"])
+        if outcome_row is not None and isinstance(outcome_row.get("payload_json"), dict)
+        else None
+    )
+    return live_delta, outcome_replay
+
+
+def _run_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
         return None
     return {
-        "schema_version": artifact["schema_version"],
-        "session_date": artifact["session_date"],
-        "market_cutoff_ms": artifact["market_cutoff_ms"],
-        "title": artifact["title"],
-        "executive_summary": artifact["executive_summary"],
-        "sections": artifact["sections"],
-        "evidence_gaps": artifact["gaps"],
-        "citations": [
-            {
-                "citation_id": citation["citation_id"],
-                "source_type": citation["source_type"],
-                "source_ref": citation["source_ref"],
-                "source_label": citation["source_label"],
-                "available_at_ms": citation["available_at_ms"],
-                "observed_at": citation.get("observed_at"),
-                "published_at_ms": citation.get("published_at_ms"),
-                "source_url": citation.get("url"),
-                "lineage": citation.get("lineage") or {},
-            }
-            for citation in artifact["citations"]
-        ],
-        "reviewer_disposition": artifact["reviewer_disposition"],
-        "reviewer_notes": artifact["reviewer_notes"],
-        "audit": row.get("audit_json") or {},
-        "published_at_ms": row.get("published_at_ms"),
-        "evidence_pack_id": row["evidence_pack_id"],
-    }
-
-
-def _run_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
         "session_date": row["session_date"],
-        "evidence_pack_id": row["evidence_pack_id"],
-        "status": row["run_status"],
+        "status": str(row["status"]),
+        "evidence_pack_id": str(row["evidence_pack_id"]),
         "attempt_count": int(row["attempt_count"]),
         "max_attempts": int(row["max_attempts"]),
-        "last_error": row.get("last_error_message"),
+        "error_code": row.get("last_error_code"),
+        "error_message": row.get("last_error_message"),
         "updated_at_ms": int(row["updated_at_ms"]),
     }
 
 
-__all__ = ["router"]
+def _history_payload(row: dict[str, Any]) -> dict[str, Any]:
+    thesis = dict(row["thesis_json"])
+    mainline = dict(thesis["mainline"])
+    return {
+        "publication_id": thesis["publication_id"],
+        "session_date": thesis["session_date"],
+        "cutoff_ms": int(thesis["cutoff_ms"]),
+        "published_at_ms": int(thesis["published_at_ms"]),
+        "title": mainline["title"],
+        "stance": mainline["stance"],
+        "confidence": mainline["confidence"],
+        "horizon": mainline["horizon"],
+    }

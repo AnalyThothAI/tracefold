@@ -16,8 +16,6 @@ def handle_macro(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_backfill(args)
     if args.macro_command == "backfill-professional":
         return _handle_professional_backfill()
-    if args.macro_command == "retry-research":
-        return _handle_retry_research(args)
     if args.macro_command == "status":
         return _handle_status()
     return 2, {"ok": False, "error": f"unknown macro command: {args.macro_command}"}
@@ -98,20 +96,6 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
     }
 
 
-def _handle_retry_research(args: Namespace) -> tuple[int, dict[str, Any]]:
-    try:
-        session_date = _parse_date(str(args.session_date))
-        settings = load_settings(require_ws_token=False)
-        with repositories(settings) as repos, repos.transaction():
-            run = repos.macro_research.retry_failed_run(
-                session_date=session_date,
-                now_ms=_now_ms(),
-            )
-    except Exception as exc:
-        return 1, _error("macro_retry_research_failed", exc)
-    return 0, {"ok": True, "data": _json_ready(run)}
-
-
 def _handle_status() -> tuple[int, dict[str, Any]]:
     try:
         settings = load_settings(require_ws_token=False)
@@ -119,9 +103,15 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
             targets = repos.macro.target_states()
             receipts = repos.macro.recent_receipts(limit=20)
             modules = repos.macro.all_modules_current()
-            judgment = repos.macro.daily_judgment()
             document_analysis_jobs = repos.macro.document_analysis_job_state()
-            research = repos.macro_research.research_state()
+            thesis = repos.macro_thesis.state()
+            publication_id = (
+                str(thesis["publication_id"]) if thesis is not None and thesis.get("publication_id") else None
+            )
+            live_delta = repos.macro_thesis.latest_live_delta(publication_id) if publication_id is not None else None
+            outcome_replay = (
+                repos.macro_thesis.latest_outcome_replay(publication_id) if publication_id is not None else None
+            )
     except Exception as exc:
         return 1, _error("macro_status_unavailable", exc)
     status_counts: dict[str, int] = {}
@@ -140,15 +130,17 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
                     "modules": [
                         {
                             "module_id": row["module_id"],
-                            "data_health_state": row["data_health_state"],
+                            "current_health_state": row["current_health_state"],
+                            "history_depth_state": row["history_depth_state"],
                             "fact_cutoff_ms": row["fact_cutoff_ms"],
                             "updated_at_ms": row["updated_at_ms"],
                         }
                         for row in modules
                     ],
-                    "daily_judgment": judgment,
                     "document_analysis_jobs": document_analysis_jobs,
-                    "research": research,
+                    "thesis": thesis,
+                    "live_delta": live_delta,
+                    "outcome_replay": outcome_replay,
                 }
             ),
         },

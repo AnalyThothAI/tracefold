@@ -33,8 +33,7 @@ _SUPPORTED_WORKERS = frozenset(
         "macro_backfill",
         "macro_document_analysis",
         "macro_projection",
-        "macro_judgment",
-        "macro_research",
+        "macro_thesis",
     }
 )
 

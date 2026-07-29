@@ -14,6 +14,7 @@ from functools import partial
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import httpx
 import requests
@@ -113,15 +114,14 @@ class MacroSourceClient:
             return self._fetch_cftc_tff(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "bls_release":
             return self._fetch_bls_release(spec, partition_key, cursor, received_at_ms)
+        if spec.adapter_id == "bea_release_page":
+            return self._fetch_bea_release(spec, partition_key, received_at_ms)
         if spec.adapter_id == "fed_board_speech_archive":
             return self._fetch_board_speech_archive(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "fed_fomc_calendar":
             return self._fetch_fed_fomc_calendar(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "fed_reserve_bank_sitemaps":
             return self._fetch_reserve_bank_speeches(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "unavailable":
-            reason = str(spec.metadata.get("unavailable_reason") or "source_not_configured")
-            raise MacroSourceUnavailable(reason)
         raise MacroSourceError(f"unsupported_macro_adapter:{spec.adapter_id}")
 
     def _fetch_fred(
@@ -760,7 +760,7 @@ class MacroSourceClient:
                     series_id=spec.series_id,
                     reference_period=reference_period,
                     scheduled_at_ms=None,
-                    published_at_ms=received_at_ms,
+                    published_at_ms=None,
                     received_at_ms=received_at_ms,
                     actual_value=actual,
                     prior_value=prior,
@@ -783,6 +783,80 @@ class MacroSourceClient:
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
                 **({"backfill_complete": True} if start_date is not None and end_date is not None else {}),
+            },
+        )
+
+    def _fetch_bea_release(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        received_at_ms: int,
+    ) -> FetchBatch:
+        listing_response = self._client.get(
+            spec.source_url,
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
+        _require_success(listing_response, source_id=spec.source_id)
+        release_family = str(spec.metadata.get("release_family") or "")
+        release_url = _bea_release_url(
+            listing_response.text,
+            base_url=str(listing_response.url),
+            release_family=release_family,
+        )
+        if release_url is None:
+            raise MacroSourceError(f"bea_current_release_missing:{release_family}")
+        response = self._client.get(
+            release_url,
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        title = _bea_page_title(response.text)
+        body = _extract_official_body(response.text)
+        published_at_ms = _bea_release_timestamp_ms(body)
+        reference_period = _bea_reference_period(
+            title=title,
+            release_family=release_family,
+        )
+        metric = str(spec.metadata.get("metric") or "")
+        values = _bea_metric_values(response.text, metric=metric)
+        if not values:
+            raise MacroSourceError(f"bea_release_metric_missing:{metric}")
+        actual_value = values[-1]
+        prior_value = values[-2] if len(values) >= 2 else None
+        revised_prior_value = actual_value if release_family == "gdp" and prior_value is not None else None
+        release_slug = urlparse(str(response.url)).path.rstrip("/").rsplit("/", 1)[-1]
+        fact = ReleaseFact(
+            dataset_id=spec.dataset_id,
+            release_id=f"BEA:{metric}:{reference_period}:{release_slug}",
+            series_id=spec.series_id,
+            reference_period=reference_period,
+            scheduled_at_ms=published_at_ms,
+            published_at_ms=published_at_ms,
+            received_at_ms=received_at_ms,
+            actual_value=actual_value,
+            prior_value=prior_value,
+            revised_prior_value=revised_prior_value,
+            estimate_value=None,
+            unit=spec.unit,
+            importance_tier=int(spec.metadata.get("importance_tier") or 3),
+            source_url=str(response.url),
+            raw_data={
+                "title": title,
+                "release_family": release_family,
+                "metric": metric,
+                "displayed_values": values,
+                "release_url": str(response.url),
+            },
+        )
+        return _batch(
+            spec,
+            partition_key,
+            (fact,),
+            response,
+            cursor={
+                "reference_period": reference_period,
+                "published_at_ms": published_at_ms,
+                "release_url": str(response.url),
             },
         )
 
@@ -1452,6 +1526,136 @@ def _parse_fed_html(value: str) -> _FedHtmlParser:
     parser.feed(value)
     parser.close()
     return parser
+
+
+def _bea_release_url(
+    value: str,
+    *,
+    base_url: str,
+    release_family: str,
+) -> str | None:
+    for href, label in _html_links(value):
+        normalized = " ".join(label.split()).casefold()
+        matches = (
+            normalized.startswith("gdp (")
+            if release_family == "gdp"
+            else normalized.startswith("personal income and outlays,")
+            if release_family == "pce"
+            else False
+        )
+        if matches:
+            return urljoin(base_url, href)
+    return None
+
+
+def _bea_page_title(value: str) -> str:
+    parsed = _parse_fed_html(value)
+    title = " ".join(parsed.title_parts).strip()
+    title = re.sub(
+        r"\s*[|]\s*U\.S\. Bureau of Economic Analysis.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not title:
+        raise MacroSourceError("bea_release_title_missing")
+    return title
+
+
+def _bea_release_timestamp_ms(value: str) -> int:
+    matched = re.search(
+        r"EMBARGOED UNTIL RELEASE AT .*?,\s*"
+        r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*"
+        r"([A-Z][a-z]+ \d{1,2}, \d{4})",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if matched is None:
+        raise MacroSourceError("bea_release_timestamp_missing")
+    released_on = datetime.strptime(matched.group(1), "%B %d, %Y").date()
+    released_at = datetime(
+        released_on.year,
+        released_on.month,
+        released_on.day,
+        8,
+        30,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    return int(released_at.timestamp() * 1_000)
+
+
+def _bea_reference_period(*, title: str, release_family: str) -> str:
+    if release_family == "gdp":
+        matched = re.search(
+            r"([1-4])(?:st|nd|rd|th) Quarter (\d{4})",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if matched is not None:
+            return f"{matched.group(2)}-Q{matched.group(1)}"
+    elif release_family == "pce":
+        matched = re.search(
+            r"Personal Income and Outlays,\s*([A-Z][a-z]+) (\d{4})",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if matched is not None:
+            month = datetime.strptime(matched.group(1), "%B").month
+            return f"{matched.group(2)}-M{month:02d}"
+    raise MacroSourceError(f"bea_release_reference_missing:{release_family}")
+
+
+class _HtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._table_depth = 0
+        self._row: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "table":
+            self._table_depth += 1
+        elif tag == "tr" and self._table_depth:
+            self._row = []
+        elif tag in {"th", "td"} and self._row is not None:
+            self._cell_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"th", "td"} and self._row is not None and self._cell_parts is not None:
+            self._row.append(" ".join(" ".join(self._cell_parts).split()))
+            self._cell_parts = None
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+            self._cell_parts = None
+        elif tag == "table" and self._table_depth:
+            self._table_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+
+def _bea_metric_values(value: str, *, metric: str) -> list[float]:
+    labels = {
+        "real_gdp": "real gdp",
+        "pce": "pce price index",
+        "core_pce": "pce price index excluding food and energy",
+    }
+    expected_label = labels.get(metric)
+    if expected_label is None:
+        raise MacroSourceError(f"bea_release_metric_unknown:{metric}")
+    parser = _HtmlTableParser()
+    parser.feed(value)
+    parser.close()
+    for row in parser.rows:
+        if not row or " ".join(row[0].split()).casefold() != expected_label:
+            continue
+        return [parsed for cell in row[1:] if (parsed := _finite_float(cell.replace(",", ""))) is not None]
+    return []
 
 
 def _extract_official_body(value: str) -> str:

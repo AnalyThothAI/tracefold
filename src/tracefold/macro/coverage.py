@@ -6,8 +6,8 @@ from typing import Literal
 
 from tracefold.macro.domain import MacroModuleId
 
-CoverageRequirement = Literal["required", "supporting", "licensed_unavailable"]
-CoverageState = Literal["complete", "partial", "licensed_unavailable"]
+CoverageRequirement = Literal["required", "supporting"]
+CoverageState = Literal["complete", "partial"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +17,6 @@ class CoverageSpec:
     label: str
     requirement: CoverageRequirement
     dataset_ids: tuple[str, ...]
-    unavailable_reason: str | None = None
 
 
 _COVERAGE = (
@@ -78,26 +77,27 @@ _COVERAGE = (
         ("federal_reserve.document.analysis",),
     ),
     CoverageSpec(
-        "rates.cme_policy_futures",
-        "rates_fed",
-        "CME 政策利率期货概率",
-        "licensed_unavailable",
-        ("cme.rates.futures.curves",),
-        "licensed_contract_facts_not_configured",
-    ),
-    CoverageSpec(
         "economy.activity",
         "economy_inflation",
         "增长、消费与工业活动",
         "required",
-        ("fred.gdpc1", "fred.rsafs", "fred.indpro"),
+        ("bea.gdp.release", "fred.gdpc1", "fred.rsafs", "fred.indpro"),
     ),
     CoverageSpec(
         "economy.inflation",
         "economy_inflation",
         "CPI 与 PCE 通胀",
         "required",
-        ("fred.cpiaucsl", "fred.cpilfesl", "fred.pcepi", "fred.pcepilfe"),
+        (
+            "bls.cpi.release",
+            "bls.core_cpi.release",
+            "bea.pce.release",
+            "bea.core_pce.release",
+            "fred.cpiaucsl",
+            "fred.cpilfesl",
+            "fred.pcepi",
+            "fred.pcepilfe",
+        ),
     ),
     CoverageSpec(
         "economy.labor",
@@ -179,22 +179,6 @@ _COVERAGE = (
             "yfinance.hyg.intraday",
             "cftc.tff.credit_positions",
         ),
-    ),
-    CoverageSpec(
-        "credit.trace_transactions",
-        "credit",
-        "TRACE 逐笔与 ETF NAV 溢折价",
-        "licensed_unavailable",
-        ("licensed.credit.trace_nav",),
-        "licensed_security_level_facts_not_configured",
-    ),
-    CoverageSpec(
-        "credit.ice_bofa_full_history",
-        "credit",
-        "ICE BofA 信用指数三年前完整历史",
-        "licensed_unavailable",
-        ("licensed.credit.ice_bofa_full_history",),
-        "ice_bofa_history_before_public_three_year_window_unavailable",
     ),
     CoverageSpec(
         "volatility.core",

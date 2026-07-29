@@ -8,55 +8,245 @@
       grid-column: 3;
     }
 
-    .macro-decision__dimensions {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .macro-decision__module-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 1023px) {
+    .macro-decision__mainline-workbench,
+    .macro-decision__state,
+    .macro-decision__research {
+      grid-template-columns: minmax(0, 1fr);
     }
 
-    .macro-decision__credit-dimensions {
+    .macro-decision__validity-rail {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .macro-decision__module-grid,
+    .macro-decision__validity-rail > header {
+      grid-column: 1 / -1;
+    }
+
     .macro-decision__review-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .macro-decision__research dl {
+      justify-content: start;
+    }
+
+    .macro-decision__visual-workbench {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__annotation-rail {
+      position: static;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .macro-decision__annotation-rail > header {
+      grid-column: 1 / -1;
     }
   }
 
   @media (max-width: 767px) {
     .macro-decision {
-      padding: 0.7rem;
+      gap: 0.72rem;
+      padding: 0.65rem;
     }
 
-    .macro-decision__header,
-    .macro-decision__judgment-grid,
-    .macro-decision__state,
-    .macro-decision__research {
-      grid-template-columns: 1fr;
+    .macro-decision__header {
+      grid-template-columns: minmax(0, 1fr);
+      padding: 0.78rem;
     }
 
     .macro-decision__header > button {
       grid-column: auto;
+      justify-self: start;
     }
 
     .macro-decision__header dl,
     .macro-decision__research dl {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .macro-decision__dimensions,
-    .macro-decision__credit-dimensions,
+    .macro-decision__nav {
+      display: none;
+    }
+
+    .macro-decision__mobile-nav {
+      display: grid;
+      gap: 0.2rem;
+    }
+
+    .macro-decision__mobile-nav span {
+      color: var(--text-muted);
+      font-size: 0.6rem;
+    }
+
+    .macro-decision__mobile-nav select {
+      width: 100%;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: var(--surface-panel);
+      padding: 0.52rem 0.62rem;
+      color: var(--text-primary);
+      font: inherit;
+      font-size: 0.72rem;
+    }
+
+    .macro-decision__section-nav {
+      display: none;
+    }
+
+    .macro-decision__section-select {
+      display: grid;
+      gap: 0.25rem;
+    }
+
+    .macro-decision__section-select span {
+      color: var(--text-muted);
+      font-size: 0.62rem;
+    }
+
+    .macro-decision__section-select select {
+      width: 100%;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: var(--surface-panel);
+      padding: 0.55rem 0.65rem;
+      color: var(--text-primary);
+      font: inherit;
+      font-size: 0.76rem;
+    }
+
+    .macro-decision__judgment > header {
+      display: grid;
+    }
+
+    .macro-decision__judgment > header small {
+      justify-self: start;
+    }
+
+    .macro-decision__validity-rail,
     .macro-decision__module-grid,
-    .macro-decision__review-grid {
-      grid-template-columns: 1fr;
+    .macro-decision__review-grid,
+    .macro-decision__chart-pair,
+    .macro-decision__small-multiples,
+    .macro-decision__credit-dimensions,
+    .macro-decision__annotation-rail {
+      grid-template-columns: minmax(0, 1fr);
     }
 
-    .macro-decision__dataset-list article {
-      grid-template-columns: 1fr auto;
+    .macro-decision__validity-rail > header {
+      grid-column: auto;
     }
 
-    .macro-decision__dataset-list time {
-      grid-column: 1;
+    .macro-decision__causal-chain p {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.2rem;
+      border-top: 1px solid var(--border-faint);
+      padding-top: 0.4rem;
+    }
+
+    .macro-decision__causal-chain p svg {
+      transform: rotate(90deg);
+    }
+
+    .macro-decision__causal-chain p > strong:last-child {
+      text-align: left;
+    }
+
+    .macro-decision__tension-sides {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__tension-sides > span {
+      justify-self: center;
+    }
+
+    .macro-decision__assets [role="row"]:first-child {
+      display: none;
+    }
+
+    .macro-decision__assets [role="table"] {
+      gap: 0.55rem;
+      overflow: visible;
+      border: 0;
+    }
+
+    .macro-decision__assets [role="row"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      border: 1px solid var(--border-faint);
+      border-radius: var(--radius-md);
+      background: var(--surface-raised);
+    }
+
+    .macro-decision__assets [role="cell"] {
+      display: grid;
+      grid-template-columns: minmax(4.8rem, 0.45fr) minmax(0, 1fr);
+      align-items: start;
+    }
+
+    .macro-decision__assets [role="cell"]::before {
+      color: var(--text-muted);
+      font-size: 0.61rem;
+      font-weight: 500;
+      content: attr(data-label);
+    }
+
+    .macro-decision__assets [role="cell"]:first-child,
+    .macro-decision__assets details[role="cell"] {
+      grid-column: 1 / -1;
+    }
+
+    .macro-decision__assets [role="cell"]:first-child::before {
+      content: "";
+    }
+
+    .macro-decision__assets details[role="cell"]::before {
+      content: attr(data-label);
+    }
+
+    .macro-decision__notice {
+      align-items: start;
+    }
+
+    .macro-decision__return-matrix [role="row"] {
+      grid-template-columns: minmax(6.5rem, 1.2fr) repeat(4, minmax(3.25rem, 0.7fr));
+    }
+
+    .macro-decision__return-matrix [role="cell"],
+    .macro-decision__return-matrix [role="columnheader"] {
+      padding: 0.45rem 0.25rem;
+      font-size: 0.6rem;
+    }
+
+    .macro-decision__timeline li {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .macro-decision__timeline time {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 430px) {
+    .macro-decision__assets [role="row"] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__assets [role="cell"]:first-child,
+    .macro-decision__assets details[role="cell"] {
+      grid-column: auto;
+    }
+
+    .macro-decision__header dl,
+    .macro-decision__research dl {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 }

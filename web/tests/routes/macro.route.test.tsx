@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   macroModuleFixture,
   macroOverviewFixture,
@@ -21,12 +21,12 @@ describe("daily macro decision workbench", () => {
     configureMacroApi(macroResearchFixture());
   });
 
-  it("renders one decision overview with six modules and fixed asset directions", async () => {
+  it("renders one Thesis overview with six modules and fixed asset views", async () => {
     renderAppRoute("/macro");
 
-    expect(await screen.findByRole("heading", { level: 1, name: "每日宏观决策台" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "分项压力、尚未共振" })).toBeVisible();
-    expect(screen.getByText("固定资产方向")).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "实际利率上行主导短期风险资产定价" })).toBeVisible();
+    expect(screen.getByText("十二资产：事实动量 vs 条件展望")).toBeVisible();
     for (const label of [
       "利率与美联储",
       "经济与通胀",
@@ -37,8 +37,7 @@ describe("daily macro decision workbench", () => {
     ]) {
       expect(screen.getByRole("heading", { name: label })).toBeVisible();
     }
-    expect(screen.getByText("mep_fixture")).toBeVisible();
-    expect(screen.getByText("pass")).toBeVisible();
+    expect(screen.getByText("确认主线")).toBeVisible();
     expect(screen.queryByText("历史窗口")).toBeNull();
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith("/api/macro/overview", { token: "secret" }),
@@ -56,34 +55,34 @@ describe("daily macro decision workbench", () => {
     renderAppRoute(route);
 
     expect(await screen.findByRole("heading", { level: 1, name: title })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "矛盾与反证" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "判断失效条件" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "矛盾" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "失效条件" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "下一检查点" })).toBeVisible();
-    expect(screen.getByText("展开 Coverage Manifest、Dataset 健康与原始事实")).toBeVisible();
+    expect(
+      screen.getByText("展开 Coverage、Current Health、History Depth 与原始事实"),
+    ).toBeVisible();
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(apiPath, { token: "secret" }));
   });
 
-  it("keeps futures confirmation in its fixed hash section", async () => {
+  it("renders futures confirmation in the fixed cross-asset route", async () => {
     window.location.hash = "#futures";
-    renderAppRoute("/macro/cross-asset");
+    renderAppRoute("/macro/cross-asset#futures");
 
-    expect(
-      await screen.findByRole("heading", {
-        name: "主要期货、美元指数、VIX 结算与跨资产 CFTC 仓位",
-      }),
-    ).toBeVisible();
-    expect(screen.getByText("VX/U6")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "期货市场与仓位确认" })).toBeVisible();
+    expect(screen.getByText(/^VIX 官方结算/)).toBeVisible();
   });
 
-  it("renders one persisted Evidence-Pack research document", async () => {
+  it("renders the same persisted Thesis in its immutable history page", async () => {
     renderAppRoute("/macro/research");
 
-    expect(await screen.findByRole("heading", { level: 1, name: "宏观研究工作台" })).toBeVisible();
-    expect(screen.getByRole("heading", { level: 2, name: "完成交易日宏观研究" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "利率" })).toBeVisible();
-    const citations = screen.getByRole("heading", { name: "引用与事实溯源" }).closest("section");
-    expect(citations).not.toBeNull();
-    expect(within(citations!).getByText("Evidence Pack / 利率与美联储")).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Macro Thesis 档案" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "实际利率上行主导短期风险资产定价" }),
+    ).toBeVisible();
+    expect(screen.getByRole("heading", { name: "主线论点与因果链" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "不可变主线历史" })).toBeVisible();
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith("/api/macro/research", { token: "secret" }),
     );
@@ -92,18 +91,18 @@ describe("daily macro decision workbench", () => {
   it("keeps audit metadata collapsed until requested", async () => {
     renderAppRoute("/macro/research");
 
-    await screen.findByRole("heading", { name: "利率" });
+    await screen.findByRole("heading", { name: "主线论点与因果链" });
     const details = document.querySelector("details.macro-research-audit");
     expect(details).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("审阅与运行审计"));
+    fireEvent.click(screen.getByText("独立审阅与运行审计"));
     expect(details).toHaveAttribute("open");
-    expect(screen.getByText("已复核引用闭合。")).toBeVisible();
+    expect(screen.getByText("证据引用、反证与资产条件已独立复核。")).toBeVisible();
   });
 
   it.each([
-    ["generating", "研究正在生成", "页面只轮询持久化状态"],
-    ["failed", "本次研究生成失败", "service unavailable"],
-    ["missing", "该交易日尚无宏观研究", "选择其他已完成交易日"],
+    ["generating", "Macro Thesis 正在生成", "页面只轮询持久化状态"],
+    ["failed", "本次 Macro Thesis 未发布", "service unavailable"],
+    ["missing", "该交易日尚无 Macro Thesis", "选择其他交易日"],
   ] as const)("renders persisted %s state", async (state, title, hint) => {
     configureMacroApi(macroResearchFixture(state));
     renderAppRoute("/macro/research");

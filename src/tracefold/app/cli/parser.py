@@ -53,12 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         "backfill-professional",
         help="enqueue the code-owned professional Macro history policy",
     )
-    macro_retry_research = macro_subcommands.add_parser(
-        "retry-research",
-        help="grant one additional attempt to a failed Macro research run",
+    macro_subcommands.add_parser(
+        "status",
+        help="print acquisition, module, and Macro Thesis status",
     )
-    macro_retry_research.add_argument("--session-date", required=True, help="completed session date (YYYY-MM-DD)")
-    macro_subcommands.add_parser("status", help="print acquisition, module, judgment, and research status")
 
     recent = subcommands.add_parser("recent", help="print recent stored events")
     recent.add_argument("--limit", type=_positive_int, default=20)

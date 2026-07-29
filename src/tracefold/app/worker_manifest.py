@@ -110,14 +110,6 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         ),
     ),
     WorkerManifest(
-        name="macro_judgment",
-        start_priority=82,
-        current_read_model_identities=(
-            ("macro_daily_judgments", ("session_date",)),
-            ("macro_judgment_status", ("session_date",)),
-        ),
-    ),
-    WorkerManifest(
         name="token_image_mirror",
         start_priority=82,
         queue_tables=("token_image_source_dirty_targets",),
@@ -144,9 +136,10 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         current_read_model_identities=(("news_brief_current", ("singleton_key",)),),
     ),
     WorkerManifest(
-        name="macro_research",
+        name="macro_thesis",
         start_priority=100,
-        queue_tables=("macro_research_runs",),
+        queue_tables=("macro_thesis_runs",),
+        current_read_model_identities=(("macro_thesis_publications", ("session_date",)),),
     ),
 )
 
