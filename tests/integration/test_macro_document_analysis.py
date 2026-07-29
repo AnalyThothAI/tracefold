@@ -134,8 +134,10 @@ def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_p
         second = asyncio.run(service.run_once(now_ms=5_000))
 
         with repository_session_for_connection(conn) as repos:
-            analyses = repos.macro.document_analysis_history(received_before_ms=2_500)
+            analyses_before_creation = repos.macro.document_analysis_history(received_before_ms=2_500)
+            analyses = repos.macro.document_analysis_history(received_before_ms=5_000)
             jobs = repos.macro.document_analysis_job_state(received_before_ms=2_500)
+        assert analyses_before_creation == []
         stored = analyses[0]
         assert first["status"] == "published"
         assert first["rows_written"] == 1

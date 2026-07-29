@@ -93,6 +93,121 @@ def test_bls_public_release_adapter_preserves_actual_and_prior() -> None:
     assert latest.estimate_value is None
 
 
+def test_bea_gdp_release_page_preserves_estimate_revision_and_release_clock() -> None:
+    listing = """
+    <html><main>
+      <a href="/news/2026/gdp-third-estimate-1st-quarter-2026">
+        GDP (Third Estimate), 1st Quarter 2026
+      </a>
+      <a href="/news/2026/gross-domestic-product-by-county-2025">
+        Gross Domestic Product by County, 2025
+      </a>
+    </main></html>
+    """
+    release = """
+    <html>
+      <title>GDP (Third Estimate), 1st Quarter 2026 | U.S. Bureau of Economic Analysis (BEA)</title>
+      <main>
+        <p>EMBARGOED UNTIL RELEASE AT 8:30 a.m. EDT, Thursday, June 25, 2026</p>
+        <table>
+          <tr><th></th><th>Advance Estimate</th><th>Second Estimate</th><th>Third Estimate</th></tr>
+          <tr><td>Real GDP</td><td>2.0</td><td>1.6</td><td>2.1</td></tr>
+        </table>
+      </main>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=release if "gdp-third-estimate" in request.url.path else listing,
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("bea.gdp.release"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(batch.facts) == 1
+    fact = batch.facts[0]
+    assert isinstance(fact, ReleaseFact)
+    assert fact.reference_period == "2026-Q1"
+    assert fact.actual_value == 2.1
+    assert fact.prior_value == 1.6
+    assert fact.revised_prior_value == 2.1
+    assert fact.estimate_value is None
+    assert fact.published_at_ms == int(datetime(2026, 6, 25, 12, 30, tzinfo=UTC).timestamp() * 1_000)
+    assert fact.scheduled_at_ms == fact.published_at_ms
+    assert fact.source_url.endswith("/news/2026/gdp-third-estimate-1st-quarter-2026")
+
+
+@pytest.mark.parametrize(
+    ("dataset_id", "expected_actual", "expected_prior"),
+    (
+        ("bea.pce.release", 0.4, 0.4),
+        ("bea.core_pce.release", 0.3, 0.3),
+    ),
+)
+def test_bea_pce_release_page_preserves_headline_table_values(
+    dataset_id: str,
+    expected_actual: float,
+    expected_prior: float,
+) -> None:
+    listing = """
+    <html><main>
+      <a href="/news/2026/personal-income-and-outlays-may-2026">
+        Personal Income and Outlays, May 2026
+      </a>
+    </main></html>
+    """
+    release = """
+    <html>
+      <title>Personal Income and Outlays, May 2026 | U.S. Bureau of Economic Analysis (BEA)</title>
+      <main>
+        <p>EMBARGOED UNTIL RELEASE AT 8:30 a.m. EDT, Thursday, June 25, 2026</p>
+        <table>
+          <tr><th></th><th>April</th><th>May</th></tr>
+          <tr><td>PCE price index</td><td>0.4</td><td>0.4</td></tr>
+          <tr><td>PCE price index excluding food and energy</td><td>0.3</td><td>0.3</td></tr>
+        </table>
+      </main>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=release if "personal-income-and-outlays" in request.url.path else listing,
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset(dataset_id),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    fact = batch.facts[0]
+    assert isinstance(fact, ReleaseFact)
+    assert fact.reference_period == "2026-M05"
+    assert fact.actual_value == expected_actual
+    assert fact.prior_value == expected_prior
+    assert fact.revised_prior_value is None
+    assert fact.published_at_ms == int(datetime(2026, 6, 25, 12, 30, tzinfo=UTC).timestamp() * 1_000)
+
+
 def test_federal_reserve_speech_adapter_fetches_official_full_text() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/newsevents/2026-speeches.htm"):
@@ -456,7 +571,9 @@ def test_cfe_settlement_uses_current_official_csv_endpoint() -> None:
     assert len(batch.facts) == 1
     fact = batch.facts[0]
     assert isinstance(fact, MarketSettlementFact)
+    assert fact.fact_schema_version == "market_settlement_v2"
     assert fact.contract_code == "VX30/N6"
+    assert fact.contract_expiration_date == date(2026, 7, 29)
     assert fact.settlement_price == 19.231
     assert requests[0].url.params["dt"] == "2026-07-24"
 
@@ -585,7 +702,46 @@ def test_cftc_tff_adapter_emits_official_contract_position_facts() -> None:
     assert "043602" in requests[0].url.params["$where"]
 
 
-def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_period() -> None:
+def test_nasdaq_daily_history_requests_five_year_window_and_emits_daily_facts() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "status": {"rCode": 200},
+                "data": {
+                    "tradesTable": {
+                        "rows": [
+                            {"date": "07/24/2026", "close": "$638.47"},
+                            {"date": "07/23/2026", "close": "$635.34"},
+                        ]
+                    }
+                },
+            },
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("nasdaq.spy.daily"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert [fact.value_numeric for fact in batch.facts] == [635.34, 638.47]
+    assert all(isinstance(fact, MarketObservationFact) for fact in batch.facts)
+    assert requests[0].url.params["fromdate"] == "2021-07-27"
+    assert requests[0].url.params["todate"] == "2026-07-27"
+    assert requests[0].url.params["limit"] == "5000"
+
+
+def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_period() -> None:
     calls: list[dict[str, object]] = []
 
     def load(symbol: str, **kwargs: object) -> pd.DataFrame:
@@ -607,13 +763,13 @@ def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_pe
     client = MacroSourceClient(yfinance_history_loader=load)
     try:
         initial = client.fetch(
-            require_dataset("yfinance.spy.market"),
+            require_dataset("yfinance.spy.intraday"),
             partition_key="latest",
             cursor={},
             now_ms=NOW_MS,
         )
         incremental = client.fetch(
-            require_dataset("yfinance.spy.market"),
+            require_dataset("yfinance.spy.intraday"),
             partition_key="latest",
             cursor=initial.cursor,
             now_ms=NOW_MS,
@@ -633,6 +789,56 @@ def test_yfinance_history_emits_market_time_facts_and_switches_to_incremental_pe
     assert incremental.response_hash == initial.response_hash
 
 
+def test_yfinance_daily_continuous_proxy_uses_five_year_then_monthly_period() -> None:
+    calls: list[dict[str, object]] = []
+
+    def load(symbol: str, **kwargs: object) -> pd.DataFrame:
+        calls.append({"symbol": symbol, **kwargs})
+        return pd.DataFrame(
+            {
+                "Open": [6_300.0],
+                "High": [6_350.0],
+                "Low": [6_290.0],
+                "Close": [6_340.5],
+                "Volume": [1_000.0],
+            },
+            index=pd.to_datetime(["2026-07-24T00:00:00Z"], utc=True),
+        )
+
+    client = MacroSourceClient(yfinance_history_loader=load)
+    try:
+        initial = client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+        client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="latest",
+            cursor=initial.cursor,
+            now_ms=NOW_MS,
+        )
+        bounded = client.fetch(
+            require_dataset("yfinance.es_future.daily"),
+            partition_key="2021-07-27..2026-07-27",
+            cursor={"start_date": "2021-07-27", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert calls[0]["period"] == "5y"
+    assert calls[0]["interval"] == "1d"
+    assert calls[0]["prepost"] is False
+    assert calls[1]["period"] == "1mo"
+    assert calls[2]["period"] == "5y"
+    assert initial.facts[0].dataset_id == "yfinance.es_future.daily"
+    assert bounded.cursor["start_date"] == "2021-07-27"
+    assert bounded.cursor["end_date"] == "2026-07-27"
+    assert bounded.cursor["backfill_complete"] is True
+
+
 def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
     client = MacroSourceClient(
         yfinance_enabled=False,
@@ -641,7 +847,7 @@ def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
     try:
         with pytest.raises(MacroSourceUnavailable, match="yfinance_disabled"):
             client.fetch(
-                require_dataset("yfinance.spy.market"),
+                require_dataset("yfinance.spy.intraday"),
                 partition_key="latest",
                 cursor={},
                 now_ms=NOW_MS,

@@ -14,6 +14,8 @@ import { useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 export type ShellRouteContext = {
+  bootstrapError: boolean;
+  bootstrapLoading: boolean;
   token: string;
   updateWindow: (window: WindowKey) => void;
   windowKey: WindowKey;
@@ -37,6 +39,8 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const token = session.token;
   const windowKey = liveRoute.window;
   const routeContext: ShellRouteContext = {
+    bootstrapError: session.bootstrapError,
+    bootstrapLoading: session.bootstrapLoading,
     token,
     updateWindow: liveRoute.updateWindow,
     windowKey,

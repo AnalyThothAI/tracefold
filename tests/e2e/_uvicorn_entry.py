@@ -32,6 +32,7 @@ def main() -> int:
     ws_token = os.environ.get("TRACEFOLD_E2E_WS_TOKEN", "e2e-token")
 
     # Import after env validation to keep error pretty.
+    from tracefold.app.http import routes_macro
     from tracefold.app.http.app import create_app
     from tracefold.app.worker_manifest import all_worker_manifests
     from tracefold.platform.config.settings import Settings
@@ -42,7 +43,15 @@ def main() -> int:
         workers={manifest.name: {"enabled": False} for manifest in all_worker_manifests()},
     )
 
-    app = create_app(settings=settings, start_collector=False)
+    fixed_now_ms = os.environ.get("TRACEFOLD_E2E_FIXED_NOW_MS")
+    if fixed_now_ms:
+        routes_macro._now_ms = lambda: int(fixed_now_ms)
+
+    app = create_app(
+        settings=settings,
+        start_collector=False,
+        frontend_dist=os.environ.get("TRACEFOLD_FRONTEND_DIST"),
+    )
 
     config = uvicorn.Config(
         app,

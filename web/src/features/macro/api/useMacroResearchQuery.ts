@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import type { MacroResearchReadData } from "../model/macroTypes";
 
+import { macroSessionBucket } from "./useMacroDecisionQuery";
+
 export function useMacroResearchQuery({
   sessionDate,
   token,
@@ -10,8 +12,9 @@ export function useMacroResearchQuery({
   sessionDate: string | null;
   token: string;
 }) {
+  const bucket = sessionDate ?? macroSessionBucket();
   return useQuery({
-    queryKey: ["macro", "research", sessionDate ?? "latest"] as const,
+    queryKey: ["macro", "research", bucket] as const,
     queryFn: async () => {
       const response = await getApi<MacroResearchReadData>("/api/macro/research", {
         token,

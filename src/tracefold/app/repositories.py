@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.macro import MacroRepository, MacroResearchRepository
+from tracefold.macro import MacroRepository, MacroThesisRepository
 from tracefold.market import (
     AssetProfileRefreshTargetRepository,
     AssetProfileRepository,
@@ -76,7 +76,7 @@ class RepositorySession:
     news: NewsRepository
     macro: MacroRepository
     macro_market: GeneralMarketRepository
-    macro_research: MacroResearchRepository
+    macro_thesis: MacroThesisRepository
 
     def transaction(self) -> AbstractContextManager[None]:
         return transaction(self.conn)
@@ -117,7 +117,7 @@ def repositories_for_connection(conn: Any) -> RepositorySession:
         news=NewsRepository(conn),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
-        macro_research=MacroResearchRepository(conn),
+        macro_thesis=MacroThesisRepository(conn),
     )
 
 

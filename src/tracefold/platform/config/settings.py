@@ -191,6 +191,7 @@ class MacroSourcesConfig(BaseModel):
     fred_enabled: bool = True
     cboe_enabled: bool = True
     cftc_enabled: bool = True
+    nasdaq_daily_enabled: bool = True
     yfinance_enabled: bool = True
     request_timeout_seconds: float = Field(default=60.0, ge=1)
     user_agent: str = "TracefoldMacro/1.0 research@localhost"
@@ -341,24 +342,23 @@ class TokenRadarProjectionWorkerSettings(PerWorkerSettings):
         return tuple(_split_values(value))
 
 
-class MacroResearchWorkerSettings(PerWorkerSettings):
+class MacroThesisWorkerSettings(PerWorkerSettings):
     enabled: bool = False
     interval_seconds: float = Field(default=300.0, ge=0)
-    settle_delay_seconds: int = Field(default=1_800, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
     lease_ms: int = Field(default=900_000, ge=1)
     retry_ms: int = Field(default=900_000, ge=1)
     max_attempts: int = Field(default=3, ge=1)
     model: str = "gpt-5.4-mini"
     model_request_timeout_seconds: float = Field(default=480.0, ge=1)
-    max_tokens: int = Field(default=12_000, ge=1)
+    max_tokens: int = Field(default=6_000, ge=1)
 
     @field_validator("model", mode="before")
     @classmethod
     def parse_model(cls, value: Any) -> str:
         normalized = str(value or "").strip()
         if not normalized:
-            raise ValueError("macro_research.model is required")
+            raise ValueError("macro_thesis model is required")
         return normalized
 
 
@@ -392,11 +392,6 @@ class MacroAcquisitionWorkerSettings(PerWorkerSettings):
 
 
 class MacroProjectionWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=300.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class MacroJudgmentWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=300.0, ge=0)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
@@ -441,7 +436,7 @@ class WorkersSettings(BaseModel):
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=32, retry_ms=300_000)
     )
     macro_settlements: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=2)
+        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=32)
     )
     macro_economic_releases: MacroAcquisitionWorkerSettings = Field(
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=4)
@@ -459,8 +454,7 @@ class WorkersSettings(BaseModel):
     macro_document_analysis: MacroDocumentAnalysisWorkerSettings = Field(
         default_factory=MacroDocumentAnalysisWorkerSettings
     )
-    macro_judgment: MacroJudgmentWorkerSettings = Field(default_factory=MacroJudgmentWorkerSettings)
-    macro_research: MacroResearchWorkerSettings = Field(default_factory=MacroResearchWorkerSettings)
+    macro_thesis: MacroThesisWorkerSettings = Field(default_factory=MacroThesisWorkerSettings)
     news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
     news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
 
@@ -611,6 +605,7 @@ providers:
     fred_enabled: true
     cboe_enabled: true
     cftc_enabled: true
+    nasdaq_daily_enabled: true
     yfinance_enabled: true
     request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"

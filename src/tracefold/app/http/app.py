@@ -15,8 +15,10 @@ from tracefold.app.bootstrap import Runtime, bootstrap
 from tracefold.app.http.exceptions import (
     ApiBadRequest,
     ApiUnauthorized,
+    ApiUnavailable,
     api_bad_request_response,
     api_unauthorized_response,
+    api_unavailable_response,
 )
 from tracefold.app.http.http import create_api_router
 from tracefold.app.http.responses import _validated_json
@@ -80,6 +82,7 @@ def create_app(
     app = FastAPI(title="Tracefold", lifespan=lifespan)
     app.add_exception_handler(ApiUnauthorized, api_unauthorized_response)
     app.add_exception_handler(ApiBadRequest, api_bad_request_response)
+    app.add_exception_handler(ApiUnavailable, api_unavailable_response)
     app.include_router(create_api_router(_status_payload))
 
     @app.get("/healthz", response_class=PlainTextResponse)

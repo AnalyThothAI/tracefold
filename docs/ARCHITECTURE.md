@@ -46,7 +46,7 @@ business payload is unchanged.
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
 or audit state. They are not alternate business truth.
-`macro_research_publications` and `news_brief_publications` are immutable
+`macro_thesis_publications` and `news_brief_publications` are immutable
 derived research keyed by frozen evidence; they are not material facts.
 
 ## Package map
@@ -75,8 +75,8 @@ tracefold.macro
   acquisition.py clock-driven claim, provider-I/O, receipt, fact and cursor flow
   calculations.py versioned calculation registry and transparent features
   projection.py  six current decision modules
-  judgment.py    08:50 New York Evidence Pack and deterministic daily judgment
-  research/      Evidence-Pack-bound immutable DeepAgents research lifecycle
+  thesis.py      sealed Evidence Pack, Thesis, Live Delta, and Outcome Replay
+  thesis_service.py one 08:50 New York immutable DeepAgents publication lifecycle
 
 tracefold.integrations
   provider and external-system adapters, including DeepAgents
@@ -135,8 +135,8 @@ Important atomic units are:
   membership/projection;
 - immutable World Brief publication plus completion of its exact
   evidence/model/version attempt;
-- immutable Macro Evidence Pack, daily judgment, or research publication plus
-  the corresponding stable session transition;
+- immutable Macro Evidence Pack, independent review, Thesis publication, Live
+  Delta, or Outcome Replay plus the corresponding stable session transition;
 - retry or terminal transition plus mutation of its source queue row.
 
 Provider, model, subprocess, filesystem, and network I/O occurs outside
@@ -283,13 +283,13 @@ official FOMC / speech body + effective-dated role fact
 
 08:50 America/New_York trading session
   -> cutoff-bounded six-module compilation
-  -> immutable macro_evidence_packs
-  -> immutable macro_daily_judgments
-
-completed-session macro_research_runs bound to that Evidence Pack
-  -> one checkpointed DeepAgents graph and reviewer
-  -> one immutable macro_research_publications row
-  -> persisted-only research read
+  -> immutable macro_evidence_pack_v3
+  -> bounded immutable macro_research_input_v1
+  -> one Thin DeepAgent graph / exactly one native structured model call
+  -> time, evidence, contract, and write gates
+  -> one immutable macro_thesis_v2 publication
+  -> immutable Macro Live Delta v2 / Outcome Replay v2 snapshots
+  -> current-only v2 reads and explicit immutable v1/v2 archive reads
 ```
 
 The acquisition clock families are `intraday_market`, `daily_settlement`,
@@ -301,35 +301,84 @@ transactions; completion atomically writes facts, receipt, cursor, and target
 state. Unchanged source content writes zero fact rows while every attempt
 retains a receipt. Revisions append a new fact and never overwrite history.
 
-The Dataset Registry fixes ownership, clock, adapter, trust tier, freshness,
-criticality, and module membership in code. The separate Coverage Manifest
-declares every expected capability, including unimplemented free sources and
-licensed-unavailable sources; omitting a Dataset cannot make coverage green.
-Operator config only enables source families and sets runtime
-cadence/lease/timeout knobs. Coverage (`complete`, `partial`,
-`licensed_unavailable`), Data Health (`current`, `delayed`, `stale`, `invalid`,
-`backfilling`, `unavailable`), and Judgment (`current`, `missing`, `blocked`)
-are independent decision metadata, not a generic process-readiness gate.
+The Dataset Registry fixes ownership, concept identity, source role, clock,
+adapter, trust tier, freshness, criticality, and module membership in code.
+Every concept has one primary current source and may have an explicitly labelled
+official-history or proxy source. Source identities are reconciled with a
+persisted receipt and are never blended. The Coverage Manifest contains only
+capabilities that the supported free-data system can truthfully provide;
+missing paid or unimplementable capabilities are deleted rather than displayed
+as permanent product gaps. Operator config only enables source families and
+sets runtime cadence/lease/timeout knobs.
+
+The current nominal and real curves come from Treasury, with FRED as labelled
+history. CPI and labor release facts come from BLS, while GDP, PCE, and core PCE
+release facts come from BEA's public official release pages; the matching FRED
+series are history only. Release timestamps are parsed from the official
+release clock, never substituted with receipt time.
+
+Coverage (`complete`, `partial`), Current Health (`current`, `degraded`,
+`unavailable`), and History Depth (`complete`, `partial`, `insufficient`,
+`not_required`) are independent descriptive axes. Optional history cannot
+degrade current-state health or reader-facing History Depth; it remains in the
+audit appendix. Dataset rows also expose market and source state;
+closed and maintenance sessions do not age the last expected market bar against
+wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed payload; credit and cross-asset are v3 after adding exact
-market timestamps and major-futures rows. No generic chart-array contract
-survives. The Calculation
+explicit typed payload (`rates/economy/liquidity` v5, credit/volatility/cross
+asset v7), deterministic module-specific analysis, exact
+market timestamps, natural publication cadence, source roles, importance
+ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
+revision, and publication time distinct. ETF daily history is the Nasdaq public
+five-year lane; Yahoo supplies ETF intraday prices and paired intraday/daily
+continuous-contract futures proxies. No generic chart-array contract survives. The Calculation
 Registry records every feature's inputs, formula version, windows, minimum
 observations, units, gap policy, freshness, baseline, and output shape.
+The Natural Change Calculation Registry separately fixes every Dataset's
+cadence-native windows, minimum observations, formula, unit, revision/surprise
+rules, bounded-gap policy, and output schema. Exact month/quarter lags cannot
+fall back to an older available row while retaining the requested window label.
 Treasury shape, matched breakevens, normalized asset returns, credit ladder
 history, and funding comparisons remain deterministic. Credit exposes spread,
-funding cost, bank supply, quality, and market-liquidity dimensions
-concurrently and never reduces them to a score.
+funding cost, bank supply, and borrower quality concurrently and never reduces
+them to a score.
 
-The daily judgment fixes six macro dimensions and SPY/QQQ/IWM/TLT/IEF/LQD/HYG/
-UUP/GLD/USO/BTC/VIX directions to one cutoff-bounded Evidence Pack. DeepAgents
-receives that exact Evidence Pack later in the completed-session research lane;
-the reviewer disposition is `pass`, `revise`, or `block`. A model failure
-cannot hide the six deterministic modules or the daily judgment. PostgreSQL
-checkpoints are resumable execution state, not facts or a second publication
-source. Read requests never invoke providers or the graph.
+The Thesis is the only product-level Macro judgment. A deterministic bounded
+ResearchInput preserves typed structures, exact cutoff-frozen facts, gaps,
+prior material delta, catalysts, all twelve asset momentum rows, and a closed
+condition-candidate registry without choosing the conclusion. The Thin model
+returns one call/no-call mainline, one to three causal edges for a call, at most
+one alternative, at most three tensions, sparse module assessments, and only
+material asset outlooks. The deterministic compiler closes citations,
+conditions, hashes, and stable IDs. Momentum and conditional outlook remain
+separate for exactly SPY, QQQ, IWM, TLT, IEF, LQD, HYG, UUP, GLD, USO, BTC,
+and VIX; non-material assets keep facts and a short deterministic no-call
+reason instead of model filler.
+
+The production graph is one Thin `create_deep_agent` composition with exactly
+one provider-native structured model invocation per durable attempt. Business
+tools, subagents, filesystem, todo, task, execute, search, summarization, and
+checkpoint writes are absent. Reviewer is not a production gate or invocation;
+existing v1 review rows remain immutable archive audit. The only post-envelope
+publication gates are time identity, evidence closure, contract validity, and
+write safety.
+
+Post-publication updates never mutate the Thesis. Macro Live Delta only reports
+condition-bound strengthening, weakening, or invalidation against cited
+evidence; its public read projection preserves mainline, alternative, tension,
+and asset scopes, and only mainline bindings determine mainline validity.
+Event checkpoints never affect mainline validity. Outcome Replay emits only
+declared 1W/1M horizons and only corresponding material outlook assets.
+Current Recovery separately compares publication-time and current canonical
+fact availability without changing the Thesis hash. Current routes resolve one
+session and never inject a prior publication; older v1/v2 Thesis is available
+only by explicit archive selection. One unavailable module degrades only its
+evidence scope. Read requests never invoke providers or the graph. Missing
+evidence, no-call, partial history, confidence, report length, Reviewer
+absence, and offline score are descriptive rather than extra publication
+gates.
 
 ## Safety boundary
 

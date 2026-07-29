@@ -17,6 +17,12 @@ class ApiBadRequest(Exception):
         self.field = field
 
 
+class ApiUnavailable(Exception):
+    def __init__(self, error: str):
+        super().__init__(error)
+        self.error = error
+
+
 def api_unauthorized_response(_: Request, __: ApiUnauthorized) -> JSONResponse:
     return _json({"ok": False, "error": "unauthorized"}, status_code=401)
 
@@ -26,3 +32,7 @@ def api_bad_request_response(_: Request, exc: ApiBadRequest) -> JSONResponse:
     if exc.field:
         payload["field"] = exc.field
     return _json(payload, status_code=400)
+
+
+def api_unavailable_response(_: Request, exc: ApiUnavailable) -> JSONResponse:
+    return _json({"ok": False, "error": exc.error}, status_code=503)

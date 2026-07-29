@@ -6,8 +6,8 @@ from typing import Literal
 
 from tracefold.macro.domain import MacroModuleId
 
-CoverageRequirement = Literal["required", "supporting", "licensed_unavailable"]
-CoverageState = Literal["complete", "partial", "licensed_unavailable"]
+CoverageRequirement = Literal["required", "supporting"]
+CoverageState = Literal["complete", "partial"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +17,6 @@ class CoverageSpec:
     label: str
     requirement: CoverageRequirement
     dataset_ids: tuple[str, ...]
-    unavailable_reason: str | None = None
 
 
 _COVERAGE = (
@@ -78,26 +77,27 @@ _COVERAGE = (
         ("federal_reserve.document.analysis",),
     ),
     CoverageSpec(
-        "rates.cme_policy_futures",
-        "rates_fed",
-        "CME 政策利率期货概率",
-        "licensed_unavailable",
-        ("cme.rates.futures.curves",),
-        "licensed_contract_facts_not_configured",
-    ),
-    CoverageSpec(
         "economy.activity",
         "economy_inflation",
         "增长、消费与工业活动",
         "required",
-        ("fred.gdpc1", "fred.rsafs", "fred.indpro"),
+        ("bea.gdp.release", "fred.gdpc1", "fred.rsafs", "fred.indpro"),
     ),
     CoverageSpec(
         "economy.inflation",
         "economy_inflation",
         "CPI 与 PCE 通胀",
         "required",
-        ("fred.cpiaucsl", "fred.cpilfesl", "fred.pcepi", "fred.pcepilfe"),
+        (
+            "bls.cpi.release",
+            "bls.core_cpi.release",
+            "bea.pce.release",
+            "bea.core_pce.release",
+            "fred.cpiaucsl",
+            "fred.cpilfesl",
+            "fred.pcepi",
+            "fred.pcepilfe",
+        ),
     ),
     CoverageSpec(
         "economy.labor",
@@ -172,23 +172,13 @@ _COVERAGE = (
         "credit",
         "LQD/HYG 与 CFTC 市场确认",
         "supporting",
-        ("yfinance.lqd.market", "yfinance.hyg.market", "cftc.tff.credit_positions"),
-    ),
-    CoverageSpec(
-        "credit.trace_transactions",
-        "credit",
-        "TRACE 逐笔与 ETF NAV 溢折价",
-        "licensed_unavailable",
-        ("licensed.credit.trace_nav",),
-        "licensed_security_level_facts_not_configured",
-    ),
-    CoverageSpec(
-        "credit.ice_bofa_full_history",
-        "credit",
-        "ICE BofA 信用指数三年前完整历史",
-        "licensed_unavailable",
-        ("licensed.credit.ice_bofa_full_history",),
-        "ice_bofa_history_before_public_three_year_window_unavailable",
+        (
+            "nasdaq.lqd.daily",
+            "nasdaq.hyg.daily",
+            "yfinance.lqd.intraday",
+            "yfinance.hyg.intraday",
+            "cftc.tff.credit_positions",
+        ),
     ),
     CoverageSpec(
         "volatility.core",
@@ -198,21 +188,46 @@ _COVERAGE = (
         ("fred.vixcls", "fred.vxvcls", "fred.vxncls", "fred.gvzcls", "fred.ovxcls"),
     ),
     CoverageSpec(
+        "volatility.official_vx_curve",
+        "volatility",
+        "带官方到期日的 CFE VIX 期货结算曲线",
+        "required",
+        ("cboe.cfe.vx.settlement",),
+    ),
+    CoverageSpec(
         "cross_asset.etf_matrix",
         "cross_asset",
-        "固定十只 ETF 代理矩阵",
+        "固定十只 ETF 盘中代理矩阵",
         "required",
         (
-            "yfinance.spy.market",
-            "yfinance.qqq.market",
-            "yfinance.iwm.market",
-            "yfinance.tlt.market",
-            "yfinance.ief.market",
-            "yfinance.lqd.market",
-            "yfinance.hyg.market",
-            "yfinance.dxy.market",
-            "yfinance.gld.market",
-            "yfinance.uso.market",
+            "yfinance.spy.intraday",
+            "yfinance.qqq.intraday",
+            "yfinance.iwm.intraday",
+            "yfinance.tlt.intraday",
+            "yfinance.ief.intraday",
+            "yfinance.lqd.intraday",
+            "yfinance.hyg.intraday",
+            "yfinance.dxy.intraday",
+            "yfinance.gld.intraday",
+            "yfinance.uso.intraday",
+        ),
+    ),
+    CoverageSpec(
+        "cross_asset.etf_daily_history",
+        "cross_asset",
+        "固定十只 ETF 五年日线",
+        "required",
+        (
+            "nasdaq.spy.daily",
+            "nasdaq.qqq.daily",
+            "nasdaq.iwm.daily",
+            "nasdaq.tlt.daily",
+            "nasdaq.ief.daily",
+            "nasdaq.lqd.daily",
+            "nasdaq.hyg.daily",
+            "nasdaq.dxy.daily",
+            "nasdaq.gld.daily",
+            "nasdaq.uso.daily",
         ),
     ),
     CoverageSpec(
@@ -227,7 +242,12 @@ _COVERAGE = (
         "cross_asset",
         "BTC、VIX 与市场基准",
         "required",
-        ("yfinance.btc_yahoo.market", "yfinance.vix_index.market"),
+        (
+            "yfinance.btc_yahoo.intraday",
+            "yfinance.vix_index.intraday",
+            "binance.btcusdt.spot",
+            "fred.vixcls",
+        ),
     ),
     CoverageSpec(
         "cross_asset.major_futures_market",
@@ -235,23 +255,40 @@ _COVERAGE = (
         "股指、利率、商品主要期货与美元指数",
         "required",
         (
-            "yfinance.es_future.market",
-            "yfinance.nq_future.market",
-            "yfinance.rty_future.market",
-            "yfinance.zb_future.market",
-            "yfinance.zn_future.market",
-            "yfinance.dx_future.market",
-            "yfinance.gc_future.market",
-            "yfinance.cl_future.market",
-            "yfinance.hg_future.market",
+            "yfinance.es_future.intraday",
+            "yfinance.nq_future.intraday",
+            "yfinance.rty_future.intraday",
+            "yfinance.zb_future.intraday",
+            "yfinance.zn_future.intraday",
+            "yfinance.dx_future.intraday",
+            "yfinance.gc_future.intraday",
+            "yfinance.cl_future.intraday",
+            "yfinance.hg_future.intraday",
+        ),
+    ),
+    CoverageSpec(
+        "cross_asset.major_futures_daily_history",
+        "cross_asset",
+        "股指、利率、商品主要期货与美元指数五年日线",
+        "required",
+        (
+            "yfinance.es_future.daily",
+            "yfinance.nq_future.daily",
+            "yfinance.rty_future.daily",
+            "yfinance.zb_future.daily",
+            "yfinance.zn_future.daily",
+            "yfinance.dx_future.daily",
+            "yfinance.gc_future.daily",
+            "yfinance.cl_future.daily",
+            "yfinance.hg_future.daily",
         ),
     ),
     CoverageSpec(
         "cross_asset.futures_confirmation",
         "cross_asset",
-        "VIX 期货结算与跨资产 CFTC 仓位",
+        "跨资产 CFTC 仓位",
         "supporting",
-        ("cboe.cfe.vx.settlement", "cftc.tff.cross_asset_positions"),
+        ("cftc.tff.cross_asset_positions",),
     ),
 )
 

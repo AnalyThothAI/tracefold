@@ -14,6 +14,7 @@ class MacroProjectionWorker(WorkerBase):
         *,
         name: str,
         settings: Any,
+        backfill_worker_enabled: bool,
         db: Any,
         telemetry: Any,
     ) -> None:
@@ -21,6 +22,7 @@ class MacroProjectionWorker(WorkerBase):
         self.service = MacroProjectionService(
             db=db,
             settings=settings,
+            backfill_worker_enabled=backfill_worker_enabled,
             worker_name=name,
         )
 

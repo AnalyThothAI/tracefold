@@ -22,7 +22,6 @@ class MacroRepository:
         self.conn = conn
 
     def ensure_target(self, spec: DatasetSpec, *, now_ms: int, max_attempts: int) -> int:
-        initial_status = "unavailable" if spec.adapter_id == "unavailable" else "pending"
         cursor = self.conn.execute(
             """
             INSERT INTO macro_acquisition_targets(
@@ -30,34 +29,18 @@ class MacroRepository:
               status, next_due_at_ms, priority, attempt_count, max_attempts,
               created_at_ms, updated_at_ms
             )
-            VALUES (%s, %s, 'latest', %s, '{}'::jsonb, %s, %s, %s, 0, %s, %s, %s)
+            VALUES (%s, %s, 'latest', %s, '{}'::jsonb, 'pending', %s, %s, 0, %s, %s, %s)
             ON CONFLICT(target_key) DO UPDATE SET
               clock_kind = EXCLUDED.clock_kind,
               max_attempts = EXCLUDED.max_attempts,
-              status = CASE
-                WHEN macro_acquisition_targets.status = 'unavailable'
-                     AND EXCLUDED.status <> 'unavailable'
-                THEN 'pending'
-                WHEN EXCLUDED.status = 'unavailable' THEN 'unavailable'
-                ELSE macro_acquisition_targets.status
-              END,
               updated_at_ms = EXCLUDED.updated_at_ms
             WHERE macro_acquisition_targets.clock_kind IS DISTINCT FROM EXCLUDED.clock_kind
                OR macro_acquisition_targets.max_attempts IS DISTINCT FROM EXCLUDED.max_attempts
-               OR (
-                 macro_acquisition_targets.status = 'unavailable'
-                 AND EXCLUDED.status <> 'unavailable'
-               )
-               OR (
-                 macro_acquisition_targets.status <> 'unavailable'
-                 AND EXCLUDED.status = 'unavailable'
-               )
             """,
             (
                 spec.target_key,
                 spec.dataset_id,
                 spec.clock_kind,
-                initial_status,
                 int(now_ms),
                 10 if spec.critical else 100,
                 int(max_attempts),
@@ -76,13 +59,10 @@ class MacroRepository:
         now_ms: int,
         max_attempts: int,
         history_class: str | None = None,
-        required_for_judgment: bool = False,
         priority: int = 50,
     ) -> dict[str, Any]:
         if start_date > end_date:
             raise ValueError("macro_backfill_invalid_range")
-        if spec.adapter_id == "unavailable":
-            raise ValueError("macro_backfill_dataset_unavailable")
         partition_key = f"{start_date.isoformat()}..{end_date.isoformat()}"
         target_key = f"{spec.dataset_id}:backfill:{partition_key}"
         row = self.conn.execute(
@@ -118,7 +98,6 @@ class MacroRepository:
                         "start_date": start_date.isoformat(),
                         "end_date": end_date.isoformat(),
                         "history_class": history_class,
-                        "required_for_judgment": required_for_judgment,
                     },
                     sort_keys=True,
                 ),
@@ -140,7 +119,6 @@ class MacroRepository:
         start_date: date,
         end_date: date,
         history_class: str,
-        required_for_judgment: bool,
         priority: int,
         now_ms: int,
     ) -> dict[str, Any] | None:
@@ -165,8 +143,7 @@ class MacroRepository:
             )
             UPDATE macro_acquisition_targets AS target
             SET cursor_json = target.cursor_json || jsonb_build_object(
-                  'history_class', %s::text,
-                  'required_for_judgment', %s::boolean
+                  'history_class', %s::text
                 ),
                 priority = %s,
                 updated_at_ms = %s
@@ -179,7 +156,6 @@ class MacroRepository:
                 start_date,
                 end_date,
                 history_class,
-                required_for_judgment,
                 int(priority),
                 int(now_ms),
             ),
@@ -604,6 +580,53 @@ class MacroRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def receipt_states_at(
+        self,
+        *,
+        cutoff_ms: int,
+        dataset_ids: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT ON (receipts.dataset_id, receipts.partition_key)
+              receipts.target_key,
+              receipts.dataset_id,
+              receipts.partition_key,
+              CASE
+                WHEN receipts.status IN ('ok', 'not_modified', 'empty') THEN 'current'
+                WHEN receipts.status = 'invalid' THEN 'invalid'
+                ELSE 'failed'
+              END AS status,
+              CASE
+                WHEN receipts.partition_key = 'latest' THEN registry.clock_kind
+                ELSE 'backfill'
+              END AS clock_kind,
+              receipts.completed_at_ms AS last_success_at_ms,
+              receipts.completed_at_ms AS updated_at_ms,
+              receipts.error_code AS last_error_code,
+              '{}'::jsonb AS cursor_json
+            FROM macro_source_receipts AS receipts
+            JOIN macro_acquisition_targets AS registry
+              ON registry.target_key = receipts.target_key
+            WHERE receipts.completed_at_ms <= %s
+              AND (
+                cardinality(%s::text[]) = 0
+                OR receipts.dataset_id = ANY(%s)
+              )
+            ORDER BY
+              receipts.dataset_id,
+              receipts.partition_key,
+              receipts.completed_at_ms DESC,
+              receipts.receipt_id DESC
+            """,
+            (
+                int(cutoff_ms),
+                list(dataset_ids),
+                list(dataset_ids),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def recent_receipts(self, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -684,7 +707,11 @@ class MacroRepository:
             FROM macro_release_facts
             WHERE dataset_id = ANY(%s)
               AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
-            ORDER BY dataset_id, published_at_ms
+            ORDER BY
+              dataset_id,
+              reference_period,
+              received_at_ms,
+              fact_hash
             """,
             (list(dataset_ids), received_before_ms),
         ).fetchall()
@@ -749,9 +776,13 @@ class MacroRepository:
               %s::bigint,
               documents.received_at_ms
             )
+              AND analyses.created_at_ms <= COALESCE(
+                %s::bigint,
+                analyses.created_at_ms
+              )
             ORDER BY documents.effective_date, analyses.created_at_ms, analyses.analysis_id
             """,
-            (received_before_ms,),
+            (received_before_ms, received_before_ms),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1203,7 +1234,8 @@ class MacroRepository:
         self,
         *,
         module_id: str,
-        data_health_state: str,
+        current_health_state: str,
+        history_depth_state: str,
         fact_cutoff_ms: int,
         payload: dict[str, Any],
         payload_hash: str,
@@ -1212,11 +1244,13 @@ class MacroRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO macro_module_current(
-              module_id, data_health_state, fact_cutoff_ms, payload_json, payload_hash, updated_at_ms
+              module_id, current_health_state, history_depth_state,
+              fact_cutoff_ms, payload_json, payload_hash, updated_at_ms
             )
-            VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT(module_id) DO UPDATE SET
-              data_health_state = EXCLUDED.data_health_state,
+              current_health_state = EXCLUDED.current_health_state,
+              history_depth_state = EXCLUDED.history_depth_state,
               fact_cutoff_ms = EXCLUDED.fact_cutoff_ms,
               payload_json = EXCLUDED.payload_json,
               payload_hash = EXCLUDED.payload_hash,
@@ -1225,7 +1259,8 @@ class MacroRepository:
             """,
             (
                 module_id,
-                data_health_state,
+                current_health_state,
+                history_depth_state,
                 int(fact_cutoff_ms),
                 json.dumps(payload, sort_keys=True),
                 payload_hash,
@@ -1244,205 +1279,6 @@ class MacroRepository:
     def all_modules_current(self) -> list[dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM macro_module_current ORDER BY module_id").fetchall()
         return [dict(row) for row in rows]
-
-    def insert_evidence_pack(
-        self,
-        *,
-        evidence_pack_id: str,
-        session_date: date,
-        judgment_cutoff_ms: int,
-        latest_fact_at_ms: int,
-        schema_version: str,
-        compiler_version: str,
-        payload: dict[str, Any],
-        payload_hash: str,
-        created_at_ms: int,
-    ) -> int:
-        cursor = self.conn.execute(
-            """
-            INSERT INTO macro_evidence_packs(
-              evidence_pack_id, session_date, judgment_cutoff_ms, latest_fact_at_ms,
-              schema_version, compiler_version, payload_json, payload_hash, created_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                evidence_pack_id,
-                session_date,
-                int(judgment_cutoff_ms),
-                int(latest_fact_at_ms),
-                schema_version,
-                compiler_version,
-                json.dumps(payload, sort_keys=True),
-                payload_hash,
-                int(created_at_ms),
-            ),
-        )
-        return int(cursor.rowcount)
-
-    def evidence_pack(
-        self,
-        *,
-        session_date: date | None = None,
-        evidence_pack_id: str | None = None,
-    ) -> dict[str, Any] | None:
-        if evidence_pack_id is not None:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_evidence_packs
-                WHERE evidence_pack_id = %s
-                  AND schema_version = 'macro_evidence_pack_v2'
-                """,
-                (evidence_pack_id,),
-            ).fetchone()
-        elif session_date is not None:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_evidence_packs
-                WHERE session_date = %s
-                  AND schema_version = 'macro_evidence_pack_v2'
-                ORDER BY judgment_cutoff_ms DESC
-                LIMIT 1
-                """,
-                (session_date,),
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_evidence_packs
-                WHERE schema_version = 'macro_evidence_pack_v2'
-                ORDER BY session_date DESC, judgment_cutoff_ms DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        return dict(row) if row is not None else None
-
-    def insert_daily_judgment(
-        self,
-        *,
-        session_date: date,
-        evidence_pack_id: str,
-        judgment_cutoff_ms: int,
-        latest_fact_at_ms: int,
-        judgment: dict[str, Any],
-        memo_text: str,
-        schema_version: str,
-        compiler_version: str,
-        payload_hash: str,
-        published_at_ms: int,
-    ) -> int:
-        cursor = self.conn.execute(
-            """
-            INSERT INTO macro_daily_judgments(
-              session_date, evidence_pack_id, judgment_cutoff_ms, latest_fact_at_ms,
-              judgment_json, memo_text, schema_version, compiler_version,
-              payload_hash, published_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                session_date,
-                evidence_pack_id,
-                int(judgment_cutoff_ms),
-                int(latest_fact_at_ms),
-                json.dumps(judgment, sort_keys=True),
-                memo_text,
-                schema_version,
-                compiler_version,
-                payload_hash,
-                int(published_at_ms),
-            ),
-        )
-        return int(cursor.rowcount)
-
-    def daily_judgment(self, session_date: date | None = None) -> dict[str, Any] | None:
-        if session_date is not None:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_daily_judgments
-                WHERE session_date = %s
-                  AND schema_version = 'macro_daily_judgment_v2'
-                """,
-                (session_date,),
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_daily_judgments
-                WHERE schema_version = 'macro_daily_judgment_v2'
-                ORDER BY session_date DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        return dict(row) if row is not None else None
-
-    def upsert_judgment_status(
-        self,
-        *,
-        session_date: date,
-        judgment_cutoff_ms: int,
-        state: str,
-        reason_code: str,
-        details: dict[str, Any],
-        attempted_at_ms: int,
-    ) -> int:
-        payload_hash = _payload_hash(
-            {
-                "session_date": str(session_date),
-                "judgment_cutoff_ms": int(judgment_cutoff_ms),
-                "state": state,
-                "reason_code": reason_code,
-                "details": details,
-            }
-        )
-        cursor = self.conn.execute(
-            """
-            INSERT INTO macro_judgment_status(
-              session_date, judgment_cutoff_ms, state, reason_code,
-              details_json, payload_hash, attempted_at_ms, updated_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT(session_date) DO UPDATE SET
-              judgment_cutoff_ms = EXCLUDED.judgment_cutoff_ms,
-              state = EXCLUDED.state,
-              reason_code = EXCLUDED.reason_code,
-              details_json = EXCLUDED.details_json,
-              payload_hash = EXCLUDED.payload_hash,
-              attempted_at_ms = EXCLUDED.attempted_at_ms,
-              updated_at_ms = EXCLUDED.updated_at_ms
-            WHERE macro_judgment_status.payload_hash
-                  IS DISTINCT FROM EXCLUDED.payload_hash
-            """,
-            (
-                session_date,
-                int(judgment_cutoff_ms),
-                state,
-                reason_code,
-                json.dumps(details, sort_keys=True),
-                payload_hash,
-                int(attempted_at_ms),
-                int(attempted_at_ms),
-            ),
-        )
-        return int(cursor.rowcount)
-
-    def judgment_status(self, session_date: date) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT *
-              FROM macro_judgment_status
-             WHERE session_date = %s
-            """,
-            (session_date,),
-        ).fetchone()
-        return dict(row) if row is not None else None
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

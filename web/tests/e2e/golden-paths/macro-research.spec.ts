@@ -6,35 +6,39 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-test("renders one persisted Macro research workbench", async ({ page }) => {
+test("renders one immutable Macro Thesis history workbench", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/macro/research");
 
-  await expect(page.getByRole("heading", { level: 1, name: "宏观研究工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Macro Thesis 档案" })).toBeVisible();
   await expect(
-    page.getByRole("heading", { level: 2, name: "宏观研究：增长与实际利率的拉锯" }),
+    page.getByRole("heading", {
+      level: 2,
+      name: "真实利率回落正在缓和风险资产的贴现压力",
+    }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "核心机制" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "关键反证" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "证据缺口与开放问题" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "引用与事实溯源" })).toBeVisible();
-  await expect(page.getByText("期限溢价历史窗口不足")).toBeVisible();
+  await expect(page.getByRole("link", { name: "返回当前主线" })).toHaveAttribute("href", "/macro");
+  await expect(
+    page.getByRole("heading", { name: "十二资产事实固定呈现，展望只在有传导时出现" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-asset-fact]")).toHaveCount(12);
+  await expect(page.getByRole("heading", { name: "证据、缺口与生成身份" })).toBeVisible();
+  await expect(page.getByText("2 条实际引用证据")).toBeVisible();
+  await expect(page.getByText("0 个冻结缺口")).toBeVisible();
+  await expect(page.getByText("macro_thesis_workflow_v2")).toBeVisible();
+  await expect(page.getByText("test-model")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "不可变 publication 历史" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行状态与四类 gate" })).toBeVisible();
 
-  const audit = page.locator(".macro-research-audit");
-  await expect(audit).not.toHaveAttribute("open", "");
-  await audit.locator("summary").click();
-  await expect(audit).toHaveAttribute("open", "");
-  await expect(page.getByText(/planning_used/)).toBeVisible();
-
-  await expect(page.getByRole("main", { name: "宏观研究工作台" })).not.toContainText(
-    /macro_decision_v2|八类风险|Daily SPY|买入|卖出|仓位/,
+  await expect(page.locator(".macro-research-workbench")).not.toContainText(
+    /macro_daily_judgment|licensed_unavailable|Reviewer|买入|卖出|仓位/,
   );
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [
     ".macro-research-workbench",
-    ".macro-research-document",
-    ".macro-research-sections",
     ".macro-research-citations",
+    { selector: ".macro-thesis-report__asset-table", allowHorizontalOverflow: true },
+    { selector: ".macro-thesis-report__recovery", allowHorizontalOverflow: true },
   ]);
   await expectNoUnhandledApiRequests(page);
 });

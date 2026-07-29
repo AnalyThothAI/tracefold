@@ -67,12 +67,11 @@ macro_official_documents
 macro_backfill
 macro_document_analysis
 macro_projection
-macro_judgment
+macro_thesis
 token_image_mirror
 token_profile_current
 news_pipeline
 news_world_brief
-macro_research
 ```
 
 `workers.yaml`, `WorkersSettings`, factories, status output, and this manifest
@@ -109,7 +108,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
-| Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable daily judgment/Evidence Pack, and Evidence-Pack-bound DeepAgents research |
+| Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable Evidence Pack/Thesis, independent review, Live Delta, and Outcome Replay |
 | News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | deterministic Story read model, NewsItem members, immutable Chinese Brief, source fetch state, and derived News health |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
@@ -221,29 +220,43 @@ read:
 ```
 
 Overview and module reads accept no query parameters. The overview returns the
-latest immutable daily judgment, six module summaries, changes since the
-judgment cutoff, three independent status families, and compact research state.
+intended 08:50 New York requested session, the immutable Thesis when available,
+server-owned twelve-asset fact/outlook/recovery rows, scoped Live Delta,
+Outcome Replay, six typed module availability summaries, three independent
+data-quality axes, backfill execution state, and typed reasons. It never
+includes a prior-publication fallback. HTTP loading, stale cache, disabled
+query, and error are frontend transport states rather than Thesis states.
 Each route returns exactly one matching schema:
 
-- `macro_rates_fed_v2`
-- `macro_economy_inflation_v2`
-- `macro_liquidity_funding_v2`
-- `macro_credit_v3`
-- `macro_volatility_v2`
-- `macro_cross_asset_v3`
+- overview: `macro_overview_v8`
+- current research: `macro_thesis_detail_v4`
+- explicit archive: `macro_thesis_archive_detail_v2`
+- `macro_rates_fed_v5`
+- `macro_economy_inflation_v5`
+- `macro_liquidity_funding_v5`
+- `macro_credit_v7`
+- `macro_volatility_v7`
+- `macro_cross_asset_v7`
 
 Shared fields are limited to identity, clocks, status, summary, contradictions,
 falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
 events, credit ladders, and the ETF comparison matrix are explicit typed
-fields, not generic chart arrays. Coverage is `complete`, `partial`, or
-`licensed_unavailable`; Data Health is `current`, `delayed`, `stale`, `invalid`,
-`backfilling`, or `unavailable`; Judgment is `current`, `missing`, or `blocked`.
-The v3 overview also returns the persisted current/blocked judgment publication
-status, reason code, attempted time, blocked modules, and exact dataset gaps.
-These reads use `macro_module_current`, `macro_judgment_status`, and immutable
-judgment rows only; they
-never call a provider/model, advance a target, rebuild a projection, or
-synthesize a fallback.
+fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
+Health is `current`, `degraded`, or `unavailable`; History Depth is `complete`,
+`partial`, `insufficient`, or `not_required`. Each Dataset additionally exposes
+market state and source state. Optional history cannot lower Current Health.
+Only declared required windows affect reader-facing History Depth; optional
+maximum public history remains audit-only.
+The Macro overview read always returns the intended Thesis session and
+deterministic cutoff, even before publication. Its Thesis state is one of
+`published`, `pending`, `running`, `retryable`, `failed`, `config_error`,
+`not_published`, or `missing`. A `published` current state requires a v2
+publication whose session exactly matches the resolved session. One missing or
+schema-mismatched module produces a typed
+unavailable slot and lowers Evidence Health rather than failing the entire
+overview or dossier. These reads use `macro_module_current` and immutable
+Thesis tables only; they never call a provider/model, advance a target, rebuild
+a projection, or write fallback content.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
@@ -254,16 +267,44 @@ facts; macroeconomic series, release events, and official documents are Macro
 facts. The legacy generic evidence route, window parameter, bundle/sync
 surface, `macro_observations`, and unclassified facts do not exist.
 
+Every Registry row has a stable `concept_id` and `source_role`.
+`decision_primary` is authoritative for the current decision; `release`,
+`history`, `intraday_proxy`, and `reconciliation_only` remain separately
+labelled inputs. A
+reconciliation receipt records comparisons; values from different identities
+are never averaged or silently substituted. Release facts preserve actual,
+expected, surprise, revision, reference date, optional source publication time,
+and receipt time as separate fields.
+
+Treasury owns the current nominal/real curve and FRED owns its history. BLS
+owns CPI/labor release facts; BEA public release pages own GDP, PCE, and core
+PCE release facts; FRED owns the matching history. The natural-change contract
+is Dataset-specific: daily/weekly gaps are bounded and monthly/quarterly
+comparisons require the exact calendar lag. A missing period yields a missing
+change, never a mislabeled fallback.
+
 The Cross-Asset payload always owns the fixed ETF basket SPY, QQQ, IWM, TLT,
 IEF, LQD, HYG, UUP, GLD, and USO plus ES, NQ, RTY, ZB, ZN, GC, CL, and HG
-major-futures rows and the Yahoo DXY index. Yahoo Finance through the pinned `yfinance` adapter is an
-explicitly `untrusted_proxy`, five-minute best-effort source; each row exposes
-its actual market timestamp and may be delayed. WTI is the separate official FRED/EIA
-`DCOILWTICO` benchmark; USO is never relabelled as spot or futures. The Rates
+major-futures rows and the Yahoo DXY index. ETF rows use Nasdaq public daily
+history for five-year changes, normalization, and correlations, paired with
+Yahoo Finance five-minute prices. Futures pair Yahoo five-minute prices with
+Yahoo continuous-contract daily history. Both Yahoo lanes and Nasdaq public
+history are explicitly `untrusted_proxy`; each row exposes separate history
+and price Dataset IDs, its actual market timestamp, price kind, and source
+lineage. A closed or maintenance market preserves the last expected bar as
+`current`; staleness is measured against the market clock, never wall-clock
+age alone. WTI is the separate official FRED/EIA `DCOILWTICO` benchmark. The Rates
 payload exposes Treasury nominal and real maturity cross-sections for current,
 1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,
-transparent curve-shape inputs, and explicit licensed-unavailable CME
-probabilities.
+and transparent curve-shape inputs. Paid CME probability gaps are not part of
+the supported contract.
+
+Volatility exclusively owns the official CFE VX settlement curve. A served
+`market_settlement_v2` fact requires the official `Expiration Date`; schema
+version and expiration participate in both fact hash and settlement identity.
+Provable legacy raw rows receive a new append-only v2 revision while the v1 row
+remains unchanged. Unprovable v1 rows stay audit-only and are never sorted by a
+guessed contract-code expiry. Cross-Asset does not duplicate this curve.
 
 FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
 Bank speeches retain official full body text and source hashes. SEP PDF text is
@@ -275,54 +316,68 @@ communication distribution remain separate. Non-policy material is
 `not_policy_signal`; no static official label or universal hawk/dove score
 exists. The current immutable-analysis admission window is 550 days for FOMC
 materials and 120 days for speeches. Older official bodies remain durable raw
-evidence and do not block the current Daily Judgment.
+evidence and do not block the current Thesis.
 
 Credit exposes IG/BBB/BB/B/CCC OAS, actual-sample history statistics, IG/HY
 effective yields, deterministic comparisons with EFFR and 10Y Treasury, SLOOS
 standards and demand for C&I/CRE/consumer, loan delinquency/charge-off facts,
-and labelled ETF/CFTC confirmations. TRACE/NAV detail remains
-`licensed_unavailable`. FRED's public ICE BofA series exposes only its current
-three-year window, so older ICE history is also declared
-`licensed_unavailable`, never inferred or silently presented as complete. Five
-concurrent credit dimensions are returned; no composite score exists.
+and labelled ETF/CFTC confirmations. Four concurrent credit dimensions are
+returned; no composite score exists. Paid TRACE/NAV and unavailable historical
+ICE placeholders were deleted from the product contract.
 
 On every U.S. trading session at 08:50 `America/New_York`,
-`macro_judgment` seals one cutoff-bounded `macro_evidence_pack_v2` and publishes
-one immutable `macro_daily_judgment_v2` when no critical module is blocked and
-required professional backfills/document analyses are complete.
-The judgment fixes growth, inflation, policy, liquidity, credit, and volatility
-states plus one-week/one-month directions for SPY, QQQ, IWM, TLT, IEF, LQD,
-HYG, UUP, GLD, USO, BTC, and VIX. It exposes conflicts, invalidation conditions, confidence,
-citations, gaps, and next checkpoints instead of a hidden score.
+`macro_thesis` seals one cutoff-bounded `macro_evidence_pack_v3` and projects
+one immutable `macro_research_input_v1`. Each module contributes at most three
+driver candidates, two material changes, two counter-signals, six exact refs,
+and four conditions; the global input is capped at 64 exact refs, 32
+conditions, and 64 KiB. Input compilation failure is a stable pre-model
+`failed` run.
 
-With no query, `GET /api/macro/research` targets the latest completed U.S.
-regular session. Optional `session_date=YYYY-MM-DD` selects one explicit
-session. The response is always persisted-only and returns state `current`,
-`historical`, `generating`, `failed`, or `missing`, together with the requested
-and current session dates. A generating or failed response may include the
-durable run status, attempt counts, sanitized last error, and update time.
+The only production execution path is `macro_thesis_thin_v1`: one
+`create_deep_agent` graph invocation and exactly one provider-native structured
+model invocation per durable attempt. It has no business tools, subagents,
+filesystem, todo, task, execute, search, summarization, checkpoint write,
+Reviewer, or revision loop. Provider configuration/authentication, timeout,
+refusal, and missing structured mapping are pre-draft run errors.
 
-An available publication is bound to the same immutable Evidence Pack used by
-the session judgment. It contains the Evidence Pack ID, schema version, session
-and market cutoff, agent-authored title and Chinese executive summary, one
-authoritative dynamically ordered list of Markdown sections, explicit evidence
-gaps, citations, reviewer disposition (`pass`, `revise`, or `block`), reviewer
-notes, sanitized audit, and publication time. A flat Markdown export is
-mechanically derived from the same sections and is not a second API narrative.
-Citations carry stable
-IDs, material `source_ref` values, source labels, observation/publication time,
-URL when available, and lineage. The envelope does not prescribe fixed
-sections, asset lanes, direction, confidence, score, forecast horizon,
-readiness, or a trading conclusion.
+A provider-success envelope is publishable only through the closed four-gate
+set: time identity, evidence closure, contract validity, and write safety.
+Their parseable primary order is time, evidence, contract, then write.
+Confidence, no-call, history partial, best-effort gaps, report length, Reviewer
+absence, and offline evaluation are not additional runtime gates.
 
-The service verifies Evidence Pack/session/cutoff identity, citation closure,
-and reviewer disposition before publication. These are contract checks, not a
-second semantic gate. The read endpoint does not invoke a model or provider,
-search facts, resume a graph, run a repair, or synthesize a fallback
-publication.
-Missing remains a typed successful read state rather than an older publication
-relabelled as current. Unmatched Macro API paths return the ordinary
-application `404` response.
+The immutable `macro_thesis_v2` contains one call/no-call mainline, one to
+three causal edges for a call, at most one alternative, at most three tensions,
+sparse material module assessments, sparse material asset outlooks, compiled
+citations/conditions, and all twelve deterministic frozen asset snapshots in
+stable order. Non-material assets retain canonical momentum/current facts and
+a short read-projection no-call reason; the model does not generate 12×2
+filler. Existing `macro_thesis_v1` bytes/hashes remain available only through
+explicit archive reads.
+
+`macro_live_delta_v2` is an immutable post-publication snapshot whose ID binds
+publication and deterministic current-fact input hash. It keeps mainline,
+alternative, tension, and asset scopes separate; only mainline metric
+conditions determine mainline validity, while event checkpoints use a separate
+state. `macro_outcome_replay_v2` uses the same append-only identity rule,
+emits only declared 1W/1M horizons (`1w_to_1m` expands to both), and includes
+only assets with a corresponding material outlook. Current Recovery is an
+independent rebuildable projection. None of these changes the Thesis hash.
+
+With no query, `GET /api/macro/research` targets the current intended 08:50
+U.S. trading session and never relabels the previous publication. Optional
+`session_date=YYYY-MM-DD` selects one explicit session. This is the same Thesis
+product as the overview. Without a date it returns
+`macro_thesis_detail_v4` and only a matching current v2 Thesis. With a date it
+returns `macro_thesis_archive_detail_v2`, whose state is `historical` or
+`missing` and whose Thesis is discriminated as original v1 or v2. Archive
+payload/hash identity is unchanged; current Recovery is outside the immutable
+payload. Current history items use `macro_publication_history_item_v2`.
+
+The read endpoint does not invoke a model or provider, search facts, resume a
+graph, run a repair, or synthesize a fallback publication. Missing remains a
+typed successful state and never carries an older Thesis. Unmatched Macro API
+paths return the ordinary application `404` response.
 
 ### Token images
 
@@ -359,11 +414,19 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 - service/config: `serve`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- Macro: `macro backfill|retry-research|status`;
+- Macro: `macro backfill|backfill-professional|status`;
 - read models: `recent`, `search`, `asset-flow`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
+
+`macro status` resolves the current publication session first and never selects
+the latest historical run as a substitute. Its Thesis summary exposes only the
+current v2 state and identity; a same-session v1 row is `not_published`.
+`offline_evaluation` is a read-only projection over immutable Evidence Packs:
+it reports the exact nine-real-session shortfall or the selected 12-case corpus,
+but never invokes a model, writes an evaluation row, or becomes a daily
+publication gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

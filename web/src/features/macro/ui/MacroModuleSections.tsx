@@ -1,30 +1,63 @@
 import { ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { CSSProperties } from "react";
 
 import type {
   JsonObject,
-  MacroAssetRow,
   MacroCreditReadData,
-  MacroCurveSnapshot,
   MacroEconomyInflationReadData,
-  MacroIndicator,
   MacroLiquidityFundingReadData,
   MacroRatesFedReadData,
   MacroTypedModuleReadData,
   MacroVolatilityReadData,
 } from "../model/macroTypes";
+import {
+  asRecord,
+  asRecords,
+  parseCorrelations,
+  parseCrossAssetNormalizedGroups,
+  parseCrossAssetReturnMatrix,
+  parseCrossAssetSourceIdentity,
+  parseCurveSnapshots,
+  parseHistory,
+  parseIndicators,
+  parsePointRecords,
+  parsePositions,
+  parseReleases,
+  readBoolean,
+  readNumber,
+  readRecord,
+  readRecords,
+  readText,
+  type MacroCrossAssetNormalizedGroupView,
+  type MacroCrossAssetReturnRowView,
+  type MacroCrossAssetSourceIdentityView,
+  type MacroCrossAssetSourceView,
+  type MacroIndicatorView,
+  type MacroPositionView,
+} from "../model/macroViewModels";
+
+import {
+  MacroBarChart,
+  MacroCorrelationHeatmap,
+  MacroCurveChart,
+  MacroIndicatorTable,
+  MacroReleaseStrip,
+  MacroTimeSeriesChart,
+  type MacroBarGroup,
+  type MacroChartAnnotation,
+  type MacroChartSeries,
+} from "./MacroCharts";
 
 import "./MacroModuleSections.css";
 
 type Section = { id: string; label: string };
 
-const SECTIONS: Record<MacroTypedModuleReadData["module_id"], Section[]> = {
+const SECTIONS: Record<MacroTypedModuleReadData["module_id"], readonly Section[]> = {
   rates_fed: [
     { id: "curve", label: "收益率曲线" },
-    { id: "policy", label: "政策定价" },
-    { id: "fed", label: "FOMC 与讲话" },
-    { id: "positioning", label: "期货仓位" },
+    { id: "policy", label: "政策走廊" },
+    { id: "fed", label: "美联储沟通" },
+    { id: "positioning", label: "利率仓位" },
   ],
   economy_inflation: [
     { id: "inflation", label: "通胀" },
@@ -33,63 +66,117 @@ const SECTIONS: Record<MacroTypedModuleReadData["module_id"], Section[]> = {
   ],
   liquidity_funding: [
     { id: "balance-sheet", label: "资产负债表" },
-    { id: "funding", label: "资金市场" },
+    { id: "funding", label: "融资条件" },
   ],
   credit: [
-    { id: "spreads", label: "评级梯级" },
+    { id: "cycle", label: "周期四维" },
+    { id: "spreads", label: "评级利差" },
     { id: "funding", label: "融资成本" },
-    { id: "banks", label: "银行供给" },
+    { id: "banks", label: "银行供需" },
     { id: "quality", label: "贷款质量" },
     { id: "confirmation", label: "市场确认" },
   ],
   volatility: [
-    { id: "term", label: "期限结构" },
-    { id: "cross-asset", label: "跨资产波动率" },
+    { id: "term", label: "现货–3M" },
+    { id: "cross-asset", label: "跨资产隐波" },
   ],
   cross_asset: [
-    { id: "assets", label: "资产矩阵" },
-    { id: "normalized", label: "归一化比较" },
-    { id: "correlations", label: "相关性" },
-    { id: "futures", label: "期货确认" },
+    { id: "returns", label: "收益矩阵" },
+    { id: "normalized", label: "分组走势" },
+    { id: "correlations", label: "相关矩阵" },
+    { id: "futures", label: "期货与仓位" },
   ],
 };
 
 export function MacroModuleSections({ module }: { module: MacroTypedModuleReadData }) {
   const sections = SECTIONS[module.module_id];
   const active = useHashSection(sections);
+  const panelId = `macro-${module.module_id}-${active}-panel`;
   return (
-    <>
-      <nav aria-label={`${module.label}内部视图`} className="macro-decision__section-nav">
-        {sections.map((section) => (
-          <a
-            aria-current={active === section.id ? "page" : undefined}
-            href={`#${section.id}`}
-            key={section.id}
+    <div className="macro-decision__module-workspace">
+      <div className="macro-decision__section-navigation">
+        <nav aria-label={`${module.label}内部视图`}>
+          <div className="macro-decision__section-nav" role="tablist">
+            {sections.map((section, index) => (
+              <a
+                aria-controls={`macro-${module.module_id}-${section.id}-panel`}
+                aria-selected={active === section.id}
+                href={`#${section.id}`}
+                id={`macro-${module.module_id}-${section.id}-tab`}
+                key={section.id}
+                onKeyDown={(event) => {
+                  const direction =
+                    event.key === "ArrowRight" || event.key === "ArrowDown"
+                      ? 1
+                      : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                        ? -1
+                        : 0;
+                  const targetIndex =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? sections.length - 1
+                        : direction
+                          ? (index + direction + sections.length) % sections.length
+                          : null;
+                  if (targetIndex == null) return;
+                  event.preventDefault();
+                  const target = sections[targetIndex]!;
+                  window.location.hash = target.id;
+                  document.getElementById(`macro-${module.module_id}-${target.id}-tab`)?.focus();
+                }}
+                role="tab"
+                tabIndex={active === section.id ? 0 : -1}
+              >
+                {section.label}
+              </a>
+            ))}
+          </div>
+        </nav>
+        <label className="macro-decision__section-select">
+          <span>当前视图</span>
+          <select
+            aria-label={`${module.label}当前视图`}
+            onChange={(event) => {
+              window.location.hash = event.target.value;
+            }}
+            value={active}
           >
-            {section.label}
-          </a>
-        ))}
-      </nav>
-      {module.module_id === "rates_fed" ? <RatesSections active={active} module={module} /> : null}
-      {module.module_id === "economy_inflation" ? (
-        <EconomySections active={active} module={module} />
-      ) : null}
-      {module.module_id === "liquidity_funding" ? (
-        <LiquiditySections active={active} module={module} />
-      ) : null}
-      {module.module_id === "credit" ? <CreditSections active={active} module={module} /> : null}
-      {module.module_id === "volatility" ? (
-        <VolatilitySections active={active} module={module} />
-      ) : null}
-      {module.module_id === "cross_asset" ? (
-        <CrossAssetSections active={active} module={module} />
-      ) : null}
-    </>
+            {sections.map((section) => (
+              <option key={section.id} value={section.id}>
+                {section.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div
+        aria-labelledby={`macro-${module.module_id}-${active}-tab`}
+        id={panelId}
+        role="tabpanel"
+        tabIndex={0}
+      >
+        {module.module_id === "rates_fed" ? <RatesSection active={active} module={module} /> : null}
+        {module.module_id === "economy_inflation" ? (
+          <EconomySection active={active} module={module} />
+        ) : null}
+        {module.module_id === "liquidity_funding" ? (
+          <LiquiditySection active={active} module={module} />
+        ) : null}
+        {module.module_id === "credit" ? <CreditSection active={active} module={module} /> : null}
+        {module.module_id === "volatility" ? (
+          <VolatilitySection active={active} module={module} />
+        ) : null}
+        {module.module_id === "cross_asset" ? (
+          <CrossAssetSection active={active} module={module} />
+        ) : null}
+      </div>
+    </div>
   );
 }
 
-function useHashSection(sections: Section[]) {
-  const fallback = sections[0].id;
+function useHashSection(sections: readonly Section[]) {
+  const fallback = sections[0]?.id ?? "";
   const read = useCallback(() => {
     const candidate = window.location.hash.replace(/^#/, "");
     return sections.some((section) => section.id === candidate) ? candidate : fallback;
@@ -104,454 +191,738 @@ function useHashSection(sections: Section[]) {
   return active;
 }
 
-function RatesSections({ module, active }: { module: MacroRatesFedReadData; active: string }) {
+function RatesSection({ module, active }: { module: MacroRatesFedReadData; active: string }) {
   if (active === "policy") {
+    const indicators = parseIndicators(module.policy_pricing.rates);
     return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="POLICY PRICING"
-          title="现金政策、政策走廊与曲线定价"
-          description="EFFR、目标区间、SOFR 与 Treasury 短长端并列；没有底层合约时不生成 FedWatch 概率。"
+      <ModuleWorkbench
+        description="EFFR、目标区间、SOFR 与 Treasury 短长端使用各自事实序列，不生成缺少底层合约的 FedWatch 近似概率。"
+        eyebrow="POLICY CORRIDOR"
+        module={module}
+        title="政策走廊与当前市场定价"
+      >
+        <ModuleTimeSeriesChart
+          description="相同百分比坐标；默认按数据自然频率截取。"
+          module={module}
+          series={indicatorSeries(indicators)}
+          title="政策利率与市场利率"
+          unit="percent"
         />
-        <IndicatorTable indicators={module.policy_pricing.rates} />
-        <UnavailableCard
-          label="CME 政策利率期货概率"
-          reason={module.policy_pricing.cme_policy_probabilities.reason}
-        />
-      </section>
+        <LatestMetricStrip indicators={indicators} />
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
     );
   }
   if (active === "fed") {
-    return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="FED COMMUNICATION"
-          title="政策事件优先，不给官员贴永久标签"
-          description="机构立场与官员讲话分布是两条独立轨道；每个结论绑定原文与不可变分析。"
-        />
-        <div className="macro-decision__fed-summary">
-          <article>
-            <span>FOMC 机构立场</span>
-            <strong>{module.fed.institutional_stance.direction}</strong>
-            <p>{module.fed.institutional_stance.reason}</p>
-          </article>
-          <article>
-            <span>官员沟通分布</span>
-            <strong>
-              鹰 {module.fed.officials_distribution.hawkish} · 中性{" "}
-              {module.fed.officials_distribution.neutral} · 鸽{" "}
-              {module.fed.officials_distribution.dovish} · 混合{" "}
-              {module.fed.officials_distribution.mixed}
-            </strong>
-            <p>
-              {module.fed.officials_distribution.window_days} 日窗口，截至{" "}
-              {module.fed.officials_distribution.as_of ?? "—"}；非政策{" "}
-              {module.fed.officials_distribution.not_policy_signal} · 不确定{" "}
-              {module.fed.officials_distribution.uncertain}
-            </p>
-          </article>
-        </div>
-        <FedTimeline events={module.fed.timeline} />
-        {module.fed.roster.state !== "current" ? (
-          <UnavailableCard label="有效日期官员 roster" reason={module.fed.roster.reason} />
-        ) : null}
-      </section>
-    );
+    return <FedCommunication module={module} />;
   }
   if (active === "positioning") {
+    const positions = parsePositions(module.positioning);
     return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="POSITIONING"
-          title="利率期货杠杆资金仓位"
-          description="CFTC 仓位是市场确认，不替代收益率曲线与政策事实。"
+      <ModuleWorkbench
+        description="CFTC 分账户净仓位只作市场确认；零值按真实零柱显示。"
+        eyebrow="CFTC POSITIONING"
+        module={module}
+        title="利率期货仓位确认"
+      >
+        <MacroBarChart
+          baseline={0}
+          groups={positionGroups(positions)}
+          title="净仓位占未平仓量"
+          unit="percent_open_interest"
         />
-        <ObjectTable rows={module.positioning} />
-      </section>
+        <PositionSourceList rows={positions} />
+      </ModuleWorkbench>
     );
   }
+
+  const curve = asRecord(module.curve);
+  const nominal = parseCurveSnapshots(curve, "nominal_snapshots", "yield_pct");
+  const real = parseCurveSnapshots(curve, "real_snapshots", "yield_pct");
+  const breakeven = parseCurveSnapshots(curve, "breakeven_snapshots", "breakeven_pct");
+  const spreadContainer = readRecord(curve, "spreads");
+  const spreadSeries: MacroChartSeries[] = Object.entries(spreadContainer).map(
+    ([id, value], index) => ({
+      id,
+      label: spreadLabel(id),
+      color: chartColor(index),
+      points: parsePointRecords(value, "value_bp"),
+    }),
+  );
+  const classification = readRecord(curve, "classification");
   return (
-    <section className="macro-decision__semantic-section">
-      <SectionHeading
-        eyebrow="TREASURY CURVE"
-        title={`${module.curve.classification.label} · 当前、1周、1月、3月`}
-        description="横轴是统一期限，纵轴是统一收益率；不再把不同刻度的历史 sparkline 误称为收益率曲线。"
-      />
-      <CurveFigure snapshots={module.curve.nominal_snapshots} title="名义 Treasury 曲线" />
-      <CurveFigure snapshots={module.curve.real_snapshots} title="实际 Treasury 曲线" />
-      <CurveTenorTable curve={module.curve} />
-      <SpreadTable spreads={module.curve.spreads} />
-      <p className="macro-decision__callout">
-        1周因子：水平 {numberLabel(module.curve.classification.inputs.level_change_bp)} bp · 斜率{" "}
-        {numberLabel(module.curve.classification.inputs.slope_change_bp)} bp · 曲率{" "}
-        {numberLabel(module.curve.classification.inputs.curvature_change_bp)} bp ·{" "}
-        {module.curve.classification.formula_version}
-      </p>
-    </section>
+    <ModuleWorkbench
+      description="横轴始终是统一期限；名义、实际与 breakeven 分图，避免双轴与历史 sparkline 冒充收益率曲线。"
+      eyebrow="TREASURY CURVE"
+      module={module}
+      title={`${readText(classification, "label") ?? "收益率曲线形态尚未解释"} · 当前 / 1W / 1M / 3M`}
+    >
+      <div className="macro-decision__chart-stack">
+        <MacroCurveChart snapshots={nominal} title="名义 Treasury 曲线" />
+        <div className="macro-decision__chart-pair">
+          <MacroCurveChart snapshots={real} title="实际 Treasury 曲线" />
+          <MacroCurveChart snapshots={breakeven} title="Breakeven 通胀补偿" />
+        </div>
+        <ModuleTimeSeriesChart
+          baseline={0}
+          description="2s10s、3m10s 与 5s30s，统一使用基点。"
+          module={module}
+          series={spreadSeries}
+          title="关键期限利差"
+          unit="basis_points"
+        />
+      </div>
+    </ModuleWorkbench>
   );
 }
 
-function EconomySections({
+function FedCommunication({ module }: { module: MacroRatesFedReadData }) {
+  const fed = asRecord(module.fed);
+  const institutional = readRecord(fed, "institutional_stance");
+  const distribution = readRecord(fed, "officials_distribution");
+  const eventCounts = readRecord(distribution, "stance_event_counts");
+  const officialCounts = readRecord(distribution, "stance_unique_official_counts");
+  const institutionalDirection = readText(institutional, "direction");
+  const institutionalReason = readText(institutional, "reason");
+  const institutionalAnalysisId = readText(institutional, "analysis_id");
+  const stances = ["hawkish", "neutral", "dovish", "mixed"] as const;
+  const groups: MacroBarGroup[] = stances.map((stance) => ({
+    id: stance,
+    label: stanceLabel(stance),
+    values: [
+      {
+        id: "events",
+        label: "事件数",
+        value: readNumber(eventCounts, stance),
+        color: chartColor(0),
+      },
+      {
+        id: "officials",
+        label: "独立官员数",
+        value: readNumber(officialCounts, stance),
+        color: chartColor(1),
+      },
+    ],
+  }));
+  return (
+    <ModuleWorkbench
+      description="机构声明与官员讲话是两条独立证据轨；分布来自已审阅文件，不给官员贴永久鹰鸽标签。"
+      eyebrow="FED COMMUNICATION"
+      module={module}
+      title="制度立场、官员分布与事件时间线"
+    >
+      {institutionalDirection || institutionalReason || institutionalAnalysisId ? (
+        <div className="macro-decision__fed-callout">
+          <span>机构立场</span>
+          {institutionalDirection ? <strong>{stanceLabel(institutionalDirection)}</strong> : null}
+          {institutionalReason ? <p>{institutionalReason}</p> : null}
+          {institutionalAnalysisId ? (
+            <details>
+              <summary>查看分析审计</summary>
+              <small>{institutionalAnalysisId}</small>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+      <MacroBarChart groups={groups} title="近 90 日已审阅沟通分布" />
+      <FedTimeline rows={readRecords(fed, "timeline")} />
+    </ModuleWorkbench>
+  );
+}
+
+function EconomySection({
   module,
   active,
 }: {
   module: MacroEconomyInflationReadData;
   active: string;
 }) {
-  const section =
+  const payload =
     active === "labor" ? module.labor : active === "growth" ? module.growth : module.inflation;
-  const releases =
-    active === "growth"
-      ? []
-      : active === "labor"
-        ? module.labor.official_releases
-        : module.inflation.official_releases;
+  const indicators = parseIndicators(payload);
+  const releases = parseReleases(payload);
+  const copy = {
+    growth: {
+      title: "增长与实际活动",
+      description: "GDP、零售销售与工业生产各按自身发布频率呈现，不使用双轴拼接。",
+    },
+    inflation: {
+      title: "通胀脉冲与黏性",
+      description: "CPI、核心 CPI、PCE 与核心 PCE 分为同口径小图，并保留官方预期差与前值修订。",
+    },
+    labor: {
+      title: "就业、失业率与初请",
+      description: "月度就业、失业率与周度初请使用各自自然窗口，不把发布频率混成一条总分。",
+    },
+  }[active === "labor" || active === "growth" ? active : "inflation"];
   return (
-    <section className="macro-decision__semantic-section">
-      <SectionHeading
-        eyebrow="ECONOMY & INFLATION"
-        title={active === "labor" ? "就业与劳动市场" : active === "growth" ? "增长与需求" : "通胀"}
-        description="水平、1周/1月变化、样本范围与正式发布事实分开呈现。"
-      />
-      <IndicatorTable indicators={section.indicators} />
-      {releases.length ? <ObjectTable rows={releases} /> : null}
-    </section>
+    <ModuleWorkbench
+      description={copy.description}
+      eyebrow="ECONOMY & INFLATION"
+      module={module}
+      title={copy.title}
+    >
+      <IndicatorSmallMultiples indicators={indicators} module={module} />
+      <MacroReleaseStrip releases={releases} />
+      <MacroIndicatorTable indicators={indicators} />
+    </ModuleWorkbench>
   );
 }
 
-function LiquiditySections({
+function LiquiditySection({
   module,
   active,
 }: {
   module: MacroLiquidityFundingReadData;
   active: string;
 }) {
-  const indicators =
-    active === "funding" ? module.funding.indicators : module.balance_sheet.indicators;
-  return (
-    <section className="macro-decision__semantic-section">
-      <SectionHeading
-        eyebrow="LIQUIDITY & FUNDING"
-        title={active === "funding" ? "SOFR 与准备金利率" : "央行、准备金与财政流动性"}
-        description="余额与资金价格分开读，避免把同方向变化机械压成一个总分。"
-      />
-      <IndicatorTable indicators={indicators} />
-    </section>
-  );
-}
-
-function CreditSections({ module, active }: { module: MacroCreditReadData; active: string }) {
-  let content;
   if (active === "funding") {
-    content = (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="ALL-IN FUNDING COST"
-          title="公司债绝对融资成本"
-          description="IG/HY effective yield 与 Fed Funds、10Y Treasury 并列，紧利差不再等同于低融资成本。"
+    const funding = asRecord(module.funding);
+    const indicators = parseIndicators(funding);
+    const spread = parsePointRecords(funding.sofr_minus_iorb_bp_history, "value");
+    return (
+      <ModuleWorkbench
+        description="SOFR 与 IORB 使用同一百分比坐标；SOFR−IORB 利差由服务端确定性计算，不在浏览器推导。"
+        eyebrow="FUNDING CONDITIONS"
+        module={module}
+        title="隔夜融资价格与政策利率"
+      >
+        <ModuleTimeSeriesChart
+          module={module}
+          series={indicatorSeries(indicators)}
+          title="SOFR 与 IORB"
+          unit="percent"
         />
-        <IndicatorTable
-          indicators={[
-            ...module.funding_costs.corporate_yields,
-            ...module.funding_costs.reference_rates,
+        <ModuleTimeSeriesChart
+          baseline={0}
+          module={module}
+          series={[
+            {
+              id: "sofr-iorb",
+              label: "SOFR − IORB",
+              points: spread,
+            },
           ]}
+          title="SOFR−IORB 利差"
+          unit="basis_points"
         />
-        <FundingComparisonTable rows={module.funding_costs.comparisons} />
-      </section>
-    );
-  } else if (active === "banks") {
-    content = (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="BANK SUPPLY"
-          title="SLOOS 贷款标准与需求"
-          description="C&I、CRE 与消费信贷供给/需求使用官方季度时钟。"
-        />
-        <IndicatorTable indicators={module.bank_lending.indicators} />
-      </section>
-    );
-  } else if (active === "quality") {
-    content = (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="REALIZED QUALITY"
-          title="逾期率与核销率"
-          description="市场定价必须接受企业、CRE 与消费贷款真实质量的交叉检验。"
-        />
-        <IndicatorTable indicators={module.loan_quality.indicators} />
-      </section>
-    );
-  } else if (active === "confirmation") {
-    content = (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="MARKET CONFIRMATION"
-          title="ETF 与期货仓位确认"
-          description="LQD/HYG 和 CFTC 只作确认；TRACE 与 NAV 细节在获得合规数据前保持不可用。"
-        />
-        <AssetTable rows={module.confirmations.etfs} />
-        <ObjectTable rows={module.confirmations.positions} />
-        <UnavailableCard label="TRACE / ETF NAV" reason={module.confirmations.trace_nav.reason} />
-      </section>
-    );
-  } else {
-    content = (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="CREDIT LADDER"
-          title="IG → BBB → BB → B → CCC 评级梯级"
-          description="同时展示水平、变化、实际样本数与历史分位；没有综合信用分数。"
-        />
-        <IndicatorTable indicators={module.spread_ladder.rows} />
-        <p className="macro-decision__callout">
-          CCC–BB 尾差：{formatSigned(module.spread_ladder.tail_gap)} bp
-        </p>
-      </section>
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
     );
   }
+  const indicators = parseIndicators(module.balance_sheet);
   return (
-    <>
-      <CreditCycleDimensions rows={module.cycle_dimensions} />
-      {content}
-    </>
+    <ModuleWorkbench
+      description="Fed 总资产、准备金、TGA 与 RRP 四条余额分图呈现，同时比较 1W / 1M 变化；不压成综合流动性分数。"
+      eyebrow="BALANCE SHEET"
+      module={module}
+      title="资产负债表与储备流动性"
+    >
+      <IndicatorSmallMultiples indicators={indicators} module={module} />
+      <MacroBarChart
+        groups={indicatorChangeGroups(indicators)}
+        title="余额变化"
+        unit={commonUnit(indicators)}
+      />
+      <MacroIndicatorTable indicators={indicators} />
+    </ModuleWorkbench>
   );
 }
 
-function CreditCycleDimensions({ rows }: { rows: MacroCreditReadData["cycle_dimensions"] }) {
+function CreditSection({ module, active }: { module: MacroCreditReadData; active: string }) {
+  if (active === "cycle") {
+    return (
+      <ModuleWorkbench
+        description="四个维度独立呈现水平、速度、供需与已实现质量；不生成综合信用分数。"
+        eyebrow="CREDIT CYCLE"
+        module={module}
+        title="信用周期四维判断"
+      >
+        <CreditDimensions rows={module.cycle_dimensions} />
+      </ModuleWorkbench>
+    );
+  }
+  if (active === "spreads") {
+    const ladder = asRecord(module.spread_ladder);
+    const indicators = parseIndicators(readRecords(ladder, "rows"));
+    const tailGap = readNumber(ladder, "tail_gap");
+    return (
+      <ModuleWorkbench
+        description="IG → BBB → BB → B → CCC 同时展示当前水平、历史变化与真实样本分位。"
+        eyebrow="SPREAD LADDER"
+        module={module}
+        title="评级利差梯级与尾部差"
+      >
+        <MacroBarChart
+          baseline={0}
+          groups={indicators.map((item) => ({
+            id: item.datasetId,
+            label: shortIndicatorLabel(item.label),
+            values: [{ id: "level", label: "当前利差", value: item.latestValue }],
+          }))}
+          title="当前评级利差"
+          unit={commonUnit(indicators)}
+        />
+        <ModuleTimeSeriesChart
+          module={module}
+          series={indicatorSeries(indicators)}
+          title="评级利差历史"
+          unit={commonUnit(indicators)}
+        />
+        {tailGap == null ? null : (
+          <p className="macro-decision__callout">
+            CCC−BB 尾差：
+            {formatOptional(tailGap, readText(ladder, "tail_gap_unit"))}
+          </p>
+        )}
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
+    );
+  }
+  if (active === "funding") {
+    const funding = asRecord(module.funding_costs);
+    const corporate = parseIndicators(readRecords(funding, "corporate_yields"));
+    const reference = parseIndicators(readRecords(funding, "reference_rates"));
+    const comparisons = readRecords(funding, "comparisons");
+    return (
+      <ModuleWorkbench
+        description="公司债 effective yield 与 EFFR、10Y Treasury 并列；紧利差不等于低融资成本。"
+        eyebrow="ALL-IN FUNDING COST"
+        module={module}
+        title="公司债绝对融资成本"
+      >
+        <ModuleTimeSeriesChart
+          module={module}
+          series={indicatorSeries([...corporate, ...reference])}
+          title="公司债与参考利率"
+          unit="percent"
+        />
+        <MacroBarChart
+          groups={comparisons.map((row, index) => ({
+            id: readText(row, "label") ?? `comparison-${index}`,
+            label: readText(row, "label") ?? `比较 ${index + 1}`,
+            values: [
+              {
+                id: "spread",
+                label: "利差",
+                value: readNumber(row, "value_bp"),
+              },
+            ],
+          }))}
+          title="公司债收益率减参考利率"
+          unit="basis_points"
+        />
+        <MacroIndicatorTable indicators={[...corporate, ...reference]} />
+      </ModuleWorkbench>
+    );
+  }
+  if (active === "banks") {
+    const indicators = parseIndicators(module.bank_lending);
+    return (
+      <ModuleWorkbench
+        description="C&I、CRE 与消费信贷的标准和需求按官方季度时钟分开读。"
+        eyebrow="BANK SUPPLY & DEMAND"
+        module={module}
+        title="银行信贷供给与需求"
+      >
+        <IndicatorSmallMultiples indicators={indicators} module={module} />
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
+    );
+  }
+  if (active === "quality") {
+    const indicators = parseIndicators(module.loan_quality);
+    return (
+      <ModuleWorkbench
+        description="企业、CRE 与消费贷款逾期率和核销率检验市场信用定价。"
+        eyebrow="REALIZED QUALITY"
+        module={module}
+        title="已实现贷款质量"
+      >
+        <IndicatorSmallMultiples indicators={indicators} module={module} />
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
+    );
+  }
+  const confirmations = asRecord(module.confirmations);
+  const returnMatrix = parseCrossAssetReturnMatrix(confirmations.return_matrix);
+  const sourceIdentity = parseCrossAssetSourceIdentity(confirmations.source_identity);
+  const positions = parsePositions(readRecords(confirmations, "positions"));
   return (
-    <section aria-label="信用周期五维结论" className="macro-decision__credit-dimensions">
-      {rows.map((row) => (
-        <article data-state={row.state} key={row.dimension_id}>
-          <span>{row.label}</span>
-          <strong>{row.state}</strong>
-          <p>{row.driver}</p>
-          {row.conflicts.map((conflict) => (
-            <small key={conflict}>{conflict}</small>
-          ))}
-        </article>
-      ))}
-    </section>
+    <ModuleWorkbench
+      description="LQD/HYG 与 CFTC 只作确认；最新价和历史收益严格读取服务端指定来源，不在浏览器内替补。"
+      eyebrow="MARKET CONFIRMATION"
+      module={module}
+      title="信用 ETF 与仓位确认"
+    >
+      <CrossAssetReturnMatrix label="信用 ETF 收益矩阵" rows={returnMatrix} />
+      <CrossAssetSourceIdentityTable rows={sourceIdentity} />
+      <MacroBarChart
+        groups={positionGroups(positions)}
+        title="信用期货净仓位"
+        unit="percent_open_interest"
+      />
+    </ModuleWorkbench>
   );
 }
 
-function VolatilitySections({
+function VolatilitySection({
   module,
   active,
 }: {
   module: MacroVolatilityReadData;
   active: string;
 }) {
-  const indicators =
-    active === "cross-asset"
-      ? module.cross_asset_implied.indicators
-      : module.term_structure.spot_and_three_month;
+  if (active === "cross-asset") {
+    const payload = asRecord(module.cross_asset_implied);
+    const indicators = parseIndicators(payload);
+    const groups = parseCrossAssetNormalizedGroups(payload.normalized_groups);
+    return (
+      <ModuleWorkbench
+        description="VXN、GVZ 与 OVX 先按各自水平呈现；服务端归一化序列用于跨资产方向比较。"
+        eyebrow="CROSS-ASSET IMPLIED VOL"
+        module={module}
+        title="股票、黄金与原油隐含波动率"
+      >
+        {groups.length ? (
+          <div className="macro-decision__chart-stack">
+            {groups.map((group) => (
+              <ModuleTimeSeriesChart
+                baseline={100}
+                key={group.groupId}
+                module={module}
+                series={crossAssetNormalizedSeries(group)}
+                title={group.label}
+                unit="index"
+              />
+            ))}
+          </div>
+        ) : (
+          <IndicatorSmallMultiples indicators={indicators} module={module} />
+        )}
+        <MacroIndicatorTable indicators={indicators} />
+      </ModuleWorkbench>
+    );
+  }
+  const term = asRecord(module.term_structure);
+  const indicators = parseIndicators(readRecords(term, "spot_and_three_month"));
+  const spread = parseHistory(term.spread_history);
+  const officialVxCurve = readRecords(term, "official_vx_curve");
   return (
-    <section className="macro-decision__semantic-section">
-      <SectionHeading
-        eyebrow="VOLATILITY"
-        title={active === "cross-asset" ? "股票、黄金与原油隐含波动率" : "VIX 现货与三个月期限结构"}
-        description="期限与跨资产波动率分开，保留各自来源和历史范围。"
+    <ModuleWorkbench
+      description="现货与三个月 VIX 用于时间序列比较；完整期货曲线只读取带官方到期日的 CFE 结算，不用合约代码猜到期。"
+      eyebrow="VOLATILITY TERM STRUCTURE"
+      module={module}
+      title="VIX 期限结构"
+    >
+      <ModuleTimeSeriesChart
+        module={module}
+        series={indicatorSeries(indicators)}
+        title="VIX 与 3M VIX"
+        unit="index"
       />
-      <IndicatorTable indicators={indicators} />
-    </section>
+      <ModuleTimeSeriesChart
+        baseline={0}
+        module={module}
+        series={[{ id: "vix-vxv", label: "VIX − 3M VIX", points: spread }]}
+        title="现货减三个月利差"
+        unit="index_points"
+      />
+      <MacroIndicatorTable indicators={indicators} />
+      <SettlementTable rows={officialVxCurve} />
+    </ModuleWorkbench>
   );
 }
 
-function CrossAssetSections({
+function CrossAssetSection({
   module,
   active,
 }: {
   module: Extract<MacroTypedModuleReadData, { module_id: "cross_asset" }>;
   active: string;
 }) {
+  const assetsPayload = asRecord(module.assets);
   if (active === "normalized") {
+    const groups = parseCrossAssetNormalizedGroups(assetsPayload.normalized_groups);
     return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="NORMALIZED TO 100"
-          title="固定 ETF 篮子归一化比较"
-          description="各资产从窗口首日归一为 100，避免不同价格单位造成错误比较。"
-        />
-        <NormalizedFigure points={module.assets.normalized} />
-      </section>
+      <ModuleWorkbench
+        description="各资产由服务端归一为窗口首日 100，并按服务端返回的稳定分组和顺序拆图；不同价格单位不会直接比较。"
+        eyebrow="NORMALIZED GROUPS"
+        module={module}
+        title="大类资产分组归一化走势"
+      >
+        {groups.length ? (
+          <div className="macro-decision__chart-stack">
+            {groups.map((group) => (
+              <ModuleTimeSeriesChart
+                baseline={100}
+                key={group.groupId}
+                module={module}
+                series={crossAssetNormalizedSeries(group)}
+                title={group.label}
+                unit="index"
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState text="服务端尚未返回归一化分组。" />
+        )}
+      </ModuleWorkbench>
     );
   }
   if (active === "correlations") {
     return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="CORRELATION"
-          title="最多 120 个日收益样本"
-          description="相关性是独立证据，不挤占默认资产矩阵。"
+      <ModuleWorkbench
+        description="相关性使用共同日收益样本，样本数随单元格保留；矩阵仅重排 API 事实。"
+        eyebrow="CORRELATION MATRIX"
+        module={module}
+        title="跨资产相关性"
+      >
+        <MacroCorrelationHeatmap
+          rows={parseCorrelations(module.correlations)}
+          title="日收益相关矩阵"
         />
-        <CorrelationTable rows={module.correlations} />
-      </section>
+      </ModuleWorkbench>
     );
   }
   if (active === "futures") {
+    const futures = asRecord(module.futures);
+    const returnMatrix = parseCrossAssetReturnMatrix(futures.return_matrix);
+    const positions = parsePositions(readRecords(futures, "positions"));
     return (
-      <section className="macro-decision__semantic-section">
-        <SectionHeading
-          eyebrow="FUTURES CONFIRMATION"
-          title="主要期货、美元指数、VIX 结算与跨资产 CFTC 仓位"
-          description="盘中行情采用 Yahoo Finance 最佳可用代理；官方结算与周度仓位仍单独保留。"
+      <ModuleWorkbench
+        description="连续期货市场与 CFTC 周度仓位分层呈现，不混用来源时钟；VIX 官方期限曲线由波动率模块负责。"
+        eyebrow="FUTURES CONFIRMATION"
+        module={module}
+        title="期货市场与仓位确认"
+      >
+        <CrossAssetReturnMatrix label="期货收益矩阵" rows={returnMatrix} />
+        <CrossAssetReturnSourceTable rows={returnMatrix} />
+        <MacroBarChart
+          groups={positionGroups(positions)}
+          title="跨资产 CFTC 净仓位"
+          unit="percent_open_interest"
         />
-        <AssetTable rows={module.futures.market} />
-        <ObjectTable rows={[...module.futures.vix_settlements, ...module.futures.positions]} />
-      </section>
+      </ModuleWorkbench>
     );
   }
+  const returnMatrix = parseCrossAssetReturnMatrix(assetsPayload.return_matrix);
+  const sourceIdentity = parseCrossAssetSourceIdentity(assetsPayload.source_identity);
+  return (
+    <ModuleWorkbench
+      description="固定十只 ETF 用最新价与 1D / 1W / 1M 收益热力矩阵开场；每个单元格只读取服务端指定来源，不在浏览器中替补或混合。"
+      eyebrow="CROSS-ASSET RETURNS"
+      module={module}
+      title="固定十只 ETF 收益矩阵"
+    >
+      <CrossAssetReturnMatrix label="十只 ETF 收益矩阵" rows={returnMatrix} />
+      <CrossAssetSourceIdentityTable rows={sourceIdentity} />
+    </ModuleWorkbench>
+  );
+}
+
+function ModuleWorkbench({
+  module,
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  module: MacroTypedModuleReadData;
+  eyebrow: string;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="macro-decision__semantic-section">
-      <SectionHeading
-        eyebrow="CROSS-ASSET MATRIX"
-        title="市场基准与可交易 ETF 代理分开"
-        description="USO 只是 ETF 行；WTI Cushing spot 是独立官方基准。"
-      />
-      <BenchmarkTable rows={module.assets.benchmarks} />
-      <AssetTable rows={module.assets.proxies} />
-      <NormalizedFigure points={module.assets.normalized} />
+      <header className="macro-decision__section-heading">
+        <span>{eyebrow}</span>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </header>
+      <div className="macro-decision__visual-workbench">
+        <div className="macro-decision__chart-stage">{children}</div>
+        <DecisionAnnotationRail module={module} />
+      </div>
     </section>
   );
 }
 
-function SectionHeading({
-  eyebrow,
-  title,
-  description,
-}: {
-  eyebrow: string;
-  title: string;
-  description: string;
-}) {
+function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }) {
+  const thesisContext = module.thesis_context;
+  const summaryInterpretation = module.summary.interpretation;
   return (
-    <header className="macro-decision__section-heading">
-      <span>{eyebrow}</span>
-      <h2>{title}</h2>
-      <p>{description}</p>
-    </header>
-  );
-}
-
-function CurveFigure({ snapshots, title }: { snapshots: MacroCurveSnapshot[]; title: string }) {
-  const allValues = snapshots.flatMap((snapshot) =>
-    snapshot.points.map((point) => point.yield_pct),
-  );
-  if (!allValues.length) return <EmptyState text={`${title}尚在回填。`} />;
-  const minimum = Math.min(...allValues);
-  const maximum = Math.max(...allValues);
-  const span = maximum - minimum || 1;
-  return (
-    <figure className="macro-decision__curve">
-      <figcaption>{title}</figcaption>
-      <svg aria-label={title} preserveAspectRatio="none" viewBox="0 0 100 42">
-        {snapshots.map((snapshot) => {
-          const path = snapshot.points
-            .map((point, index) => {
-              const x =
-                snapshot.points.length === 1 ? 50 : (index / (snapshot.points.length - 1)) * 100;
-              const y = 38 - ((point.yield_pct - minimum) / span) * 32;
-              return `${index ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-            })
-            .join(" ");
-          return <path data-window={snapshot.window} d={path} key={snapshot.window} />;
-        })}
-      </svg>
-      <div className="macro-decision__curve-legend">
-        {snapshots.map((snapshot) => (
-          <span data-window={snapshot.window} key={snapshot.window}>
-            {windowLabel(snapshot.window)} · {snapshot.as_of}
-          </span>
-        ))}
-      </div>
-      <div className="macro-decision__curve-tenors">
-        {snapshots[0].points.map((point) => (
-          <span key={point.tenor}>{point.tenor}</span>
-        ))}
-      </div>
-    </figure>
-  );
-}
-
-function CurveTenorTable({ curve }: { curve: MacroRatesFedReadData["curve"] }) {
-  const nominalByWindow = new Map(
-    curve.nominal_snapshots.map((snapshot) => [
-      snapshot.window,
-      new Map(snapshot.points.map((point) => [point.tenor, point.yield_pct])),
-    ]),
-  );
-  const current = curve.nominal_snapshots.find((snapshot) => snapshot.window === "current");
-  const real = new Map(
-    (curve.real_snapshots.find((snapshot) => snapshot.window === "current")?.points ?? []).map(
-      (point) => [point.tenor, point.yield_pct],
-    ),
-  );
-  const breakeven = new Map(
-    (curve.breakeven_snapshots.find((snapshot) => snapshot.window === "current")?.points ?? []).map(
-      (point) => [point.tenor, point.breakeven_pct],
-    ),
-  );
-  if (!current) return <EmptyState text="详细期限表等待 Treasury 曲线回填。" />;
-  return (
-    <div className="macro-decision__semantic-table macro-decision__curve-table" role="table">
-      <div role="row">
-        <span role="columnheader">期限</span>
-        <span role="columnheader">当前名义</span>
-        <span role="columnheader">1周前</span>
-        <span role="columnheader">1月前</span>
-        <span role="columnheader">3月前</span>
-        <span role="columnheader">当前实际 / breakeven</span>
-      </div>
-      {current.points.map((point) => (
-        <div key={point.tenor} role="row">
-          <span role="cell">
-            <strong>{point.tenor}</strong>
-          </span>
-          <span role="cell">{formatNumber(point.yield_pct)}%</span>
-          <span role="cell">{optionalPercent(nominalByWindow.get("1w")?.get(point.tenor))}</span>
-          <span role="cell">{optionalPercent(nominalByWindow.get("1m")?.get(point.tenor))}</span>
-          <span role="cell">{optionalPercent(nominalByWindow.get("3m")?.get(point.tenor))}</span>
-          <span role="cell">
-            {optionalPercent(real.get(point.tenor))} / {optionalPercent(breakeven.get(point.tenor))}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SpreadTable({
-  spreads,
-}: {
-  spreads: Record<string, Array<{ date: string; value_bp: number }>>;
-}) {
-  return (
-    <div className="macro-decision__metric-grid">
-      {Object.entries(spreads).map(([name, points]) => (
-        <article key={name}>
-          <span>{name}</span>
-          <strong>{points.length ? `${formatNumber(points.at(-1)!.value_bp)} bp` : "—"}</strong>
-          <small>{points.length ? `${points[0].date} → ${points.at(-1)!.date}` : "等待回填"}</small>
+    <aside aria-label="图表决策注释" className="macro-decision__annotation-rail">
+      <header>
+        <span>DECISION ANNOTATIONS</span>
+        <strong>只展示当前 API 返回的判断与检查项</strong>
+      </header>
+      <article>
+        <span>事实截点</span>
+        <strong>{formatInstant(module.latest_fact_at_ms)}</strong>
+        {module.summary.headline ? <small>{module.summary.headline}</small> : null}
+        {summaryInterpretation ? <small>{summaryInterpretation}</small> : null}
+      </article>
+      <article
+        data-context-state={thesisContext.state}
+        data-state={thesisContext.role === "contradicting" ? "weakening" : undefined}
+      >
+        <span>当前 Thesis 关系</span>
+        <strong>{thesisRoleLabel(thesisContext.role)}</strong>
+        {thesisContext.assessment ? <small>{thesisContext.assessment.analysis}</small> : null}
+        {thesisContext.reason ? <small>{thesisContext.reason.message}</small> : null}
+        <small>
+          闭集条件 {thesisContext.conditions.length} · 恢复观察 {thesisContext.recovery.length}
+        </small>
+        {thesisContext.assessment?.evidence_refs.length ? (
+          <details>
+            <summary>查看实际引用证据</summary>
+            <ul>
+              {thesisContext.assessment.evidence_refs.map((id) => (
+                <li key={id}>
+                  <small>{id}</small>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </article>
+      {module.summary.top_changes.length ? (
+        <article data-state="change">
+          <span>关键变化</span>
+          <ul>
+            {module.summary.top_changes.map((change) => (
+              <li key={`${change.dataset_id}:${change.as_of ?? change.importance_rank}`}>
+                <strong>{change.label}</strong>
+                <small>
+                  {formatOptional(change.value, change.unit)}
+                  {change.as_of ? ` · ${change.as_of}` : ""}
+                </small>
+                {change.importance_explanation ? (
+                  <small>{change.importance_explanation}</small>
+                ) : null}
+                <details>
+                  <summary>查看来源审计</summary>
+                  <small>{change.dataset_id}</small>
+                  {change.source_url ? (
+                    <a href={change.source_url} rel="noreferrer" target="_blank">
+                      原始来源 <ExternalLink aria-hidden="true" />
+                    </a>
+                  ) : null}
+                </details>
+              </li>
+            ))}
+          </ul>
         </article>
+      ) : null}
+      {module.contradictions.length ? (
+        <article data-state="weakening">
+          <span>矛盾</span>
+          <ul>
+            {module.contradictions.map((contradiction) => (
+              <li key={contradiction}>
+                <strong>{contradiction}</strong>
+              </li>
+            ))}
+          </ul>
+        </article>
+      ) : null}
+      {module.falsifiers.length ? (
+        <article data-state="invalidated">
+          <span>失效条件</span>
+          <ul>
+            {module.falsifiers.map((falsifier) => (
+              <li key={falsifier}>
+                <strong>{falsifier}</strong>
+              </li>
+            ))}
+          </ul>
+        </article>
+      ) : null}
+      {module.next_checkpoints.length ? (
+        <article>
+          <span>下一检查点</span>
+          <ul>
+            {module.next_checkpoints.map((checkpoint) => (
+              <li key={`${checkpoint.dataset_id}:${checkpoint.label}`}>
+                <strong>{checkpoint.label}</strong>
+                <small>
+                  当前数据 {checkpointCurrentLabel(checkpoint.current_health)} · 历史深度{" "}
+                  {checkpointHistoryLabel(checkpoint.history_depth)}
+                </small>
+                {checkpoint.next_check_at_ms ? (
+                  <time>下次检查 {formatInstant(checkpoint.next_check_at_ms)}</time>
+                ) : null}
+                {checkpoint.reason ? <small>{checkpoint.reason.message}</small> : null}
+                {checkpoint.reason?.next_action ? (
+                  <small>{checkpoint.reason.next_action}</small>
+                ) : null}
+                <details>
+                  <summary>查看数据审计</summary>
+                  <small>{checkpoint.dataset_id}</small>
+                </details>
+              </li>
+            ))}
+          </ul>
+        </article>
+      ) : null}
+    </aside>
+  );
+}
+
+type ModuleTimeSeriesProps = Parameters<typeof MacroTimeSeriesChart>[0] & {
+  module: MacroTypedModuleReadData;
+};
+
+function ModuleTimeSeriesChart({ module, ...props }: ModuleTimeSeriesProps) {
+  return (
+    <MacroTimeSeriesChart
+      {...props}
+      annotations={[...(props.annotations ?? []), ...moduleChartAnnotations(module, props.series)]}
+    />
+  );
+}
+
+function IndicatorSmallMultiples({
+  indicators,
+  module,
+}: {
+  indicators: MacroIndicatorView[];
+  module: MacroTypedModuleReadData;
+}) {
+  if (!indicators.length) return <EmptyState text="当前没有可用指标。" />;
+  return (
+    <div className="macro-decision__small-multiples">
+      {indicators.map((indicator) => (
+        <ModuleTimeSeriesChart
+          key={indicator.datasetId}
+          module={module}
+          series={[
+            {
+              id: indicator.datasetId,
+              label: indicator.label,
+              points: indicator.history,
+            },
+          ]}
+          title={indicator.label}
+          unit={indicator.unit}
+        />
       ))}
     </div>
   );
 }
 
-function FundingComparisonTable({
-  rows,
-}: {
-  rows: MacroCreditReadData["funding_costs"]["comparisons"];
-}) {
-  if (!rows.length) return <EmptyState text="等待公司债收益率与参考利率的共同日期。" />;
+function LatestMetricStrip({ indicators }: { indicators: MacroIndicatorView[] }) {
+  if (!indicators.length) return null;
   return (
-    <div className="macro-decision__metric-grid">
-      {rows.map((row) => (
-        <article key={`${row.corporate_dataset_id}-${row.reference_dataset_id}`}>
-          <span>{row.label}</span>
-          <strong>{formatSigned(row.value_bp)} bp</strong>
+    <div className="macro-decision__metric-strip">
+      {indicators.map((indicator) => (
+        <article key={indicator.datasetId}>
+          <span>{indicator.label}</span>
+          <strong>{formatOptional(indicator.latestValue, indicator.unit)}</strong>
           <small>
-            {row.as_of} · {row.formula_version}
+            1W {formatSigned(indicator.change1w)} · 1M {formatSigned(indicator.change1m)}
           </small>
         </article>
       ))}
@@ -559,263 +930,557 @@ function FundingComparisonTable({
   );
 }
 
-function IndicatorTable({ indicators }: { indicators: MacroIndicator[] }) {
-  if (!indicators.length) return <EmptyState text="等待有效历史数据。" />;
+function CreditDimensions({ rows }: { rows: JsonObject[] }) {
+  const contentRows = rows.filter(
+    (row) =>
+      readText(row, "label") ||
+      readText(row, "state") ||
+      readText(row, "driver") ||
+      asRecords(row.conflicts).length ||
+      (Array.isArray(row.conflicts) && row.conflicts.length),
+  );
+  if (!contentRows.length) return <EmptyState text="信用周期维度尚未形成。" />;
   return (
-    <div className="macro-decision__semantic-table" role="table">
-      <div role="row">
-        <span role="columnheader">指标</span>
-        <span role="columnheader">最新</span>
-        <span role="columnheader">1周</span>
-        <span role="columnheader">1月</span>
-        <span role="columnheader">样本 / 分位</span>
-        <span role="columnheader">截至</span>
-      </div>
-      {indicators.map((item) => (
-        <div key={item.dataset_id} role="row">
-          <span role="cell">
-            <strong>{item.label}</strong>
-            <small>{item.dataset_id}</small>
-          </span>
-          <span role="cell">
-            {formatNumber(item.latest_value)} {unitLabel(item.unit)}
-          </span>
-          <span role="cell">{formatSigned(item.change_1w)}</span>
-          <span role="cell">{formatSigned(item.change_1m)}</span>
-          <span role="cell">
-            {item.sample_count} /{" "}
-            {item.percentile == null ? "—" : `${formatNumber(item.percentile)}%`}
-          </span>
-          <span role="cell">
-            <time>{item.as_of}</time>
-            <SourceLink href={item.source_url} />
-          </span>
-        </div>
-      ))}
+    <div aria-label="信用周期四维结论" className="macro-decision__credit-dimensions">
+      {contentRows.map((row, index) => {
+        const conflicts = asRecords(row.conflicts).length
+          ? asRecords(row.conflicts)
+              .map((item) => readText(item, "text"))
+              .filter(Boolean)
+          : Array.isArray(row.conflicts)
+            ? row.conflicts.filter((item): item is string => typeof item === "string")
+            : [];
+        return (
+          <article
+            data-state={readText(row, "state") ?? undefined}
+            key={readText(row, "dimension_id") ?? index}
+          >
+            {readText(row, "label") ? <span>{readText(row, "label")}</span> : null}
+            {readText(row, "state") ? (
+              <strong>{creditStateLabel(readText(row, "state")!)}</strong>
+            ) : null}
+            {readText(row, "driver") ? <p>{readText(row, "driver")}</p> : null}
+            {conflicts.map((conflict) => (
+              <small key={conflict}>{conflict}</small>
+            ))}
+          </article>
+        );
+      })}
     </div>
   );
 }
 
-function AssetTable({ rows }: { rows: MacroAssetRow[] }) {
-  if (!rows.length) return <EmptyState text="固定 ETF 篮子尚在回填。" />;
+function checkpointCurrentLabel(value: string): string {
   return (
-    <div className="macro-decision__semantic-table macro-decision__asset-table" role="table">
+    {
+      current: "当前",
+      degraded: "降级",
+      unavailable: "不可用",
+    }[value] ?? "状态未解释"
+  );
+}
+
+function checkpointHistoryLabel(value: string): string {
+  return (
+    {
+      complete: "完整",
+      insufficient: "不足",
+      not_required: "不要求",
+      partial: "部分",
+    }[value] ?? "状态未解释"
+  );
+}
+
+function creditStateLabel(value: string): string {
+  return (
+    {
+      cheap: "融资成本偏低",
+      deteriorating: "正在恶化",
+      easing: "正在宽松",
+      expensive: "融资成本偏高",
+      improving: "正在改善",
+      insufficient: "证据不足",
+      neutral: "中性",
+      normal: "常态",
+      restrictive: "供给偏紧",
+      stable: "稳定",
+      stressed: "承压",
+      tightening: "正在收紧",
+      weak_demand: "需求偏弱",
+    }[value] ?? "状态未解释"
+  );
+}
+
+function CrossAssetReturnMatrix({
+  rows,
+  label,
+}: {
+  rows: MacroCrossAssetReturnRowView[];
+  label: string;
+}) {
+  if (!rows.length) return <EmptyState text="服务端尚未返回资产收益矩阵。" />;
+  return (
+    <div aria-label={label} className="macro-decision__return-matrix" role="table">
       <div role="row">
-        <span role="columnheader">ETF / 类型</span>
+        <span role="columnheader">资产</span>
         <span role="columnheader">最新</span>
-        <span role="columnheader">1日</span>
-        <span role="columnheader">1周</span>
-        <span role="columnheader">1月</span>
-        <span role="columnheader">来源层级</span>
+        <span role="columnheader">1D</span>
+        <span role="columnheader">1W</span>
+        <span role="columnheader">1M</span>
       </div>
       {rows.map((row) => (
-        <div key={row.dataset_id} role="row">
+        <div
+          data-display-order={row.displayOrder}
+          data-group-id={row.groupId}
+          key={`${row.displayOrder}:${row.symbol}`}
+          role="row"
+        >
           <span role="cell">
             <strong>{row.symbol}</strong>
-            <small>
-              {row.label} · {row.instrument_type}
-            </small>
+            <small>{row.label}</small>
+            <small>{row.groupLabel}</small>
           </span>
-          <span role="cell">
-            {formatNumber(row.latest_value)} <small>{formatMarketTime(row.market_time_ms)}</small>
-          </span>
-          <SignedCell value={row.change_1d_pct} />
-          <SignedCell value={row.change_1w_pct} />
-          <SignedCell value={row.change_1m_pct} />
-          <span role="cell">
-            <small>{row.trust_tier}</small>
-            <SourceLink href={row.source_url} />
-          </span>
+          <span role="cell">{formatOptional(row.latestSource.fact?.latestValue ?? null, "")}</span>
+          <HeatCell value={row.returnSource.fact?.change1dPct ?? null} />
+          <HeatCell value={row.returnSource.fact?.change1wPct ?? null} />
+          <HeatCell value={row.returnSource.fact?.change1mPct ?? null} />
         </div>
       ))}
     </div>
   );
 }
 
-function BenchmarkTable({ rows }: { rows: JsonObject[] }) {
+function CrossAssetSourceIdentityTable({ rows }: { rows: MacroCrossAssetSourceIdentityView[] }) {
+  if (!rows.length) return null;
   return (
-    <div className="macro-decision__benchmark-grid">
-      {rows.map((row) => (
-        <article key={textValue(row.dataset_id) ?? textValue(row.label) ?? "benchmark"}>
-          <span>{textValue(row.asset_class) ?? "market"}</span>
-          <strong>{textValue(row.label) ?? "基准"}</strong>
-          <p>
-            {numberLabel(row.latest_value)} · 1周 {numberLabel(row.change_1w)}
-          </p>
-          <small>{textValue(row.evidence_kind) ?? "reference"}</small>
-        </article>
-      ))}
-    </div>
+    <details className="macro-decision__source-table">
+      <summary>查看来源身份与时钟（{rows.length}）</summary>
+      <div role="table">
+        <div role="row">
+          <span role="columnheader">资产</span>
+          <span role="columnheader">证据身份</span>
+          <span role="columnheader">精确来源</span>
+          <span role="columnheader">选择规则</span>
+          <span role="columnheader">身份规则</span>
+        </div>
+        {rows.map((row) => (
+          <div
+            data-display-order={row.displayOrder}
+            key={`${row.displayOrder}:${row.symbol}`}
+            role="row"
+          >
+            <span role="cell">
+              <strong>{row.symbol}</strong>
+              <small>{row.label}</small>
+            </span>
+            <span role="cell">{row.evidenceKind}</span>
+            <CrossAssetSourceList sources={row.sources} />
+            <span role="cell">{row.selectionPolicy}</span>
+            <span role="cell">{row.identityPolicy}</span>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
-function NormalizedFigure({
-  points,
-}: {
-  points: Array<{ symbol: string; date: string; normalized_value: number }>;
-}) {
-  const symbols = [...new Set(points.map((point) => point.symbol))];
-  const values = points.map((point) => point.normalized_value);
-  if (!values.length) return <EmptyState text="等待 ETF 历史回填。" />;
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  const span = maximum - minimum || 1;
+function CrossAssetReturnSourceTable({ rows }: { rows: MacroCrossAssetReturnRowView[] }) {
+  if (!rows.length) return null;
   return (
-    <figure className="macro-decision__normalized">
-      <svg aria-label="固定 ETF 篮子归一化走势" preserveAspectRatio="none" viewBox="0 0 100 44">
-        {symbols.map((symbol, symbolIndex) => {
-          const series = points.filter((point) => point.symbol === symbol);
-          const path = series
-            .map((point, index) => {
-              const x = series.length === 1 ? 50 : (index / (series.length - 1)) * 100;
-              const y = 40 - ((point.normalized_value - minimum) / span) * 36;
-              return `${index ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-            })
-            .join(" ");
+    <details className="macro-decision__source-table">
+      <summary>查看收益矩阵精确来源（{rows.length}）</summary>
+      <div role="table">
+        <div role="row">
+          <span role="columnheader">资产</span>
+          <span role="columnheader">最新价来源</span>
+          <span role="columnheader">收益来源</span>
+          <span role="columnheader">选择规则</span>
+          <span role="columnheader">身份规则</span>
+        </div>
+        {rows.map((row) => (
+          <div
+            data-display-order={row.displayOrder}
+            key={`${row.displayOrder}:${row.symbol}`}
+            role="row"
+          >
+            <span role="cell">
+              <strong>{row.symbol}</strong>
+              <small>{row.label}</small>
+            </span>
+            <CrossAssetSourceCell source={row.latestSource} />
+            <CrossAssetSourceCell source={row.returnSource} />
+            <span role="cell">{row.selectionPolicy}</span>
+            <span role="cell">{row.identityPolicy}</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function CrossAssetSourceList({ sources }: { sources: MacroCrossAssetSourceView[] }) {
+  return (
+    <span role="cell">
+      {sources.map((source) => (
+        <span key={`${source.sourceRole}:${source.datasetId}`}>
+          <strong>{source.label}</strong>
+          <small>
+            {source.datasetId} · {source.sourceRole}
+          </small>
+          <SourceClockAndLink source={source} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function CrossAssetSourceCell({ source }: { source: MacroCrossAssetSourceView }) {
+  return (
+    <span role="cell">
+      <strong>{source.label}</strong>
+      <small>
+        {source.datasetId} · {source.sourceRole}
+      </small>
+      <SourceClockAndLink source={source} />
+    </span>
+  );
+}
+
+function SourceClockAndLink({ source }: { source: MacroCrossAssetSourceView }) {
+  const fact = source.fact;
+  if (!fact) return <small>尚无来源事实</small>;
+  return (
+    <>
+      <small>
+        {fact.asOf ?? (fact.marketTimeMs ? formatInstant(fact.marketTimeMs) : "时钟未返回")}
+      </small>
+      {fact.sourceUrl ? (
+        <a href={fact.sourceUrl} rel="noreferrer" target="_blank">
+          来源 <ExternalLink aria-hidden="true" />
+        </a>
+      ) : null}
+    </>
+  );
+}
+
+function HeatCell({ value }: { value: number | null }) {
+  const intensity = value == null ? 0 : Math.min(Math.abs(value) / 8, 1);
+  return (
+    <span
+      data-direction={value == null ? "none" : value > 0 ? "up" : value < 0 ? "down" : "flat"}
+      role="cell"
+      style={{ "--heat-intensity": Math.max(intensity, 0.08) } as React.CSSProperties}
+    >
+      {value == null ? "—" : `${formatSigned(value)}%`}
+    </span>
+  );
+}
+
+function FedTimeline({ rows }: { rows: JsonObject[] }) {
+  if (!rows.length) return <EmptyState text="FOMC 文件与讲话正文尚未回填。" />;
+  return (
+    <details className="macro-decision__timeline" open>
+      <summary>政策事件时间线（最近 {Math.min(rows.length, 20)} 条）</summary>
+      <ol>
+        {rows.slice(0, 20).map((row, index) => {
+          const analysis = readRecord(row, "analysis");
           return (
-            <path
-              d={path}
-              key={symbol}
-              style={{ "--series-index": symbolIndex } as CSSProperties}
-            />
+            <li key={readText(row, "document_id") ?? index}>
+              <time>{readText(row, "effective_date") ?? "—"}</time>
+              <div>
+                <span>
+                  {readText(row, "document_type") ?? "政策材料"}
+                  {readText(analysis, "stance")
+                    ? ` · ${stanceLabel(readText(analysis, "stance")!)}`
+                    : ""}
+                </span>
+                <strong>{readText(row, "title") ?? "未命名政策材料"}</strong>
+                <small>
+                  {readText(row, "speaker_name") ?? "美联储机构材料"} ·{" "}
+                  {readText(row, "role_title") ?? "机构材料"} ·{" "}
+                  {voterLabel(readBoolean(row, "fomc_voter"))}
+                </small>
+              </div>
+              {readText(row, "source_url") ? (
+                <a href={readText(row, "source_url")!} rel="noreferrer" target="_blank">
+                  原文
+                </a>
+              ) : null}
+            </li>
           );
         })}
-      </svg>
-      <figcaption>
-        {symbols.map((symbol) => (
-          <span key={symbol}>{symbol}</span>
-        ))}
-      </figcaption>
-    </figure>
+      </ol>
+    </details>
   );
 }
 
-function CorrelationTable({
-  rows,
-}: {
-  rows: Array<{
-    left: string;
-    right: string;
-    correlation: number | null;
-    sample_count: number;
-    window: string;
-  }>;
-}) {
-  if (!rows.length) return <EmptyState text="至少需要 20 个共同日收益样本。" />;
+function PositionSourceList({ rows }: { rows: ReturnType<typeof parsePositions> }) {
+  if (!rows.length) return null;
   return (
-    <div className="macro-decision__correlations">
+    <div className="macro-decision__position-sources">
       {rows.map((row) => (
-        <article key={`${row.left}-${row.right}`}>
-          <span>
-            {row.left} / {row.right}
-          </span>
-          <strong>{row.correlation == null ? "—" : row.correlation.toFixed(2)}</strong>
-          <small>n={row.sample_count}</small>
+        <article key={row.contractCode}>
+          <strong>{row.contractName}</strong>
+          <span>{row.reportDate ?? "—"}</span>
+          {row.sourceUrl ? (
+            <a href={row.sourceUrl} rel="noreferrer" target="_blank">
+              CFTC 来源
+            </a>
+          ) : null}
         </article>
       ))}
     </div>
   );
 }
 
-function FedTimeline({ events }: { events: MacroRatesFedReadData["fed"]["timeline"] }) {
-  if (!events.length) return <EmptyState text="FOMC 文件与讲话正文尚在回填。" />;
+function SettlementTable({ rows }: { rows: JsonObject[] }) {
+  if (!rows.length) return null;
   return (
-    <ol className="macro-decision__timeline">
-      {events.map((event) => (
-        <li key={event.document_id}>
-          <time>{event.effective_date}</time>
-          <div>
-            <span>
-              {event.document_type} · {event.analysis.stance}
+    <details className="macro-decision__settlements" open>
+      <summary>VIX 官方结算（最近 {rows.length} 条）</summary>
+      <div role="table">
+        <div role="row">
+          <span role="columnheader">交易日</span>
+          <span role="columnheader">合约</span>
+          <span role="columnheader">官方到期日</span>
+          <span role="columnheader">结算</span>
+          <span role="columnheader">持仓 / 成交</span>
+          <span role="columnheader">来源时钟</span>
+        </div>
+        {rows.map((row, index) => (
+          <div
+            key={`${readText(row, "trade_date")}:${readText(row, "contract_code")}:${readText(row, "contract_expiration_date")}:${index}`}
+            role="row"
+          >
+            <span role="cell">{readText(row, "trade_date") ?? "—"}</span>
+            <span role="cell">{readText(row, "contract_code") ?? "—"}</span>
+            <span role="cell">{readText(row, "contract_expiration_date") ?? "—"}</span>
+            <span role="cell">{formatOptional(readNumber(row, "settlement_price"), "")}</span>
+            <span role="cell">
+              {formatOptional(readNumber(row, "open_interest"), "")} /{" "}
+              {formatOptional(readNumber(row, "volume"), "")}
             </span>
-            <strong>{event.title}</strong>
-            <small>
-              {event.speaker_name ?? "FOMC institution"} · {event.role_title ?? "institutional"} ·{" "}
-              {event.fomc_voter == null ? "机构材料" : event.fomc_voter ? "当期投票" : "当期非投票"}
-            </small>
-            {event.analysis.state === "analyzed" ? (
-              <details>
-                <summary>
-                  {event.analysis.policy_relevance} · confidence{" "}
-                  {event.analysis.confidence == null ? "—" : event.analysis.confidence.toFixed(2)}
-                </summary>
-                <ul>
-                  {event.analysis.evidence.map((item, index) => (
-                    <li key={`${event.document_id}-evidence-${index}`}>
-                      {textValue(item.claim) ?? "证据"}：{textValue(item.excerpt) ?? "—"}
-                    </li>
-                  ))}
-                </ul>
-                <small>
-                  {event.analysis.model_name ?? "deterministic"} ·{" "}
-                  {event.analysis.prompt_version ?? "—"} ·{" "}
-                  {event.analysis.reviewer_disposition ?? "—"}
-                </small>
-              </details>
-            ) : null}
+            <span role="cell">
+              发布{" "}
+              {readNumber(row, "published_at_ms")
+                ? formatInstant(readNumber(row, "published_at_ms") ?? 0)
+                : "—"}
+              <small>接收 {formatInstant(readNumber(row, "received_at_ms") ?? 0)}</small>
+            </span>
           </div>
-          <SourceLink href={event.source_url} />
-        </li>
-      ))}
-    </ol>
+        ))}
+      </div>
+    </details>
   );
 }
 
-function ObjectTable({ rows }: { rows: JsonObject[] }) {
-  if (!rows.length) return <EmptyState text="暂无可展示事实。" />;
+function indicatorSeries(indicators: MacroIndicatorView[]): MacroChartSeries[] {
+  return indicators.map((indicator, index) => ({
+    id: indicator.datasetId,
+    label: indicator.label,
+    color: chartColor(index),
+    points: indicator.history,
+  }));
+}
+
+function moduleChartAnnotations(
+  module: MacroTypedModuleReadData,
+  series: MacroChartSeries[],
+): MacroChartAnnotation[] {
+  const visibleDatasetIds = new Set(series.map((item) => item.id));
+  const changes = module.summary.top_changes.flatMap((change) =>
+    change.as_of && visibleDatasetIds.has(change.dataset_id)
+      ? [
+          {
+            id: `change:${change.concept_id}:${change.dataset_id}:${change.as_of}`,
+            date: change.as_of,
+            detail: change.importance_explanation,
+            label: change.label,
+            seriesId: change.dataset_id,
+            tone: "change" as const,
+            value: change.value,
+          },
+        ]
+      : [],
+  );
+  const cutoffInstant =
+    module.thesis_context.cutoff_ms == null
+      ? null
+      : new Date(module.thesis_context.cutoff_ms).toISOString();
+  const cutoffDate = cutoffInstant?.slice(0, 10) ?? null;
+  const cutoff =
+    cutoffDate && cutoffInstant && series[0]
+      ? [
+          {
+            id: `cutoff:${module.module_id}:${series[0].id}:${module.thesis_context.cutoff_ms}`,
+            date: cutoffDate,
+            detail: "该主线发布时可使用事实的最终截点。",
+            label: "主线证据截点",
+            seriesId: series[0].id,
+            sourceTimestamp: cutoffInstant,
+            tone: "cutoff" as const,
+          },
+        ]
+      : [];
+  const thesisConditions =
+    cutoffDate == null || cutoffInstant == null
+      ? []
+      : module.thesis_context.conditions.flatMap((condition) => {
+          if (!condition.dataset_id || !visibleDatasetIds.has(condition.dataset_id)) return [];
+          const label =
+            condition.kind === "falsifier"
+              ? "主线失效阈值"
+              : condition.kind === "checkpoint"
+                ? "下一检查点"
+                : "主线确认条件";
+          const tone =
+            condition.kind === "falsifier"
+              ? ("invalidation" as const)
+              : condition.kind === "checkpoint"
+                ? ("checkpoint" as const)
+                : condition.kind === "weakening"
+                  ? ("weakening" as const)
+                  : ("confirming" as const);
+          return [
+            {
+              id: `thesis:${condition.scope_kind}:${condition.scope_id}:${condition.kind}:${condition.condition_id}`,
+              date: cutoffDate,
+              detail: condition.rationale,
+              label,
+              seriesId: condition.dataset_id,
+              sourceTimestamp: cutoffInstant,
+              tone,
+              value: condition.threshold ?? undefined,
+            },
+          ];
+        });
+  return [...cutoff, ...changes, ...thesisConditions];
+}
+
+function indicatorChangeGroups(indicators: MacroIndicatorView[]): MacroBarGroup[] {
+  return indicators.map((indicator) => ({
+    id: indicator.datasetId,
+    label: shortIndicatorLabel(indicator.label),
+    values: [
+      { id: "1w", label: "1W", value: indicator.change1w, color: chartColor(0) },
+      { id: "1m", label: "1M", value: indicator.change1m, color: chartColor(1) },
+    ],
+  }));
+}
+
+function positionGroups(rows: MacroPositionView[]): MacroBarGroup[] {
+  return rows.map((row) => ({
+    id: row.contractCode,
+    label: row.contractName,
+    values: [
+      {
+        id: "dealer",
+        label: "Dealer",
+        value: row.dealerNetPctOi,
+        color: chartColor(0),
+      },
+      {
+        id: "asset-manager",
+        label: "Asset Manager",
+        value: row.assetManagerNetPctOi,
+        color: chartColor(1),
+      },
+      {
+        id: "leveraged",
+        label: "Leveraged",
+        value: row.leveragedNetPctOi,
+        color: chartColor(3),
+      },
+    ],
+  }));
+}
+
+function crossAssetNormalizedSeries(group: MacroCrossAssetNormalizedGroupView): MacroChartSeries[] {
+  return group.series.map((series, index) => ({
+    id: series.source.datasetId,
+    label: series.label,
+    color: chartColor(index),
+    points: series.points,
+  }));
+}
+
+function commonUnit(indicators: MacroIndicatorView[]): string {
+  const units = [...new Set(indicators.map((item) => item.unit).filter(Boolean))];
+  return units.length === 1 ? (units[0] ?? "") : "";
+}
+
+function spreadLabel(value: string): string {
   return (
-    <div className="macro-decision__object-list">
-      {rows.slice(0, 40).map((row, index) => (
-        <article key={`${textValue(row.dataset_id) ?? textValue(row.contract_code) ?? index}`}>
-          {Object.entries(row)
-            .slice(0, 6)
-            .map(([key, value]) => (
-              <div key={key}>
-                <span>{key}</span>
-                <strong>{scalarLabel(value)}</strong>
-              </div>
-            ))}
-        </article>
-      ))}
-    </div>
+    {
+      "2s10s": "2Y–10Y",
+      "3m10s": "3M–10Y",
+      "5s30s": "5Y–30Y",
+    }[value] ?? "期限利差"
   );
 }
 
-function UnavailableCard({ label, reason }: { label: string; reason: string }) {
+function stanceLabel(value: string): string {
   return (
-    <article className="macro-decision__unavailable">
-      <span>UNAVAILABLE</span>
-      <strong>{label}</strong>
-      <p>{reasonLabel(reason)}</p>
-    </article>
+    {
+      dovish: "鸽派",
+      hawkish: "鹰派",
+      mixed: "混合",
+      neutral: "中性",
+      no_call: "证据不足，暂不判断",
+    }[value] ?? "立场未解释"
   );
+}
+
+function thesisRoleLabel(value: NonNullable<MacroTypedModuleReadData["thesis_context"]["role"]>) {
+  return (
+    {
+      confirming: "确认主线",
+      contradicting: "反驳主线",
+      driver: "驱动主线",
+      not_material: "本次不重要",
+      uncertain: "关系未定",
+    }[value] ?? "关系未解释"
+  );
+}
+
+function voterLabel(value: boolean | null): string {
+  return value == null ? "机构材料" : value ? "当期投票" : "当期非投票";
+}
+
+function shortIndicatorLabel(value: string): string {
+  return value.length > 16 ? `${value.slice(0, 15)}…` : value;
+}
+
+function chartColor(index: number): string {
+  return [
+    "#67d4ff",
+    "#f6c85f",
+    "#9d8cff",
+    "#ff7c8b",
+    "#66c2a5",
+    "#fc8d62",
+    "#8da0cb",
+    "#e78ac3",
+    "#a6d854",
+    "#ffd92f",
+  ][index % 10]!;
 }
 
 function EmptyState({ text }: { text: string }) {
   return <p className="macro-decision__empty">{text}</p>;
 }
 
-function SourceLink({ href }: { href: string }) {
-  return (
-    <a href={href} rel="noreferrer" target="_blank">
-      来源 <ExternalLink aria-hidden="true" />
-    </a>
-  );
+function formatInstant(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "short",
+    hour12: false,
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
-function SignedCell({ value }: { value: number | null }) {
-  return (
-    <span
-      data-sign={value == null ? "none" : value > 0 ? "up" : value < 0 ? "down" : "flat"}
-      role="cell"
-    >
-      {formatSigned(value)}%
-    </span>
-  );
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
+function formatOptional(value: number | null, unit: string | null): string {
+  if (value == null) return "—";
+  return `${formatNumber(value)}${unitLabel(unit)}`;
 }
 
 function formatSigned(value: number | null): string {
@@ -823,59 +1488,26 @@ function formatSigned(value: number | null): string {
   return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
 }
 
-function formatMarketTime(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
 }
 
-function numberLabel(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? formatNumber(value) : "—";
-}
-
-function optionalPercent(value: number | undefined): string {
-  return value == null ? "—" : `${formatNumber(value)}%`;
-}
-
-function scalarLabel(value: unknown): string {
-  if (typeof value === "number") return formatNumber(value);
-  if (typeof value === "string") return value;
-  if (value == null) return "—";
-  return JSON.stringify(value);
-}
-
-function textValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function unitLabel(unit: string): string {
+function unitLabel(unit: string | null): string {
+  if (!unit) return "";
   return (
     {
+      basis_points: " bp",
+      billions_chained_2017_usd: " 十亿 2017 年不变价美元",
+      billions_usd: " 十亿美元",
+      bp: " bp",
+      index: " 点",
+      index_points: " 点",
+      millions_usd: " 百万美元",
       percent: "%",
-      basis_points: "bp",
-      index: "点",
-      millions_usd: "百万美元",
-      billions_usd: "十亿美元",
-      usd_per_barrel: "美元/桶",
-    }[unit] ?? unit
+      percent_open_interest: "% OI",
+      thousands_persons: " 千人",
+      usd_per_barrel: " 美元/桶",
+      usdt: " USDT",
+    }[unit] ?? "（单位未解释）"
   );
-}
-
-function reasonLabel(reason: string): string {
-  return (
-    {
-      licensed_contract_facts_not_configured: "尚无合规授权的底层期货合约事实，不生成近似概率。",
-      licensed_security_level_facts_not_configured: "尚无合规的逐笔 TRACE 与 NAV 数据。",
-      effective_dated_roster_not_ingested: "有效日期官员身份与投票事实尚未入库。",
-      immutable_document_analysis_not_published: "尚未发布绑定原文哈希的不可变文件分析。",
-    }[reason] ?? reason
-  );
-}
-
-function windowLabel(value: MacroCurveSnapshot["window"]): string {
-  return { current: "当前", "1w": "1周前", "1m": "1月前", "3m": "3月前" }[value];
 }

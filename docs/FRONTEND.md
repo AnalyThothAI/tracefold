@@ -110,53 +110,72 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `/macro/liquidity-funding`, `/macro/credit`, `/macro/volatility`, and
   `/macro/cross-asset` are the six typed decision modules backed by matching
   `/api/macro/*` routes. They do not accept a generic window parameter.
-  `/macro/research` is the separate completed-session research workbench backed
-  by `/api/macro/research`; its optional `session_date=YYYY-MM-DD` likewise
-  survives hard reload and sharing.
+  `/macro/research` is the history/detail view of the same immutable Thesis
+  product backed by `/api/macro/research`; its optional
+  `session_date=YYYY-MM-DD` survives hard reload and sharing. It is not a
+  second Macro narrative.
 
-  The overview leads with the 08:50 New York judgment: six macro dimensions,
-  dominant pressures, top three changes, fixed asset directions, conflicts,
-  invalidations, confidence, gaps, citations, next checkpoints, and research
-  state. Each module answers current state, what changed, why it matters,
-  contradictions, falsifiers, next checkpoints, typed financial structures,
-  formulas, exact dataset quality, and raw fact lineage. Coverage, Data Health,
-  and Judgment are three independent API fields and are never inferred in the
-  browser. Fixed section selection is represented by the URL hash and survives
-  reload/share without adding routes.
-  When the judgment is blocked, the overview renders the persisted blocked
-  modules and exact dataset gaps from `judgment_status`; it does not invent a
-  frontend root cause.
+  The overview is a 30-second decision brief with one fixed order: current
+  session/publication state, call/no-call mainline, material changes, one to
+  three causal edges, strongest support/counterevidence, real tensions, sparse
+  material outlook plus all twelve asset facts/recovery, catalysts/conditions,
+  scoped Live Delta/Outcome Replay, then compact provenance/data-quality
+  audit. It does not render six equal narratives or 12×2 model filler.
+
+  The intended 08:50 session and deterministic cutoff remain explicit. When the
+  requested current session has no publication, the UI shows its exact
+  `pending`, `running`, `retryable`, `failed`, `config_error`,
+  `not_published`, or `missing` state and never injects an older Thesis.
+  Historical v1/v2 publications are available only after an explicit dated
+  research selection. Current/stale transport state is separate from Thesis
+  state, Coverage, Current Health, History Depth, and backfill execution.
+
+  Each module is a typed evidence workbench. A thin shared header answers
+  current conclusion, latest change, as-of, data health, and relationship to the
+  Thesis; the active hash-selected section then renders module-specific facts,
+  charts, why they matter, linked claims, real counterevidence, and real next
+  checkpoints. Empty semantic sections are omitted. There is no shared
+  contradictions/falsifiers/checkpoints/gaps four-card footer and no fixed
+  business interpretation. Release modules distinguish expected, actual,
+  surprise, revision, source publication time, and receipt time. Optional
+  required history can lower only the declared feature's History Depth, never
+  Current Health. Optional maximum history stays in the audit disclosure.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
-  comparison and best-effort major-futures/USD-index rows. Every proxy row displays its
-  actual market timestamp rather than the HTTP receipt time. Rates renders true maturity cross-sections and a detailed tenor
+  comparison and best-effort major-futures/USD-index rows. ETF and futures rows
+  distinguish five-year daily history from intraday price datasets and display
+  the actual market timestamp rather than the HTTP receipt time. Dataset
+  details show data, market, and source state independently plus group health;
+  closed and maintenance sessions are not painted stale merely because wall
+  time advanced. Rates renders true maturity cross-sections and a detailed tenor
   table. Fed renders institutional stance, recent officials distribution, then
-  the event timeline. Credit keeps five concurrent dimensions visible above
+  the event timeline. Credit keeps four concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a
-  composite score.
+  composite score. Volatility owns the official-expiry CFE VX settlement curve;
+  Cross-Asset does not duplicate it.
 
-  The research page is a Chinese workbench, not a frontend-authored decision
-  model. It renders the publication title, executive summary, Agent-ordered
-  sections, Evidence Pack ID, evidence gaps, citations, reviewer disposition
-  and notes, audit metadata, session, and market cutoff exactly from the API.
-  The browser does not prescribe
-  sections, classify evidence sufficiency, infer direction/confidence, score
-  assets, or recompute conclusions.
+  The research page renders the same v2 report for the current session and an
+  explicit immutable v1/v2 archive envelope for a dated session. It provides a
+  real link back to the overview and keeps publication history separate from
+  run status. Old Reviewer fields are labelled audit-only and never presented
+  as current approval. The browser does not classify evidence sufficiency,
+  infer direction/confidence, score or group assets, merge source identities,
+  aggregate Live Delta, select fallback content, or recompute conclusions.
 
-  Current, historical, generating, failed, and missing states remain visually
-  distinct. Generating state polls only the persisted read; it never starts or
-  resumes an Agent. A historical document is labelled with both requested and
-  current completed-session dates and is never relabelled as current. Run
-  attempts and sanitized errors are supporting status, not research content.
+  Current business states and archive `historical/missing` remain visually
+  distinct. Every non-success state displays its typed
+  reason, affected scope, retryability, recovery action, and a next check only
+  when one is actually scheduled. Persisted pending/running states may poll the
+  read but never start or resume an Agent. Run status and sanitized errors are
+  supporting metadata, not Thesis content.
 
-  Citations show their stable citation ID, source label/type, observation date,
-  material `source_ref`, and source URL when available. Evidence gaps stay
-  first-class rather than being converted into a frontend warning threshold.
-  Reviewer notes and bounded runtime audit live in a keyboard-accessible
-  disclosure. At desktop, tablet, and mobile widths the document becomes
-  labelled stacked content without horizontal page scrolling or hover-only
-  material evidence.
-- **Page state.** Loading, empty, stale, and error surfaces should use `PageState.*` so skeletons, error alerts, and retry actions stay consistent.
+  At desktop, tablet, and mobile widths the document becomes labelled stacked
+  content without horizontal page scrolling or hover-only material evidence.
+- **Page state.** Only an active first HTTP request may show Loading.
+  Bootstrap pending/error, disabled query, transport error, same-session stale
+  cache, and Thesis business states use distinct `PageState.*` surfaces with a
+  truthful retry/recovery action. A disabled token query must never leave an
+  infinite skeleton.
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `RadarControls`, `PageState`, `TokenProfileCard`, `DecisionTag`, `CompactPanel`, and the research case-file components own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
@@ -224,11 +243,13 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the daily
-   judgment, six module cards, status triplets/gaps, changes, asset directions, and
-   research state readable without horizontal overflow. Verify each module
-   keeps its typed structures, formulas, falsifiers, checkpoints, and source
-   clocks readable. For each module, select a non-default section, reload, and
-   verify the same hash section remains active.
-   On `/macro/research`, the audit disclosure is keyboard reachable and the
-   selected historical session survives reload.
+9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the
+   mainline, strongest evidence/tensions, changes, all twelve server-grouped
+   assets, scoped Live Delta, Evidence Health, and Data Quality readable
+   without horizontal overflow or machine-only labels. Verify each module has
+   a real-sized module-specific chart, no fixed empty four-card footer, exact
+   source clocks, an equivalent data table, and only its active hash section
+   mounted. Select a non-default section, reload, and verify the same section
+   remains active. On `/macro/research`, verify the claim-first chain, readable
+   citations, requested/displayed session boundary, real Overview link,
+   keyboard-reachable audit appendix, and historical session reload.

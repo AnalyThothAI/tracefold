@@ -63,13 +63,13 @@ const routeCases: RouteCase[] = [
     name: "news queue",
     path: "/news",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "Global news stories" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "全球新闻 Story 流" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.locator("[aria-label='News Story filters']")).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "Story pagination" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "新闻分类" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "新闻排序" })).toBeVisible();
       await expect(
-        page.getByRole("button", { name: /Macro desk flags liquidity rotation/ }),
+        page.getByRole("link", { name: /Macro desk flags liquidity rotation/ }),
       ).toBeVisible();
     },
     nestedOverflowSelectors: [".news-panel", ".news-story-list", ".news-story-row"],
@@ -79,24 +79,23 @@ const routeCases: RouteCase[] = [
     name: "news detail",
     path: "/news/stories/story-global-policy",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "News Story detail" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Story 事实页" })).toBeVisible();
     },
     specific: async (page) => {
       await expect(page.getByRole("link", { name: "返回 Story 流" })).toBeVisible();
-      await expect(page.getByText("DeepSeek 中文分析", { exact: true })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "来源证据" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Story 状态" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "成员归并审计" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Story 聚合身份" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "重要度因子" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "聚类成员" })).toBeVisible();
       await expect(
         page.getByRole("heading", {
           exact: true,
-          level: 2,
+          level: 1,
           name: "Macro desk flags liquidity rotation",
         }),
       ).toBeVisible();
     },
     nestedOverflowSelectors: [".news-panel", ".news-story-detail", ".news-detail-grid"],
-    lastMeaningfulSelector: ".news-membership-list",
+    lastMeaningfulSelector: ".news-member-list",
   },
   {
     name: "token case",
@@ -120,19 +119,22 @@ const routeCases: RouteCase[] = [
     name: "macro",
     path: "/macro",
     primary: async (page) => {
-      await expect(page.getByRole("heading", { level: 1, name: "每日宏观决策台" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("navigation", { name: "宏观决策模块" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "真实利率回落正在缓和风险资产的贴现压力" }),
+      ).toBeVisible();
+      await expect(page.getByRole("table", { name: "十二资产冻结事实与稀疏展望" })).toBeVisible();
       await expect(page.getByRole("region", { name: "六个宏观模块" })).toBeVisible();
-      await expect(page.getByText("固定资产方向")).toBeVisible();
     },
     nestedOverflowSelectors: [
       ".macro-decision",
       ".macro-decision__header",
       ".macro-decision__module-grid",
     ],
-    lastMeaningfulSelector: ".macro-decision__research",
+    lastMeaningfulSelector: ".macro-decision__module-grid article:last-of-type",
   },
 ];
 

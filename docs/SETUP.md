@@ -84,18 +84,21 @@ Macro live-data debugging starts the same way: first run
 booleans, and diagnostic command status; do not paste WebSocket tokens, API
 keys, provider passwords, or full config payloads into docs or chat.
 
-Macro acquisition uses free, keyless sources first: FRED public CSV and BLS
-Public Data API for official series/releases, Federal Reserve RSS for official
-policy documents, CFTC TFF Futures Only for rates/credit/cross-asset positioning,
-Cboe CFE settlement files for VIX futures, Binance public spot klines for the
-completed UTC BTC settlement, and the pinned `yfinance` wrapper over Yahoo
-Finance for best-effort five-minute ETFs, BTC, VIX, and major futures.
+Macro acquisition uses free, keyless sources first: Treasury XML for the
+current nominal/real curve; FRED public CSV for official history; BLS Public
+Data API and BEA public current-release pages for scheduled release facts;
+Federal Reserve official pages for policy documents; CFTC TFF Futures Only for
+rates/credit/cross-asset positioning; Cboe CFE settlement files for VIX
+futures; Binance public spot klines for the completed UTC BTC settlement; and
+the pinned `yfinance` wrapper over Yahoo Finance for best-effort five-minute
+ETFs, BTC, VIX, and major futures plus five-year daily continuous-futures
+proxies. Nasdaq public ETF history supplies the separate five-year daily ETF
+lane.
 `providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-and yfinance independently and owns only request timeout/user-agent transport
+Nasdaq daily, and yfinance independently and owns only request timeout/user-agent transport
 settings. It does not own dataset membership, formulas, freshness, or
-scheduling. Licensed CME rates futures prices/curves remain an explicit
-`unavailable` dataset until an authorized provider is configured; the service
-never fills that gap with a fake proxy.
+scheduling. Capabilities that require unavailable paid data are not part of the
+current product contract and are not filled with a fake proxy.
 
 Five automatic acquisition workers own distinct clocks:
 `macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
@@ -105,7 +108,10 @@ disabled by default and processes only operator-created bounded targets.
 `macro_projection` rebuilds six stable current rows from persisted facts;
 `macro_document_analysis` writes immutable evidence-bound FOMC/speech analyses
 and is disabled by default;
-`macro_judgment` seals the 08:50 New York Evidence Pack and daily decision.
+`macro_thesis` seals the 08:50 New York Evidence Pack, compiles one bounded
+`MacroResearchInputV1`, performs exactly one native structured model invocation
+per durable attempt through the Thin DeepAgent profile, and publishes at most
+one immutable v2 Thesis for the session.
 
 For an operator-triggered repair of one bounded dataset window:
 
@@ -114,58 +120,64 @@ uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YY
 uv run tracefold macro status
 ```
 
-For the one code-owned professional history policy required by the v2 hard cut:
+For the code-owned five-year history policy:
 
 ```bash
 uv run tracefold macro backfill-professional
 uv run tracefold macro status
 ```
 
-The readiness-critical Treasury, FOMC, speech, and completed BTC-settlement
-backfill window is the most recent five years. Yfinance is not a professional
-backfill source: first acquisition requests one month of five-minute bars and
-subsequent acquisition requests the rolling day. Older deep history is
-optional enrichment and does not block Coverage, projection, or Daily
-Judgment. Credit and WTI retain longer reliable public history where one
+Treasury, FOMC, speech, completed BTC settlement, fixed ETF Nasdaq daily, and
+Yahoo continuous-futures daily datasets use the most recent five years.
+Yahoo intraday acquisition requests one month of five-minute bars initially
+and the rolling day thereafter. Older deep history is optional enrichment.
+No optional backfill state blocks Coverage, Current Health, projection,
+Evidence Pack, or Thesis; History Depth remains explicit and affected
+conclusions can become `no_call`. Credit and WTI retain longer reliable public history where one
 bounded source response makes that history cheap and material to percentile
 context.
 
-Enable `macro_backfill` until every readiness-required professional target is
-`current`; optional deep-history targets may continue without blocking the
-workbench. Then
+Enable `macro_backfill` until the desired five-year targets are `current`;
+incomplete targets remain visible without blocking the workbench. Then
 enable `macro_document_analysis` until its durable queue has no open or failed
-jobs. Projection and judgment intentionally remain blocked while required
-history or document analysis is incomplete.
+jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
+publication.
 
-A good macro status reports Alembic `20260728_0210`, bounded acquisition target
-states, recent source receipts, all six module rows, and the latest daily
-judgment/research states. Diagnose a missing value by dataset ID through its
-target, last receipt, fact family, and module gap. A public-source timeout,
-weekend settlement lag, unavailable licensed CME dataset, or delayed Yahoo
-market proxy is a visible quality state; it is not a frontend defect.
+A good macro status reports Alembic `20260729_0216`, bounded acquisition target
+states, recent source and reconciliation receipts, all six module rows, and the
+current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
+read-only frozen-corpus readiness: nine distinct real sessions are required
+before baseline/candidate model runs. Historical v1 rows never satisfy current
+status. Diagnose a missing value by
+concept ID and source role through its target, receipt, fact family, and three
+module quality axes. A public-source timeout, weekend settlement lag, or
+delayed Yahoo proxy is a visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
-immutable Evidence Packs and daily judgments, `macro_research_runs`, immutable
-`macro_research_publications`, and the LangGraph PostgreSQL checkpoint tables.
-`20260728_0210` is the current-schema baseline. A new empty database creates
-only this schema; it does not replay retired tables, compatibility columns,
-historical backfills, or intermediate contracts. A database already stamped at
-`20260728_0210` is recognized as current and is not rebuilt. The retained
-`*_v1_archive` tables contain material immutable publication history and are
-not runtime compatibility lanes.
+immutable Evidence Packs, Thesis runs/reviews/publications, Live Delta, Outcome
+Replay, append-only Research Inputs, and the retained historical review/checkpoint
+tables.
+`20260728_0210` remains the compact current-schema baseline and
+`20260729_0216` is the required hard-cut head. A new empty database applies the
+baseline and head without replaying retired runtime tables, compatibility
+columns, historical backfills, or intermediate contracts. A database stamped
+at `20260728_0210` migrates forward once; retired Judgment/Research tables and
+paid-data placeholders are dropped rather than archived.
 Enable the Macro workers only after the migration is current.
 
-A healthy completed-session research run transitions
-`pending -> running -> published`; transient model/tool failures transition to
-`retryable`, and exhausted attempts to `failed`. The overview, six typed module
+A healthy Thesis run transitions
+`pending -> running -> published`; transient provider/model failures transition to
+`retryable`, exhausted attempts to `failed`, invalid models to `config_error`,
+and one of the four publication gates may produce terminal `not_published`.
+Unsupported
+configuration reaches `config_error` with `attempt_count=0`. The overview, six typed module
 reads, and `/api/macro/research` are persisted-only and never trigger a
 provider, model, target advance, projection rebuild, or write.
 
-The enabled worker creates per-scope native DeepAgents calculation directories
-under `~/.tracefold/macro-agent-workspaces/`. Docker Compose already mounts the
-operator app home, so `execute` scratch files survive app-container restarts;
-checkpoint-backed files and large tool results remain in PostgreSQL.
+The Thin profile has no Reviewer invocation, tool loop, subagent, workspace, or
+checkpoint write. Historical v1 Reviewer rows remain immutable audit records;
+the migration removes only retired Macro Thesis checkpoint control rows.
 
 The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands

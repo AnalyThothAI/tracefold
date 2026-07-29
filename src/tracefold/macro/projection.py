@@ -18,11 +18,13 @@ class MacroProjectionService:
         *,
         db: Any,
         settings: Any,
+        backfill_worker_enabled: bool,
         worker_name: str = "macro_projection",
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self.db = db
         self.settings = settings
+        self.backfill_worker_enabled = backfill_worker_enabled
         self.worker_name = worker_name
         self.clock_ms = clock_ms or _now_ms
 
@@ -74,10 +76,12 @@ class MacroProjectionService:
                     role_rows=role_rows,
                     analysis_rows=analysis_rows,
                     analysis_job_state=analysis_job_state,
+                    backfill_worker_enabled=self.backfill_worker_enabled,
                 )
                 module_writes += repos.macro.upsert_module_current(
                     module_id=module_id,
-                    data_health_state=str(payload["status"]["data_health"]["state"]),
+                    current_health_state=str(payload["status"]["current_health"]["state"]),
+                    history_depth_state=str(payload["status"]["history_depth"]["state"]),
                     fact_cutoff_ms=int(payload["latest_fact_at_ms"]),
                     payload=payload,
                     payload_hash=_payload_hash(payload),

@@ -7,7 +7,16 @@ from datetime import date
 from typing import Any
 
 from tracefold.app.repositories import repositories
-from tracefold.macro import professional_backfill_policies, require_dataset
+from tracefold.macro import (
+    MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS,
+    MacroEvalReadinessV1,
+    MacroEvidencePackV3,
+    classify_current_thesis_state,
+    inspect_macro_eval_readiness,
+    professional_backfill_policies,
+    require_dataset,
+    resolve_thesis_session,
+)
 from tracefold.platform.config.settings import load_settings
 
 
@@ -16,8 +25,6 @@ def handle_macro(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_backfill(args)
     if args.macro_command == "backfill-professional":
         return _handle_professional_backfill()
-    if args.macro_command == "retry-research":
-        return _handle_retry_research(args)
     if args.macro_command == "status":
         return _handle_status()
     return 2, {"ok": False, "error": f"unknown macro command: {args.macro_command}"}
@@ -64,7 +71,6 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                     start_date=policy.start_date,
                     end_date=through_date,
                     history_class=policy.history_class,
-                    required_for_judgment=policy.required_for_judgment,
                     priority=policy.priority,
                     now_ms=now_ms,
                 )
@@ -76,14 +82,12 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                         now_ms=now_ms,
                         max_attempts=int(settings.workers.macro_backfill.max_attempts),
                         history_class=policy.history_class,
-                        required_for_judgment=policy.required_for_judgment,
                         priority=policy.priority,
                     )
                 targets.append(
                     {
                         "dataset_id": policy.dataset_id,
                         "history_class": policy.history_class,
-                        "required_for_judgment": policy.required_for_judgment,
                         "priority": policy.priority,
                         "partition_key": target["partition_key"],
                         "status": target["status"],
@@ -101,30 +105,28 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
     }
 
 
-def _handle_retry_research(args: Namespace) -> tuple[int, dict[str, Any]]:
-    try:
-        session_date = _parse_date(str(args.session_date))
-        settings = load_settings(require_ws_token=False)
-        with repositories(settings) as repos, repos.transaction():
-            run = repos.macro_research.retry_failed_run(
-                session_date=session_date,
-                now_ms=_now_ms(),
-            )
-    except Exception as exc:
-        return 1, _error("macro_retry_research_failed", exc)
-    return 0, {"ok": True, "data": _json_ready(run)}
-
-
 def _handle_status() -> tuple[int, dict[str, Any]]:
     try:
         settings = load_settings(require_ws_token=False)
+        now_ms = _now_ms()
+        current_session = resolve_thesis_session(now_ms=now_ms)
         with repositories(settings) as repos:
             targets = repos.macro.target_states()
             receipts = repos.macro.recent_receipts(limit=20)
             modules = repos.macro.all_modules_current()
-            judgment = repos.macro.daily_judgment()
             document_analysis_jobs = repos.macro.document_analysis_job_state()
-            research = repos.macro_research.research_state()
+            thesis = repos.macro_thesis.state(current_session)
+            thesis_state = classify_current_thesis_state(thesis)
+            publication_id = (
+                str(thesis["publication_id"])
+                if thesis_state == "published" and thesis is not None and thesis.get("publication_id")
+                else None
+            )
+            live_delta = repos.macro_thesis.latest_live_delta(publication_id) if publication_id is not None else None
+            outcome_replay = (
+                repos.macro_thesis.latest_outcome_replay(publication_id) if publication_id is not None else None
+            )
+            eval_readiness = _evaluation_readiness(repos.macro_thesis.evaluation_evidence_packs())
     except Exception as exc:
         return 1, _error("macro_status_unavailable", exc)
     status_counts: dict[str, int] = {}
@@ -143,19 +145,66 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
                     "modules": [
                         {
                             "module_id": row["module_id"],
-                            "data_health_state": row["data_health_state"],
+                            "current_health_state": row["current_health_state"],
+                            "history_depth_state": row["history_depth_state"],
                             "fact_cutoff_ms": row["fact_cutoff_ms"],
                             "updated_at_ms": row["updated_at_ms"],
                         }
                         for row in modules
                     ],
-                    "daily_judgment": judgment,
                     "document_analysis_jobs": document_analysis_jobs,
-                    "research": research,
+                    "current_session_date": current_session,
+                    "thesis": _current_thesis_summary(
+                        thesis,
+                        session_date=current_session,
+                        state=thesis_state,
+                    ),
+                    "live_delta": live_delta,
+                    "outcome_replay": outcome_replay,
+                    "offline_evaluation": eval_readiness.model_dump(mode="json"),
                 }
             ),
         },
     )
+
+
+def _current_thesis_summary(
+    row: Mapping[str, Any] | None,
+    *,
+    session_date: date,
+    state: str,
+) -> dict[str, Any]:
+    schema_version = str(row.get("schema_version") or "") or None if row is not None else None
+    return {
+        "session_date": session_date,
+        "state": state,
+        "run_status": str(row.get("status") or "") if row is not None else None,
+        "schema_version": schema_version,
+        "evidence_pack_id": row.get("evidence_pack_id") if row is not None else None,
+        "research_input_id": row.get("research_input_id") if row is not None else None,
+        "publication_id": (row.get("publication_id") if row is not None and state == "published" else None),
+        "last_error_code": row.get("last_error_code") if row is not None else None,
+        "last_gate_category": row.get("last_gate_category") if row is not None else None,
+    }
+
+
+def _evaluation_readiness(rows: Sequence[Mapping[str, Any]]) -> MacroEvalReadinessV1:
+    try:
+        packs = tuple(MacroEvidencePackV3.model_validate(row.get("payload_json")) for row in rows)
+    except ValueError:
+        session_dates = tuple(sorted({value for row in rows if isinstance((value := row.get("session_date")), date)}))
+        return MacroEvalReadinessV1(
+            state="selection_blocked",
+            available_real_sessions=len(session_dates),
+            missing_real_sessions=max(
+                0,
+                MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS - len(session_dates),
+            ),
+            session_dates=session_dates,
+            selected_case_ids=(),
+            reason_code="macro_eval_evidence_pack_invalid",
+        )
+    return inspect_macro_eval_readiness(packs)
 
 
 def _parse_date(raw: str) -> date:

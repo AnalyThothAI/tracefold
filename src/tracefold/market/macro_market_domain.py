@@ -39,11 +39,13 @@ class MarketObservationFact:
 
 @dataclass(frozen=True, slots=True)
 class MarketSettlementFact:
+    fact_schema_version: Literal["market_settlement_v2"]
     dataset_id: str
     instrument_id: str
     source_id: str
     trade_date: date
     contract_code: str
+    contract_expiration_date: date
     settlement_price: float
     open_interest: float | None
     volume: float | None

@@ -14,6 +14,7 @@ from functools import partial
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import httpx
 import requests
@@ -49,6 +50,7 @@ class MacroSourceClient:
         fred_enabled: bool = True,
         cboe_enabled: bool = True,
         cftc_enabled: bool = True,
+        nasdaq_daily_enabled: bool = True,
         yfinance_enabled: bool = True,
         yfinance_history_loader: Any | None = None,
         transport: httpx.BaseTransport | None = None,
@@ -68,6 +70,7 @@ class MacroSourceClient:
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
+        self._nasdaq_daily_enabled = bool(nasdaq_daily_enabled)
         self._yfinance_enabled = bool(yfinance_enabled)
         self._yfinance_history_loader = yfinance_history_loader or _load_yfinance_history
 
@@ -91,12 +94,16 @@ class MacroSourceClient:
             raise MacroSourceUnavailable("cboe_disabled")
         if spec.adapter_id == "cftc_tff" and not self._cftc_enabled:
             raise MacroSourceUnavailable("cftc_disabled")
+        if spec.adapter_id == "nasdaq_history" and not self._nasdaq_daily_enabled:
+            raise MacroSourceUnavailable("nasdaq_daily_disabled")
         if spec.adapter_id == "yfinance_history" and not self._yfinance_enabled:
             raise MacroSourceUnavailable("yfinance_disabled")
         if spec.adapter_id == "fred_csv":
             return self._fetch_fred(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "treasury_curve_xml":
             return self._fetch_treasury_curve(spec, partition_key, cursor, received_at_ms)
+        if spec.adapter_id == "nasdaq_history":
+            return self._fetch_nasdaq_history(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "yfinance_history":
             return self._fetch_yfinance_history(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "binance_spot":
@@ -107,15 +114,14 @@ class MacroSourceClient:
             return self._fetch_cftc_tff(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "bls_release":
             return self._fetch_bls_release(spec, partition_key, cursor, received_at_ms)
+        if spec.adapter_id == "bea_release_page":
+            return self._fetch_bea_release(spec, partition_key, received_at_ms)
         if spec.adapter_id == "fed_board_speech_archive":
             return self._fetch_board_speech_archive(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "fed_fomc_calendar":
             return self._fetch_fed_fomc_calendar(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "fed_reserve_bank_sitemaps":
             return self._fetch_reserve_bank_speeches(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "unavailable":
-            reason = str(spec.metadata.get("unavailable_reason") or "source_not_configured")
-            raise MacroSourceUnavailable(reason)
         raise MacroSourceError(f"unsupported_macro_adapter:{spec.adapter_id}")
 
     def _fetch_fred(
@@ -187,6 +193,87 @@ class MacroSourceClient:
             ),
         )
 
+    def _fetch_nasdaq_history(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        cursor: dict[str, Any],
+        received_at_ms: int,
+    ) -> FetchBatch:
+        received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
+        start_date = _optional_date(cursor.get("start_date"))
+        end_date = _optional_date(cursor.get("end_date"))
+        cursor_date = _optional_date(cursor.get("reference_date")) or start_date
+        lower_bound = start_date or (
+            cursor_date - timedelta(days=7) if cursor_date is not None else _years_before(received_date, 5)
+        )
+        upper_bound = end_date or received_date
+        response = self._client.get(
+            spec.source_url,
+            params={
+                "assetclass": "etf",
+                "fromdate": lower_bound.isoformat(),
+                "todate": upper_bound.isoformat(),
+                "limit": "5000",
+            },
+            headers={"Accept": "application/json, text/plain, */*"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        payload = response.json()
+        status_code = (
+            payload.get("status", {}).get("rCode")
+            if isinstance(payload, dict) and isinstance(payload.get("status"), dict)
+            else None
+        )
+        rows = (
+            payload.get("data", {}).get("tradesTable", {}).get("rows", [])
+            if isinstance(payload, dict) and isinstance(payload.get("data"), dict)
+            else []
+        )
+        if status_code != 200 or not isinstance(rows, list):
+            raise MacroSourceError("nasdaq_history_payload_invalid")
+        facts: list[MarketObservationFact] = []
+        latest_date: date | None = cursor_date
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            observed_date = _optional_us_date(row.get("date"))
+            close = _finite_float(str(row.get("close") or "").replace("$", "").replace(",", ""))
+            if observed_date is None or close is None or spec.instrument_id is None:
+                continue
+            facts.append(
+                MarketObservationFact(
+                    dataset_id=spec.dataset_id,
+                    instrument_id=spec.instrument_id,
+                    source_id=spec.source_id,
+                    field_name="close",
+                    value_numeric=close,
+                    unit=spec.unit,
+                    observed_at_ms=_date_close_ms(observed_date),
+                    published_at_ms=None,
+                    received_at_ms=received_at_ms,
+                    trust_tier=spec.trust_tier,
+                    source_url=str(response.url),
+                    raw_data=dict(row),
+                )
+            )
+            latest_date = max(latest_date or observed_date, observed_date)
+        facts.sort(key=lambda fact: fact.observed_at_ms)
+        if not facts:
+            raise MacroSourceError("nasdaq_history_no_valid_rows")
+        return _batch(
+            spec,
+            partition_key,
+            tuple(facts),
+            response,
+            cursor=_series_cursor(
+                latest_date,
+                start_date=start_date,
+                end_date=end_date,
+                backfill_complete=True if start_date is not None and end_date is not None else None,
+            ),
+        )
+
     def _fetch_yfinance_history(
         self,
         spec: DatasetSpec,
@@ -199,6 +286,8 @@ class MacroSourceClient:
         interval = str(spec.metadata.get("bar_interval") or "5m")
         initial_period = str(spec.metadata.get("initial_period") or "1mo")
         incremental_period = str(spec.metadata.get("incremental_period") or "1d")
+        start_date = _optional_date(cursor.get("start_date"))
+        end_date = _optional_date(cursor.get("end_date"))
         period = incremental_period if _optional_int(cursor.get("observed_at_ms")) is not None else initial_period
         prepost = bool(spec.metadata.get("prepost", True))
         try:
@@ -223,6 +312,11 @@ class MacroSourceClient:
                 continue
             if observed_at.tzinfo is None:
                 observed_at = observed_at.replace(tzinfo=UTC)
+            observed_date = observed_at.astimezone(UTC).date()
+            if start_date is not None and observed_date < start_date:
+                continue
+            if end_date is not None and observed_date > end_date:
+                continue
             observed_at_ms = int(observed_at.astimezone(UTC).timestamp() * 1_000)
             facts.append(
                 MarketObservationFact(
@@ -259,7 +353,12 @@ class MacroSourceClient:
             dataset_id=spec.dataset_id,
             partition_key=partition_key,
             facts=tuple(facts),
-            cursor={"observed_at_ms": facts[-1].observed_at_ms},
+            cursor={
+                "observed_at_ms": facts[-1].observed_at_ms,
+                **({"start_date": start_date.isoformat()} if start_date is not None else {}),
+                **({"end_date": end_date.isoformat()} if end_date is not None else {}),
+                **({"backfill_complete": True} if start_date is not None and end_date is not None else {}),
+            },
             response_hash="sha256:" + hashlib.sha256(response_body.encode()).hexdigest(),
             source_url=spec.source_url,
             diagnostics={
@@ -462,9 +561,11 @@ class MacroSourceClient:
                     "price",
                     "finalsettlement",
                 )
+                contract_expiration_date = _optional_date(row.get("expirationdate"))
                 if (
                     not contract_code
                     or settlement is None
+                    or contract_expiration_date is None
                     or spec.instrument_id is None
                     or (
                         str(product or "").upper() != spec.series_id
@@ -474,11 +575,13 @@ class MacroSourceClient:
                     continue
                 facts.append(
                     MarketSettlementFact(
+                        fact_schema_version="market_settlement_v2",
                         dataset_id=spec.dataset_id,
                         instrument_id=spec.instrument_id,
                         source_id=spec.source_id,
                         trade_date=candidate,
                         contract_code=contract_code.upper(),
+                        contract_expiration_date=contract_expiration_date,
                         settlement_price=settlement,
                         open_interest=_first_float(row, "openinterest", "oi"),
                         volume=_first_float(row, "volume", "totalvolume"),
@@ -661,7 +764,7 @@ class MacroSourceClient:
                     series_id=spec.series_id,
                     reference_period=reference_period,
                     scheduled_at_ms=None,
-                    published_at_ms=received_at_ms,
+                    published_at_ms=None,
                     received_at_ms=received_at_ms,
                     actual_value=actual,
                     prior_value=prior,
@@ -684,6 +787,80 @@ class MacroSourceClient:
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
                 **({"backfill_complete": True} if start_date is not None and end_date is not None else {}),
+            },
+        )
+
+    def _fetch_bea_release(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        received_at_ms: int,
+    ) -> FetchBatch:
+        listing_response = self._client.get(
+            spec.source_url,
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
+        _require_success(listing_response, source_id=spec.source_id)
+        release_family = str(spec.metadata.get("release_family") or "")
+        release_url = _bea_release_url(
+            listing_response.text,
+            base_url=str(listing_response.url),
+            release_family=release_family,
+        )
+        if release_url is None:
+            raise MacroSourceError(f"bea_current_release_missing:{release_family}")
+        response = self._client.get(
+            release_url,
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        title = _bea_page_title(response.text)
+        body = _extract_official_body(response.text)
+        published_at_ms = _bea_release_timestamp_ms(body)
+        reference_period = _bea_reference_period(
+            title=title,
+            release_family=release_family,
+        )
+        metric = str(spec.metadata.get("metric") or "")
+        values = _bea_metric_values(response.text, metric=metric)
+        if not values:
+            raise MacroSourceError(f"bea_release_metric_missing:{metric}")
+        actual_value = values[-1]
+        prior_value = values[-2] if len(values) >= 2 else None
+        revised_prior_value = actual_value if release_family == "gdp" and prior_value is not None else None
+        release_slug = urlparse(str(response.url)).path.rstrip("/").rsplit("/", 1)[-1]
+        fact = ReleaseFact(
+            dataset_id=spec.dataset_id,
+            release_id=f"BEA:{metric}:{reference_period}:{release_slug}",
+            series_id=spec.series_id,
+            reference_period=reference_period,
+            scheduled_at_ms=published_at_ms,
+            published_at_ms=published_at_ms,
+            received_at_ms=received_at_ms,
+            actual_value=actual_value,
+            prior_value=prior_value,
+            revised_prior_value=revised_prior_value,
+            estimate_value=None,
+            unit=spec.unit,
+            importance_tier=int(spec.metadata.get("importance_tier") or 3),
+            source_url=str(response.url),
+            raw_data={
+                "title": title,
+                "release_family": release_family,
+                "metric": metric,
+                "displayed_values": values,
+                "release_url": str(response.url),
+            },
+        )
+        return _batch(
+            spec,
+            partition_key,
+            (fact,),
+            response,
+            cursor={
+                "reference_period": reference_period,
+                "published_at_ms": published_at_ms,
+                "release_url": str(response.url),
             },
         )
 
@@ -1241,6 +1418,27 @@ def _optional_date(value: Any) -> date | None:
         return None
 
 
+def _optional_us_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
+def _date_close_ms(value: date) -> int:
+    return int(datetime(value.year, value.month, value.day, 21, tzinfo=UTC).timestamp() * 1_000)
+
+
+def _years_before(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year - years)
+    except ValueError:
+        return value.replace(year=value.year - years, day=28)
+
+
 def _date_open_ms(value: date) -> int:
     return int(datetime(value.year, value.month, value.day, tzinfo=UTC).timestamp() * 1_000)
 
@@ -1332,6 +1530,136 @@ def _parse_fed_html(value: str) -> _FedHtmlParser:
     parser.feed(value)
     parser.close()
     return parser
+
+
+def _bea_release_url(
+    value: str,
+    *,
+    base_url: str,
+    release_family: str,
+) -> str | None:
+    for href, label in _html_links(value):
+        normalized = " ".join(label.split()).casefold()
+        matches = (
+            normalized.startswith("gdp (")
+            if release_family == "gdp"
+            else normalized.startswith("personal income and outlays,")
+            if release_family == "pce"
+            else False
+        )
+        if matches:
+            return urljoin(base_url, href)
+    return None
+
+
+def _bea_page_title(value: str) -> str:
+    parsed = _parse_fed_html(value)
+    title = " ".join(parsed.title_parts).strip()
+    title = re.sub(
+        r"\s*[|]\s*U\.S\. Bureau of Economic Analysis.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not title:
+        raise MacroSourceError("bea_release_title_missing")
+    return title
+
+
+def _bea_release_timestamp_ms(value: str) -> int:
+    matched = re.search(
+        r"EMBARGOED UNTIL RELEASE AT .*?,\s*"
+        r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*"
+        r"([A-Z][a-z]+ \d{1,2}, \d{4})",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if matched is None:
+        raise MacroSourceError("bea_release_timestamp_missing")
+    released_on = datetime.strptime(matched.group(1), "%B %d, %Y").date()
+    released_at = datetime(
+        released_on.year,
+        released_on.month,
+        released_on.day,
+        8,
+        30,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    return int(released_at.timestamp() * 1_000)
+
+
+def _bea_reference_period(*, title: str, release_family: str) -> str:
+    if release_family == "gdp":
+        matched = re.search(
+            r"([1-4])(?:st|nd|rd|th) Quarter (\d{4})",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if matched is not None:
+            return f"{matched.group(2)}-Q{matched.group(1)}"
+    elif release_family == "pce":
+        matched = re.search(
+            r"Personal Income and Outlays,\s*([A-Z][a-z]+) (\d{4})",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if matched is not None:
+            month = datetime.strptime(matched.group(1), "%B").month
+            return f"{matched.group(2)}-M{month:02d}"
+    raise MacroSourceError(f"bea_release_reference_missing:{release_family}")
+
+
+class _HtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._table_depth = 0
+        self._row: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "table":
+            self._table_depth += 1
+        elif tag == "tr" and self._table_depth:
+            self._row = []
+        elif tag in {"th", "td"} and self._row is not None:
+            self._cell_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"th", "td"} and self._row is not None and self._cell_parts is not None:
+            self._row.append(" ".join(" ".join(self._cell_parts).split()))
+            self._cell_parts = None
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+            self._cell_parts = None
+        elif tag == "table" and self._table_depth:
+            self._table_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+
+def _bea_metric_values(value: str, *, metric: str) -> list[float]:
+    labels = {
+        "real_gdp": "real gdp",
+        "pce": "pce price index",
+        "core_pce": "pce price index excluding food and energy",
+    }
+    expected_label = labels.get(metric)
+    if expected_label is None:
+        raise MacroSourceError(f"bea_release_metric_unknown:{metric}")
+    parser = _HtmlTableParser()
+    parser.feed(value)
+    parser.close()
+    for row in parser.rows:
+        if not row or " ".join(row[0].split()).casefold() != expected_label:
+            continue
+        return [parsed for cell in row[1:] if (parsed := _finite_float(cell.replace(",", ""))) is not None]
+    return []
 
 
 def _extract_official_body(value: str) -> str:

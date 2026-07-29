@@ -11,7 +11,8 @@ from itertools import pairwise
 from types import MappingProxyType
 from typing import Any, Literal
 
-from tracefold.macro.domain import MacroModuleId
+from tracefold.macro.domain import DatasetSpec, MacroModuleId
+from tracefold.macro.registry import DATASET_REGISTRY
 
 GapPolicy = Literal["intersection", "latest_available"]
 
@@ -31,6 +32,84 @@ class CalculationSpec:
     output_schema: str
     operation: str
     materialize_feature: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class NaturalChangeCalculationSpec:
+    dataset_id: str
+    cadence: str
+    comparison_windows: tuple[str, ...]
+    minimum_observations: tuple[tuple[str, int], ...]
+    formula_version: str
+    output_unit: str
+    revision_policy: str
+    surprise_policy: str
+    gap_policy: str
+    max_gap_days: int | None
+    output_schema: str = "macro_natural_change_v1"
+
+
+def _natural_change_spec(spec: DatasetSpec) -> NaturalChangeCalculationSpec:
+    basis_points = spec.unit == "percent"
+    output_unit = "basis_points" if basis_points else "percent"
+    windows: tuple[str, ...]
+    minimums: tuple[tuple[str, int], ...]
+    if spec.frequency in {"intraday", "daily"}:
+        windows = ("1d", "1w", "1m")
+        minimums = (("1d", 2), ("1w", 2), ("1m", 2))
+        formula = "basis_point_difference_v1" if basis_points else "percent_return_v1"
+        gap_policy = "bounded_previous_observation"
+        max_gap_days = 4
+    elif spec.frequency == "weekly":
+        windows = ("wow", "4w")
+        minimums = (("wow", 2), ("4w", 2))
+        formula = "basis_point_difference_v1" if basis_points else "percent_change_v1"
+        gap_policy = "bounded_previous_observation"
+        max_gap_days = 7
+    elif spec.frequency == "monthly":
+        windows = ("mom", "3m_annualized", "yoy")
+        minimums = (("mom", 2), ("3m_annualized", 4), ("yoy", 13))
+        formula = "natural_monthly_change_v1"
+        gap_policy = "exact_period_lag"
+        max_gap_days = None
+    elif spec.frequency == "quarterly":
+        windows = ("qoq_annualized", "yoy")
+        minimums = (("qoq_annualized", 2), ("yoy", 5))
+        formula = "natural_quarterly_change_v1"
+        gap_policy = "exact_period_lag"
+        max_gap_days = None
+    else:
+        windows = ()
+        minimums = ()
+        formula = "not_applicable"
+        gap_policy = "not_applicable"
+        max_gap_days = None
+    return NaturalChangeCalculationSpec(
+        dataset_id=spec.dataset_id,
+        cadence=spec.frequency,
+        comparison_windows=windows,
+        minimum_observations=minimums,
+        formula_version=formula,
+        output_unit=output_unit,
+        revision_policy=(
+            "explicit_revised_prior_only" if spec.fact_family == "release" else "latest_vintage_per_reference_period"
+        ),
+        surprise_policy=("explicit_consensus_only" if spec.fact_family == "release" else "not_applicable"),
+        gap_policy=gap_policy,
+        max_gap_days=max_gap_days,
+    )
+
+
+NATURAL_CHANGE_REGISTRY = MappingProxyType(
+    {dataset_id: _natural_change_spec(spec) for dataset_id, spec in DATASET_REGISTRY.items()}
+)
+
+
+def natural_change_calculation(dataset_id: str) -> NaturalChangeCalculationSpec:
+    try:
+        return NATURAL_CHANGE_REGISTRY[dataset_id]
+    except KeyError as exc:
+        raise ValueError(f"macro_natural_change_unknown_dataset:{dataset_id}") from exc
 
 
 _CALCULATIONS = (
@@ -236,16 +315,16 @@ _CALCULATIONS = (
         "cross_asset.normalized_returns",
         "cross_asset",
         (
-            "yfinance.spy.market",
-            "yfinance.qqq.market",
-            "yfinance.iwm.market",
-            "yfinance.tlt.market",
-            "yfinance.ief.market",
-            "yfinance.lqd.market",
-            "yfinance.hyg.market",
-            "yfinance.dxy.market",
-            "yfinance.gld.market",
-            "yfinance.uso.market",
+            "nasdaq.spy.daily",
+            "nasdaq.qqq.daily",
+            "nasdaq.iwm.daily",
+            "nasdaq.tlt.daily",
+            "nasdaq.ief.daily",
+            "nasdaq.lqd.daily",
+            "nasdaq.hyg.daily",
+            "nasdaq.dxy.daily",
+            "nasdaq.gld.daily",
+            "nasdaq.uso.daily",
         ),
         "normalized_to_100_v1",
         "index",
@@ -262,16 +341,16 @@ _CALCULATIONS = (
         "cross_asset.return_correlations",
         "cross_asset",
         (
-            "yfinance.spy.market",
-            "yfinance.qqq.market",
-            "yfinance.iwm.market",
-            "yfinance.tlt.market",
-            "yfinance.ief.market",
-            "yfinance.lqd.market",
-            "yfinance.hyg.market",
-            "yfinance.dxy.market",
-            "yfinance.gld.market",
-            "yfinance.uso.market",
+            "nasdaq.spy.daily",
+            "nasdaq.qqq.daily",
+            "nasdaq.iwm.daily",
+            "nasdaq.tlt.daily",
+            "nasdaq.ief.daily",
+            "nasdaq.lqd.daily",
+            "nasdaq.hyg.daily",
+            "nasdaq.dxy.daily",
+            "nasdaq.gld.daily",
+            "nasdaq.uso.daily",
         ),
         "pearson_daily_returns_v1",
         "correlation",
@@ -914,11 +993,14 @@ def _input_ref(row: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CALCULATION_REGISTRY",
+    "NATURAL_CHANGE_REGISTRY",
     "CalculationSpec",
+    "NaturalChangeCalculationSpec",
     "calculate_curve_contract",
     "calculate_features",
     "calculate_funding_cost_comparisons",
     "calculate_market_comparison",
     "calculate_market_statistics",
     "calculate_series_statistics",
+    "natural_change_calculation",
 ]
