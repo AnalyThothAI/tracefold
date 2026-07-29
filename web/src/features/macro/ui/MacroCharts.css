@@ -30,16 +30,19 @@
     min-width: 0;
   }
 
-  .macro-chart > figcaption strong {
+  .macro-chart > figcaption h3 {
+    margin: 0;
     color: var(--text-primary);
     font-size: 0.86rem;
   }
 
-  .macro-chart > figcaption span,
+  .macro-chart > figcaption p,
   .macro-chart__readout,
   .macro-chart__empty {
+    margin: 0;
     color: var(--text-muted);
     font-size: 0.68rem;
+    line-height: 1.5;
   }
 
   .macro-chart__range,
@@ -120,9 +123,14 @@
   }
 
   .macro-chart > svg {
+    display: block;
     width: 100%;
+    height: auto;
+    min-height: 18rem;
     min-width: 0;
     max-height: 20rem;
+    aspect-ratio: 720 / 300;
+    overflow: visible;
   }
 
   .macro-chart__grid-line {
@@ -157,6 +165,13 @@
     stroke-dasharray: 1 4;
   }
 
+  .macro-chart__curve-point {
+    fill: var(--surface-panel);
+    stroke: var(--accent-primary);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+
   .macro-chart__baseline {
     stroke: color-mix(in srgb, var(--text-muted) 70%, transparent);
     stroke-dasharray: 3 3;
@@ -166,6 +181,62 @@
   .macro-chart__bar {
     fill: var(--series-color);
     opacity: 0.88;
+  }
+
+  .macro-chart__bar-value {
+    fill: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
+
+  .macro-chart__annotations {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .macro-chart__annotations li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.12rem 0.4rem;
+    max-width: min(100%, 24rem);
+    border-left: 2px solid var(--accent-border);
+    background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+    padding: 0.4rem 0.5rem;
+  }
+
+  .macro-chart__annotations li[data-tone="weakening"],
+  .macro-chart__annotations li[data-tone="checkpoint"] {
+    border-left-color: var(--signal-caution);
+  }
+
+  .macro-chart__annotations li[data-tone="invalidation"] {
+    border-left-color: var(--signal-negative);
+  }
+
+  .macro-chart__annotations li[data-tone="cutoff"] {
+    border-left-color: #9d8cff;
+  }
+
+  .macro-chart__annotations time,
+  .macro-chart__annotations span,
+  .macro-chart__annotations small {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.61rem;
+  }
+
+  .macro-chart__annotations strong {
+    color: var(--text-primary);
+    font-size: 0.65rem;
+  }
+
+  .macro-chart__annotations span,
+  .macro-chart__annotations small {
+    grid-column: 1 / -1;
   }
 
   .macro-chart__data {
@@ -180,8 +251,19 @@
     cursor: pointer;
   }
 
+  .macro-chart__more {
+    margin-top: 0.5rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: transparent;
+    padding: 0.28rem 0.55rem;
+    color: var(--accent-primary);
+    font-size: 0.66rem;
+  }
+
   .macro-chart__table {
     display: grid;
+    width: 100%;
     min-width: 0;
     margin-top: 0.55rem;
     overflow-x: auto;
@@ -189,6 +271,20 @@
     border-radius: var(--radius-md);
   }
 
+  .macro-chart__table caption {
+    padding: 0.55rem 0.7rem;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .macro-chart__table thead,
+  .macro-chart__table tbody {
+    display: contents;
+  }
+
+  .macro-chart__table tr,
   .macro-chart__table [role="row"] {
     display: grid;
     grid-template-columns: minmax(8rem, 1.2fr) minmax(7rem, 0.8fr) minmax(8rem, 1fr);
@@ -196,11 +292,13 @@
     border-top: 1px solid var(--border-faint);
   }
 
+  .macro-chart__table thead tr,
   .macro-chart__table [role="row"]:first-child {
     border-top: 0;
     background: var(--surface-raised);
   }
 
+  .macro-chart__table--indicators tr,
   .macro-chart__table--indicators [role="row"] {
     grid-template-columns:
       minmax(12rem, 1.5fr) repeat(3, minmax(5rem, 0.7fr)) minmax(6rem, 0.8fr)
@@ -208,6 +306,8 @@
     min-width: 50rem;
   }
 
+  .macro-chart__table td,
+  .macro-chart__table th,
   .macro-chart__table [role="cell"],
   .macro-chart__table [role="columnheader"] {
     display: grid;
@@ -220,19 +320,24 @@
     overflow-wrap: anywhere;
   }
 
+  .macro-chart__table th,
   .macro-chart__table [role="columnheader"] {
     color: var(--text-primary);
     font-weight: 700;
+    text-align: left;
   }
 
+  .macro-chart__table td strong,
   .macro-chart__table [role="cell"] strong {
     color: var(--text-primary);
   }
 
+  .macro-chart__table td small,
   .macro-chart__table [role="cell"] small {
     color: var(--text-muted);
   }
 
+  .macro-chart__table td a,
   .macro-chart__table [role="cell"] a {
     color: var(--accent-primary);
     text-decoration: none;
@@ -321,14 +426,8 @@
       height: 15rem;
     }
 
-    .macro-chart--curve > svg,
-    .macro-chart--bars > svg {
-      min-width: 34rem;
-    }
-
-    .macro-chart--curve,
-    .macro-chart--bars {
-      overflow-x: auto;
+    .macro-chart > svg {
+      min-height: 14rem;
     }
   }
 }

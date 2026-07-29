@@ -3,11 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tracefold.macro.assets import (
+    MACRO_ASSET_DATASETS,
+    MACRO_THESIS_ASSETS,
+    MACRO_THESIS_OUTCOME_DATASETS,
+)
 from tracefold.macro.domain import MACRO_MODULE_IDS, MacroModuleId
 
 MACRO_EVIDENCE_PACK_SCHEMA_VERSION = "macro_evidence_pack_v3"
@@ -15,35 +21,15 @@ MACRO_THESIS_SCHEMA_VERSION = "macro_thesis_v1"
 MACRO_LIVE_DELTA_SCHEMA_VERSION = "macro_live_delta_v1"
 MACRO_OUTCOME_REPLAY_SCHEMA_VERSION = "macro_outcome_replay_v1"
 
-MACRO_THESIS_ASSETS: tuple[str, ...] = (
-    "SPY",
-    "QQQ",
-    "IWM",
-    "TLT",
-    "IEF",
-    "LQD",
-    "HYG",
-    "UUP",
-    "GLD",
-    "USO",
-    "BTC",
-    "VIX",
-)
-_ASSET_DATASETS = {
-    "SPY": "nasdaq.spy.daily",
-    "QQQ": "nasdaq.qqq.daily",
-    "IWM": "nasdaq.iwm.daily",
-    "TLT": "nasdaq.tlt.daily",
-    "IEF": "nasdaq.ief.daily",
-    "LQD": "nasdaq.lqd.daily",
-    "HYG": "nasdaq.hyg.daily",
-    "UUP": "nasdaq.dxy.daily",
-    "GLD": "nasdaq.gld.daily",
-    "USO": "nasdaq.uso.daily",
-    "BTC": "binance.btcusdt.spot",
-    "VIX": "fred.vixcls",
-}
-MACRO_THESIS_OUTCOME_DATASETS: tuple[str, ...] = tuple(_ASSET_DATASETS[symbol] for symbol in MACRO_THESIS_ASSETS)
+_ASSET_DATASETS = MACRO_ASSET_DATASETS
+
+
+@dataclass(frozen=True)
+class _EvidenceFactClock:
+    observed_at_ms: int | None
+    published_at_ms: int | None
+    received_at_ms: int | None
+    authoritative_at_ms: int | None
 
 
 class ExactMacroModel(BaseModel):
@@ -54,10 +40,10 @@ class MacroMomentum(ExactMacroModel):
     symbol: str
     momentum_1w: Literal["up", "down", "flat", "insufficient"]
     momentum_1m: Literal["up", "down", "flat", "insufficient"]
-    return_1w_pct: float | None = None
-    return_1m_pct: float | None = None
-    source_dataset_id: str | None = None
-    as_of: str | None = None
+    return_1w_pct: float | None
+    return_1m_pct: float | None
+    source_dataset_id: str | None
+    as_of: str | None
 
 
 class MacroEvidencePackV3(ExactMacroModel):
@@ -407,6 +393,7 @@ class MacroLiveDeltaItem(ExactMacroModel):
     dataset_id: str = Field(min_length=1, max_length=200)
     metric_name: str = Field(min_length=1, max_length=120)
     observed_value: float | None = None
+    observed_at_ms: int | None = Field(ge=0)
     operator: Literal["gt", "gte", "lt", "lte", "abs_gte"]
     threshold: float
     reason_code: str
@@ -439,8 +426,8 @@ class MacroOutcomeAssetResult(ExactMacroModel):
     expires_at_ms: int = Field(ge=0)
     status: Literal["pending", "evaluated", "insufficient"]
     published_direction: Literal["bullish", "bearish", "neutral", "no_call"]
-    realized_return_pct: float | None = None
-    direction_correct: bool | None = None
+    realized_return_pct: float | None
+    direction_correct: bool | None
     reason_code: str
 
 
@@ -449,10 +436,10 @@ class MacroOutcomeHorizon(ExactMacroModel):
     expires_at_ms: int = Field(ge=0)
     status: Literal["pending", "evaluated", "insufficient"]
     benchmark_symbol: str
-    realized_return_pct: float | None = None
-    direction_correct: bool | None = None
+    realized_return_pct: float | None
+    direction_correct: bool | None
     reason_code: str
-    asset_results: tuple[MacroOutcomeAssetResult, ...] = ()
+    asset_results: tuple[MacroOutcomeAssetResult, ...]
 
 
 class MacroOutcomeReplayV1(ExactMacroModel):
@@ -514,7 +501,7 @@ def validate_draft_against_pack(
             str(metric_name) for metric_name, value in dict(change.get("metrics") or {}).items() if value is not None
         }
         for module in evidence_pack.modules
-        for change in dict(module.get("summary") or {}).get("top_changes", ())
+        for change in _module_decision_changes(module)
         if isinstance(change, Mapping)
     }
     for condition in _draft_conditions(draft):
@@ -753,9 +740,7 @@ def evaluate_live_delta(
     evaluated_at_ms: int,
 ) -> MacroLiveDeltaV1:
     metric_values = _module_metric_values(modules)
-    module_fact_cutoffs = {
-        str(module.get("module_id") or ""): int(module.get("latest_fact_at_ms") or 0) for module in modules
-    }
+    fact_clocks_by_dataset = _latest_evidence_fact_clocks(modules)
     matched_claims: list[str] = []
     matched_falsifiers: list[str] = []
     matched_checkpoints: list[str] = []
@@ -769,7 +754,9 @@ def evaluate_live_delta(
         owner_id: str,
         bucket: list[str],
     ) -> None:
-        if module_fact_cutoffs.get(condition.module_id, 0) <= publication.cutoff_ms:
+        fact_clock = fact_clocks_by_dataset.get(condition.dataset_id)
+        authoritative_at_ms = fact_clock.authoritative_at_ms if fact_clock is not None else None
+        if authoritative_at_ms is None or authoritative_at_ms <= publication.cutoff_ms:
             items.append(
                 MacroLiveDeltaItem(
                     binding_type=binding_type,
@@ -779,6 +766,7 @@ def evaluate_live_delta(
                     dataset_id=condition.dataset_id,
                     metric_name=condition.metric_name,
                     observed_value=None,
+                    observed_at_ms=authoritative_at_ms,
                     operator=condition.operator,
                     threshold=condition.threshold,
                     reason_code="post_cutoff_fact_missing",
@@ -796,6 +784,7 @@ def evaluate_live_delta(
                     dataset_id=condition.dataset_id,
                     metric_name=condition.metric_name,
                     observed_value=None,
+                    observed_at_ms=authoritative_at_ms,
                     operator=condition.operator,
                     threshold=condition.threshold,
                     reason_code="condition_metric_missing",
@@ -827,6 +816,7 @@ def evaluate_live_delta(
                 dataset_id=condition.dataset_id,
                 metric_name=condition.metric_name,
                 observed_value=observed,
+                observed_at_ms=authoritative_at_ms,
                 operator=condition.operator,
                 threshold=condition.threshold,
                 reason_code=reason_code,
@@ -906,11 +896,27 @@ def evaluate_live_delta(
         status = "insufficient"
     else:
         status = "unrelated"
-    module_fact_cutoff_ms = max((int(module.get("latest_fact_at_ms") or 0) for module in modules), default=0)
+    module_fact_cutoff_ms = max(
+        (
+            clock.authoritative_at_ms
+            for clock in fact_clocks_by_dataset.values()
+            if clock.authoritative_at_ms is not None
+        ),
+        default=0,
+    )
     inputs = {
         "publication_id": publication.publication_id,
         "module_fact_cutoff_ms": module_fact_cutoff_ms,
-        "module_fact_cutoffs": sorted(module_fact_cutoffs.items()),
+        "dataset_fact_clocks": sorted(
+            (
+                dataset_id,
+                clock.observed_at_ms,
+                clock.published_at_ms,
+                clock.received_at_ms,
+                clock.authoritative_at_ms,
+            )
+            for dataset_id, clock in fact_clocks_by_dataset.items()
+        ),
         "metric_values": sorted((f"{dataset}:{metric}", value) for (dataset, metric), value in metric_values.items()),
     }
     input_hash = payload_hash(inputs)
@@ -959,6 +965,8 @@ def pending_outcome_replay(
                 expires_at_ms=publication.published_at_ms + offset,
                 status="pending",
                 benchmark_symbol="SPY",
+                realized_return_pct=None,
+                direction_correct=None,
                 reason_code="horizon_not_expired",
                 asset_results=(
                     tuple(
@@ -970,6 +978,8 @@ def pending_outcome_replay(
                             published_direction=(
                                 asset.outlook_1w.direction if horizon == "1w" else asset.outlook_1m.direction
                             ),
+                            realized_return_pct=None,
+                            direction_correct=None,
                             reason_code="horizon_not_expired",
                         )
                         for asset in publication.assets
@@ -1026,6 +1036,8 @@ def evaluate_outcome_replay(
                     expires_at_ms=expires_at_ms,
                     status="pending",
                     benchmark_symbol="SPY",
+                    realized_return_pct=None,
+                    direction_correct=None,
                     reason_code="horizon_not_expired",
                     asset_results=asset_results,
                 )
@@ -1040,6 +1052,8 @@ def evaluate_outcome_replay(
                     expires_at_ms=expires_at_ms,
                     status="insufficient",
                     benchmark_symbol="SPY",
+                    realized_return_pct=None,
+                    direction_correct=None,
                     reason_code="benchmark_observation_missing",
                     asset_results=asset_results,
                 )
@@ -1100,6 +1114,8 @@ def _asset_outcome_results(
                     expires_at_ms=expires_at_ms,
                     status="pending",
                     published_direction=outlook.direction,
+                    realized_return_pct=None,
+                    direction_correct=None,
                     reason_code="horizon_not_expired",
                 )
             )
@@ -1130,6 +1146,8 @@ def _asset_outcome_results(
                     expires_at_ms=expires_at_ms,
                     status="insufficient",
                     published_direction=outlook.direction,
+                    realized_return_pct=None,
+                    direction_correct=None,
                     reason_code="asset_observation_missing",
                 )
             )
@@ -1291,7 +1309,10 @@ def _gaps_for_draft(
                         dataset_id=dataset_id,
                         axis="current_health",
                         state=current_state,
-                        reason=str(state_payload.get("current_reason") or f"current_health:{current_state}"),
+                        reason=_gap_reason_text(
+                            state_payload.get("current_reason"),
+                            fallback=f"current_health:{current_state}",
+                        ),
                         affected_claim_ids=affected,
                     )
                 )
@@ -1306,7 +1327,10 @@ def _gaps_for_draft(
                         dataset_id=dataset_id,
                         axis="history_depth",
                         state=history_state,
-                        reason=str(state_payload.get("history_reason") or f"history_depth:{history_state}"),
+                        reason=_gap_reason_text(
+                            state_payload.get("history_reason"),
+                            fallback=f"history_depth:{history_state}",
+                        ),
                         affected_claim_ids=affected,
                     )
                 )
@@ -1320,6 +1344,19 @@ def _gaps_for_draft(
             ),
         )
     )
+
+
+def _gap_reason_text(value: object, *, fallback: str) -> str:
+    if isinstance(value, Mapping):
+        message = str(value.get("message") or "").strip()
+        code = str(value.get("code") or "").strip()
+        if message and code:
+            return f"{message} [{code}]"
+        if message or code:
+            return message or code
+        return fallback
+    text = str(value or "").strip()
+    return text or fallback
 
 
 def _compile_delta_pack(
@@ -1459,9 +1496,7 @@ def _optional_int(value: object) -> int | None:
 def _module_metric_values(modules: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], float]:
     values: dict[tuple[str, str], float] = {}
     for module in modules:
-        summary = module.get("summary")
-        changes = summary.get("top_changes", ()) if isinstance(summary, Mapping) else ()
-        for change in changes:
+        for change in _module_decision_changes(module):
             if not isinstance(change, Mapping):
                 continue
             dataset_id = str(change.get("dataset_id") or "")
@@ -1472,6 +1507,46 @@ def _module_metric_values(modules: Sequence[Mapping[str, Any]]) -> dict[tuple[st
                 if isinstance(value, int | float):
                     values[(dataset_id, str(metric_name))] = float(value)
     return values
+
+
+def _latest_evidence_fact_clocks(
+    modules: Sequence[Mapping[str, Any]],
+) -> dict[str, _EvidenceFactClock]:
+    clocks: dict[str, _EvidenceFactClock] = {}
+    for module in modules:
+        evidence = module.get("evidence")
+        facts = evidence.get("latest_facts", ()) if isinstance(evidence, Mapping) else ()
+        for fact in facts:
+            if not isinstance(fact, Mapping):
+                continue
+            dataset_id = str(fact.get("dataset_id") or "")
+            if not dataset_id:
+                continue
+            observed_at_ms = _optional_int(fact.get("observed_at_ms"))
+            published_at_ms = _optional_int(fact.get("published_at_ms"))
+            received_at_ms = _optional_int(fact.get("received_at_ms"))
+            candidate = _EvidenceFactClock(
+                observed_at_ms=observed_at_ms,
+                published_at_ms=published_at_ms,
+                received_at_ms=received_at_ms,
+                authoritative_at_ms=next(
+                    (value for value in (observed_at_ms, published_at_ms, received_at_ms) if value is not None),
+                    None,
+                ),
+            )
+            current = clocks.get(dataset_id)
+            if current is None or _evidence_fact_clock_rank(candidate) > _evidence_fact_clock_rank(current):
+                clocks[dataset_id] = candidate
+    return clocks
+
+
+def _evidence_fact_clock_rank(clock: _EvidenceFactClock) -> tuple[int, int, int, int]:
+    return (
+        clock.authoritative_at_ms if clock.authoritative_at_ms is not None else -1,
+        clock.observed_at_ms if clock.observed_at_ms is not None else -1,
+        clock.published_at_ms if clock.published_at_ms is not None else -1,
+        clock.received_at_ms if clock.received_at_ms is not None else -1,
+    )
 
 
 def _condition_matches(value: float, condition: MacroCondition) -> bool:
@@ -1488,7 +1563,7 @@ def _compile_momentum(modules: Sequence[Mapping[str, Any]]) -> tuple[MacroMoment
     changes_by_dataset = {
         str(change.get("dataset_id") or ""): change
         for module in modules
-        for change in dict(module.get("summary") or {}).get("top_changes", ())
+        for change in _module_asset_changes(module)
         if isinstance(change, Mapping)
     }
     output = []
@@ -1510,6 +1585,28 @@ def _compile_momentum(modules: Sequence[Mapping[str, Any]]) -> tuple[MacroMoment
             )
         )
     return tuple(output)
+
+
+def _module_asset_changes(module: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    evidence = module.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return ()
+    return tuple(change for change in evidence.get("asset_changes", ()) if isinstance(change, Mapping))
+
+
+def _module_decision_changes(module: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    summary = module.get("summary")
+    top_changes = (
+        tuple(change for change in summary.get("top_changes", ()) if isinstance(change, Mapping))
+        if isinstance(summary, Mapping)
+        else ()
+    )
+    by_dataset: dict[str, Mapping[str, Any]] = {
+        str(change.get("dataset_id") or ""): change
+        for change in (*top_changes, *_module_asset_changes(module))
+        if change.get("dataset_id")
+    }
+    return tuple(by_dataset.values())
 
 
 def _momentum_direction(

@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import deepagents
 from deepagents import (
@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tracefold.macro import (
     MACRO_MODULE_IDS,
+    MACRO_MODULE_LABELS,
     MACRO_THESIS_ASSETS,
     MacroAlternative,
     MacroAssetOutlook,
@@ -688,7 +689,7 @@ def _compile_analysis_draft(
         *(
             MacroNarrativeSection(
                 section_id=f"module-{item.module_id}",
-                title=f"{item.module_id} 模块判断",
+                title=f"{MACRO_MODULE_LABELS[item.module_id]}模块判断",
                 markdown=item.analysis,
                 evidence_refs=_module_refs(evidence_pack, (item.module_id,)),
             )
@@ -798,46 +799,51 @@ def _compile_asset(
             return MacroHorizonOutlook(
                 horizon=value,
                 direction="no_call",
-                causal_channel=channel + " 当前主线或资产自身可计算动量不足，方向降级为 no_call。",
+                causal_channel=channel + " 当前主线或资产自身可计算动量不足，因此暂不形成方向判断。",
                 supporting_evidence_refs=supporting_refs,
                 conflicting_evidence_refs=conflicting_refs,
                 confidence="low",
             )
+        signal_module_id, dataset_id, metric_name, current = asset_signal
+        condition_signal = (dataset_id, metric_name, current)
+        horizon_supporting_refs = tuple(
+            dict.fromkeys((*supporting_refs, *_module_refs(evidence_pack, (signal_module_id,))))
+        )
         prefix = f"asset-{item.symbol.lower()}-{value}"
         return MacroHorizonOutlook(
             horizon=value,
             direction=direction,
             causal_channel=channel,
-            supporting_evidence_refs=supporting_refs,
+            supporting_evidence_refs=horizon_supporting_refs,
             conflicting_evidence_refs=conflicting_refs,
             confirmation_triggers=(
                 _pack_condition(
                     evidence_pack,
-                    module_id="cross_asset",
+                    module_id=signal_module_id,
                     condition_id=f"{prefix}-confirm",
                     kind="confirm",
                     rationale=f"{item.symbol} {value} 展望的驱动模块继续满足冻结方向。",
-                    signal=asset_signal,
+                    signal=condition_signal,
                 ),
             ),
             falsifiers=(
                 _pack_condition(
                     evidence_pack,
-                    module_id="cross_asset",
+                    module_id=signal_module_id,
                     condition_id=f"{prefix}-falsifier",
                     kind="falsifier",
                     rationale=f"{item.symbol} {value} 展望的驱动模块反向穿越零轴。",
-                    signal=asset_signal,
+                    signal=condition_signal,
                 ),
             ),
             checkpoints=(
                 _pack_condition(
                     evidence_pack,
-                    module_id="cross_asset",
+                    module_id=signal_module_id,
                     condition_id=f"{prefix}-checkpoint",
                     kind="confirm",
                     rationale=f"复核 {item.symbol} {value} 展望的驱动变化。",
-                    signal=asset_signal,
+                    signal=condition_signal,
                 ),
             ),
             confidence=confidence,
@@ -919,20 +925,23 @@ def _asset_signal(
     evidence_pack: MacroEvidencePackV3,
     symbol: str,
     horizon: Literal["1w", "1m"],
-) -> tuple[str, str, float] | None:
+) -> tuple[MacroModuleId, str, str, float] | None:
     momentum = next(value for value in evidence_pack.momentum if value.symbol == symbol)
     dataset_id = momentum.source_dataset_id
     metric_name = f"return_{horizon}_pct"
     if not dataset_id:
         return None
-    module = next(value for value in evidence_pack.modules if value.get("module_id") == "cross_asset")
-    for change in dict(module.get("summary") or {}).get("top_changes") or ():
-        if not isinstance(change, Mapping) or change.get("dataset_id") != dataset_id:
-            continue
-        metrics = change.get("metrics")
-        metric_value = metrics.get(metric_name) if isinstance(metrics, Mapping) else None
-        if isinstance(metric_value, (int, float)) and not isinstance(metric_value, bool):
-            return dataset_id, metric_name, float(metric_value)
+    for module in evidence_pack.modules:
+        module_id = str(module.get("module_id") or "")
+        evidence = module.get("evidence")
+        asset_changes = evidence.get("asset_changes", ()) if isinstance(evidence, Mapping) else ()
+        for change in asset_changes:
+            if not isinstance(change, Mapping) or change.get("dataset_id") != dataset_id:
+                continue
+            metrics = change.get("metrics")
+            metric_value = metrics.get(metric_name) if isinstance(metrics, Mapping) else None
+            if isinstance(metric_value, (int, float)) and not isinstance(metric_value, bool):
+                return cast(MacroModuleId, module_id), dataset_id, metric_name, float(metric_value)
     return None
 
 

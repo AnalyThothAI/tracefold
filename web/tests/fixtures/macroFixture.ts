@@ -1,6 +1,8 @@
 import type {
+  MacroCondition,
   MacroModuleId,
   MacroOverviewReadData,
+  MacroReason,
   MacroThesisDetailReadData,
   MacroThesisV1,
   MacroTypedModuleReadData,
@@ -16,11 +18,82 @@ const MODULE_IDS: MacroModuleId[] = [
   "cross_asset",
 ];
 const ASSETS = ["SPY", "QQQ", "IWM", "TLT", "IEF", "LQD", "HYG", "UUP", "GLD", "USO", "BTC", "VIX"];
+type CrossAssetFixture = Extract<MacroTypedModuleReadData, { module_id: "cross_asset" }>;
+type RatesFedFixture = Extract<MacroTypedModuleReadData, { module_id: "rates_fed" }>;
+type EconomyInflationFixture = Extract<
+  MacroTypedModuleReadData,
+  { module_id: "economy_inflation" }
+>;
+type CrossAssetReturnRowFixture = CrossAssetFixture["assets"]["return_matrix"][number];
+type CrossAssetSourceFixture = CrossAssetReturnRowFixture["latest_source"];
+type CrossAssetNormalizedGroupFixture = CrossAssetFixture["assets"]["normalized_groups"][number];
+type CrossAssetSourceIdentityFixture = CrossAssetFixture["assets"]["source_identity"][number];
+type IndicatorFixture = RatesFedFixture["policy_pricing"]["rates"][number];
+type HistoryPointFixture = IndicatorFixture["history"][number];
+type CurveSpreadPointFixture = RatesFedFixture["curve"]["spreads"]["2s10s"][number];
+type CurveYieldSnapshotFixture = RatesFedFixture["curve"]["nominal_snapshots"][number];
+type CurveBreakevenSnapshotFixture = RatesFedFixture["curve"]["breakeven_snapshots"][number];
+type ReleaseFixture = EconomyInflationFixture["inflation"]["official_releases"][number];
+type MarketFactFixture = Extract<
+  NonNullable<CrossAssetSourceFixture["fact"]>,
+  { market_time_ms: number }
+>;
+type ModuleBaseFixture = Omit<
+  RatesFedFixture,
+  "schema_version" | "module_id" | "curve" | "policy_pricing" | "fed" | "positioning"
+>;
+
+function macroReason({
+  code,
+  message,
+  impact = "none",
+  nextAction = null,
+  nextCheckAtMs = null,
+  affectedDatasetIds = [],
+  affectedClaimIds = [],
+  retryable,
+  recovery,
+}: {
+  code: string;
+  message: string;
+  impact?: MacroReason["impact"];
+  nextAction?: string | null;
+  nextCheckAtMs?: number | null;
+  affectedDatasetIds?: string[];
+  affectedClaimIds?: string[];
+  retryable?: boolean;
+  recovery?: MacroReason["recovery"];
+}): MacroReason {
+  return {
+    code,
+    message,
+    impact,
+    affected_dataset_ids: affectedDatasetIds,
+    affected_claim_ids: affectedClaimIds,
+    retryable: retryable ?? nextAction != null,
+    recovery: recovery ?? (nextAction ? "automatic" : "none"),
+    next_action: nextAction,
+    next_check_at_ms: nextCheckAtMs,
+  };
+}
+
+function mainlineFalsifierFixture(conditionId: string): MacroCondition {
+  return {
+    condition_id: conditionId,
+    module_id: "rates_fed",
+    dataset_id: "fred.dgs2",
+    metric_name: "change_1w_bp",
+    operator: "lte",
+    threshold: -25,
+    effect: "invalidation_triggered",
+    rationale: "2Y 收益率显著反向时，该方向判断失效。",
+  };
+}
 
 export function macroOverviewFixture(): MacroOverviewReadData {
   const thesis = macroThesisFixture();
   return {
-    schema_version: "macro_overview_v5",
+    schema_version: "macro_overview_v6",
     read_at_ms: NOW,
     transport: {
       state: "current",
@@ -28,70 +101,56 @@ export function macroOverviewFixture(): MacroOverviewReadData {
       reason: null,
     },
     session_date: "2026-07-27",
+    displayed_session_date: "2026-07-27",
     cutoff_ms: NOW - 3_600_000,
     latest_fact_at_ms: NOW - 600_000,
     thesis_state: "published",
+    thesis_reason: null,
     thesis,
-    live_delta: {
-      schema_version: "macro_live_delta_v1",
-      live_delta_id: "mld_fixture",
-      publication_id: thesis.publication_id,
-      evaluated_at_ms: NOW,
-      module_fact_cutoff_ms: NOW - 60_000,
-      status: "confirming",
-      matched_claim_ids: ["claim-rates"],
-      matched_falsifier_ids: [],
-      matched_checkpoint_ids: ["checkpoint-credit"],
-      items: [
-        {
-          binding_type: "checkpoint",
-          binding_id: "checkpoint-credit",
-          condition_id: "checkpoint-credit",
-          status: "confirming",
-          dataset_id: "fred.bamlh0a0hym2",
-          metric_name: "change_1w_bp",
-          observed_value: 22,
-          operator: "gte",
-          threshold: 20,
-          reason_code: "condition_threshold_matched",
-        },
-      ],
-      reason_codes: ["condition_threshold_matched"],
-      input_hash: `sha256:${"3".repeat(64)}`,
+    run: {
+      session_date: "2026-07-27",
+      status: "published",
+      evidence_pack_id: thesis.evidence_pack_id,
+      attempt_count: 1,
+      max_attempts: 2,
+      error_code: null,
+      reason: null,
+      updated_at_ms: NOW,
     },
-    outcome_replay: {
-      schema_version: "macro_outcome_replay_v1",
-      replay_id: "mor_fixture",
-      publication_id: thesis.publication_id,
-      evaluated_at_ms: NOW,
-      horizons: (["1d", "1w", "1m"] as const).map((horizon, index) => ({
-        horizon,
-        expires_at_ms: NOW + (index + 1) * 86_400_000,
-        status: "pending",
-        benchmark_symbol: "SPY",
-        realized_return_pct: null,
-        direction_correct: null,
-        reason_code: "horizon_not_expired",
-        asset_results: [],
-      })),
-      input_hash: `sha256:${"4".repeat(64)}`,
+    fallback: {
+      state: "none",
+      reason: macroReason({
+        code: "requested_publication_available",
+        message: "请求交易日主线已发布。",
+      }),
+      publication_id: null,
+      session_date: null,
+      cutoff_ms: null,
     },
+    asset_presentation: macroAssetPresentationFixture(thesis),
+    claim_presentation: macroClaimPresentationFixture(thesis),
+    live_delta: macroLiveDeltaFixture(thesis),
+    outcome_replay: macroOutcomeReplayFixture(thesis),
     modules: MODULE_IDS.map((moduleId) => {
       const module = macroModuleFixture(moduleId);
       const role = thesis.module_assessments.find((item) => item.module_id === moduleId)!;
       return {
         module_id: moduleId,
         label: module.label,
+        availability: "available",
+        reason: null,
         role: role.role,
         coverage_state: module.status.coverage.state,
         current_health_state: module.status.current_health.state,
         history_depth_state: module.status.history_depth.state,
+        backfill_execution: module.status.backfill_execution,
         latest_fact_at_ms: module.latest_fact_at_ms,
         summary: module.summary,
         coverage_gap_count: 0,
         current_health_gap_count: 0,
         history_gap_count: 0,
         href: modulePath(moduleId),
+        thesis_context: module.thesis_context,
       };
     }),
     data_quality: {
@@ -244,57 +303,88 @@ export function macroThesisFixture(): MacroThesisV1 {
       supporting_evidence_refs: [moduleRef(moduleId)],
       conflicting_evidence_refs: [],
     })),
-    assets: ASSETS.map((symbol) => ({
+    assets: ASSETS.map((symbol, index) => ({
       symbol,
       momentum: {
         symbol,
-        momentum_1w: symbol === "QQQ" ? "down" : "up",
-        momentum_1m: symbol === "QQQ" ? "down" : "up",
-        return_1w_pct: symbol === "QQQ" ? -1.2 : 0.3,
-        return_1m_pct: symbol === "QQQ" ? -2.1 : 0.8,
-        source_dataset_id: `fixture.${symbol.toLowerCase()}`,
+        momentum_1w: index >= 8 ? "insufficient" : symbol === "QQQ" ? "down" : "up",
+        momentum_1m: index >= 8 ? "insufficient" : symbol === "QQQ" ? "down" : "up",
+        return_1w_pct: index >= 8 ? null : symbol === "QQQ" ? -1.2 : 0.3,
+        return_1m_pct: index >= 8 ? null : symbol === "QQQ" ? -2.1 : 0.8,
+        source_dataset_id: index >= 8 ? null : `fixture.${symbol.toLowerCase()}`,
         as_of: "2026-07-27",
       },
       outlook_1w: {
         horizon: "1w",
-        direction: "no_call",
-        causal_channel: "等待利率与信用共同确认。",
+        direction: index < 4 ? "bearish" : "no_call",
+        causal_channel:
+          index < 4 ? "实际利率上行经贴现率压制风险偏好。" : "等待利率与信用共同确认。",
         supporting_evidence_refs: [moduleRef("rates_fed")],
         conflicting_evidence_refs: [moduleRef("credit")],
-        confirmation_triggers: [],
-        falsifiers: [],
+        confirmation_triggers:
+          index >= 4 && index < 8
+            ? [
+                {
+                  condition_id: `confirm-${symbol.toLowerCase()}-1w`,
+                  module_id: "credit",
+                  dataset_id: "fred.bamlh0a0hym2",
+                  metric_name: "change_1w_bp",
+                  operator: "gte",
+                  threshold: 20,
+                  effect: "confirming",
+                  rationale: "信用利差走阔后再形成方向判断。",
+                },
+              ]
+            : [],
+        falsifiers:
+          index < 4 ? [mainlineFalsifierFixture(`falsifier-${symbol.toLowerCase()}-1w`)] : [],
         checkpoints: [],
-        confidence: "low",
+        confidence: index < 4 ? "medium" : "low",
       },
       outlook_1m: {
         horizon: "1m",
-        direction: "no_call",
-        causal_channel: "等待更完整的月度证据。",
+        direction: index < 4 ? "bearish" : "no_call",
+        causal_channel: index < 4 ? "持续高实际利率限制中期估值扩张。" : "等待更完整的月度证据。",
         supporting_evidence_refs: [moduleRef("rates_fed")],
         conflicting_evidence_refs: [moduleRef("credit")],
-        confirmation_triggers: [],
-        falsifiers: [],
+        confirmation_triggers:
+          index >= 4 && index < 8
+            ? [
+                {
+                  condition_id: `confirm-${symbol.toLowerCase()}-1m`,
+                  module_id: "credit",
+                  dataset_id: "fred.bamlh0a0hym2",
+                  metric_name: "change_1w_bp",
+                  operator: "gte",
+                  threshold: 30,
+                  effect: "confirming",
+                  rationale: "信用与利率压力共同持续后再形成中期判断。",
+                },
+              ]
+            : [],
+        falsifiers:
+          index < 4 ? [mainlineFalsifierFixture(`falsifier-${symbol.toLowerCase()}-1m`)] : [],
         checkpoints: [],
-        confidence: "low",
+        confidence: index < 4 ? "medium" : "low",
       },
     })),
     gaps: [],
     citations: MODULE_IDS.map((moduleId) => ({
       evidence_ref: moduleRef(moduleId),
       module_id: moduleId,
-      dataset_id: null,
-      source_role: null,
+      dataset_id: `fixture.${moduleId}`,
+      source_role: "decision_primary",
       label: moduleLabel(moduleId),
       reference: "2026-07-27",
-      published_at_ms: null,
+      published_at_ms: NOW - 900_000,
       received_at_ms: NOW - 600_000,
-      source_url: null,
+      source_url: `https://example.com/${moduleId}`,
     })),
     narrative_sections: [
       {
         section_id: "mainline",
         title: "市场主线",
-        markdown: "实际利率上行仍然主导短期跨资产定价。",
+        markdown: "## 判断\n\n实际利率上行仍然主导短期跨资产定价。\n\n- 贴现率抬升\n- 信用尚未确认",
         evidence_refs: [moduleRef("rates_fed"), moduleRef("credit")],
       },
     ],
@@ -320,22 +410,255 @@ export function macroThesisFixture(): MacroThesisV1 {
   };
 }
 
+function macroAssetPresentationFixture(
+  thesis: MacroThesisV1,
+): MacroOverviewReadData["asset_presentation"] {
+  return thesis.assets.map((asset, index) => {
+    const group =
+      index < 4
+        ? ("actionable" as const)
+        : index < 8
+          ? ("watch" as const)
+          : ("evidence_gap" as const);
+    const horizons = ([asset.outlook_1w, asset.outlook_1m] as const).map((outlook) => ({
+      horizon: outlook.horizon,
+      momentum_state:
+        outlook.horizon === "1w" ? asset.momentum.momentum_1w : asset.momentum.momentum_1m,
+      momentum_value:
+        outlook.horizon === "1w" ? asset.momentum.return_1w_pct : asset.momentum.return_1m_pct,
+      outlook_direction: outlook.direction,
+      causal_channel: outlook.causal_channel,
+      confidence: outlook.confidence,
+      supporting_evidence_refs: outlook.supporting_evidence_refs,
+      conflicting_evidence_refs: outlook.conflicting_evidence_refs,
+      confirmation_triggers: outlook.confirmation_triggers,
+      falsifiers: outlook.falsifiers,
+      checkpoints: outlook.checkpoints,
+      reason:
+        group === "evidence_gap"
+          ? macroReason({
+              code: "asset_momentum_insufficient",
+              message: `${asset.symbol} ${outlook.horizon} 缺少完整事实动量。`,
+              impact: "blocked",
+              nextAction: "等待资产数据按市场时钟自动补齐。",
+              nextCheckAtMs: NOW + 86_400_000,
+              affectedDatasetIds: [`fixture.${asset.symbol.toLowerCase()}`],
+              affectedClaimIds: ["claim-rates"],
+            })
+          : null,
+    }));
+    return {
+      symbol: asset.symbol,
+      order: index + 1,
+      group,
+      source_dataset_id:
+        asset.momentum.source_dataset_id ?? `fixture.${asset.symbol.toLowerCase()}`,
+      as_of: asset.momentum.as_of,
+      claim_ids: ["claim-rates"],
+      horizons: [horizons[0]!, horizons[1]!],
+    };
+  });
+}
+
+function macroClaimPresentationFixture(
+  thesis: MacroThesisV1,
+): MacroOverviewReadData["claim_presentation"] {
+  return thesis.mainline.claims.map((claim) => ({
+    claim_id: claim.claim_id,
+    statement: claim.statement,
+    supporting_evidence_refs: claim.supporting_evidence_refs,
+    conflicting_evidence_refs: claim.conflicting_evidence_refs,
+    conditions: claim.conditions,
+    falsifiers: thesis.mainline.falsifiers,
+    checkpoints: thesis.mainline.checkpoints,
+    asset_implications: thesis.assets.slice(0, 4).flatMap((asset) =>
+      ([asset.outlook_1w, asset.outlook_1m] as const).map((outlook) => ({
+        symbol: asset.symbol,
+        horizon: outlook.horizon,
+        direction: outlook.direction,
+        causal_channel: outlook.causal_channel,
+        confidence: outlook.confidence,
+        evidence_links: [...outlook.supporting_evidence_refs, ...outlook.conflicting_evidence_refs],
+        confirmation_triggers: outlook.confirmation_triggers,
+        falsifiers: outlook.falsifiers,
+        checkpoints: outlook.checkpoints,
+      })),
+    ),
+  }));
+}
+
+function macroLiveDeltaFixture(
+  thesis: MacroThesisV1,
+): NonNullable<MacroOverviewReadData["live_delta"]> {
+  const itemReason = macroReason({
+    code: "condition_threshold_matched",
+    message: "观察值达到已发布条件阈值。",
+  });
+  const item = (
+    bindingType: "claim" | "falsifier" | "checkpoint",
+    bindingId: string,
+    conditionId: string,
+    datasetId: string,
+    datasetLabel: string,
+    metricName: string,
+  ) => ({
+    binding_type: bindingType,
+    binding_id: bindingId,
+    condition_id: conditionId,
+    status: "confirming" as const,
+    dataset_id: datasetId,
+    dataset_label: datasetLabel,
+    metric_name: metricName,
+    unit: "bp",
+    observed_value: 22,
+    observed_at_ms: NOW - 60_000,
+    observation_cutoff_ms: NOW - 60_000,
+    operator: "gte" as const,
+    threshold: 20,
+    rationale: "高收益信用利差走阔，正在确认融资压力。",
+    source_reason_code: "condition_threshold_matched",
+    reason: itemReason,
+  });
+  return {
+    schema_version: "macro_live_delta_read_v1",
+    source_schema_version: "macro_live_delta_v1",
+    live_delta_id: "mld_fixture",
+    publication_id: thesis.publication_id,
+    evaluated_at_ms: NOW,
+    module_fact_cutoff_ms: NOW - 60_000,
+    mainline_validity: "confirming",
+    matched_claim_ids: ["claim-rates"],
+    matched_falsifier_ids: [],
+    matched_checkpoint_ids: ["checkpoint-credit"],
+    scopes: [
+      {
+        scope: "mainline",
+        scope_id: "mainline",
+        label: "整体主线",
+        status: "confirming",
+        matched_binding_ids: ["claim-rates"],
+        items: [
+          item(
+            "claim",
+            "claim-rates",
+            "checkpoint-credit",
+            "fred.bamlh0a0hym2",
+            "美国高收益信用利差",
+            "change_1w_bp",
+          ),
+        ],
+      },
+      {
+        scope: "tension",
+        scope_id: "tension:tension-credit",
+        label: "信用利差尚未确认利率压力。",
+        status: "confirming",
+        matched_binding_ids: ["tension-credit"],
+        items: [
+          item(
+            "checkpoint",
+            "tension-credit",
+            "tension-credit-resolution",
+            "fred.bamlh0a0hym2",
+            "美国高收益信用利差",
+            "change_1w_bp",
+          ),
+        ],
+      },
+      {
+        scope: "asset",
+        scope_id: "asset:SPY:1w",
+        label: "SPY · 1 周",
+        status: "confirming",
+        matched_binding_ids: ["asset:SPY:1w"],
+        items: [
+          item(
+            "falsifier",
+            "asset:SPY:1w",
+            "falsifier-spy-1w",
+            "fred.dgs2",
+            "美国 2 年期国债收益率",
+            "change_1w_bp",
+          ),
+        ],
+      },
+    ],
+    reason_codes: ["condition_threshold_matched"],
+    input_hash: `sha256:${"3".repeat(64)}`,
+  };
+}
+
+function macroOutcomeReplayFixture(
+  thesis: MacroThesisV1,
+): NonNullable<MacroOverviewReadData["outcome_replay"]> {
+  return {
+    schema_version: "macro_outcome_replay_read_v1",
+    source_schema_version: "macro_outcome_replay_v1",
+    replay_id: "mor_fixture",
+    publication_id: thesis.publication_id,
+    evaluated_at_ms: NOW,
+    horizons: (["1d", "1w", "1m"] as const).map((horizon, index) => {
+      const expiresAtMs = NOW + (index + 1) * 86_400_000;
+      const reason = macroReason({
+        code: "horizon_not_expired",
+        message: `${horizon} 结果观察期尚未结束。`,
+        nextAction: "到期后按市场数据时钟自动评估。",
+        nextCheckAtMs: expiresAtMs,
+      });
+      return {
+        horizon,
+        expires_at_ms: expiresAtMs,
+        status: "pending",
+        benchmark_symbol: "SPY",
+        realized_return_pct: null,
+        direction_correct: null,
+        source_reason_code: "horizon_not_expired",
+        reason,
+        asset_results: [
+          {
+            symbol: "SPY",
+            horizon: horizon === "1m" ? ("1m" as const) : ("1w" as const),
+            expires_at_ms: expiresAtMs,
+            status: "pending" as const,
+            published_direction: "bearish" as const,
+            realized_return_pct: null,
+            direction_correct: null,
+            source_reason_code: "asset_horizon_not_expired",
+            reason,
+          },
+        ],
+      };
+    }),
+    input_hash: `sha256:${"4".repeat(64)}`,
+  };
+}
+
 export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleReadData {
   const base = moduleBase(moduleId);
   if (moduleId === "rates_fed") {
     return {
       ...base,
-      schema_version: "macro_rates_fed_v4",
+      schema_version: "macro_rates_fed_v5",
       module_id: "rates_fed",
       curve: {
         classification: {
           state: "bear_steepening",
           label: "熊市陡峭化",
-          formula_version: "curve-shape-v1",
+          formula_version: "level_slope_curvature_classification_v2",
+          inputs: {
+            "2y_change_bp": 15,
+            "10y_change_bp": 25,
+            current_2s10s_bp: 35,
+            current_as_of: "2026-07-27",
+            curvature_change_bp: 2,
+            level_change_bp: 20,
+            prior_as_of: "2026-07-20",
+            slope_change_bp: 10,
+          },
         },
-        nominal_snapshots: curveSnapshots("yield_pct", [4.3, 4.15, 4.22, 4.4, 4.62]),
-        real_snapshots: curveSnapshots("yield_pct", [1.7, 1.85, 1.94, 2.08, 2.22]),
-        breakeven_snapshots: curveSnapshots("breakeven_pct", [2.6, 2.3, 2.28, 2.32, 2.4]),
+        nominal_snapshots: curveYieldSnapshots([4.3, 4.15, 4.22, 4.4, 4.62]),
+        real_snapshots: curveYieldSnapshots([1.7, 1.85, 1.94, 2.08, 2.22]),
+        breakeven_snapshots: curveBreakevenSnapshots([2.6, 2.3, 2.28, 2.32, 2.4]),
         spreads: {
           "2s10s": historyRows([5, 12, 22, 35], "value_bp"),
           "3m10s": historyRows([-25, -18, -6, 10], "value_bp"),
@@ -356,7 +679,9 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
         institutional_stance: {
           state: "current",
           direction: "hawkish",
-          reason: "analysis:fomc-fixture",
+          change_from_prior: "unchanged",
+          reason: "最新已审阅的联邦公开市场委员会声明维持偏鹰立场。",
+          analysis_id: "fomc-fixture",
         },
         officials_distribution: {
           state: "current",
@@ -364,6 +689,10 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           as_of: "2026-07-27",
           stance_event_counts: { hawkish: 4, neutral: 2, dovish: 1, mixed: 1 },
           stance_unique_official_counts: { hawkish: 3, neutral: 2, dovish: 1, mixed: 1 },
+          analyzed_event_count: 8,
+          not_policy_signal_event_count: 1,
+          uncertain_event_count: 0,
+          unique_official_count: 7,
         },
         timeline: [
           {
@@ -371,14 +700,33 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
             document_type: "statement",
             title: "Federal Reserve issues FOMC statement",
             effective_date: "2026-07-23",
+            official_id: null,
+            published_at_ms: NOW - 900_000,
             source_url: "https://example.com/fed",
             speaker_name: null,
             role_title: "FOMC",
             fomc_voter: null,
-            analysis: { stance: "hawkish" },
+            analysis: {
+              analysis_id: "fomc-fixture",
+              change_from_prior: "unchanged",
+              confidence: 0.82,
+              evidence: [
+                {
+                  claim: "声明继续强调通胀风险。",
+                  excerpt: "Inflation remains somewhat elevated.",
+                },
+              ],
+              model_name: "fixture-model",
+              policy_relevance: "policy_signal",
+              prompt_version: "fed-analysis-v1",
+              rationale: "最新声明没有释放明确宽松信号。",
+              reviewer_disposition: "pass",
+              stance: "hawkish",
+              state: "analyzed",
+            },
           },
         ],
-        roster: { state: "current", officials: [] },
+        roster: { state: "current", reason: null, officials: [] },
       },
       positioning: [
         {
@@ -396,7 +744,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "economy_inflation") {
     return {
       ...base,
-      schema_version: "macro_economy_inflation_v4",
+      schema_version: "macro_economy_inflation_v5",
       module_id: "economy_inflation",
       inflation: {
         indicators: [
@@ -433,7 +781,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "liquidity_funding") {
     return {
       ...base,
-      schema_version: "macro_liquidity_funding_v4",
+      schema_version: "macro_liquidity_funding_v5",
       module_id: "liquidity_funding",
       balance_sheet: {
         indicators: [
@@ -453,9 +801,13 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
     };
   }
   if (moduleId === "credit") {
+    const creditReturnMatrix = [
+      crossAssetReturnRow(1, "credit_etf", "信用 ETF", "LQD", "lqd", [0.1, 0.4, 1.1]),
+      crossAssetReturnRow(2, "credit_etf", "信用 ETF", "HYG", "hyg", [-0.1, 0.2, 0.8]),
+    ];
     return {
       ...base,
-      schema_version: "macro_credit_v5",
+      schema_version: "macro_credit_v7",
       module_id: "credit",
       cycle_dimensions: [
         {
@@ -463,6 +815,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           label: "利差水平与速度",
           state: "tightening",
           driver: "评级梯级近月平均走阔",
+          evidence_dataset_ids: ["fred.bamlc0a0cm", "fred.bamlh0a3hyc"],
           conflicts: ["利差仍处低分位，但近月正在走阔"],
         },
         {
@@ -470,6 +823,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           label: "绝对融资成本",
           state: "expensive",
           driver: "公司债绝对收益率处于实际历史高分位",
+          evidence_dataset_ids: ["fred.bamlc0a0cmey", "fred.bamlh0a0hym2ey"],
           conflicts: [],
         },
         {
@@ -477,6 +831,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           label: "银行供给与需求",
           state: "neutral",
           driver: "银行供给与需求未形成一致压力",
+          evidence_dataset_ids: ["fred.drtscilm", "fred.drsdcilm"],
           conflicts: [],
         },
         {
@@ -484,6 +839,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           label: "实现信用质量",
           state: "stable",
           driver: "实现贷款质量未出现一致恶化",
+          evidence_dataset_ids: ["fred.drblacbs", "fred.drcrelexfacbs"],
           conflicts: [],
         },
       ],
@@ -508,8 +864,24 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           indicator("fred.dgs10", "10Y Treasury", "percent", [4.1, 4.2, 4.3, 4.4]),
         ],
         comparisons: [
-          { label: "IG yield − EFFR", value_bp: 77 },
-          { label: "HY yield − EFFR", value_bp: 327 },
+          {
+            as_of: "2026-07-27",
+            corporate_dataset_id: "fred.bamlc0a0cmey",
+            formula_version: "matched_rate_difference_v1",
+            input_fact_ids: ["fact:ig", "fact:effr"],
+            label: "IG yield − EFFR",
+            reference_dataset_id: "fred.effr",
+            value_bp: 77,
+          },
+          {
+            as_of: "2026-07-27",
+            corporate_dataset_id: "fred.bamlh0a0hym2ey",
+            formula_version: "matched_rate_difference_v1",
+            input_fact_ids: ["fact:hy", "fact:effr"],
+            label: "HY yield − EFFR",
+            reference_dataset_id: "fred.effr",
+            value_bp: 327,
+          },
         ],
       },
       bank_lending: {
@@ -528,10 +900,8 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
         ],
       },
       confirmations: {
-        etfs: [
-          combinedAsset("LQD", "nasdaq.lqd.daily", "yfinance.lqd.intraday", [0.1, 0.4, 1.1]),
-          combinedAsset("HYG", "nasdaq.hyg.daily", "yfinance.hyg.intraday", [-0.1, 0.2, 0.8]),
-        ],
+        return_matrix: creditReturnMatrix,
+        source_identity: creditReturnMatrix.map(crossAssetIdentity),
         positions: [],
       },
     };
@@ -539,7 +909,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "volatility") {
     return {
       ...base,
-      schema_version: "macro_volatility_v4",
+      schema_version: "macro_volatility_v6",
       module_id: "volatility",
       term_structure: {
         spot_and_three_month: [
@@ -554,36 +924,81 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           indicator("fred.gvzcls", "GVZ", "index", [14, 15, 15.5, 16]),
           indicator("fred.ovxcls", "OVX", "index", [28, 29, 30, 31]),
         ],
-        normalized: [
-          ...normalizedRows("VXN", [100, 105, 110, 116]),
-          ...normalizedRows("GVZ", [100, 107, 111, 114]),
-          ...normalizedRows("OVX", [100, 104, 107, 111]),
+        normalized_groups: [
+          crossAssetNormalizedGroup(1, "cross_asset_implied_volatility", "跨资产隐含波动率", [
+            ["VXN", "Nasdaq 100 波动率指数", "fred.vxncls", [100, 105, 110, 116]],
+            ["GVZ", "黄金波动率指数", "fred.gvzcls", [100, 107, 111, 114]],
+            ["OVX", "原油波动率指数", "fred.ovxcls", [100, 104, 107, 111]],
+          ]),
         ],
       },
     };
   }
+  const returnMatrix = [
+    crossAssetReturnRow(1, "equity", "权益", "SPY", "spy", [0.4, 1.2, 3.8]),
+    crossAssetReturnRow(2, "equity", "权益", "QQQ", "qqq", [0.6, 1.8, 4.2]),
+    crossAssetReturnRow(3, "equity", "权益", "IWM", "iwm", [-0.2, 0.5, 1.1]),
+    crossAssetReturnRow(4, "duration_credit", "久期与信用", "TLT", "tlt", [-0.3, -1.4, -2.2]),
+    crossAssetReturnRow(5, "duration_credit", "久期与信用", "IEF", "ief", [-0.1, -0.5, -0.8]),
+    crossAssetReturnRow(6, "duration_credit", "久期与信用", "LQD", "lqd", [0.1, 0.4, 1.1]),
+    crossAssetReturnRow(7, "duration_credit", "久期与信用", "HYG", "hyg", [-0.1, 0.2, 0.8]),
+    crossAssetReturnRow(8, "dollar_commodities", "美元与商品", "UUP", "dxy", [0.2, 0.7, 1.3]),
+    crossAssetReturnRow(9, "dollar_commodities", "美元与商品", "GLD", "gld", [0.2, 1.8, 4.5]),
+    crossAssetReturnRow(10, "dollar_commodities", "美元与商品", "USO", "uso", [-0.5, 1.1, 2.4]),
+  ];
   return {
     ...base,
-    schema_version: "macro_cross_asset_v5",
+    schema_version: "macro_cross_asset_v6",
     module_id: "cross_asset",
     assets: {
-      benchmarks: [
-        benchmark("S&P 500", "equity", "SPY", "nasdaq.spy.daily", [0.4, 1.2, 3.8]),
-        benchmark("Treasury duration", "rates", "TLT", "nasdaq.tlt.daily", [-0.3, -1.4, -2.2]),
-        benchmark("HY credit", "credit", "HYG", "nasdaq.hyg.daily", [0.1, 0.6, 1.4]),
-        benchmark("Gold", "commodity", "GLD", "nasdaq.gld.daily", [0.2, 1.8, 4.5]),
-        benchmark("Bitcoin", "crypto", "BTC", "binance.btcusdt.spot", [1.4, 5.5, 12]),
+      return_matrix: returnMatrix,
+      normalized_groups: [
+        crossAssetNormalizedGroup(1, "equity", "权益", [
+          ["SPY", "SPDR标普500 ETF", "nasdaq.spy.daily", [100, 102, 104, 106]],
+          ["QQQ", "Invesco纳斯达克100 ETF", "nasdaq.qqq.daily", [100, 103, 105, 108]],
+          ["IWM", "iShares罗素2000 ETF", "nasdaq.iwm.daily", [100, 99, 101, 102]],
+        ]),
+        crossAssetNormalizedGroup(2, "duration_credit", "久期与信用", [
+          ["TLT", "iShares 20年以上美债 ETF", "nasdaq.tlt.daily", [100, 99, 98, 97]],
+          ["IEF", "iShares 7-10年美债 ETF", "nasdaq.ief.daily", [100, 99.5, 99, 98.5]],
+          ["LQD", "iShares投资级公司债 ETF", "nasdaq.lqd.daily", [100, 100.2, 100.6, 101]],
+          ["HYG", "iShares高收益公司债 ETF", "nasdaq.hyg.daily", [100, 100.5, 101, 101.5]],
+        ]),
+        crossAssetNormalizedGroup(3, "dollar_commodities", "美元与商品", [
+          ["UUP", "Invesco美元指数 ETF", "nasdaq.dxy.daily", [100, 100.5, 101, 101.5]],
+          ["GLD", "SPDR黄金 ETF", "nasdaq.gld.daily", [100, 102, 104, 105]],
+          ["USO", "United States Oil Fund", "nasdaq.uso.daily", [100, 99, 101, 103]],
+        ]),
       ],
-      proxies: [
-        combinedAsset("SPY", "nasdaq.spy.daily", "yfinance.spy.intraday", [0.4, 1.2, 3.8]),
-        combinedAsset("TLT", "nasdaq.tlt.daily", "yfinance.tlt.intraday", [-0.3, -1.4, -2.2]),
-      ],
-      normalized: [
-        ...normalizedRows("SPY", [100, 102, 104, 106]),
-        ...normalizedRows("TLT", [100, 99, 98, 97]),
-        ...normalizedRows("HYG", [100, 100.5, 101, 101.5]),
-        ...normalizedRows("GLD", [100, 102, 104, 105]),
-        ...normalizedRows("BTC", [100, 106, 112, 118]),
+      source_identity: [
+        ...returnMatrix.map(crossAssetIdentity),
+        crossAssetStandaloneIdentity(11, "WTI", "WTI Cushing 现货", "official_benchmark", [
+          crossAssetSource(
+            "WTI",
+            "fred.dcoilwtico",
+            "WTI Cushing 现货",
+            "decision_primary",
+            [0.2, 1, 2],
+          ),
+        ]),
+        crossAssetStandaloneIdentity(12, "BTC", "Bitcoin / USD", "crypto", [
+          crossAssetSource(
+            "BTC",
+            "binance.btcusdt.spot",
+            "Binance BTC/USDT 现货",
+            "decision_primary",
+            [1.4, 5.5, 12],
+          ),
+        ]),
+        crossAssetStandaloneIdentity(13, "VIX", "Cboe Volatility Index", "volatility", [
+          crossAssetSource(
+            "VIX",
+            "fred.vixcls",
+            "Cboe 波动率指数",
+            "decision_primary",
+            [0.3, 1, 2],
+          ),
+        ]),
       ],
     },
     correlations: [
@@ -610,7 +1025,17 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       },
     ],
     futures: {
-      market: [combinedAsset("ES", "nasdaq.es.daily", "yfinance.es.intraday", [0.3, 1.1, 3])],
+      return_matrix: [
+        crossAssetReturnRow(
+          1,
+          "major_futures",
+          "主要连续期货",
+          "ES",
+          "es_future",
+          [0.3, 1.1, 3],
+          "es",
+        ),
+      ],
       positions: [
         {
           contract_code: "ES",
@@ -641,12 +1066,14 @@ function indicator(
   label: string,
   unit: string,
   values: number[],
-): Record<string, unknown> {
+): IndicatorFixture {
+  const latestValue = values.at(-1);
+  if (latestValue == null) throw new Error(`indicator fixture ${datasetId} requires values`);
   return {
     dataset_id: datasetId,
     label,
     unit,
-    latest_value: values.at(-1) ?? null,
+    latest_value: latestValue,
     as_of: "2026-07-27",
     change_1w: values.length > 1 ? values.at(-1)! - values.at(-2)! : null,
     change_1m: values.length > 1 ? values.at(-1)! - values[0]! : null,
@@ -658,18 +1085,27 @@ function indicator(
   };
 }
 
-function historyRows(values: number[], key = "value"): Array<Record<string, unknown>> {
+function historyRows(values: number[]): HistoryPointFixture[];
+function historyRows(values: number[], key: "value"): HistoryPointFixture[];
+function historyRows(values: number[], key: "value_bp"): CurveSpreadPointFixture[];
+function historyRows(
+  values: number[],
+  key: "value" | "value_bp" = "value",
+): HistoryPointFixture[] | CurveSpreadPointFixture[] {
   const dates = ["2026-04-27", "2026-05-27", "2026-06-27", "2026-07-27"];
+  if (key === "value_bp") {
+    return values.map((value, index) => ({
+      date: dates[index] ?? `2026-07-${index + 1}`,
+      value_bp: value,
+    }));
+  }
   return values.map((value, index) => ({
     date: dates[index] ?? `2026-07-${index + 1}`,
-    [key]: value,
+    value,
   }));
 }
 
-function curveSnapshots(
-  key: "yield_pct" | "breakeven_pct",
-  currentValues: number[],
-): Array<Record<string, unknown>> {
+function curveYieldSnapshots(currentValues: number[]): CurveYieldSnapshotFixture[] {
   const tenors = [
     ["3M", 0.25],
     ["2Y", 2],
@@ -677,18 +1113,52 @@ function curveSnapshots(
     ["10Y", 10],
     ["30Y", 30],
   ] as const;
-  return [
-    ["current", "2026-07-27", 0],
-    ["1w", "2026-07-20", -0.05],
-    ["1m", "2026-06-27", -0.1],
-    ["3m", "2026-04-27", -0.15],
-  ].map(([window, asOf, offset]) => ({
+  const snapshots: Array<{
+    window: CurveYieldSnapshotFixture["window"];
+    asOf: string;
+    offset: number;
+  }> = [
+    { window: "current", asOf: "2026-07-27", offset: 0 },
+    { window: "1w", asOf: "2026-07-20", offset: -0.05 },
+    { window: "1m", asOf: "2026-06-27", offset: -0.1 },
+    { window: "3m", asOf: "2026-04-27", offset: -0.15 },
+  ];
+  return snapshots.map(({ window, asOf, offset }) => ({
     window,
     as_of: asOf,
     points: tenors.map(([tenor, years], index) => ({
       tenor,
       years,
-      [key]: currentValues[index]! + Number(offset),
+      yield_pct: currentValues[index]! + offset,
+    })),
+  }));
+}
+
+function curveBreakevenSnapshots(currentValues: number[]): CurveBreakevenSnapshotFixture[] {
+  const tenors = [
+    ["3M", 0.25],
+    ["2Y", 2],
+    ["5Y", 5],
+    ["10Y", 10],
+    ["30Y", 30],
+  ] as const;
+  const snapshots: Array<{
+    window: CurveBreakevenSnapshotFixture["window"];
+    asOf: string;
+    offset: number;
+  }> = [
+    { window: "current", asOf: "2026-07-27", offset: 0 },
+    { window: "1w", asOf: "2026-07-20", offset: -0.05 },
+    { window: "1m", asOf: "2026-06-27", offset: -0.1 },
+    { window: "3m", asOf: "2026-04-27", offset: -0.15 },
+  ];
+  return snapshots.map(({ window, asOf, offset }) => ({
+    window,
+    as_of: asOf,
+    points: tenors.map(([tenor, years], index) => ({
+      tenor,
+      years,
+      breakeven_pct: currentValues[index]! + offset,
     })),
   }));
 }
@@ -699,10 +1169,8 @@ function release(
   actual: number,
   estimate: number,
   prior: number,
-): Record<string, unknown> {
-  return {
-    dataset_id: datasetId,
-    label,
+): ReleaseFixture {
+  const observation = {
     reference_period: "2026-06",
     actual_value: actual,
     estimate_value: estimate,
@@ -711,50 +1179,16 @@ function release(
     surprise: actual - estimate,
     revision: 0.1,
     unit: "percent",
+    scheduled_at_ms: NOW - 1_200_000,
+    published_at_ms: NOW - 900_000,
+    received_at_ms: NOW - 600_000,
     source_url: "https://example.com/release",
   };
-}
-
-function combinedAsset(
-  symbol: string,
-  historyDatasetId: string,
-  intradayDatasetId: string,
-  changes: [number, number, number],
-): Record<string, unknown> {
   return {
-    symbol,
-    label: symbol,
-    asset_class: "market",
-    selection_policy: "decision_primary_only_no_fallback",
-    sources: {
-      identity_policy: "separate_source_facts_no_blend",
-      decision_primary: assetFact(symbol, historyDatasetId, changes),
-      intraday_proxy: assetFact(symbol, intradayDatasetId, changes),
-      history: assetFact(symbol, historyDatasetId, changes),
-    },
-  };
-}
-
-function benchmark(
-  label: string,
-  assetClass: string,
-  symbol: string,
-  datasetId: string,
-  changes: [number, number, number],
-): Record<string, unknown> {
-  return {
-    label,
-    symbol,
-    asset_class: assetClass,
     dataset_id: datasetId,
-    evidence_kind: "tradable_proxy_reference",
-    selection_policy: "decision_primary_only_no_fallback",
-    sources: {
-      identity_policy: "separate_source_facts_no_blend",
-      decision_primary: assetFact(symbol, datasetId, changes),
-      intraday_proxy: null,
-      history: assetFact(symbol, datasetId, changes),
-    },
+    label,
+    ...observation,
+    observations: [observation],
   };
 }
 
@@ -762,11 +1196,9 @@ function assetFact(
   symbol: string,
   datasetId: string,
   changes: [number, number, number],
-): Record<string, unknown> {
+): MarketFactFixture {
   return {
     dataset_id: datasetId,
-    symbol,
-    label: symbol,
     latest_value: 100,
     as_of: "2026-07-27",
     market_time_ms: NOW,
@@ -774,28 +1206,163 @@ function assetFact(
     change_1w_pct: changes[1],
     change_1m_pct: changes[2],
     source_url: "https://example.com/market",
+    unit: symbol === "BTC" ? "usd" : "index",
   };
 }
 
-function normalizedRows(symbol: string, values: number[]): Array<Record<string, unknown>> {
-  return historyRows(values).map((row) => ({
+function crossAssetReturnRow(
+  displayOrder: number,
+  groupId: string,
+  groupLabel: string,
+  symbol: string,
+  intradayDatasetStem: string,
+  changes: [number, number, number],
+  dailyDatasetStem = intradayDatasetStem,
+): CrossAssetReturnRowFixture {
+  return {
+    display_order: displayOrder,
+    group_id: groupId,
+    group_label: groupLabel,
     symbol,
-    date: row.date,
-    normalized_value: row.value,
-  }));
+    label: `${symbol} 可交易代理`,
+    identity_policy: "separate_source_facts_no_blend",
+    selection_policy: "intraday_latest_and_daily_returns_exact",
+    latest_source: crossAssetSource(
+      symbol,
+      `yfinance.${intradayDatasetStem}.intraday`,
+      `${symbol} 盘中价格`,
+      "intraday_proxy",
+      changes,
+    ),
+    return_source: crossAssetSource(
+      symbol,
+      `nasdaq.${dailyDatasetStem}.daily`,
+      `${symbol} 日频收益`,
+      "decision_primary",
+      changes,
+    ),
+  };
+}
+
+function crossAssetSource(
+  symbol: string,
+  datasetId: string,
+  label: string,
+  sourceRole: string,
+  changes: [number, number, number],
+): CrossAssetSourceFixture {
+  return {
+    dataset_id: datasetId,
+    label,
+    source_role: sourceRole,
+    fact: assetFact(symbol, datasetId, changes),
+  };
+}
+
+function crossAssetNormalizedGroup(
+  displayOrder: number,
+  groupId: string,
+  label: string,
+  rows: Array<readonly [string, string, string, number[]]>,
+): CrossAssetNormalizedGroupFixture {
+  return {
+    display_order: displayOrder,
+    group_id: groupId,
+    label,
+    series: rows.map(([symbol, seriesLabel, datasetId, values], index) => ({
+      display_order: index + 1,
+      symbol,
+      label: seriesLabel,
+      source: {
+        dataset_id: datasetId,
+        label: seriesLabel,
+        source_role: "decision_primary",
+        fact: null,
+      },
+      points: values.map((value, pointIndex) => ({
+        date: `2026-07-${String(24 + pointIndex).padStart(2, "0")}`,
+        normalized_value: value,
+      })),
+    })),
+  };
+}
+
+function crossAssetIdentity(row: CrossAssetReturnRowFixture): CrossAssetSourceIdentityFixture {
+  return crossAssetStandaloneIdentity(row.display_order, row.symbol, row.label, "etf", [
+    row.latest_source,
+    row.return_source,
+  ]);
+}
+
+function crossAssetStandaloneIdentity(
+  displayOrder: number,
+  symbol: string,
+  label: string,
+  evidenceKind: string,
+  sources: CrossAssetSourceFixture[],
+): CrossAssetSourceIdentityFixture {
+  return {
+    display_order: displayOrder,
+    symbol,
+    label,
+    evidence_kind: evidenceKind,
+    identity_policy: "separate_source_facts_no_blend",
+    selection_policy: "decision_primary_only_no_fallback",
+    sources,
+  };
 }
 
 export function macroResearchFixture(
   state: MacroThesisDetailReadData["state"] = "current",
 ): MacroThesisDetailReadData {
   const thesis = state === "current" || state === "historical" ? macroThesisFixture() : null;
+  const stateReason =
+    state === "current" || state === "historical"
+      ? null
+      : macroReason({
+          code: `macro_thesis_${state}`,
+          message:
+            state === "failed"
+              ? "研究提供方暂不可用，本次发布失败。"
+              : state === "generating"
+                ? "后台研究运行尚未完成。"
+                : "该交易日尚无已发布主线。",
+          impact: "blocked",
+          nextAction:
+            state === "missing"
+              ? "等待 08:50 New York 后台任务。"
+              : state === "failed"
+                ? "检查研究提供方配置后重新生成。"
+                : "后台将按运行策略继续处理。",
+          nextCheckAtMs: NOW + 300_000,
+          retryable: state === "failed" ? false : undefined,
+          recovery: state === "failed" ? "operator_action" : undefined,
+        });
   return {
+    schema_version: "macro_thesis_detail_v2",
     state,
     requested_session_date: "2026-07-27",
     current_session_date: state === "historical" ? "2026-07-28" : "2026-07-27",
+    displayed_session_date: thesis?.session_date ?? null,
+    reason: stateReason,
     thesis,
-    live_delta: thesis ? macroOverviewFixture().live_delta : null,
-    outcome_replay: thesis ? macroOverviewFixture().outcome_replay : null,
+    fallback: {
+      state: "none",
+      reason:
+        stateReason ??
+        macroReason({
+          code: "requested_publication_available",
+          message: "请求交易日主线已发布。",
+        }),
+      publication_id: null,
+      session_date: null,
+      cutoff_ms: null,
+    },
+    asset_presentation: thesis ? macroAssetPresentationFixture(thesis) : [],
+    claim_presentation: thesis ? macroClaimPresentationFixture(thesis) : [],
+    live_delta: thesis && state === "current" ? macroOverviewFixture().live_delta : null,
+    outcome_replay: thesis && state === "current" ? macroOverviewFixture().outcome_replay : null,
+    appendix: thesis ? macroPublicationAppendixFixture(thesis) : null,
     run:
       state === "missing"
         ? null
@@ -811,7 +1378,7 @@ export function macroResearchFixture(
             attempt_count: 1,
             max_attempts: 2,
             error_code: state === "failed" ? "macro_thesis_configuration_error" : null,
-            error_message: state === "failed" ? "service unavailable" : null,
+            reason: stateReason,
             updated_at_ms: NOW,
           },
     history: [
@@ -829,8 +1396,113 @@ export function macroResearchFixture(
   };
 }
 
-function moduleBase(moduleId: MacroModuleId) {
+function macroPublicationAppendixFixture(
+  thesis: MacroThesisV1,
+): NonNullable<MacroThesisDetailReadData["appendix"]> {
   return {
+    schema_version: "macro_publication_appendix_v1",
+    publication_id: thesis.publication_id,
+    evidence_pack_id: thesis.evidence_pack_id,
+    session_date: thesis.session_date,
+    cutoff_ms: thesis.cutoff_ms,
+    sealed_at_ms: thesis.cutoff_ms + 60_000,
+    source_max_received_at_ms: thesis.cutoff_ms - 60_000,
+    data_quality: {
+      coverage_state: "complete",
+      current_health_state: "current",
+      history_depth_state: "complete",
+      coverage_gap_count: 0,
+      current_health_gap_count: 0,
+      history_gap_count: 0,
+      modules: MODULE_IDS.map((moduleId) => ({
+        module_id: moduleId,
+        label: moduleLabel(moduleId),
+        coverage_state: "complete",
+        current_health_state: "current",
+        history_depth_state: "complete",
+        expected_capabilities: 1,
+        available_capabilities: 1,
+        current_datasets: 1,
+        tracked_datasets: 1,
+        complete_history_datasets: 1,
+        tracked_history_datasets: 1,
+        backfill_state: "complete",
+        backfill_worker_enabled: true,
+        latest_fact_at_ms: thesis.cutoff_ms - 120_000,
+        reasons: [],
+      })),
+    },
+    source_lineage: MODULE_IDS.map((moduleId) => ({
+      module_id: moduleId,
+      module_label: moduleLabel(moduleId),
+      dataset_id: `fixture.${moduleId}`,
+      label: `${moduleLabel(moduleId)}核心事实`,
+      value: moduleId === "rates_fed" ? 4.38 : 1,
+      unit: moduleId === "rates_fed" ? "percent" : "index",
+      reference: thesis.session_date,
+      observed_at_ms: thesis.cutoff_ms - 240_000,
+      published_at_ms: thesis.cutoff_ms - 180_000,
+      received_at_ms: thesis.cutoff_ms - 120_000,
+      source_url: `https://example.com/${moduleId}`,
+      source_role: "decision_primary",
+      current_health: "current",
+      current_reason: null,
+      history_depth: "complete",
+      history_reason: null,
+    })),
+    reconciliation_receipts: [
+      {
+        module_id: "rates_fed",
+        module_label: moduleLabel("rates_fed"),
+        concept_id: "treasury_2y_yield",
+        identity_policy: "same_concept_same_reference_only",
+        selection_policy: "decision_primary_only_no_fallback",
+        selected_dataset_id: "fred.dgs2",
+        state: "complete",
+        observations: [
+          {
+            dataset_id: "fred.dgs2",
+            source_role: "decision_primary",
+            value: 4.38,
+            unit: "percent",
+            reference: thesis.session_date,
+            fact_ref: "macro-observation:fred.dgs2:2026-07-27",
+          },
+          {
+            dataset_id: "treasury.daily_treasury_real_long_term_rate",
+            source_role: "official_cross_check",
+            value: 4.37,
+            unit: "percent",
+            reference: thesis.session_date,
+            fact_ref: "macro-observation:treasury.2y:2026-07-27",
+          },
+        ],
+        comparisons: [
+          {
+            left_dataset_id: "fred.dgs2",
+            right_dataset_id: "treasury.daily_treasury_real_long_term_rate",
+            left_value: 4.38,
+            right_value: 4.37,
+            difference: 0.01,
+            tolerance: 0.02,
+            unit: "percent",
+            status: "within_tolerance",
+            left_reference: thesis.session_date,
+            right_reference: thesis.session_date,
+            aligned_reference: thesis.session_date,
+            left_fact_ref: "macro-observation:fred.dgs2:2026-07-27",
+            right_fact_ref: "macro-observation:treasury.2y:2026-07-27",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function moduleBase(moduleId: MacroModuleId): ModuleBaseFixture {
+  return {
+    availability: "available" as const,
+    reason: null,
     label: moduleLabel(moduleId),
     status: {
       coverage: {
@@ -869,6 +1541,16 @@ function moduleBase(moduleId: MacroModuleId) {
         state: "complete" as const,
         complete_datasets: 1,
         tracked_datasets: 1,
+      },
+      backfill_execution: {
+        state: "complete" as const,
+        worker_enabled: true,
+        total_targets: 1,
+        complete_targets: 1,
+        pending_targets: 0,
+        failed_targets: 0,
+        next_check_at_ms: null,
+        reason: null,
       },
     },
     latest_fact_at_ms: NOW - 600_000,
@@ -910,7 +1592,13 @@ function moduleBase(moduleId: MacroModuleId) {
         label: "下一次官方更新",
         current_health: "current",
         history_depth: "complete",
-        next_check: "按数据自然发布频率检查",
+        reason: macroReason({
+          code: "next_release_scheduled",
+          message: "下一次官方发布将重新检查该条件。",
+          nextAction: "按 Dataset Registry 数据时钟自动检查。",
+          nextCheckAtMs: NOW + 86_400_000,
+        }),
+        next_check_at_ms: NOW + 86_400_000,
       },
     ],
     evidence: {
@@ -924,8 +1612,14 @@ function moduleBase(moduleId: MacroModuleId) {
           history_depth: "complete" as const,
           market_state: "not_applicable" as const,
           source_state: "healthy" as const,
-          current_reason: "latest_fact_within_natural_cadence",
-          history_reason: "history_requirement_satisfied",
+          current_reason: macroReason({
+            code: "latest_fact_within_natural_cadence",
+            message: "最新事实仍在自然发布频率内。",
+          }),
+          history_reason: macroReason({
+            code: "history_requirement_satisfied",
+            message: "历史深度满足当前计算要求。",
+          }),
           critical: true,
           trust_tier: "official" as const,
           source_url: "https://example.com/source",
@@ -944,12 +1638,70 @@ function moduleBase(moduleId: MacroModuleId) {
           reference: "2026-07-27",
           value: 4.3,
           unit: "percent",
+          observed_at_ms: NOW - 1_200_000,
           published_at_ms: NOW - 900_000,
           received_at_ms: NOW - 600_000,
           source_url: "https://example.com/source",
         },
       ],
-      reconciliation_receipts: [],
+      asset_changes: [],
+      reconciliation_receipts: [
+        {
+          concept_id: `${moduleId}.core`,
+          identity_policy: "separate_source_facts_no_blend",
+          selected_dataset_id: "fixture.dataset",
+          selection_policy: "decision_primary_only_no_fallback",
+          state: "complete",
+          observations: [
+            {
+              dataset_id: "fixture.dataset",
+              fact_ref: `fact:${moduleId}:decision-primary`,
+              reference: "2026-07-27",
+              source_role: "decision_primary",
+              unit: "percent",
+              value: 4.3,
+            },
+            {
+              dataset_id: "fixture.proxy",
+              fact_ref: `fact:${moduleId}:intraday-proxy`,
+              reference: "2026-07-27",
+              source_role: "intraday_proxy",
+              unit: "percent",
+              value: 4.28,
+            },
+          ],
+          comparisons: [
+            {
+              aligned_reference: "2026-07-27",
+              difference: 0.02,
+              left_dataset_id: "fixture.dataset",
+              left_fact_ref: `fact:${moduleId}:decision-primary`,
+              left_reference: "2026-07-27",
+              left_value: 4.3,
+              right_dataset_id: "fixture.proxy",
+              right_fact_ref: `fact:${moduleId}:intraday-proxy`,
+              right_reference: "2026-07-27",
+              right_value: 4.28,
+              status: "within_tolerance",
+              tolerance: 0.05,
+              unit: "percent",
+            },
+          ],
+        },
+      ],
+    },
+    thesis_context: {
+      state: "current" as const,
+      session_date: "2026-07-27",
+      cutoff_ms: NOW - 3_600_000,
+      role: moduleId === "rates_fed" ? ("driver" as const) : ("confirming" as const),
+      analysis:
+        moduleId === "rates_fed" ? "该模块提供主线驱动证据。" : "该模块用于确认或反驳已发布主线。",
+      claim_ids: ["claim-rates"],
+      supporting_evidence_refs: [`macro-module:2026-07-27:${moduleId}`],
+      conflicting_evidence_refs: [],
+      annotations: [],
+      reason: null,
     },
   };
 }

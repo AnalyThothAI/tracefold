@@ -1,17 +1,25 @@
 import * as PageState from "@shared/ui/PageState";
 import { Button } from "@shared/ui/button";
-import { CalendarDays } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { ArrowLeft } from "lucide-react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useMacroResearchQuery } from "../api/useMacroResearchQuery";
-import type {
-  MacroLiveDeltaV1,
-  MacroOutcomeReplayV1,
-  MacroThesisDetailReadData,
-  MacroThesisV1,
-} from "../model/macroTypes";
+import {
+  confidenceLabel,
+  formatInstant,
+  horizonLabel,
+  runErrorLabel,
+  runStatusLabel,
+  stanceLabel,
+} from "../model/macroPresentation";
+import type { MacroReason, MacroThesisDetailReadData } from "../model/macroTypes";
 
+import { StatusGlyph } from "./MacroResearchAppendices";
+import { MacroResearchDossier } from "./MacroResearchDossier";
+
+import "./MacroResearchAudit.css";
+import "./MacroResearchDossier.css";
 import "./MacroResearchPage.css";
 
 const SESSION_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -23,6 +31,10 @@ export function MacroResearchPage({ token }: { token: string }) {
     requestedSession && SESSION_DATE.test(requestedSession) ? requestedSession : null;
   const [draftSession, setDraftSession] = useState(sessionDate ?? "");
   const query = useMacroResearchQuery({ sessionDate, token });
+
+  useEffect(() => {
+    setDraftSession(sessionDate ?? "");
+  }, [sessionDate]);
 
   if (query.isError && !query.data) {
     return <PageState.Error error={query.error} onRetry={() => void query.refetch()} />;
@@ -41,9 +53,13 @@ export function MacroResearchPage({ token }: { token: string }) {
       >
         <header className="macro-research-header">
           <div>
+            <Link className="macro-research-back" to="/macro">
+              <ArrowLeft aria-hidden="true" />
+              返回主线总览
+            </Link>
             <span>DEEPAGENT · IMMUTABLE MACRO THESIS</span>
             <h1>Macro Thesis 档案</h1>
-            <p>这里展示与总览完全相同的主线、独立审阅、Live Delta 和结果复盘。</p>
+            <p>按论点阅读不可变主线的完整论证链；当前事实不会改写历史判断。</p>
           </div>
           <SessionPicker
             draftSession={draftSession}
@@ -61,10 +77,16 @@ export function MacroResearchPage({ token }: { token: string }) {
           />
         </header>
 
-        <ThesisStateBanner data={data} transportStale={query.isError} />
-
+        <ThesisStateBanner
+          data={data}
+          lastSuccessfulReadAtMs={query.dataUpdatedAt || null}
+          transportStale={query.isError}
+        />
         {data.thesis ? (
-          <ThesisDocument
+          <MacroResearchDossier
+            appendix={data.appendix}
+            assets={data.asset_presentation}
+            claims={data.claim_presentation}
             liveDelta={data.live_delta}
             outcomeReplay={data.outcome_replay}
             state={data.state}
@@ -73,21 +95,22 @@ export function MacroResearchPage({ token }: { token: string }) {
         ) : data.state === "generating" ? (
           <PageState.Empty
             title="Macro Thesis 正在生成"
-            hint="页面只轮询持久化状态，不会在浏览器中启动或恢复 Agent。"
+            hint={reasonText(data, "页面只轮询持久化状态，不会在浏览器中启动或恢复 Agent。")}
           />
         ) : data.state === "failed" || data.state === "not_published" ? (
           <PageState.Empty
             title="本次 Macro Thesis 未发布"
-            hint={data.run?.error_message ?? data.run?.error_code ?? "失败原因尚未写入。"}
+            hint={reasonText(data, "失败原因尚未写入。")}
           />
         ) : (
           <PageState.Empty
             title="该交易日尚无 Macro Thesis"
-            hint="选择其他交易日，或等待 08:50 New York 后台任务完成。"
+            hint={reasonText(data, "选择其他交易日，或等待 08:50 New York 后台任务完成。")}
           />
         )}
 
-        <PublicationHistory history={data.history} />
+        <PublicationHistory history={data.history} requestedSession={data.requested_session_date} />
+        <RunAttemptPanel requestedSession={data.requested_session_date} run={data.run} />
       </main>
     </PageState.Stale>
   );
@@ -132,9 +155,11 @@ function SessionPicker({
 function ThesisStateBanner({
   data,
   transportStale,
+  lastSuccessfulReadAtMs,
 }: {
   data: MacroThesisDetailReadData;
   transportStale: boolean;
+  lastSuccessfulReadAtMs: number | null;
 }) {
   const stateLabel = {
     current: "当前主线",
@@ -146,309 +171,178 @@ function ThesisStateBanner({
   }[data.state];
   return (
     <section aria-label="主线状态" className="macro-research-state" data-state={data.state}>
-      <CalendarDays aria-hidden="true" />
+      <StatusGlyph tone={thesisStateTone(data.state)} />
       <div>
-        <strong>{stateLabel}</strong>
+        <strong>
+          {data.fallback.state === "available"
+            ? `请求交易日未发布，展示 ${data.displayed_session_date} 已发布档案`
+            : stateLabel}
+        </strong>
         <span>
-          请求 {data.requested_session_date} · 当前 {data.current_session_date} · 传输{" "}
+          请求交易日 {data.requested_session_date} · 当前已完成交易日 {data.current_session_date} ·
+          实际展示 {data.displayed_session_date ?? "无已发布档案"} · 传输{" "}
           {transportStale ? "陈旧缓存" : "当前读取"}
         </span>
+        {transportStale ? (
+          <small>
+            最后成功读取 {formatInstant(lastSuccessfulReadAtMs)} · 展示主线市场截止{" "}
+            {formatInstant(data.thesis?.cutoff_ms ?? null)}
+          </small>
+        ) : null}
+        {data.reason ? (
+          <small>
+            {data.reason.message}；影响：
+            {reasonImpactLabel(data.reason.impact)}
+            {data.reason.next_action ? `；恢复动作：${data.reason.next_action}` : ""}
+            {data.reason.next_check_at_ms
+              ? `；下次检查：${formatInstant(data.reason.next_check_at_ms)}`
+              : ""}
+          </small>
+        ) : null}
       </div>
-      {data.run ? (
-        <small>
-          {data.run.status} · 尝试 {data.run.attempt_count}/{data.run.max_attempts}
-        </small>
-      ) : null}
     </section>
   );
 }
 
-function ThesisDocument({
-  thesis,
-  liveDelta,
-  outcomeReplay,
-  state,
+function RunAttemptPanel({
+  run,
+  requestedSession,
 }: {
-  thesis: MacroThesisV1;
-  liveDelta: MacroLiveDeltaV1 | null;
-  outcomeReplay: MacroOutcomeReplayV1 | null;
-  state: MacroThesisDetailReadData["state"];
+  run: MacroThesisDetailReadData["run"];
+  requestedSession: string;
 }) {
   return (
-    <article aria-labelledby="macro-research-title" className="macro-research-document">
-      <header className="macro-research-document-header">
-        <div>
-          <span>
-            {state === "current" ? "CURRENT" : "HISTORICAL"} · {thesis.session_date}
-          </span>
-          <h2 id="macro-research-title">{thesis.mainline.title}</h2>
-          <p>{thesis.mainline.thesis}</p>
-        </div>
-        <dl>
-          <div>
-            <dt>市场截止</dt>
-            <dd>{formatInstant(thesis.cutoff_ms)}</dd>
-          </div>
-          <div>
-            <dt>Evidence Pack</dt>
-            <dd>{thesis.evidence_pack_id}</dd>
-          </div>
-          <div>
-            <dt>主线</dt>
-            <dd>
-              {thesis.mainline.stance} · {thesis.mainline.horizon}
-            </dd>
-          </div>
-          <div>
-            <dt>独立 Reviewer</dt>
-            <dd>
-              {thesis.review.disposition} · {thesis.review.model_name}
-            </dd>
-          </div>
-        </dl>
-      </header>
-
-      <div className="macro-research-sections">
-        <section>
-          <h3>主线论点与因果链</h3>
-          {thesis.mainline.claims.map((claim) => (
-            <article key={claim.claim_id}>
-              <strong>{claim.statement}</strong>
-              {claim.causal_edges.map((edge) => (
-                <p key={`${claim.claim_id}:${edge.source}:${edge.target}`}>
-                  {edge.source} → {edge.mechanism} → {edge.target}
-                </p>
-              ))}
-              <small>{claim.supporting_evidence_refs.join(" · ")}</small>
-            </article>
-          ))}
-        </section>
-        {thesis.alternative_explanation ? (
-          <section>
-            <h3>唯一备选路径：{thesis.alternative_explanation.title}</h3>
-            <p>{thesis.alternative_explanation.thesis}</p>
-            <small>
-              触发：
-              {thesis.alternative_explanation.trigger_conditions
-                .map((condition) => condition.condition_id)
-                .join(" · ")}
-            </small>
-          </section>
-        ) : null}
-        <section>
-          <h3>核心矛盾</h3>
-          <ol>
-            {thesis.core_tensions.map((tension) => (
-              <li key={tension.tension_id}>
-                <strong>{tension.statement}</strong>
-                <p>
-                  {tension.side_a.label}：{tension.side_a.statement}
-                </p>
-                <p>
-                  {tension.side_b.label}：{tension.side_b.statement}
-                </p>
-                <small>
-                  领先 {tension.leading_side} · 滞后 {tension.lagging_signal} ·{" "}
-                  {tension.unresolved_reason}
-                </small>
-              </li>
-            ))}
-          </ol>
-        </section>
-        <section>
-          <h3>相较上一期的变化</h3>
-          <ol>
-            {thesis.changes_from_prior.length ? (
-              thesis.changes_from_prior.map((change) => (
-                <li key={change.change_id}>
-                  <strong>{change.status}</strong> · {change.statement}
-                </li>
-              ))
-            ) : (
-              <li>首期发布或没有足以改写主线的变化。</li>
-            )}
-          </ol>
-        </section>
-        <section>
-          <h3>十二资产：动量与条件展望</h3>
-          <div className="macro-research-assets" role="table">
-            {thesis.assets.map((asset) => (
-              <div key={asset.symbol} role="row">
-                <strong role="cell">{asset.symbol}</strong>
-                <span role="cell">
-                  1W {asset.momentum.momentum_1w} · {formatSigned(asset.momentum.return_1w_pct)}
-                </span>
-                <span role="cell">
-                  {asset.outlook_1w.direction} · {asset.outlook_1w.causal_channel}
-                </span>
-                <span role="cell">
-                  1M {asset.momentum.momentum_1m} · {formatSigned(asset.momentum.return_1m_pct)}
-                </span>
-                <span role="cell">
-                  {asset.outlook_1m.direction} · {asset.outlook_1m.causal_channel}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-        <section>
-          <h3>Live Delta、失效条件与检查点</h3>
-          <p>
-            Live Delta：{liveDelta?.status ?? "尚未评估"}；匹配失效条件：
-            {liveDelta?.matched_falsifier_ids.join(" · ") || "—"}
-          </p>
-          <ConditionList title="失效条件" rows={thesis.mainline.falsifiers} />
-          <ConditionList title="检查点" rows={thesis.mainline.checkpoints} />
-        </section>
-        <section>
-          <h3>六模块角色</h3>
-          {thesis.module_assessments.map((role) => (
-            <article key={role.module_id}>
-              <strong>
-                {role.module_id} · {role.role}
-              </strong>
-              <p>{role.analysis}</p>
-            </article>
-          ))}
-        </section>
-        <section>
-          <h3>自适应研究叙事</h3>
-          {thesis.narrative_sections.map((section) => (
-            <article key={section.section_id}>
-              <strong>{section.title}</strong>
-              <p>{section.markdown}</p>
-              <small>{section.evidence_refs.join(" · ")}</small>
-            </article>
-          ))}
-        </section>
-        <section>
-          <h3>证据引用与真实缺口</h3>
-          <p>
-            {thesis.citations.length} 条闭合引用 · {thesis.gaps.length} 个数据缺口
-          </p>
-          <ul>
-            {thesis.gaps.map((gap) => (
-              <li key={gap.gap_id}>
-                {gap.dataset_id} · {gap.axis}/{gap.state}：{gap.reason}
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section>
-          <h3>Outcome Replay</h3>
-          <ul>
-            {outcomeReplay?.horizons.map((horizon) => (
-              <li key={horizon.horizon}>
-                {horizon.horizon} · {horizon.status} ·{" "}
-                {horizon.realized_return_pct == null
-                  ? "等待到期"
-                  : `${formatSigned(horizon.realized_return_pct)}%`}
-              </li>
-            )) ?? <li>尚未创建复盘。</li>}
-          </ul>
-        </section>
+    <section aria-labelledby="macro-research-run-title" className="macro-research-run">
+      <div>
+        <span>PUBLICATION ATTEMPTS</span>
+        <h2 id="macro-research-run-title">生成尝试（不属于档案历史）</h2>
       </div>
-
-      <details className="macro-research-audit">
-        <summary>独立审阅与运行审计</summary>
-        <div>
-          <h3>Reviewer findings</h3>
-          <ul>
-            {thesis.review.findings.map((finding) => (
-              <li key={finding}>{finding}</li>
-            ))}
-          </ul>
-          <h3>Provenance</h3>
-          <dl className="macro-research-provenance">
+      {!run ? (
+        <p role="status">{requestedSession} 没有持久化生成尝试。</p>
+      ) : (
+        <>
+          <dl>
             <div>
-              <dt>Workflow</dt>
-              <dd>{thesis.provenance.workflow_version}</dd>
+              <dt>状态</dt>
+              <dd>
+                <StatusGlyph tone={runStatusTone(run.status)} />
+                {runReaderStatus(run.status)}
+              </dd>
             </div>
             <div>
-              <dt>Research model</dt>
-              <dd>{thesis.provenance.research_model}</dd>
+              <dt>尝试</dt>
+              <dd>
+                {run.attempt_count}/{run.max_attempts}
+              </dd>
             </div>
             <div>
-              <dt>Research prompt</dt>
-              <dd>{thesis.provenance.research_prompt_version}</dd>
+              <dt>最后状态变化</dt>
+              <dd>{formatInstant(run.updated_at_ms)}</dd>
             </div>
             <div>
-              <dt>Research invocation</dt>
-              <dd>{thesis.provenance.research_invocation_id}</dd>
+              <dt>可重试</dt>
+              <dd>{run.reason ? (run.reason.retryable ? "是" : "否") : "不适用"}</dd>
             </div>
             <div>
-              <dt>Reviewer model</dt>
-              <dd>{thesis.provenance.reviewer_model}</dd>
-            </div>
-            <div>
-              <dt>Reviewer prompt</dt>
-              <dd>{thesis.provenance.reviewer_prompt_version}</dd>
-            </div>
-            <div>
-              <dt>Draft hash</dt>
-              <dd>{thesis.provenance.draft_hash}</dd>
+              <dt>恢复方式</dt>
+              <dd>{run.reason ? recoveryLabel(run.reason.recovery) : "无需恢复"}</dd>
             </div>
           </dl>
-        </div>
-      </details>
-    </article>
+          {run.reason || run.error_code ? (
+            <p role="status">
+              {run.reason ? run.reason.message : "发布未完成。"}
+              {run.reason ? `；影响：${reasonImpactLabel(run.reason.impact)}` : ""}
+              {run.reason?.next_action ? `；恢复动作：${run.reason.next_action}` : ""}
+              {run.error_code ? `；错误类型：${runErrorLabel(run.error_code)}` : ""}
+            </p>
+          ) : null}
+        </>
+      )}
+    </section>
   );
 }
 
-function ConditionList({
-  title,
-  rows,
+function PublicationHistory({
+  history,
+  requestedSession,
 }: {
-  title: string;
-  rows: MacroThesisV1["mainline"]["falsifiers"];
+  history: MacroThesisDetailReadData["history"];
+  requestedSession: string;
 }) {
-  return (
-    <div>
-      <h4>{title}</h4>
-      <ul>
-        {rows.map((row) => (
-          <li key={row.condition_id}>
-            {row.dataset_id}.{row.metric_name} {row.operator} {row.threshold}：{row.rationale}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function PublicationHistory({ history }: { history: MacroThesisDetailReadData["history"] }) {
   return (
     <section className="macro-research-citations">
       <header>
         <h3>不可变主线历史</h3>
+        <span>请求交易日 {requestedSession}</span>
       </header>
-      <ol>
-        {history.map((item) => (
-          <li key={item.publication_id}>
-            <span>{item.session_date}</span>
-            <div>
-              <strong>{item.title}</strong>
-              <small>
-                {item.stance} · {item.confidence} · {item.horizon}
-              </small>
-            </div>
-            <Link to={`/macro/research?session_date=${item.session_date}`}>读取</Link>
-          </li>
-        ))}
-      </ol>
+      {history.length ? (
+        <ol>
+          {history.map((item) => (
+            <li key={item.publication_id}>
+              <span>{item.session_date}</span>
+              <div>
+                <strong>{item.title}</strong>
+                <small>
+                  {stanceLabel(item.stance)} · {confidenceLabel(item.confidence)} ·{" "}
+                  {horizonLabel(item.horizon)} · 发布 {formatInstant(item.published_at_ms)}
+                </small>
+              </div>
+              <Link
+                aria-current={item.session_date === requestedSession ? "page" : undefined}
+                to={`/macro/research?session_date=${item.session_date}`}
+              >
+                读取档案
+              </Link>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p>尚无通过 publication gate 的不可变档案。</p>
+      )}
     </section>
   );
 }
 
-function formatInstant(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
+function reasonText(data: MacroThesisDetailReadData, fallback: string): string {
+  const reason = data.reason ?? data.run?.reason;
+  if (!reason) return fallback;
+  return `${reason.message}；影响：${reasonImpactLabel(reason.impact)}${
+    reason.next_action ? `；恢复动作：${reason.next_action}` : ""
+  }`;
 }
 
-function formatSigned(value: number | null): string {
-  if (value == null) return "—";
-  const rendered = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
-  return `${value > 0 ? "+" : ""}${rendered}`;
+function reasonImpactLabel(value: "none" | "limited" | "blocked"): string {
+  return {
+    blocked: "阻断当前判断",
+    limited: "限制判断范围",
+    none: "不影响已发布判断",
+  }[value];
+}
+
+function thesisStateTone(value: MacroThesisDetailReadData["state"]) {
+  if (value === "current") return "positive" as const;
+  if (value === "historical" || value === "generating") return "caution" as const;
+  return "negative" as const;
+}
+
+function runStatusTone(value: string) {
+  if (value === "published") return "positive" as const;
+  if (value === "running" || value === "pending" || value === "retryable") {
+    return "caution" as const;
+  }
+  return "negative" as const;
+}
+
+function runReaderStatus(value: string): string {
+  if (value === "not_published") return "审阅未通过，未发布";
+  return runStatusLabel(value);
+}
+
+function recoveryLabel(value: MacroReason["recovery"]): string {
+  return {
+    automatic: "系统自动恢复",
+    next_session: "下一交易日重新生成",
+    none: "无需恢复",
+    operator_action: "需要操作员处理",
+  }[value];
 }

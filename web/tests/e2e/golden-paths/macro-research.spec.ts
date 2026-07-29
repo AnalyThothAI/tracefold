@@ -14,9 +14,12 @@ test("renders one immutable Macro Thesis history workbench", async ({ page }) =>
   await expect(
     page.getByRole("heading", { level: 2, name: "实际利率上行主导短期风险资产定价" }),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "主线论点与因果链" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "核心矛盾" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "十二资产：动量与条件展望" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "返回主线总览" })).toHaveAttribute("href", "/macro");
+  await expect(page.getByText("CLAIM 1")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资产影响" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "核心矛盾与解决条件" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "十二资产条件附录" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "判断" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "不可变主线历史" })).toBeVisible();
 
   const audit = page.locator(".macro-research-audit");

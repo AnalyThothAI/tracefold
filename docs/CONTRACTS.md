@@ -220,17 +220,20 @@ read:
 ```
 
 Overview and module reads accept no query parameters. The overview returns the
-intended 08:50 New York session, the immutable Thesis when available, Live
-Delta, Outcome Replay, six module summaries, three independent data-quality
-axes, and an explicit current/stale transport state.
+intended 08:50 New York requested session, the immutable Thesis when available,
+an explicitly historical displayed publication when fallback context exists,
+server-owned twelve-asset presentation groups, scoped Live Delta, Outcome
+Replay, six typed module availability summaries, three independent
+data-quality axes, backfill execution state, typed reasons, and an explicit
+current/stale transport state.
 Each route returns exactly one matching schema:
 
-- `macro_rates_fed_v4`
-- `macro_economy_inflation_v4`
-- `macro_liquidity_funding_v4`
-- `macro_credit_v5`
-- `macro_volatility_v4`
-- `macro_cross_asset_v5`
+- `macro_rates_fed_v5`
+- `macro_economy_inflation_v5`
+- `macro_liquidity_funding_v5`
+- `macro_credit_v7`
+- `macro_volatility_v6`
+- `macro_cross_asset_v6`
 
 Shared fields are limited to identity, clocks, status, summary, contradictions,
 falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
@@ -239,12 +242,17 @@ fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
 Health is `current`, `degraded`, or `unavailable`; History Depth is `complete`,
 `partial`, `insufficient`, or `not_required`. Each Dataset additionally exposes
 market state and source state. Optional history cannot lower Current Health.
-The `macro_overview_v5` read always returns the intended Thesis session and
+The Macro overview read always returns the intended Thesis session and
 deterministic cutoff, even before publication. Its Thesis state is one of
 `published`, `pending`, `running`, `retryable`, `failed`, `config_error`,
-`not_published`, or `missing`. These reads use `macro_module_current` and immutable
+`not_published`, or `missing`. Requested state and displayed publication
+identity are separate. A prior immutable publication may be included only as
+labelled fallback context; it never changes the requested state or becomes a
+fallback publication. One missing or schema-mismatched module produces a typed
+unavailable slot and lowers Evidence Health rather than failing the entire
+overview or dossier. These reads use `macro_module_current` and immutable
 Thesis tables only; they never call a provider/model, advance a target, rebuild
-a projection, or synthesize a fallback.
+a projection, or write fallback content.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
@@ -328,25 +336,37 @@ Incomplete evidence stays explicit and can produce `no_call`; it does not
 create a fabricated conclusion.
 
 `macro_live_delta_v1` is a deterministic post-publication comparison against
-the Thesis conditions and cited datasets. It may report confirming,
-weakening, or invalidation, but cannot rewrite the Thesis. The deterministic
-`macro_outcome_replay_v1` evaluates declared 1D/1W/1M horizons after they mature
-and remains a separate record.
+the Thesis conditions and cited datasets. Its read projection keeps mainline,
+alternative, tension, and asset scopes separate; mainline validity is derived
+only from mainline claim, falsifier, and checkpoint bindings. Asset
+confirmation cannot promote the mainline state. Live Delta may report
+confirming, weakening, or invalidation, but cannot rewrite the Thesis. The
+deterministic `macro_outcome_replay_v1` evaluates declared 1D/1W/1M horizons
+after they mature and remains a separate record.
 
 With no query, `GET /api/macro/research` targets the current intended 08:50
 U.S. trading session and never relabels the previous publication. Optional
-`session_date=YYYY-MM-DD` selects one explicit
-session. This is the same Thesis detail/history product as the overview, not a
-second research narrative. The persisted-only response returns `current`,
-`historical`, `generating`, `not_published`, `failed`, or `missing`, together with the requested
-and current session dates, Thesis, Live Delta, Outcome Replay, bounded run
-status, and immutable publication history.
+`session_date=YYYY-MM-DD` selects one explicit session. This is the same Thesis
+product as the overview, rendered as a claim-first dossier rather than a second
+research narrative. The persisted-only response returns requested state,
+requested and displayed session dates, immutable Thesis, publication-bound
+Live Delta and Outcome Replay for the exact current publication, typed reason,
+bounded run status, immutable publication history, separate generation
+attempts, and `macro_publication_appendix_v1`. The appendix is projected only
+from the publication's immutable Evidence Pack and freezes data quality, source
+lineage, and reconciliation receipts at publication time; it does not read
+current module projections. Historical publications and explicitly labelled
+fallback publications return `null` for Live Delta and Outcome Replay while
+retaining their own frozen appendix. When the requested session lacks a
+publication it may also carry the latest immutable Thesis as explicit
+historical fallback context; the requested state remains `generating`,
+`not_published`, `failed`, or `missing`.
 
 The read endpoint does not invoke a model or provider, search facts, resume a
-graph, run a repair, or synthesize a fallback publication.
-Missing remains a typed successful read state rather than an older publication
-relabelled as current. Unmatched Macro API paths return the ordinary
-application `404` response.
+graph, run a repair, or synthesize a fallback publication. Missing remains a
+typed successful requested state; any separately displayed older publication
+retains its original identity, cutoff, and historical label. Unmatched Macro
+API paths return the ordinary application `404` response.
 
 ### Token images
 

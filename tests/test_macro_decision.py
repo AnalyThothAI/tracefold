@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 
+from tracefold.app.http import schemas as api_schemas
 from tracefold.macro import (
     NATURAL_CHANGE_REGISTRY,
     module_payloads,
@@ -12,6 +13,7 @@ from tracefold.macro import (
 from tracefold.macro.coverage import COVERAGE_MANIFEST
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.module_payloads import build_typed_module_payload
+from tracefold.macro.reasons import macro_reason
 from tracefold.macro.registry import DATASET_REGISTRY
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
@@ -54,7 +56,13 @@ def _market_row(dataset_id: str, observed_at_ms: int, value: float) -> dict:
     }
 
 
-def _module(module_id: str, *, now_ms: int = NOW_MS, **overrides: list[dict]) -> dict:
+def _module(
+    module_id: str,
+    *,
+    now_ms: int = NOW_MS,
+    backfill_worker_enabled: bool = False,
+    **overrides: list[dict],
+) -> dict:
     groups = {
         "series_rows": [],
         "market_rows": [],
@@ -68,6 +76,7 @@ def _module(module_id: str, *, now_ms: int = NOW_MS, **overrides: list[dict]) ->
     return build_typed_module_payload(
         module_id=module_id,  # type: ignore[arg-type]
         now_ms=now_ms,
+        backfill_worker_enabled=backfill_worker_enabled,
         **groups,
     )
 
@@ -104,6 +113,51 @@ def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
     assert _dataset_state(module, "fred.dgs2")["current_health"] == "current"
 
 
+def test_daily_fact_without_publication_clock_uses_received_time_not_future_close() -> None:
+    now_ms = int(datetime(2026, 7, 29, 6, 30, tzinfo=UTC).timestamp() * 1_000)
+    received_at_ms = now_ms - 5_000
+    row = {
+        **_series_row(
+            dataset_id="fred.iorb",
+            reference_date=date(2026, 7, 29),
+            value=3.65,
+        ),
+        "received_at_ms": received_at_ms,
+    }
+
+    module = _module(
+        "liquidity_funding",
+        now_ms=now_ms,
+        series_rows=[row],
+    )
+
+    assert module["latest_fact_at_ms"] == received_at_ms
+    latest = next(item for item in module["evidence"]["latest_facts"] if item["dataset_id"] == "fred.iorb")
+    assert latest["observed_at_ms"] is None
+    assert latest["published_at_ms"] is None
+    assert latest["received_at_ms"] == received_at_ms
+
+
+def test_market_latest_fact_exposes_all_source_clocks_and_prefers_observed_time() -> None:
+    observed_at_ms = NOW_MS - 20_000
+    row = {
+        **_market_row("yfinance.spy.intraday", observed_at_ms, 105),
+        "published_at_ms": NOW_MS - 10_000,
+        "received_at_ms": NOW_MS - 5_000,
+    }
+
+    module = _module(
+        "cross_asset",
+        market_rows=[row],
+    )
+
+    assert module["latest_fact_at_ms"] == observed_at_ms
+    latest = next(item for item in module["evidence"]["latest_facts"] if item["dataset_id"] == "yfinance.spy.intraday")
+    assert latest["observed_at_ms"] == observed_at_ms
+    assert latest["published_at_ms"] == NOW_MS - 10_000
+    assert latest["received_at_ms"] == NOW_MS - 5_000
+
+
 def test_coverage_manifest_keeps_expected_but_unregistered_capability_visible(
     monkeypatch,
 ) -> None:
@@ -129,6 +183,60 @@ def test_implemented_fed_capabilities_exclude_unavailable_licensed_products() ->
     assert all(spec.adapter_id != "unavailable" for spec in DATASET_REGISTRY.values())
     assert all(capability.requirement in {"required", "supporting"} for capability in COVERAGE_MANIFEST.values())
     assert "licensed_unavailable" not in json.dumps(module, sort_keys=True)
+
+
+def test_fed_institutional_stance_separates_reader_reason_from_analysis_identity() -> None:
+    document_id = "macrodoc_fomc_statement_20260727"
+    analysis_id = "macroan_fomc_statement_20260727"
+    module = _module(
+        "rates_fed",
+        document_rows=[
+            {
+                "document_id": document_id,
+                "dataset_id": "federal_reserve.fomc.documents",
+                "document_type": "statement",
+                "title": "Federal Reserve issues FOMC statement",
+                "effective_date": date(2026, 7, 27),
+                "published_at_ms": NOW_MS - 10_000,
+                "received_at_ms": NOW_MS - 9_000,
+                "source_url": "https://www.federalreserve.gov/monetarypolicy/fomc.htm",
+                "metadata_json": {},
+            }
+        ],
+        analysis_rows=[
+            {
+                "analysis_id": analysis_id,
+                "dataset_id": "federal_reserve.document.analysis",
+                "document_id": document_id,
+                "created_at_ms": NOW_MS - 5_000,
+                "received_at_ms": NOW_MS - 5_000,
+                "source_url": "https://www.federalreserve.gov/monetarypolicy/fomc.htm",
+                "policy_relevance": "policy_signal",
+                "stance": "hawkish",
+                "confidence": 0.86,
+                "analysis_json": {
+                    "change_from_prior": "more_hawkish",
+                    "evidence": [],
+                    "rationale": "委员会仍将通胀风险置于宽松风险之前。",
+                },
+                "model_name": "test-model",
+                "prompt_version": "test-prompt",
+                "reviewer_disposition": "pass",
+            }
+        ],
+    )
+
+    api_schemas.MacroRatesFedPersistedData.model_validate(module)
+    stance = module["fed"]["institutional_stance"]
+    assert stance["state"] == "current"
+    assert stance["direction"] == "hawkish"
+    assert stance["reason"] == "委员会仍将通胀风险置于宽松风险之前。"
+    assert stance["analysis_id"] == analysis_id
+    assert not stance["reason"].startswith("analysis:")
+
+    unavailable = _module("rates_fed")["fed"]["institutional_stance"]
+    assert unavailable["reason"] == "尚未发布通过独立审阅的 FOMC 声明分析。"
+    assert unavailable["analysis_id"] is None
 
 
 def test_natural_change_registry_covers_every_registered_dataset() -> None:
@@ -179,6 +287,7 @@ def test_rates_payload_contains_true_curve_snapshots_spreads_and_shape() -> None
         ],
     )
 
+    api_schemas.MacroRatesFedPersistedData.model_validate(module)
     snapshots = module["curve"]["nominal_snapshots"]
     assert [point["tenor"] for point in snapshots[0]["points"]] == [
         "3M",
@@ -212,6 +321,7 @@ def test_liquidity_payload_exposes_server_calculated_sofr_iorb_spread_history() 
         ],
     )
 
+    api_schemas.MacroLiquidityFundingPersistedData.model_validate(module)
     assert module["funding"]["sofr_minus_iorb_bp_history"] == [
         {"date": "2026-07-17", "value": -10.0},
         {"date": "2026-07-24", "value": -5.0},
@@ -240,14 +350,19 @@ def test_volatility_payload_exposes_server_normalized_cross_asset_history() -> N
         ],
     )
 
-    normalized = module["cross_asset_implied"]["normalized"]
-    assert normalized[0] == {
-        "symbol": "VXN",
+    api_schemas.MacroVolatilityPersistedData.model_validate(module)
+    groups = module["cross_asset_implied"]["normalized_groups"]
+    assert [group["group_id"] for group in groups] == ["cross_asset_implied_volatility"]
+    assert [series["symbol"] for series in groups[0]["series"]] == [
+        "VXN",
+        "GVZ",
+        "OVX",
+    ]
+    assert groups[0]["series"][0]["points"][0] == {
         "date": "2026-07-17",
         "normalized_value": 100.0,
     }
-    assert normalized[-1] == {
-        "symbol": "OVX",
+    assert groups[0]["series"][-1]["points"][-1] == {
         "date": "2026-07-24",
         "normalized_value": 90.0,
     }
@@ -272,6 +387,7 @@ def test_credit_payload_exposes_rating_ladder_sample_size_and_no_composite_score
     ]
     module = _module("credit", series_rows=rows)
 
+    api_schemas.MacroCreditPersistedData.model_validate(module)
     assert [row["dataset_id"] for row in module["spread_ladder"]["rows"]] == list(dataset_ids)
     assert all(row["sample_count"] == 2 for row in module["spread_ladder"]["rows"])
     assert [row["dimension_id"] for row in module["cycle_dimensions"]] == [
@@ -338,7 +454,9 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
         ],
     )
 
-    assert [row["symbol"] for row in module["assets"]["proxies"]] == [
+    api_schemas.MacroCrossAssetPersistedData.model_validate(module)
+    matrix = module["assets"]["return_matrix"]
+    assert [row["symbol"] for row in matrix] == [
         "SPY",
         "QQQ",
         "IWM",
@@ -350,24 +468,71 @@ def test_cross_asset_payload_builds_fixed_proxy_matrix_and_normalized_comparison
         "GLD",
         "USO",
     ]
-    assert {row["symbol"] for row in module["assets"]["normalized"]} == {
-        "SPY",
-        "QQQ",
-        "IWM",
-        "TLT",
-        "IEF",
-        "LQD",
-        "HYG",
-        "UUP",
-        "GLD",
-        "USO",
+    assert [(row["group_id"], row["group_label"]) for row in matrix] == [
+        ("equity", "权益"),
+        ("equity", "权益"),
+        ("equity", "权益"),
+        ("duration_credit", "久期与信用"),
+        ("duration_credit", "久期与信用"),
+        ("duration_credit", "久期与信用"),
+        ("duration_credit", "久期与信用"),
+        ("dollar_commodities", "美元与商品"),
+        ("dollar_commodities", "美元与商品"),
+        ("dollar_commodities", "美元与商品"),
+    ]
+    assert [group["group_id"] for group in module["assets"]["normalized_groups"]] == [
+        "equity",
+        "duration_credit",
+        "dollar_commodities",
+    ]
+    assert [[series["symbol"] for series in group["series"]] for group in module["assets"]["normalized_groups"]] == [
+        ["SPY", "QQQ", "IWM"],
+        ["TLT", "IEF", "LQD", "HYG"],
+        ["UUP", "GLD", "USO"],
+    ]
+    assert {
+        series["source"]["source_role"] for group in module["assets"]["normalized_groups"] for series in group["series"]
+    } == {"decision_primary"}
+    assert {row["symbol"] for row in module["assets"]["source_identity"]} >= {
+        "BTC",
+        "VIX",
+        "WTI",
     }
-    assert module["assets"]["benchmarks"][0]["symbol"] == "SPY"
     assert _dataset_state(module, "yfinance.spy.intraday")["current_health"] == "current"
-    assert module["assets"]["proxies"][0]["sources"]["intraday_proxy"]["market_time_ms"] == intraday
-    assert module["assets"]["proxies"][0]["history_dataset_id"] == "nasdaq.spy.daily"
-    assert module["assets"]["proxies"][0]["sources"]["history"]["change_1w_pct"] == 5.0
-    assert module["assets"]["proxies"][0]["sources"]["identity_policy"] == "separate_source_facts_no_blend"
+    assert matrix[0]["latest_source"]["dataset_id"] == "yfinance.spy.intraday"
+    assert matrix[0]["latest_source"]["label"] == "SPDR标普500 ETF"
+    assert matrix[0]["latest_source"]["source_role"] == "intraday_proxy"
+    assert matrix[0]["latest_source"]["fact"]["market_time_ms"] == intraday
+    assert matrix[0]["return_source"]["dataset_id"] == "nasdaq.spy.daily"
+    assert matrix[0]["return_source"]["source_role"] == "decision_primary"
+    assert matrix[0]["return_source"]["fact"]["change_1w_pct"] == 5.0
+    assert matrix[0]["identity_policy"] == "separate_source_facts_no_blend"
+    assert matrix[0]["selection_policy"] == "intraday_latest_and_daily_returns_exact"
+    assert set(module["assets"]) == {
+        "normalized_groups",
+        "return_matrix",
+        "source_identity",
+    }
+
+
+def test_cross_asset_matrix_keeps_exact_source_roles_without_browser_fallback() -> None:
+    daily = int(datetime(2026, 7, 24, 20, tzinfo=UTC).timestamp() * 1_000)
+    module = _module(
+        "cross_asset",
+        market_rows=[_market_row("nasdaq.spy.daily", daily, 105)],
+    )
+
+    matrix = module["assets"]["return_matrix"]
+    assert len(matrix) == 10
+    assert [row["display_order"] for row in matrix] == list(range(1, 11))
+    spy = matrix[0]
+    assert spy["symbol"] == "SPY"
+    assert spy["latest_source"]["dataset_id"] == "yfinance.spy.intraday"
+    assert spy["latest_source"]["fact"] is None
+    assert spy["return_source"]["dataset_id"] == "nasdaq.spy.daily"
+    assert spy["return_source"]["fact"]["latest_value"] == 105
+    assert module["futures"]["return_matrix"][0]["latest_source"]["dataset_id"] == ("yfinance.es_future.intraday")
+    assert module["futures"]["return_matrix"][0]["latest_source"]["fact"] is None
 
 
 def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
@@ -390,11 +555,11 @@ def test_cross_asset_uses_latest_intraday_bar_within_the_same_session() -> None:
         ],
     )
 
-    spy = module["assets"]["proxies"][0]
+    spy = module["assets"]["return_matrix"][0]
     state = _dataset_state(module, "yfinance.spy.intraday")
-    assert spy["sources"]["intraday_proxy"]["latest_value"] == 110
-    assert spy["sources"]["intraday_proxy"]["market_time_ms"] == later
-    assert spy["selection_policy"] == "decision_primary_only_no_fallback"
+    assert spy["latest_source"]["fact"]["latest_value"] == 110
+    assert spy["latest_source"]["fact"]["market_time_ms"] == later
+    assert spy["selection_policy"] == "intraday_latest_and_daily_returns_exact"
     assert state["last_market_at_ms"] == later
     assert state["current_health"] == "current"
 
@@ -418,8 +583,132 @@ def test_closed_equity_market_keeps_the_last_expected_bar_current() -> None:
     state = _dataset_state(module, "yfinance.spy.intraday")
     assert state["market_state"] == "closed"
     assert state["current_health"] == "current"
-    assert state["current_reason"] == "last_expected_bar_present"
+    assert state["current_reason"]["code"] == "last_expected_bar_present"
     assert module["status"]["current_health"]["state"] == "degraded"
+
+
+def test_next_checkpoints_never_emit_reasonless_critical_placeholders() -> None:
+    healthy = {
+        "dataset_id": "fred.dgs2",
+        "label": "2Y Treasury",
+        "current_health": "current",
+        "history_depth": "complete",
+        "critical": True,
+        "current_reason": macro_reason(
+            code="within_freshness_budget",
+            message="当前事实位于 freshness budget 内。",
+            impact="none",
+            retryable=False,
+            recovery="none",
+        ),
+        "history_reason": macro_reason(
+            code="configured_history_range_complete",
+            message="历史范围完整。",
+            impact="none",
+            retryable=False,
+            recovery="none",
+        ),
+    }
+    assert module_payloads._next_checkpoints([healthy]) == []
+
+    scheduled = {
+        **healthy,
+        "current_reason": macro_reason(
+            code="within_freshness_budget",
+            message="当前事实位于 freshness budget 内；下一窗口已调度。",
+            impact="none",
+            retryable=False,
+            recovery="none",
+            next_check_at_ms=NOW_MS + 1_000,
+        ),
+    }
+    checkpoint = module_payloads._next_checkpoints([scheduled])[0]
+    assert checkpoint["reason"]["code"] == "within_freshness_budget"
+    assert checkpoint["next_check_at_ms"] == NOW_MS + 1_000
+
+
+def test_running_backfill_without_durable_schedule_has_no_next_check() -> None:
+    module = _module(
+        "rates_fed",
+        backfill_worker_enabled=True,
+        target_states=[
+            {
+                "dataset_id": "fred.dgs2",
+                "partition_key": "2021-07-27..2026-07-27",
+                "clock_kind": "backfill",
+                "status": "claimed",
+                "cursor_json": {"start_date": "2021-07-27"},
+            }
+        ],
+    )
+
+    execution = module["status"]["backfill_execution"]
+    assert execution["state"] == "running"
+    assert execution["next_check_at_ms"] is None
+    assert execution["reason"]["code"] == "history_backfill_running"
+    assert execution["reason"]["next_check_at_ms"] is None
+
+
+def test_empty_module_summary_does_not_invent_analysis_or_falsifiers() -> None:
+    module = _module("rates_fed")
+
+    assert module["summary"]["headline"] is None
+    assert module["summary"]["interpretation"] is None
+    assert module["falsifiers"] == []
+    assert all(item["reason"] is not None for item in module["next_checkpoints"])
+
+
+def test_release_payload_preserves_latest_fields_and_bounds_twelve_observations() -> None:
+    periods = [
+        *(f"2025-M{month:02d}" for month in range(1, 13)),
+        "2026-M01",
+        "2026-M02",
+    ]
+    releases = [
+        {
+            "release_fact_id": f"release:{period}",
+            "fact_hash": f"sha256:{index:064x}",
+            "dataset_id": "bls.cpi.release",
+            "reference_period": period,
+            "scheduled_at_ms": NOW_MS + index * 1_000,
+            "actual_value": 300.0 + index,
+            "estimate_value": 299.5 + index,
+            "prior_value": 299.0 + index,
+            "revised_prior_value": None,
+            "unit": "index",
+            "published_at_ms": NOW_MS + index * 1_000,
+            "received_at_ms": NOW_MS + index * 1_000 + 100,
+            "source_url": f"https://example.com/releases/{period}",
+        }
+        for index, period in enumerate(periods, start=1)
+    ]
+    releases.append(
+        {
+            **releases[-2],
+            "release_fact_id": "release:2026-M01:revision",
+            "fact_hash": "sha256:" + "f" * 64,
+            "revised_prior_value": 311.25,
+            "received_at_ms": releases[-2]["received_at_ms"] + 500,
+        }
+    )
+
+    module = _module("economy_inflation", release_rows=releases)
+    reversed_module = _module(
+        "economy_inflation",
+        release_rows=list(reversed(releases)),
+    )
+    api_schemas.MacroEconomyInflationPersistedData.model_validate(module)
+    summary = module["inflation"]["official_releases"][0]
+    observations = summary["observations"]
+
+    assert len(observations) == 12
+    assert [item["reference_period"] for item in observations] == list(reversed(periods[2:]))
+    assert summary["reference_period"] == observations[0]["reference_period"] == "2026-M02"
+    assert summary["actual_value"] == observations[0]["actual_value"]
+    assert (
+        next(item for item in observations if item["reference_period"] == "2026-M01")["revised_prior_value"] == 311.25
+    )
+    assert reversed_module["inflation"]["official_releases"] == module["inflation"]["official_releases"]
 
 
 def test_natural_change_metrics_follow_dataset_cadence_and_are_comparable() -> None:
@@ -453,7 +742,9 @@ def test_natural_change_metrics_follow_dataset_cadence_and_are_comparable() -> N
     assert cpi_change["metric_unit"] == "percent"
     assert rates_change["importance_rank"] >= 1
     assert rates_change["importance_factors"]["standardized_magnitude"] >= 0
-    assert "importance_explanation" in rates_change
+    assert rates_change["importance_explanation"].startswith("1周变化+15bp")
+    assert "basis_points" not in rates["summary"]["headline"]
+    assert rates["summary"]["headline"].endswith("+15bp，截至 2026-07-27")
 
 
 def test_natural_change_does_not_relabel_out_of_window_or_missing_period_data() -> None:
@@ -507,13 +798,14 @@ def test_reconciliation_receipt_selects_primary_without_blending_proxy_identity(
         ],
     )
     receipt = next(item for item in module["evidence"]["reconciliation_receipts"] if item["concept_id"] == "market.btc")
-    bitcoin = next(item for item in module["assets"]["benchmarks"] if item["label"] == "Bitcoin")
+    bitcoin = next(item for item in module["assets"]["source_identity"] if item["symbol"] == "BTC")
+    bitcoin_sources = {item["dataset_id"]: item for item in bitcoin["sources"]}
 
     assert receipt["selected_dataset_id"] == "binance.btcusdt.spot"
     assert receipt["selection_policy"] == "decision_primary_only_no_fallback"
     assert receipt["identity_policy"] == "separate_source_facts_no_blend"
-    assert bitcoin["sources"]["decision_primary"]["dataset_id"] == "binance.btcusdt.spot"
-    assert bitcoin["sources"]["intraday_proxy"]["dataset_id"] == "yfinance.btc_yahoo.intraday"
+    assert bitcoin_sources["binance.btcusdt.spot"]["source_role"] == "decision_primary"
+    assert bitcoin_sources["yfinance.btc_yahoo.intraday"]["source_role"] == "intraday_proxy"
     assert "latest_value" not in bitcoin
 
 

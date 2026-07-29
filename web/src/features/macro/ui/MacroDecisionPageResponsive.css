@@ -7,10 +7,6 @@
     .macro-decision__header > button {
       grid-column: 3;
     }
-
-    .macro-decision__module-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
   }
 
   @media (max-width: 1023px) {
@@ -28,10 +24,6 @@
       grid-column: 1 / -1;
     }
 
-    .macro-decision__review-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .macro-decision__research dl {
       justify-content: start;
     }
@@ -47,6 +39,10 @@
 
     .macro-decision__annotation-rail > header {
       grid-column: 1 / -1;
+    }
+
+    .macro-decision__claim-evidence > article {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 
@@ -131,8 +127,6 @@
     }
 
     .macro-decision__validity-rail,
-    .macro-decision__module-grid,
-    .macro-decision__review-grid,
     .macro-decision__chart-pair,
     .macro-decision__small-multiples,
     .macro-decision__credit-dimensions,
@@ -142,6 +136,20 @@
 
     .macro-decision__validity-rail > header {
       grid-column: auto;
+    }
+
+    .macro-decision__evidence-index > header,
+    .macro-decision__evidence-health > header {
+      align-items: start;
+      flex-direction: column;
+    }
+
+    .macro-decision__claim-evidence li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__evidence-health [role="row"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .macro-decision__causal-chain p {
@@ -199,7 +207,7 @@
     }
 
     .macro-decision__assets [role="cell"]:first-child,
-    .macro-decision__assets details[role="cell"] {
+    .macro-decision__assets [role="cell"]:last-child {
       grid-column: 1 / -1;
     }
 
@@ -207,7 +215,7 @@
       content: "";
     }
 
-    .macro-decision__assets details[role="cell"]::before {
+    .macro-decision__assets [role="cell"]:last-child::before {
       content: attr(data-label);
     }
 
@@ -235,12 +243,16 @@
   }
 
   @media (max-width: 430px) {
+    .macro-decision__evidence-health [role="row"] {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .macro-decision__assets [role="row"] {
       grid-template-columns: minmax(0, 1fr);
     }
 
     .macro-decision__assets [role="cell"]:first-child,
-    .macro-decision__assets details[role="cell"] {
+    .macro-decision__assets [role="cell"]:last-child {
       grid-column: auto;
     }
 

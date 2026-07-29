@@ -355,12 +355,17 @@ identities are terminal configuration errors.
 
 Post-publication updates never mutate the Thesis. Macro Live Delta only reports
 condition-bound strengthening, weakening, or invalidation against cited
-evidence; Outcome Replay evaluates the Thesis at its declared horizon. Model
-failure cannot hide the six deterministic modules or the last immutable
-Thesis. PostgreSQL checkpoints are resumable execution state, not facts or a
-second publication source. Read requests never invoke providers or either
-graph. Evidence completeness is descriptive and can produce `no_call`; only
-identity/schema/cutoff/citation/reviewer integrity remains fail-closed.
+evidence; its public read projection preserves mainline, alternative, tension,
+and asset scopes, and only mainline bindings determine mainline validity.
+Outcome Replay evaluates the Thesis at its declared horizon. Model failure
+cannot hide the six deterministic modules or the last immutable Thesis. Reads
+keep the requested session state separate from any explicitly historical
+displayed publication, and one unavailable module degrades only its evidence
+slot rather than the whole Thesis read. PostgreSQL checkpoints are resumable
+execution state, not facts or a second publication source. Read requests never
+invoke providers or either graph. Evidence completeness is descriptive and can
+produce `no_call`; only identity/schema/cutoff/citation/reviewer integrity
+remains fail-closed.
 
 ## Safety boundary
 

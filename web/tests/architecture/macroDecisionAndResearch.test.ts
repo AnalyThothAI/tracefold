@@ -16,6 +16,9 @@ describe("daily macro decision and research hard cut", () => {
       "ui/MacroCharts.tsx",
       "ui/MacroDecisionPage.tsx",
       "ui/MacroModuleSections.tsx",
+      "ui/MacroResearchAppendices.tsx",
+      "ui/MacroResearchDossier.tsx",
+      "ui/MacroResearchEvidence.tsx",
       "ui/MacroResearchPage.tsx",
     ]);
     expect(files).not.toContain("shell.ts");
@@ -27,6 +30,16 @@ describe("daily macro decision and research hard cut", () => {
     expect(macroText()).not.toMatch(/StructuredValue|JSON\.stringify|ObjectTable/);
     expect(sections).toContain("useHashSection");
     expect(sections).toContain("MacroTimeSeriesChart");
+    expect(sections).toContain("module.summary.top_changes.map");
+    expect(sections).toContain("module.contradictions.map");
+    expect(sections).toContain("module.falsifiers.map");
+    expect(sections).toContain("module.next_checkpoints.map");
+    expect(sections).not.toMatch(
+      /module\.(?:contradictions|falsifiers|next_checkpoints)\[0\]|尚无足够历史|等待自然频率积累/,
+    );
+    expect(sections).not.toMatch(
+      /readRecord\(fed,\s*"event_counts"\)|readRecord\(fed,\s*"unique_official_counts"\)|readRecords\(confirmations,\s*"etfs"\)|payload\.normalized(?!_groups)|parseAssets|normalizedSeries|decisionPrimary|intradayProxy|curve-shape-v1/,
+    );
   });
 
   it("wires the overview, research, and six typed module routes", () => {
@@ -73,20 +86,25 @@ describe("daily macro decision and research hard cut", () => {
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.tsx"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroModuleSections.tsx"), "utf8"),
     ].join("\n");
-    const research = readFileSync(join(macroRoot, "ui/MacroResearchPage.tsx"), "utf8");
+    const research = [
+      readFileSync(join(macroRoot, "ui/MacroResearchPage.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroResearchDossier.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroResearchAppendices.tsx"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroResearchEvidence.tsx"), "utf8"),
+    ].join("\n");
 
     for (const field of [
       "thesis.mainline",
       "thesis.core_tensions",
       "thesis.changes_from_prior",
-      "thesis.assets",
-      "asset.momentum.momentum_1w",
-      "asset.outlook_1w",
-      "asset.outlook_1m",
+      "data.asset_presentation",
+      "asset.horizons",
+      "asset.group === group.id",
       "data.live_delta",
+      "data.live_delta.mainline_validity",
+      "data.live_delta?.scopes",
       "thesis.mainline.falsifiers",
       "thesis.mainline.checkpoints",
-      "data.thesis?.module_assessments",
       "data.thesis?.gaps",
       "module.contradictions",
       "module.falsifiers",
@@ -102,8 +120,8 @@ describe("daily macro decision and research hard cut", () => {
     for (const field of [
       "thesis.mainline.claims.map",
       "thesis.core_tensions.map",
-      "thesis.assets.map",
-      "thesis.module_assessments.map",
+      "claimPresentation?.asset_implications",
+      "thesis.module_assessments.filter",
       "thesis.review.findings.map",
       "thesis.provenance",
       "thesis.narrative_sections.map",
@@ -114,9 +132,13 @@ describe("daily macro decision and research hard cut", () => {
   });
 
   it("keeps both feature surfaces namespaced and responsive", () => {
-    const researchCss = readFileSync(join(macroRoot, "ui/MacroResearchPage.css"), "utf8");
+    const researchCss = [
+      readFileSync(join(macroRoot, "ui/MacroResearchPage.css"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroResearchDossier.css"), "utf8"),
+    ].join("\n");
     const decisionCss = [
       readFileSync(join(macroRoot, "ui/MacroCharts.css"), "utf8"),
+      readFileSync(join(macroRoot, "ui/MacroDecisionBrief.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionOverview.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionPage.css"), "utf8"),
       readFileSync(join(macroRoot, "ui/MacroDecisionEvidence.css"), "utf8"),
@@ -140,6 +162,18 @@ describe("daily macro decision and research hard cut", () => {
         (selector) => selector.startsWith("macro-decision") || selector.startsWith("macro-chart"),
       ),
     ).toBe(true);
+  });
+
+  it("reserves full plot geometry for semantic SVG charts instead of icon sizing", () => {
+    const baseCss = readSource("styles/base.css");
+    const chartsCss = readFileSync(join(macroRoot, "ui/MacroCharts.css"), "utf8");
+
+    expect(baseCss).toMatch(/\.lucide\s*{[^}]*width:\s*13px[^}]*height:\s*13px/s);
+    expect(baseCss).not.toMatch(/(^|})\s*svg\s*{[^}]*width:\s*13px[^}]*height:\s*13px/s);
+    expect(chartsCss).toMatch(
+      /\.macro-chart > svg\s*{[^}]*width:\s*100%[^}]*height:\s*auto[^}]*min-height:\s*18rem/s,
+    );
+    expect(chartsCss).not.toMatch(/\.macro-chart--(?:curve|bars) > svg[^}]*min-width:\s*34rem/s);
   });
 });
 

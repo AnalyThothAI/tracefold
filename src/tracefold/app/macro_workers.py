@@ -69,6 +69,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
         constructed["macro_projection"] = MacroProjectionWorker(
             name="macro_projection",
             settings=projection_settings,
+            backfill_worker_enabled=bool(ctx.settings.workers.macro_backfill.enabled),
             db=ctx.db,
             telemetry=ctx.telemetry,
         )
@@ -151,6 +152,7 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
             agent=agent,
             reviewer=reviewer,
             configuration_error=configuration_error,
+            backfill_worker_enabled=bool(ctx.settings.workers.macro_backfill.enabled),
             worker_name="macro_thesis",
         )
         constructed["macro_thesis"] = MacroThesisWorker(

@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-test("renders one Macro Thesis, six modules, and deterministic follow-ups", async ({ page }) => {
+test("renders one Macro Thesis, claim evidence, and deterministic follow-ups", async ({ page }) => {
   await page.goto("/macro");
 
   await expect(page.getByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
@@ -32,9 +32,14 @@ test("renders one Macro Thesis, six modules, and deterministic follow-ups", asyn
       page.getByRole("navigation", { name: "宏观决策模块" }).getByRole("link"),
     ).toHaveCount(8);
   }
-  await expect(page.getByRole("region", { name: "六个宏观模块" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "主线证据入口" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Evidence Health" })).toBeVisible();
   await expect(page.getByText("十二资产：事实动量 vs 条件展望")).toBeVisible();
-  await expect(page.getByText("确认主线")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Actionable" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Watch" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Evidence gap" })).toBeVisible();
+  await expect(page.locator("[data-asset-group]")).toHaveCount(12);
+  await expect(page.getByText("正在确认").first()).toBeVisible();
   await expect(page.getByRole("link", { name: /查看主线档案/ })).toHaveAttribute(
     "href",
     "/macro/research",
@@ -84,9 +89,10 @@ for (const [path, title] of modules) {
     await page.goto(path);
 
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "矛盾" })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "失效条件" })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 2, name: "下一检查点" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "图表决策注释" })).toBeVisible();
+    await expect(page.getByText("矛盾")).toBeVisible();
+    await expect(page.getByText("失效条件")).toBeVisible();
+    await expect(page.getByText("下一检查点")).toBeVisible();
     await expect(
       page.getByText("展开 Coverage、Current Health、History Depth 与原始事实"),
     ).toBeVisible();
@@ -108,6 +114,7 @@ async function expectMacroLayout(page: Page) {
     ".macro-decision",
     ".macro-decision__header",
     ".macro-decision__nav",
-    ".macro-decision__module-grid",
+    ".macro-decision__asset-groups",
+    ".macro-decision__evidence-index",
   ]);
 }

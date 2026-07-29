@@ -16,8 +16,8 @@ const archetypes = [
 ] as const;
 
 const macroPages = [
-  ["decision", "/macro", "每日宏观决策台"],
-  ["research", "/macro/research", "宏观研究工作台"],
+  ["decision", "/macro", "每日宏观主线"],
+  ["research", "/macro/research", "Macro Thesis 档案"],
 ] as const;
 
 test.beforeEach(async ({ page }) => {

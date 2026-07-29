@@ -43,7 +43,7 @@
     color: var(--text-primary);
   }
 
-  .macro-decision__section-nav a[aria-current="page"] {
+  .macro-decision__section-nav a[aria-selected="true"] {
     border-color: var(--accent-border);
     background: var(--accent-soft);
     color: var(--text-primary);
@@ -166,6 +166,42 @@
   .macro-decision__annotation-rail strong {
     font-size: 0.75rem;
     overflow-wrap: anywhere;
+  }
+
+  .macro-decision__annotation-rail ul {
+    display: grid;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .macro-decision__annotation-rail li {
+    display: grid;
+    gap: 0.16rem;
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+    padding-top: 0.5rem;
+  }
+
+  .macro-decision__annotation-rail li:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .macro-decision__annotation-rail time {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.61rem;
+  }
+
+  .macro-decision__annotation-rail a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    color: var(--accent-primary);
+    font-size: 0.62rem;
+    text-decoration: none;
   }
 
   .macro-decision__metric-strip,

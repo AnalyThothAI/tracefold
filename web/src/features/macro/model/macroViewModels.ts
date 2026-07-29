@@ -38,6 +38,8 @@ export type MacroReleaseView = {
   label: string;
   referencePeriod: string | null;
   scheduledAtMs: number | null;
+  publishedAtMs: number | null;
+  receivedAtMs: number | null;
   actualValue: number | null;
   estimateValue: number | null;
   priorValue: number | null;
@@ -72,16 +74,48 @@ export type MacroAssetFactView = {
   sourceUrl: string | null;
 };
 
-export type MacroAssetView = {
+export type MacroCrossAssetSourceView = {
+  datasetId: string;
+  label: string;
+  sourceRole: string;
+  fact: MacroAssetFactView | null;
+};
+
+export type MacroCrossAssetReturnRowView = {
+  displayOrder: number;
+  groupId: string;
+  groupLabel: string;
   symbol: string;
   label: string;
-  assetClass: string;
-  evidenceKind: string;
-  selectionPolicy: string;
   identityPolicy: string;
-  decisionPrimary: MacroAssetFactView | null;
-  intradayProxy: MacroAssetFactView | null;
-  history: MacroAssetFactView | null;
+  selectionPolicy: string;
+  latestSource: MacroCrossAssetSourceView;
+  returnSource: MacroCrossAssetSourceView;
+};
+
+export type MacroCrossAssetNormalizedSeriesView = {
+  displayOrder: number;
+  symbol: string;
+  label: string;
+  source: MacroCrossAssetSourceView;
+  points: MacroHistoryPoint[];
+};
+
+export type MacroCrossAssetNormalizedGroupView = {
+  displayOrder: number;
+  groupId: string;
+  label: string;
+  series: MacroCrossAssetNormalizedSeriesView[];
+};
+
+export type MacroCrossAssetSourceIdentityView = {
+  displayOrder: number;
+  symbol: string;
+  label: string;
+  evidenceKind: string;
+  identityPolicy: string;
+  selectionPolicy: string;
+  sources: MacroCrossAssetSourceView[];
 };
 
 export type MacroCorrelationView = {
@@ -193,20 +227,37 @@ export function parseCurveSnapshots(
 
 export function parseReleases(value: unknown): MacroReleaseView[] {
   const container = asRecord(value);
-  return readRecords(container, "official_releases").map((row, index) => ({
-    datasetId: readText(row, "dataset_id") ?? `release-${index}`,
-    label: readText(row, "label") ?? readText(row, "dataset_id") ?? `发布 ${index + 1}`,
-    referencePeriod: readText(row, "reference_period"),
-    scheduledAtMs: readNumber(row, "scheduled_at_ms"),
-    actualValue: readNumber(row, "actual_value"),
-    estimateValue: readNumber(row, "estimate_value"),
-    priorValue: readNumber(row, "prior_value"),
-    revisedPriorValue: readNumber(row, "revised_prior_value"),
-    surprise: readNumber(row, "surprise"),
-    revision: readNumber(row, "revision"),
-    unit: readText(row, "unit") ?? "",
-    sourceUrl: readText(row, "source_url"),
-  }));
+  return readRecords(container, "official_releases")
+    .flatMap((summary, summaryIndex) => {
+      const datasetId = readText(summary, "dataset_id") ?? `release-${summaryIndex}`;
+      const label =
+        readText(summary, "label") ?? readText(summary, "dataset_id") ?? `发布 ${summaryIndex + 1}`;
+      const observations = readRecords(summary, "observations");
+      return observations.map((row) => ({
+        datasetId,
+        label,
+        referencePeriod: readText(row, "reference_period"),
+        scheduledAtMs: readNumber(row, "scheduled_at_ms"),
+        publishedAtMs: readNumber(row, "published_at_ms"),
+        receivedAtMs: readNumber(row, "received_at_ms"),
+        actualValue: readNumber(row, "actual_value"),
+        estimateValue: readNumber(row, "estimate_value"),
+        priorValue: readNumber(row, "prior_value"),
+        revisedPriorValue: readNumber(row, "revised_prior_value"),
+        surprise: readNumber(row, "surprise"),
+        revision: readNumber(row, "revision"),
+        unit: readText(row, "unit") ?? "",
+        sourceUrl: readText(row, "source_url"),
+      }));
+    })
+    .sort(
+      (left, right) =>
+        (right.publishedAtMs ?? right.scheduledAtMs ?? 0) -
+          (left.publishedAtMs ?? left.scheduledAtMs ?? 0) ||
+        (right.referencePeriod ?? "").localeCompare(left.referencePeriod ?? "") ||
+        left.datasetId.localeCompare(right.datasetId),
+    )
+    .slice(0, 12);
 }
 
 export function parsePositions(value: unknown): MacroPositionView[] {
@@ -222,16 +273,138 @@ export function parsePositions(value: unknown): MacroPositionView[] {
   }));
 }
 
-export function parseAssetFact(value: unknown, sourceRole: string): MacroAssetFactView | null {
+export function parseCrossAssetReturnMatrix(value: unknown): MacroCrossAssetReturnRowView[] {
+  return asRecords(value)
+    .map((row) => {
+      const displayOrder = readNumber(row, "display_order");
+      const groupId = readText(row, "group_id");
+      const groupLabel = readText(row, "group_label");
+      const symbol = readText(row, "symbol");
+      const label = readText(row, "label");
+      const identityPolicy = readText(row, "identity_policy");
+      const selectionPolicy = readText(row, "selection_policy");
+      const latestSource = parseCrossAssetSource(row.latest_source);
+      const returnSource = parseCrossAssetSource(row.return_source);
+      if (
+        displayOrder == null ||
+        !groupId ||
+        !groupLabel ||
+        !symbol ||
+        !label ||
+        !identityPolicy ||
+        !selectionPolicy ||
+        !latestSource ||
+        !returnSource
+      ) {
+        return null;
+      }
+      return {
+        displayOrder,
+        groupId,
+        groupLabel,
+        symbol,
+        label,
+        identityPolicy,
+        selectionPolicy,
+        latestSource,
+        returnSource,
+      };
+    })
+    .filter((row): row is MacroCrossAssetReturnRowView => row != null)
+    .sort((left, right) => left.displayOrder - right.displayOrder);
+}
+
+export function parseCrossAssetNormalizedGroups(
+  value: unknown,
+): MacroCrossAssetNormalizedGroupView[] {
+  return asRecords(value)
+    .map((row) => {
+      const displayOrder = readNumber(row, "display_order");
+      const groupId = readText(row, "group_id");
+      const label = readText(row, "label");
+      if (displayOrder == null || !groupId || !label) return null;
+      const series = readRecords(row, "series")
+        .map((seriesRow) => {
+          const seriesOrder = readNumber(seriesRow, "display_order");
+          const symbol = readText(seriesRow, "symbol");
+          const seriesLabel = readText(seriesRow, "label");
+          const source = parseCrossAssetSource(seriesRow.source);
+          if (seriesOrder == null || !symbol || !seriesLabel || !source) return null;
+          return {
+            displayOrder: seriesOrder,
+            symbol,
+            label: seriesLabel,
+            source,
+            points: parsePointRecords(seriesRow.points, "normalized_value"),
+          };
+        })
+        .filter((seriesRow): seriesRow is MacroCrossAssetNormalizedSeriesView => seriesRow != null)
+        .sort((left, right) => left.displayOrder - right.displayOrder);
+      return { displayOrder, groupId, label, series };
+    })
+    .filter((row): row is MacroCrossAssetNormalizedGroupView => row != null)
+    .sort((left, right) => left.displayOrder - right.displayOrder);
+}
+
+export function parseCrossAssetSourceIdentity(value: unknown): MacroCrossAssetSourceIdentityView[] {
+  return asRecords(value)
+    .map((row) => {
+      const displayOrder = readNumber(row, "display_order");
+      const symbol = readText(row, "symbol");
+      const label = readText(row, "label");
+      const evidenceKind = readText(row, "evidence_kind");
+      const identityPolicy = readText(row, "identity_policy");
+      const selectionPolicy = readText(row, "selection_policy");
+      if (
+        displayOrder == null ||
+        !symbol ||
+        !label ||
+        !evidenceKind ||
+        !identityPolicy ||
+        !selectionPolicy
+      ) {
+        return null;
+      }
+      return {
+        displayOrder,
+        symbol,
+        label,
+        evidenceKind,
+        identityPolicy,
+        selectionPolicy,
+        sources: asRecords(row.sources)
+          .map(parseCrossAssetSource)
+          .filter((source): source is MacroCrossAssetSourceView => source != null),
+      };
+    })
+    .filter((row): row is MacroCrossAssetSourceIdentityView => row != null)
+    .sort((left, right) => left.displayOrder - right.displayOrder);
+}
+
+function parseCrossAssetSource(value: unknown): MacroCrossAssetSourceView | null {
   const row = asRecord(value);
   const datasetId = readText(row, "dataset_id");
-  if (!datasetId && !Object.keys(row).length) return null;
+  const label = readText(row, "label");
+  const sourceRole = readText(row, "source_role");
+  if (!datasetId || !label || !sourceRole) return null;
   return {
-    datasetId: datasetId ?? sourceRole,
-    label: readText(row, "label") ?? datasetId ?? sourceRole,
-    symbol: readText(row, "symbol") ?? "",
+    datasetId,
+    label,
     sourceRole,
-    latestValue: readNumber(row, "latest_value") ?? readNumber(row, "value"),
+    fact: parseCrossAssetFact(row.fact, { datasetId, label, sourceRole }),
+  };
+}
+
+function parseCrossAssetFact(
+  value: unknown,
+  identity: Pick<MacroCrossAssetSourceView, "datasetId" | "label" | "sourceRole">,
+): MacroAssetFactView | null {
+  const row = asRecord(value);
+  if (!Object.keys(row).length) return null;
+  return {
+    ...identity,
+    symbol: "",
+    latestValue: readNumber(row, "latest_value"),
     asOf: readText(row, "as_of"),
     marketTimeMs: readNumber(row, "market_time_ms"),
     change1dPct: readNumber(row, "change_1d_pct"),
@@ -239,39 +412,6 @@ export function parseAssetFact(value: unknown, sourceRole: string): MacroAssetFa
     change1mPct: readNumber(row, "change_1m_pct"),
     sourceUrl: readText(row, "source_url"),
   };
-}
-
-export function parseAssets(value: unknown): MacroAssetView[] {
-  return asRecords(value).map((row, index) => {
-    const sources = readRecord(row, "sources");
-    const decisionPrimary = parseAssetFact(sources.decision_primary, "decision_primary");
-    const intradayProxy = parseAssetFact(sources.intraday_proxy, "intraday_proxy");
-    const history = parseAssetFact(sources.history, "history");
-    const legacyFact = parseAssetFact(row, readText(row, "source_role") ?? "decision_primary");
-    return {
-      symbol:
-        readText(row, "symbol") ??
-        decisionPrimary?.symbol ??
-        intradayProxy?.symbol ??
-        legacyFact?.symbol ??
-        `资产 ${index + 1}`,
-      label:
-        readText(row, "label") ??
-        decisionPrimary?.label ??
-        intradayProxy?.label ??
-        legacyFact?.label ??
-        `资产 ${index + 1}`,
-      assetClass: readText(row, "asset_class") ?? "",
-      evidenceKind: readText(row, "evidence_kind") ?? "",
-      selectionPolicy: readText(row, "selection_policy") ?? "",
-      identityPolicy: readText(sources, "identity_policy") ?? "",
-      decisionPrimary:
-        decisionPrimary ?? (legacyFact?.sourceRole === "decision_primary" ? legacyFact : null),
-      intradayProxy:
-        intradayProxy ?? (legacyFact?.sourceRole === "intraday_proxy" ? legacyFact : null),
-      history,
-    };
-  });
 }
 
 export function parseCorrelations(value: unknown): MacroCorrelationView[] {

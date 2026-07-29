@@ -57,6 +57,7 @@ class MacroThesisService:
         agent: MacroThesisAgent | None,
         reviewer: MacroThesisReviewer | None,
         configuration_error: str | None = None,
+        backfill_worker_enabled: bool = False,
         worker_name: str = "macro_thesis",
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
@@ -68,6 +69,7 @@ class MacroThesisService:
         self._agent = agent
         self._reviewer = reviewer
         self._configuration_error = str(configuration_error or "").strip() or None
+        self._backfill_worker_enabled = backfill_worker_enabled
         self._worker_name = worker_name
         self._lease_owner = lease_owner or f"{worker_name}:{uuid4().hex}"
         self._clock_ms = clock_ms or _now_ms
@@ -325,6 +327,7 @@ class MacroThesisService:
                 role_rows=role_rows,
                 analysis_rows=analysis_rows,
                 analysis_job_state=None,
+                backfill_worker_enabled=self._backfill_worker_enabled,
             )
             module["features"] = [feature for feature in features if feature.get("module_id") == module_id]
             modules.append(module)

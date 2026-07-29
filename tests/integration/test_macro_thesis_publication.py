@@ -118,10 +118,18 @@ def test_macro_thesis_repository_enforces_bound_review_and_immutable_followups(
             assert repos.macro_thesis.insert_live_delta(unchanged_live_delta) == 0
             post_cutoff_modules = deepcopy(_modules())
             post_cutoff_modules[0]["latest_fact_at_ms"] = CUTOFF_MS + 550
-            post_cutoff_live_delta = evaluate_live_delta(
+            unbound_module_clock = evaluate_live_delta(
                 publication=publication,
                 modules=post_cutoff_modules,
                 evaluated_at_ms=CUTOFF_MS + 600,
+            )
+            assert unbound_module_clock.input_hash == live_delta.input_hash
+            assert repos.macro_thesis.insert_live_delta(unbound_module_clock) == 0
+            post_cutoff_modules[0]["evidence"]["latest_facts"][0]["observed_at_ms"] = CUTOFF_MS + 550
+            post_cutoff_live_delta = evaluate_live_delta(
+                publication=publication,
+                modules=post_cutoff_modules,
+                evaluated_at_ms=CUTOFF_MS + 650,
             )
             assert post_cutoff_live_delta.live_delta_id == live_delta.live_delta_id
             assert post_cutoff_live_delta.input_hash != live_delta.input_hash

@@ -115,22 +115,32 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `session_date=YYYY-MM-DD` survives hard reload and sharing. It is not a
   second Macro narrative.
 
-  The overview has one fixed decision order: market mainline, real tensions,
-  changes from the prior Thesis, twelve assets with momentum kept separate from
-  conditional outlook, Live Delta/falsifiers/checkpoints/Outcome Replay, the
-  role and analysis of all six modules, then data quality. It always renders the
-  intended Thesis session and deterministic 08:50 cutoff. Before publication it
-  shows the persisted run state; after publication it renders the immutable
-  Thesis exactly. Current/stale transport state is separate from Coverage,
-  Current Health, and History Depth and is never inferred from wall-clock age in
-  the browser.
+  The overview is a 30-second decision brief with one fixed order: requested
+  versus displayed session state when exceptional, market mainline, strongest
+  evidence and real tensions, changes from the prior Thesis, twelve assets in
+  server-owned `actionable`/`watch`/`evidence_gap` groups, scoped Live Delta,
+  falsifiers/checkpoints/Outcome Replay, compact Evidence Health, then Data
+  Quality. It does not render six equal module-role cards. Module evidence is
+  attached to the claim it supports or contradicts; the compact health summary
+  is the only overview-wide module index.
 
-  Each module answers current state, changes on the Dataset's natural cadence,
-  why the changes matter, contradictions, falsifiers, next checkpoints, typed
-  financial structures, formulas, source roles, reconciliation receipts, exact
-  data quality, and raw fact lineage. Release modules distinguish expected,
-  actual, surprise, revision, source publication time, and receipt time.
-  Optional history can lower only History Depth, never Current Health.
+  The intended 08:50 session and deterministic cutoff remain explicit. When the
+  requested current session has no publication, the API may also supply the
+  latest immutable publication as clearly historical fallback context. The UI
+  must show both requested and displayed sessions and must never relabel that
+  publication as current. Current/stale transport state is separate from
+  content fallback, Coverage, Current Health, History Depth, and backfill
+  execution; the browser never infers any of these states from wall-clock age.
+
+  Each module is a typed evidence workbench. A thin shared header answers
+  current conclusion, latest change, as-of, data health, and relationship to the
+  Thesis; the active hash-selected section then renders module-specific facts,
+  charts, why they matter, linked claims, real counterevidence, and real next
+  checkpoints. Empty semantic sections are omitted. There is no shared
+  contradictions/falsifiers/checkpoints/gaps four-card footer and no fixed
+  business interpretation. Release modules distinguish expected, actual,
+  surprise, revision, source publication time, and receipt time. Optional
+  history can lower only History Depth, never Current Health.
 
   Cross-Asset defaults to the fixed ten-ETF matrix followed by a normalized
   comparison and best-effort major-futures/USD-index rows. ETF and futures rows
@@ -144,17 +154,24 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   its ladder/funding/banks/quality/confirmation sections and never renders a
   composite score.
 
-  The research page renders the selected immutable Thesis, its Reviewer
-  disposition, Live Delta, Outcome Replay, run status, and publication history
-  exactly from the API. The browser does not classify evidence sufficiency,
-  infer direction/confidence, score assets, merge source identities, or
+  The research page is a claim-first dossier, not the overview with more fields.
+  It renders each claim as statement, reasoning, supporting evidence,
+  counterevidence, asset implications, falsifiers, checkpoints, citations, and
+  relevant replay. Reviewer/run/source-lineage detail lives in an audit
+  appendix. It provides a real link back to the overview and keeps publication
+  history separate from generation attempts. The browser does not classify
+  evidence sufficiency, infer direction/confidence, score or group assets,
+  merge source identities, aggregate Live Delta, select fallback content, or
   recompute conclusions.
 
-  Current, historical, generating, failed, and missing states remain visually
-  distinct. Generating state polls only the persisted read; it never starts or
-  resumes an Agent. A historical document is labelled with both requested and
-  current completed-session dates and is never relabelled as current. Run
-  attempts and sanitized errors are supporting status, not Thesis content.
+  Current, historical, fallback, generating, not-published, failed, and missing
+  states remain visually distinct. Every non-success state displays its typed
+  reason, affected scope, retryability, recovery action, and a next check only
+  when one is actually scheduled. Generating state polls only the persisted
+  read; it never starts or resumes an Agent. A historical or fallback document
+  is labelled with requested and displayed session dates and is never
+  relabelled as current. Run attempts and sanitized errors are supporting
+  status, not Thesis content.
 
   At desktop, tablet, and mobile widths the document becomes labelled stacked
   content without horizontal page scrolling or hover-only material evidence.
@@ -226,11 +243,13 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the daily
-   judgment, six module cards, status triplets/gaps, changes, asset directions, and
-   research state readable without horizontal overflow. Verify each module
-   keeps its typed structures, formulas, falsifiers, checkpoints, and source
-   clocks readable. For each module, select a non-default section, reload, and
-   verify the same hash section remains active.
-   On `/macro/research`, the audit disclosure is keyboard reachable and the
-   selected historical session survives reload.
+9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps the
+   mainline, strongest evidence/tensions, changes, all twelve server-grouped
+   assets, scoped Live Delta, Evidence Health, and Data Quality readable
+   without horizontal overflow or machine-only labels. Verify each module has
+   a real-sized module-specific chart, no fixed empty four-card footer, exact
+   source clocks, an equivalent data table, and only its active hash section
+   mounted. Select a non-default section, reload, and verify the same section
+   remains active. On `/macro/research`, verify the claim-first chain, readable
+   citations, requested/displayed session boundary, real Overview link,
+   keyboard-reachable audit appendix, and historical session reload.

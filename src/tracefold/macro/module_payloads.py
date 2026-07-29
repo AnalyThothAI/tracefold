@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tracefold.macro.assets import MACRO_ASSET_DATASET_IDS
 from tracefold.macro.calculations import (
     calculate_curve_contract,
     calculate_funding_cost_comparisons,
@@ -18,15 +19,16 @@ from tracefold.macro.coverage import coverage_for_module
 from tracefold.macro.domain import MACRO_MODULE_LABELS, DatasetSpec, MacroModuleId
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.market_calendar import market_clock
+from tracefold.macro.reasons import macro_reason
 from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
 
 _SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
-    "rates_fed": "macro_rates_fed_v4",
-    "economy_inflation": "macro_economy_inflation_v4",
-    "liquidity_funding": "macro_liquidity_funding_v4",
-    "credit": "macro_credit_v5",
-    "volatility": "macro_volatility_v4",
-    "cross_asset": "macro_cross_asset_v5",
+    "rates_fed": "macro_rates_fed_v5",
+    "economy_inflation": "macro_economy_inflation_v5",
+    "liquidity_funding": "macro_liquidity_funding_v5",
+    "credit": "macro_credit_v7",
+    "volatility": "macro_volatility_v6",
+    "cross_asset": "macro_cross_asset_v6",
 }
 _ETF_DAILY_IDS = (
     "nasdaq.spy.daily",
@@ -44,6 +46,11 @@ _ETF_INTRADAY_IDS = tuple(
     dataset_id.replace("nasdaq.", "yfinance.").replace(".daily", ".intraday") for dataset_id in _ETF_DAILY_IDS
 )
 _ETF_DATASETS = tuple(zip(_ETF_DAILY_IDS, _ETF_INTRADAY_IDS, strict=True))
+_CROSS_ASSET_NORMALIZED_GROUPS = (
+    ("equity", "权益", _ETF_DAILY_IDS[:3]),
+    ("duration_credit", "久期与信用", _ETF_DAILY_IDS[3:7]),
+    ("dollar_commodities", "美元与商品", _ETF_DAILY_IDS[7:]),
+)
 _FUTURES_DAILY_IDS = (
     "yfinance.es_future.daily",
     "yfinance.nq_future.daily",
@@ -82,6 +89,7 @@ def build_typed_module_payload(
     role_rows: list[dict[str, Any]] | None = None,
     analysis_rows: list[dict[str, Any]] | None = None,
     analysis_job_state: dict[str, int] | None = None,
+    backfill_worker_enabled: bool = False,
 ) -> dict[str, Any]:
     role_rows = role_rows or []
     analysis_rows = analysis_rows or []
@@ -109,10 +117,16 @@ def build_typed_module_payload(
         module_facts,
         now_ms,
         analysis_job_state=analysis_job_state,
+        backfill_worker_enabled=backfill_worker_enabled,
     )
     coverage = _coverage(module_id)
     current_health = _current_health(dataset_states)
     history_depth = _history_depth(dataset_states)
+    backfill_execution = _backfill_execution(
+        specs,
+        target_states,
+        worker_enabled=backfill_worker_enabled,
+    )
     changes = _top_changes(specs, series_rows, market_rows, settlement_rows, release_rows)
     payload: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSIONS[module_id],
@@ -122,19 +136,21 @@ def build_typed_module_payload(
             "coverage": coverage,
             "current_health": current_health,
             "history_depth": history_depth,
+            "backfill_execution": backfill_execution,
         },
         "latest_fact_at_ms": latest_fact_at_ms,
         "summary": {
-            "headline": f"{MACRO_MODULE_LABELS[module_id]}当前证据",
-            "interpretation": "实时模块只呈现可复算事实；主线判断由冻结 Macro Thesis 发布。",
+            "headline": _summary_headline(changes),
+            "interpretation": None,
             "top_changes": changes[:6],
         },
         "contradictions": _contradictions(module_id, changes),
-        "falsifiers": _falsifiers(module_id),
+        "falsifiers": [],
         "next_checkpoints": _next_checkpoints(dataset_states),
         "evidence": {
             "dataset_states": dataset_states,
             "latest_facts": _latest_fact_summaries(module_facts),
+            "asset_changes": [change for change in changes if str(change["dataset_id"]) in MACRO_ASSET_DATASET_IDS],
             "reconciliation_receipts": _reconciliation_receipts(specs, module_facts),
         },
     }
@@ -181,7 +197,19 @@ def _coverage(module_id: MacroModuleId) -> dict[str, Any]:
                 "requirement": capability.requirement,
                 "state": state,
                 "dataset_ids": list(capability.dataset_ids),
-                "reason": None if active else "dataset_not_registered",
+                "reason": (
+                    None
+                    if active
+                    else macro_reason(
+                        code="dataset_not_registered",
+                        message="该能力声明的 Dataset 尚未注册，不能作为当前模块证据。",
+                        impact="blocked" if capability.requirement == "required" else "limited",
+                        affected_dataset_ids=tuple(capability.dataset_ids),
+                        retryable=False,
+                        recovery="operator_action",
+                        next_action="修复 Dataset Registry 后重新投影模块。",
+                    )
+                ),
             }
         )
     state = "partial" if required_missing else "complete"
@@ -200,6 +228,7 @@ def _dataset_states(
     now_ms: int,
     *,
     analysis_job_state: dict[str, int] | None,
+    backfill_worker_enabled: bool,
 ) -> list[dict[str, Any]]:
     targets_by_dataset: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in targets:
@@ -289,6 +318,14 @@ def _dataset_states(
             [row for row in facts if str(row["dataset_id"]) == spec.dataset_id],
             active_backfills=active_backfills,
         )
+        current_next_check_at_ms = _minimum_timestamp(
+            target.get("next_due_at_ms") if target is not None else None,
+            market.next_open_ms if market is not None else None,
+        )
+        history_next_check_at_ms = min(
+            (int(row["next_due_at_ms"]) for row in active_backfills if row.get("next_due_at_ms") is not None),
+            default=None,
+        )
         states.append(
             {
                 "dataset_id": spec.dataset_id,
@@ -299,8 +336,19 @@ def _dataset_states(
                 "history_depth": history_state,
                 "market_state": market.state if market is not None else "not_applicable",
                 "source_state": source_state,
-                "current_reason": current_reason,
-                "history_reason": history_reason,
+                "current_reason": _dataset_current_reason(
+                    code=current_reason,
+                    dataset_id=spec.dataset_id,
+                    current_health=current_health,
+                    next_check_at_ms=current_next_check_at_ms,
+                ),
+                "history_reason": _dataset_history_reason(
+                    code=history_reason,
+                    dataset_id=spec.dataset_id,
+                    history_depth=history_state,
+                    worker_enabled=backfill_worker_enabled,
+                    next_check_at_ms=history_next_check_at_ms,
+                ),
                 "critical": spec.critical,
                 "trust_tier": spec.trust_tier,
                 "source_url": spec.source_url,
@@ -329,6 +377,87 @@ def _source_state(target: dict[str, Any] | None) -> str:
     return "degraded"
 
 
+_CURRENT_REASON_MESSAGES = {
+    "document_analysis_jobs_failed": "部分政策文件分析任务失败，现有事实仍可读取但分析覆盖受限。",
+    "document_analysis_initial_build_pending": "政策文件分析尚未形成首个有效事实。",
+    "derived_fact_pending": "确定性派生事实尚未生成。",
+    "derived_fact_past_freshness_budget": "派生事实已超过最大 freshness 预算。",
+    "derived_fact_delayed": "派生事实已超过预期 freshness 预算。",
+    "within_freshness_budget": "当前事实位于 Dataset freshness 预算内。",
+    "acquisition_target_missing": "Dataset 缺少 acquisition target，无法自动采集。",
+    "no_valid_fact": "Dataset 尚无可用于判断的有效事实。",
+    "expected_fact_missing": "预期事实未在最大 freshness 预算内到达。",
+    "expected_fact_delayed": "预期事实尚未到达，当前事实已延迟。",
+    "last_expected_bar_present": "市场休市或维护期间，最近应有 bar 已存在。",
+}
+
+_HISTORY_REASON_MESSAGES = {
+    "no_history_requirement": "该 Dataset 没有独立历史深度要求。",
+    "configured_history_range_complete": "配置的历史区间已完整回填。",
+    "history_backfill_incomplete": "配置的历史区间尚未完整，但已有部分有效历史事实。",
+    "history_backfill_has_no_valid_fact": "配置的历史区间尚未形成有效历史事实。",
+    "history_facts_missing": "该 feature 所需历史事实缺失。",
+    "expected_history_window_present": "该 feature 的最小历史窗口已满足。",
+    "expected_history_window_incomplete": "该 feature 的最小历史窗口尚未满足。",
+}
+
+
+def _dataset_current_reason(
+    *,
+    code: str,
+    dataset_id: str,
+    current_health: str,
+    next_check_at_ms: int | None,
+) -> dict[str, object]:
+    healthy = current_health == "current"
+    operator_action = code == "acquisition_target_missing"
+    return macro_reason(
+        code=code,
+        message=_CURRENT_REASON_MESSAGES[code],
+        impact="none" if healthy else "blocked" if current_health == "unavailable" else "limited",
+        affected_dataset_ids=() if healthy else (dataset_id,),
+        retryable=not healthy and not operator_action,
+        recovery="none" if healthy else "operator_action" if operator_action else "automatic",
+        next_action=(
+            None
+            if healthy
+            else "创建 acquisition target 后重新投影模块。"
+            if operator_action
+            else "等待下一次采集或派生投影，并复核该 Dataset。"
+        ),
+        next_check_at_ms=next_check_at_ms,
+    )
+
+
+def _dataset_history_reason(
+    *,
+    code: str,
+    dataset_id: str,
+    history_depth: str,
+    worker_enabled: bool,
+    next_check_at_ms: int | None,
+) -> dict[str, object]:
+    complete = history_depth in {"complete", "not_required"}
+    requires_backfill = code in {"history_backfill_incomplete", "history_backfill_has_no_valid_fact"}
+    paused = requires_backfill and not worker_enabled
+    return macro_reason(
+        code=("history_backfill_paused" if paused else code),
+        message=("历史回填 worker 已停用；当前历史深度不会自动推进。" if paused else _HISTORY_REASON_MESSAGES[code]),
+        impact="none" if complete else "blocked" if history_depth == "insufficient" else "limited",
+        affected_dataset_ids=() if complete else (dataset_id,),
+        retryable=not complete,
+        recovery="none" if complete else "operator_action" if paused else "automatic",
+        next_action=(
+            None
+            if complete
+            else "启用 macro_backfill worker 或由操作员执行回填。"
+            if paused
+            else "等待历史回填或补充满足该 feature 最小窗口的事实。"
+        ),
+        next_check_at_ms=None if paused else next_check_at_ms,
+    )
+
+
 def _dataset_history_depth(
     spec: DatasetSpec,
     targets: list[dict[str, Any]],
@@ -346,7 +475,7 @@ def _dataset_history_depth(
         return "complete", "configured_history_range_complete"
     if active_backfills:
         return (
-            ("partial", "history_backfill_in_progress")
+            ("partial", "history_backfill_incomplete")
             if dated_facts
             else ("insufficient", "history_backfill_has_no_valid_fact")
         )
@@ -390,6 +519,118 @@ def _history_depth(dataset_states: list[dict[str, Any]]) -> dict[str, Any]:
         "state": state,
         "complete_datasets": sum(item["history_depth"] == "complete" for item in tracked),
         "tracked_datasets": len(tracked),
+    }
+
+
+def _backfill_execution(
+    specs: tuple[DatasetSpec, ...],
+    targets: list[dict[str, Any]],
+    *,
+    worker_enabled: bool,
+) -> dict[str, Any]:
+    dataset_ids = {spec.dataset_id for spec in specs}
+    backfills = [
+        row
+        for row in targets
+        if str(row.get("dataset_id") or "") in dataset_ids and str(row.get("clock_kind") or "") == "backfill"
+    ]
+    statuses = [str(row.get("status") or "") for row in backfills]
+    complete_targets = sum(status == "current" for status in statuses)
+    failed_targets = sum(status in {"stale", "unavailable", "invalid", "failed"} for status in statuses)
+    pending_targets = len(backfills) - complete_targets
+    next_check_at_ms = min(
+        (int(row["next_due_at_ms"]) for row in backfills if row.get("next_due_at_ms") is not None),
+        default=None,
+    )
+    if not backfills:
+        state = "not_required"
+        reason = None
+    elif pending_targets == 0:
+        state = "complete"
+        reason = None
+    elif not worker_enabled:
+        state = "paused"
+        reason = macro_reason(
+            code="history_backfill_worker_disabled",
+            message="历史回填目标仍未完成，但 macro_backfill worker 已停用。",
+            impact="limited",
+            affected_dataset_ids=tuple(
+                sorted({str(row["dataset_id"]) for row in backfills if str(row.get("status") or "") != "current"})
+            ),
+            retryable=True,
+            recovery="operator_action",
+            next_action="启用 macro_backfill worker 或由操作员执行明确的回填任务。",
+        )
+    elif "claimed" in statuses:
+        state = "running"
+        reason = macro_reason(
+            code="history_backfill_running",
+            message="历史回填 worker 正在处理至少一个目标。",
+            impact="limited",
+            affected_dataset_ids=tuple(
+                sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
+            ),
+            retryable=True,
+            recovery="automatic",
+            next_action="等待当前租约完成后重新读取模块。",
+            next_check_at_ms=next_check_at_ms,
+        )
+    elif failed_targets:
+        state = "failed"
+        reason = macro_reason(
+            code="history_backfill_failed",
+            message="至少一个历史回填目标已耗尽重试或进入不可用状态。",
+            impact="limited",
+            affected_dataset_ids=tuple(
+                sorted(
+                    {
+                        str(row["dataset_id"])
+                        for row in backfills
+                        if str(row.get("status") or "") in {"stale", "unavailable", "invalid", "failed"}
+                    }
+                )
+            ),
+            retryable=False,
+            recovery="operator_action",
+            next_action="检查目标最后错误，修复来源后显式重新入队。",
+        )
+    elif any(status == "delayed" for status in statuses):
+        state = "retry_wait"
+        reason = macro_reason(
+            code="history_backfill_retry_wait",
+            message="历史回填目标正在等待下一次自动重试。",
+            impact="limited",
+            affected_dataset_ids=tuple(
+                sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
+            ),
+            retryable=True,
+            recovery="automatic",
+            next_action="等待 next_check_at_ms 后重新读取目标状态。",
+            next_check_at_ms=next_check_at_ms,
+        )
+    else:
+        state = "queued"
+        reason = macro_reason(
+            code="history_backfill_queued",
+            message="历史回填目标已排队，尚未被 worker 领取。",
+            impact="limited",
+            affected_dataset_ids=tuple(
+                sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
+            ),
+            retryable=True,
+            recovery="automatic",
+            next_action="等待 macro_backfill worker 领取目标。",
+            next_check_at_ms=next_check_at_ms,
+        )
+    return {
+        "state": state,
+        "worker_enabled": worker_enabled,
+        "total_targets": len(backfills),
+        "complete_targets": complete_targets,
+        "pending_targets": pending_targets,
+        "failed_targets": failed_targets,
+        "next_check_at_ms": next_check_at_ms if state not in {"not_required", "complete", "paused", "failed"} else None,
+        "reason": reason,
     }
 
 
@@ -499,6 +740,17 @@ def _liquidity_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _credit_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     series_rows = groups["series_rows"]
+    confirmation_pairs = (
+        ("nasdaq.lqd.daily", "yfinance.lqd.intraday"),
+        ("nasdaq.hyg.daily", "yfinance.hyg.intraday"),
+    )
+    confirmation_matrix = _cross_asset_return_matrix(
+        groups["market_rows"],
+        confirmation_pairs,
+        group_by_history_dataset={
+            dataset_id: ("credit_etf", "信用 ETF") for dataset_id, _price_dataset_id in confirmation_pairs
+        },
+    )
     ladder_ids = (
         "fred.bamlc0a0cm",
         "fred.bamlc0a4cbbb",
@@ -563,13 +815,18 @@ def _credit_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
             "indicators": loan_quality,
         },
         "confirmations": {
-            "etfs": _combined_asset_rows(
-                groups["market_rows"],
-                (
-                    ("nasdaq.lqd.daily", "yfinance.lqd.intraday"),
-                    ("nasdaq.hyg.daily", "yfinance.hyg.intraday"),
-                ),
-            ),
+            "return_matrix": confirmation_matrix,
+            "source_identity": [
+                _cross_asset_identity_row(
+                    display_order=index,
+                    evidence_kind="credit_etf",
+                    label=row["label"],
+                    selection_policy=row["selection_policy"],
+                    sources=[row["latest_source"], row["return_source"]],
+                    symbol=row["symbol"],
+                )
+                for index, row in enumerate(confirmation_matrix, start=1)
+            ],
             "positions": _position_rows(groups["position_rows"], "cftc.tff.credit_positions"),
         },
     }
@@ -744,6 +1001,15 @@ def _volatility_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     vix = _series_by_dataset(series_rows).get("fred.vixcls", [])
     vxv = _series_by_dataset(series_rows).get("fred.vxvcls", [])
     cross_asset_ids = ("fred.vxncls", "fred.gvzcls", "fred.ovxcls")
+    normalized_rows = _normalized_indicator_history(
+        series_rows,
+        cross_asset_ids,
+        {
+            "fred.vxncls": "VXN",
+            "fred.gvzcls": "GVZ",
+            "fred.ovxcls": "OVX",
+        },
+    )
     return {
         "term_structure": {
             "spot_and_three_month": _indicator_rows(series_rows, ("fred.vixcls", "fred.vxvcls")),
@@ -754,10 +1020,16 @@ def _volatility_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
                 series_rows,
                 cross_asset_ids,
             ),
-            "normalized": _normalized_indicator_history(
-                series_rows,
-                cross_asset_ids,
-                {
+            "normalized_groups": _normalized_groups(
+                normalized_rows,
+                (
+                    (
+                        "cross_asset_implied_volatility",
+                        "跨资产隐含波动率",
+                        cross_asset_ids,
+                    ),
+                ),
+                symbols_by_dataset={
                     "fred.vxncls": "VXN",
                     "fred.gvzcls": "GVZ",
                     "fred.ovxcls": "OVX",
@@ -778,58 +1050,225 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
         _ETF_DAILY_IDS,
         symbol_by_dataset,
     )
-    proxy_rows = _combined_asset_rows(market_rows, _ETF_DATASETS)
-    proxy_by_dataset = {row["history_dataset_id"]: row for row in proxy_rows}
-    bitcoin_rows = _combined_asset_rows(
+    return_matrix = _cross_asset_return_matrix(
         market_rows,
-        (("binance.btcusdt.spot", "yfinance.btc_yahoo.intraday"),),
+        _ETF_DATASETS,
+        group_by_history_dataset={
+            dataset_id: (group_id, group_label)
+            for group_id, group_label, dataset_ids in _CROSS_ASSET_NORMALIZED_GROUPS
+            for dataset_id in dataset_ids
+        },
     )
-    vix_intraday = _asset_rows(market_rows, ("yfinance.vix_index.intraday",))
+    futures_return_matrix = _cross_asset_return_matrix(
+        market_rows,
+        _FUTURES_DATASETS,
+        group_by_history_dataset={dataset_id: ("major_futures", "主要连续期货") for dataset_id in _FUTURES_DAILY_IDS},
+    )
+    market_facts = {
+        str(item["dataset_id"]): item
+        for item in calculate_market_statistics(
+            market_rows,
+            (
+                "binance.btcusdt.spot",
+                "yfinance.btc_yahoo.intraday",
+                "yfinance.vix_index.intraday",
+            ),
+        )
+    }
     wti = _indicator_rows(series_rows, ("fred.dcoilwtico",))
     vix_daily = _indicator_rows(series_rows, ("fred.vixcls",))
-    vix_row = _reconciled_asset_sources(
-        decision_primary=vix_daily[0] if vix_daily else None,
-        intraday_proxy=vix_intraday[0] if vix_intraday else None,
-    )
-    benchmarks = [
-        _benchmark("S&P 500", "equity", "nasdaq.spy.daily", proxy_by_dataset.get("nasdaq.spy.daily")),
-        _benchmark("Nasdaq 100", "equity", "nasdaq.qqq.daily", proxy_by_dataset.get("nasdaq.qqq.daily")),
-        _benchmark("Russell 2000", "equity", "nasdaq.iwm.daily", proxy_by_dataset.get("nasdaq.iwm.daily")),
-        _benchmark("Treasury duration", "rates", "nasdaq.tlt.daily", proxy_by_dataset.get("nasdaq.tlt.daily")),
-        _benchmark("IG credit", "credit", "nasdaq.lqd.daily", proxy_by_dataset.get("nasdaq.lqd.daily")),
-        _benchmark("HY credit", "credit", "nasdaq.hyg.daily", proxy_by_dataset.get("nasdaq.hyg.daily")),
-        _benchmark("U.S. dollar", "fx", "nasdaq.dxy.daily", proxy_by_dataset.get("nasdaq.dxy.daily")),
-        _benchmark("Gold", "commodity", "nasdaq.gld.daily", proxy_by_dataset.get("nasdaq.gld.daily")),
-        _benchmark("WTI Cushing spot", "commodity", "fred.dcoilwtico", wti[0] if wti else None, official=True),
-        _benchmark(
-            "Bitcoin",
-            "crypto",
-            "binance.btcusdt.spot",
-            bitcoin_rows[0] if bitcoin_rows else None,
-            official=True,
+    source_identity = [
+        *[
+            _cross_asset_identity_row(
+                display_order=index,
+                evidence_kind="etf",
+                label=row["label"],
+                selection_policy=row["selection_policy"],
+                sources=[row["latest_source"], row["return_source"]],
+                symbol=row["symbol"],
+            )
+            for index, row in enumerate(return_matrix, start=1)
+        ],
+        _cross_asset_identity_row(
+            display_order=11,
+            evidence_kind="official_benchmark",
+            label="WTI Cushing 现货",
+            selection_policy="decision_primary_only_no_fallback",
+            sources=[
+                _cross_asset_source_selection(
+                    "fred.dcoilwtico",
+                    wti[0] if wti else None,
+                )
+            ],
+            symbol="WTI",
         ),
-        _benchmark("Intermediate Treasury", "rates", "nasdaq.ief.daily", proxy_by_dataset.get("nasdaq.ief.daily")),
-        _benchmark(
-            "VIX",
-            "volatility",
-            "fred.vixcls",
-            vix_row,
-            official=True,
+        _cross_asset_identity_row(
+            display_order=12,
+            evidence_kind="crypto",
+            label="Bitcoin / USD",
+            selection_policy="decision_primary_only_no_fallback",
+            sources=[
+                _cross_asset_source_selection(
+                    "binance.btcusdt.spot",
+                    market_facts.get("binance.btcusdt.spot"),
+                ),
+                _cross_asset_source_selection(
+                    "yfinance.btc_yahoo.intraday",
+                    market_facts.get("yfinance.btc_yahoo.intraday"),
+                ),
+            ],
+            symbol="BTC",
+        ),
+        _cross_asset_identity_row(
+            display_order=13,
+            evidence_kind="volatility",
+            label="Cboe Volatility Index",
+            selection_policy="decision_primary_only_no_fallback",
+            sources=[
+                _cross_asset_source_selection(
+                    "fred.vixcls",
+                    vix_daily[0] if vix_daily else None,
+                ),
+                _cross_asset_source_selection(
+                    "yfinance.vix_index.intraday",
+                    market_facts.get("yfinance.vix_index.intraday"),
+                ),
+            ],
+            symbol="VIX",
         ),
     ]
     return {
         "assets": {
-            "benchmarks": benchmarks,
-            "proxies": proxy_rows,
-            "normalized": comparison["normalized"],
+            "return_matrix": return_matrix,
+            "normalized_groups": _normalized_groups(
+                comparison["normalized"],
+                _CROSS_ASSET_NORMALIZED_GROUPS,
+            ),
+            "source_identity": source_identity,
         },
         "correlations": comparison["correlations"],
         "futures": {
-            "market": _combined_asset_rows(market_rows, _FUTURES_DATASETS),
+            "return_matrix": futures_return_matrix,
             "vix_settlements": _settlement_rows(groups["settlement_rows"], "cboe.cfe.vx.settlement"),
             "positions": _position_rows(groups["position_rows"], "cftc.tff.cross_asset_positions"),
         },
     }
+
+
+def _cross_asset_return_matrix(
+    market_rows: list[dict[str, Any]],
+    dataset_pairs: tuple[tuple[str, str], ...],
+    *,
+    group_by_history_dataset: Mapping[str, tuple[str, str]],
+) -> list[dict[str, Any]]:
+    dataset_ids = tuple(dataset_id for pair in dataset_pairs for dataset_id in pair)
+    facts = {str(item["dataset_id"]): item for item in calculate_market_statistics(market_rows, dataset_ids)}
+    rows = []
+    for display_order, (history_dataset_id, price_dataset_id) in enumerate(
+        dataset_pairs,
+        start=1,
+    ):
+        history_spec = DATASET_REGISTRY[history_dataset_id]
+        price_spec = DATASET_REGISTRY[price_dataset_id]
+        group_id, group_label = group_by_history_dataset[history_dataset_id]
+        rows.append(
+            {
+                "display_order": display_order,
+                "group_id": group_id,
+                "group_label": group_label,
+                "symbol": str(price_spec.symbol or history_spec.symbol or history_dataset_id),
+                "label": price_spec.label,
+                "identity_policy": "separate_source_facts_no_blend",
+                "selection_policy": "intraday_latest_and_daily_returns_exact",
+                "latest_source": _cross_asset_source_selection(
+                    price_dataset_id,
+                    facts.get(price_dataset_id),
+                ),
+                "return_source": _cross_asset_source_selection(
+                    history_dataset_id,
+                    facts.get(history_dataset_id),
+                ),
+            }
+        )
+    return rows
+
+
+def _cross_asset_source_selection(
+    dataset_id: str,
+    fact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    spec = DATASET_REGISTRY[dataset_id]
+    return {
+        "dataset_id": dataset_id,
+        "label": spec.label,
+        "source_role": spec.source_role,
+        "fact": fact,
+    }
+
+
+def _cross_asset_identity_row(
+    *,
+    display_order: int,
+    evidence_kind: str,
+    label: str,
+    selection_policy: str,
+    sources: list[dict[str, Any]],
+    symbol: str,
+) -> dict[str, Any]:
+    return {
+        "display_order": display_order,
+        "symbol": symbol,
+        "label": label,
+        "evidence_kind": evidence_kind,
+        "identity_policy": "separate_source_facts_no_blend",
+        "selection_policy": selection_policy,
+        "sources": sources,
+    }
+
+
+def _normalized_groups(
+    rows: list[dict[str, Any]],
+    groups: tuple[tuple[str, str, tuple[str, ...]], ...],
+    *,
+    symbols_by_dataset: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    points_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        points_by_symbol[str(row["symbol"])].append(
+            {
+                "date": str(row["date"]),
+                "normalized_value": float(row["normalized_value"]),
+            }
+        )
+    return [
+        {
+            "display_order": group_order,
+            "group_id": group_id,
+            "label": group_label,
+            "series": [
+                {
+                    "display_order": series_order,
+                    "symbol": (
+                        symbols_by_dataset[dataset_id]
+                        if symbols_by_dataset is not None
+                        else str(DATASET_REGISTRY[dataset_id].symbol or dataset_id)
+                    ),
+                    "label": DATASET_REGISTRY[dataset_id].label,
+                    "source": _cross_asset_source_selection(dataset_id, None),
+                    "points": points_by_symbol.get(
+                        (
+                            symbols_by_dataset[dataset_id]
+                            if symbols_by_dataset is not None
+                            else str(DATASET_REGISTRY[dataset_id].symbol or dataset_id)
+                        ),
+                        [],
+                    ),
+                }
+                for series_order, dataset_id in enumerate(dataset_ids, start=1)
+            ],
+        }
+        for group_order, (group_id, group_label, dataset_ids) in enumerate(groups, start=1)
+    ]
 
 
 def _fed_payload(
@@ -895,6 +1334,7 @@ def _fed_payload(
                     "change_from_prior": (
                         analysis_payload.get("change_from_prior") if isinstance(analysis_payload, dict) else None
                     ),
+                    "rationale": (analysis_payload.get("rationale") if isinstance(analysis_payload, dict) else None),
                     "evidence": (analysis_payload.get("evidence", []) if isinstance(analysis_payload, dict) else []),
                     "analysis_id": (document_analysis.get("analysis_id") if document_analysis is not None else None),
                     "model_name": (document_analysis.get("model_name") if document_analysis is not None else None),
@@ -959,10 +1399,9 @@ def _fed_payload(
             "state": "current" if institutional is not None else "no_call",
             "direction": institutional["analysis"]["stance"] if institutional else "no_call",
             "change_from_prior": (institutional["analysis"]["change_from_prior"] if institutional else "no_call"),
+            "analysis_id": institutional["analysis"]["analysis_id"] if institutional else None,
             "reason": (
-                f"analysis:{institutional['analysis']['analysis_id']}"
-                if institutional
-                else "immutable_document_analysis_not_published"
+                institutional["analysis"]["rationale"] if institutional else "尚未发布通过独立审阅的 FOMC 声明分析。"
             ),
         },
         "officials_distribution": {
@@ -1041,130 +1480,6 @@ def _series_by_dataset(series_rows: list[dict[str, Any]]) -> dict[str, list[dict
     for rows in by_dataset.values():
         rows.sort(key=lambda row: (row["reference_date"], row["vintage_date"], int(row["received_at_ms"])))
     return dict(by_dataset)
-
-
-def _asset_rows(
-    market_rows: list[dict[str, Any]],
-    dataset_ids: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    calculated = calculate_market_statistics(market_rows, dataset_ids)
-    output: list[dict[str, Any]] = []
-    for item in calculated:
-        dataset_id = str(item["dataset_id"])
-        spec = DATASET_REGISTRY[dataset_id]
-        output.append(
-            {
-                **item,
-                "dataset_id": dataset_id,
-                "symbol": spec.symbol,
-                "label": spec.label,
-                "instrument_type": spec.instrument_type,
-                "asset_class": spec.asset_class,
-                "unit": spec.unit,
-                "trust_tier": spec.trust_tier,
-                "market_time_ms": int(item["market_time_ms"]),
-            }
-        )
-    return output
-
-
-def _combined_asset_rows(
-    market_rows: list[dict[str, Any]],
-    dataset_pairs: tuple[tuple[str, str], ...],
-) -> list[dict[str, Any]]:
-    dataset_ids = tuple(dataset_id for pair in dataset_pairs for dataset_id in pair)
-    calculated = {str(item["dataset_id"]): item for item in calculate_market_statistics(market_rows, dataset_ids)}
-    output: list[dict[str, Any]] = []
-    for history_dataset_id, price_dataset_id in dataset_pairs:
-        history = calculated.get(history_dataset_id)
-        price = calculated.get(price_dataset_id)
-        current = price or history
-        if current is None:
-            continue
-        history_spec = DATASET_REGISTRY[history_dataset_id]
-        price_spec = DATASET_REGISTRY[price_dataset_id]
-        sources = _reconciled_asset_sources(
-            decision_primary=(
-                history
-                if history_spec.source_role == "decision_primary"
-                else price
-                if price_spec.source_role == "decision_primary"
-                else None
-            ),
-            intraday_proxy=(
-                price
-                if price_spec.source_role == "intraday_proxy"
-                else history
-                if history_spec.source_role == "intraday_proxy"
-                else None
-            ),
-            # The canonical daily Dataset is also the row's explicit history
-            # source. Repeating that exact record under the history lens does
-            # not transfer identity to the independent intraday proxy.
-            history=history,
-        )
-        output.append(
-            {
-                "concept_id": history_spec.concept_id,
-                "price_dataset_id": price_dataset_id,
-                "history_dataset_id": history_dataset_id,
-                "symbol": price_spec.symbol or history_spec.symbol,
-                "label": price_spec.label,
-                "instrument_type": price_spec.instrument_type,
-                "asset_class": price_spec.asset_class,
-                "selection_policy": (
-                    "decision_primary_only_no_fallback"
-                    if sources["decision_primary"] is not None
-                    else "intraday_proxy_for_current_history_separate"
-                ),
-                "sources": sources,
-            }
-        )
-    return output
-
-
-def _reconciled_asset_sources(
-    *,
-    decision_primary: dict[str, Any] | None = None,
-    intraday_proxy: dict[str, Any] | None = None,
-    history: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "identity_policy": "separate_source_facts_no_blend",
-        "decision_primary": decision_primary,
-        "intraday_proxy": intraday_proxy,
-        "history": history,
-    }
-
-
-def _benchmark(
-    label: str,
-    asset_class: str,
-    dataset_id: str,
-    row: dict[str, Any] | None,
-    *,
-    official: bool = False,
-) -> dict[str, Any]:
-    registry_symbol = DATASET_REGISTRY[dataset_id].symbol
-    sources = (
-        row["sources"]
-        if row is not None and isinstance(row.get("sources"), dict)
-        else row
-        if row is not None and row.get("identity_policy") == "separate_source_facts_no_blend"
-        else _reconciled_asset_sources(
-            decision_primary=row if official else None,
-            history=row if not official else None,
-        )
-    )
-    return {
-        "label": label,
-        "symbol": (str(row["symbol"]) if row is not None and row.get("symbol") else str(registry_symbol or label)),
-        "asset_class": asset_class,
-        "dataset_id": dataset_id,
-        "evidence_kind": "official_benchmark" if official else "tradable_proxy_reference",
-        "selection_policy": "decision_primary_only_no_fallback" if official else "proxy_current_history_separate",
-        "sources": sources,
-    }
 
 
 def _position_rows(rows: list[dict[str, Any]], dataset_id: str) -> list[dict[str, Any]]:
@@ -1249,31 +1564,49 @@ def _current_settlement_revisions(rows: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _release_summaries(rows: list[dict[str, Any]], dataset_ids: tuple[str, ...]) -> list[dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
+    latest_by_period: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         dataset_id = str(row["dataset_id"])
         if dataset_id not in dataset_ids:
             continue
-        if dataset_id not in latest or _release_order(row) > _release_order(latest[dataset_id]):
-            latest[dataset_id] = row
-    return [
-        {
-            "dataset_id": dataset_id,
-            "label": DATASET_REGISTRY[dataset_id].label,
-            "reference_period": row["reference_period"],
-            "scheduled_at_ms": (int(row["scheduled_at_ms"]) if row.get("scheduled_at_ms") is not None else None),
-            "actual_value": row["actual_value"],
-            "estimate_value": row["estimate_value"],
-            "prior_value": row["prior_value"],
-            "revised_prior_value": row["revised_prior_value"],
-            **_release_delta(row),
-            "unit": row["unit"],
-            "published_at_ms": int(row["published_at_ms"]) if row.get("published_at_ms") is not None else None,
-            "received_at_ms": int(row["received_at_ms"]),
-            "source_url": row["source_url"],
-        }
-        for dataset_id, row in sorted(latest.items())
-    ]
+        reference_period = str(row["reference_period"])
+        current = latest_by_period[dataset_id].get(reference_period)
+        if current is None or _release_order(row) > _release_order(current):
+            latest_by_period[dataset_id][reference_period] = row
+    output = []
+    for dataset_id in sorted(latest_by_period):
+        observations = sorted(
+            latest_by_period[dataset_id].values(),
+            key=_release_order,
+            reverse=True,
+        )[:12]
+        if not observations:
+            continue
+        output.append(
+            {
+                "dataset_id": dataset_id,
+                "label": DATASET_REGISTRY[dataset_id].label,
+                **_release_observation(observations[0]),
+                "observations": [_release_observation(row) for row in observations],
+            }
+        )
+    return output
+
+
+def _release_observation(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "reference_period": row["reference_period"],
+        "scheduled_at_ms": (int(row["scheduled_at_ms"]) if row.get("scheduled_at_ms") is not None else None),
+        "actual_value": row["actual_value"],
+        "estimate_value": row["estimate_value"],
+        "prior_value": row["prior_value"],
+        "revised_prior_value": row["revised_prior_value"],
+        **_release_delta(row),
+        "unit": row["unit"],
+        "published_at_ms": (int(row["published_at_ms"]) if row.get("published_at_ms") is not None else None),
+        "received_at_ms": int(row["received_at_ms"]),
+        "source_url": row["source_url"],
+    }
 
 
 def _paired_difference_history(
@@ -1377,9 +1710,10 @@ def _top_changes(
                 },
                 "importance_explanation": (
                     (
-                        f"{strongest_name}={strongest_value:g} {metric_unit}; "
-                        f"标准化幅度={standardized_magnitude:g}; "
-                        f"决策相关性={decision_relevance}; 来源={spec.trust_tier}"
+                        f"{_change_metric_label(strongest_name)}"
+                        f"{_reader_value(strongest_value, metric_unit, signed=True)}；"
+                        "按自然频率变化幅度、决策关联和来源质量排序；"
+                        f"{_trust_tier_label(spec.trust_tier)}。"
                     )
                     if strongest_name is not None and strongest_value is not None
                     else "可比变化窗口不足"
@@ -1624,6 +1958,7 @@ def _latest_fact_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "reference": _fact_reference(row),
             "value": row.get("title") if row.get("document_id") else _fact_value(row),
             "unit": row.get("unit") or ("document" if row.get("document_id") else "unknown"),
+            "observed_at_ms": (int(row["observed_at_ms"]) if row.get("observed_at_ms") is not None else None),
             "published_at_ms": row.get("published_at_ms"),
             "received_at_ms": int(row["received_at_ms"]),
             "source_url": row["source_url"],
@@ -1737,37 +2072,117 @@ def _reconciliation_tolerance(unit: str) -> float:
 
 
 def _next_checkpoints(states: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "dataset_id": state["dataset_id"],
-            "label": state["label"],
-            "current_health": state["current_health"],
-            "history_depth": state["history_depth"],
-            "next_check": "按 Dataset Registry 数据时钟自动检查",
-        }
-        for state in states
-        if state["critical"]
-        or state["current_health"] != "current"
-        or state["history_depth"] in {"partial", "insufficient"}
-    ][:12]
+    checkpoints = []
+    for state in states:
+        if state["current_health"] != "current":
+            reason = state["current_reason"]
+        elif state["history_depth"] in {"partial", "insufficient"}:
+            reason = state["history_reason"]
+        elif state["critical"]:
+            reason = state["current_reason"]
+            if not isinstance(reason, Mapping) or reason.get("next_check_at_ms") is None:
+                continue
+        else:
+            continue
+        if not isinstance(reason, Mapping):
+            continue
+        checkpoints.append(
+            {
+                "dataset_id": state["dataset_id"],
+                "label": state["label"],
+                "current_health": state["current_health"],
+                "history_depth": state["history_depth"],
+                "reason": reason,
+                "next_check_at_ms": reason.get("next_check_at_ms"),
+            }
+        )
+    return checkpoints[:12]
 
 
-def _contradictions(module_id: MacroModuleId, changes: list[dict[str, Any]]) -> list[str]:
-    signs = {float(item["primary_change"]) > 0 for item in changes[:6] if item["primary_change"] is not None}
-    if len(signs) > 1:
-        return [f"{MACRO_MODULE_LABELS[module_id]}的主要分项短窗口方向不一致，不能压成单一叙事。"]
-    return []
+def _summary_headline(changes: list[dict[str, Any]]) -> str | None:
+    if not changes:
+        return None
+    change = changes[0]
+    primary_change = change.get("primary_change")
+    if isinstance(primary_change, int | float):
+        value = _reader_value(float(primary_change), str(change["metric_unit"]), signed=True)
+    else:
+        value = _reader_value(float(change["value"]), str(change["unit"]), signed=False)
+    as_of = f"，截至 {change['as_of']}" if change.get("as_of") else ""
+    return f"{change['label']}：{value}{as_of}"
 
 
-def _falsifiers(module_id: MacroModuleId) -> list[str]:
+def _reader_value(value: float, unit: str, *, signed: bool) -> str:
+    rendered = f"{value:+.4g}" if signed else f"{value:.6g}"
+    return f"{rendered}{_reader_unit(unit)}"
+
+
+def _reader_unit(unit: str) -> str:
     return {
-        "rates_fed": ["2Y、10Y 与政策走廊的相对变化反转当前曲线分类。"],
-        "economy_inflation": ["连续两次核心通胀或就业发布改变当前方向。"],
-        "liquidity_funding": ["SOFR越过政策走廊或准备金连续显著下降。"],
-        "credit": ["评级梯级尾部、贷款供给或逾期核销同时恶化。"],
-        "volatility": ["VIX期限结构由升水切换为持续倒挂。"],
-        "cross_asset": ["固定资产矩阵的1周与1月方向同时反转。"],
-    }[module_id]
+        "basis_points": "bp",
+        "billions_chained_2017_usd": "十亿 2017 年不变价美元",
+        "billions_usd": "十亿美元",
+        "bp": "bp",
+        "index": "点",
+        "index_points": "点",
+        "millions_usd": "百万美元",
+        "percent": "%",
+        "percent_open_interest": "% OI",
+        "persons": "人",
+        "price": "",
+        "thousands_persons": "千人",
+        "usd_per_barrel": "美元/桶",
+        "usdt": " USDT",
+    }.get(unit, "（单位未解释）")
+
+
+def _change_metric_label(metric: str) -> str:
+    return {
+        "change_1d_bp": "1日变化",
+        "change_1m_bp": "1月变化",
+        "change_1w_bp": "1周变化",
+        "change_3m_bp": "3个月变化",
+        "change_4w_bp": "4周变化",
+        "change_4w_pct": "4周变化",
+        "change_wow_bp": "周环比",
+        "change_wow_pct": "周环比",
+        "mom_bp": "月环比",
+        "mom_pct": "月环比",
+        "qoq_annualized_pct": "季环比年化",
+        "qoq_bp": "季环比",
+        "return_1d_pct": "1日回报",
+        "return_1m_pct": "1月回报",
+        "return_1w_pct": "1周回报",
+        "revision": "前值修订",
+        "surprise": "相对预期",
+        "three_month_annualized_pct": "3个月年化",
+        "yoy_bp": "同比",
+        "yoy_pct": "同比",
+    }.get(metric, "登记指标变化")
+
+
+def _trust_tier_label(trust_tier: str) -> str:
+    return {
+        "exchange": "交易所来源",
+        "official": "官方来源",
+        "untrusted_proxy": "代理来源，需谨慎核对",
+    }.get(trust_tier, "来源等级未标注")
+
+
+def _contradictions(_module_id: MacroModuleId, changes: list[dict[str, Any]]) -> list[str]:
+    rising = [
+        str(item["label"])
+        for item in changes
+        if isinstance(item.get("primary_change"), int | float) and float(item["primary_change"]) > 0
+    ]
+    falling = [
+        str(item["label"])
+        for item in changes
+        if isinstance(item.get("primary_change"), int | float) and float(item["primary_change"]) < 0
+    ]
+    if rising and falling:
+        return [f"{'、'.join(rising[:2])}上行；{'、'.join(falling[:2])}下行，短窗口方向分化。"]
+    return []
 
 
 def _optional_difference(left: float | None, right: float | None, *, multiplier: float = 1) -> float | None:
@@ -1779,6 +2194,11 @@ def _fact_value(row: dict[str, Any]) -> float | None:
         if row.get(key) is not None:
             return float(row[key])
     return None
+
+
+def _minimum_timestamp(*values: object) -> int | None:
+    timestamps = [int(value) for value in values if isinstance(value, int)]
+    return min(timestamps) if timestamps else None
 
 
 def _fact_reference(row: dict[str, Any] | None) -> str | None:
@@ -1822,10 +2242,6 @@ def _fact_clock_ms(row: dict[str, Any]) -> int:
         return int(row["observed_at_ms"])
     if row.get("published_at_ms") is not None:
         return int(row["published_at_ms"])
-    reference_date = _fact_date(row)
-    if reference_date is not None:
-        value = datetime(reference_date.year, reference_date.month, reference_date.day, 21, tzinfo=UTC)
-        return int(value.timestamp() * 1_000)
     return int(row["received_at_ms"])
 
 
