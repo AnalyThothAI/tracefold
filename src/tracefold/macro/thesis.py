@@ -615,8 +615,7 @@ def compile_evidence_pack_v3(
 ) -> MacroEvidencePackV3:
     normalized_modules = tuple(dict(module) for module in modules)
     current_changes = {
-        str(module.get("module_id")): list(dict(module.get("summary") or {}).get("top_changes") or ())
-        for module in normalized_modules
+        str(module.get("module_id")): list(_module_decision_changes(module)) for module in normalized_modules
     }
     prior_summary = dict(prior_publication) if prior_publication is not None else None
     evidence_refs: list[str] = []
@@ -1378,18 +1377,17 @@ def _compile_delta_pack(
             if not isinstance(module, Mapping):
                 continue
             module_id = str(module.get("module_id") or "")
-            summary = module.get("summary")
-            prior_changes[module_id] = tuple(
-                change
-                for change in (summary.get("top_changes", ()) if isinstance(summary, Mapping) else ())
-                if isinstance(change, Mapping)
-            )
+            prior_changes[module_id] = _module_decision_changes(module)
 
     def keyed(
         source: Mapping[str, Sequence[Mapping[str, Any]]],
-    ) -> dict[tuple[str, str], dict[str, Any]]:
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
         return {
-            (module_id, str(change.get("dataset_id") or "")): dict(change)
+            (
+                module_id,
+                str(change.get("dataset_id") or ""),
+                str(change.get("series_id") or ""),
+            ): dict(change)
             for module_id, changes in source.items()
             for change in changes
             if change.get("dataset_id")
@@ -1398,12 +1396,12 @@ def _compile_delta_pack(
     current = keyed(current_changes)
     previous = keyed(prior_changes)
     changes = []
-    for module_id, dataset_id in sorted(
+    for module_id, dataset_id, series_id in sorted(
         set(current) | set(previous),
-        key=lambda key: (MACRO_MODULE_IDS.index(key[0]), key[1]),
+        key=lambda key: (MACRO_MODULE_IDS.index(key[0]), key[1], key[2]),
     ):
-        current_value = current.get((module_id, dataset_id))
-        prior_value = previous.get((module_id, dataset_id))
+        current_value = current.get((module_id, dataset_id, series_id))
+        prior_value = previous.get((module_id, dataset_id, series_id))
         if current_value is None:
             status = "removed"
         elif prior_value is None:
@@ -1414,9 +1412,10 @@ def _compile_delta_pack(
             status = "changed"
         changes.append(
             {
-                "delta_id": f"{module_id}:{dataset_id}",
+                "delta_id": f"{module_id}:{dataset_id}:{series_id or 'scalar'}",
                 "module_id": module_id,
                 "dataset_id": dataset_id,
+                "series_id": series_id or None,
                 "status": status,
                 "current": current_value,
                 "prior": prior_value,
@@ -1595,6 +1594,35 @@ def _module_asset_changes(module: Mapping[str, Any]) -> tuple[Mapping[str, Any],
 
 
 def _module_decision_changes(module: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    if module.get("module_id") == "rates_fed":
+        decision = module.get("decision")
+        matrix = decision.get("tenor_matrix", ()) if isinstance(decision, Mapping) else ()
+        changes: list[Mapping[str, Any]] = []
+        for row in matrix:
+            if not isinstance(row, Mapping):
+                continue
+            current = row.get("current")
+            if not isinstance(current, Mapping):
+                continue
+            windows = {str(item.get("window")): item for item in row.get("windows", ()) if isinstance(item, Mapping)}
+            tenor = str(row.get("tenor") or "")
+            changes.append(
+                {
+                    "dataset_id": str(current.get("dataset_id") or ""),
+                    "series_id": tenor,
+                    "label": f"{tenor} 美国财政部名义国债收益率",
+                    "as_of": current.get("reference_date"),
+                    "value": current.get("yield_pct"),
+                    "unit": "percent",
+                    "metrics": {
+                        "change_1d_bp": windows.get("1d", {}).get("change_bp"),
+                        "change_1w_bp": windows.get("1w", {}).get("change_bp"),
+                        "change_mtd_bp": windows.get("mtd", {}).get("change_bp"),
+                        "change_3m_bp": windows.get("3m", {}).get("change_bp"),
+                    },
+                }
+            )
+        return tuple(changes)
     summary = module.get("summary")
     top_changes = (
         tuple(change for change in summary.get("top_changes", ()) if isinstance(change, Mapping))

@@ -23,7 +23,7 @@ from tracefold.macro.reasons import macro_reason
 from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
 
 _SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
-    "rates_fed": "macro_rates_fed_v5",
+    "rates_fed": "macro_rates_fed_v6",
     "economy_inflation": "macro_economy_inflation_v5",
     "liquidity_funding": "macro_liquidity_funding_v5",
     "credit": "macro_credit_v7",
@@ -127,7 +127,6 @@ def build_typed_module_payload(
         target_states,
         worker_enabled=backfill_worker_enabled,
     )
-    changes = _top_changes(specs, series_rows, market_rows, settlement_rows, release_rows)
     payload: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSIONS[module_id],
         "module_id": module_id,
@@ -139,21 +138,30 @@ def build_typed_module_payload(
             "backfill_execution": backfill_execution,
         },
         "latest_fact_at_ms": latest_fact_at_ms,
-        "summary": {
-            "headline": _summary_headline(changes),
-            "interpretation": None,
-            "top_changes": changes[:6],
-        },
-        "contradictions": _contradictions(module_id, changes),
-        "falsifiers": [],
         "next_checkpoints": _next_checkpoints(dataset_states),
         "evidence": {
             "dataset_states": dataset_states,
             "latest_facts": _latest_fact_summaries(module_facts),
-            "asset_changes": [change for change in changes if str(change["dataset_id"]) in MACRO_ASSET_DATASET_IDS],
+            "asset_changes": [],
             "reconciliation_receipts": _reconciliation_receipts(specs, module_facts),
         },
     }
+    if module_id != "rates_fed":
+        changes = _top_changes(specs, series_rows, market_rows, settlement_rows, release_rows)
+        payload.update(
+            {
+                "summary": {
+                    "headline": _summary_headline(changes),
+                    "interpretation": None,
+                    "top_changes": changes[:6],
+                },
+                "contradictions": _contradictions(module_id, changes),
+                "falsifiers": [],
+            }
+        )
+        payload["evidence"]["asset_changes"] = [
+            change for change in changes if str(change["dataset_id"]) in MACRO_ASSET_DATASET_IDS
+        ]
     builders = {
         "rates_fed": _rates_payload,
         "economy_inflation": _economy_payload,
@@ -725,8 +733,10 @@ def _summary_axis(rows: list[dict[str, Any]], key: str, *, healthy: str) -> str:
 
 def _rates_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     series_rows = groups["series_rows"]
+    curve_contract = calculate_curve_contract(series_rows)
     return {
-        "curve": calculate_curve_contract(series_rows),
+        "decision": curve_contract["decision"],
+        "curve": curve_contract["curve"],
         "policy_pricing": {
             "rates": _indicator_rows(
                 series_rows,
@@ -2038,7 +2048,23 @@ def _latest_fact_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "received_at_ms": int(row["received_at_ms"]),
             "source_url": row["source_url"],
         }
-        for row in sorted(latest.values(), key=lambda item: (str(item["dataset_id"]), _fact_reference(item) or ""))
+        for row in sorted(
+            latest.values(),
+            key=lambda item: (
+                str(item["dataset_id"]),
+                str(item.get("series_id") or ""),
+                str(item.get("contract_code") or ""),
+                _fact_reference(item) or "",
+                str(
+                    item.get("fact_id")
+                    or item.get("observation_id")
+                    or item.get("position_fact_id")
+                    or item.get("settlement_id")
+                    or item.get("release_fact_id")
+                    or ""
+                ),
+            ),
+        )
     ]
 
 
@@ -2058,6 +2084,8 @@ def _reconciliation_receipts(
     receipts = []
     for concept_id, concept_specs in sorted(specs_by_concept.items()):
         if len(concept_specs) < 2:
+            continue
+        if any(spec.metadata.get("tenors") for spec in concept_specs):
             continue
         observations = []
         for spec in sorted(concept_specs, key=lambda item: (item.source_role, item.dataset_id)):

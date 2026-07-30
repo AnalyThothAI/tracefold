@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
@@ -18,8 +19,9 @@ from tests.test_macro_thesis import (
 from tracefold.app.http import routes_macro
 from tracefold.app.http.app import create_app
 from tracefold.macro.assets import MACRO_THESIS_ASSETS
-from tracefold.macro.domain import MACRO_MODULE_IDS
+from tracefold.macro.domain import MACRO_MODULE_IDS, SeriesFact
 from tracefold.macro.module_payloads import build_typed_module_payload
+from tracefold.macro.projection import MacroProjectionService
 from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
 from tracefold.macro.thesis import (
     MacroAssetOutlook,
@@ -42,6 +44,87 @@ from tracefold.macro.thesis_v2 import (
 from tracefold.platform.config.settings import Settings
 
 AUTH = {"Authorization": "Bearer secret"}
+
+
+def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _current_time(monkeypatch)
+    now_ms = int(datetime(2026, 7, 30, 12, tzinfo=UTC).timestamp() * 1_000)
+    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    with TestClient(app) as client:
+        with client.app.state.service.repositories() as repos, repos.transaction():
+            for dataset_id, observations in (
+                (
+                    "treasury.daily_nominal_curve",
+                    (
+                        (date(2026, 7, 28), {"2Y": 4.26, "7Y": 4.47, "10Y": 4.61, "30Y": 5.09}),
+                        (date(2026, 7, 29), {"2Y": 4.22, "7Y": 4.51, "10Y": 4.67, "30Y": 5.20}),
+                    ),
+                ),
+                (
+                    "treasury.daily_real_curve",
+                    (
+                        (date(2026, 7, 28), {"10Y": 2.41, "30Y": 2.92}),
+                        (date(2026, 7, 29), {"10Y": 2.41, "30Y": 2.98}),
+                    ),
+                ),
+            ):
+                spec = DATASET_REGISTRY[dataset_id]
+                for reference_date, values in observations:
+                    for tenor, value in values.items():
+                        repos.macro.insert_series_fact(
+                            SeriesFact(
+                                dataset_id=dataset_id,
+                                series_id=tenor,
+                                reference_date=reference_date,
+                                vintage_date=reference_date,
+                                value_numeric=value,
+                                value_text=None,
+                                unit=spec.unit,
+                                published_at_ms=now_ms - 60_000,
+                                received_at_ms=now_ms - 30_000,
+                                source_url=spec.source_url,
+                                raw_data={"fixture": "issue-31-rates-vertical-seam"},
+                            )
+                        )
+        projection = MacroProjectionService(
+            db=client.app.state.service.db,
+            settings=SimpleNamespace(statement_timeout_seconds=30),
+            backfill_worker_enabled=False,
+            clock_ms=lambda: now_ms,
+        )
+        result = projection.rebuild(now_ms=now_ms)
+        assert result["modules_computed"] == 6
+        with client.app.state.service.repositories() as repos:
+            persisted = repos.macro.module_current("rates_fed")
+        response = client.get("/api/macro/rates-fed", headers=AUTH)
+
+    assert persisted is not None
+    stored = persisted["payload_json"]
+    assert stored["schema_version"] == "macro_rates_fed_v6"
+    assert "summary" not in stored
+    assert "top_changes" not in stored
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["decision"]["headline"] == ("最近完整交易日：2Y 下行4bp，10Y 上行6bp，30Y 上行11bp（2026-07-29）")
+    matrix = {item["tenor"]: item for item in data["decision"]["tenor_matrix"]}
+    assert matrix["10Y"]["current"]["yield_pct"] == 4.67
+    assert next(item for item in matrix["10Y"]["windows"] if item["window"] == "1d")["change_bp"] == 6.0
+    assert {item["spread_id"]: item["change_1d_bp"] for item in data["decision"]["spread_summary"]} == {
+        "2s10s": 10.0,
+        "10s30s": 5.0,
+    }
+    assert {
+        item["tenor"]: (
+            item["nominal_change_bp"],
+            item["real_change_bp"],
+            item["breakeven_change_bp"],
+        )
+        for item in data["decision"]["decompositions"]
+    } == {"10Y": (6.0, 0.0, 6.0), "30Y": (11.0, 6.0, 5.0)}
+    assert data["decision"]["classifications"][0]["state"] == "twist_steepening"
 
 
 def test_module_reason_uses_only_required_current_sources_and_preserves_terminal_recovery() -> None:
@@ -307,7 +390,7 @@ def _legacy_publication():
     falsifier = MacroCondition(
         condition_id="legacy-falsifier",
         module_id="rates_fed",
-        dataset_id="fred.dgs2",
+        dataset_id="treasury.daily_nominal_curve",
         metric_name="change_1w_bp",
         operator="lte",
         threshold=-25,
@@ -317,7 +400,7 @@ def _legacy_publication():
     checkpoint = MacroCondition(
         condition_id="legacy-checkpoint",
         module_id="rates_fed",
-        dataset_id="fred.dgs2",
+        dataset_id="treasury.daily_nominal_curve",
         metric_name="change_1w_bp",
         operator="gte",
         threshold=20,

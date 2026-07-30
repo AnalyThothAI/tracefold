@@ -32,6 +32,19 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
+    .macro-decision__rates-decision > header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .macro-decision__rates-badges {
+      justify-content: start;
+    }
+
+    .macro-decision__rates-second-line {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .macro-decision__annotation-rail {
       position: static;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -220,6 +233,80 @@
 
     .macro-decision__notice {
       align-items: start;
+    }
+
+    .macro-decision__rates-matrix [role="row"]:first-child {
+      display: none;
+    }
+
+    .macro-decision__rates-matrix {
+      gap: 0.55rem;
+      overflow: visible;
+      border: 0;
+    }
+
+    .macro-decision__rates-matrix [role="row"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border: 1px solid var(--border-faint);
+      border-radius: var(--radius-md);
+      background: var(--surface-raised);
+    }
+
+    .macro-decision__rates-matrix [role="cell"] {
+      border-left: 0;
+      border-top: 1px solid var(--border-faint);
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:first-child {
+      grid-column: 1 / -1;
+      border-top: 0;
+      font-size: 0.82rem;
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:nth-child(2)::before,
+    .macro-decision__rates-matrix [role="cell"]:nth-child(3)::before,
+    .macro-decision__rates-matrix [role="cell"]:nth-child(4)::before,
+    .macro-decision__rates-matrix [role="cell"]:nth-child(5)::before {
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 0.58rem;
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:nth-child(2)::before {
+      content: "当前";
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:nth-child(3)::before {
+      content: "1D";
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:nth-child(4)::before {
+      content: "1W";
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:nth-child(5)::before {
+      content: "MTD";
+    }
+
+    .macro-decision__rates-matrix [role="cell"]:last-child {
+      grid-column: 1 / -1;
+    }
+
+    .macro-decision__rates-second-line > section {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__rates-second-line article {
+      border-top: 1px solid var(--border-faint);
+      border-left: 0;
+    }
+
+    .macro-decision__rates-audit > article {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__rates-audit > article small {
+      grid-column: auto;
     }
 
     .macro-decision__return-matrix [role="row"] {

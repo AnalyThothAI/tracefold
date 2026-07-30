@@ -28,7 +28,7 @@ export type MacroCurvePoint = {
 };
 
 export type MacroCurveSnapshotView = {
-  window: "current" | "1w" | "1m" | "3m";
+  window: "current" | "previous" | "1w" | "mtd" | "3m";
   asOf: string;
   points: MacroCurvePoint[];
 };
@@ -425,5 +425,11 @@ export function parseCorrelations(value: unknown): MacroCorrelationView[] {
 }
 
 function isCurveWindow(value: string | null): value is MacroCurveSnapshotView["window"] {
-  return value === "current" || value === "1w" || value === "1m" || value === "3m";
+  return (
+    value === "current" ||
+    value === "previous" ||
+    value === "1w" ||
+    value === "mtd" ||
+    value === "3m"
+  );
 }

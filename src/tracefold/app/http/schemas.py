@@ -187,6 +187,11 @@ class MacroModuleSummaryStateData(ExactApiSchema):
     top_changes: list[MacroChangeData]
 
 
+class MacroOverviewModuleSummaryStateData(ExactApiSchema):
+    headline: str | None
+    interpretation: str | None
+
+
 class MacroDatasetStateData(ExactApiSchema):
     dataset_id: str
     concept_id: str
@@ -357,22 +362,27 @@ class MacroCurveYieldPointData(ExactApiSchema):
     tenor: str
     years: float
     yield_pct: float
+    dataset_id: str
+    source_role: Literal["decision_primary"]
+    fact_id: str
+    source_url: str
 
 
 class MacroCurveBreakevenPointData(ExactApiSchema):
     tenor: str
     years: float
     breakeven_pct: float
+    input_fact_ids: list[str]
 
 
 class MacroCurveYieldSnapshotData(ExactApiSchema):
-    window: Literal["current", "1w", "1m", "3m"]
+    window: Literal["current", "previous", "1w", "mtd", "3m"]
     as_of: date
     points: list[MacroCurveYieldPointData]
 
 
 class MacroCurveBreakevenSnapshotData(ExactApiSchema):
-    window: Literal["current", "1w", "1m", "3m"]
+    window: Literal["current", "previous", "1w", "mtd", "3m"]
     as_of: date
     points: list[MacroCurveBreakevenPointData]
 
@@ -380,12 +390,90 @@ class MacroCurveBreakevenSnapshotData(ExactApiSchema):
 class MacroCurveSpreadPointData(ExactApiSchema):
     date: date
     value_bp: float
+    input_fact_ids: list[str]
 
 
 class MacroCurveSpreadsData(ExactApiSchema):
     two_s_ten_s: list[MacroCurveSpreadPointData] = Field(alias="2s10s")
+    ten_s_thirty_s: list[MacroCurveSpreadPointData] = Field(alias="10s30s")
     three_m_ten_s: list[MacroCurveSpreadPointData] = Field(alias="3m10s")
     five_s_thirty_s: list[MacroCurveSpreadPointData] = Field(alias="5s30s")
+
+
+class MacroRatesWindowChangeData(ExactApiSchema):
+    window: Literal["1d", "1w", "mtd", "3m", "past_30d"]
+    state: Literal["available", "baseline", "unavailable"]
+    current_date: date | None
+    baseline_date: date | None
+    change_bp: float | None
+    selection_policy: Literal[
+        "previous_treasury_observation",
+        "bounded_previous_observation_4_calendar_days",
+        "first_available_treasury_observation_in_calendar_month",
+    ]
+    input_fact_ids: list[str]
+
+
+class MacroRatesTenorCurrentData(ExactApiSchema):
+    tenor: Literal["2Y", "10Y", "30Y"]
+    reference_date: date
+    yield_pct: float
+    dataset_id: Literal["treasury.daily_nominal_curve"]
+    source_role: Literal["decision_primary"]
+    fact_id: str
+    source_url: str
+
+
+class MacroRatesTenorDecisionData(ExactApiSchema):
+    tenor: Literal["2Y", "10Y", "30Y"]
+    current: MacroRatesTenorCurrentData | None
+    windows: list[MacroRatesWindowChangeData]
+
+
+class MacroRatesLatestObservationData(ExactApiSchema):
+    tenor: Literal["2Y", "10Y", "30Y"]
+    reference_date: date | None
+    fact_id: str | None
+
+
+class MacroRatesSessionCompletenessData(ExactApiSchema):
+    state: Literal["complete", "unaligned", "incomplete"]
+    reference_date: date | None
+    required_tenors: list[Literal["2Y", "10Y", "30Y"]]
+    latest_observations: list[MacroRatesLatestObservationData]
+    reason: str | None
+
+
+class MacroRatesSpreadSummaryData(ExactApiSchema):
+    spread_id: Literal["2s10s", "10s30s"]
+    label: str
+    state: Literal["available", "unaligned", "incomplete", "insufficient_history"]
+    current_date: date | None
+    prior_date: date | None
+    value_bp: float | None
+    change_1d_bp: float | None
+    input_fact_ids: list[str]
+
+
+class MacroRatesDecompositionData(ExactApiSchema):
+    tenor: Literal["10Y", "30Y"]
+    state: Literal["available", "unaligned", "insufficient_history"]
+    current_date: date | None
+    prior_date: date | None
+    nominal_change_bp: float | None
+    real_change_bp: float | None
+    breakeven_change_bp: float | None
+    assessment_state: (
+        Literal[
+            "inflation_compensation_dominant",
+            "real_yield_dominant",
+            "mixed_real_and_inflation_compensation",
+        ]
+        | None
+    )
+    assessment: str | None
+    input_fact_ids: list[str]
+    gap: str | None
 
 
 class MacroCurveClassificationInputsData(ExactApiSchema):
@@ -393,16 +481,21 @@ class MacroCurveClassificationInputsData(ExactApiSchema):
     prior_as_of: date | None = None
     two_year_change_bp: float | None = Field(default=None, alias="2y_change_bp")
     ten_year_change_bp: float | None = Field(default=None, alias="10y_change_bp")
+    thirty_year_change_bp: float | None = Field(default=None, alias="30y_change_bp")
     level_change_bp: float | None = None
     slope_change_bp: float | None = None
     curvature_change_bp: float | None = None
     current_2s10s_bp: float | None = None
+    current_10s30s_bp: float | None = None
 
 
 class MacroCurveClassificationData(ExactApiSchema):
+    window: Literal["1d", "1w", "mtd", "3m"]
     state: Literal[
+        "unaligned",
         "insufficient_history",
         "insufficient_tenors",
+        "twist_steepening",
         "parallel_up",
         "parallel_down",
         "bear_steepening",
@@ -412,8 +505,43 @@ class MacroCurveClassificationData(ExactApiSchema):
         "stable",
     ]
     label: str
-    formula_version: Literal["level_slope_curvature_classification_v2"]
+    formula_version: Literal["level_slope_curvature_classification_v3"]
     inputs: MacroCurveClassificationInputsData
+
+
+class MacroRatesExplanationStatementData(ExactApiSchema):
+    statement: str
+    input_fact_ids: list[str]
+
+
+class MacroRatesBoundedAssessmentData(MacroRatesExplanationStatementData):
+    assessment_id: str
+    uncertainty: str
+
+
+class MacroRatesExplanationData(ExactApiSchema):
+    facts: list[MacroRatesExplanationStatementData]
+    bounded_assessments: list[MacroRatesBoundedAssessmentData]
+    hypotheses: list[MacroRatesExplanationStatementData]
+
+
+class MacroRatesSourcePolicyData(ExactApiSchema):
+    decision_primary_dataset_ids: list[Literal["treasury.daily_nominal_curve", "treasury.daily_real_curve"]]
+    history_only_dataset_ids: list[Literal["fred.dgs2", "fred.dgs10", "fred.dgs30", "fred.dfii10", "fred.t10yie"]]
+    selection_policy: Literal["treasury_completed_session_primary_fred_history_only"]
+
+
+class MacroRatesDecisionData(ExactApiSchema):
+    state: Literal["available", "unaligned", "incomplete", "insufficient_history"]
+    reference_date: date | None
+    headline: str | None
+    session_completeness: MacroRatesSessionCompletenessData
+    tenor_matrix: list[MacroRatesTenorDecisionData]
+    spread_summary: list[MacroRatesSpreadSummaryData]
+    decompositions: list[MacroRatesDecompositionData]
+    classifications: list[MacroCurveClassificationData]
+    explanation: MacroRatesExplanationData
+    source_policy: MacroRatesSourcePolicyData
 
 
 class MacroCurveData(ExactApiSchema):
@@ -421,7 +549,6 @@ class MacroCurveData(ExactApiSchema):
     real_snapshots: list[MacroCurveYieldSnapshotData]
     breakeven_snapshots: list[MacroCurveBreakevenSnapshotData]
     spreads: MacroCurveSpreadsData
-    classification: MacroCurveClassificationData
 
 
 class MacroPolicyPricingData(ExactApiSchema):
@@ -709,9 +836,15 @@ class MacroCrossAssetFuturesData(ExactApiSchema):
     positions: list[MacroPositionData]
 
 
-class MacroRatesFedPersistedData(_MacroModulePersistedBaseData):
-    schema_version: Literal["macro_rates_fed_v5"]
+class MacroRatesFedPersistedData(ExactApiSchema):
+    schema_version: Literal["macro_rates_fed_v6"]
     module_id: Literal["rates_fed"]
+    label: str
+    status: MacroModuleStatusData
+    latest_fact_at_ms: int
+    next_checkpoints: list[MacroNextCheckpointData]
+    evidence: MacroModuleEvidenceData
+    decision: MacroRatesDecisionData
     curve: MacroCurveData
     policy_pricing: MacroPolicyPricingData
     fed: MacroFedData
@@ -816,7 +949,7 @@ class MacroModuleSummaryData(ExactApiSchema):
     history_depth_state: Literal["complete", "partial", "insufficient", "not_required"] | None
     backfill_execution: MacroBackfillExecutionData | None
     latest_fact_at_ms: int | None
-    summary: MacroModuleSummaryStateData | None
+    summary: MacroOverviewModuleSummaryStateData | None
     coverage_gap_count: int
     current_health_gap_count: int
     history_gap_count: int

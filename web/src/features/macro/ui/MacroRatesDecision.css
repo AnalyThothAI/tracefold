@@ -1,0 +1,243 @@
+@layer app.features {
+  .macro-decision__rates-decision {
+    display: grid;
+    gap: 0.8rem;
+    min-width: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    padding: 0.9rem;
+  }
+
+  .macro-decision__rates-decision > header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.9rem;
+    min-width: 0;
+  }
+
+  .macro-decision__rates-decision > header > div:first-child {
+    display: grid;
+    gap: 0.24rem;
+    min-width: 0;
+  }
+
+  .macro-decision__rates-decision > header span,
+  .macro-decision__rates-decision > header p,
+  .macro-decision__rates-decision small {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.64rem;
+  }
+
+  .macro-decision__rates-decision > header > div:first-child > span {
+    color: var(--accent-primary);
+    font-weight: 700;
+    letter-spacing: 0.09em;
+  }
+
+  .macro-decision__rates-decision h2 {
+    margin: 0;
+    font-size: clamp(1rem, 1.6vw, 1.35rem);
+    line-height: 1.35;
+  }
+
+  .macro-decision__rates-badges {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: end;
+    gap: 0.35rem;
+  }
+
+  .macro-decision__rates-badges > span {
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-raised);
+    padding: 0.32rem 0.5rem;
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .macro-decision__rates-badges > span[data-state="unaligned"],
+  .macro-decision__rates-badges > span[data-state="incomplete"],
+  .macro-decision__rates-badges > span[data-state="insufficient_history"] {
+    border-color: color-mix(in srgb, var(--signal-caution) 45%, var(--border-subtle));
+    color: var(--signal-caution);
+  }
+
+  .macro-decision__rates-matrix {
+    display: grid;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+  }
+
+  .macro-decision__rates-matrix [role="row"] {
+    display: grid;
+    grid-template-columns: minmax(4.5rem, 0.55fr) repeat(4, minmax(7rem, 1fr));
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .macro-decision__rates-matrix [role="row"]:first-child {
+    border-top: 0;
+    background: var(--surface-raised);
+  }
+
+  .macro-decision__rates-matrix [role="cell"],
+  .macro-decision__rates-matrix [role="columnheader"] {
+    display: grid;
+    align-content: center;
+    gap: 0.12rem;
+    min-width: 0;
+    padding: 0.6rem;
+    border-left: 1px solid var(--border-faint);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+  }
+
+  .macro-decision__rates-matrix [role="cell"]:first-child,
+  .macro-decision__rates-matrix [role="columnheader"]:first-child {
+    border-left: 0;
+  }
+
+  .macro-decision__rates-matrix [role="cell"][data-direction="up"] {
+    background: color-mix(in srgb, var(--signal-negative) 9%, transparent);
+    color: var(--signal-negative);
+  }
+
+  .macro-decision__rates-matrix [role="cell"][data-direction="down"] {
+    background: color-mix(in srgb, var(--signal-positive) 9%, transparent);
+    color: var(--signal-positive);
+  }
+
+  .macro-decision__rates-second-line {
+    display: grid;
+    grid-template-columns: minmax(15rem, 0.8fr) minmax(20rem, 1.2fr);
+    gap: 0.7rem;
+    min-width: 0;
+  }
+
+  .macro-decision__rates-second-line > section {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+  }
+
+  .macro-decision__rates-second-line > section > header {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 0.15rem;
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--surface-raised);
+    padding: 0.58rem;
+  }
+
+  .macro-decision__rates-second-line > section > header span {
+    color: var(--accent-primary);
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .macro-decision__rates-second-line article {
+    display: grid;
+    align-content: start;
+    gap: 0.18rem;
+    min-width: 0;
+    border-left: 1px solid var(--border-faint);
+    padding: 0.62rem;
+  }
+
+  .macro-decision__rates-second-line article:first-of-type {
+    border-left: 0;
+  }
+
+  .macro-decision__rates-second-line article > span {
+    color: var(--text-muted);
+    font-size: 0.64rem;
+  }
+
+  .macro-decision__rates-second-line article > strong {
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+  }
+
+  .macro-decision__rates-audit {
+    border-top: 1px solid var(--border-faint);
+    padding-top: 0.65rem;
+  }
+
+  .macro-decision__rates-audit > summary {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .macro-decision__rates-audit > p {
+    color: var(--text-muted);
+    font-size: 0.66rem;
+  }
+
+  .macro-decision__rates-audit > article {
+    display: grid;
+    grid-template-columns: 4rem minmax(0, 1fr) auto;
+    gap: 0.2rem 0.6rem;
+    border-top: 1px solid var(--border-faint);
+    padding: 0.55rem 0;
+  }
+
+  .macro-decision__rates-audit > article small {
+    grid-column: 2 / -1;
+    overflow-wrap: anywhere;
+  }
+
+  .macro-decision__rates-audit a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    color: var(--accent-primary);
+    font-size: 0.64rem;
+    text-decoration: none;
+  }
+
+  .macro-decision__curve-window-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.8rem;
+    min-width: 0;
+    margin: 0;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    padding: 0.55rem 0.7rem;
+  }
+
+  .macro-decision__curve-window-controls legend,
+  .macro-decision__curve-window-controls span,
+  .macro-decision__curve-window-controls label {
+    color: var(--text-muted);
+    font-size: 0.66rem;
+  }
+
+  .macro-decision__curve-window-controls legend {
+    padding: 0 0.25rem;
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .macro-decision__curve-window-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.24rem;
+    cursor: pointer;
+  }
+}
