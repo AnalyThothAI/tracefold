@@ -22,10 +22,7 @@ from tracefold.market.radar.token_radar_rank_source_query import (
     TokenRadarFeatureSourceRequest,
 )
 from tracefold.market.radar.token_radar_repository import stable_generation_id
-from tracefold.platform.postgres.projection_frontier import (
-    PROFILE_FRONTIER,
-    RADAR_FRONTIER,
-)
+from tracefold.platform.postgres.projection_frontier import RADAR_FRONTIER
 
 _CLAIM_LEASE_MS = 5_000
 _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
@@ -480,39 +477,173 @@ class RadarProjectionService:
                 for row in [*rows, *exited_rows]
                 if str(row.get("target_type_key") or "") in {"Asset", "CexToken"}
             }
-            for target_type, target_id in sorted(targets):
-                serving_rows = [
-                    dict(row)
-                    for row in repos.conn.execute(
-                        """
-                        SELECT "window", venue, lane, payload_hash
-                        FROM token_radar_current_rows
-                        WHERE projection_version = %s
-                          AND target_type_key = %s
-                          AND identity_id = %s
-                        ORDER BY "window", venue, lane
-                        LIMIT 101
-                        """,
-                        (
-                            TOKEN_RADAR_PROJECTION_VERSION,
-                            target_type,
-                            target_id,
-                        ),
-                    ).fetchall()
-                ]
-                if len(serving_rows) > 100:
-                    raise RadarShardOversized("radar_profile_serving_input_oversized")
-                repos.projection_frontiers.mark_dirty(
-                    PROFILE_FRONTIER,
-                    key={
-                        "target_type": target_type,
-                        "target_id": target_id,
-                    },
-                    dirty_at_ms=int(computed_at_ms),
-                    deadline_at_ms=int(computed_at_ms) + _PROFILE_DEADLINE_MS,
-                    input_fingerprint=_fingerprint(serving_rows),
-                    version="token-profile-current-serving-v1",
+            if not targets:
+                return
+            ordered = sorted(targets)
+            cursor = repos.conn.execute(
+                """
+                WITH targets(target_type, target_id) AS (
+                  SELECT *
+                  FROM unnest(%(target_types)s::text[], %(target_ids)s::text[])
+                ),
+                serving AS (
+                  SELECT
+                    target.target_type,
+                    target.target_id,
+                    count(current.row_id) AS serving_rows,
+                    'sha256:' || encode(
+                      sha256(
+                        convert_to(
+                          COALESCE(
+                            jsonb_agg(
+                              jsonb_build_object(
+                                'window', current."window",
+                                'venue', current.venue,
+                                'lane', current.lane,
+                                'payload_hash', current.payload_hash
+                              )
+                              ORDER BY current."window", current.venue, current.lane
+                            ) FILTER (WHERE current.row_id IS NOT NULL),
+                            '[]'::jsonb
+                          )::text,
+                          'UTF8'
+                        )
+                      ),
+                      'hex'
+                    ) AS input_fingerprint
+                  FROM targets target
+                  LEFT JOIN token_radar_current_rows current
+                    ON current.projection_version = %(projection_version)s
+                   AND current.target_type_key = target.target_type
+                   AND current.identity_id = target.target_id
+                  GROUP BY target.target_type, target.target_id
                 )
+                INSERT INTO token_profile_projection_frontiers(
+                  target_type, target_id, status, first_dirty_at_ms,
+                  deadline_at_ms, next_attempt_at_ms, attempt_count,
+                  input_fingerprint, projection_version, claimed_by,
+                  claimed_until_ms, last_error_code, updated_at_ms
+                )
+                SELECT
+                  target_type, target_id, 'dirty', %(dirty_at_ms)s,
+                  %(deadline_at_ms)s, NULL, 0, input_fingerprint,
+                  %(profile_projection_version)s, NULL, NULL, NULL,
+                  %(dirty_at_ms)s
+                FROM serving
+                WHERE serving_rows <= 100
+                ON CONFLICT(target_type, target_id) DO UPDATE SET
+                  status = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN 'dirty'
+                    ELSE token_profile_projection_frontiers.status
+                  END,
+                  first_dirty_at_ms = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    )
+                      AND token_profile_projection_frontiers.status IN ('clean', 'quarantined')
+                    THEN EXCLUDED.first_dirty_at_ms
+                    ELSE LEAST(
+                      COALESCE(
+                        token_profile_projection_frontiers.first_dirty_at_ms,
+                        EXCLUDED.first_dirty_at_ms
+                      ),
+                      EXCLUDED.first_dirty_at_ms
+                    )
+                  END,
+                  deadline_at_ms = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    )
+                      AND token_profile_projection_frontiers.status IN ('clean', 'quarantined')
+                    THEN EXCLUDED.deadline_at_ms
+                    ELSE LEAST(
+                      COALESCE(
+                        token_profile_projection_frontiers.deadline_at_ms,
+                        EXCLUDED.deadline_at_ms
+                      ),
+                      EXCLUDED.deadline_at_ms
+                    )
+                  END,
+                  next_attempt_at_ms = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN NULL
+                    ELSE token_profile_projection_frontiers.next_attempt_at_ms
+                  END,
+                  attempt_count = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN 0
+                    ELSE token_profile_projection_frontiers.attempt_count
+                  END,
+                  transient_failure_count = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN 0
+                    ELSE token_profile_projection_frontiers.transient_failure_count
+                  END,
+                  input_fingerprint = EXCLUDED.input_fingerprint,
+                  projection_version = EXCLUDED.projection_version,
+                  claimed_by = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN NULL
+                    ELSE token_profile_projection_frontiers.claimed_by
+                  END,
+                  claimed_until_ms = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN NULL
+                    ELSE token_profile_projection_frontiers.claimed_until_ms
+                  END,
+                  last_error_code = CASE
+                    WHEN (
+                      token_profile_projection_frontiers.input_fingerprint
+                        IS DISTINCT FROM EXCLUDED.input_fingerprint
+                      OR token_profile_projection_frontiers.projection_version
+                        IS DISTINCT FROM EXCLUDED.projection_version
+                    ) THEN NULL
+                    ELSE token_profile_projection_frontiers.last_error_code
+                  END,
+                  updated_at_ms = EXCLUDED.updated_at_ms
+                """,
+                {
+                    "target_types": [target_type for target_type, _target_id in ordered],
+                    "target_ids": [target_id for _target_type, target_id in ordered],
+                    "projection_version": TOKEN_RADAR_PROJECTION_VERSION,
+                    "dirty_at_ms": int(computed_at_ms),
+                    "deadline_at_ms": int(computed_at_ms) + _PROFILE_DEADLINE_MS,
+                    "profile_projection_version": "token-profile-current-serving-v1",
+                },
+            )
+            if int(cursor.rowcount or 0) != len(ordered):
+                raise RadarShardOversized("radar_profile_serving_input_oversized")
 
         return callback
 

@@ -322,7 +322,7 @@ def _seed_radar_current(conn: Any) -> str:
         {
             **loaded,
             "feature": target_projection["feature"],
-            "venues": ["all", target_projection["target_venue"]],
+            "venues": [claim.venue],
             "rank_limit": 100,
         }
     )
