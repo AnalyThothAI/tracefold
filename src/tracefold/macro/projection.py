@@ -77,6 +77,7 @@ class MacroProjectionService:
         """One-shot hard-cut rebuild preparation; never called by steady runtime."""
 
         with self._session() as repos, repos.transaction():
+            repos.conn.execute("DELETE FROM macro_module_frontiers")
             material_rows = [
                 *repos.macro.maintenance_dataset_fact_states(),
                 *repos.macro_market.maintenance_dataset_fact_states(),

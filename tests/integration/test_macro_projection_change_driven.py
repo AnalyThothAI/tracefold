@@ -153,6 +153,37 @@ def test_macro_projection_publish_rejects_changed_dataset_fingerprint() -> None:
         conn.close()
 
 
+def test_macro_maintenance_reseeds_clean_unchanged_frontiers() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        service = _service(conn)
+
+        service.prepare_maintenance_frontiers(now_ms=NOW_MS)
+        conn.execute(
+            """
+            UPDATE macro_module_frontiers
+               SET status = 'clean',
+                   first_dirty_at_ms = NULL,
+                   deadline_at_ms = NULL
+            """
+        )
+        service.prepare_maintenance_frontiers(now_ms=NOW_MS + 1)
+
+        rows = conn.execute(
+            """
+            SELECT module_id, status, deadline_at_ms
+            FROM macro_module_frontiers
+            ORDER BY module_id
+            """
+        ).fetchall()
+        assert len(rows) == 6
+        assert all(row["status"] == "dirty" for row in rows)
+        assert all(row["deadline_at_ms"] == NOW_MS + 1 for row in rows)
+    finally:
+        conn.close()
+
+
 def test_macro_series_reducer_preserves_capped_history_percentile_semantics() -> None:
     conn = connect_postgres_test()
     try:
