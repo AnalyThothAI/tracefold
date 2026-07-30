@@ -224,6 +224,55 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
     }
 
 
+def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
+    conn = RecordingJsonPlanConn(
+        {
+            "Plan": {
+                "Node Type": "Limit",
+                "Actual Rows": 50,
+                "Actual Loops": 1,
+                "Plans": [
+                    {
+                        "Node Type": "Bitmap Heap Scan",
+                        "Relation Name": "events",
+                        "Actual Rows": 116,
+                        "Actual Loops": 1,
+                        "Plans": [
+                            {
+                                "Node Type": "BitmapAnd",
+                                "Actual Rows": 0,
+                                "Actual Loops": 1,
+                                "Plans": [
+                                    {
+                                        "Node Type": "Bitmap Index Scan",
+                                        "Index Name": "idx_events_search_tsv",
+                                        "Actual Rows": 5_239,
+                                        "Actual Loops": 1,
+                                    },
+                                    {
+                                        "Node Type": "Bitmap Index Scan",
+                                        "Index Name": "idx_events_received",
+                                        "Actual Rows": 78_859,
+                                        "Actual Loops": 1,
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "Planning Time": 1.0,
+            "Execution Time": 50.0,
+        }
+    )
+
+    payload = PostgresQueryAudit(conn).run(analyze=True)
+
+    assert payload["ok"] is True
+    assert payload["queries"][0]["metrics"]["read_rows"] == 116
+    assert payload["queries"][0]["metrics"]["read_return_amplification"] == 2.32
+
+
 class RecordingExplainConn:
     def __init__(self):
         self.params_seen = []

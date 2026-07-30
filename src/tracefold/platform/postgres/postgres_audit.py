@@ -850,8 +850,10 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
         }
     nodes = list(_walk_plan_nodes(root))
     returned_rows = _executed_rows(root)
-    leaf_nodes = [node for node in nodes if not node.get("Plans")]
-    read_rows = sum(_executed_rows(node) for node in leaf_nodes)
+    relation_scans = [
+        node for node in nodes if node.get("Relation Name") and "Scan" in str(node.get("Node Type") or "")
+    ]
+    read_rows = sum(_executed_rows(node) for node in relation_scans)
     denominator = max(1, returned_rows)
     amplification = read_rows / denominator
     large_seq_scans = [
