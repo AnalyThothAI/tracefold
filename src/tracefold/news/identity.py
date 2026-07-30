@@ -178,7 +178,7 @@ def cosine_similarity(left: StoryVector | None, right: StoryVector | None) -> fl
             shared = sum(token in large for token in small)
             if shared / len(small) >= CONTAINMENT_RESCUE_RATIO:
                 return CONTAINMENT_RESCUE_SCORE
-    return score
+    return max(0.0, min(1.0, score))
 
 
 def story_similarity(left: str, right: str) -> float:

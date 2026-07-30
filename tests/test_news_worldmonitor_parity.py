@@ -204,7 +204,9 @@ def test_worldmonitor_positive_and_negative_sets_keep_margin() -> None:
 
 def test_identical_titles_have_similarity_one() -> None:
     title = "Iran threatens to close Strait of Hormuz"
-    assert story_similarity(title, title) == pytest.approx(1.0, abs=1e-9)
+    score = story_similarity(title, title)
+    assert score == pytest.approx(1.0, abs=1e-9)
+    assert 0.0 <= score <= 1.0
 
 
 def test_empty_titles_have_no_vector_and_zero_similarity() -> None:
