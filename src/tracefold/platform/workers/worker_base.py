@@ -11,7 +11,6 @@ from loguru import logger as default_logger
 from tracefold.platform.workers.worker_result import WorkerResult
 
 _MIN_WAIT_SECONDS = 0.001
-_MIN_CATCH_UP_WAIT_SECONDS = 1.0
 _MAX_DURATION_SAMPLES = 256
 
 
@@ -379,7 +378,8 @@ def _loop_wait_seconds(seconds: float) -> float:
 def _successful_iteration_delay(*, interval_seconds: float, duration_seconds: float) -> float:
     interval = _loop_wait_seconds(interval_seconds)
     duration = max(0.0, float(duration_seconds))
-    return max(min(interval, _MIN_CATCH_UP_WAIT_SECONDS), interval - duration)
+    next_slot = (int(duration // interval) + 1) * interval
+    return _loop_wait_seconds(next_slot - duration)
 
 
 def _error_text(exc: BaseException) -> str:

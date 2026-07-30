@@ -7,6 +7,7 @@ def test_successful_worker_cadence_targets_start_to_start_interval() -> None:
     assert _successful_iteration_delay(interval_seconds=10, duration_seconds=2.5) == 7.5
 
 
-def test_overrun_worker_catch_up_keeps_a_bounded_non_busy_wait() -> None:
-    assert _successful_iteration_delay(interval_seconds=10, duration_seconds=12) == 1
+def test_overrun_worker_skips_missed_ticks_and_waits_for_the_next_cadence_boundary() -> None:
+    assert _successful_iteration_delay(interval_seconds=10, duration_seconds=12) == 8
+    assert _successful_iteration_delay(interval_seconds=10, duration_seconds=20) == 10
     assert _successful_iteration_delay(interval_seconds=0.25, duration_seconds=2) == 0.25
