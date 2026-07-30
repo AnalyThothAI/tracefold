@@ -226,7 +226,7 @@ class RadarProjectionService:
             for identity in ranked["selected_identities"]
             if tuple(str(part) for part in identity) != new_identity
         ]
-        if len(identities) > _RANK_LIMIT:
+        if len(identities) > 2 * _RANK_LIMIT:
             raise RadarShardOversized("radar_rank_hydration_shard_oversized")
         with self._session() as repos:
             rows = cast(
