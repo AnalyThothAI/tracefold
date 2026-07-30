@@ -329,31 +329,51 @@ def _seed_radar_current(conn: Any) -> str:
         now_ms=FIXED_NOW_MS,
     )
     assert claim is not None
-    loaded = radar.load_target(claim, now_ms=FIXED_NOW_MS)
+    loaded = radar.load_target_feature(claim, now_ms=FIXED_NOW_MS)
     target_projection = compute_token_radar_target_projection(loaded)
+    feature_result = radar.publish_target_feature(
+        claim,
+        target_projection=target_projection,
+        now_ms=FIXED_NOW_MS,
+    )
+    assert feature_result["projection_status"] == "published"
+    rank_claim = radar.claim(
+        key={
+            "target_type": "RankSet",
+            "target_id": "token",
+            "window_key": "1h",
+            "venue": "all",
+        },
+        runtime_id=str(uuid4()),
+        now_ms=FIXED_NOW_MS,
+    )
+    assert rank_claim is not None
+    rank_loaded = radar.load_rank_set(
+        rank_claim,
+        now_ms=FIXED_NOW_MS,
+    )
     ranked = rank_token_radar_closure(
         {
-            **loaded,
-            "feature": target_projection["feature"],
-            "venues": [claim.venue],
+            **rank_loaded,
+            "feature": None,
+            "venues": [rank_claim.venue],
             "rank_limit": 100,
         }
     )
     hydrated = radar.load_hydration(
-        claim,
-        target_projection=target_projection,
+        rank_claim,
+        target_projection={},
         ranked=ranked,
     )
     closure = build_token_radar_current_closure(
         {
-            "feature": target_projection["feature"],
+            "feature": None,
             "selected_by_venue": ranked["selected_by_venue"],
             "hydrated_inputs": hydrated,
         }
     )
-    result = radar.publish(
-        claim,
-        target_projection=target_projection,
+    result = radar.publish_token_rank_set(
+        rank_claim,
         ranked=ranked,
         closure=closure,
         now_ms=FIXED_NOW_MS,

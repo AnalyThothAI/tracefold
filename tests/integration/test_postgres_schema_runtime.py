@@ -279,6 +279,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 """
             ).fetchall()
         }
+        radar_frontier_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'radar_projection_frontiers'
+                """
+            ).fetchall()
+        }
         retired_projection_tables = {
             row["table_name"]
             for row in conn.execute(
@@ -439,6 +450,12 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     assert "scope" not in radar_current_columns
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
+    assert {
+        "pending_first_dirty_at_ms",
+        "pending_deadline_at_ms",
+        "pending_input_fingerprint",
+        "pending_projection_version",
+    } <= radar_frontier_columns
     assert retired_projection_tables == set()
     assert performance_indexes == {
         "ix_news_source_fetches_source_time",
@@ -449,7 +466,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0228"
+    assert version == latest_migration_version() == "20260731_0229"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -474,7 +491,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0228"
+    assert version == latest_migration_version() == "20260731_0229"
 
 
 def test_rates_curve_v6_migration_deletes_only_old_rates_projection_and_rejects_v5(
@@ -689,7 +706,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0228"
+        assert version == "20260731_0229"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

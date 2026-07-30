@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, cast
 
 from tracefold.market.radar.projection import (
     RadarProjectionService,
     RadarShardOversized,
     build_token_radar_current_closure,
-    compute_stocks_radar_projection,
+    compute_stocks_radar_rank_set,
+    compute_stocks_radar_target_feature,
     compute_token_radar_target_projection,
     rank_token_radar_closure,
 )
@@ -59,7 +60,7 @@ class RadarProjectionCandidate:
         return ProjectionShard(
             domain="radar",
             shard_key=_shard_key(key),
-            deadline_at_ms=int(row["deadline_at_ms"]),
+            deadline_at_ms=int(row["effective_deadline_at_ms"]),
             stable_order=self.stable_order,
         )
 
@@ -104,21 +105,28 @@ class RadarProjectionCandidate:
         now_ms: int,
     ) -> WorkerResult:
         try:
+            if claim.target_type == "RankSet":
+                result = await self._run_rank_set(claim, now_ms=now_ms)
+                return WorkerResult(
+                    processed=1,
+                    skipped=1 if int(result["rows_written"]) == 0 else 0,
+                    notes=result,
+                )
             loaded = await self.resources.run_background_db(
-                self.service.load_target,
+                self.service.load_target_feature,
                 claim,
                 now_ms=now_ms,
             )
             if claim.target_type == "MarketInstrument":
-                stock_projection = await self.resources.run_cpu(
-                    compute_stocks_radar_projection,
+                target_projection = await self.resources.run_cpu(
+                    compute_stocks_radar_target_feature,
                     loaded,
                     timeout_seconds=_CPU_TIMEOUT_SECONDS,
                 )
                 result = await self.resources.run_background_db(
-                    self.service.publish_stock,
+                    self.service.publish_stock_target_feature,
                     claim,
-                    projection=stock_projection,
+                    target_projection=target_projection,
                     now_ms=_now_ms(),
                 )
                 return WorkerResult(
@@ -131,37 +139,10 @@ class RadarProjectionCandidate:
                 loaded,
                 timeout_seconds=_CPU_TIMEOUT_SECONDS,
             )
-            ranked = await self.resources.run_cpu(
-                rank_token_radar_closure,
-                {
-                    **loaded,
-                    "feature": target_projection["feature"],
-                    "venues": [claim.venue],
-                    "rank_limit": _RANK_LIMIT,
-                },
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
-            )
-            hydrated = await self.resources.run_background_db(
-                self.service.load_hydration,
-                claim,
-                target_projection=target_projection,
-                ranked=ranked,
-            )
-            closure = await self.resources.run_cpu(
-                build_token_radar_current_closure,
-                {
-                    "feature": target_projection["feature"],
-                    "selected_by_venue": ranked["selected_by_venue"],
-                    "hydrated_inputs": hydrated,
-                },
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
-            )
             result = await self.resources.run_background_db(
-                self.service.publish,
+                self.service.publish_target_feature,
                 claim,
                 target_projection=target_projection,
-                ranked=ranked,
-                closure=closure,
                 now_ms=_now_ms(),
             )
         except (
@@ -206,6 +187,70 @@ class RadarProjectionCandidate:
             processed=1,
             skipped=1 if int(result["rows_written"]) == 0 else 0,
             notes=result,
+        )
+
+    async def _run_rank_set(
+        self,
+        claim: Any,
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        loaded = await self.resources.run_background_db(
+            self.service.load_rank_set,
+            claim,
+            now_ms=now_ms,
+        )
+        if claim.target_id == "stocks":
+            projection = await self.resources.run_cpu(
+                compute_stocks_radar_rank_set,
+                loaded,
+                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            )
+            return cast(
+                dict[str, Any],
+                await self.resources.run_background_db(
+                    self.service.publish_stock_rank_set,
+                    claim,
+                    projection=projection,
+                    now_ms=_now_ms(),
+                ),
+            )
+        if claim.target_id != "token":
+            raise ValueError("radar_rank_set_target_invalid")
+        ranked = await self.resources.run_cpu(
+            rank_token_radar_closure,
+            {
+                **loaded,
+                "feature": None,
+                "venues": [claim.venue],
+                "rank_limit": _RANK_LIMIT,
+            },
+            timeout_seconds=_CPU_TIMEOUT_SECONDS,
+        )
+        hydrated = await self.resources.run_background_db(
+            self.service.load_hydration,
+            claim,
+            target_projection={},
+            ranked=ranked,
+        )
+        closure = await self.resources.run_cpu(
+            build_token_radar_current_closure,
+            {
+                "feature": None,
+                "selected_by_venue": ranked["selected_by_venue"],
+                "hydrated_inputs": hydrated,
+            },
+            timeout_seconds=_CPU_TIMEOUT_SECONDS,
+        )
+        return cast(
+            dict[str, Any],
+            await self.resources.run_background_db(
+                self.service.publish_token_rank_set,
+                claim,
+                ranked=ranked,
+                closure=closure,
+                now_ms=_now_ms(),
+            ),
         )
 
 

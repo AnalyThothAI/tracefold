@@ -77,12 +77,22 @@ Claim, compute, publish, and full-turn hard timeouts are respectively 500 ms,
 2 s, 1 s, and 5 s. Overflow is split deterministically or quarantined as
 `shard_oversized`; it is never sampled or truncated.
 
-Radar keeps one `window × venue` publication atomic while splitting an
-oversized ordered row set into deterministic write batches no larger than
-1 MiB. A single row that exceeds the envelope is quarantined. The high-churn
-`events` table uses a one-percent/10,000-row auto-analyze threshold so the
-24-hour Search planner does not choose a recency scan from stale time
-distribution statistics.
+Radar uses two stable shard granularities inside the same EDF coordinator.
+A `target × window` shard recomputes and persists only that target feature;
+a `RankSet × window × venue` shard reads the compact feature set once, ranks
+it, hydrates only selected identities, and atomically publishes the serving
+closure. Target changes coalesce into the stable RankSet row. If a RankSet is
+already running, the latest input is held in its pending fields and promoted
+back to `dirty` after the claimed snapshot publishes, so sustained input
+cannot invalidate every publication attempt. There is no extra Radar worker,
+queue, or wake plane.
+
+One `window × venue` publication remains atomic while an oversized ordered
+row set is split into deterministic write batches no larger than 1 MiB. A
+single row that exceeds the envelope is quarantined. The high-churn `events`
+table uses a one-percent/10,000-row auto-analyze threshold so the 24-hour
+Search planner does not choose a recency scan from stale time-distribution
+statistics.
 
 `/metrics` exposes low-cardinality worker transaction duration, projection
 source/candidate/hydrated/written row counts, change-driven cache hit/miss,
@@ -133,7 +143,8 @@ Token Radar:
 
 ```text
 event -> intent -> resolution -> stable Radar source edges
-  -> typed target x window frontier -> affected window x venue rank closure
+  -> target x window feature frontier -> compact target feature
+  -> coalesced RankSet x window x venue frontier -> atomic rank closure
   -> token_radar_current_rows
 ```
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from tracefold.market.radar.token_radar_projector import (
     compute_token_radar_target_projection,
     rank_token_radar_closure,
 )
+from tracefold.platform.postgres.projection_frontier import RADAR_FRONTIER
 
 
 class _SingleConnectionDB:
@@ -168,7 +170,7 @@ def test_expiry_removes_only_due_edges_and_redirties_only_affected_shards() -> N
         conn.close()
 
 
-def test_one_target_window_splits_affected_venues_into_bounded_frontiers() -> None:
+def test_target_feature_dirties_bounded_rank_sets_before_atomic_publication() -> None:
     conn = connect_postgres_test()
     try:
         reset_postgres_schema(conn)
@@ -182,69 +184,69 @@ def test_one_target_window_splits_affected_venues_into_bounded_frontiers() -> No
             )
         service = RadarProjectionService(db=_SingleConnectionDB(conn))
         runtime_id = str(uuid4())
+        target_claim = service.claim(
+            key={
+                "target_type": "Asset",
+                "target_id": _asset_id(conn),
+                "window_key": "1h",
+                "venue": "all",
+            },
+            runtime_id=runtime_id,
+            now_ms=FIXED_NOW_MS,
+        )
+        assert target_claim is not None
+        loaded = service.load_target_feature(
+            target_claim,
+            now_ms=FIXED_NOW_MS,
+        )
+        target_projection = compute_token_radar_target_projection(loaded)
+        target_result = service.publish_target_feature(
+            target_claim,
+            target_projection=target_projection,
+            now_ms=FIXED_NOW_MS,
+        )
 
-        def publish_venue(venue: str) -> dict[str, Any]:
-            claim = service.claim(
-                key={
-                    "target_type": "Asset",
-                    "target_id": _asset_id(conn),
-                    "window_key": "1h",
-                    "venue": venue,
-                },
-                runtime_id=runtime_id,
-                now_ms=FIXED_NOW_MS,
-            )
-            assert claim is not None
-            loaded = service.load_target(claim, now_ms=FIXED_NOW_MS)
-            assert conn.info.transaction_status == pq.TransactionStatus.IDLE
-            target_projection = compute_token_radar_target_projection(loaded)
-            ranked = rank_token_radar_closure(
-                {
-                    **loaded,
-                    "feature": target_projection["feature"],
-                    "venues": [claim.venue],
-                    "rank_limit": 100,
-                }
-            )
-            hydrated = service.load_hydration(
-                claim,
-                target_projection=target_projection,
-                ranked=ranked,
-            )
-            closure = build_token_radar_current_closure(
-                {
-                    "feature": target_projection["feature"],
-                    "selected_by_venue": ranked["selected_by_venue"],
-                    "hydrated_inputs": hydrated,
-                }
-            )
-            return service.publish(
-                claim,
-                target_projection=target_projection,
-                ranked=ranked,
-                closure=closure,
-                now_ms=FIXED_NOW_MS,
-            )
-
-        all_result = publish_venue("all")
-        assert all_result["projection_status"] == "published"
-        assert set(all_result["venues"]) == {"all"}
-        venue_frontier = conn.execute(
+        assert target_result["projection_status"] == "published"
+        assert target_result["rank_frontiers_written"] == 2
+        assert conn.execute(
             """
-            SELECT status
+            SELECT count(*) AS count
+            FROM token_radar_current_rows
+            """
+        ).fetchone() == {"count": 0}
+        assert conn.execute(
+            """
+            SELECT target_type, target_id, venue, status
             FROM radar_projection_frontiers
-            WHERE target_type = 'Asset'
-              AND target_id = %s
+            WHERE target_type = 'RankSet'
+              AND target_id = 'token'
               AND window_key = '1h'
-              AND venue = 'eth'
+            ORDER BY venue
             """,
-            (_asset_id(conn),),
-        ).fetchone()
-        assert venue_frontier == {"status": "dirty"}
+        ).fetchall() == [
+            {
+                "target_type": "RankSet",
+                "target_id": "token",
+                "venue": "all",
+                "status": "dirty",
+            },
+            {
+                "target_type": "RankSet",
+                "target_id": "token",
+                "venue": "eth",
+                "status": "dirty",
+            },
+        ]
 
-        venue_result = publish_venue("eth")
-        assert venue_result["projection_status"] == "published"
-        assert set(venue_result["venues"]) == {"eth"}
+        results = [
+            _publish_token_rank_set(
+                service,
+                venue=venue,
+                now_ms=FIXED_NOW_MS,
+            )
+            for venue in ("all", "eth")
+        ]
+        assert {result["projection_status"] for result in results} == {"published"}
         rows = conn.execute(
             """
             SELECT venue, target_type_key, identity_id
@@ -267,25 +269,38 @@ def test_one_target_window_splits_affected_venues_into_bounded_frontiers() -> No
                 "identity_id": _asset_id(conn),
             },
         ]
-        frontier = conn.execute(
+        frontiers = conn.execute(
             """
-            SELECT status, first_dirty_at_ms, deadline_at_ms
+            SELECT target_type, venue, status,
+                   first_dirty_at_ms, deadline_at_ms
             FROM radar_projection_frontiers
-            WHERE target_type = 'Asset'
-              AND target_id = %s
-              AND window_key = '1h'
-              AND venue IN ('all', 'eth')
-            ORDER BY venue
+            WHERE window_key = '1h'
+              AND (
+                (target_type = 'Asset' AND target_id = %s)
+                OR (target_type = 'RankSet' AND target_id = 'token')
+              )
+            ORDER BY target_type, venue
             """,
             (_asset_id(conn),),
         ).fetchall()
-        assert frontier == [
+        assert frontiers == [
             {
+                "target_type": "Asset",
+                "venue": "all",
                 "status": "clean",
                 "first_dirty_at_ms": None,
                 "deadline_at_ms": None,
             },
             {
+                "target_type": "RankSet",
+                "venue": "all",
+                "status": "clean",
+                "first_dirty_at_ms": None,
+                "deadline_at_ms": None,
+            },
+            {
+                "target_type": "RankSet",
+                "venue": "eth",
                 "status": "clean",
                 "first_dirty_at_ms": None,
                 "deadline_at_ms": None,
@@ -300,6 +315,139 @@ def test_one_target_window_splits_affected_venues_into_bounded_frontiers() -> No
             (_asset_id(conn),),
         ).fetchone()
         assert profile == {"status": "dirty"}
+    finally:
+        conn.close()
+
+
+def test_running_rank_set_coalesces_new_target_input_without_losing_it() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        service = RadarProjectionService(db=_SingleConnectionDB(conn))
+        target_key = {
+            "target_type": "Asset",
+            "target_id": _asset_id(conn),
+            "window_key": "1h",
+            "venue": "all",
+        }
+        target_claim = service.claim(
+            key=target_key,
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS,
+        )
+        assert target_claim is not None
+        loaded = service.load_target_feature(
+            target_claim,
+            now_ms=FIXED_NOW_MS,
+        )
+        first_projection = compute_token_radar_target_projection(loaded)
+        service.publish_target_feature(
+            target_claim,
+            target_projection=first_projection,
+            now_ms=FIXED_NOW_MS,
+        )
+
+        rank_claim = service.claim(
+            key={
+                "target_type": "RankSet",
+                "target_id": "token",
+                "window_key": "1h",
+                "venue": "all",
+            },
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS,
+        )
+        assert rank_claim is not None
+        old_rank_loaded = service.load_rank_set(
+            rank_claim,
+            now_ms=FIXED_NOW_MS,
+        )
+
+        with repos.transaction():
+            repos.projection_frontiers.mark_dirty(
+                RADAR_FRONTIER,
+                key=target_key,
+                dirty_at_ms=FIXED_NOW_MS + 1,
+                deadline_at_ms=FIXED_NOW_MS + 60_001,
+                input_fingerprint="sha256:new-target-input",
+                version=TOKEN_RADAR_PROJECTION_VERSION,
+            )
+        second_target_claim = service.claim(
+            key=target_key,
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS + 1,
+        )
+        assert second_target_claim is not None
+        second_projection = deepcopy(first_projection)
+        assert isinstance(second_projection["projected"], dict)
+        second_projection["projected"]["source_event_ids_json"] = [
+            "event-radar-idempotent",
+            "event-radar-new-input",
+        ]
+        second_result = service.publish_target_feature(
+            second_target_claim,
+            target_projection=second_projection,
+            now_ms=FIXED_NOW_MS + 1,
+        )
+        assert second_result["projection_status"] == "published"
+        pending = conn.execute(
+            """
+            SELECT status, input_fingerprint,
+                   pending_first_dirty_at_ms,
+                   pending_deadline_at_ms,
+                   pending_input_fingerprint
+            FROM radar_projection_frontiers
+            WHERE target_type = 'RankSet'
+              AND target_id = 'token'
+              AND window_key = '1h'
+              AND venue = 'all'
+            """
+        ).fetchone()
+        assert pending is not None
+        assert pending["status"] == "running"
+        assert pending["input_fingerprint"] == rank_claim.input_fingerprint
+        assert pending["pending_first_dirty_at_ms"] == FIXED_NOW_MS + 1
+        assert pending["pending_deadline_at_ms"] == FIXED_NOW_MS + 60_001
+        assert pending["pending_input_fingerprint"] is not None
+
+        _publish_claimed_token_rank_set(
+            service,
+            claim=rank_claim,
+            loaded=old_rank_loaded,
+            now_ms=FIXED_NOW_MS + 2,
+        )
+        promoted = conn.execute(
+            """
+            SELECT status, first_dirty_at_ms, deadline_at_ms,
+                   pending_input_fingerprint
+            FROM radar_projection_frontiers
+            WHERE target_type = 'RankSet'
+              AND target_id = 'token'
+              AND window_key = '1h'
+              AND venue = 'all'
+            """
+        ).fetchone()
+        assert promoted == {
+            "status": "dirty",
+            "first_dirty_at_ms": FIXED_NOW_MS + 1,
+            "deadline_at_ms": FIXED_NOW_MS + 60_001,
+            "pending_input_fingerprint": None,
+        }
+
+        final_result = _publish_token_rank_set(
+            service,
+            venue="all",
+            now_ms=FIXED_NOW_MS + 2,
+        )
+        assert final_result["frontier_status"] == "clean"
     finally:
         conn.close()
 
@@ -319,7 +467,7 @@ def test_maintenance_rebuild_seeds_edges_and_drains_typed_radar_frontiers() -> N
         assert result["projection_status"] == "rebuilt"
         assert result["events_scanned"] == 1
         assert result["source_edges_written"] == 4
-        assert result["shards_computed"] == 7
+        assert result["shards_computed"] == 10
         assert result["current_rows"] > 0
         assert conn.execute(
             """
@@ -330,6 +478,67 @@ def test_maintenance_rebuild_seeds_edges_and_drains_typed_radar_frontiers() -> N
         ).fetchone() == {"count": 0}
     finally:
         conn.close()
+
+
+def _publish_token_rank_set(
+    service: RadarProjectionService,
+    *,
+    venue: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    claim = service.claim(
+        key={
+            "target_type": "RankSet",
+            "target_id": "token",
+            "window_key": "1h",
+            "venue": venue,
+        },
+        runtime_id=str(uuid4()),
+        now_ms=now_ms,
+    )
+    assert claim is not None
+    loaded = service.load_rank_set(claim, now_ms=now_ms)
+    return _publish_claimed_token_rank_set(
+        service,
+        claim=claim,
+        loaded=loaded,
+        now_ms=now_ms,
+    )
+
+
+def _publish_claimed_token_rank_set(
+    service: RadarProjectionService,
+    *,
+    claim: Any,
+    loaded: dict[str, Any],
+    now_ms: int,
+) -> dict[str, Any]:
+    ranked = rank_token_radar_closure(
+        {
+            **loaded,
+            "feature": None,
+            "venues": [claim.venue],
+            "rank_limit": 100,
+        }
+    )
+    hydrated = service.load_hydration(
+        claim,
+        target_projection={},
+        ranked=ranked,
+    )
+    closure = build_token_radar_current_closure(
+        {
+            "feature": None,
+            "selected_by_venue": ranked["selected_by_venue"],
+            "hydrated_inputs": hydrated,
+        }
+    )
+    return service.publish_token_rank_set(
+        claim,
+        ranked=ranked,
+        closure=closure,
+        now_ms=now_ms,
+    )
 
 
 def _asset_id(conn: Any) -> str:
