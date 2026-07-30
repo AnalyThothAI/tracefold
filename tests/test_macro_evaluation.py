@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import timedelta
 
+import pytest
+
 from tests.test_macro_thesis import CUTOFF_MS, SESSION, _modules
 from tracefold.macro.domain import MACRO_MODULE_IDS
 from tracefold.macro.evaluation import (
@@ -157,15 +159,76 @@ def test_eval_selector_builds_six_modules_three_mixed_and_three_gap_cases() -> N
     )
 
 
-def test_eval_readiness_reports_exact_real_session_shortfall_without_selecting_cases() -> None:
+def test_eval_selector_requires_mixed_tails_from_distinct_modules() -> None:
+    sessions = list(_eval_session(offset) for offset in range(1, 10))
+    for index in range(3):
+        pack, research_input = sessions[index]
+        evidence_ref = next(
+            module.exact_evidence_refs[0] for module in research_input.modules if module.module_id == "rates_fed"
+        )
+        candidates = tuple(
+            MetricConditionCandidate(
+                candidate_id=f"test.same-module:{index}:{candidate_index}",
+                module_id="rates_fed",
+                dataset_id="treasury.daily_nominal_curve",
+                metric=f"value_{candidate_index}",
+                unit="percent",
+                operator="gte",
+                threshold=1.0,
+                frozen_value=2.0,
+                as_of=research_input.session_date.isoformat(),
+                historical_percentile_rank=rank,
+                quantile_window="five_years",
+                sample_count=40,
+                allowed_kinds=("confirmation", "weakening", "falsifier"),
+                allowed_scopes=("mainline", "alternative", "tension"),
+                meaning="One module must not count as two mixed-tail modules.",
+                evidence_refs=(evidence_ref,),
+            )
+            for candidate_index, rank in enumerate((0.9, 0.9, 0.1, 0.1), start=1)
+        )
+        payload = research_input.model_dump(mode="json")
+        payload["condition_candidates"] = [candidate.model_dump(mode="json") for candidate in candidates]
+        payload["allowed_condition_ids"] = [candidate.candidate_id for candidate in candidates]
+        for module in payload["modules"]:
+            module["condition_candidate_ids"] = (
+                [candidate.candidate_id for candidate in candidates] if module["module_id"] == "rates_fed" else []
+            )
+        sessions[index] = (pack, MacroResearchInputV1.model_validate(payload))
+
+    with pytest.raises(ValueError, match="macro_eval_mixed_sessions_insufficient"):
+        select_macro_eval_case_seeds(tuple(sessions))
+
+
+def test_eval_readiness_reports_advisory_real_session_target_without_blocking_deployment() -> None:
     readiness = inspect_macro_eval_readiness(tuple(_eval_session(offset)[0] for offset in range(1, 4)))
 
-    assert readiness.state == "insufficient_real_sessions"
-    assert readiness.required_real_sessions == 9
+    assert readiness.state == "collecting"
+    assert readiness.target_real_sessions == 9
     assert readiness.available_real_sessions == 3
-    assert readiness.missing_real_sessions == 6
+    assert readiness.remaining_to_target == 6
+    assert readiness.blocks_deployment is False
     assert readiness.selected_case_ids == ()
-    assert readiness.reason_code == "macro_eval_real_sessions_insufficient"
+    assert readiness.reason_code == "macro_eval_collecting_real_sessions"
+
+
+def test_eval_readiness_checks_real_pack_compatibility_before_advisory_target() -> None:
+    modules = deepcopy(_modules())
+    modules[0]["evidence"]["latest_facts"][0]["source_url"] = "https://example.test/" + "x" * 100_000
+    pack = compile_evidence_pack_v3(
+        session_date=SESSION,
+        cutoff_ms=CUTOFF_MS,
+        sealed_at_ms=CUTOFF_MS + 1_000,
+        modules=modules,
+        prior_publication=None,
+    )
+
+    readiness = inspect_macro_eval_readiness((pack,))
+
+    assert readiness.state == "selection_blocked"
+    assert readiness.available_real_sessions == 1
+    assert readiness.blocks_deployment is False
+    assert readiness.reason_code == "macro_eval_research_input_invalid"
 
 
 def test_eval_readiness_proves_the_exact_twelve_case_selection(monkeypatch) -> None:
@@ -180,7 +243,8 @@ def test_eval_readiness_proves_the_exact_twelve_case_selection(monkeypatch) -> N
 
     assert readiness.state == "ready"
     assert readiness.available_real_sessions == 9
-    assert readiness.missing_real_sessions == 0
+    assert readiness.remaining_to_target == 0
+    assert readiness.blocks_deployment is False
     assert len(readiness.selected_case_ids) == 12
     assert readiness.reason_code is None
 

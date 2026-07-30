@@ -8,7 +8,7 @@ from typing import Any
 
 from tracefold.app.repositories import repositories
 from tracefold.macro import (
-    MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS,
+    MACRO_THIN_EVAL_TARGET_REAL_SESSIONS,
     MacroEvalReadinessV1,
     MacroEvidencePackV3,
     classify_current_thesis_state,
@@ -196,9 +196,9 @@ def _evaluation_readiness(rows: Sequence[Mapping[str, Any]]) -> MacroEvalReadine
         return MacroEvalReadinessV1(
             state="selection_blocked",
             available_real_sessions=len(session_dates),
-            missing_real_sessions=max(
+            remaining_to_target=max(
                 0,
-                MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS - len(session_dates),
+                MACRO_THIN_EVAL_TARGET_REAL_SESSIONS - len(session_dates),
             ),
             session_dates=session_dates,
             selected_case_ids=(),

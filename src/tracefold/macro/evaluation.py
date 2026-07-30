@@ -29,7 +29,7 @@ from tracefold.macro.thesis_v2 import (
 MACRO_THIN_EVAL_CORPUS = "macro_thin_profile_eval_v1"
 MACRO_THIN_EVAL_SCHEMA_VERSION = "macro_thin_profile_eval_manifest_v1"
 MACRO_THIN_EVAL_BASELINE_COMMIT = "810b9acc6fc5ea762fff43f1ce7efb8626960a84"
-MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS: Literal[9] = 9
+MACRO_THIN_EVAL_TARGET_REAL_SESSIONS: Literal[9] = 9
 
 
 class _ExactEvalModel(BaseModel):
@@ -180,10 +180,11 @@ class MacroEvalReadinessV1(_ExactEvalModel):
     schema_version: Literal["macro_thin_eval_readiness_v1"] = "macro_thin_eval_readiness_v1"
     corpus_id: Literal["macro_thin_profile_eval_v1"] = "macro_thin_profile_eval_v1"
     baseline_commit: Literal["810b9acc6fc5ea762fff43f1ce7efb8626960a84"] = "810b9acc6fc5ea762fff43f1ce7efb8626960a84"
-    state: Literal["ready", "insufficient_real_sessions", "selection_blocked"]
-    required_real_sessions: Literal[9] = MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS
+    state: Literal["ready", "collecting", "selection_blocked"]
+    target_real_sessions: Literal[9] = MACRO_THIN_EVAL_TARGET_REAL_SESSIONS
     available_real_sessions: int = Field(ge=0)
-    missing_real_sessions: int = Field(ge=0)
+    remaining_to_target: int = Field(ge=0)
+    blocks_deployment: Literal[False] = False
     session_dates: tuple[date, ...]
     selected_case_ids: tuple[str, ...]
     reason_code: str | None
@@ -230,14 +231,23 @@ def inspect_macro_eval_readiness(
             session_dates=distinct_dates,
             reason_code="macro_eval_duplicate_session_pack",
         )
-    if len(distinct_dates) < MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS:
+    compiled_sessions: list[tuple[MacroEvidencePackV3, MacroResearchInputV1]] = []
+    try:
+        compiled_sessions.extend((pack, compile_research_input_v1(pack)) for pack in ordered)
+    except ValueError:
         return _eval_readiness(
-            state="insufficient_real_sessions",
+            state="selection_blocked",
             session_dates=distinct_dates,
-            reason_code="macro_eval_real_sessions_insufficient",
+            reason_code="macro_eval_research_input_invalid",
+        )
+    if len(distinct_dates) < MACRO_THIN_EVAL_TARGET_REAL_SESSIONS:
+        return _eval_readiness(
+            state="collecting",
+            session_dates=distinct_dates,
+            reason_code="macro_eval_collecting_real_sessions",
         )
     try:
-        seeds = select_macro_eval_case_seeds(tuple((pack, compile_research_input_v1(pack)) for pack in ordered))
+        seeds = select_macro_eval_case_seeds(tuple(compiled_sessions))
     except ValueError as exc:
         return _eval_readiness(
             state="selection_blocked",
@@ -344,7 +354,7 @@ def select_macro_eval_case_seeds(
 
 def _eval_readiness(
     *,
-    state: Literal["ready", "insufficient_real_sessions", "selection_blocked"],
+    state: Literal["ready", "collecting", "selection_blocked"],
     session_dates: tuple[date, ...],
     selected_case_ids: tuple[str, ...] = (),
     reason_code: str | None = None,
@@ -352,9 +362,9 @@ def _eval_readiness(
     return MacroEvalReadinessV1(
         state=state,
         available_real_sessions=len(session_dates),
-        missing_real_sessions=max(
+        remaining_to_target=max(
             0,
-            MACRO_THIN_EVAL_REQUIRED_REAL_SESSIONS - len(session_dates),
+            MACRO_THIN_EVAL_TARGET_REAL_SESSIONS - len(session_dates),
         ),
         session_dates=session_dates,
         selected_case_ids=selected_case_ids,
@@ -572,14 +582,22 @@ def _module_extremeness(
 
 
 def _tail_counts(research_input: MacroResearchInputV1) -> tuple[int, int]:
-    ranks = [
-        float(rank)
-        for item in _ranked_metric_candidates(research_input)
-        if (rank := item.historical_percentile_rank) is not None
-    ]
+    ranked = tuple(_ranked_metric_candidates(research_input))
     return (
-        sum(value >= 0.8 for value in ranks),
-        sum(value <= 0.2 for value in ranks),
+        len(
+            {
+                item.module_id
+                for item in ranked
+                if item.historical_percentile_rank is not None and float(item.historical_percentile_rank) >= 0.8
+            }
+        ),
+        len(
+            {
+                item.module_id
+                for item in ranked
+                if item.historical_percentile_rank is not None and float(item.historical_percentile_rank) <= 0.2
+            }
+        ),
     )
 
 

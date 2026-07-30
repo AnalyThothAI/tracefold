@@ -146,9 +146,11 @@ publication.
 A good macro status reports Alembic `20260729_0216`, bounded acquisition target
 states, recent source and reconciliation receipts, all six module rows, and the
 current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
-read-only frozen-corpus readiness: nine distinct real sessions are required
-before baseline/candidate model runs. Historical v1 rows never satisfy current
-status. Diagnose a missing value by
+read-only frozen-corpus readiness: nine distinct real sessions remain the
+long-horizon comparison target, while `blocks_deployment=false` makes clear that
+collection is not a schema-migration gate. Every available real v3 Evidence Pack
+must still compile into the bounded current Research Input before deployment.
+Historical v1 rows never satisfy current status. Diagnose a missing value by
 concept ID and source role through its target, receipt, fact family, and three
 module quality axes. A public-source timeout, weekend settlement lag, or
 delayed Yahoo proxy is a visible quality state; it is not a frontend defect.
