@@ -1415,6 +1415,23 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
         merged.setdefault(root, []).extend(members)
         merged_candidates.setdefault(root, Counter()).update(component_candidates[index])
 
+    affected_ids = _affected_component_item_ids(
+        target_id=target_id,
+        rows_by_id=rows_by_id,
+        features=features,
+        previous=previous,
+        aliases=aliases,
+        merged=merged,
+        merged_candidates=merged_candidates,
+        existing_edges=[dict(edge) for edge in payload["existing_edges"]],
+        final_edges=[dict(edge) for edge in payload["final_edges"]],
+    )
+    affected_roots = {
+        root
+        for root, member_ids in merged.items()
+        if affected_ids.intersection(member_ids)
+    }
+
     entity_sources: dict[str, dict[str, int]] = {}
     entity_members: dict[str, dict[str, int]] = {}
     for row in payload["entity_rows"]:
@@ -1440,6 +1457,8 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
     memberships: list[dict[str, str]] = []
     alias_updates: list[dict[str, str]] = []
     for root, member_ids in sorted(merged.items(), key=lambda pair: min(pair[1])):
+        if root not in affected_roots:
+            continue
         component_rows = [rows_by_id[item_id] for item_id in sorted(member_ids)]
         source_count = len({str(member["source_id"]) for member in component_rows})
         entity_source_count = 0
@@ -1599,8 +1618,14 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
         for alias_key, story_id in sorted({(str(row["alias_key"]), str(row["story_id"])) for row in alias_updates})
     ]
     output: dict[str, Any] = {
-        "closure_item_ids": sorted(rows_by_id),
-        "old_story_ids": sorted(set(previous.values())),
+        "closure_item_ids": sorted(affected_ids),
+        "old_story_ids": sorted(
+            {
+                previous[item_id]
+                for item_id in affected_ids
+                if item_id in previous
+            }
+        ),
         "item_updates": sorted(item_updates, key=lambda row: str(row["item_id"])),
         "stories": sorted(stories, key=lambda row: str(row["story_id"])),
         "memberships": sorted(memberships, key=lambda row: str(row["item_id"])),
@@ -1608,6 +1633,85 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
     }
     _require_bounded_output(output)
     return output
+
+
+def _affected_component_item_ids(
+    *,
+    target_id: str,
+    rows_by_id: dict[str, dict[str, Any]],
+    features: dict[str, dict[str, Any]],
+    previous: dict[str, str],
+    aliases: dict[str, str],
+    merged: dict[int, list[str]],
+    merged_candidates: dict[int, Counter[str]],
+    existing_edges: list[dict[str, Any]],
+    final_edges: list[dict[str, Any]],
+) -> set[str]:
+    """Return the old/new Story identity closure touched by one identity change."""
+
+    def pair(edge: dict[str, Any]) -> tuple[str, str]:
+        return _ordered_pair(
+            str(edge["left_item_id"]),
+            str(edge["right_item_id"]),
+        )
+
+    existing_pairs = {pair(edge) for edge in existing_edges}
+    final_pairs = {pair(edge) for edge in final_edges}
+    changed_pairs = existing_pairs.symmetric_difference(final_pairs)
+    seeds = {
+        target_id,
+        *(
+            item_id
+            for changed_pair in changed_pairs
+            for item_id in changed_pair
+        ),
+    }
+
+    adjacency: dict[str, set[str]] = {}
+    for left, right in existing_pairs | final_pairs:
+        adjacency.setdefault(left, set()).add(right)
+        adjacency.setdefault(right, set()).add(left)
+    topology_ids: set[str] = set()
+    pending = sorted(item_id for item_id in seeds if item_id in rows_by_id)
+    while pending:
+        item_id = pending.pop()
+        if item_id in topology_ids:
+            continue
+        topology_ids.add(item_id)
+        pending.extend(
+            neighbor
+            for neighbor in sorted(adjacency.get(item_id, ()))
+            if neighbor not in topology_ids
+        )
+
+    story_ids = {
+        previous[item_id]
+        for item_id in topology_ids
+        if item_id in previous
+    }
+    story_ids.update(
+        aliases[alias_key]
+        for item_id in topology_ids
+        if item_id in features
+        if (alias_key := _alias_key(features[item_id]["normalized_title"])) in aliases
+    )
+
+    affected_ids = set(topology_ids)
+    remaining = set(merged)
+    while True:
+        selected = {
+            root
+            for root in remaining
+            if affected_ids.intersection(merged[root])
+            or story_ids.intersection(merged_candidates[root])
+        }
+        if not selected:
+            break
+        for root in selected:
+            affected_ids.update(merged[root])
+            story_ids.update(merged_candidates[root])
+        remaining.difference_update(selected)
+    return affected_ids
 
 
 def merge_final_edges(
