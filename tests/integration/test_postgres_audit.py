@@ -11,6 +11,7 @@ from tracefold.platform.postgres.postgres_audit import (
     PUBLIC_ROUTE_QUERY_COVERAGE,
     PostgresOperationalAudit,
     PostgresQueryAudit,
+    ProjectionValidationAudit,
 )
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 
@@ -54,6 +55,29 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     assert expected.issubset(names)
     assert "search_v2_trigram" not in names
     assert all(item["plan"] for item in payload["queries"])
+
+
+def test_projection_validation_checks_bounded_public_models(tmp_path):
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        initial = ProjectionValidationAudit(conn).run(sample=100)
+        conn.execute(
+            """
+            INSERT INTO news_story_facet_counts (
+              facet_type, facet_value, story_count, updated_at_ms
+            )
+            VALUES ('category', 'stale-test-value', 1, 1)
+            """
+        )
+        stale = ProjectionValidationAudit(conn).run(sample=100)
+    finally:
+        conn.close()
+
+    assert initial["ok"] is True
+    assert initial["mismatch_count"] == 0
+    assert stale["ok"] is False
+    assert stale["checks"]["news_story_facet_mismatch"] == 1
 
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
@@ -108,6 +132,27 @@ def test_query_audit_news_status_reads_the_singleton_projection_summary():
 
     assert "news_projection_summary" in query["sql"]
     assert "FROM news_stories" not in query["sql"]
+
+
+def test_query_audit_public_news_views_read_only_bounded_models():
+    story_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_story_facets")
+    source_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_source_facets")
+    brief = next(item for item in HOT_QUERIES if item["name"] == "news_brief")
+
+    assert "news_story_facet_counts" in story_facets["sql"]
+    assert "FROM news_stories" not in story_facets["sql"]
+    assert "news_source_facet_counts" in source_facets["sql"]
+    assert "news_story_members" not in source_facets["sql"]
+    assert "news_brief_selection_current" in brief["sql"]
+    assert "row_number()" not in brief["sql"].lower()
+
+
+def test_query_audit_stocks_radar_reads_only_current_projection():
+    query = next(item for item in HOT_QUERIES if item["name"] == "stocks_radar_recent")
+
+    assert "stocks_radar_current_rows" in query["sql"]
+    assert "FROM events" not in query["sql"]
+    assert "token_intent_resolutions" not in query["sql"]
 
 
 def test_query_audit_does_not_restore_retired_token_factor_settlement_hot_path():

@@ -300,6 +300,54 @@ def test_incremental_news_projection_persists_edges_and_publishes_only_affected_
             """
         ).fetchall() == [{"item_count": 2, "source_count": 2}]
         assert conn.execute("SELECT count(*) AS n FROM news_story_members WHERE current").fetchone()["n"] == 2
+        assert (
+            conn.execute(
+                """
+            SELECT facet_type, facet_value, story_count
+            FROM news_story_facet_counts
+            ORDER BY facet_type, facet_value
+            """
+            ).fetchall()
+            == conn.execute(
+                """
+            SELECT facet_type, facet_value, story_count
+            FROM (
+              SELECT 'category'::text AS facet_type,
+                     category AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY category
+              UNION ALL
+              SELECT 'level'::text AS facet_type,
+                     level AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY level
+            ) expected
+            ORDER BY facet_type, facet_value
+            """
+            ).fetchall()
+        )
+        assert conn.execute(
+            """
+            SELECT source_id, story_count
+            FROM news_source_facet_counts
+            ORDER BY source_id
+            """
+        ).fetchall() == [
+            {"source_id": "ap", "story_count": 1},
+            {"source_id": "reuters", "story_count": 1},
+        ]
+        assert conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM news_brief_selection_current selection
+            JOIN news_stories story ON story.story_id = selection.story_id
+            WHERE story.active
+            """
+        ).fetchone() == {"count": 1}
 
         score_row = conn.execute(
             """
@@ -1457,6 +1505,9 @@ def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
             "news_story_aliases",
             "news_story_input_state",
             "news_projection_summary",
+            "news_story_facet_counts",
+            "news_source_facet_counts",
+            "news_brief_selection_current",
             "news_projection_frontiers",
             "news_identity_features",
             "news_similarity_edges",

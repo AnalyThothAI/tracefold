@@ -86,6 +86,9 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_story_aliases",
     "news_story_input_state",
     "news_projection_summary",
+    "news_story_facet_counts",
+    "news_source_facet_counts",
+    "news_brief_selection_current",
     "news_brief_runs",
     "news_brief_publications",
     "news_brief_current",
@@ -322,6 +325,9 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "enriched_events",
         "token_radar_current_rows",
         "token_radar_publication_state",
+        "stock_attention_target_features",
+        "stocks_radar_current_rows",
+        "stocks_radar_publication_state",
         "market_instruments",
         "market_observations",
         "market_settlements",
@@ -429,7 +435,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
     }
-    assert version == latest_migration_version() == "20260730_0226"
+    assert version == latest_migration_version() == "20260730_0227"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -454,7 +460,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260730_0226"
+    assert version == latest_migration_version() == "20260730_0227"
 
 
 def test_rates_curve_v6_migration_deletes_only_old_rates_projection_and_rejects_v5(
@@ -669,7 +675,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260730_0226"
+        assert version == "20260730_0227"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

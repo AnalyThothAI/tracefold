@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from tracefold.market.radar.constants import (
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
+    TOKEN_RADAR_RESOLVER_POLICY_VERSION,
     TOKEN_RADAR_VENUES,
     WINDOW_MS,
 )
@@ -35,6 +36,7 @@ _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
 _EXPIRY_BATCH_SIZE = 100
 _PROFILE_DEADLINE_MS = 30_000
 _RANK_LIMIT = 100
+_STOCK_SOURCE_EVENT_LIMIT = 25
 _DEADLINE_MS = {
     "5m": 10_000,
     "1h": 60_000,
@@ -140,6 +142,8 @@ class RadarProjectionService:
         *,
         now_ms: int,
     ) -> dict[str, Any]:
+        if claim.target_type == "MarketInstrument":
+            return self._load_stock_target(claim, now_ms=now_ms)
         window_ms = WINDOW_MS[claim.window]
         request = TokenRadarFeatureSourceRequest(
             request_key="target",
@@ -203,6 +207,77 @@ class RadarProjectionService:
             "source_rows": source_rows,
             "compact_inputs": compact_inputs,
             "old_venues": sorted(venues),
+        }
+        _require_bounded_input(loaded)
+        return loaded
+
+    def _load_stock_target(
+        self,
+        claim: RadarProjectionClaim,
+        *,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        with self._session() as repos:
+            rows = [
+                dict(row)
+                for row in repos.conn.execute(
+                    """
+                    SELECT edge.source_id AS event_id,
+                           edge.observed_at_ms AS received_at_ms,
+                           event.author_handle,
+                           COALESCE(event.text_clean, event.text) AS text,
+                           equity.symbol,
+                           equity.security_name,
+                           equity.exchange,
+                           equity.instrument_type
+                    FROM radar_source_edges edge
+                    JOIN events event
+                      ON event.event_id = edge.source_id
+                    JOIN us_equity_symbols equity
+                      ON equity.market_instrument_id = edge.target_id
+                     AND equity.status = 'active'
+                    WHERE edge.target_type = 'MarketInstrument'
+                      AND edge.target_id = %s
+                      AND edge.window_key = %s
+                      AND edge.venue = %s
+                      AND edge.source_kind = 'event'
+                      AND edge.observed_at_ms >= %s
+                    ORDER BY edge.observed_at_ms DESC, edge.source_id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        claim.target_id,
+                        claim.window,
+                        claim.venue,
+                        int(now_ms) - WINDOW_MS[claim.window],
+                        _INPUT_ROW_CAP + 1,
+                    ),
+                ).fetchall()
+            ]
+            if len(rows) > _INPUT_ROW_CAP:
+                raise RadarShardOversized("stocks_radar_target_shard_oversized")
+            current_features = [
+                dict(row)
+                for row in repos.conn.execute(
+                    """
+                    SELECT *
+                    FROM stock_attention_target_features
+                    WHERE window_key = %s
+                    ORDER BY target_id
+                    LIMIT %s
+                    """,
+                    (claim.window, _INPUT_ROW_CAP + 1),
+                ).fetchall()
+            ]
+            if len(current_features) > _INPUT_ROW_CAP:
+                raise RadarShardOversized("stocks_radar_rank_set_oversized")
+        loaded = {
+            "kind": "stocks_radar",
+            "target_id": claim.target_id,
+            "window": claim.window,
+            "now_ms": int(now_ms),
+            "rows": rows,
+            "current_features": current_features,
         }
         _require_bounded_input(loaded)
         return loaded
@@ -370,6 +445,186 @@ class RadarProjectionService:
             "target_type": claim.target_type,
             "target_id": claim.target_id,
             "window": claim.window,
+        }
+
+    def publish_stock(
+        self,
+        claim: RadarProjectionClaim,
+        *,
+        projection: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        _require_bounded_output(projection)
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            frontier = repos.conn.execute(
+                """
+                SELECT status, claimed_by, input_fingerprint, projection_version
+                FROM radar_projection_frontiers
+                WHERE target_type = %s
+                  AND target_id = %s
+                  AND window_key = %s
+                  AND venue = %s
+                FOR UPDATE
+                """,
+                (
+                    claim.target_type,
+                    claim.target_id,
+                    claim.window,
+                    claim.venue,
+                ),
+            ).fetchone()
+            if not _claim_still_current(frontier, claim):
+                return {
+                    "projection_status": "stale_snapshot",
+                    "rows_written": 0,
+                }
+
+            feature = projection.get("feature")
+            if isinstance(feature, dict):
+                feature_writes = int(
+                    repos.conn.execute(
+                        """
+                        INSERT INTO stock_attention_target_features (
+                          window_key, target_id, symbol, security_name,
+                          exchange, instrument_type, mentions, unique_authors,
+                          latest_seen_ms, latest_event_id,
+                          latest_author_handle, latest_text, source_event_ids,
+                          state_fingerprint, computed_at_ms
+                        )
+                        VALUES (
+                          %(window_key)s, %(target_id)s, %(symbol)s,
+                          %(security_name)s, %(exchange)s,
+                          %(instrument_type)s, %(mentions)s,
+                          %(unique_authors)s, %(latest_seen_ms)s,
+                          %(latest_event_id)s, %(latest_author_handle)s,
+                          %(latest_text)s, %(source_event_ids)s,
+                          %(state_fingerprint)s, %(computed_at_ms)s
+                        )
+                        ON CONFLICT (window_key, target_id) DO UPDATE SET
+                          symbol = EXCLUDED.symbol,
+                          security_name = EXCLUDED.security_name,
+                          exchange = EXCLUDED.exchange,
+                          instrument_type = EXCLUDED.instrument_type,
+                          mentions = EXCLUDED.mentions,
+                          unique_authors = EXCLUDED.unique_authors,
+                          latest_seen_ms = EXCLUDED.latest_seen_ms,
+                          latest_event_id = EXCLUDED.latest_event_id,
+                          latest_author_handle = EXCLUDED.latest_author_handle,
+                          latest_text = EXCLUDED.latest_text,
+                          source_event_ids = EXCLUDED.source_event_ids,
+                          state_fingerprint = EXCLUDED.state_fingerprint,
+                          computed_at_ms = EXCLUDED.computed_at_ms
+                        WHERE stock_attention_target_features.state_fingerprint
+                              IS DISTINCT FROM EXCLUDED.state_fingerprint
+                        """,
+                        feature,
+                    ).rowcount
+                    or 0
+                )
+            else:
+                feature_writes = int(
+                    repos.conn.execute(
+                        """
+                        DELETE FROM stock_attention_target_features
+                        WHERE window_key = %s
+                          AND target_id = %s
+                        """,
+                        (claim.window, claim.target_id),
+                    ).rowcount
+                    or 0
+                )
+
+            state = repos.conn.execute(
+                """
+                SELECT state_fingerprint
+                FROM stocks_radar_publication_state
+                WHERE window_key = %s
+                FOR UPDATE
+                """,
+                (claim.window,),
+            ).fetchone()
+            publication_writes = 0
+            if state is None or str(state["state_fingerprint"]) != str(projection["state_fingerprint"]):
+                publication_writes += int(
+                    repos.conn.execute(
+                        """
+                        DELETE FROM stocks_radar_current_rows
+                        WHERE window_key = %s
+                        """,
+                        (claim.window,),
+                    ).rowcount
+                    or 0
+                )
+                for row in projection["rows"]:
+                    publication_writes += int(
+                        repos.conn.execute(
+                            """
+                            INSERT INTO stocks_radar_current_rows (
+                              window_key, target_id, rank, symbol,
+                              security_name, exchange, instrument_type,
+                              mentions, unique_authors, latest_seen_ms,
+                              latest_event_id, latest_author_handle,
+                              latest_text, source_event_ids,
+                              state_fingerprint, computed_at_ms
+                            )
+                            VALUES (
+                              %(window_key)s, %(target_id)s, %(rank)s,
+                              %(symbol)s, %(security_name)s, %(exchange)s,
+                              %(instrument_type)s, %(mentions)s,
+                              %(unique_authors)s, %(latest_seen_ms)s,
+                              %(latest_event_id)s, %(latest_author_handle)s,
+                              %(latest_text)s, %(source_event_ids)s,
+                              %(state_fingerprint)s, %(computed_at_ms)s
+                            )
+                            """,
+                            row,
+                        ).rowcount
+                        or 0
+                    )
+                publication_writes += int(
+                    repos.conn.execute(
+                        """
+                        INSERT INTO stocks_radar_publication_state (
+                          window_key, state_fingerprint,
+                          source_frontier_ms, published_at_ms
+                        )
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (window_key) DO UPDATE SET
+                          state_fingerprint = EXCLUDED.state_fingerprint,
+                          source_frontier_ms = EXCLUDED.source_frontier_ms,
+                          published_at_ms = EXCLUDED.published_at_ms
+                        """,
+                        (
+                            claim.window,
+                            projection["state_fingerprint"],
+                            projection["source_frontier_ms"],
+                            int(now_ms),
+                        ),
+                    ).rowcount
+                    or 0
+                )
+
+            if not repos.projection_frontiers.complete(
+                RADAR_FRONTIER,
+                key=claim.key,
+                runtime_id=claim.runtime_id,
+                input_fingerprint=claim.input_fingerprint,
+                version=claim.projection_version,
+                now_ms=now_ms,
+            ):
+                raise RuntimeError("stocks_radar_frontier_cas_failed")
+        rows_written = feature_writes + publication_writes
+        return {
+            "projection_status": ("published" if publication_writes else "unchanged"),
+            "rows_written": rows_written,
+            "feature_rows_written": feature_writes,
+            "publication_rows_written": publication_writes,
+            "ranked_rows": len(projection["rows"]),
         }
 
     @staticmethod
@@ -678,6 +933,93 @@ class RadarProjectionService:
         )
 
 
+def compute_stocks_radar_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    target_id = str(payload["target_id"])
+    window = str(payload["window"])
+    now_ms = int(payload["now_ms"])
+    rows_by_event = {str(row["event_id"]): dict(row) for row in payload.get("rows", [])}
+    ordered_events = sorted(
+        rows_by_event.values(),
+        key=lambda row: (
+            -int(row["received_at_ms"]),
+            str(row["event_id"]),
+        ),
+    )
+    feature: dict[str, Any] | None = None
+    if ordered_events:
+        latest = ordered_events[0]
+        author_handles = {
+            str(row.get("author_handle") or "").strip().lower()
+            for row in ordered_events
+            if str(row.get("author_handle") or "").strip()
+        }
+        feature_state = {
+            "window_key": window,
+            "target_id": target_id,
+            "symbol": str(latest["symbol"]),
+            "security_name": str(latest["security_name"]),
+            "exchange": str(latest["exchange"]),
+            "instrument_type": str(latest["instrument_type"]),
+            "mentions": len(ordered_events),
+            "unique_authors": len(author_handles),
+            "latest_seen_ms": int(latest["received_at_ms"]),
+            "latest_event_id": str(latest["event_id"]),
+            "latest_author_handle": (str(latest["author_handle"]) if latest.get("author_handle") else None),
+            "latest_text": str(latest["text"]),
+            "source_event_ids": [str(row["event_id"]) for row in ordered_events[:_STOCK_SOURCE_EVENT_LIMIT]],
+        }
+        feature = {
+            **feature_state,
+            "state_fingerprint": _fingerprint(feature_state),
+            "computed_at_ms": now_ms,
+        }
+
+    features = {
+        str(row["target_id"]): dict(row)
+        for row in payload.get("current_features", [])
+        if str(row["target_id"]) != target_id
+    }
+    if feature is not None:
+        features[target_id] = feature
+    ranked_features = sorted(
+        features.values(),
+        key=lambda row: (
+            -int(row["mentions"]),
+            -int(row["latest_seen_ms"]),
+            str(row["symbol"]),
+            str(row["target_id"]),
+        ),
+    )[:_RANK_LIMIT]
+    ranked_rows = [
+        {
+            **{key: value for key, value in row.items() if key not in {"rank"}},
+            "rank": rank,
+            "window_key": window,
+            "computed_at_ms": now_ms,
+        }
+        for rank, row in enumerate(ranked_features, start=1)
+    ]
+    state_fingerprint = _fingerprint(
+        [
+            [
+                row["rank"],
+                row["target_id"],
+                row["state_fingerprint"],
+            ]
+            for row in ranked_rows
+        ]
+    )
+    return {
+        "feature": feature,
+        "rows": ranked_rows,
+        "state_fingerprint": state_fingerprint,
+        "source_frontier_ms": max(
+            (int(row["latest_seen_ms"]) for row in ranked_rows),
+            default=0,
+        ),
+    }
+
+
 def rebuild_all_token_radar_for_maintenance(
     *,
     db: Any,
@@ -698,6 +1040,13 @@ def rebuild_all_token_radar_for_maintenance(
             "current_rows": int(repos.conn.execute("DELETE FROM token_radar_current_rows").rowcount or 0),
             "publication_states": int(repos.conn.execute("DELETE FROM token_radar_publication_state").rowcount or 0),
             "target_features": int(repos.conn.execute("DELETE FROM token_radar_target_features").rowcount or 0),
+            "stocks_current_rows": int(repos.conn.execute("DELETE FROM stocks_radar_current_rows").rowcount or 0),
+            "stocks_publication_states": int(
+                repos.conn.execute("DELETE FROM stocks_radar_publication_state").rowcount or 0
+            ),
+            "stocks_target_features": int(
+                repos.conn.execute("DELETE FROM stock_attention_target_features").rowcount or 0
+            ),
             "source_edges": int(repos.conn.execute("DELETE FROM radar_source_edges").rowcount or 0),
             "frontiers": int(repos.conn.execute("DELETE FROM radar_projection_frontiers").rowcount or 0),
         }
@@ -727,7 +1076,17 @@ def rebuild_all_token_radar_for_maintenance(
                  AND resolution.event_id = event.event_id
                 WHERE event.received_at_ms >= %(cutoff_ms)s
                   AND resolution.is_current
-                  AND resolution.target_type IN ('Asset', 'CexToken')
+                  AND (
+                    resolution.target_type IN ('Asset', 'CexToken')
+                    OR (
+                      resolution.target_type = 'MarketInstrument'
+                      AND resolution.resolution_status = 'NON_CRYPTO'
+                      AND resolution.resolver_policy_version =
+                            %(resolver_policy_version)s
+                      AND resolution.reason_codes_json
+                            @> '["CONFIRMED_US_EQUITY"]'::jsonb
+                    )
+                  )
                   AND resolution.target_id IS NOT NULL
                   {after_predicate}
                 ORDER BY event.received_at_ms, event.event_id
@@ -738,6 +1097,7 @@ def rebuild_all_token_radar_for_maintenance(
                     "after_received_at_ms": after[0] if after else None,
                     "after_event_id": after[1] if after else None,
                     "limit": _MAINTENANCE_EVENT_BATCH_SIZE,
+                    "resolver_policy_version": TOKEN_RADAR_RESOLVER_POLICY_VERSION,
                 },
             ).fetchall()
         if not rows:
@@ -773,6 +1133,17 @@ def rebuild_all_token_radar_for_maintenance(
         if claim is None:
             raise RuntimeError("radar_maintenance_claim_missing")
         loaded = service.load_target(claim, now_ms=int(now_ms))
+        if claim.target_type == "MarketInstrument":
+            stock_projection = compute_stocks_radar_projection(loaded)
+            result = service.publish_stock(
+                claim,
+                projection=stock_projection,
+                now_ms=int(now_ms),
+            )
+            if result["projection_status"] not in {"published", "unchanged"}:
+                raise RuntimeError(f"radar_maintenance_publish_failed:{result['projection_status']}")
+            shard_results.append(result)
+            continue
         target_projection = compute_token_radar_target_projection(loaded)
         ranked = rank_token_radar_closure(
             {
@@ -818,6 +1189,9 @@ def rebuild_all_token_radar_for_maintenance(
         current_rows = int(
             repos.conn.execute("SELECT count(*) AS count FROM token_radar_current_rows").fetchone()["count"]
         )
+        stocks_current_rows = int(
+            repos.conn.execute("SELECT count(*) AS count FROM stocks_radar_current_rows").fetchone()["count"]
+        )
     if quarantined:
         raise RuntimeError(f"radar_maintenance_quarantine_unresolved:{quarantined}")
     return {
@@ -827,6 +1201,7 @@ def rebuild_all_token_radar_for_maintenance(
         "shards_computed": len(shard_results),
         "rows_written": sum(int(result["rows_written"]) for result in shard_results),
         "current_rows": current_rows,
+        "stocks_current_rows": stocks_current_rows,
         "reset": reset_counts,
     }
 
@@ -869,7 +1244,12 @@ def _serialized_size(value: Any) -> int:
 
 
 def _require_bounded_input(payload: dict[str, Any]) -> None:
-    row_count = len(payload.get("source_rows", [])) + len(payload.get("compact_inputs", []))
+    row_count = (
+        len(payload.get("source_rows", []))
+        + len(payload.get("compact_inputs", []))
+        + len(payload.get("rows", []))
+        + len(payload.get("current_features", []))
+    )
     if row_count > _INPUT_ROW_CAP:
         raise RadarShardOversized("radar_input_row_overflow")
     if _serialized_size(payload) > _INPUT_BYTE_CAP:
@@ -877,6 +1257,8 @@ def _require_bounded_input(payload: dict[str, Any]) -> None:
 
 
 def _require_bounded_output(payload: dict[str, Any]) -> None:
+    if _serialized_size({"rows": payload.get("rows", [])}) > _OUTPUT_BYTE_CAP:
+        raise RadarShardOversized("radar_output_byte_overflow")
     for venue, rows in dict(payload.get("rows_by_venue") or {}).items():
         rows_by_lane: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -900,6 +1282,7 @@ __all__ = [
     "RadarProjectionService",
     "RadarShardOversized",
     "build_token_radar_current_closure",
+    "compute_stocks_radar_projection",
     "compute_token_radar_target_projection",
     "rank_token_radar_closure",
     "rebuild_all_token_radar_for_maintenance",

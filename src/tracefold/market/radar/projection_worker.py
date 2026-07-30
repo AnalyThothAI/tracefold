@@ -9,6 +9,7 @@ from tracefold.market.radar.projection import (
     RadarProjectionService,
     RadarShardOversized,
     build_token_radar_current_closure,
+    compute_stocks_radar_projection,
     compute_token_radar_target_projection,
     rank_token_radar_closure,
 )
@@ -108,6 +109,23 @@ class RadarProjectionCandidate:
                 claim,
                 now_ms=now_ms,
             )
+            if claim.target_type == "MarketInstrument":
+                stock_projection = await self.resources.run_cpu(
+                    compute_stocks_radar_projection,
+                    loaded,
+                    timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                )
+                result = await self.resources.run_background_db(
+                    self.service.publish_stock,
+                    claim,
+                    projection=stock_projection,
+                    now_ms=_now_ms(),
+                )
+                return WorkerResult(
+                    processed=1,
+                    skipped=1 if int(result["rows_written"]) == 0 else 0,
+                    notes=result,
+                )
             target_projection = await self.resources.run_cpu(
                 compute_token_radar_target_projection,
                 loaded,

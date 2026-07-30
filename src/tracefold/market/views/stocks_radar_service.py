@@ -27,8 +27,7 @@ class StocksRadarService:
         parsed_limit = require_nonnegative_int(limit, error_code="stocks_radar_limit_required")
         since_ms = int(now_ms) - WINDOW_MS[window]
         rows = self.stock_rows_query.stock_rows(
-            since_ms=since_ms,
-            now_ms=int(now_ms),
+            window=window,
             limit=parsed_limit,
         )
         items = [

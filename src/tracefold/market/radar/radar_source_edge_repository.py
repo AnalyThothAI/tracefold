@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from tracefold.market.radar.constants import (
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
+    TOKEN_RADAR_RESOLVER_POLICY_VERSION,
     WINDOW_MS,
 )
 from tracefold.platform.postgres.postgres_client import require_transaction
@@ -68,7 +69,16 @@ class RadarSourceEdgeRepository:
                  AND resolution.event_id = event.event_id
                 WHERE event.event_id = %s
                   AND resolution.is_current = true
-                  AND resolution.target_type IN ('Asset', 'CexToken')
+                  AND (
+                    resolution.target_type IN ('Asset', 'CexToken')
+                    OR (
+                      resolution.target_type = 'MarketInstrument'
+                      AND resolution.resolution_status = 'NON_CRYPTO'
+                      AND resolution.resolver_policy_version = %s
+                      AND resolution.reason_codes_json
+                            @> '["CONFIRMED_US_EQUITY"]'::jsonb
+                    )
+                  )
                   AND resolution.target_id IS NOT NULL
                 ORDER BY
                   resolution.target_type,
@@ -77,7 +87,11 @@ class RadarSourceEdgeRepository:
                   resolution.resolution_id
                 LIMIT %s
                 """,
-                (event_key, _EVENT_RESOLUTION_CAP + 1),
+                (
+                    event_key,
+                    TOKEN_RADAR_RESOLVER_POLICY_VERSION,
+                    _EVENT_RESOLUTION_CAP + 1,
+                ),
             ).fetchall()
         ]
         if len(rows) > _EVENT_RESOLUTION_CAP:

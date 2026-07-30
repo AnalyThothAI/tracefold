@@ -1342,6 +1342,7 @@ class NewsRepository:
             ),
         )
         self.refresh_projection_summary_for_maintenance(now_ms=now_ms)
+        self.refresh_bounded_read_models_for_maintenance(now_ms=now_ms)
         return {
             "items": len(items),
             "temporary_clusters": len(temporary_clusters),
@@ -1510,6 +1511,299 @@ class NewsRepository:
             ),
         )
 
+    def projection_facet_snapshot(self, *, story_ids: Sequence[str]) -> dict[str, Any]:
+        ids = sorted({str(value) for value in story_ids if str(value)})
+        if not ids:
+            return {"story_facets": [], "source_pairs": []}
+        story_facets = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT story_id, category, level
+                FROM news_stories
+                WHERE active
+                  AND story_id = ANY(%s)
+                ORDER BY story_id
+                """,
+                (ids,),
+            ).fetchall()
+        ]
+        source_pairs = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT DISTINCT story.story_id, item.source_id
+                FROM news_stories story
+                JOIN news_story_members member
+                  ON member.story_id = story.story_id
+                 AND member.current
+                JOIN news_items item
+                  ON item.item_id = member.item_id
+                WHERE story.active
+                  AND story.story_id = ANY(%s)
+                ORDER BY story.story_id, item.source_id
+                """,
+                (ids,),
+            ).fetchall()
+        ]
+        return {
+            "story_facets": story_facets,
+            "source_pairs": source_pairs,
+        }
+
+    def apply_projection_facet_delta(
+        self,
+        *,
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+        now_ms: int,
+    ) -> int:
+        before_story = _story_facet_counter(before.get("story_facets"))
+        after_story = _story_facet_counter(after.get("story_facets"))
+        before_sources = _source_facet_counter(before.get("source_pairs"))
+        after_sources = _source_facet_counter(after.get("source_pairs"))
+        writes = 0
+        for key in sorted(set(before_story) | set(after_story)):
+            delta = int(after_story[key]) - int(before_story[key])
+            if delta:
+                writes += self._apply_story_facet_count_delta(
+                    facet_type=key[0],
+                    facet_value=key[1],
+                    delta=delta,
+                    now_ms=now_ms,
+                )
+        for source_id in sorted(set(before_sources) | set(after_sources)):
+            delta = int(after_sources[source_id]) - int(before_sources[source_id])
+            if delta:
+                writes += self._apply_source_facet_count_delta(
+                    source_id=source_id,
+                    delta=delta,
+                    now_ms=now_ms,
+                )
+        return writes
+
+    def refresh_brief_selection(self, *, now_ms: int) -> int:
+        desired = [
+            str(row["story_id"])
+            for row in self.conn.execute(
+                """
+                SELECT candidate.story_id
+                FROM news_sources source
+                CROSS JOIN LATERAL (
+                  SELECT story.story_id,
+                         story.importance_score,
+                         story.last_published_at_ms
+                  FROM news_stories story
+                  JOIN news_items item
+                    ON item.item_id = story.representative_item_id
+                  WHERE source.enabled
+                    AND story.active
+                    AND story.representative_source_id = source.source_id
+                    AND NOT item.brief_excluded
+                  ORDER BY story.importance_score DESC,
+                           story.last_published_at_ms DESC,
+                           story.story_id
+                  LIMIT 3
+                ) candidate
+                ORDER BY candidate.importance_score DESC,
+                         candidate.last_published_at_ms DESC,
+                         candidate.story_id
+                LIMIT 8
+                """
+            ).fetchall()
+        ]
+        existing = [
+            str(row["story_id"])
+            for row in self.conn.execute(
+                """
+                SELECT story_id
+                FROM news_brief_selection_current
+                ORDER BY rank
+                """
+            ).fetchall()
+        ]
+        if desired == existing:
+            return 0
+        writes = int(self.conn.execute("DELETE FROM news_brief_selection_current").rowcount or 0)
+        for rank, story_id in enumerate(desired, start=1):
+            writes += int(
+                self.conn.execute(
+                    """
+                    INSERT INTO news_brief_selection_current (
+                      rank, story_id, updated_at_ms
+                    )
+                    VALUES (%s, %s, %s)
+                    """,
+                    (rank, story_id, int(now_ms)),
+                ).rowcount
+                or 0
+            )
+        return writes
+
+    def refresh_bounded_read_models_for_maintenance(self, *, now_ms: int) -> None:
+        self.conn.execute("DELETE FROM news_story_facet_counts")
+        self.conn.execute(
+            """
+            INSERT INTO news_story_facet_counts (
+              facet_type, facet_value, story_count, updated_at_ms
+            )
+            SELECT facets.facet_type, facets.facet_value,
+                   facets.story_count, %s
+            FROM (
+              SELECT 'category'::text AS facet_type,
+                     category AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY category
+              UNION ALL
+              SELECT 'level'::text AS facet_type,
+                     level AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY level
+            ) facets
+            """,
+            (int(now_ms),),
+        )
+        self.conn.execute("DELETE FROM news_source_facet_counts")
+        self.conn.execute(
+            """
+            INSERT INTO news_source_facet_counts (
+              source_id, story_count, updated_at_ms
+            )
+            SELECT item.source_id,
+                   count(DISTINCT member.story_id)::integer,
+                   %s
+            FROM news_story_members member
+            JOIN news_stories story
+              ON story.story_id = member.story_id
+            JOIN news_items item
+              ON item.item_id = member.item_id
+            WHERE story.active
+              AND member.current
+            GROUP BY item.source_id
+            """,
+            (int(now_ms),),
+        )
+        self.refresh_brief_selection(now_ms=now_ms)
+
+    def _apply_story_facet_count_delta(
+        self,
+        *,
+        facet_type: str,
+        facet_value: str,
+        delta: int,
+        now_ms: int,
+    ) -> int:
+        if delta > 0:
+            return int(
+                self.conn.execute(
+                    """
+                    INSERT INTO news_story_facet_counts (
+                      facet_type, facet_value, story_count, updated_at_ms
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (facet_type, facet_value) DO UPDATE SET
+                      story_count = (
+                        news_story_facet_counts.story_count
+                        + EXCLUDED.story_count
+                      ),
+                      updated_at_ms = EXCLUDED.updated_at_ms
+                    """,
+                    (facet_type, facet_value, int(delta), int(now_ms)),
+                ).rowcount
+                or 0
+            )
+        removed = int(
+            self.conn.execute(
+                """
+                DELETE FROM news_story_facet_counts
+                WHERE facet_type = %s
+                  AND facet_value = %s
+                  AND story_count = %s
+                """,
+                (facet_type, facet_value, -int(delta)),
+            ).rowcount
+            or 0
+        )
+        if removed:
+            return removed
+        updated = int(
+            self.conn.execute(
+                """
+                UPDATE news_story_facet_counts
+                SET story_count = story_count + %s,
+                    updated_at_ms = %s
+                WHERE facet_type = %s
+                  AND facet_value = %s
+                  AND story_count > %s
+                """,
+                (int(delta), int(now_ms), facet_type, facet_value, -int(delta)),
+            ).rowcount
+            or 0
+        )
+        if updated != 1:
+            raise RuntimeError("news_story_facet_delta_invalid")
+        return updated
+
+    def _apply_source_facet_count_delta(
+        self,
+        *,
+        source_id: str,
+        delta: int,
+        now_ms: int,
+    ) -> int:
+        if delta > 0:
+            return int(
+                self.conn.execute(
+                    """
+                    INSERT INTO news_source_facet_counts (
+                      source_id, story_count, updated_at_ms
+                    )
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (source_id) DO UPDATE SET
+                      story_count = (
+                        news_source_facet_counts.story_count
+                        + EXCLUDED.story_count
+                      ),
+                      updated_at_ms = EXCLUDED.updated_at_ms
+                    """,
+                    (source_id, int(delta), int(now_ms)),
+                ).rowcount
+                or 0
+            )
+        removed = int(
+            self.conn.execute(
+                """
+                DELETE FROM news_source_facet_counts
+                WHERE source_id = %s
+                  AND story_count = %s
+                """,
+                (source_id, -int(delta)),
+            ).rowcount
+            or 0
+        )
+        if removed:
+            return removed
+        updated = int(
+            self.conn.execute(
+                """
+                UPDATE news_source_facet_counts
+                SET story_count = story_count + %s,
+                    updated_at_ms = %s
+                WHERE source_id = %s
+                  AND story_count > %s
+                """,
+                (int(delta), int(now_ms), source_id, -int(delta)),
+            ).rowcount
+            or 0
+        )
+        if updated != 1:
+            raise RuntimeError("news_source_facet_delta_invalid")
+        return updated
+
     # Read contract ------------------------------------------------------------
 
     def list_feed(
@@ -1646,22 +1940,20 @@ class NewsRepository:
     def _feed_facets(self) -> dict[str, Any]:
         categories = self.conn.execute(
             """
-            SELECT category AS value, count(*) AS count
-              FROM news_stories
-             WHERE active
-             GROUP BY category
-             ORDER BY count(*) DESC, category
+            SELECT facet_value AS value, story_count AS count
+              FROM news_story_facet_counts
+             WHERE facet_type = 'category'
+             ORDER BY story_count DESC, facet_value
              LIMIT %s
             """,
             (_PUBLIC_LIST_LIMIT + 1,),
         ).fetchall()
         levels = self.conn.execute(
             """
-            SELECT level AS value, count(*) AS count
-              FROM news_stories
-             WHERE active
-             GROUP BY level
-             ORDER BY count(*) DESC, level
+            SELECT facet_value AS value, story_count AS count
+              FROM news_story_facet_counts
+             WHERE facet_type = 'level'
+             ORDER BY story_count DESC, facet_value
              LIMIT %s
             """,
             (_PUBLIC_LIST_LIMIT + 1,),
@@ -1669,14 +1961,10 @@ class NewsRepository:
         sources = self.conn.execute(
             """
             SELECT src.source_id AS value, src.name AS label,
-                   count(DISTINCT m.story_id) AS count
-              FROM news_story_members m
-              JOIN news_stories st ON st.story_id = m.story_id
-              JOIN news_items i ON i.item_id = m.item_id
-              JOIN news_sources src ON src.source_id = i.source_id
-             WHERE st.active AND m.current
-             GROUP BY src.source_id, src.name
-             ORDER BY count(DISTINCT m.story_id) DESC, src.name, src.source_id
+                   facet.story_count AS count
+              FROM news_source_facet_counts facet
+              JOIN news_sources src ON src.source_id = facet.source_id
+             ORDER BY facet.story_count DESC, src.name, src.source_id
              LIMIT %s
             """,
             (_PUBLIC_LIST_LIMIT + 1,),
@@ -1883,27 +2171,13 @@ class NewsRepository:
     def brief_candidates(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            WITH ranked AS (
-              SELECT st.*, src.name AS representative_source_name,
-                     row_number() OVER (
-                       PARTITION BY st.representative_source_id
-                       ORDER BY st.importance_score DESC,
-                                st.last_published_at_ms DESC,
-                                st.story_id
-                     ) AS source_rank
-                FROM news_stories st
-                JOIN news_sources src
-                  ON src.source_id = st.representative_source_id
-                JOIN news_items item ON item.item_id = st.representative_item_id
-               WHERE st.active
-                 AND src.enabled
-                 AND NOT item.brief_excluded
-            )
-            SELECT *
-              FROM ranked
-             WHERE source_rank <= 3
-             ORDER BY importance_score DESC, last_published_at_ms DESC, story_id
-             LIMIT 8
+            SELECT story.*, source.name AS representative_source_name
+            FROM news_brief_selection_current selection
+            JOIN news_stories story
+              ON story.story_id = selection.story_id
+            JOIN news_sources source
+              ON source.source_id = story.representative_source_id
+            ORDER BY selection.rank
             """
         ).fetchall()
         return select_top_stories(rows, limit=8, max_per_source=3)
@@ -2553,6 +2827,22 @@ def _brief_run_payload(
         "updated_at_ms": int(row["updated_at_ms"]),
         "completed_at_ms": row["completed_at_ms"],
     }
+
+
+def _story_facet_counter(value: Any) -> Counter[tuple[str, str]]:
+    rows = value if isinstance(value, list) else []
+    counts: Counter[tuple[str, str]] = Counter()
+    for raw in rows:
+        row = dict(raw)
+        counts[("category", str(row["category"]))] += 1
+        counts[("level", str(row["level"]))] += 1
+    return counts
+
+
+def _source_facet_counter(value: Any) -> Counter[str]:
+    rows = value if isinstance(value, list) else []
+    pairs = {(str(dict(raw)["story_id"]), str(dict(raw)["source_id"])) for raw in rows}
+    return Counter(source_id for _, source_id in pairs)
 
 
 __all__ = ["NewsRepository", "deterministic_id"]

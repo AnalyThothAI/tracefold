@@ -8,7 +8,7 @@ from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
-from tests.integration.test_token_radar_idempotency import _run_radar_projection
+from tests.integration.test_token_radar_idempotency import _run_radar_projection, _SingleConnectionDB
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
@@ -28,6 +28,7 @@ from tracefold.market import (
     TwitterEvent,
     market_tick_id,
     parse_gmgn_token_payload,
+    rebuild_all_token_radar_for_maintenance,
 )
 from tracefold.news import NewsBriefDraft, NewsFeedEntry, NewsSourceDefinition
 from tracefold.news.brief import brief_fingerprint
@@ -331,10 +332,11 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
         for attempt in range(1_000):
             frontier = conn.execute(
                 """
-                SELECT target_type, target_id, window_key
+                SELECT target_type, target_id, window_key, venue
                 FROM radar_projection_frontiers
                 WHERE status = 'dirty'
-                ORDER BY deadline_at_ms, target_type, target_id, window_key
+                ORDER BY deadline_at_ms, target_type, target_id,
+                         window_key, venue
                 LIMIT 1
                 """
             ).fetchone()
@@ -347,6 +349,7 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
                 target_id=str(frontier["target_id"]),
                 window=str(frontier["window_key"]),
                 now_ms=base_now_ms + attempt,
+                venue=str(frontier["venue"]),
             )
             assert result["projection_status"] in {
                 "published",
@@ -1071,6 +1074,15 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
                 received_at_ms=now_ms - 1_000,
             ),
         )
+
+        conn = connect_postgres_test(read_only=False)
+        try:
+            rebuild_all_token_radar_for_maintenance(
+                db=_SingleConnectionDB(conn),
+                now_ms=now_ms,
+            )
+        finally:
+            conn.close()
 
         response = client.get(
             "/api/stocks-radar",

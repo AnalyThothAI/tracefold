@@ -684,6 +684,9 @@ class NewsProjectionService:
                     (affected_story_ids or [""],),
                 ).fetchone()["count"]
             )
+            facet_snapshot_before = repos.news.projection_facet_snapshot(
+                story_ids=affected_story_ids,
+            )
 
             feature_writes = int(
                 conn.execute(
@@ -935,7 +938,25 @@ class NewsProjectionService:
                     ),
                 )
 
-            base_serving_rows = item_active_writes + item_score_writes + story_writes + membership_writes
+            facet_writes = 0
+            if story_writes or membership_writes:
+                facet_snapshot_after = repos.news.projection_facet_snapshot(
+                    story_ids=affected_story_ids,
+                )
+                facet_writes = repos.news.apply_projection_facet_delta(
+                    before=facet_snapshot_before,
+                    after=facet_snapshot_after,
+                    now_ms=now_ms,
+                )
+            brief_selection_writes = repos.news.refresh_brief_selection(now_ms=now_ms) if story_writes else 0
+            base_serving_rows = (
+                item_active_writes
+                + item_score_writes
+                + story_writes
+                + membership_writes
+                + facet_writes
+                + brief_selection_writes
+            )
             summary_writes = 0
             if base_serving_rows:
                 active_story_count_after = int(
@@ -1070,6 +1091,8 @@ class NewsProjectionService:
             "story_rows_written": story_writes,
             "membership_rows_written": membership_writes,
             "summary_rows_written": summary_writes,
+            "facet_rows_written": facet_writes,
+            "brief_selection_rows_written": brief_selection_writes,
             "candidate_pairs": len(edge_plan["recompute_pairs"]),
             "pair_blocks": int(edge_plan["pair_blocks"]),
             "closure_items": len(projection["closure_item_ids"]),

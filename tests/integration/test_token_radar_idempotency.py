@@ -103,17 +103,19 @@ def _run_radar_projection(
     now_ms: int,
     target_id: str | None = None,
     target_type: str = "Asset",
+    venue: str = "all",
 ) -> dict[str, Any]:
     if target_id is None:
         row = conn.execute(
             """
             SELECT target_type, target_id
             FROM radar_projection_frontiers
-            WHERE window_key = %s AND venue = 'all'
+            WHERE window_key = %s
+              AND venue = %s
             ORDER BY first_dirty_at_ms, target_type, target_id
             LIMIT 1
             """,
-            (window,),
+            (window, venue),
         ).fetchone()
         if row is None:
             return {"projection_status": "idle", "rows_written": 0}
@@ -126,7 +128,7 @@ def _run_radar_projection(
             "target_type": target_type,
             "target_id": target_id,
             "window_key": window,
-            "venue": "all",
+            "venue": venue,
         },
         runtime_id=str(uuid4()),
         now_ms=now_ms,

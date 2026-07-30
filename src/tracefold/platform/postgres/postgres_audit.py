@@ -34,7 +34,13 @@ CORE_TABLES = (
 PROJECTION_TABLES = (
     "token_radar_current_rows",
     "token_radar_publication_state",
+    "stock_attention_target_features",
+    "stocks_radar_current_rows",
+    "stocks_radar_publication_state",
     "news_projection_summary",
+    "news_story_facet_counts",
+    "news_source_facet_counts",
+    "news_brief_selection_current",
 )
 
 FOREIGN_KEY_CHECKS = {
@@ -183,21 +189,13 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "stocks_radar_recent",
         "sql": """
-            SELECT tir.target_id, count(*) AS mentions,
-                   max(events.received_at_ms) AS latest_seen_ms
-            FROM events
-            JOIN token_intents intents ON intents.event_id = events.event_id
-            JOIN token_intent_resolutions tir
-              ON tir.intent_id = intents.intent_id
-             AND tir.is_current
-             AND tir.target_type = 'MarketInstrument'
-            WHERE events.received_at_ms >= %s
-              AND events.received_at_ms <= %s
-            GROUP BY tir.target_id
-            ORDER BY mentions DESC, latest_seen_ms DESC, tir.target_id
+            SELECT target_id, mentions, latest_seen_ms
+            FROM stocks_radar_current_rows
+            WHERE window_key = %s
+            ORDER BY rank
             LIMIT 100
         """,
-        "params": (0, 9_999_999_999_999),
+        "params": ("1h",),
     },
     {
         "name": "live_market_current",
@@ -244,11 +242,9 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_feed_story_facets",
         "sql": """
-            SELECT category, level, count(*) AS story_count
-            FROM news_stories
-            WHERE active
-            GROUP BY GROUPING SETS ((category), (level))
-            ORDER BY story_count DESC, category, level
+            SELECT facet_type, facet_value, story_count
+            FROM news_story_facet_counts
+            ORDER BY facet_type, story_count DESC, facet_value
             LIMIT 101
         """,
         "params": (),
@@ -256,15 +252,10 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_feed_source_facets",
         "sql": """
-            SELECT sources.source_id, count(DISTINCT members.story_id) AS story_count
-            FROM news_story_members members
-            JOIN news_stories stories ON stories.story_id = members.story_id
-            JOIN news_items items ON items.item_id = members.item_id
-            JOIN news_sources sources ON sources.source_id = items.source_id
-            WHERE stories.active
-              AND members.current
-            GROUP BY sources.source_id, sources.name
-            ORDER BY story_count DESC, sources.name, sources.source_id
+            SELECT sources.source_id, facets.story_count
+            FROM news_source_facet_counts facets
+            JOIN news_sources sources ON sources.source_id = facets.source_id
+            ORDER BY facets.story_count DESC, sources.name, sources.source_id
             LIMIT 101
         """,
         "params": (),
@@ -299,36 +290,12 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_brief",
         "sql": """
-            WITH candidates AS (
-              SELECT stories.story_id, stories.importance_score,
-                     stories.last_published_at_ms,
-                     row_number() OVER (
-                       PARTITION BY stories.representative_source_id
-                       ORDER BY stories.importance_score DESC,
-                                stories.last_published_at_ms DESC,
-                                stories.story_id
-                     ) AS source_rank
-              FROM news_stories stories
-              JOIN news_sources sources
-                ON sources.source_id = stories.representative_source_id
-              JOIN news_items items
-                ON items.item_id = stories.representative_item_id
-              WHERE stories.active
-                AND sources.enabled
-                AND NOT items.brief_excluded
-            ),
-            selected AS (
-              SELECT story_id
-              FROM candidates
-              WHERE source_rank <= 3
-              ORDER BY importance_score DESC, last_published_at_ms DESC, story_id
-              LIMIT 8
-            )
-            SELECT current.publication_id, count(selected.story_id) AS candidate_count
+            SELECT current.publication_id, selection.story_id
             FROM news_brief_current current
-            LEFT JOIN selected ON true
+            LEFT JOIN news_brief_selection_current selection ON true
             WHERE current.singleton_key
-            GROUP BY current.publication_id
+            ORDER BY selection.rank
+            LIMIT 8
         """,
         "params": (),
     },
@@ -698,15 +665,150 @@ class ProjectionValidationAudit:
         checked_count = int(row["checked_count"] if row else 0)
         missing_refs = int(row["mismatch_count"] if row else 0)
         latest_computed_at_ms = row["computed_at_ms"] if row else None
+        bounded_models = self.conn.execute(
+            """
+            WITH stock_expected_ranked AS (
+              SELECT
+                window_key,
+                target_id,
+                row_number() OVER (
+                  PARTITION BY window_key
+                  ORDER BY mentions DESC, latest_seen_ms DESC,
+                           symbol, target_id
+                )::integer AS expected_rank,
+                state_fingerprint
+              FROM stock_attention_target_features
+            ),
+            stock_expected AS (
+              SELECT *
+              FROM stock_expected_ranked
+              WHERE expected_rank <= 100
+            ),
+            stock_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM stock_expected expected
+              FULL OUTER JOIN stocks_radar_current_rows current
+                ON current.window_key = expected.window_key
+               AND current.target_id = expected.target_id
+              WHERE expected.target_id IS NULL
+                 OR current.target_id IS NULL
+                 OR current.rank IS DISTINCT FROM expected.expected_rank
+                 OR current.state_fingerprint
+                      IS DISTINCT FROM expected.state_fingerprint
+            ),
+            story_facet_expected AS (
+              SELECT 'category'::text AS facet_type,
+                     category AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY category
+              UNION ALL
+              SELECT 'level'::text AS facet_type,
+                     level AS facet_value,
+                     count(*)::integer AS story_count
+              FROM news_stories
+              WHERE active
+              GROUP BY level
+            ),
+            story_facet_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM story_facet_expected expected
+              FULL OUTER JOIN news_story_facet_counts current
+                ON current.facet_type = expected.facet_type
+               AND current.facet_value = expected.facet_value
+              WHERE expected.facet_value IS NULL
+                 OR current.facet_value IS NULL
+                 OR current.story_count IS DISTINCT FROM expected.story_count
+            ),
+            source_facet_expected AS (
+              SELECT item.source_id,
+                     count(DISTINCT member.story_id)::integer AS story_count
+              FROM news_story_members member
+              JOIN news_stories story
+                ON story.story_id = member.story_id
+              JOIN news_items item
+                ON item.item_id = member.item_id
+              WHERE story.active
+                AND member.current
+              GROUP BY item.source_id
+            ),
+            source_facet_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM source_facet_expected expected
+              FULL OUTER JOIN news_source_facet_counts current
+                ON current.source_id = expected.source_id
+              WHERE expected.source_id IS NULL
+                 OR current.source_id IS NULL
+                 OR current.story_count IS DISTINCT FROM expected.story_count
+            ),
+            brief_candidates AS (
+              SELECT candidate.story_id,
+                     candidate.importance_score,
+                     candidate.last_published_at_ms
+              FROM news_sources source
+              CROSS JOIN LATERAL (
+                SELECT story.story_id,
+                       story.importance_score,
+                       story.last_published_at_ms
+                FROM news_stories story
+                JOIN news_items item
+                  ON item.item_id = story.representative_item_id
+                WHERE source.enabled
+                  AND story.active
+                  AND story.representative_source_id = source.source_id
+                  AND NOT item.brief_excluded
+                ORDER BY story.importance_score DESC,
+                         story.last_published_at_ms DESC,
+                         story.story_id
+                LIMIT 3
+              ) candidate
+              ORDER BY candidate.importance_score DESC,
+                       candidate.last_published_at_ms DESC,
+                       candidate.story_id
+              LIMIT 8
+            ),
+            brief_expected AS (
+              SELECT row_number() OVER (
+                       ORDER BY importance_score DESC,
+                                last_published_at_ms DESC,
+                                story_id
+                     )::smallint AS rank,
+                     story_id
+              FROM brief_candidates
+            ),
+            brief_mismatch AS (
+              SELECT count(*)::integer AS count
+              FROM brief_expected expected
+              FULL OUTER JOIN news_brief_selection_current current
+                USING (rank)
+              WHERE expected.story_id IS NULL
+                 OR current.story_id IS NULL
+                 OR current.story_id IS DISTINCT FROM expected.story_id
+            )
+            SELECT
+              (SELECT count FROM stock_mismatch)
+                AS stocks_radar_current_mismatch,
+              (SELECT count FROM story_facet_mismatch)
+                AS news_story_facet_mismatch,
+              (SELECT count FROM source_facet_mismatch)
+                AS news_source_facet_mismatch,
+              (SELECT count FROM brief_mismatch)
+                AS news_brief_selection_mismatch
+            """
+        ).fetchone()
+        bounded_checks = {str(name): int(value or 0) for name, value in dict(bounded_models or {}).items()}
+        mismatch_count = missing_refs + sum(bounded_checks.values())
         status = "ready" if latest_computed_at_ms is not None else "projection_missing"
         return {
-            "ok": missing_refs == 0,
+            "ok": mismatch_count == 0,
             "status": status,
             "sample": sample_size,
             "checked_count": checked_count,
-            "mismatch_count": missing_refs,
+            "mismatch_count": mismatch_count,
             "checks": {
                 "token_radar_current_rows_missing_refs": missing_refs,
+                **bounded_checks,
             },
         }
 
