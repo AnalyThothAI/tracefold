@@ -424,9 +424,10 @@ Mutating maintenance commands require an explicit execution flag where the parse
 the latest historical run as a substitute. Its Thesis summary exposes only the
 current v2 state and identity; a same-session v1 row is `not_published`.
 `offline_evaluation` is a read-only projection over immutable Evidence Packs:
-it reports the exact nine-real-session shortfall or the selected 12-case corpus,
-but never invokes a model, writes an evaluation row, or becomes a daily
-publication gate.
+it validates available packs, reports advisory progress toward the nine-real-
+session quality corpus or the selected 12 cases, and explicitly returns
+`blocks_deployment=false`. It never invokes a model, writes an evaluation row,
+or becomes a daily publication or schema-migration gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

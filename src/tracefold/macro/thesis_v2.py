@@ -35,6 +35,7 @@ MACRO_THESIS_PROMPT_VERSION = "macro_thesis_sop_v2"
 MAX_RESEARCH_INPUT_BYTES = 64 * 1024
 MAX_EXACT_EVIDENCE_REFS = 64
 MAX_CONDITION_CANDIDATES = 32
+MAX_STRUCTURE_MAPPING_ITEMS = 6
 
 ConditionKind = Literal["confirmation", "weakening", "falsifier", "checkpoint"]
 ConditionScopeKind = Literal["mainline", "alternative", "tension", "asset"]
@@ -863,15 +864,14 @@ def compile_research_input_v1(
         local_ref_order[module_id] = local_refs
         changes = _module_change_candidates(module, exact_rows)
         counter_signals = _module_counter_signals(module, local_refs)
+        structure_source = {
+            key: module.get(key) for key in _MODULE_STRUCTURE_KEYS[module_id] if module.get(key) is not None
+        }
         capsules.append(
             MacroResearchModuleCapsule(
                 module_id=module_id,
                 state_as_of_cutoff=_module_current_state(module),
-                structure={
-                    key: _bounded_structure(module.get(key))
-                    for key in _MODULE_STRUCTURE_KEYS[module_id]
-                    if module.get(key) is not None
-                },
+                structure=_bounded_structure(structure_source),
                 driver_candidates=tuple(
                     MacroDriverCandidate(
                         candidate_id=f"driver:{module_id}:{change.change_id}",
@@ -900,6 +900,7 @@ def compile_research_input_v1(
                     "counter_signals": max(0, len(counter_signals) - 2),
                     "exact_evidence": max(0, len(exact_rows) - len(local_refs)),
                     "condition_candidates": max(0, len(module_candidates) - len(chosen_candidates)),
+                    "structure_items": _bounded_structure_omissions(structure_source),
                 },
             )
         )
@@ -2076,9 +2077,43 @@ def _bounded_structure(value: Any, *, depth: int = 0) -> Any:
     if depth > 5:
         return None
     if isinstance(value, Mapping):
-        return {
-            str(key): _bounded_structure(item, depth=depth + 1)
-            for key, item in value.items()
+        items = sorted(
+            (
+                (str(key), item)
+                for key, item in value.items()
+                if key
+                not in {
+                    "analysis_evidence",
+                    "documents",
+                    "history",
+                    "markdown",
+                    "narrative",
+                    "raw_data",
+                    "raw_data_json",
+                    "receipts",
+                    "source_url",
+                    "timeline",
+                }
+            ),
+            key=lambda item: item[0],
+        )[:MAX_STRUCTURE_MAPPING_ITEMS]
+        return {key: _bounded_structure(item, depth=depth + 1) for key, item in items}
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return [_bounded_structure(item, depth=depth + 1) for item in list(value)[:2]]
+    if isinstance(value, str):
+        return value[:1_000]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _bounded_structure_omissions(value: Any, *, depth: int = 0) -> int:
+    if depth > 5:
+        return 1
+    if isinstance(value, Mapping):
+        retained = [
+            item
+            for key, item in sorted(value.items(), key=lambda item: str(item[0]))
             if key
             not in {
                 "analysis_evidence",
@@ -2092,14 +2127,16 @@ def _bounded_structure(value: Any, *, depth: int = 0) -> Any:
                 "source_url",
                 "timeline",
             }
-        }
+        ]
+        return max(0, len(retained) - MAX_STRUCTURE_MAPPING_ITEMS) + sum(
+            _bounded_structure_omissions(item, depth=depth + 1) for item in retained[:MAX_STRUCTURE_MAPPING_ITEMS]
+        )
     if isinstance(value, Sequence) and not isinstance(value, str | bytes):
-        return [_bounded_structure(item, depth=depth + 1) for item in list(value)[:2]]
-    if isinstance(value, str):
-        return value[:1_000]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value
+        retained = list(value)
+        return max(0, len(retained) - 2) + sum(
+            _bounded_structure_omissions(item, depth=depth + 1) for item in retained[:2]
+        )
+    return 0
 
 
 def _walk_mappings(value: Any) -> tuple[Mapping[str, Any], ...]:

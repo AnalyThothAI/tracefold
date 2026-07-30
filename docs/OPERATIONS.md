@@ -306,21 +306,28 @@ with a corresponding material outlook. Recovery separately explains
 publication-time versus current fact availability. None of these paths edits
 or republishes the Thesis.
 
-Before applying `20260729_0216` to production, freeze and human-sign
-`macro_thin_profile_eval_v1`: six module cases, three distinct mixed sessions,
-and three derived gap cases. Baseline and candidate use the same production
-model twice. Candidate factual/citation/condition errors veto release; its
-worst causal, counterevidence, and material-asset recall cannot regress, and at
-least one of causal sufficiency, counterevidence recall, or duplicate-claim
-count must improve. The deterministic evaluator reports eligibility only; the
-research owner records the final cutover decision. Insufficient real sessions
-blocks migration rather than introducing synthetic directional cases.
-`uv run tracefold macro status` reports this as
-`offline_evaluation.state=insufficient_real_sessions` with the exact available
-and missing real-session counts. Once nine sessions exist it deterministically
-compiles bounded Research Inputs and either reports the 12 selected case IDs or
-`selection_blocked` with the failed corpus rule. This status read performs no
-provider call and no write.
+Before applying `20260729_0216` to production, compile every available real v3
+Evidence Pack into the bounded current Research Input, then complete the normal
+backup, migration, restart, PostgreSQL/API/browser, and current-session model
+smoke checks. A pack that cannot compile is a deployment defect; the number of
+elapsed sessions is not.
+
+`macro_thin_profile_eval_v1` remains an offline quality corpus: six module
+cases, three distinct mixed sessions, and three derived gap cases. Nine
+distinct real sessions are its long-horizon selection target, not a migration
+gate, and synthetic directional cases never fill the target. Baseline and
+candidate use the same production model twice. Candidate
+factual/citation/condition errors veto a human quality disposition; its worst
+causal, counterevidence, and material-asset recall cannot regress, and at least
+one of causal sufficiency, counterevidence recall, or duplicate-claim count
+must improve.
+
+`uv run tracefold macro status` reports collection as
+`offline_evaluation.state=collecting`, the target and remaining real-session
+counts, and `blocks_deployment=false`. It validates every available pack before
+reporting collection. Once the target exists it either reports the 12 selected
+case IDs or `selection_blocked` with the failed corpus rule. This status read
+performs no provider call and no write.
 
 ## Operator actions and retention
 

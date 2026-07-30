@@ -354,6 +354,28 @@ def test_research_input_is_deterministic_bounded_and_round_robin() -> None:
     assert first.omitted_count["exact_evidence"] > 0
 
 
+def test_research_input_bounds_wide_typed_module_mappings() -> None:
+    modules = deepcopy(_modules())
+    credit = next(module for module in modules if module["module_id"] == "credit")
+    credit["confirmations"] = {
+        f"confirmation_{index:02d}": {
+            "dataset_id": f"fred.confirmation_{index:02d}",
+            "label": f"Credit confirmation {index:02d}",
+            "value": float(index),
+            "unit": "percent",
+            "as_of": SESSION.isoformat(),
+        }
+        for index in range(40)
+    }
+
+    research_input = compile_research_input_v1(_pack(modules=modules))
+
+    assert len(canonical_json_bytes(research_input.model_dump(mode="json"))) <= MAX_RESEARCH_INPUT_BYTES
+    credit_capsule = next(module for module in research_input.modules if module.module_id == "credit")
+    assert "confirmation_00" in credit_capsule.structure["confirmations"]
+    assert credit_capsule.omitted_count["structure_items"] == 34
+
+
 def test_condition_registry_is_the_exact_closed_family_set() -> None:
     assert MACRO_CONDITION_FAMILY_PREFIXES == (
         "rates.curve10y2y",
