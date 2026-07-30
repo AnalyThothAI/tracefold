@@ -125,7 +125,7 @@ export function MacroThesisReport({
           </header>
           <ul>
             {thesis.material_changes.map((item) => (
-              <li key={item.change_id}>
+              <li key={item.candidate_id}>
                 <b>{changeStatusLabel(item.status)}</b> {item.statement}
               </li>
             ))}

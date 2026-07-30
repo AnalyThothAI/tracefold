@@ -711,6 +711,7 @@ def test_current_v1_is_not_published_but_remains_explicit_archive(
     assert overview_data["thesis_state"] == "not_published"
     assert overview_data["thesis"] is None
     assert overview_data["thesis_reason"]["code"] == "macro_thesis_current_contract_not_published"
+    assert {module["role"] for module in overview_data["modules"]} == {"unassessed"}
     assert current_data["state"] == "not_published"
     assert current_data["thesis"] is None
     assert archive_data["state"] == "historical"

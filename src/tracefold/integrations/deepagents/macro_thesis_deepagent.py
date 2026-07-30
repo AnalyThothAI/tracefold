@@ -51,10 +51,14 @@ _RESEARCH_PROMPT = """你是 Tracefold 的 Thin Macro Research Agent。
    证据冲突或不足时明确 no_call。
 3. 主动写出 strongest counterevidence；只有确有不同因果解释时才提供最多一个 alternative，
    tensions 最多三个。
-4. 只选择有 exact evidence 和可解释 transmission 的 material module 与 material asset outlook；
+4. material_changes 是必答选择：只能选择 modules.material_changes 中已有的 candidate_id，
+   填 status 与 statement；没有实质 Thesis 变化时明确返回空数组，不得用普通事实变化凑数。
+5. 只选择有 exact evidence 和可解释 transmission 的 material module 与 material asset outlook；
    不填满六模块或十二资产。
-5. 条件只能选择输入给出的 candidate_id、allowed kind 和 allowed scope；不得改写 predicate。
-6. 每个事实性判断完成 exact evidence_ref closure，然后只返回 MacroThesisDraftV2 structured output。
+6. 条件只能选择输入给出的 candidate_id、allowed kind 和 allowed scope；不得改写 predicate。
+   stance=call 时必须选择至少一个 scope_kind=mainline、scope_id=mainline 的 falsifier；
+   falsifier 在 cutoff 时必须尚未触发；没有合格 falsifier 时必须 no_call。
+7. 每个事实性判断完成 exact evidence_ref closure，然后只返回 MacroThesisDraftV2 structured output。
 
 不得选择 canonical source、重算 deterministic facts、发明 Dataset/metric/operator/threshold，
 不得调用工具、子 Agent、文件、todo、task、execute、search 或 summarization。

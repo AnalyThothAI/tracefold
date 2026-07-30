@@ -4012,50 +4012,6 @@
         "title": "MacroDraftMainline",
         "type": "object"
       },
-      "MacroDraftMaterialChange": {
-        "additionalProperties": false,
-        "properties": {
-          "change_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Change Id",
-            "type": "string"
-          },
-          "evidence_refs": {
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 8,
-            "minItems": 1,
-            "title": "Evidence Refs",
-            "type": "array"
-          },
-          "statement": {
-            "maxLength": 2000,
-            "minLength": 1,
-            "title": "Statement",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "new",
-              "strengthened",
-              "weakened",
-              "reversed"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "change_id",
-          "status",
-          "statement",
-          "evidence_refs"
-        ],
-        "title": "MacroDraftMaterialChange",
-        "type": "object"
-      },
       "MacroDraftModuleAssessment": {
         "additionalProperties": false,
         "properties": {
@@ -6328,7 +6284,8 @@
               "confirming",
               "contradicting",
               "uncertain",
-              "not_material"
+              "not_material",
+              "unassessed"
             ],
             "title": "Role",
             "type": "string"
@@ -6456,7 +6413,8 @@
               "confirming",
               "contradicting",
               "uncertain",
-              "not_material"
+              "not_material",
+              "unassessed"
             ],
             "title": "Role",
             "type": "string"
@@ -7335,6 +7293,50 @@
           "horizon"
         ],
         "title": "MacroPublicationHistoryItemData",
+        "type": "object"
+      },
+      "MacroPublishedMaterialChange": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "statement": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "strengthened",
+              "weakened",
+              "reversed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "status",
+          "statement",
+          "evidence_refs"
+        ],
+        "title": "MacroPublishedMaterialChange",
         "type": "object"
       },
       "MacroRatesBoundedAssessmentData": {
@@ -9680,7 +9682,7 @@
           },
           "material_changes": {
             "items": {
-              "$ref": "#/components/schemas/MacroDraftMaterialChange"
+              "$ref": "#/components/schemas/MacroPublishedMaterialChange"
             },
             "title": "Material Changes",
             "type": "array"

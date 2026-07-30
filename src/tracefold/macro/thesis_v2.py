@@ -30,7 +30,7 @@ MACRO_LIVE_DELTA_SCHEMA_VERSION_V2 = "macro_live_delta_v2"
 MACRO_OUTCOME_REPLAY_SCHEMA_VERSION_V2 = "macro_outcome_replay_v2"
 
 MACRO_THESIS_PROFILE_VERSION = "macro_thesis_thin_v1"
-MACRO_THESIS_PROMPT_VERSION = "macro_thesis_sop_v2"
+MACRO_THESIS_PROMPT_VERSION = "macro_thesis_sop_v3"
 
 MAX_RESEARCH_INPUT_BYTES = 64 * 1024
 MAX_EXACT_EVIDENCE_REFS = 64
@@ -216,7 +216,7 @@ class MacroDriverCandidate(ExactMacroV2Model):
 
 
 class MacroMaterialChangeCandidate(ExactMacroV2Model):
-    change_id: str = Field(min_length=1, max_length=300)
+    candidate_id: str = Field(min_length=1, max_length=300)
     dataset_id: str = Field(min_length=1, max_length=200)
     status_hint: Literal["new", "strengthened", "weakened", "reversed"] | None = None
     label: str = Field(min_length=1, max_length=300)
@@ -289,7 +289,7 @@ class MacroResearchInputV1(ExactMacroV2Model):
     session_date: date
     cutoff_ms: int = Field(ge=0)
     profile_version: Literal["macro_thesis_thin_v1"] = "macro_thesis_thin_v1"
-    prompt_version: Literal["macro_thesis_sop_v2"] = "macro_thesis_sop_v2"
+    prompt_version: Literal["macro_thesis_sop_v3"] = "macro_thesis_sop_v3"
     modules: tuple[MacroResearchModuleCapsule, ...]
     momentum: tuple[MacroMomentum, ...]
     prior_material_delta: dict[str, Any]
@@ -317,6 +317,16 @@ class MacroResearchInputV1(ExactMacroV2Model):
             raise ValueError("macro_research_input_evidence_identity")
         if condition_ids != self.allowed_condition_ids or len(condition_ids) != len(set(condition_ids)):
             raise ValueError("macro_research_input_condition_identity")
+        material_change_ids = tuple(item.candidate_id for module in self.modules for item in module.material_changes)
+        if len(material_change_ids) != len(set(material_change_ids)):
+            raise ValueError("macro_research_input_material_change_identity")
+        allowed_evidence = set(self.allowed_evidence_ids)
+        if any(
+            not set(item.evidence_refs).issubset(allowed_evidence)
+            for module in self.modules
+            for item in module.material_changes
+        ):
+            raise ValueError("macro_research_input_material_change_evidence")
         if any(item.authoritative_at_ms > self.cutoff_ms for item in self.exact_evidence):
             raise ValueError("macro_research_input_future_fact")
         encoded = canonical_json_bytes(self.model_dump(mode="json"))
@@ -396,7 +406,13 @@ class MacroDraftModuleAssessment(ExactMacroV2Model):
 
 
 class MacroDraftMaterialChange(ExactMacroV2Model):
-    change_id: str = Field(min_length=1, max_length=200)
+    candidate_id: str = Field(min_length=1, max_length=300)
+    status: Literal["new", "strengthened", "weakened", "reversed"]
+    statement: str = Field(min_length=1, max_length=2_000)
+
+
+class MacroPublishedMaterialChange(ExactMacroV2Model):
+    candidate_id: str = Field(min_length=1, max_length=300)
     status: Literal["new", "strengthened", "weakened", "reversed"]
     statement: str = Field(min_length=1, max_length=2_000)
     evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
@@ -450,7 +466,7 @@ class MacroThesisDraftV2(ExactMacroV2Model):
     alternative: MacroDraftAlternative | None = None
     tensions: tuple[MacroDraftTension, ...] = Field(default=(), max_length=3)
     module_assessments: tuple[MacroDraftModuleAssessment, ...] = Field(default=(), max_length=6)
-    material_changes: tuple[MacroDraftMaterialChange, ...] = Field(default=(), max_length=8)
+    material_changes: tuple[MacroDraftMaterialChange, ...] = Field(max_length=8)
     asset_outlooks: tuple[MacroDraftAssetOutlook, ...] = Field(default=(), max_length=12)
     condition_uses: tuple[MacroDraftConditionUse, ...] = Field(default=(), max_length=24)
 
@@ -460,7 +476,7 @@ class MacroThesisDraftV2(ExactMacroV2Model):
             *(item.edge_id for item in self.mainline.causal_edges),
             *((item.edge_id for item in self.alternative.causal_edges) if self.alternative else ()),
             *(item.tension_id for item in self.tensions),
-            *(item.change_id for item in self.material_changes),
+            *(item.candidate_id for item in self.material_changes),
             *(item.outlook_id for item in self.asset_outlooks),
         ]
         if len(identifiers) != len(set(identifiers)):
@@ -494,8 +510,6 @@ class MacroThesisDraftV2(ExactMacroV2Model):
             refs.update(tension.side_b.evidence_refs)
         for assessment in self.module_assessments:
             refs.update(assessment.evidence_refs)
-        for change in self.material_changes:
-            refs.update(change.evidence_refs)
         for outlook in self.asset_outlooks:
             refs.update(outlook.supporting_evidence_refs)
             refs.update(outlook.conflicting_evidence_refs)
@@ -609,7 +623,7 @@ class MacroThesisV2(ExactMacroV2Model):
     mainline: MacroDraftMainline
     alternative: MacroDraftAlternative | None
     tensions: tuple[MacroDraftTension, ...]
-    material_changes: tuple[MacroDraftMaterialChange, ...]
+    material_changes: tuple[MacroPublishedMaterialChange, ...]
     module_assessments: tuple[MacroDraftModuleAssessment, ...]
     assets: tuple[MacroFrozenAssetSnapshotV2, ...]
     asset_outlooks: tuple[MacroDraftAssetOutlook, ...]
@@ -849,10 +863,14 @@ def compile_research_input_v1(
         module_candidates = sorted(candidates_by_module[module_id], key=_condition_candidate_sort_key)
         chosen_candidates = module_candidates[:4]
         selected_candidates.extend(chosen_candidates)
+        changes = _module_change_candidates(module, exact_rows)
         candidate_refs = [
             ref
-            for candidate in chosen_candidates
-            for ref in candidate.evidence_refs
+            for refs in (
+                *(change.evidence_refs for change in changes[:3]),
+                *(candidate.evidence_refs for candidate in chosen_candidates),
+            )
+            for ref in refs
             if ref in {item.evidence_ref for item in exact_rows}
         ]
         remaining_refs = [
@@ -861,8 +879,9 @@ def compile_research_input_v1(
             if item.evidence_ref not in candidate_refs
         ]
         local_refs = list(dict.fromkeys([*candidate_refs, *remaining_refs]))[:6]
+        local_ref_set = set(local_refs)
+        selected_changes = [change for change in changes if set(change.evidence_refs).issubset(local_ref_set)]
         local_ref_order[module_id] = local_refs
-        changes = _module_change_candidates(module, exact_rows)
         counter_signals = _module_counter_signals(module, local_refs)
         structure_source = {
             key: module.get(key) for key in _MODULE_STRUCTURE_KEYS[module_id] if module.get(key) is not None
@@ -874,7 +893,7 @@ def compile_research_input_v1(
                 structure=_bounded_structure(structure_source),
                 driver_candidates=tuple(
                     MacroDriverCandidate(
-                        candidate_id=f"driver:{module_id}:{change.change_id}",
+                        candidate_id=f"driver:{module_id}:{change.candidate_id}",
                         dataset_id=change.dataset_id,
                         label=change.label,
                         value=change.value,
@@ -882,9 +901,9 @@ def compile_research_input_v1(
                         metrics={},
                         evidence_refs=change.evidence_refs,
                     )
-                    for change in changes[:3]
+                    for change in selected_changes[:3]
                 ),
-                material_changes=tuple(changes[:2]),
+                material_changes=tuple(selected_changes[:2]),
                 counter_signal_candidates=tuple(counter_signals[:2]),
                 source_clock_ms=max(
                     (item.authoritative_at_ms for item in exact_rows),
@@ -895,8 +914,8 @@ def compile_research_input_v1(
                 exact_evidence_refs=tuple(local_refs),
                 condition_candidate_ids=tuple(item.candidate_id for item in chosen_candidates),
                 omitted_count={
-                    "drivers": max(0, len(changes) - 3),
-                    "material_changes": max(0, len(changes) - 2),
+                    "drivers": max(0, len(changes) - len(selected_changes[:3])),
+                    "material_changes": max(0, len(changes) - len(selected_changes[:2])),
                     "counter_signals": max(0, len(counter_signals) - 2),
                     "exact_evidence": max(0, len(exact_rows) - len(local_refs)),
                     "condition_candidates": max(0, len(module_candidates) - len(chosen_candidates)),
@@ -1029,6 +1048,7 @@ def compile_candidate_publication_v2(
 
     try:
         compiled_conditions = _compile_selected_conditions(draft, research_input)
+        compiled_material_changes = _compile_material_changes(draft, research_input)
         _validate_draft_scopes(draft)
     except ValueError as exc:
         raise _gate_failure(
@@ -1052,6 +1072,9 @@ def compile_candidate_publication_v2(
     }
     publication_id = "mth2_" + payload_hash(seed).removeprefix("sha256:")[:32]
     citation_lookup = {item.evidence_ref: item for item in research_input.exact_evidence}
+    citation_refs = draft.evidence_refs | frozenset(
+        ref for change in compiled_material_changes for ref in change.evidence_refs
+    )
     citations = tuple(
         MacroCitationV2(
             **citation_lookup[ref].model_dump(
@@ -1060,7 +1083,7 @@ def compile_candidate_publication_v2(
             )
         )
         for ref in research_input.allowed_evidence_ids
-        if ref in draft.evidence_refs
+        if ref in citation_refs
     )
     prior_publication_id = (
         str(evidence_pack.prior_publication.get("publication_id"))
@@ -1080,7 +1103,7 @@ def compile_candidate_publication_v2(
         mainline=draft.mainline,
         alternative=draft.alternative,
         tensions=draft.tensions,
-        material_changes=draft.material_changes,
+        material_changes=compiled_material_changes,
         module_assessments=draft.module_assessments,
         assets=tuple(
             MacroFrozenAssetSnapshotV2(
@@ -1435,6 +1458,12 @@ def _compile_selected_conditions(
             raise ValueError(f"condition_scope_not_allowed:{use.candidate_id}:{use.scope_kind}")
         if not set(use.evidence_refs).issubset(set(candidate.evidence_refs)):
             raise ValueError(f"condition_evidence_binding_invalid:{use.candidate_id}")
+        if (
+            isinstance(candidate, MetricConditionCandidate)
+            and use.kind == "falsifier"
+            and _predicate_matches(candidate.frozen_value, candidate.operator, candidate.threshold)
+        ):
+            raise ValueError(f"condition_falsifier_already_triggered:{use.candidate_id}")
         if isinstance(candidate, MetricConditionCandidate):
             candidate_type = "metric_condition"
             dataset_id = candidate.dataset_id
@@ -1497,6 +1526,27 @@ def _compile_selected_conditions(
     return tuple(output)
 
 
+def _compile_material_changes(
+    draft: MacroThesisDraftV2,
+    research_input: MacroResearchInputV1,
+) -> tuple[MacroPublishedMaterialChange, ...]:
+    candidates = {item.candidate_id: item for module in research_input.modules for item in module.material_changes}
+    output: list[MacroPublishedMaterialChange] = []
+    for change in draft.material_changes:
+        candidate = candidates.get(change.candidate_id)
+        if candidate is None:
+            raise ValueError(f"unknown_material_change_candidate:{change.candidate_id}")
+        output.append(
+            MacroPublishedMaterialChange(
+                candidate_id=candidate.candidate_id,
+                status=change.status,
+                statement=change.statement,
+                evidence_refs=candidate.evidence_refs,
+            )
+        )
+    return tuple(output)
+
+
 def _validate_draft_scopes(draft: MacroThesisDraftV2) -> None:
     scope_ids: dict[ConditionScopeKind, set[str]] = {
         "mainline": {"mainline"},
@@ -1514,6 +1564,11 @@ def _validate_draft_scopes(draft: MacroThesisDraftV2) -> None:
                 raise ValueError(f"condition_asset_scope_mismatch:{use.scope_id}")
     if draft.mainline.stance == "call" and not draft.mainline.supporting_evidence_refs:
         raise ValueError("macro_thesis_v2_mainline_support_required")
+    if draft.mainline.stance == "call" and not any(
+        use.scope_kind == "mainline" and use.scope_id == "mainline" and use.kind == "falsifier"
+        for use in draft.condition_uses
+    ):
+        raise ValueError("macro_thesis_v2_mainline_falsifier_required")
     if draft.mainline.stance == "no_call":
         local_outlook_ids = {item.outlook_id for item in draft.asset_outlooks if item.outlook_context == "local"}
         for item in draft.asset_outlooks:
@@ -1942,7 +1997,7 @@ def _module_change_candidates(
             tenor = str(row.get("tenor") or "")
             rates_output.append(
                 MacroMaterialChangeCandidate(
-                    change_id=f"{dataset_id}:{tenor}:{current.get('reference_date')}",
+                    candidate_id=f"{dataset_id}:{tenor}:{current.get('reference_date')}",
                     dataset_id=dataset_id,
                     label=f"{tenor} 美国财政部名义国债收益率",
                     value=(float(current["yield_pct"]) if isinstance(current.get("yield_pct"), int | float) else None),
@@ -1972,7 +2027,7 @@ def _module_change_candidates(
         }
         output.append(
             MacroMaterialChangeCandidate(
-                change_id=f"{dataset_id}:{row.get('as_of') or index}",
+                candidate_id=f"{dataset_id}:{row.get('as_of') or index}",
                 dataset_id=dataset_id,
                 label=str(row.get("label") or dataset_id),
                 value=float(row["value"]) if isinstance(row.get("value"), int | float) else None,

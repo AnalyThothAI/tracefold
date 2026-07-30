@@ -1716,6 +1716,7 @@ function thesisRoleLabel(value: NonNullable<MacroTypedModuleReadData["thesis_con
       contradicting: "反驳主线",
       driver: "驱动主线",
       not_material: "本次不重要",
+      unassessed: "未评估",
       uncertain: "关系未定",
     }[value] ?? "关系未解释"
   );

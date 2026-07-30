@@ -332,6 +332,15 @@ def test_transient_provider_retry_reuses_input_and_runs_one_model_call_per_attem
             "cutoff_ms": research_input.cutoff_ms,
             "evidence_pack_id": research_input.evidence_pack_id,
             "research_input_id": research_input.input_id,
+            "mainline": _draft(_research_input(pack=pack)).mainline.model_copy(
+                update={
+                    "stance": "no_call",
+                    "causal_edges": (),
+                    "supporting_evidence_refs": (),
+                    "no_call_reason": "The frozen input has no eligible falsifier candidate.",
+                }
+            ),
+            "asset_outlooks": (),
             "condition_uses": (),
         }
     )

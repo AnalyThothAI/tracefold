@@ -16,6 +16,10 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
+    .macro-decision__module-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .macro-decision__validity-rail {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -73,6 +77,24 @@
     .macro-decision__header > button {
       grid-column: auto;
       justify-self: start;
+    }
+
+    .macro-decision__module-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .macro-decision__thesis-strip,
+    .macro-decision__diagnostic-strip,
+    .macro-decision__thesis-strip > div {
+      align-items: start;
+      flex-direction: column;
+    }
+
+    .macro-decision__thesis-strip span,
+    .macro-decision__diagnostic-strip span {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
     }
 
     .macro-decision__header dl,

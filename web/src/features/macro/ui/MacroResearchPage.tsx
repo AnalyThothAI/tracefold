@@ -104,8 +104,8 @@ export function MacroResearchPage({
         ) : (
           <ArchiveResearch data={data} />
         )}
+        {data.schema_version === "macro_thesis_detail_v4" ? <RunAttemptPanel data={data} /> : null}
         <PublicationHistory data={data} />
-        <RunAttemptPanel data={data} />
       </section>
     </PageState.Stale>
   );
@@ -122,14 +122,7 @@ function CurrentResearch({ data }: { data: MacroThesisDetailReadData }) {
       />
     );
   }
-  return (
-    <PageState.Empty
-      title={data.state === "running" ? "Thin Agent 正在生成" : "当前 session 未发布"}
-      hint={
-        data.reason?.message ?? "当前读取不会展示上一交易日，也不会在浏览器中启动或恢复 Agent。"
-      }
-    />
-  );
+  return null;
 }
 
 function ArchiveResearch({ data }: { data: MacroThesisArchiveDetailReadData }) {
@@ -290,37 +283,66 @@ function RunAttemptPanel({ data }: { data: MacroResearchReadData }) {
   return (
     <section aria-labelledby="macro-research-run-title" className="macro-research-run">
       <div>
-        <span>PUBLICATION ATTEMPT</span>
-        <h2 id="macro-research-run-title">运行状态与四类 gate</h2>
+        <span>RESEARCH DIAGNOSTICS</span>
+        <h2 id="macro-research-run-title">运行诊断</h2>
       </div>
       {!run ? (
         <p role="status">该 session 没有持久化运行。</p>
       ) : (
-        <dl>
-          <div>
-            <dt>状态</dt>
-            <dd>{runStatusLabel(run.status)}</dd>
+        <>
+          <div className="macro-research-run__summary">
+            <strong>{attemptLabel(run)}</strong>
+            <span>
+              {failureBoundary(run)}
+              {run.error_code ? ` · ${run.error_code}` : ""}
+            </span>
+            {run.candidate_hash ? <code>{run.candidate_hash}</code> : null}
           </div>
-          <div>
-            <dt>ResearchInput</dt>
-            <dd>{run.research_input_id ?? "未冻结"}</dd>
-          </div>
-          <div>
-            <dt>尝试</dt>
-            <dd>
-              {run.attempt_count}/{run.max_attempts}
-            </dd>
-          </div>
-          <div>
-            <dt>失败边界</dt>
-            <dd>{run.gate_category ?? "pre-draft / 无"}</dd>
-          </div>
-          <div>
-            <dt>最后更新</dt>
-            <dd>{formatInstant(run.updated_at_ms)}</dd>
-          </div>
-        </dl>
+          <details className="macro-research-run__details">
+            <summary>运行身份</summary>
+            <dl>
+              <div>
+                <dt>状态</dt>
+                <dd>{runStatusLabel(run.status)}</dd>
+              </div>
+              <div>
+                <dt>ResearchInput</dt>
+                <dd>{run.research_input_id ?? "未冻结"}</dd>
+              </div>
+              <div>
+                <dt>最后更新</dt>
+                <dd>{formatInstant(run.updated_at_ms)}</dd>
+              </div>
+            </dl>
+          </details>
+        </>
       )}
     </section>
   );
+}
+
+function attemptLabel(run: NonNullable<MacroResearchReadData["run"]>): string {
+  if (run.status === "config_error") return "配置检查 · 候选未生成";
+  if (run.gate_category && run.candidate_hash) {
+    return `第${run.attempt_count}次候选 · ${
+      run.gate_category === "write_safety" ? "terminal write failure" : "terminal contract failure"
+    }`;
+  }
+  if (run.status === "retryable") {
+    return `第${run.attempt_count}/${run.max_attempts}次传输尝试`;
+  }
+  if (run.candidate_hash) {
+    return `第${run.attempt_count}次候选`;
+  }
+  if (!run.research_input_id && run.status === "failed") {
+    return "旧运行 · 候选阶段不可判定";
+  }
+  return "候选未生成";
+}
+
+function failureBoundary(run: NonNullable<MacroResearchReadData["run"]>): string {
+  if (run.gate_category) return run.gate_category;
+  if (run.candidate_hash) return "候选返回后 · 未分类";
+  if (!run.research_input_id && run.status === "failed") return "旧运行未记录精确阶段";
+  return "候选生成前";
 }

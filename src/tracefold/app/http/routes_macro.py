@@ -548,13 +548,28 @@ def _available_module_reason(payload: dict[str, Any]) -> dict[str, object] | Non
             next_check_at_ms=None if operator_action else next_check_at_ms,
         )
     if history["state"] in {"partial", "insufficient"}:
+        backfill = dict(status["backfill_execution"])
+        automatic = bool(backfill["worker_enabled"]) and backfill["state"] in {
+            "queued",
+            "running",
+            "retry_wait",
+        }
         return macro_reason(
             code=f"macro_module_history_{history['state']}",
             message="当前事实可用，但 required 历史深度仍不足。",
             impact="limited",
-            retryable=True,
-            recovery="automatic",
-            next_action="等待 required 历史回填；optional 最大历史不阻断当前判断。",
+            retryable=automatic,
+            recovery="automatic" if automatic else "operator_action",
+            next_action=(
+                "等待已启用的 required 历史回填；optional 最大历史不阻断当前判断。"
+                if automatic
+                else "检查缺失数据集的 history target 与 backfill worker 配置；当前事实仍可读取。"
+            ),
+            next_check_at_ms=(
+                int(backfill["next_check_at_ms"])
+                if automatic and backfill.get("next_check_at_ms") is not None
+                else None
+            ),
         )
     return None
 
@@ -594,7 +609,7 @@ def _module_thesis_context(
         "state": state,
         "session_date": session_date,
         "cutoff_ms": cutoff_ms,
-        "role": assessment.role if assessment is not None else "not_material",
+        "role": (assessment.role if assessment is not None else "not_material" if thesis is not None else "unassessed"),
         "assessment": (assessment.model_dump(mode="json") if assessment is not None else None),
         "conditions": conditions,
         "recovery": module_recovery,
@@ -683,14 +698,22 @@ def _current_reason(
         )
     error_code = str(row.get("last_error_code") or f"macro_thesis_{state}")
     gate = str(row.get("last_gate_category") or "")
+    candidate_hash = str(row.get("last_candidate_hash") or "")
+    research_input_id = str(row.get("research_input_id") or "")
     configuration = state == "config_error"
+    if configuration:
+        message = "Thin Agent 配置或鉴权失败，候选生成未启动。"
+    elif gate:
+        message = f"今日研究未发布：{gate} · {error_code}。"
+    elif candidate_hash:
+        message = f"今日研究未发布：候选已返回，但未通过发布检查 · {error_code}。"
+    elif research_input_id:
+        message = f"今日研究未发布：候选未生成 · {error_code}。"
+    else:
+        message = f"今日研究未发布：旧运行未记录可判定的候选阶段 · {error_code}。"
     return macro_reason(
         code=error_code,
-        message=(
-            "Thin Agent 配置或鉴权失败，候选生成未启动。"
-            if configuration
-            else f"本 session 未发布；失败边界为 {gate or 'pre-draft run'}。"
-        ),
+        message=message,
         impact="blocked",
         retryable=False,
         recovery="operator_action" if configuration or gate == "write_safety" else "next_session",
@@ -699,7 +722,9 @@ def _current_reason(
             if configuration
             else "检查写入事务与身份冲突后显式恢复。"
             if gate == "write_safety"
-            else "保留 gate 诊断，下一交易日使用新的冻结输入。"
+            else "本 session 不做语义重试；修复合同根因后由下一交易日的新冻结输入验证。"
+            if gate
+            else "保留错误码；下一交易日使用新的冻结输入。"
         ),
     )
 

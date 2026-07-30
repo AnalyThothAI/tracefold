@@ -132,8 +132,16 @@ describe("Macro Thin Thesis workbench", () => {
 
     renderWithProviders(<MacroOverviewPage {...SESSION_PROPS} />, { route: "/macro" });
 
-    expect(await screen.findByRole("heading", { name: "生成中" })).toBeVisible();
+    const currentFacts = await screen.findByRole("heading", { name: "当前事实摘要" });
+    const researchState = screen.getByText("今日研究未发布 · 生成中");
+    expect(currentFacts).toBeVisible();
+    expect(researchState).toBeVisible();
+    expect(
+      currentFacts.compareDocumentPosition(researchState) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.getByText("当前 session 的 Thin Agent 正在运行。")).toBeVisible();
+    expect(screen.getAllByText("未评估")).toHaveLength(6);
+    expect(screen.queryByText("本次不重要")).toBeNull();
     expect(screen.queryByText("真实利率回落正在缓和风险资产的贴现压力")).toBeNull();
   });
 

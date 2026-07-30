@@ -60,7 +60,7 @@ describe("macro module evidence workbench", () => {
 
     expect(
       container.querySelector(
-        '[data-annotation-id="thesis:mainline:mainline:confirmation:rates.real10y.tail:fred.dff:leq20"]',
+        '[data-annotation-id="thesis:mainline:mainline:falsifier:rates.real10y.tail:fred.dff:leq20"]',
       ),
     ).not.toBeNull();
     expect(screen.getByText("实际利率是本次主线的主要驱动。")).toBeVisible();

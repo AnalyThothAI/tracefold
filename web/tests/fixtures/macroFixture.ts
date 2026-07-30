@@ -93,7 +93,7 @@ export function macroThesisFixture(overrides: Partial<MacroThesisV2> = {}): Macr
     ],
     material_changes: [
       {
-        change_id: "change-real10y",
+        candidate_id: "fred.dfii10:2026-07-28",
         status: "strengthened",
         statement: "10Y 实际利率一周变化转负。",
         evidence_refs: ["rates:real10y"],
@@ -169,7 +169,7 @@ export function macroThesisFixture(overrides: Partial<MacroThesisV2> = {}): Macr
         condition_id: "rates.real10y.tail:fred.dfii10:leq20",
         candidate_type: "metric_condition",
         candidate_id: "rates.real10y.tail:fred.dfii10:leq20",
-        kind: "confirmation",
+        kind: "falsifier",
         scope_kind: "mainline",
         scope_id: "mainline",
         symbol: null,
@@ -200,7 +200,7 @@ export function macroThesisFixture(overrides: Partial<MacroThesisV2> = {}): Macr
       provider_name: "openai-compatible",
       research_model: "test-model",
       profile_version: "macro_thesis_thin_v1",
-      prompt_version: "macro_thesis_sop_v2",
+      prompt_version: "macro_thesis_sop_v3",
       workflow_version: "macro_thesis_workflow_v2",
     },
     published_at_ms: PUBLISHED_AT_MS,
@@ -240,7 +240,24 @@ export function macroOverviewFixture(
       history_gap_count: 0,
     },
   };
-  return { ...overview, ...overrides };
+  const result = { ...overview, ...overrides };
+  if (result.thesis) return result;
+  return {
+    ...result,
+    modules: result.modules.map((module) => ({
+      ...module,
+      role: "unassessed",
+      thesis_context: {
+        ...module.thesis_context,
+        state: result.thesis_state,
+        role: "unassessed",
+        assessment: null,
+        conditions: [],
+        recovery: [],
+        reason: result.thesis_reason,
+      },
+    })),
+  };
 }
 
 export function macroResearchFixture(
@@ -255,7 +272,12 @@ export function macroResearchFixture(
     reason:
       state === "published"
         ? null
-        : reasonFixture("macro_thesis_current_not_published", "当前 session 尚未发布。"),
+        : reasonFixture(
+            `macro_thesis_${state}`,
+            state === "running"
+              ? "Thin Agent 正在执行本次唯一模型调用。"
+              : "今日研究未发布；当前读取不会回退到历史主线。",
+          ),
     thesis,
     live_delta: thesis ? liveDeltaFixture(thesis.publication_id) : null,
     outcome_replay: thesis ? outcomeReplayFixture(thesis.publication_id) : null,
@@ -830,6 +852,8 @@ function statusFixture(): Schemas["MacroModuleStatusData"] {
 }
 
 function runFixture(status: string): Schemas["MacroThesisRunData"] {
+  const terminalContract = status === "not_published";
+  const hasCandidate = status === "published" || terminalContract;
   return {
     session_date: SESSION_DATE,
     status,
@@ -837,9 +861,9 @@ function runFixture(status: string): Schemas["MacroThesisRunData"] {
     research_input_id: "macro-input-2026-07-28",
     attempt_count: 1,
     max_attempts: 2,
-    error_code: null,
-    gate_category: null,
-    candidate_hash: HASH_A,
+    error_code: terminalContract ? "macro_thesis_contract_binding_invalid" : null,
+    gate_category: terminalContract ? "contract_validity" : null,
+    candidate_hash: hasCandidate ? HASH_A : null,
     reason: null,
     updated_at_ms: PUBLISHED_AT_MS,
   };

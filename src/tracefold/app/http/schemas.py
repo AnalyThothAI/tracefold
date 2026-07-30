@@ -293,7 +293,14 @@ class MacroModuleThesisContextData(ExactApiSchema):
     ]
     session_date: date
     cutoff_ms: int
-    role: Literal["driver", "confirming", "contradicting", "uncertain", "not_material"]
+    role: Literal[
+        "driver",
+        "confirming",
+        "contradicting",
+        "uncertain",
+        "not_material",
+        "unassessed",
+    ]
     assessment: MacroDraftModuleAssessment | None
     conditions: list[MacroCompiledCondition]
     recovery: list[MacroRecoveryItem]
@@ -943,7 +950,14 @@ class MacroModuleSummaryData(ExactApiSchema):
     label: str
     availability: Literal["available", "unavailable"]
     reason: MacroReason | None
-    role: Literal["driver", "confirming", "contradicting", "uncertain", "not_material"]
+    role: Literal[
+        "driver",
+        "confirming",
+        "contradicting",
+        "uncertain",
+        "not_material",
+        "unassessed",
+    ]
     coverage_state: Literal["complete", "partial"] | None
     current_health_state: Literal["current", "degraded", "unavailable"] | None
     history_depth_state: Literal["complete", "partial", "insufficient", "not_required"] | None

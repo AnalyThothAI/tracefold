@@ -31,6 +31,7 @@ from tracefold.macro.thesis_service import MacroThesisService
 from tracefold.macro.thesis_v2 import (
     MacroDraftAssetOutlook,
     MacroDraftCausalEdge,
+    MacroDraftConditionUse,
     MacroDraftMainline,
     MacroDraftMaterialChange,
     MacroDraftModuleAssessment,
@@ -160,6 +161,19 @@ def test_macro_real_vertical_seam_with_fake_outer_provider_only(
 
 
 def _seed_material_macro_facts(repos: Any) -> None:
+    for rate_index, (dataset_id, values) in enumerate(
+        (("fred.dgs10", (4.2, 4.25, 4.3)),),
+        start=200,
+    ):
+        spec = DATASET_REGISTRY[dataset_id]
+        _insert_three_point_facts(
+            repos,
+            spec=spec,
+            values=values,
+            received_offset=rate_index,
+        )
+        _record_current_source(repos, spec=spec, suffix=dataset_id.replace(".", "-"))
+
     for symbol_index, symbol in enumerate(MACRO_THESIS_ASSETS, start=1):
         dataset_id = MACRO_ASSET_DATASETS[symbol]
         spec = DATASET_REGISTRY[dataset_id]
@@ -355,6 +369,12 @@ def _candidate_for_real_input(research_input: MacroResearchInputV1) -> MacroThes
         raise AssertionError("full-stack input must retain two material asset facts")
     primary_evidence = material_evidence[0]
     primary_symbol = symbol_by_dataset[primary_evidence.dataset_id]
+    material_change = next(change for module in research_input.modules for change in module.material_changes)
+    falsifier = next(
+        candidate
+        for candidate in research_input.condition_candidates
+        if "falsifier" in candidate.allowed_kinds and "mainline" in candidate.allowed_scopes
+    )
     outlooks = tuple(
         MacroDraftAssetOutlook(
             outlook_id=f"outlook-{symbol.lower()}-1w",
@@ -406,14 +426,22 @@ def _candidate_for_real_input(research_input: MacroResearchInputV1) -> MacroThes
         ),
         material_changes=(
             MacroDraftMaterialChange(
-                change_id="change-material-weekly",
+                candidate_id=material_change.candidate_id,
                 status="strengthened",
                 statement=f"{primary_symbol} weekly momentum strengthened in the sealed input.",
-                evidence_refs=(primary_evidence.evidence_ref,),
             ),
         ),
         asset_outlooks=outlooks,
-        condition_uses=(),
+        condition_uses=(
+            MacroDraftConditionUse(
+                candidate_id=falsifier.candidate_id,
+                kind="falsifier",
+                scope_kind="mainline",
+                scope_id="mainline",
+                rationale="The bound predicate falsifies the published directional call.",
+                evidence_refs=falsifier.evidence_refs,
+            ),
+        ),
     )
 
 

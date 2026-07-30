@@ -68,13 +68,14 @@ export function moduleLabel(value: MacroModuleId): string {
 }
 
 export function moduleRoleLabel(
-  value: MacroThesisV2["module_assessments"][number]["role"] | "not_material",
+  value: MacroThesisV2["module_assessments"][number]["role"] | "not_material" | "unassessed",
 ): string {
   return {
     confirming: "确认",
     contradicting: "反证",
     driver: "驱动",
     not_material: "本次不重要",
+    unassessed: "未评估",
     uncertain: "待确认",
   }[value];
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from langchain.agents.structured_output import ProviderStrategy
@@ -193,16 +193,18 @@ def _research_input(
     *,
     pack=None,
     candidate_scopes: tuple[str, ...] = ("mainline", "alternative", "tension", "asset"),
+    candidate_operator: Literal["gt", "lte"] = "lte",
 ) -> MacroResearchInputV1:
     base = compile_research_input_v1(pack or _pack())
     evidence_ref = base.modules[0].exact_evidence_refs[0]
+    suffix = "le0" if candidate_operator == "lte" else "gt0"
     candidate = MetricConditionCandidate(
-        candidate_id="rates.curve10y2y:rates.curve_10y2y:gt0",
+        candidate_id=f"rates.curve10y2y:rates.curve_10y2y:{suffix}",
         module_id="rates_fed",
         dataset_id="rates.curve_10y2y",
         metric="value",
         unit="basis_points",
-        operator="gt",
+        operator=candidate_operator,
         threshold=0.0,
         frozen_value=25.0,
         as_of=SESSION.isoformat(),
@@ -240,16 +242,31 @@ def _draft(
         confidence=None,
     )
     scope_id = "outlook-spy-1w" if condition_scope == "asset" else "mainline"
-    condition_use = MacroDraftConditionUse(
+    mainline_falsifier = MacroDraftConditionUse(
         candidate_id=research_input.allowed_condition_ids[0],
-        kind="confirmation",
-        scope_kind=condition_scope,
-        scope_id=scope_id,
-        symbol="SPY" if condition_scope == "asset" else None,
-        horizon="1w" if condition_scope == "asset" else None,
+        kind="falsifier",
+        scope_kind="mainline",
+        scope_id="mainline",
+        symbol=None,
+        horizon=None,
         rationale="The declared curve predicate tests the causal transmission.",
         evidence_refs=(evidence_ref,),
     )
+    condition_uses = [mainline_falsifier]
+    if condition_scope == "asset":
+        condition_uses.append(
+            MacroDraftConditionUse(
+                candidate_id=research_input.allowed_condition_ids[0],
+                kind="confirmation",
+                scope_kind=condition_scope,
+                scope_id=scope_id,
+                symbol="SPY",
+                horizon="1w",
+                rationale="The declared curve predicate tests the asset transmission.",
+                evidence_refs=(evidence_ref,),
+            )
+        )
+    material_change = next(change for module in research_input.modules for change in module.material_changes)
     return MacroThesisDraftV2(
         session_date=research_input.session_date,
         cutoff_ms=research_input.cutoff_ms,
@@ -288,14 +305,13 @@ def _draft(
         ),
         material_changes=(
             {
-                "change_id": "change-rates",
+                "candidate_id": material_change.candidate_id,
                 "status": "strengthened",
                 "statement": "The weekly rates move strengthened.",
-                "evidence_refs": (evidence_ref,),
             },
         ),
         asset_outlooks=(outlook,),
-        condition_uses=(condition_use,),
+        condition_uses=tuple(condition_uses),
     )
 
 
@@ -455,6 +471,60 @@ def test_directional_and_no_call_shapes_fail_closed() -> None:
         MacroThesisDraftV2.model_validate(payload)
 
 
+def test_material_change_is_required_and_must_bind_input_candidate() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    payload = _draft(research_input).model_dump(mode="json")
+    payload.pop("material_changes")
+    with pytest.raises(ValidationError, match="material_changes"):
+        MacroThesisDraftV2.model_validate(payload)
+
+    payload = _draft(research_input).model_dump(mode="json")
+    payload["material_changes"][0]["candidate_id"] = "invented-change"
+    with pytest.raises(PublicationGateFailure) as caught:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=payload),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert caught.value.category == "contract_validity"
+    assert "unknown_material_change_candidate" in caught.value.diagnostics[0]
+
+
+def test_directional_call_requires_mainline_falsifier() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack)
+    payload = _draft(research_input).model_dump(mode="json")
+    payload["condition_uses"] = []
+
+    with pytest.raises(PublicationGateFailure) as caught:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=payload),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert caught.value.category == "contract_validity"
+    assert caught.value.diagnostics == ("macro_thesis_v2_mainline_falsifier_required",)
+
+
+def test_falsifier_cannot_already_be_triggered_at_publication_cutoff() -> None:
+    pack = _pack()
+    research_input = _research_input(pack=pack, candidate_operator="gt")
+    payload = _draft(research_input).model_dump(mode="json")
+
+    with pytest.raises(PublicationGateFailure) as caught:
+        compile_candidate_publication_v2(
+            envelope=_envelope(research_input, mapping=payload),
+            research_input=research_input,
+            evidence_pack=pack,
+            published_at_ms=CUTOFF_MS + 3_000,
+        )
+    assert caught.value.category == "contract_validity"
+    assert "condition_falsifier_already_triggered" in caught.value.diagnostics[0]
+
+
 def test_same_candidate_can_only_be_selected_once_per_scope() -> None:
     research_input = _research_input()
     payload = _draft(research_input).model_dump(mode="json")
@@ -472,10 +542,17 @@ def test_publication_compiler_owns_parse_conditions_and_sparse_output() -> None:
     assert tuple(item.symbol for item in publication.assets) == MACRO_THESIS_ASSETS
     assert tuple(item.display_order for item in publication.assets) == tuple(range(12))
     assert tuple(item.symbol for item in publication.asset_outlooks) == ("SPY",)
-    assert len(publication.citations) == 1
+    assert len(publication.citations) == 2
     assert len(publication.conditions) == 1
     assert publication.conditions[0].candidate_id.startswith("rates.curve10y2y:")
     assert publication.conditions[0].threshold == 0
+    input_candidate = next(
+        change
+        for module in _research_input().modules
+        for change in module.material_changes
+        if change.candidate_id == publication.material_changes[0].candidate_id
+    )
+    assert publication.material_changes[0].evidence_refs == input_candidate.evidence_refs
 
 
 def test_unparseable_mapping_is_contract_gate() -> None:
@@ -573,7 +650,7 @@ def test_live_delta_identity_is_immutable_and_asset_scope_does_not_elevate_mainl
     assert first.input_hash == same_input_later.input_hash
     assert new_input.live_delta_id != first.live_delta_id
     assert first.mainline_validity == "insufficient"
-    assert first.items[0].scope_kind == "asset"
+    assert any(item.scope_kind == "asset" for item in first.items)
 
 
 def test_outcome_replay_only_evaluates_declared_material_1w_or_1m_outlooks() -> None:

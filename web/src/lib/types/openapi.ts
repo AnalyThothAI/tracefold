@@ -1679,20 +1679,6 @@ export interface components {
             /** Title */
             title: string;
         };
-        /** MacroDraftMaterialChange */
-        MacroDraftMaterialChange: {
-            /** Change Id */
-            change_id: string;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Statement */
-            statement: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "new" | "strengthened" | "weakened" | "reversed";
-        };
         /** MacroDraftModuleAssessment */
         MacroDraftModuleAssessment: {
             /** Analysis */
@@ -2470,7 +2456,7 @@ export interface components {
              * Role
              * @enum {string}
              */
-            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material";
+            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material" | "unassessed";
             summary: components["schemas"]["MacroOverviewModuleSummaryStateData"] | null;
             thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
@@ -2497,7 +2483,7 @@ export interface components {
              * Role
              * @enum {string}
              */
-            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material";
+            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material" | "unassessed";
             /**
              * Session Date
              * Format: date
@@ -2787,6 +2773,20 @@ export interface components {
             stance: "call" | "no_call";
             /** Title */
             title: string;
+        };
+        /** MacroPublishedMaterialChange */
+        MacroPublishedMaterialChange: {
+            /** Candidate Id */
+            candidate_id: string;
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Statement */
+            statement: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "strengthened" | "weakened" | "reversed";
         };
         /** MacroRatesBoundedAssessmentData */
         MacroRatesBoundedAssessmentData: {
@@ -3517,7 +3517,7 @@ export interface components {
             gaps: components["schemas"]["MacroEvidenceGapV2"][];
             mainline: components["schemas"]["MacroDraftMainline"];
             /** Material Changes */
-            material_changes: components["schemas"]["MacroDraftMaterialChange"][];
+            material_changes: components["schemas"]["MacroPublishedMaterialChange"][];
             /** Module Assessments */
             module_assessments: components["schemas"]["MacroDraftModuleAssessment"][];
             /** Prior Publication Id */

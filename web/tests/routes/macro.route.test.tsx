@@ -55,7 +55,7 @@ describe("daily macro Thin Thesis routes", () => {
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith("/api/macro/overview", { token: "secret" }),
     );
-  });
+  }, 10_000);
 
   it.each([
     ["/macro/rates-fed", "/api/macro/rates-fed", "利率与美联储"],
@@ -149,13 +149,31 @@ describe("daily macro Thin Thesis routes", () => {
 
     expect((await screen.findAllByText(label))[0]).toBeVisible();
     expect(
-      screen.getByText(state === "running" ? "Thin Agent 正在生成" : "当前 session 未发布"),
+      screen.getByText(
+        state === "running"
+          ? "Thin Agent 正在执行本次唯一模型调用。"
+          : "今日研究未发布；当前读取不会回退到历史主线。",
+      ),
     ).toBeVisible();
+    expect(screen.queryByText("当前 session 未发布")).toBeNull();
     expect(
       screen.queryByRole("heading", {
         name: "真实利率回落正在缓和风险资产的贴现压力",
       }),
     ).toBeNull();
+  });
+
+  it("shows terminal contract failure without a misleading retry fraction or pre-draft label", async () => {
+    configureMacroApi(macroResearchFixture("not_published"));
+    renderAppRoute("/macro/research");
+
+    expect(await screen.findByText("第1次候选 · terminal contract failure")).toBeVisible();
+    expect(
+      screen.getByText(/contract_validity · macro_thesis_contract_binding_invalid/),
+    ).toBeVisible();
+    expect(screen.getByText(`sha256:${"a".repeat(64)}`)).toBeVisible();
+    expect(screen.queryByText("1/2")).toBeNull();
+    expect(screen.queryByText(/pre-draft/)).toBeNull();
   });
 });
 

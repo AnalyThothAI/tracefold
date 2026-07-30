@@ -66,17 +66,22 @@ export function MacroOverviewPage({
         />
         <MacroNavigation />
         {data.thesis ? (
-          <MacroThesisReport
-            compact
-            liveDelta={data.live_delta}
-            outcomeReplay={data.outcome_replay}
-            recovery={data.recovery}
-            thesis={data.thesis}
-          />
+          <>
+            <MacroThesisReport
+              compact
+              liveDelta={data.live_delta}
+              outcomeReplay={data.outcome_replay}
+              recovery={data.recovery}
+              thesis={data.thesis}
+            />
+            <ModuleOverview data={data} />
+          </>
         ) : (
-          <CurrentStatePanel data={data} />
+          <>
+            <ModuleOverview data={data} />
+            <CurrentStateStrip data={data} />
+          </>
         )}
-        <ModuleOverview data={data} />
       </section>
     </PageState.Stale>
   );
@@ -109,9 +114,7 @@ export function MacroModulePage({
             <span>MACRO EVIDENCE WORKBENCH</span>
             <h1>{module.label}</h1>
             <p>
-              当前事实 {healthLabel(module.status.current_health.state)} · required 历史{" "}
-              {historyLabel(module.status.history_depth.state)} · 数据合同{" "}
-              {coverageLabel(module.status.coverage.state)} · Thesis 角色{" "}
+              确定性事实页 · 事实截止 {formatInstant(module.latest_fact_at_ms)} · Thesis{" "}
               {moduleRoleLabel(module.thesis_context.role)}
             </p>
           </div>
@@ -121,16 +124,9 @@ export function MacroModulePage({
           </Button>
         </header>
         <MacroNavigation activeModule={moduleId} />
-        {module.reason ? <ReasonPanel reason={module.reason} title="数据合同状态" /> : null}
-        {module.thesis_context.reason ? (
-          <ReasonPanel reason={module.thesis_context.reason} title="当前 Thesis 状态" />
-        ) : null}
-        {module.module_id === "rates_fed" ? (
-          <RatesDecisionSummary module={module} />
-        ) : (
-          <ModuleThesisContext module={module} />
-        )}
+        {module.module_id === "rates_fed" ? <RatesDecisionSummary module={module} /> : null}
         <MacroModuleSections module={module} />
+        <ModuleDiagnostics module={module} />
       </section>
     </PageState.Stale>
   );
@@ -163,76 +159,81 @@ function MacroHeader({
   );
 }
 
-function CurrentStatePanel({ data }: { data: MacroOverviewReadData }) {
+function CurrentStateStrip({ data }: { data: MacroOverviewReadData }) {
   return (
-    <section className="macro-decision__notice" data-impact="blocked">
+    <aside className="macro-decision__thesis-strip" data-impact="blocked">
       <div>
-        <span>CURRENT SESSION</span>
-        <h2>{runStatusLabel(data.thesis_state)}</h2>
-        <p>
-          {data.thesis_reason?.message ?? "当前 session 没有可读取的 macro_thesis_v2 publication。"}
-        </p>
-        {data.thesis_reason?.next_action ? <small>{data.thesis_reason.next_action}</small> : null}
+        <strong>今日研究未发布 · {runStatusLabel(data.thesis_state)}</strong>
+        <span>
+          {data.thesis_reason?.message ?? "当前事实照常展示，但没有可发布主线、因果链或资产传导。"}
+        </span>
       </div>
-      <Link to="/macro/research">查看当前运行与显式历史档案</Link>
-    </section>
+      <Link to="/macro/research">运行诊断</Link>
+    </aside>
   );
 }
 
 function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
   return (
-    <section className="macro-decision__module-grid" aria-label="六个宏观模块">
-      {data.modules.map((module) => (
-        <article key={module.module_id} data-health={module.current_health_state ?? "unavailable"}>
-          <header>
-            <span>{moduleRoleLabel(module.role)}</span>
-            <h3>{module.label}</h3>
-          </header>
-          <p>{module.summary?.headline ?? module.reason?.message ?? "尚无模块投影。"}</p>
-          <dl>
-            <div>
-              <dt>当前事实</dt>
-              <dd>{healthLabel(module.current_health_state)}</dd>
-            </div>
-            <div>
-              <dt>required 历史</dt>
-              <dd>{historyLabel(module.history_depth_state)}</dd>
-            </div>
-            <div>
-              <dt>数据合同</dt>
-              <dd>{module.coverage_state === "complete" ? "完整" : "部分"}</dd>
-            </div>
-          </dl>
-          <Link to={module.href}>进入模块</Link>
-        </article>
-      ))}
+    <section className="macro-decision__module-overview" aria-labelledby="macro-current-facts">
+      <header>
+        <span>CURRENT FACTS · DETERMINISTIC</span>
+        <h2 id="macro-current-facts">当前事实摘要</h2>
+      </header>
+      <div className="macro-decision__module-grid" aria-label="六个宏观模块">
+        {data.modules.map((module) => (
+          <article
+            key={module.module_id}
+            data-health={module.current_health_state ?? "unavailable"}
+          >
+            <header>
+              <span>{moduleRoleLabel(module.role)}</span>
+              <h3>{module.label}</h3>
+            </header>
+            <p>{module.summary?.headline ?? module.reason?.message ?? "尚无模块投影。"}</p>
+            <dl>
+              <div>
+                <dt>当前事实</dt>
+                <dd>{healthLabel(module.current_health_state)}</dd>
+              </div>
+              <div>
+                <dt>required 历史</dt>
+                <dd>{historyLabel(module.history_depth_state)}</dd>
+              </div>
+              <div>
+                <dt>数据合同</dt>
+                <dd>{module.coverage_state === "complete" ? "完整" : "部分"}</dd>
+              </div>
+            </dl>
+            <Link to={module.href}>进入模块</Link>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
 
-function ModuleThesisContext({ module }: { module: MacroTypedModuleReadData }) {
+function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
   const context = module.thesis_context;
-  if (context.role === "not_material") {
-    return (
-      <section className="macro-decision__notice" data-impact="none">
-        <div>
-          <span>THESIS SCOPE</span>
-          <h2>本次不重要</h2>
-          <p>该模块仍保留完整事实页面，但 Thin Agent 没有把它写入本次 material scope。</p>
-        </div>
-      </section>
-    );
-  }
+  const messages = Array.from(
+    new Set(
+      [module.reason?.message, context.reason?.message].filter((message): message is string =>
+        Boolean(message),
+      ),
+    ),
+  );
   return (
-    <section className="macro-decision__notice" data-impact="limited">
-      <div>
-        <span>THESIS SCOPE · {moduleRoleLabel(context.role)}</span>
-        <h2>{context.assessment?.analysis ?? "当前主线已引用本模块。"}</h2>
-        <p>
-          {context.conditions.length} 个闭集条件 · {context.recovery.length} 个恢复观察
-        </p>
-      </div>
-    </section>
+    <aside className="macro-decision__diagnostic-strip" aria-label="模块诊断">
+      <strong>
+        当前事实 {healthLabel(module.status.current_health.state)} · required 历史{" "}
+        {historyLabel(module.status.history_depth.state)} · 数据合同{" "}
+        {coverageLabel(module.status.coverage.state)} · Thesis {moduleRoleLabel(context.role)}
+      </strong>
+      <span>
+        {context.assessment?.analysis ??
+          (messages.length ? messages.join(" · ") : "事实与研究状态分离；诊断不阻挡当前事实。")}
+      </span>
+    </aside>
   );
 }
 
