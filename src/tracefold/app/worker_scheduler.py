@@ -5,13 +5,22 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
-from tracefold.app.worker_manifest import worker_start_phase, worker_start_priority
+from tracefold.app.worker_manifest import (
+    worker_iteration_group,
+    worker_start_phase,
+    worker_start_priority,
+)
 from tracefold.app.worker_status import effective_worker_status
 
 _START_PRIORITY = worker_start_priority()
 _START_PHASE = worker_start_phase()
+_ITERATION_GROUP = worker_iteration_group()
 _DEFAULT_PHASE_DELAYS_SECONDS = {0: 0.0, 1: 15.0, 2: 60.0}
 _DEFAULT_STAGGER_SECONDS = 1.0
+_DEFAULT_ITERATION_GROUP_CAPACITIES = {
+    "latency_projection": 1,
+    "background_projection": 2,
+}
 
 
 class WorkerScheduler:
@@ -22,6 +31,7 @@ class WorkerScheduler:
         db: Any,
         startup_phase_delays_seconds: Mapping[int, float] | None = None,
         startup_stagger_seconds: float = _DEFAULT_STAGGER_SECONDS,
+        iteration_group_capacities: Mapping[str, int] | None = None,
     ) -> None:
         self.workers = dict(workers)
         self.db = db
@@ -31,6 +41,10 @@ class WorkerScheduler:
             startup_stagger_seconds,
             error="worker_scheduler_startup_stagger_invalid",
         )
+        self.iteration_gates = {
+            name: asyncio.Semaphore(capacity)
+            for name, capacity in _iteration_group_capacities(iteration_group_capacities).items()
+        }
         self._stop_event = asyncio.Event()
         self._started = False
 
@@ -45,6 +59,9 @@ class WorkerScheduler:
                 worker = self.workers[name]
                 if not _worker_startable(worker):
                     continue
+                iteration_group = _ITERATION_GROUP.get(name)
+                if iteration_group is not None:
+                    _set_iteration_gate(worker, self.iteration_gates[iteration_group])
                 phase = _START_PHASE.get(name, 2)
                 phase_position = phase_positions.get(phase, 0)
                 phase_positions[phase] = phase_position + 1
@@ -167,3 +184,22 @@ def _nonnegative_seconds(value: float, *, error: str) -> float:
     if seconds < 0:
         raise ValueError(error)
     return seconds
+
+
+def _iteration_group_capacities(value: Mapping[str, int] | None) -> dict[str, int]:
+    resolved = dict(_DEFAULT_ITERATION_GROUP_CAPACITIES)
+    if value is not None:
+        resolved.update({str(name): int(capacity) for name, capacity in value.items()})
+    if any(capacity <= 0 for capacity in resolved.values()):
+        raise ValueError("worker_scheduler_iteration_group_capacity_invalid")
+    missing = set(_ITERATION_GROUP.values()).difference(resolved)
+    if missing:
+        raise ValueError(f"worker_scheduler_iteration_group_capacity_missing:{','.join(sorted(missing))}")
+    return resolved
+
+
+def _set_iteration_gate(worker: Any, gate: asyncio.Semaphore) -> None:
+    setter = getattr(worker, "set_iteration_gate", None)
+    if not callable(setter):
+        raise TypeError("worker_scheduler_iteration_gate_unsupported")
+    setter(gate)

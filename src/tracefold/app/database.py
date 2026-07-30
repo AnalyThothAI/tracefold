@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
+from tracefold.app.worker_manifest import worker_iteration_group
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
 from tracefold.platform.validation import require_nonnegative_float
@@ -14,6 +15,13 @@ from tracefold.platform.validation import require_nonnegative_float
 _API_STATEMENT_TIMEOUT_SECONDS = 5.0
 _WORKER_STATEMENT_TIMEOUT_SECONDS = 30.0
 _WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS = 60.0
+_WORKER_ITERATION_GROUP = worker_iteration_group()
+_BOUNDED_QUERY_GROUPS = frozenset({"latency_projection", "background_projection"})
+_BOUNDED_QUERY_CONFIG = {
+    "max_parallel_workers_per_gather": "0",
+    "jit": "off",
+    "work_mem": "16MB",
+}
 
 
 class _SyncClosePool(Protocol):
@@ -78,8 +86,11 @@ class DBPoolBundle:
         conn = self.worker_pool.getconn()
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
         returned = False
+        bounded_query_policy = _uses_bounded_query_policy(name)
         try:
             _set_config(conn, "application_name", f"worker:{_normalize_worker_name(name)}")
+            if bounded_query_policy:
+                _set_worker_query_policy(conn)
             if statement_timeout_seconds is not None:
                 _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
             try:
@@ -96,7 +107,11 @@ class DBPoolBundle:
                 )
             except BaseException:
                 try:
-                    _reset_worker_connection(conn, statement_timeout_seconds=statement_timeout_seconds)
+                    _reset_worker_connection(
+                        conn,
+                        statement_timeout_seconds=statement_timeout_seconds,
+                        bounded_query_policy=bounded_query_policy,
+                    )
                 except Exception:
                     _discard_connection(self.worker_pool, conn)
                     returned = True
@@ -104,7 +119,11 @@ class DBPoolBundle:
                     self.worker_pool.putconn(conn)
                     returned = True
                 raise
-            _reset_worker_connection(conn, statement_timeout_seconds=statement_timeout_seconds)
+            _reset_worker_connection(
+                conn,
+                statement_timeout_seconds=statement_timeout_seconds,
+                bounded_query_policy=bounded_query_policy,
+            )
             self.worker_pool.putconn(conn)
             returned = True
         except Exception:
@@ -160,10 +179,33 @@ def _set_config(conn: Any, name: str, value: str) -> None:
     conn.execute("SELECT set_config(%s, %s, false)", (str(name), str(value)))
 
 
-def _reset_worker_connection(conn: Any, *, statement_timeout_seconds: float | None) -> None:
+def _uses_bounded_query_policy(name: str) -> bool:
+    return _WORKER_ITERATION_GROUP.get(str(name)) in _BOUNDED_QUERY_GROUPS
+
+
+def _set_worker_query_policy(conn: Any) -> None:
+    for name, value in _BOUNDED_QUERY_CONFIG.items():
+        _set_config(conn, name, value)
+
+
+def _reset_worker_connection(
+    conn: Any,
+    *,
+    statement_timeout_seconds: float | None,
+    bounded_query_policy: bool,
+) -> None:
     if statement_timeout_seconds is not None:
         _set_config(conn, "statement_timeout", _statement_timeout_value(_WORKER_STATEMENT_TIMEOUT_SECONDS))
+    if bounded_query_policy:
+        for name in _BOUNDED_QUERY_CONFIG:
+            _reset_config(conn, name)
     _set_config(conn, "application_name", "tracefold_worker")
+
+
+def _reset_config(conn: Any, name: str) -> None:
+    if name not in _BOUNDED_QUERY_CONFIG:
+        raise ValueError("db_reset_config_name_invalid")
+    conn.execute(f"RESET {name}")
 
 
 def _discard_connection(pool: Any, conn: Any) -> None:

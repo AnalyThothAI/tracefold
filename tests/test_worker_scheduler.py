@@ -12,6 +12,7 @@ class _FakeWorker:
         self.name = name
         self.started = started
         self._stopped = asyncio.Event()
+        self.iteration_gate: asyncio.Semaphore | None = None
 
     def status_payload(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,9 @@ class _FakeWorker:
 
     async def aclose(self) -> None:
         return None
+
+    def set_iteration_gate(self, gate: asyncio.Semaphore) -> None:
+        self.iteration_gate = gate
 
 
 class _FakeDB:
@@ -79,5 +83,26 @@ def test_scheduler_stop_interrupts_long_startup_delay() -> None:
         await scheduler.start()
         await asyncio.wait_for(scheduler.stop(), timeout=0.1)
         assert started == []
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_shares_a_bounded_gate_across_background_projections() -> None:
+    async def scenario() -> None:
+        started: list[tuple[str, float]] = []
+        workers = {name: _FakeWorker(name, started) for name in ("collector", "macro_projection", "news_pipeline")}
+        scheduler = WorkerScheduler(
+            workers=workers,
+            db=_FakeDB(),
+            startup_phase_delays_seconds={0: 0, 1: 0, 2: 0},
+            startup_stagger_seconds=0,
+            iteration_group_capacities={"background_projection": 2},
+        )
+
+        await scheduler.start()
+        assert workers["collector"].iteration_gate is None
+        assert workers["macro_projection"].iteration_gate is not None
+        assert workers["macro_projection"].iteration_gate is workers["news_pipeline"].iteration_gate
+        await scheduler.stop()
 
     asyncio.run(scenario())

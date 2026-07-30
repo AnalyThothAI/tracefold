@@ -8,6 +8,7 @@ class WorkerManifest:
     name: str
     start_priority: int
     start_phase: int = 0
+    iteration_group: str | None = None
     queue_tables: tuple[str, ...] = ()
     current_read_model_identities: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
@@ -40,11 +41,13 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         name="asset_profile_refresh",
         start_priority=70,
         start_phase=2,
+        iteration_group="background_projection",
         queue_tables=("asset_profile_refresh_targets",),
     ),
     WorkerManifest(
         name="token_radar_projection",
         start_priority=80,
+        iteration_group="latency_projection",
         queue_tables=("token_radar_dirty_targets",),
         current_read_model_identities=(
             (
@@ -115,6 +118,7 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         name="macro_projection",
         start_priority=81,
         start_phase=1,
+        iteration_group="background_projection",
         current_read_model_identities=(
             ("macro_feature_series", ("feature_id", "as_of_date")),
             ("macro_module_current", ("module_id",)),
@@ -125,12 +129,14 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         name="token_image_mirror",
         start_priority=82,
         start_phase=2,
+        iteration_group="background_projection",
         queue_tables=("token_image_source_dirty_targets",),
     ),
     WorkerManifest(
         name="token_profile_current",
         start_priority=85,
         start_phase=2,
+        iteration_group="background_projection",
         queue_tables=("token_profile_current_dirty_targets",),
         current_read_model_identities=(("token_profile_current", ("target_type", "target_id")),),
     ),
@@ -138,6 +144,7 @@ _WORKER_MANIFESTS: tuple[WorkerManifest, ...] = (
         name="news_pipeline",
         start_priority=90,
         start_phase=1,
+        iteration_group="background_projection",
         current_read_model_identities=(
             ("news_items", ("source_id", "source_item_key")),
             ("news_stories", ("story_id",)),
@@ -183,6 +190,14 @@ def worker_start_priority() -> dict[str, int]:
 
 def worker_start_phase() -> dict[str, int]:
     return {manifest.name: manifest.start_phase for manifest in _WORKER_MANIFESTS}
+
+
+def worker_iteration_group() -> dict[str, str]:
+    return {
+        manifest.name: manifest.iteration_group
+        for manifest in _WORKER_MANIFESTS
+        if manifest.iteration_group is not None
+    }
 
 
 def worker_queue_tables() -> dict[str, tuple[str, ...]]:

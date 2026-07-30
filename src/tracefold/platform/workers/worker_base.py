@@ -56,6 +56,7 @@ class WorkerBase(ABC):
         self._iteration_duration_ms: list[float] = []
         self._consecutive_failures = 0
         self._closed = False
+        self._iteration_gate: asyncio.Semaphore | None = None
 
     async def on_start(self) -> None:
         return None
@@ -128,6 +129,11 @@ class WorkerBase(ABC):
         self._closed = True
         await self.on_close()
 
+    def set_iteration_gate(self, gate: asyncio.Semaphore) -> None:
+        if self.running:
+            raise RuntimeError(f"worker:{self.name}:iteration_gate_after_start")
+        self._iteration_gate = gate
+
     def status_payload(self) -> dict[str, Any]:
         return WorkerStatus(
             enabled=self.enabled,
@@ -180,6 +186,14 @@ class WorkerBase(ABC):
         self.running = True
 
     async def _run_iteration(self, *, started: float | None = None) -> WorkerResult:
+        if self._iteration_gate is None:
+            return await self._run_ungated_iteration(started=started)
+        async with self._iteration_gate:
+            if self._stop_event.is_set():
+                return WorkerResult(skipped=1, notes={"reason": "stopped"})
+            return await self._run_ungated_iteration(started=time.perf_counter())
+
+    async def _run_ungated_iteration(self, *, started: float | None = None) -> WorkerResult:
         iteration_started = time.perf_counter() if started is None else started
         self.last_started_at_ms = _now_ms()
         try:

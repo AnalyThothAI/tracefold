@@ -49,6 +49,10 @@ WorkerScheduler
 
 The scheduler owns start, stop, and status. One iteration runs at a time.
 Provider, DB, subprocess, and network boundaries own their explicit timeouts.
+The manifest also assigns deterministic projections to iteration groups:
+Token Radar has a dedicated latency slot, while at most two News, Macro,
+profile, or image projection iterations run together. Group wait time holds no
+database connection and is not a correctness dependency.
 
 `/metrics` exposes low-cardinality worker transaction duration, projection
 source/candidate/hydrated/written row counts, change-driven cache hit/miss,
@@ -179,7 +183,7 @@ the model.
 
 #### News WorldMonitor hard-cut runbook
 
-The `20260728_0210` current-schema baseline plus `20260730_0220` create the
+The `20260728_0210` current-schema baseline plus `20260730_0221` create the
 exact twelve-table WorldMonitor-backed News schema. The twelfth table is the
 singleton, rebuildable Story input-fingerprint control state; it is not a
 second fact or serving model. The schema contains no prior News model, ID
@@ -203,7 +207,7 @@ redirect, dual writer, or compatibility read.
 Macro:
 
 The `20260728_0210` baseline plus irreversible migrations through
-`20260730_0220` contain the current Macro fact, coverage, module,
+`20260730_0221` contain the current Macro fact, coverage, module,
 ResearchInput, Thesis v2, Live Delta v2, Outcome Replay v2, and Fed evidence
 contracts. Current reads have one v2 path. Existing v1 publications remain
 byte-for-byte immutable and are available only through explicit archive reads.
@@ -417,6 +421,14 @@ Partial indexes must match the real due/status predicate. An idle worker must
 not scan broad facts merely to prove that no work is due. Current models remain
 bounded by stable product keys; a latest-generation pointer is not a retention
 policy.
+
+Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
+`work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
+This prevents two bounded background iterations from multiplying into all
+available PostgreSQL CPU workers while preserving the source-to-current
+priority of Token Radar. The News latest-fetch and asset-identity profile hot
+paths use ordered composite indexes; do not replace them with periodic broad
+scans.
 
 Compose uses the official PostgreSQL 18 Bookworm image and preloads only
 `pg_stat_statements` for query diagnosis. `compute_query_id` remains enabled.

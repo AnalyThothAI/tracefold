@@ -20,6 +20,10 @@ Workers recover exclusively by re-reading PostgreSQL on bounded
 `interval_seconds` start-to-start loops. Startup is phased: collectors and
 market/Radar serving writers start first, bounded News/Macro current
 projections start second, and backfill/profile/analysis workers start last.
+The latency-sensitive Radar projection owns a separate one-slot iteration
+group; News, Macro, profile, and image projections share a two-slot background
+group. These process-local gates bound concurrent recomputation but do not
+carry correctness state: restart recovery still comes only from PostgreSQL.
 There is no database wake plane or in-memory correctness dependency. Provider
 raw frames remain inputs until normalized and persisted as material facts.
 
