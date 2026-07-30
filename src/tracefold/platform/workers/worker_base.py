@@ -11,6 +11,7 @@ from loguru import logger as default_logger
 from tracefold.platform.workers.worker_result import WorkerResult
 
 _MIN_WAIT_SECONDS = 0.001
+_MIN_CATCH_UP_WAIT_SECONDS = 1.0
 _MAX_DURATION_SAMPLES = 256
 
 
@@ -100,15 +101,21 @@ class WorkerBase(ABC):
         try:
             await self.on_start()
             while not self._stop_event.is_set():
+                iteration_started = time.perf_counter()
                 try:
-                    await self._run_iteration()
+                    await self._run_iteration(started=iteration_started)
                 except Exception:
                     await self._wait_for_next_iteration(self._backoff_seconds())
                     continue
 
                 if self._stop_event.is_set():
                     break
-                await self._wait_for_next_iteration(self.interval_seconds)
+                await self._wait_for_next_iteration(
+                    _successful_iteration_delay(
+                        interval_seconds=self.interval_seconds,
+                        duration_seconds=max(0.0, time.perf_counter() - iteration_started),
+                    )
+                )
         finally:
             self.running = False
             await self.on_stop()
@@ -222,6 +229,48 @@ class WorkerBase(ABC):
         for status, count in counts.items():
             if count:
                 self._call_telemetry("record_job", self.name, status, count)
+        self._record_projection_metrics(result.notes)
+
+    def _record_projection_metrics(self, notes: dict[str, Any]) -> None:
+        stages = {
+            "source": _first_metric(notes, "source_rows", "source_rows_scanned"),
+            "candidate": _first_metric(notes, "candidate_rows", "items", "targets_loaded"),
+            "hydrated": _first_metric(notes, "hydrated_rows"),
+            "written": _first_metric(notes, "rows_written"),
+        }
+        for stage, value in stages.items():
+            if value is not None:
+                self._call_telemetry("set_projection_rows", self.name, stage, value)
+
+        projection_status = str(notes.get("projection_status") or "").strip().lower()
+        if projection_status:
+            outcome = {
+                "unchanged_input": "hit",
+                "rebuilt": "miss",
+                "stale_snapshot": "stale",
+            }.get(projection_status, projection_status)
+            self._call_telemetry("record_projection_cache", self.name, outcome)
+        merged = _first_metric(notes, "merged_rank_set_triggers")
+        if merged:
+            self._call_telemetry("record_projection_merged", self.name, merged)
+
+        queue_depth = _first_metric(notes, "queue_depth")
+        if queue_depth is not None:
+            self._call_telemetry(
+                "set_queue_depth",
+                self.name,
+                str(notes.get("queue_name") or "primary"),
+                "due",
+                queue_depth,
+            )
+        oldest_due_age_ms = _first_metric(notes, "oldest_due_age_ms")
+        if oldest_due_age_ms is not None:
+            self._call_telemetry(
+                "set_queue_oldest_delay_seconds",
+                self.name,
+                str(notes.get("queue_name") or "primary"),
+                oldest_due_age_ms / 1000,
+            )
 
     def _call_telemetry(self, method_name: str, *args: Any, **kwargs: Any) -> None:
         method = getattr(self.telemetry, method_name, None)
@@ -301,6 +350,16 @@ def _compact_leaf(value: Any) -> Any:
     return text[:500]
 
 
+def _first_metric(notes: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = notes.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int | float):
+            return max(0, int(value))
+    return None
+
+
 def _p99(values: list[float]) -> float | None:
     if not values:
         return None
@@ -315,6 +374,12 @@ def _now_ms() -> int:
 
 def _loop_wait_seconds(seconds: float) -> float:
     return max(_MIN_WAIT_SECONDS, float(seconds))
+
+
+def _successful_iteration_delay(*, interval_seconds: float, duration_seconds: float) -> float:
+    interval = _loop_wait_seconds(interval_seconds)
+    duration = max(0.0, float(duration_seconds))
+    return max(min(interval, _MIN_CATCH_UP_WAIT_SECONDS), interval - duration)
 
 
 def _error_text(exc: BaseException) -> str:

@@ -5,6 +5,7 @@ from typing import Any
 
 from tracefold.platform.postgres.json_safety import postgres_safe_text
 from tracefold.platform.postgres.payload_hash import stable_dirty_target_payload_hash
+from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 from tracefold.platform.postgres.write_contract import expect_mutation_count, mutation_count
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 
@@ -38,6 +39,7 @@ class AssetProfileRefreshTargetRepository:
                 %(symbols)s::text[],
                 %(payload_hashes)s::text[],
                 %(source_watermark_ms_values)s::bigint[],
+                %(heat_tiers)s::text[],
                 %(priorities)s::integer[],
                 %(due_at_ms_values)s::bigint[]
               ) AS incoming(
@@ -49,6 +51,7 @@ class AssetProfileRefreshTargetRepository:
                 symbol,
                 payload_hash,
                 source_watermark_ms,
+                heat_tier,
                 priority,
                 due_at_ms
               )
@@ -63,6 +66,7 @@ class AssetProfileRefreshTargetRepository:
               dirty_reason,
               payload_hash,
               source_watermark_ms,
+              heat_tier,
               priority,
               due_at_ms,
               leased_until_ms,
@@ -82,6 +86,7 @@ class AssetProfileRefreshTargetRepository:
               %(dirty_reason)s,
               payload_hash,
               source_watermark_ms,
+              heat_tier,
               priority,
               due_at_ms,
               NULL,
@@ -102,7 +107,19 @@ class AssetProfileRefreshTargetRepository:
                 EXCLUDED.source_watermark_ms
               ),
               priority = LEAST(asset_profile_refresh_targets.priority, EXCLUDED.priority),
-              due_at_ms = LEAST(asset_profile_refresh_targets.due_at_ms, EXCLUDED.due_at_ms),
+              heat_tier = CASE
+                WHEN asset_profile_refresh_targets.heat_tier = 'hot'
+                  OR EXCLUDED.heat_tier = 'hot' THEN 'hot'
+                WHEN asset_profile_refresh_targets.heat_tier = 'warm'
+                  OR EXCLUDED.heat_tier = 'warm' THEN 'warm'
+                ELSE 'cold'
+              END,
+              due_at_ms = CASE
+                WHEN asset_profile_refresh_targets.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                  OR EXCLUDED.priority < asset_profile_refresh_targets.priority
+                  THEN LEAST(asset_profile_refresh_targets.due_at_ms, EXCLUDED.due_at_ms)
+                ELSE asset_profile_refresh_targets.due_at_ms
+              END,
               leased_until_ms = CASE
                 WHEN asset_profile_refresh_targets.leased_until_ms IS NOT NULL
                   AND asset_profile_refresh_targets.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
@@ -120,13 +137,45 @@ class AssetProfileRefreshTargetRepository:
                 THEN 0
                 ELSE asset_profile_refresh_targets.attempt_count
               END,
-              last_error = NULL,
+              last_error = CASE
+                WHEN asset_profile_refresh_targets.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN NULL
+                ELSE asset_profile_refresh_targets.last_error
+              END,
+              terminal_reason = CASE
+                WHEN asset_profile_refresh_targets.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN NULL
+                ELSE asset_profile_refresh_targets.terminal_reason
+              END,
               first_dirty_at_ms = asset_profile_refresh_targets.first_dirty_at_ms,
               updated_at_ms = EXCLUDED.updated_at_ms
             """,
             {**_target_params(records), "dirty_reason": str(reason), "now_ms": int(now_ms)},
         )
-        return {"targets": mutation_count(cursor, error_code="asset_profile_refresh_target_rowcount_invalid")}
+        changed = mutation_count(cursor, error_code="asset_profile_refresh_target_rowcount_invalid")
+        self.conn.execute(
+            """
+            WITH incoming AS (
+              SELECT *
+              FROM unnest(
+                %(terminal_target_keys)s::text[],
+                %(payload_hashes)s::text[]
+              ) AS incoming(target_key, payload_hash)
+            )
+            UPDATE worker_queue_terminal_events terminal
+            SET operator_action = 'retry',
+                operator_reason = 'reactivated_by_new_evidence',
+                operator_action_at_ms = %(now_ms)s
+            FROM incoming
+            WHERE terminal.worker_name = 'asset_profile_refresh'
+              AND terminal.source_table = 'asset_profile_refresh_targets'
+              AND terminal.target_key = incoming.target_key
+              AND terminal.operator_action IS NULL
+              AND terminal.payload_hash IS DISTINCT FROM incoming.payload_hash
+            """,
+            {**_target_params(records), "now_ms": int(now_ms)},
+        )
+        return {"targets": changed}
 
     def enqueue_missing_token_radar_current_targets_for_ops(
         self,
@@ -194,7 +243,8 @@ class AssetProfileRefreshTargetRepository:
                 "address": str(row["address"]),
                 "symbol": row.get("symbol"),
                 "source_watermark_ms": int(row["source_watermark_ms"]),
-                "priority": 80,
+                "heat_tier": "hot",
+                "priority": 20,
                 "due_at_ms": int(now_ms),
             }
             for row in rows
@@ -233,6 +283,7 @@ class AssetProfileRefreshTargetRepository:
               SELECT provider, target_type, target_id
               FROM asset_profile_refresh_targets
               WHERE provider = %(provider)s
+                AND terminal_reason IS NULL
                 AND due_at_ms <= %(now_ms)s
                 AND (leased_until_ms IS NULL OR leased_until_ms <= %(now_ms)s)
               ORDER BY priority ASC,
@@ -274,11 +325,18 @@ class AssetProfileRefreshTargetRepository:
         due_at_ms: int,
         now_ms: int,
         reason: str | None = None,
+        reset_attempts: bool = False,
     ) -> int:
         records = _claim_records(claims)
         if not records:
             return 0
-        params = {**_claim_params(records), "due_at_ms": int(due_at_ms), "now_ms": int(now_ms), "reason": reason}
+        params = {
+            **_claim_params(records),
+            "due_at_ms": int(due_at_ms),
+            "now_ms": int(now_ms),
+            "reason": reason,
+            "reset_attempts": bool(reset_attempts),
+        }
 
         cursor = self.conn.execute(
             """
@@ -297,6 +355,10 @@ class AssetProfileRefreshTargetRepository:
             SET due_at_ms = %(due_at_ms)s,
                 leased_until_ms = NULL,
                 lease_owner = NULL,
+                attempt_count = CASE
+                  WHEN %(reset_attempts)s THEN 0
+                  ELSE queue.attempt_count
+                END,
                 dirty_reason = COALESCE(%(reason)s, queue.dirty_reason),
                 updated_at_ms = %(now_ms)s
             FROM rescheduled
@@ -310,6 +372,78 @@ class AssetProfileRefreshTargetRepository:
             params,
         )
         return mutation_count(cursor, error_code="asset_profile_refresh_target_rowcount_invalid")
+
+    def mark_terminal(
+        self,
+        claims: Iterable[Mapping[str, Any]],
+        *,
+        reason: str,
+        now_ms: int,
+    ) -> int:
+        records = _claim_records(claims)
+        if not records:
+            return 0
+        terminal_reason = _required_text(reason, field_name="terminal_reason")
+        params = {
+            **_claim_params(records),
+            "terminal_reason": terminal_reason,
+            "now_ms": int(now_ms),
+        }
+        cursor = self.conn.execute(
+            """
+            WITH terminal AS (
+              SELECT *
+              FROM unnest(
+                %(providers)s::text[],
+                %(target_types)s::text[],
+                %(target_ids)s::text[],
+                %(payload_hashes)s::text[],
+                %(lease_owners)s::text[],
+                %(attempt_counts)s::bigint[]
+              ) AS terminal(
+                provider, target_type, target_id, payload_hash,
+                lease_owner, attempt_count
+              )
+            )
+            UPDATE asset_profile_refresh_targets queue
+            SET leased_until_ms = NULL,
+                lease_owner = NULL,
+                terminal_reason = %(terminal_reason)s,
+                last_error = %(terminal_reason)s,
+                updated_at_ms = %(now_ms)s
+            FROM terminal
+            WHERE queue.provider = terminal.provider
+              AND queue.target_type = terminal.target_type
+              AND queue.target_id = terminal.target_id
+              AND queue.payload_hash = terminal.payload_hash
+              AND queue.lease_owner = terminal.lease_owner
+              AND queue.attempt_count = terminal.attempt_count
+            RETURNING queue.*
+            """,
+            params,
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        expect_mutation_count(
+            cursor,
+            expected=len(rows),
+            error_code="asset_profile_refresh_target_rowcount_invalid",
+        )
+        for row in rows:
+            terminalize_source_row(
+                self.conn,
+                worker_name="asset_profile_refresh",
+                source_table="asset_profile_refresh_targets",
+                target_key=_terminal_target_key(row),
+                source_row=row,
+                final_status="terminal",
+                final_reason=terminal_reason,
+                now_ms=now_ms,
+                attempt_count=int(row["attempt_count"]),
+                payload_hash=str(row["payload_hash"]),
+                first_seen_at_ms=int(row["first_dirty_at_ms"]),
+                last_attempted_at_ms=now_ms,
+            )
+        return len(rows)
 
     def mark_error(
         self,
@@ -370,12 +504,51 @@ class AssetProfileRefreshTargetRepository:
             SELECT count(*) AS count
             FROM asset_profile_refresh_targets
             WHERE provider = %(provider)s
+              AND terminal_reason IS NULL
               AND due_at_ms <= %(now_ms)s
               AND (leased_until_ms IS NULL OR leased_until_ms <= %(now_ms)s)
             """,
             {"provider": str(provider), "now_ms": int(now_ms)},
         ).fetchone()
         return int(row["count"] if row else 0)
+
+    def queue_health(self, *, provider: str, now_ms: int) -> dict[str, int]:
+        row = self.conn.execute(
+            """
+            SELECT
+              count(*) FILTER (WHERE terminal_reason IS NULL) AS active,
+              count(*) FILTER (
+                WHERE terminal_reason IS NULL
+                  AND due_at_ms <= %(now_ms)s
+                  AND (leased_until_ms IS NULL OR leased_until_ms <= %(now_ms)s)
+              ) AS due,
+              count(*) FILTER (
+                WHERE terminal_reason IS NULL AND heat_tier = 'hot'
+              ) AS hot,
+              count(*) FILTER (
+                WHERE terminal_reason IS NULL AND heat_tier = 'warm'
+              ) AS warm,
+              count(*) FILTER (
+                WHERE terminal_reason IS NULL AND heat_tier = 'cold'
+              ) AS cold,
+              count(*) FILTER (WHERE terminal_reason IS NOT NULL) AS terminal,
+              COALESCE(
+                %(now_ms)s - min(due_at_ms) FILTER (
+                  WHERE terminal_reason IS NULL
+                    AND due_at_ms <= %(now_ms)s
+                    AND (leased_until_ms IS NULL OR leased_until_ms <= %(now_ms)s)
+                ),
+                0
+              ) AS oldest_due_age_ms
+            FROM asset_profile_refresh_targets
+            WHERE provider = %(provider)s
+            """,
+            {"provider": str(provider), "now_ms": int(now_ms)},
+        ).fetchone()
+        return {
+            key: int(row[key] if row and row[key] is not None else 0)
+            for key in ("active", "due", "hot", "warm", "cold", "terminal", "oldest_due_age_ms")
+        }
 
 
 def _target_records(
@@ -400,10 +573,25 @@ def _target_records(
             "address": address,
             "symbol": _optional_text(target.get("symbol")),
             "source_watermark_ms": _source_watermark_ms(target),
-            "priority": int(target.get("priority") or 100),
+            "heat_tier": _heat_tier(target.get("heat_tier")),
             "due_at_ms": int(target.get("due_at_ms") or due_at_ms or now_ms),
         }
-        record["payload_hash"] = str(target.get("payload_hash") or _payload_hash({**record, "dirty_reason": reason}))
+        record["priority"] = int(target.get("priority") or _heat_tier_priority(str(record["heat_tier"])))
+        record["payload_hash"] = str(
+            target.get("payload_hash")
+            or _payload_hash(
+                {
+                    "provider": provider,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "chain_id": chain_id,
+                    "address": address,
+                    "symbol": record["symbol"],
+                    "source_watermark_ms": record["source_watermark_ms"],
+                    "profile_contract_version": "asset_profile_refresh_v1",
+                }
+            )
+        )
         records[(provider, target_type, target_id)] = record
     return list(records.values())
 
@@ -417,7 +605,9 @@ def _target_params(records: list[dict[str, Any]]) -> dict[str, list[Any]]:
         "addresses": [str(record["address"]) for record in records],
         "symbols": [record["symbol"] for record in records],
         "payload_hashes": [str(record["payload_hash"]) for record in records],
+        "terminal_target_keys": [_terminal_target_key(record) for record in records],
         "source_watermark_ms_values": [int(record["source_watermark_ms"]) for record in records],
+        "heat_tiers": [str(record["heat_tier"]) for record in records],
         "priorities": [int(record["priority"]) for record in records],
         "due_at_ms_values": [int(record["due_at_ms"]) for record in records],
     }
@@ -523,6 +713,27 @@ def _source_watermark_ms(target: Mapping[str, Any]) -> int:
     if value <= 0:
         raise ValueError("asset_profile_refresh_target_source_watermark_required")
     return int(value)
+
+
+def _heat_tier(value: Any) -> str:
+    tier = str(value or "cold").strip().lower()
+    if tier not in {"hot", "warm", "cold"}:
+        raise ValueError("asset_profile_refresh_target_heat_tier_invalid")
+    return tier
+
+
+def _heat_tier_priority(heat_tier: str) -> int:
+    return {"hot": 20, "warm": 60, "cold": 100}[heat_tier]
+
+
+def _terminal_target_key(target: Mapping[str, Any]) -> str:
+    return ":".join(
+        (
+            str(target["provider"]),
+            str(target["target_type"]),
+            str(target["target_id"]),
+        )
+    )
 
 
 def _payload_hash(payload: Mapping[str, Any]) -> str:

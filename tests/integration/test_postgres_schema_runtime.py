@@ -84,6 +84,7 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_stories",
     "news_story_members",
     "news_story_aliases",
+    "news_story_input_state",
     "news_brief_runs",
     "news_brief_publications",
     "news_brief_current",
@@ -197,6 +198,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 """
             ).fetchall()
         }
+        asset_profile_refresh_target_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'asset_profile_refresh_targets'
+                """
+            ).fetchall()
+        }
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -298,6 +310,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "macro_acquisition_targets",
         "macro_feature_series",
         "macro_module_current",
+        "macro_projection_state",
         "macro_evidence_packs",
         "macro_research_inputs",
         "macro_thesis_runs",
@@ -379,6 +392,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
     assert {"fact_schema_version", "contract_expiration_date"} <= market_settlement_columns
+    assert {"heat_tier", "terminal_reason"} <= asset_profile_refresh_target_columns
     assert {"matched_handles_json", "is_watched", "matched_at_ms"}.isdisjoint(event_columns)
     assert "is_watched" not in event_entity_columns
     assert {"scope", "social_heat_watched_mentions", "cohort_public_followup_authors"}.isdisjoint(radar_feature_columns)
@@ -387,7 +401,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert "is_watched" not in radar_rank_source_columns
-    assert version == latest_migration_version() == "20260729_0216"
+    assert version == latest_migration_version() == "20260730_0219"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -412,7 +426,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260729_0216"
+    assert version == latest_migration_version() == "20260730_0219"
 
 
 def test_macro_reader_hard_cut_deletes_old_projections_and_requires_reprojection(
@@ -562,7 +576,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260729_0216"
+        assert version == "20260730_0219"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

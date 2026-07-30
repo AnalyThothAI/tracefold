@@ -9,6 +9,7 @@ from tracefold.market.profiles.asset_profile_refresh import (
     write_error_asset_profile,
     write_missing_asset_profile,
     write_ready_asset_profile,
+    write_unsupported_asset_profile,
 )
 from tracefold.market.provider_contracts import (
     DexProfileSource,
@@ -43,9 +44,11 @@ class AssetProfileRefreshWorker(WorkerBase):
             notes={
                 "claimed": int(result.get("claimed") or 0),
                 "queue_depth": int(result.get("queue_depth") or 0),
+                "oldest_due_age_ms": int(result.get("oldest_due_age_ms") or 0),
                 "source_rows_scanned": int(result.get("source_rows_scanned") or 0),
                 "targets_loaded": int(result.get("targets_loaded") or 0),
                 "rows_written": int(result.get("rows_written") or 0),
+                "terminal": int(result.get("terminal") or 0),
                 "result": result,
             },
         )
@@ -56,6 +59,11 @@ class AssetProfileRefreshWorker(WorkerBase):
             "selected": 0,
             "claimed": 0,
             "queue_depth": 0,
+            "oldest_due_age_ms": 0,
+            "queue_hot": 0,
+            "queue_warm": 0,
+            "queue_cold": 0,
+            "queue_terminal": 0,
             "source_rows_scanned": 0,
             "targets_loaded": 0,
             "rows_written": 0,
@@ -63,6 +71,7 @@ class AssetProfileRefreshWorker(WorkerBase):
             "missing": 0,
             "error": 0,
             "provider_blocked": 0,
+            "terminal": 0,
             "skipped": 0,
             "sources": {},
             "started_at_ms": int(now_ms),
@@ -85,9 +94,22 @@ class AssetProfileRefreshWorker(WorkerBase):
                 "missing",
                 "error",
                 "provider_blocked",
+                "terminal",
                 "skipped",
             ):
                 result[key] += int(source_result.get(key) or 0)
+            queue = dict(source_result.get("queue") or {})
+            result["oldest_due_age_ms"] = max(
+                int(result["oldest_due_age_ms"]),
+                int(queue.get("oldest_due_age_ms") or 0),
+            )
+            for queue_key, health_key in (
+                ("queue_hot", "hot"),
+                ("queue_warm", "warm"),
+                ("queue_cold", "cold"),
+                ("queue_terminal", "terminal"),
+            ):
+                result[queue_key] += int(queue.get(health_key) or 0)
         return result
 
     def _refresh_source_once(self, *, profile_source: DexProfileSource, now_ms: int) -> dict[str, Any]:
@@ -103,6 +125,7 @@ class AssetProfileRefreshWorker(WorkerBase):
             "missing": 0,
             "error": 0,
             "provider_blocked": 0,
+            "terminal": 0,
             "skipped": 0,
             "started_at_ms": int(now_ms),
             "finished_at_ms": int(now_ms),
@@ -121,10 +144,12 @@ class AssetProfileRefreshWorker(WorkerBase):
                 lease_owner=self.name,
                 lease_ms=self.settings.lease_ms,
             )
-            source_result["queue_depth"] = repos.asset_profile_refresh_targets.queue_depth(
+            queue_health = repos.asset_profile_refresh_targets.queue_health(
                 provider=profile_source.provider,
                 now_ms=now_ms,
             )
+            source_result["queue_depth"] = queue_health["due"]
+            source_result["queue"] = queue_health
         source_result["selected"] = len(rows)
         source_result["claimed"] = len(rows)
         source_result["targets_loaded"] = len(rows)
@@ -135,6 +160,7 @@ class AssetProfileRefreshWorker(WorkerBase):
         ready_refresh_ms = self.settings.ready_refresh_ms
         missing_refresh_ms = self.settings.missing_refresh_ms
         error_refresh_ms = self.settings.error_refresh_ms
+        backoff_cap_ms = self.settings.retry_backoff_cap_ms
         for row in rows:
             try:
                 profile = fetch_asset_profile(profile_source=profile_source, row=row)
@@ -146,10 +172,21 @@ class AssetProfileRefreshWorker(WorkerBase):
                     due_at_ms=now_ms + self.settings.provider_retry_ms,
                     now_ms=now_ms,
                     reason="provider_blocked",
+                    reset_attempts=True,
                 )
                 break
             except Exception as exc:
-                next_refresh_at_ms = now_ms + error_refresh_ms
+                terminal_reason = _terminal_error_reason(
+                    exc,
+                    attempt_count=int(row["attempt_count"]),
+                    max_attempts=self.settings.error_max_attempts,
+                )
+                retry_delay_ms = _retry_delay_ms(
+                    base_ms=error_refresh_ms,
+                    attempt_count=int(row["attempt_count"]),
+                    cap_ms=backoff_cap_ms,
+                )
+                next_refresh_at_ms = now_ms + retry_delay_ms
                 with (
                     self.db.worker_session(
                         self.name,
@@ -157,23 +194,40 @@ class AssetProfileRefreshWorker(WorkerBase):
                     ) as repos,
                     repos.transaction(),
                 ):
-                    write_error_asset_profile(
-                        repos=repos,
-                        provider=profile_source.provider,
-                        row=row,
-                        exc=exc,
-                        now_ms=now_ms,
-                        next_refresh_at_ms=next_refresh_at_ms,
-                    )
-                    repos.asset_profile_refresh_targets.reschedule(
-                        [row],
-                        due_at_ms=next_refresh_at_ms,
-                        now_ms=now_ms,
-                        reason="profile_error_written",
-                    )
+                    if terminal_reason == "profile_unsupported":
+                        write_unsupported_asset_profile(
+                            repos=repos,
+                            provider=profile_source.provider,
+                            row=row,
+                            exc=exc,
+                            now_ms=now_ms,
+                        )
+                    else:
+                        write_error_asset_profile(
+                            repos=repos,
+                            provider=profile_source.provider,
+                            row=row,
+                            exc=exc,
+                            now_ms=now_ms,
+                            next_refresh_at_ms=next_refresh_at_ms,
+                        )
+                    if terminal_reason is not None:
+                        repos.asset_profile_refresh_targets.mark_terminal(
+                            [row],
+                            reason=terminal_reason,
+                            now_ms=now_ms,
+                        )
+                    else:
+                        repos.asset_profile_refresh_targets.reschedule(
+                            [row],
+                            due_at_ms=next_refresh_at_ms,
+                            now_ms=now_ms,
+                            reason="profile_error_written",
+                        )
                     _enqueue_profile_current(repos=repos, row=row, now_ms=now_ms)
                 source_result["rows_written"] += 1
                 source_result["error"] += 1
+                source_result["terminal"] += int(terminal_reason is not None)
                 continue
             with (
                 self.db.worker_session(
@@ -197,10 +251,17 @@ class AssetProfileRefreshWorker(WorkerBase):
                         due_at_ms=next_refresh_at_ms,
                         now_ms=now_ms,
                         reason="profile_ready_written",
+                        reset_attempts=True,
                     )
                     source_result["ready"] += 1
                 else:
-                    next_refresh_at_ms = now_ms + missing_refresh_ms
+                    terminal = int(row["attempt_count"]) >= self.settings.missing_max_attempts
+                    retry_delay_ms = _retry_delay_ms(
+                        base_ms=missing_refresh_ms,
+                        attempt_count=int(row["attempt_count"]),
+                        cap_ms=backoff_cap_ms,
+                    )
+                    next_refresh_at_ms = now_ms + retry_delay_ms
                     write_missing_asset_profile(
                         repos=repos,
                         provider=profile_source.provider,
@@ -208,18 +269,34 @@ class AssetProfileRefreshWorker(WorkerBase):
                         now_ms=now_ms,
                         next_refresh_at_ms=next_refresh_at_ms,
                     )
-                    repos.asset_profile_refresh_targets.reschedule(
-                        [row],
-                        due_at_ms=next_refresh_at_ms,
-                        now_ms=now_ms,
-                        reason="profile_missing_written",
-                    )
+                    if terminal:
+                        repos.asset_profile_refresh_targets.mark_terminal(
+                            [row],
+                            reason="profile_missing_after_max_attempts",
+                            now_ms=now_ms,
+                        )
+                    else:
+                        repos.asset_profile_refresh_targets.reschedule(
+                            [row],
+                            due_at_ms=next_refresh_at_ms,
+                            now_ms=now_ms,
+                            reason="profile_missing_written",
+                        )
                     source_result["missing"] += 1
+                    source_result["terminal"] += int(terminal)
                 _enqueue_profile_current(repos=repos, row=row, now_ms=now_ms)
                 source_result["rows_written"] += 1
         return source_result
 
-    def _reschedule_claims(self, claims: list[dict[str, Any]], *, due_at_ms: int, now_ms: int, reason: str) -> None:
+    def _reschedule_claims(
+        self,
+        claims: list[dict[str, Any]],
+        *,
+        due_at_ms: int,
+        now_ms: int,
+        reason: str,
+        reset_attempts: bool = False,
+    ) -> None:
         if not claims:
             return
         with (
@@ -234,6 +311,7 @@ class AssetProfileRefreshWorker(WorkerBase):
                 due_at_ms=due_at_ms,
                 now_ms=now_ms,
                 reason=reason,
+                reset_attempts=reset_attempts,
             )
 
 
@@ -263,3 +341,23 @@ def _required_source_watermark_ms(row: dict[str, Any], *, error: str) -> int:
     if value <= 0:
         raise RuntimeError(error)
     return int(value)
+
+
+def _retry_delay_ms(*, base_ms: int, attempt_count: int, cap_ms: int) -> int:
+    exponent = max(0, int(attempt_count) - 1)
+    multiplier = int(2**exponent)
+    return min(int(cap_ms), int(base_ms) * multiplier)
+
+
+def _terminal_error_reason(
+    exc: Exception,
+    *,
+    attempt_count: int,
+    max_attempts: int,
+) -> str | None:
+    error = str(exc).strip().lower()
+    if error.startswith("unsupported_") or "unsupported chain" in error:
+        return "profile_unsupported"
+    if int(attempt_count) >= int(max_attempts):
+        return "profile_error_after_max_attempts"
+    return None

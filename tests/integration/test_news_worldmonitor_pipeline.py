@@ -6,7 +6,9 @@ from typing import Any
 
 import httpx
 import pytest
+from psycopg import pq
 
+import tracefold.news.repository as news_repository_module
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
@@ -193,6 +195,7 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
 
 def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
     tmp_path,
+    monkeypatch,
 ) -> None:
     rss_body = b"""
     <rss version="2.0"><channel>
@@ -265,6 +268,14 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         transport=httpx.MockTransport(handler),
         max_attempts=1,
     )
+    cluster_transaction_states: list[pq.TransactionStatus] = []
+    original_cluster_texts = news_repository_module.cluster_texts
+
+    def observed_cluster_texts(titles):
+        cluster_transaction_states.append(conn.info.transaction_status)
+        return original_cluster_texts(titles)
+
+    monkeypatch.setattr(news_repository_module, "cluster_texts", observed_cluster_texts)
     try:
         migrate(conn)
         wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
@@ -296,11 +307,16 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         assert not_modified.notes["observations_inserted"] == 0
         assert not_modified.notes["items_inserted"] == 0
         assert not_modified.notes["story_writes"] == 0
+        assert not_modified.notes["projection_status"] == "unchanged_input"
+        assert not_modified.notes["clustered"] == 0
         assert duplicate.notes["entries_seen"] == 6
         assert duplicate.notes["observations_inserted"] == 5
         assert duplicate.notes["items_inserted"] == 0
         assert duplicate.notes["items_updated"] == 0
         assert duplicate.notes["story_writes"] == 0
+        assert duplicate.notes["projection_status"] == "unchanged_input"
+        assert duplicate.notes["clustered"] == 0
+        assert cluster_transaction_states == [pq.TransactionStatus.IDLE]
 
         fetches = conn.execute(
             """
@@ -609,6 +625,8 @@ def test_pubdate_only_drift_writes_observation_but_not_item_or_story(
         assert second["items_inserted"] == 0
         assert second["items_updated"] == 0
         assert projection["story_writes"] == 0
+        assert projection["projection_status"] == "unchanged_input"
+        assert projection["clustered"] == 0
         assert (
             conn.execute("SELECT published_at_ms, last_observed_at_ms, updated_at_ms FROM news_items").fetchone()
             == before_item
@@ -618,6 +636,10 @@ def test_pubdate_only_drift_writes_observation_but_not_item_or_story(
             == before_story
         )
         assert conn.execute("SELECT count(*) AS n FROM news_feed_observations").fetchone()["n"] == 2
+        with conn.transaction():
+            next_epoch = repository.rebuild_stories(now_ms=NOW_MS + 3_600_000)
+        assert next_epoch["projection_status"] == "rebuilt"
+        assert next_epoch["clustered"] == 1
     finally:
         conn.close()
 
@@ -1196,6 +1218,7 @@ def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
             "news_stories",
             "news_story_members",
             "news_story_aliases",
+            "news_story_input_state",
             "news_brief_runs",
             "news_brief_publications",
             "news_brief_current",

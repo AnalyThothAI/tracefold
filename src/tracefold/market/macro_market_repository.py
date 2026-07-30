@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from .macro_market_domain import (
@@ -44,6 +45,24 @@ class GeneralMarketRepository:
             ),
         )
         return int(cursor.rowcount)
+
+    def projection_source_state(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT 'market_observations' AS source_name,
+                   count(*)::bigint AS row_count,
+                   max(received_at_ms)::bigint AS frontier_ms
+              FROM market_observations
+            UNION ALL
+            SELECT 'market_position_facts', count(*)::bigint, max(received_at_ms)::bigint
+              FROM market_position_facts
+            UNION ALL
+            SELECT 'market_settlements', count(*)::bigint, max(received_at_ms)::bigint
+              FROM market_settlements
+            ORDER BY source_name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def insert_observation(self, fact: MarketObservationFact) -> int:
         payload = _observation_payload(fact)
@@ -193,36 +212,57 @@ class GeneralMarketRepository:
     def market_history(
         self,
         *,
-        dataset_ids: tuple[str, ...],
-        limit_per_dataset: int = 400,
+        history_limits: Mapping[str, int],
         received_before_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        if not dataset_ids:
+        requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
+        if not requested:
             return []
         rows = self.conn.execute(
             """
-            SELECT *
+            WITH requested AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::integer[])
+                AS requested(dataset_id, max_rows)
+            )
+            SELECT
+              observation_id, dataset_id, instrument_id, source_id, field_name,
+              value_numeric, unit, observed_at_ms, published_at_ms,
+              received_at_ms, trust_tier, source_url, fact_hash, row_number
             FROM (
               SELECT
-                observations.*,
+                observations.observation_id,
+                observations.dataset_id,
+                observations.instrument_id,
+                observations.source_id,
+                observations.field_name,
+                observations.value_numeric,
+                observations.unit,
+                observations.observed_at_ms,
+                observations.published_at_ms,
+                observations.received_at_ms,
+                observations.trust_tier,
+                observations.source_url,
+                observations.fact_hash,
+                requested.max_rows,
                 row_number() OVER (
                   PARTITION BY observations.dataset_id
                   ORDER BY observations.observed_at_ms DESC, observations.received_at_ms DESC
                 ) AS row_number
               FROM market_observations AS observations
-              WHERE observations.dataset_id = ANY(%s)
-                AND observations.received_at_ms <= COALESCE(
+              JOIN requested USING (dataset_id)
+              WHERE observations.received_at_ms <= COALESCE(
                   %s::bigint,
                   observations.received_at_ms
                 )
             ) AS ranked
-            WHERE row_number <= %s
+            WHERE row_number <= max_rows
             ORDER BY dataset_id, observed_at_ms
             """,
             (
-                list(dataset_ids),
+                list(requested),
+                list(requested.values()),
                 received_before_ms,
-                int(limit_per_dataset),
             ),
         ).fetchall()
         return [dict(row) for row in rows]

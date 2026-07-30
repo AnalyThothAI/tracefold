@@ -297,10 +297,10 @@ def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
     try:
         reset_postgres_schema(conn)
         with repository_session_for_connection(conn) as repos:
-            assert repos.macro.series_history(dataset_ids=("fred.dgs10",)) == []
+            assert repos.macro.series_history(history_limits={"fred.dgs10": 500}) == []
             assert repos.macro.release_history(dataset_ids=("bls.cpi.release",)) == []
             assert repos.macro.document_history(dataset_ids=("federal_reserve.fomc.documents",)) == []
-            assert repos.macro_market.market_history(dataset_ids=("yfinance.spy.intraday",)) == []
+            assert repos.macro_market.market_history(history_limits={"yfinance.spy.intraday": 5_000}) == []
             assert repos.macro_market.settlement_history(dataset_ids=("cboe.cfe.vx.settlement",)) == []
             assert repos.macro_market.position_history(dataset_ids=("cftc.tff.rates_positions",)) == []
     finally:

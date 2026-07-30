@@ -50,22 +50,21 @@ class TokenRadarPublisher:
             max_attempts,
             error="token_radar_projection_max_attempts_invalid",
         )
-        with self.repos.transaction():
-            return self._rebuild_dirty_targets_in_transaction(
-                windows=windows,
-                work_items=work_items,
-                score_work_items=score_work_items,
-                now_ms=now_ms,
-                limit=limit,
-                rank_limit=rank_limit,
-                lease_ms=dirty_lease_ms,
-                retry_ms=dirty_retry_ms,
-                max_attempts=dirty_max_attempts,
-                lease_owner=lease_owner,
-                claimed_targets=claimed_targets,
-            )
+        return self._rebuild_dirty_targets(
+            windows=windows,
+            work_items=work_items,
+            score_work_items=score_work_items,
+            now_ms=now_ms,
+            limit=limit,
+            rank_limit=rank_limit,
+            lease_ms=dirty_lease_ms,
+            retry_ms=dirty_retry_ms,
+            max_attempts=dirty_max_attempts,
+            lease_owner=lease_owner,
+            claimed_targets=claimed_targets,
+        )
 
-    def _rebuild_dirty_targets_in_transaction(
+    def _rebuild_dirty_targets(
         self,
         *,
         windows: tuple[str, ...],
@@ -86,21 +85,23 @@ class TokenRadarPublisher:
             work_items=score_work_items if score_work_items is not None else work_items,
         )
         due_work_items = _resolve_due_work_items(work_items=work_items)
-        target_claims = (
-            [dict(claim) for claim in claimed_targets]
-            if claimed_targets is not None
-            else self.repos.token_radar_dirty_targets.claim_due(
-                limit=limit,
-                lease_ms=lease_ms,
-                now_ms=computed_at_ms,
-                lease_owner=lease_owner,
-            )
-        )
+        if claimed_targets is not None:
+            target_claims = [dict(claim) for claim in claimed_targets]
+        else:
+            with self.repos.transaction():
+                target_claims = self.repos.token_radar_dirty_targets.claim_due(
+                    limit=limit,
+                    lease_ms=lease_ms,
+                    now_ms=computed_at_ms,
+                    lease_owner=lease_owner,
+                )
         result: dict[str, Any] = {
             "computed_at_ms": computed_at_ms,
             "rows_written": 0,
             "source_rows": 0,
+            "hydrated_rows": 0,
             "claimed": len(target_claims),
+            "merged_rank_set_triggers": 0,
             "catch_up_enqueued": 0,
             "windows": {},
             "status": "idle" if not target_claims else "ready",
@@ -111,6 +112,7 @@ class TokenRadarPublisher:
         claim_keys = {_claim_identity_key(claim): _claim_key(claim) for claim in target_claims}
         successful_claims: list[tuple[dict[str, str | int], set[tuple[str, str]]]] = []
         touched: set[tuple[str, str]] = set()
+        rank_set_triggers = 0
         failures = 0
         first_error: str | None = None
         first_publish_error: str | None = None
@@ -128,18 +130,21 @@ class TokenRadarPublisher:
                 if projected.error is not None:
                     failures += 1
                     first_error = first_error or projected.error
-                    self.repos.token_radar_dirty_targets.mark_error(
-                        [claim_key],
-                        error=projected.error,
-                        retry_ms=retry_ms,
-                        max_attempts=max_attempts,
-                        worker_name=lease_owner,
-                        now_ms=computed_at_ms,
-                    )
+                    with self.repos.transaction():
+                        self.repos.token_radar_dirty_targets.mark_error(
+                            [claim_key],
+                            error=projected.error,
+                            retry_ms=retry_ms,
+                            max_attempts=max_attempts,
+                            worker_name=lease_owner,
+                            now_ms=computed_at_ms,
+                        )
                     continue
                 rank_sets = set(projected.rank_sets)
+                rank_set_triggers += len(rank_sets)
                 touched.update(rank_sets)
                 successful_claims.append((claim_key, rank_sets))
+        result["merged_rank_set_triggers"] = max(0, rank_set_triggers - len(touched))
 
         publish_items = set(due_work_items)
         publish_items.update(touched)
@@ -163,6 +168,7 @@ class TokenRadarPublisher:
                     failed_publish_items.add((window, venue))
                 result["windows"][f"{window}:{venue}"] = rank_result
                 result["rows_written"] += int(rank_result.get("rows_written") or 0)
+                result["hydrated_rows"] += int(rank_result.get("hydrated_rows") or 0)
 
         if failures:
             result["status"] = "failed"
@@ -178,10 +184,11 @@ class TokenRadarPublisher:
                 now_ms=computed_at_ms,
             )
         elif successful_claims:
-            self.repos.token_radar_dirty_targets.mark_done(
-                [claim_key for claim_key, _rank_sets in successful_claims],
-                now_ms=computed_at_ms,
-            )
+            with self.repos.transaction():
+                self.repos.token_radar_dirty_targets.mark_done(
+                    [claim_key for claim_key, _rank_sets in successful_claims],
+                    now_ms=computed_at_ms,
+                )
         return result
 
     def _finish_successful_claims(
@@ -205,17 +212,18 @@ class TokenRadarPublisher:
             for claim_key, rank_sets in successful_claims
             if rank_sets and rank_sets.intersection(failed_publish_items)
         ]
-        if done_claims:
-            self.repos.token_radar_dirty_targets.mark_done(done_claims, now_ms=now_ms)
-        if retry_claims:
-            self.repos.token_radar_dirty_targets.mark_error(
-                retry_claims,
-                error=error,
-                retry_ms=retry_ms,
-                max_attempts=max_attempts,
-                worker_name=worker_name,
-                now_ms=now_ms,
-            )
+        with self.repos.transaction():
+            if done_claims:
+                self.repos.token_radar_dirty_targets.mark_done(done_claims, now_ms=now_ms)
+            if retry_claims:
+                self.repos.token_radar_dirty_targets.mark_error(
+                    retry_claims,
+                    error=error,
+                    retry_ms=retry_ms,
+                    max_attempts=max_attempts,
+                    worker_name=worker_name,
+                    now_ms=now_ms,
+                )
 
     def publish_rank_set(
         self,
@@ -317,6 +325,7 @@ class TokenRadarPublisher:
             return {
                 "rows_written": 0,
                 "source_rows": projected.source_rows,
+                "hydrated_rows": projected.hydrated_rows,
                 "computed_at_ms": computed_at_ms,
                 "generation_id": published_generation_id,
                 "status": "stale_skipped",
@@ -326,6 +335,7 @@ class TokenRadarPublisher:
         return {
             "rows_written": rows_written,
             "source_rows": projected.source_rows,
+            "hydrated_rows": projected.hydrated_rows,
             "computed_at_ms": computed_at_ms,
             "generation_id": published_generation_id,
             "status": "ready" if status == "published" else "unchanged",
@@ -352,6 +362,7 @@ class TokenRadarPublisher:
         return {
             "rows_written": 0,
             "source_rows": 0,
+            "hydrated_rows": 0,
             "computed_at_ms": computed_at_ms,
             "status": "failed",
             "error": str(error),
@@ -632,19 +643,14 @@ def _asset_profile_targets(
     targets: list[dict[str, Any]] = []
     for provider in ASSET_PROFILE_REFRESH_PROVIDERS:
         payload = {
+            "profile_refresh_version": "asset_profile_refresh_v1",
             "provider": provider,
             "target_type": target_type,
             "target_id": target_id,
             "chain_id": chain_id,
             "address": address,
             "symbol": symbol,
-            "window": str(window),
-            "rank": row.get("rank"),
-            "lane": row.get("lane"),
-            "decision": row.get("decision"),
             "source_watermark_ms": source_watermark_ms,
-            "token_radar_payload_hash": row.get("payload_hash"),
-            "reason": reason,
         }
         targets.append(
             {
@@ -657,7 +663,8 @@ def _asset_profile_targets(
                 "dirty_reason": reason,
                 "payload_hash": stable_token_radar_payload_hash(payload),
                 "source_watermark_ms": source_watermark_ms,
-                "priority": 80,
+                "heat_tier": "hot",
+                "priority": 20,
                 "due_at_ms": computed_at_ms,
             }
         )

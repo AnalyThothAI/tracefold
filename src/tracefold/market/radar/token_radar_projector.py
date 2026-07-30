@@ -69,6 +69,7 @@ class ProjectedClaim:
 class RankSetProjection:
     rows: tuple[dict[str, Any], ...]
     source_rows: int
+    hydrated_rows: int
 
 
 def prune_token_radar_private_cache(
@@ -143,14 +144,15 @@ class TokenRadarProjector:
         edge_refresh_targets = [target for target in targets if not _is_market_only_claim(target)]
         if edge_refresh_targets:
             try:
-                self.repos.token_radar_rank_sources.populate_edges_for_targets(
-                    edge_refresh_targets,
-                    projected_at_ms=computed_at_ms,
-                    analysis_since_ms=_rank_source_repair_analysis_since_ms(
-                        computed_at_ms=computed_at_ms,
-                        work_items=source_work_items,
-                    ),
-                )
+                with self.repos.transaction():
+                    self.repos.token_radar_rank_sources.populate_edges_for_targets(
+                        edge_refresh_targets,
+                        projected_at_ms=computed_at_ms,
+                        analysis_since_ms=_rank_source_repair_analysis_since_ms(
+                            computed_at_ms=computed_at_ms,
+                            work_items=source_work_items,
+                        ),
+                    )
             except Exception as exc:
                 failed_identities = {_target_identity_key(target) for target in edge_refresh_targets}
                 projected.extend(
@@ -236,48 +238,49 @@ class TokenRadarProjector:
             window_ms=window_ms,
             total_window_events=total_window_events,
         )
-        if projected is None:
-            deleted = 0
-            for lane in ("resolved", "attention"):
-                deleted += int(
-                    self.repos.token_radar.delete_target_feature(
-                        projection_version=PROJECTION_VERSION,
-                        window=window,
-                        lane=lane,
-                        target_type_key=target_type_key,
-                        identity_id=identity_id,
+        with self.repos.transaction():
+            if projected is None:
+                deleted = 0
+                for lane in ("resolved", "attention"):
+                    deleted += int(
+                        self.repos.token_radar.delete_target_feature(
+                            projection_version=PROJECTION_VERSION,
+                            window=window,
+                            lane=lane,
+                            target_type_key=target_type_key,
+                            identity_id=identity_id,
+                        )
+                        or 0
                     )
-                    or 0
-                )
-            return {
-                "status": "deleted" if deleted else "empty",
-                "source_rows": len(source_rows),
-                "rows_written": 0,
-                "rank_set_changed": deleted > 0,
-                "target_venue": _venue_for_identity(target_type_key=target_type_key, identity_id=identity_id),
-            }
+                return {
+                    "status": "deleted" if deleted else "empty",
+                    "source_rows": len(source_rows),
+                    "rows_written": 0,
+                    "rank_set_changed": deleted > 0,
+                    "target_venue": _venue_for_identity(target_type_key=target_type_key, identity_id=identity_id),
+                }
 
-        target_venue = token_radar_venue_for_rank_input(projected)
-        written = int(
-            self.repos.token_radar.upsert_target_feature(
-                projection_version=PROJECTION_VERSION,
-                window=window,
-                row=projected,
-                computed_at_ms=int(now_ms),
+            target_venue = token_radar_venue_for_rank_input(projected)
+            written = int(
+                self.repos.token_radar.upsert_target_feature(
+                    projection_version=PROJECTION_VERSION,
+                    window=window,
+                    row=projected,
+                    computed_at_ms=int(now_ms),
+                )
+                or 0
             )
-            or 0
-        )
-        opposite_lane = "attention" if projected["lane"] == "resolved" else "resolved"
-        deleted = int(
-            self.repos.token_radar.delete_target_feature(
-                projection_version=PROJECTION_VERSION,
-                window=window,
-                lane=opposite_lane,
-                target_type_key=target_type_key,
-                identity_id=identity_id,
+            opposite_lane = "attention" if projected["lane"] == "resolved" else "resolved"
+            deleted = int(
+                self.repos.token_radar.delete_target_feature(
+                    projection_version=PROJECTION_VERSION,
+                    window=window,
+                    lane=opposite_lane,
+                    target_type_key=target_type_key,
+                    identity_id=identity_id,
+                )
+                or 0
             )
-            or 0
-        )
         changed = written > 0 or deleted > 0
         return {
             "status": "updated" if changed else "unchanged",
@@ -311,7 +314,7 @@ class TokenRadarProjector:
         limit: int,
     ) -> dict[str, RankSetProjection]:
         min_latest_event_received_at_ms = int(now_ms) - _window_ms(window)
-        rank_inputs = self.repos.token_radar.list_rank_inputs_for_rank_set(
+        rank_inputs = self.repos.token_radar.list_compact_rank_inputs_for_rank_set(
             projection_version=PROJECTION_VERSION,
             window=window,
             min_latest_event_received_at_ms=min_latest_event_received_at_ms,
@@ -321,7 +324,7 @@ class TokenRadarProjector:
             for row in rank_inputs
             if _rank_input_latest_event_received_at_ms(row) >= min_latest_event_received_at_ms
         ]
-        projections: dict[str, RankSetProjection] = {}
+        selected_by_venue: dict[str, list[dict[str, Any]]] = {}
         for venue in dict.fromkeys(str(item) for item in venues):
             venue_inputs = (
                 current_inputs
@@ -329,11 +332,45 @@ class TokenRadarProjector:
                 else [row for row in current_inputs if token_radar_venue_for_rank_input(row) == venue]
             )
             ranked = self.rank_compact_inputs(venue_inputs)
-            selected_ranked = _select_top_ranked_by_lane(ranked, limit=limit)
-            rows = tuple(
-                _patch_ranked_current_row(_row_from_target_feature(row, venue=venue), row) for row in selected_ranked
+            selected_by_venue[venue] = _select_top_ranked_by_lane(ranked, limit=limit)
+
+        selected_identities = list(
+            dict.fromkeys(
+                _rank_input_identity(row) for selected_ranked in selected_by_venue.values() for row in selected_ranked
             )
-            projections[venue] = RankSetProjection(rows=rows, source_rows=len(venue_inputs))
+        )
+        hydrated_inputs = self.repos.token_radar.hydrate_rank_inputs_for_rank_set(
+            projection_version=PROJECTION_VERSION,
+            window=window,
+            identities=selected_identities,
+        )
+        hydrated_by_identity = {_rank_input_identity(row): row for row in hydrated_inputs}
+
+        projections: dict[str, RankSetProjection] = {}
+        for venue, selected_ranked in selected_by_venue.items():
+            rows = tuple(
+                _patch_ranked_current_row(
+                    _row_from_target_feature(
+                        _required_hydrated_rank_input(
+                            hydrated_by_identity,
+                            identity=_rank_input_identity(row),
+                        ),
+                        venue=venue,
+                    ),
+                    row,
+                )
+                for row in selected_ranked
+            )
+            venue_inputs = (
+                current_inputs
+                if venue == TOKEN_RADAR_DEFAULT_VENUE
+                else [row for row in current_inputs if token_radar_venue_for_rank_input(row) == venue]
+            )
+            projections[venue] = RankSetProjection(
+                rows=rows,
+                source_rows=len(venue_inputs),
+                hydrated_rows=len(selected_ranked),
+            )
         return projections
 
     @staticmethod
@@ -1532,7 +1569,11 @@ def token_radar_venue_for_rank_input(row: Mapping[str, Any]) -> str:
         return "cex"
     if target_type != "Asset":
         return TOKEN_RADAR_DEFAULT_VENUE
-    chain = _factor_snapshot_subject_chain(row.get("factor_snapshot_json"))
+    chain = (
+        row.get("subject_chain")
+        if "subject_chain" in row
+        else _factor_snapshot_subject_chain(row.get("factor_snapshot_json"))
+    )
     return _venue_for_chain(chain)
 
 
@@ -1688,6 +1729,25 @@ def _patch_ranked_current_row(row: dict[str, Any], ranked: dict[str, Any]) -> di
 
 def _compact_target_id(row: dict[str, Any]) -> str:
     return str(row.get("target_id") or "")
+
+
+def _rank_input_identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        _required_projection_row_text(row, "lane"),
+        _required_projection_row_text(row, "target_type_key"),
+        _required_projection_row_text(row, "identity_id"),
+    )
+
+
+def _required_hydrated_rank_input(
+    rows: Mapping[tuple[str, str, str], dict[str, Any]],
+    *,
+    identity: tuple[str, str, str],
+) -> dict[str, Any]:
+    try:
+        return rows[identity]
+    except KeyError as exc:
+        raise RuntimeError("token_radar_rank_input_hydration_missing") from exc
 
 
 def _compact_family_raw_score(row: dict[str, Any], family: str) -> float | None:

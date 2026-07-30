@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from contextlib import suppress
 from typing import Any
 
-from tracefold.app.worker_manifest import worker_start_priority
+from tracefold.app.worker_manifest import worker_start_phase, worker_start_priority
 from tracefold.app.worker_status import effective_worker_status
 
 _START_PRIORITY = worker_start_priority()
+_START_PHASE = worker_start_phase()
+_DEFAULT_PHASE_DELAYS_SECONDS = {0: 0.0, 1: 15.0, 2: 60.0}
+_DEFAULT_STAGGER_SECONDS = 1.0
 
 
 class WorkerScheduler:
@@ -16,22 +20,45 @@ class WorkerScheduler:
         *,
         workers: Mapping[str, Any],
         db: Any,
+        startup_phase_delays_seconds: Mapping[int, float] | None = None,
+        startup_stagger_seconds: float = _DEFAULT_STAGGER_SECONDS,
     ) -> None:
         self.workers = dict(workers)
         self.db = db
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.startup_phase_delays_seconds = _startup_phase_delays(startup_phase_delays_seconds)
+        self.startup_stagger_seconds = _nonnegative_seconds(
+            startup_stagger_seconds,
+            error="worker_scheduler_startup_stagger_invalid",
+        )
+        self._stop_event = asyncio.Event()
         self._started = False
 
     async def start(self) -> None:
         if self._started:
             raise RuntimeError("worker_scheduler:already_started")
         self._started = True
+        self._stop_event.clear()
         try:
+            phase_positions: dict[int, int] = {}
             for name in self._ordered_worker_names():
                 worker = self.workers[name]
                 if not _worker_startable(worker):
                     continue
-                self.tasks[name] = asyncio.create_task(worker.run(), name=f"worker:{name}")
+                phase = _START_PHASE.get(name, 2)
+                phase_position = phase_positions.get(phase, 0)
+                phase_positions[phase] = phase_position + 1
+                startup_delay_seconds = (
+                    self.startup_phase_delays_seconds.get(phase, self.startup_phase_delays_seconds[2])
+                    + phase_position * self.startup_stagger_seconds
+                )
+                self.tasks[name] = asyncio.create_task(
+                    self._run_after_startup_delay(
+                        worker,
+                        delay_seconds=startup_delay_seconds,
+                    ),
+                    name=f"worker:{name}",
+                )
                 await asyncio.sleep(0)
                 task = self.tasks[name]
                 if task.done():
@@ -39,6 +66,7 @@ class WorkerScheduler:
                     if exc is not None:
                         raise exc
         except Exception:
+            self._stop_event.set()
             for name in self.tasks:
                 await self.workers[name].stop()
             if self.tasks:
@@ -49,6 +77,7 @@ class WorkerScheduler:
 
     async def stop(self) -> None:
         errors: list[Exception] = []
+        self._stop_event.set()
         for worker in self.workers.values():
             try:
                 await worker.stop()
@@ -72,6 +101,14 @@ class WorkerScheduler:
         self._started = False
         if errors:
             raise ExceptionGroup("worker_scheduler_stop_failed", errors)
+
+    async def _run_after_startup_delay(self, worker: Any, *, delay_seconds: float) -> None:
+        if delay_seconds > 0:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._stop_event.wait(), timeout=delay_seconds)
+        if self._stop_event.is_set():
+            return
+        await worker.run()
 
     def status_payload(self) -> dict[str, dict[str, Any]]:
         return {name: _worker_status_payload(worker) for name, worker in self.workers.items()}
@@ -108,3 +145,25 @@ def _task_exception(task: asyncio.Task[Any]) -> Exception | None:
     except asyncio.CancelledError:
         return None
     return error if isinstance(error, Exception) else None
+
+
+def _startup_phase_delays(value: Mapping[int, float] | None) -> dict[int, float]:
+    resolved = dict(_DEFAULT_PHASE_DELAYS_SECONDS)
+    if value is not None:
+        resolved.update(
+            {
+                int(phase): _nonnegative_seconds(
+                    delay,
+                    error="worker_scheduler_startup_phase_delay_invalid",
+                )
+                for phase, delay in value.items()
+            }
+        )
+    return resolved
+
+
+def _nonnegative_seconds(value: float, *, error: str) -> float:
+    seconds = float(value)
+    if seconds < 0:
+        raise ValueError(error)
+    return seconds

@@ -67,6 +67,8 @@
 | `last_error` | `TEXT` | True | `None` |
 | `first_dirty_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `heat_tier` | `TEXT` | False | `'cold'::text` |
+| `terminal_reason` | `TEXT` | True | `None` |
 
 ## `asset_profiles`
 
@@ -437,6 +439,16 @@
 | `schema_version` | `TEXT` | False | `None` |
 | `payload_json` | `JSONB` | False | `None` |
 | `input_hash` | `TEXT` | False | `None` |
+
+## `macro_projection_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton_key` | `TEXT` | False | `None` |
+| `input_fingerprint` | `TEXT` | False | `None` |
+| `feature_count` | `INTEGER` | False | `None` |
+| `module_count` | `INTEGER` | False | `None` |
+| `projected_at_ms` | `BIGINT` | False | `None` |
 
 ## `macro_release_facts`
 
@@ -897,6 +909,18 @@
 | `story_id` | `TEXT` | False | `None` |
 | `expires_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_story_input_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton_key` | `TEXT` | False | `None` |
+| `input_fingerprint` | `TEXT` | False | `None` |
+| `scoring_epoch_ms` | `BIGINT` | False | `None` |
+| `item_count` | `INTEGER` | False | `None` |
+| `temporary_cluster_count` | `INTEGER` | False | `None` |
+| `story_count` | `INTEGER` | False | `None` |
+| `projected_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_story_members`
 

@@ -7,6 +7,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -44,6 +45,8 @@ _ALIAS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 _SCORING_EPOCH_MS = 60 * 60 * 1000
 _OPERATIONS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 _BRIEF_LEASE_MS = 120_000
+_STORY_PROJECTION_KEY = "current"
+_STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}"
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -142,6 +145,26 @@ def _cursor_decode(value: str) -> dict[str, Any]:
     if not isinstance(decoded, dict):
         raise ValueError("news_feed_cursor_invalid")
     return decoded
+
+
+@dataclass(frozen=True, slots=True)
+class _StoryProjectionInput:
+    fingerprint: str
+    cutoff_ms: int
+    scoring_epoch_ms: int
+    item_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoryProjectionPreparation:
+    input: _StoryProjectionInput
+    item_ids: tuple[str, ...]
+    temporary_clusters: tuple[tuple[int, ...], ...]
+    current_story_count: int | None = None
+
+    @property
+    def requires_rebuild(self) -> bool:
+        return self.current_story_count is None
 
 
 class NewsRepository:
@@ -651,14 +674,85 @@ class NewsRepository:
 
     # Persistent Story projection ----------------------------------------------
 
-    def rebuild_stories(self, *, now_ms: int) -> dict[str, int]:
+    def prepare_story_projection(self, *, now_ms: int) -> StoryProjectionPreparation:
+        projection_input = self._story_projection_input(now_ms=now_ms)
+        projection_state = self.conn.execute(
+            """
+            SELECT input_fingerprint, story_count
+              FROM news_story_input_state
+             WHERE singleton_key = %s
+            """,
+            (_STORY_PROJECTION_KEY,),
+        ).fetchone()
+        if projection_state is not None and str(projection_state["input_fingerprint"]) == projection_input.fingerprint:
+            return StoryProjectionPreparation(
+                input=projection_input,
+                item_ids=(),
+                temporary_clusters=(),
+                current_story_count=int(projection_state["story_count"]),
+            )
+        rows = self.conn.execute(
+            """
+            SELECT item.item_id, item.title
+            FROM news_items item
+            JOIN news_sources source ON source.source_id = item.source_id
+            WHERE item.published_at_ms >= %s
+              AND source.enabled
+            ORDER BY item.published_at_ms, item.item_id
+            """,
+            (projection_input.cutoff_ms,),
+        ).fetchall()
+        clusters = cluster_texts([str(row["title"]) for row in rows])
+        return StoryProjectionPreparation(
+            input=projection_input,
+            item_ids=tuple(str(row["item_id"]) for row in rows),
+            temporary_clusters=tuple(tuple(int(index) for index in cluster) for cluster in clusters),
+        )
+
+    def rebuild_stories(
+        self,
+        *,
+        now_ms: int,
+        prepared: StoryProjectionPreparation | None = None,
+    ) -> dict[str, Any]:
+        preparation = prepared or self.prepare_story_projection(now_ms=now_ms)
+        if not preparation.requires_rebuild:
+            story_count = int(preparation.current_story_count or 0)
+            return {
+                "items": preparation.input.item_count,
+                "temporary_clusters": 0,
+                "stories": story_count,
+                "story_writes": 0,
+                "membership_writes": 0,
+                "rows_written": 0,
+                "added": 0,
+                "archived": 0,
+                "unchanged": story_count,
+                "projection_status": "unchanged_input",
+                "clustered": 0,
+            }
         self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
+        projection_input = self._story_projection_input(now_ms=now_ms)
+        if projection_input.fingerprint != preparation.input.fingerprint:
+            return {
+                "items": projection_input.item_count,
+                "temporary_clusters": 0,
+                "stories": 0,
+                "story_writes": 0,
+                "membership_writes": 0,
+                "rows_written": 0,
+                "added": 0,
+                "archived": 0,
+                "unchanged": 0,
+                "projection_status": "stale_snapshot",
+                "clustered": 0,
+            }
         active_before = {
             str(row["story_id"])
             for row in self.conn.execute("SELECT story_id FROM news_stories WHERE active").fetchall()
         }
-        cutoff_ms = now_ms - _ACTIVE_WINDOW_MS
-        scoring_now_ms = now_ms - (now_ms % _SCORING_EPOCH_MS)
+        cutoff_ms = projection_input.cutoff_ms
+        scoring_now_ms = projection_input.scoring_epoch_ms
         self.conn.execute(
             """
             UPDATE news_items AS item
@@ -695,7 +789,10 @@ class NewsRepository:
                 """
             ).fetchall()
         ]
-        temporary_clusters = cluster_texts([str(item["title"]) for item in items])
+        item_ids = tuple(str(item["item_id"]) for item in items)
+        if item_ids != preparation.item_ids:
+            raise RuntimeError("news_story_input_snapshot_changed")
+        temporary_clusters = [list(cluster) for cluster in preparation.temporary_clusters]
 
         previous_by_item = {
             str(row["item_id"]): str(row["story_id"])
@@ -1136,16 +1233,86 @@ class NewsRepository:
             ),
         )
         current_story_id_set = set(unique_story_ids)
+        self.conn.execute(
+            """
+            INSERT INTO news_story_input_state (
+              singleton_key, input_fingerprint, scoring_epoch_ms,
+              item_count, temporary_cluster_count, story_count, projected_at_ms
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (singleton_key) DO UPDATE SET
+              input_fingerprint = EXCLUDED.input_fingerprint,
+              scoring_epoch_ms = EXCLUDED.scoring_epoch_ms,
+              item_count = EXCLUDED.item_count,
+              temporary_cluster_count = EXCLUDED.temporary_cluster_count,
+              story_count = EXCLUDED.story_count,
+              projected_at_ms = EXCLUDED.projected_at_ms
+            """,
+            (
+                _STORY_PROJECTION_KEY,
+                projection_input.fingerprint,
+                projection_input.scoring_epoch_ms,
+                len(items),
+                len(temporary_clusters),
+                len(current_story_id_set),
+                now_ms,
+            ),
+        )
         return {
             "items": len(items),
             "temporary_clusters": len(temporary_clusters),
             "stories": len(current_story_id_set),
             "story_writes": story_writes,
             "membership_writes": membership_writes,
+            "rows_written": story_writes + membership_writes,
             "added": len(current_story_id_set - active_before),
             "archived": len(active_before - current_story_id_set),
             "unchanged": len((current_story_id_set & active_before) - changed_story_ids),
+            "projection_status": "rebuilt",
+            "clustered": len(items),
         }
+
+    def _story_projection_input(self, *, now_ms: int) -> _StoryProjectionInput:
+        cutoff_ms = int(now_ms) - _ACTIVE_WINDOW_MS
+        scoring_epoch_ms = int(now_ms) - (int(now_ms) % _SCORING_EPOCH_MS)
+        rows = self.conn.execute(
+            """
+            SELECT
+              item.item_id,
+              item.source_id,
+              item.content_fingerprint,
+              item.published_at_ms,
+              source.tier
+            FROM news_items item
+            JOIN news_sources source ON source.source_id = item.source_id
+            WHERE item.published_at_ms >= %s
+              AND source.enabled
+            ORDER BY item.published_at_ms, item.item_id
+            """,
+            (cutoff_ms,),
+        ).fetchall()
+        fingerprint = _sha256_json(
+            {
+                "projection_version": _STORY_PROJECTION_VERSION,
+                "scoring_epoch_ms": scoring_epoch_ms,
+                "items": [
+                    [
+                        str(row["item_id"]),
+                        str(row["source_id"]),
+                        str(row["content_fingerprint"]),
+                        int(row["published_at_ms"]),
+                        int(row["tier"]),
+                    ]
+                    for row in rows
+                ],
+            }
+        )
+        return _StoryProjectionInput(
+            fingerprint=fingerprint,
+            cutoff_ms=cutoff_ms,
+            scoring_epoch_ms=scoring_epoch_ms,
+            item_count=len(rows),
+        )
 
     def _story_invariant_counts(self) -> dict[str, int]:
         row = self.conn.execute(

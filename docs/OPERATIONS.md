@@ -41,13 +41,19 @@ Every long-running worker is a `WorkerBase` subclass:
 
 ```text
 WorkerScheduler
-  -> run_once()
+  -> phased start (serving -> current projections -> cold/backfill)
+  -> run_once() on a fixed start-to-start cadence
   -> WorkerResult + duration telemetry
   -> bounded interval catch-up / backoff
 ```
 
 The scheduler owns start, stop, and status. One iteration runs at a time.
 Provider, DB, subprocess, and network boundaries own their explicit timeouts.
+
+`/metrics` exposes low-cardinality worker transaction duration, projection
+source/candidate/hydrated/written row counts, change-driven cache hit/miss,
+queue depth, and oldest-due delay. Use these amplification and latency signals
+with PostgreSQL activity/lock evidence; CPU alone is not a root-cause claim.
 
 ## Durable queue and transaction rules
 
@@ -62,6 +68,9 @@ Provider, DB, subprocess, and network boundaries own their explicit timeouts.
 - Workers re-read durable work on bounded intervals; there is no wake plane.
 - Provider/network/subprocess/filesystem I/O occurs outside DB transactions.
 - Current rows use stable keys and skip unchanged payload writes.
+- Asset profile targets carry `hot`/`warm`/`cold` priority, exponential
+  missing/error backoff, and an explicit terminal reason. Rank-only churn does
+  not reset retries; a new evidence fingerprint reactivates the target.
 
 ## First checks
 
@@ -170,10 +179,11 @@ the model.
 
 #### News WorldMonitor hard-cut runbook
 
-The `20260728_0210` current-schema baseline creates the exact eleven-table
-WorldMonitor-backed News schema on an empty database. It contains no prior News
-schema, ID redirect, dual writer, or compatibility read. An existing database
-already stamped at the baseline is left intact.
+The `20260728_0210` current-schema baseline plus `20260730_0219` create the
+exact twelve-table WorldMonitor-backed News schema. The twelfth table is the
+singleton, rebuildable Story input-fingerprint control state; it is not a
+second fact or serving model. The schema contains no prior News model, ID
+redirect, dual writer, or compatibility read.
 
 1. Stop the service so no older News worker can write during the cut.
 2. Confirm the intended checkout and current Alembic version.
@@ -183,7 +193,7 @@ already stamped at the baseline is left intact.
    latest head.
 5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
    service.
-6. Verify exactly eleven `news_*` tables, 73 synchronized physical sources,
+6. Verify exactly twelve `news_*` tables, 73 synchronized physical sources,
    73 memberships, a terminal attempt for every source, fresh receipts and
    observations, non-empty NewsItems and Stories, membership closure, the five
    HTTP routes, ETag `304`, a truthful Brief state, and zero old routes.
@@ -193,7 +203,7 @@ already stamped at the baseline is left intact.
 Macro:
 
 The `20260728_0210` baseline plus irreversible migrations through
-`20260729_0216` contain the current Macro fact, coverage, module,
+`20260730_0219` contain the current Macro fact, coverage, module,
 ResearchInput, Thesis v2, Live Delta v2, Outcome Replay v2, and Fed evidence
 contracts. Current reads have one v2 path. Existing v1 publications remain
 byte-for-byte immutable and are available only through explicit archive reads.
@@ -258,8 +268,14 @@ exhausted jobs remain visible in the affected evidence scope; they do not
 become a global publication gate. Restart reclaims expired leases without
 duplicating analysis identity.
 
-`macro_projection` deterministically recomputes the Calculation Registry and
-six stable module rows; unchanged payloads write zero serving rows.
+`macro_projection` first compares the compact fact/target/version fingerprint.
+Unchanged inputs load no histories and compute no features/modules. Changed
+inputs load per-Dataset narrow histories derived from Calculation Registry and
+module presentation semantics; full available history remains only where an
+actual-history percentile requires it. Computation occurs outside the database
+transaction, then the worker compares the fingerprint again and publishes the
+Calculation Registry plus six stable module rows in one short transaction;
+unchanged payloads still write zero serving rows.
 `macro_thesis` runs after 08:50 `America/New_York` on U.S. trading days, creates
 or re-reads one stable session run, and claims at most one due run per
 iteration. Before model work it freezes the session, cutoff, pack identity,

@@ -59,6 +59,24 @@ def write_error_asset_profile(
     )
 
 
+def write_unsupported_asset_profile(
+    *,
+    repos: Any,
+    provider: str,
+    row: dict[str, Any],
+    exc: Exception,
+    now_ms: int,
+) -> None:
+    repos.asset_profiles.upsert_status(
+        asset_id=str(row["target_id"]),
+        provider=provider,
+        status="unsupported",
+        observed_at_ms=int(now_ms),
+        next_refresh_at_ms=int(now_ms),
+        last_error=str(exc)[:500],
+    )
+
+
 def _write_ready_profile(
     *,
     repos: Any,

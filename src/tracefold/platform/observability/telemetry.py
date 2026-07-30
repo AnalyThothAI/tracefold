@@ -47,6 +47,36 @@ class TelemetryRegistry:
             ("worker", "queue", "status"),
             registry=self.registry,
         )
+        self.transaction_seconds = Histogram(
+            "tracefold_worker_transaction_seconds",
+            "Duration of explicit worker database transactions in seconds.",
+            ("worker",),
+            registry=self.registry,
+        )
+        self.projection_rows = Gauge(
+            "tracefold_worker_projection_rows",
+            "Rows observed at bounded projection stages.",
+            ("worker", "stage"),
+            registry=self.registry,
+        )
+        self.projection_cache_total = Counter(
+            "tracefold_worker_projection_cache_total",
+            "Change-driven projection cache outcomes.",
+            ("worker", "outcome"),
+            registry=self.registry,
+        )
+        self.projection_merged_total = Counter(
+            "tracefold_worker_projection_merged_total",
+            "Redundant projection triggers coalesced before publication.",
+            ("worker",),
+            registry=self.registry,
+        )
+        self.queue_oldest_delay_seconds = Gauge(
+            "tracefold_worker_queue_oldest_delay_seconds",
+            "Age of the oldest due queue item.",
+            ("worker", "queue"),
+            registry=self.registry,
+        )
 
     def record_processing_seconds(self, worker: str, seconds: float) -> None:
         self.processing_seconds.labels(worker=_label(worker)).observe(max(0.0, float(seconds)))
@@ -72,6 +102,30 @@ class TelemetryRegistry:
             queue=_label(queue),
             status=_label(status),
         ).set(max(0, int(depth)))
+
+    def record_transaction_seconds(self, worker: str, seconds: float) -> None:
+        self.transaction_seconds.labels(worker=_label(worker)).observe(max(0.0, float(seconds)))
+
+    def set_projection_rows(self, worker: str, stage: str, rows: int) -> None:
+        self.projection_rows.labels(
+            worker=_label(worker),
+            stage=_label(stage),
+        ).set(max(0, int(rows)))
+
+    def record_projection_cache(self, worker: str, outcome: str) -> None:
+        self.projection_cache_total.labels(
+            worker=_label(worker),
+            outcome=_label(outcome),
+        ).inc()
+
+    def record_projection_merged(self, worker: str, count: int) -> None:
+        self.projection_merged_total.labels(worker=_label(worker)).inc(max(0, int(count)))
+
+    def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
+        self.queue_oldest_delay_seconds.labels(
+            worker=_label(worker),
+            queue=_label(queue),
+        ).set(max(0.0, float(seconds)))
 
     def render_prometheus_text(self) -> str:
         return generate_latest(self.registry).decode("utf-8")

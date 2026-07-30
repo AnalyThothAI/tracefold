@@ -154,14 +154,23 @@ class NewsPipelineWorker(WorkerBase):
             for key in totals:
                 totals[key] += int(summary[key])
 
-        with (
-            self.db.worker_session(
-                self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
-            ) as repos,
-            repos.transaction(),
-        ):
-            projection = repos.news.rebuild_stories(now_ms=int(self.clock_ms()))
+        projection_now_ms = int(self.clock_ms())
+        with self.db.worker_session(
+            self.name,
+            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+        ) as repos:
+            prepared = repos.news.prepare_story_projection(now_ms=projection_now_ms)
+            if prepared.requires_rebuild:
+                with repos.transaction():
+                    projection = repos.news.rebuild_stories(
+                        now_ms=projection_now_ms,
+                        prepared=prepared,
+                    )
+            else:
+                projection = repos.news.rebuild_stories(
+                    now_ms=projection_now_ms,
+                    prepared=prepared,
+                )
         return WorkerResult(
             processed=len(fetched),
             skipped=1 if not claimed and projection["story_writes"] == 0 else 0,

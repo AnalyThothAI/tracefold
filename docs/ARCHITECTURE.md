@@ -17,9 +17,11 @@ providers / public streams
 ```
 
 Workers recover exclusively by re-reading PostgreSQL on bounded
-`interval_seconds` loops. There is no database wake plane or in-memory
-correctness dependency. Provider raw frames remain inputs until normalized and
-persisted as material facts.
+`interval_seconds` start-to-start loops. Startup is phased: collectors and
+market/Radar serving writers start first, bounded News/Macro current
+projections start second, and backfill/profile/analysis workers start last.
+There is no database wake plane or in-memory correctness dependency. Provider
+raw frames remain inputs until normalized and persisted as material facts.
 
 ## Truth, control state, and derived state
 
@@ -45,7 +47,12 @@ business payload is unchanged.
 
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
-or audit state. They are not alternate business truth.
+or audit state. The singleton `news_story_input_state` and
+`macro_projection_state` rows store only deterministic input fingerprints and
+counts so unchanged ticks can skip clustering/history loads; both are
+rebuildable control state, not alternate business truth. Profile refresh heat
+tiers, retry attempts, and terminal reasons are likewise queue policy, not
+profile facts.
 `macro_thesis_publications` and `news_brief_publications` are immutable
 derived research keyed by frozen evidence; they are not material facts.
 
@@ -154,12 +161,20 @@ fact replay rebuilds it.
 events + intents + resolutions + market facts
   -> token_radar_dirty_targets
   -> source edges + target features
+  -> compact scalar rank inputs
+  -> Top-N identity selection
+  -> hydrate wide JSON only for selected identities
   -> token_radar_current_rows + publication state
   -> Radar, Search, Token Case
 ```
 
 The public Radar row is a transparent `factor_snapshot` built only from
-persisted identity, social, and market facts.
+persisted identity, social, and market facts. Feature calculation and ranking
+run outside write transactions; publication and exact dirty-claim completion
+use bounded short transactions. Unchanged rank sets write zero serving rows.
+Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
+error outcomes back off exponentially to a bounded terminal state, and only a
+new evidence fingerprint reactivates that target.
 
 ### News
 
@@ -172,7 +187,8 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
   -> ETag / Last-Modified, first five entries
   -> immutable FeedObservation before admission
   -> idempotent NewsItem
-  -> full 96-hour WorldMonitor title clustering
+  -> input-fingerprint comparison
+  -> full 96-hour WorldMonitor title clustering only when changed
   -> canonical alias union
   -> coherent persistent Story + members + aliases
   -> one flat global cursor Feed; category is a facet
@@ -199,6 +215,11 @@ future time beyond one hour remain auditable rejected observations and never
 become NewsItems. Valid entries older than 96 hours are persisted as
 historical inactive NewsItems so acquisition loss stays distinguishable from
 active-cluster eligibility.
+
+Story candidate loading, vectorization, and clustering occur outside the write
+transaction. The write phase compares the input fingerprint again before
+publishing; an unchanged fingerprint performs zero clustering and zero serving
+writes.
 
 WallStEngine is one ordinary tier-4 English source in the Finance membership.
 Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
@@ -256,10 +277,11 @@ The deterministic pipeline runs every 120 seconds and the Brief worker every
 300 seconds by default, giving a two-minute Story target and a five-minute
 Chinese Brief target when providers respond within budget.
 
-The complete live News storage boundary is exactly eleven tables:
+The complete live News storage boundary is exactly twelve tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,
 `news_feed_observations`, `news_items`, `news_stories`,
-`news_story_members`, `news_story_aliases`, `news_brief_runs`,
+`news_story_members`, `news_story_aliases`, `news_story_input_state`,
+`news_brief_runs`,
 `news_brief_publications`, and `news_brief_current`. The
 `20260728_0210` current-schema baseline creates only this News model on an empty
 database and has no downgrade or compatibility lane.
@@ -272,7 +294,8 @@ code-owned Dataset Registry + Coverage Manifest
   -> macro_acquisition_targets claim
   -> free official / exchange / disclosed proxy adapter
   -> typed append-only Market or Macro fact + source receipt + cursor
-  -> macro_projection
+  -> compact fact/target watermark fingerprint
+  -> macro_projection only when that fingerprint changes
   -> six macro_module_current rows
   -> persisted-only overview and module reads
 
@@ -300,6 +323,10 @@ bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
 transactions; completion atomically writes facts, receipt, cursor, and target
 state. Unchanged source content writes zero fact rows while every attempt
 retains a receipt. Revisions append a new fact and never overwrite history.
+Macro history reads, Calculation Registry execution, and all six module payload
+builds occur outside the write transaction. A short compare-and-set write phase
+publishes the stable feature/module rows and projection fingerprint; unchanged
+facts perform zero history loads and zero calculations.
 
 The Dataset Registry fixes ownership, concept identity, source role, clock,
 adapter, trust tier, freshness, criticality, and module membership in code.

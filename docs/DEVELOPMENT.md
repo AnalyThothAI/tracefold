@@ -94,7 +94,7 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly eleven News tables, 73 synchronized physical sources with 73
+exactly twelve News tables, 73 synchronized physical sources with 73
 memberships, exactly two News workers, real RSS observations and NewsItems,
 deterministic Story membership, all five public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any, TypedDict
 
@@ -575,7 +575,7 @@ class TokenRadarRepository:
         )
         return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
-    def list_rank_inputs_for_rank_set(
+    def list_compact_rank_inputs_for_rank_set(
         self,
         *,
         projection_version: str,
@@ -612,15 +612,7 @@ class TokenRadarRepository:
               raw_composite_score,
               recommended_decision,
               gates_max_decision,
-              factor_snapshot_json,
-              intent_json,
-              resolution_json,
-              source_event_ids_json,
-              source_intent_ids_json,
-              source_resolution_ids_json,
-              payload_hash,
-              last_scored_at_ms,
-              updated_at_ms
+              factor_snapshot_json #>> '{subject,chain}' AS subject_chain
             FROM token_radar_target_features
             WHERE projection_version = %s
               AND "window" = %s
@@ -628,6 +620,61 @@ class TokenRadarRepository:
             ORDER BY lane DESC, rank_score DESC, latest_event_received_at_ms DESC, identity_id ASC
             """,
             (projection_version, window, int(min_latest_event_received_at_ms)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def hydrate_rank_inputs_for_rank_set(
+        self,
+        *,
+        projection_version: str,
+        window: str,
+        identities: Sequence[tuple[str, str, str]],
+    ) -> list[dict[str, Any]]:
+        requested = list(dict.fromkeys(identities))
+        if not requested:
+            return []
+        lanes = [lane for lane, _target_type_key, _identity_id in requested]
+        target_type_keys = [target_type_key for _lane, target_type_key, _identity_id in requested]
+        identity_ids = [identity_id for _lane, _target_type_key, identity_id in requested]
+        rows = self.conn.execute(
+            """
+            WITH requested(lane, target_type_key, identity_id) AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::text[], %s::text[])
+            )
+            SELECT
+              feature.projection_version,
+              feature."window",
+              feature.lane,
+              feature.target_type_key,
+              feature.identity_id,
+              feature.target_type,
+              feature.target_id,
+              feature.pricefeed_id,
+              feature.latest_event_received_at_ms,
+              feature.factor_snapshot_json,
+              feature.intent_json,
+              feature.resolution_json,
+              feature.source_event_ids_json,
+              feature.source_intent_ids_json,
+              feature.source_resolution_ids_json,
+              feature.payload_hash,
+              feature.last_scored_at_ms
+            FROM token_radar_target_features feature
+            JOIN requested
+              ON requested.lane = feature.lane
+             AND requested.target_type_key = feature.target_type_key
+             AND requested.identity_id = feature.identity_id
+            WHERE feature.projection_version = %s
+              AND feature."window" = %s
+            """,
+            (
+                lanes,
+                target_type_keys,
+                identity_ids,
+                projection_version,
+                window,
+            ),
         ).fetchall()
         return [dict(row) for row in rows]
 

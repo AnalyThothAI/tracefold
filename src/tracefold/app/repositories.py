@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -77,15 +78,30 @@ class RepositorySession:
     macro: MacroRepository
     macro_market: GeneralMarketRepository
     macro_thesis: MacroThesisRepository
+    transaction_observer: Callable[[float], None] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
-        return transaction(self.conn)
+        return self._observed_transaction()
+
+    @contextmanager
+    def _observed_transaction(self) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            with transaction(self.conn):
+                yield
+        finally:
+            if self.transaction_observer is not None:
+                self.transaction_observer(max(0.0, time.perf_counter() - started))
 
     def require_transaction(self, *, operation: str) -> None:
         require_transaction(self.conn, operation=operation)
 
 
-def repositories_for_connection(conn: Any) -> RepositorySession:
+def repositories_for_connection(
+    conn: Any,
+    *,
+    transaction_observer: Callable[[float], None] | None = None,
+) -> RepositorySession:
     return RepositorySession(
         conn=conn,
         evidence=EvidenceRepository(conn),
@@ -118,6 +134,7 @@ def repositories_for_connection(conn: Any) -> RepositorySession:
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
         macro_thesis=MacroThesisRepository(conn),
+        transaction_observer=transaction_observer,
     )
 
 

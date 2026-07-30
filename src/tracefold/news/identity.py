@@ -11,6 +11,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Final
 
 DIM: Final = 512
@@ -53,6 +54,7 @@ def strip_attribution_suffix(text: str) -> str:
     return result
 
 
+@lru_cache(maxsize=8192)
 def normalize_story_text(text: str) -> str:
     chars = (
         char.lower() if unicodedata.category(char).startswith(("L", "N")) or char.isspace() else " "
@@ -65,6 +67,7 @@ def _is_non_ascii(token: str) -> bool:
     return any(ord(char) > 127 for char in token)
 
 
+@lru_cache(maxsize=8192)
 def candidate_tokens(text: str) -> frozenset[str]:
     result: set[str] = set()
     clamped = strip_attribution_suffix(text)[:MAX_IDENTITY_CHARS]
@@ -118,6 +121,7 @@ def _l2_normalize(vector: list[float]) -> tuple[float, ...] | None:
     return tuple(value / norm for value in vector)
 
 
+@lru_cache(maxsize=8192)
 def story_vector(text: str) -> StoryVector | None:
     tokens = _content_tokens(text)
     if not tokens:

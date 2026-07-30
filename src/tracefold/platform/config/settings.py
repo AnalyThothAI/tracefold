@@ -301,6 +301,9 @@ class AssetProfileRefreshWorkerSettings(PerWorkerSettings):
     ready_refresh_ms: int = Field(default=21_600_000, ge=1)
     missing_refresh_ms: int = Field(default=900_000, ge=1)
     error_refresh_ms: int = Field(default=900_000, ge=1)
+    retry_backoff_cap_ms: int = Field(default=86_400_000, ge=1)
+    missing_max_attempts: int = Field(default=4, ge=1)
+    error_max_attempts: int = Field(default=5, ge=1)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
 

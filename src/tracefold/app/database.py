@@ -83,7 +83,17 @@ class DBPoolBundle:
             if statement_timeout_seconds is not None:
                 _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
             try:
-                yield repositories_for_connection(conn)
+                yield repositories_for_connection(
+                    conn,
+                    transaction_observer=(
+                        None
+                        if self.telemetry is None
+                        else lambda seconds: self.telemetry.record_transaction_seconds(
+                            name,
+                            seconds,
+                        )
+                    ),
+                )
             except BaseException:
                 try:
                     _reset_worker_connection(conn, statement_timeout_seconds=statement_timeout_seconds)

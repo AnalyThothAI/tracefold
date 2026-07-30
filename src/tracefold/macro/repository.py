@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
@@ -580,6 +581,91 @@ class MacroRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def projection_source_state(self) -> dict[str, Any]:
+        fact_tables = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT 'macro_series_facts' AS source_name,
+                       count(*)::bigint AS row_count,
+                       max(received_at_ms)::bigint AS frontier_ms
+                  FROM macro_series_facts
+                UNION ALL
+                SELECT 'macro_release_facts', count(*)::bigint, max(received_at_ms)::bigint
+                  FROM macro_release_facts
+                UNION ALL
+                SELECT 'macro_documents', count(*)::bigint, max(received_at_ms)::bigint
+                  FROM macro_documents
+                UNION ALL
+                SELECT 'macro_fed_official_role_facts', count(*)::bigint, max(received_at_ms)::bigint
+                  FROM macro_fed_official_role_facts
+                UNION ALL
+                SELECT 'macro_document_analyses', count(*)::bigint, max(created_at_ms)::bigint
+                  FROM macro_document_analyses
+                ORDER BY source_name
+                """
+            ).fetchall()
+        ]
+        target_states = [
+            dict(row)
+            for row in self.conn.execute(
+                """
+                SELECT
+                  target_key, dataset_id, partition_key, clock_kind, status,
+                  cursor_json, next_due_at_ms, priority, attempt_count,
+                  max_attempts, last_receipt_id, last_success_at_ms,
+                  last_error_code, updated_at_ms
+                FROM macro_acquisition_targets
+                ORDER BY target_key
+                """
+            ).fetchall()
+        ]
+        analysis_job_state = self.document_analysis_job_state()
+        return {
+            "fact_tables": fact_tables,
+            "target_states": target_states,
+            "analysis_job_state": analysis_job_state,
+        }
+
+    def projection_state(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM macro_projection_state
+            WHERE singleton_key = 'current'
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def upsert_projection_state(
+        self,
+        *,
+        input_fingerprint: str,
+        feature_count: int,
+        module_count: int,
+        projected_at_ms: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO macro_projection_state (
+              singleton_key, input_fingerprint, feature_count,
+              module_count, projected_at_ms
+            )
+            VALUES ('current', %s, %s, %s, %s)
+            ON CONFLICT (singleton_key) DO UPDATE SET
+              input_fingerprint = EXCLUDED.input_fingerprint,
+              feature_count = EXCLUDED.feature_count,
+              module_count = EXCLUDED.module_count,
+              projected_at_ms = EXCLUDED.projected_at_ms
+            """,
+            (
+                input_fingerprint,
+                int(feature_count),
+                int(module_count),
+                int(projected_at_ms),
+            ),
+        )
+
     def receipt_states_at(
         self,
         *,
@@ -654,20 +740,36 @@ class MacroRepository:
     def series_history(
         self,
         *,
-        dataset_ids: tuple[str, ...],
-        limit_per_dataset: int = 400,
+        history_limits: Mapping[str, int],
         received_before_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        if not dataset_ids:
+        requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
+        if not requested:
             return []
         rows = self.conn.execute(
             """
-            WITH latest_vintage AS (
+            WITH requested AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::integer[])
+                AS requested(dataset_id, max_rows)
+            ), latest_vintage AS (
               SELECT DISTINCT ON (dataset_id, series_id, reference_date)
-                *
-              FROM macro_series_facts
-              WHERE dataset_id = ANY(%s)
-                AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
+                facts.fact_id,
+                facts.dataset_id,
+                facts.series_id,
+                facts.reference_date,
+                facts.vintage_date,
+                facts.value_numeric,
+                facts.value_text,
+                facts.unit,
+                facts.published_at_ms,
+                facts.received_at_ms,
+                facts.source_url,
+                facts.fact_hash,
+                requested.max_rows
+              FROM macro_series_facts AS facts
+              JOIN requested USING (dataset_id)
+              WHERE facts.received_at_ms <= COALESCE(%s::bigint, facts.received_at_ms)
               ORDER BY
                 dataset_id, series_id, reference_date,
                 vintage_date DESC, received_at_ms DESC
@@ -680,15 +782,18 @@ class MacroRepository:
                 ) AS row_number
               FROM latest_vintage
             )
-            SELECT *
+            SELECT
+              fact_id, dataset_id, series_id, reference_date, vintage_date,
+              value_numeric, value_text, unit, published_at_ms, received_at_ms,
+              source_url, fact_hash, row_number
             FROM ranked
-            WHERE row_number <= %s
+            WHERE row_number <= max_rows
             ORDER BY dataset_id, series_id, reference_date
             """,
             (
-                list(dataset_ids),
+                list(requested),
+                list(requested.values()),
                 received_before_ms,
-                int(limit_per_dataset),
             ),
         ).fetchall()
         return [dict(row) for row in rows]

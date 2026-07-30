@@ -13,6 +13,10 @@ from zoneinfo import ZoneInfo
 from tracefold.macro.assets import MACRO_THESIS_OUTCOME_DATASETS
 from tracefold.macro.calculations import calculate_features
 from tracefold.macro.domain import MACRO_MODULE_IDS
+from tracefold.macro.history_policy import (
+    market_history_limits,
+    series_history_limits,
+)
 from tracefold.macro.module_payloads import build_typed_module_payload
 from tracefold.macro.registry import DATASET_REGISTRY
 from tracefold.macro.session_calendar import is_us_market_session
@@ -378,13 +382,11 @@ class MacroThesisService:
         document_ids = tuple(spec.dataset_id for spec in all_specs if spec.fact_family == "document")
         with self._session() as repos:
             series_rows = repos.macro.series_history(
-                dataset_ids=series_ids,
-                limit_per_dataset=10_000,
+                history_limits=series_history_limits(series_ids),
                 received_before_ms=cutoff_ms,
             )
             market_rows = repos.macro_market.market_history(
-                dataset_ids=market_ids,
-                limit_per_dataset=5_000,
+                history_limits=market_history_limits(market_ids),
                 received_before_ms=cutoff_ms,
             )
             position_rows = repos.macro_market.position_history(
@@ -486,15 +488,13 @@ class MacroThesisService:
         with self._session() as repos, repos.transaction():
             modules = [dict(row["payload_json"]) for row in repos.macro.all_modules_current()]
             market_rows = repos.macro_market.market_history(
-                dataset_ids=tuple(
-                    dataset_id for dataset_id in MACRO_THESIS_OUTCOME_DATASETS if dataset_id != "fred.vixcls"
+                history_limits=market_history_limits(
+                    tuple(dataset_id for dataset_id in MACRO_THESIS_OUTCOME_DATASETS if dataset_id != "fred.vixcls")
                 ),
-                limit_per_dataset=5_000,
                 received_before_ms=now_ms,
             )
             vix_rows = repos.macro.series_history(
-                dataset_ids=("fred.vixcls",),
-                limit_per_dataset=5_000,
+                history_limits=series_history_limits(("fred.vixcls",)),
                 received_before_ms=now_ms,
             )
             market_rows.extend(

@@ -66,10 +66,12 @@ class TokenRadarProjectionWorker(WorkerBase):
                 "computed_at_ms": result["computed_at_ms"],
                 "rows_written": result["rows_written"],
                 "source_rows": result["source_rows"],
+                "hydrated_rows": result.get("hydrated_rows", 0),
                 "window": result.get("window"),
                 "status": result.get("status"),
                 "reason": result.get("reason"),
                 "claimed": result.get("claimed"),
+                "merged_rank_set_triggers": result.get("merged_rank_set_triggers"),
                 "catch_up_enqueued": result.get("catch_up_enqueued"),
                 "private_cache_retention": result.get("private_cache_retention"),
                 "windows": result["windows"],
@@ -176,6 +178,7 @@ class TokenRadarProjectionWorker(WorkerBase):
         result.setdefault("computed_at_ms", computed_at_ms)
         result.setdefault("rows_written", 0)
         result.setdefault("source_rows", 0)
+        result.setdefault("hydrated_rows", 0)
         result.setdefault("windows", {})
         result.setdefault("claimed", 0)
         result.setdefault("catch_up_enqueued", 0)
@@ -292,6 +295,7 @@ def _idle_result(*, computed_at_ms: int) -> dict[str, Any]:
         "computed_at_ms": computed_at_ms,
         "rows_written": 0,
         "source_rows": 0,
+        "hydrated_rows": 0,
         "status": "idle",
         "reason": "no_due_work_items",
         "claimed": 0,
