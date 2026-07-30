@@ -19,6 +19,8 @@ from tests.postgres_test_utils import (
 )
 from tracefold.market.profiles.profile_projection import (
     ProfileProjectionService,
+    _fingerprint,
+    _serialized_size,
     compute_profile_current_projection,
     rebuild_all_profiles_for_maintenance,
 )
@@ -53,6 +55,17 @@ class _SingleConnectionDB:
         finally:
             if self.conn.info.transaction_status != pq.TransactionStatus.IDLE:
                 self.conn.rollback()
+
+
+def test_profile_snapshot_fingerprint_accepts_stable_composite_source_keys() -> None:
+    first = {
+        ("gmgn", "https://example.com/a.png"): {"status": "ready"},
+        ("okx", "https://example.com/b.png"): {"status": "pending"},
+    }
+    second = dict(reversed(tuple(first.items())))
+
+    assert _fingerprint(first) == _fingerprint(second)
+    assert _serialized_size(first) == _serialized_size(second)
 
 
 def test_outside_serving_profile_shard_deletes_current_and_recovery_state() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -798,7 +799,7 @@ def _claim_still_current(
 
 def _fingerprint(value: Any) -> str:
     serialized = json.dumps(
-        value,
+        _canonical_json_value(value),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -810,13 +811,54 @@ def _fingerprint(value: Any) -> str:
 def _serialized_size(value: Any) -> int:
     return len(
         json.dumps(
-            value,
+            _canonical_json_value(value),
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
             default=str,
         ).encode("utf-8")
     )
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if all(isinstance(key, str) for key in value):
+            return {
+                str(key): _canonical_json_value(item)
+                for key, item in value.items()
+            }
+        entries = [
+            {
+                "key": _canonical_json_value(key),
+                "value": _canonical_json_value(item),
+            }
+            for key, item in value.items()
+        ]
+        entries.sort(
+            key=lambda entry: json.dumps(
+                entry["key"],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return {"__mapping_entries__": entries}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        items = [_canonical_json_value(item) for item in value]
+        return sorted(
+            items,
+            key=lambda item: json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+    return value
 
 
 def _require_bounded_input(payload: dict[str, Any]) -> None:
