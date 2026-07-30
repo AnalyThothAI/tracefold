@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import tracefold.market.radar.token_radar_projector as projector_module
+from tracefold.market.radar.projection import (
+    RadarShardOversized,
+    _require_bounded_output,
+)
 from tracefold.market.radar.token_radar_projector import (
     build_token_radar_current_closure,
     rank_token_radar_closure,
@@ -69,6 +75,33 @@ def test_rank_closure_selects_top_n_before_wide_hydration(
         "asset-0",
         "asset-1",
     ]
+
+
+def test_radar_output_cap_is_enforced_per_stable_venue_lane_identity() -> None:
+    _require_bounded_output(
+        {
+            "rows_by_venue": {
+                "all": [
+                    {"lane": "resolved", "payload": "r" * 600_000},
+                    {"lane": "attention", "payload": "a" * 600_000},
+                ]
+            }
+        }
+    )
+
+    with pytest.raises(RadarShardOversized, match="radar_output_byte_overflow"):
+        _require_bounded_output(
+            {
+                "rows_by_venue": {
+                    "all": [
+                        {
+                            "lane": "resolved",
+                            "payload": "x" * (1024 * 1024),
+                        }
+                    ]
+                }
+            }
+        )
 
 
 def _compact_row(*, identity_id: str, rank_score: int) -> dict[str, Any]:

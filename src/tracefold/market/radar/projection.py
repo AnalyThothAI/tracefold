@@ -862,8 +862,19 @@ def _require_bounded_input(payload: dict[str, Any]) -> None:
 
 
 def _require_bounded_output(payload: dict[str, Any]) -> None:
-    if _serialized_size(payload) > _OUTPUT_BYTE_CAP:
-        raise RadarShardOversized("radar_output_byte_overflow")
+    for venue, rows in dict(payload.get("rows_by_venue") or {}).items():
+        rows_by_lane: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            lane = str(row.get("lane") or "")
+            rows_by_lane.setdefault(lane, []).append(dict(row))
+        for lane, lane_rows in rows_by_lane.items():
+            if _serialized_size(
+                {
+                    "window_venue_lane": [str(venue), lane],
+                    "rows": lane_rows,
+                }
+            ) > _OUTPUT_BYTE_CAP:
+                raise RadarShardOversized("radar_output_byte_overflow")
 
 
 __all__ = [
