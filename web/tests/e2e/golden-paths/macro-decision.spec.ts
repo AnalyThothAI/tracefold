@@ -91,6 +91,32 @@ test("keeps the chart workbench readable at 1920, 1366, 834 and 390px", async ({
   await expectNoUnhandledApiRequests(page);
 });
 
+test("opens rates with the 1D tenor matrix and keeps background curves opt-in", async ({
+  page,
+}) => {
+  await page.goto("/macro/rates-fed#curve");
+
+  const summary = page.getByRole("region", { name: "最近完整交易日收益率决策摘要" });
+  await expect(summary).toContainText(
+    "最近完整交易日：2Y 下行4bp，10Y 上行6bp，30Y 上行11bp（2026-07-29）",
+  );
+  await expect(summary.getByRole("table", { name: "2Y 10Y 30Y 收益率矩阵" })).toBeVisible();
+  await expect(
+    summary.getByRole("row", { name: /2Y(?: 当前)? 4\.22% 2026-07-29(?: 1D)? -4bp/ }),
+  ).toBeVisible();
+  await expect(
+    summary.getByRole("row", { name: /10Y(?: 当前)? 4\.67% 2026-07-29(?: 1D)? \+6bp/ }),
+  ).toBeVisible();
+  await expect(
+    summary.getByRole("row", { name: /30Y(?: 当前)? 5\.2% 2026-07-29(?: 1D)? \+11bp/ }),
+  ).toBeVisible();
+
+  await expect(page.getByText("1周基准")).toHaveCount(0);
+  await page.getByRole("checkbox", { name: "1W" }).check();
+  await expect(page.getByText("1周基准 · 2026-07-22")).toBeVisible();
+  await expectNoUnhandledApiRequests(page);
+});
+
 for (const [path, title] of modules) {
   test(`hard-loads ${title} with typed facts and decision checkpoints`, async ({ page }) => {
     await page.goto(path);
@@ -99,7 +125,13 @@ for (const [path, title] of modules) {
     await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "图表决策注释" })).toBeVisible();
     await expect(page.locator(".macro-decision__header")).toContainText("数据合同");
-    await expect(page.getByText("只展示当前 API 返回的判断与检查项")).toBeVisible();
+    await expect(
+      page.getByText(
+        path === "/macro/rates-fed"
+          ? "期限、窗口和来源均由持久化合同提供"
+          : "只展示当前 API 返回的判断与检查项",
+      ),
+    ).toBeVisible();
     await expect(page.locator(".macro-decision")).not.toContainText("历史窗口");
     await expect(page.locator(".macro-decision")).not.toContainText(
       "展开 Coverage、Current Health、History Depth 与原始事实",

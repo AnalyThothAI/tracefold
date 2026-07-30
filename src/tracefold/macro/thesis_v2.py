@@ -1912,6 +1912,50 @@ def _module_change_candidates(
     ref_by_dataset: dict[str, list[str]] = defaultdict(list)
     for item in exact:
         ref_by_dataset[item.dataset_id].append(item.evidence_ref)
+    if module.get("module_id") == "rates_fed":
+        decision = module.get("decision")
+        matrix = decision.get("tenor_matrix", ()) if isinstance(decision, Mapping) else ()
+        rates_output: list[MacroMaterialChangeCandidate] = []
+        for row in matrix:
+            if not isinstance(row, Mapping):
+                continue
+            current = row.get("current")
+            if not isinstance(current, Mapping):
+                continue
+            one_day = next(
+                (
+                    item
+                    for item in row.get("windows", ())
+                    if isinstance(item, Mapping)
+                    and item.get("window") == "1d"
+                    and item.get("state") in {"available", "baseline"}
+                ),
+                None,
+            )
+            if one_day is None:
+                continue
+            dataset_id = str(current.get("dataset_id") or "")
+            fact_ids = {str(value) for value in one_day.get("input_fact_ids", ())}
+            refs = tuple(value for value in ref_by_dataset.get(dataset_id, ()) if value in fact_ids)[:2]
+            if not dataset_id or not refs:
+                continue
+            tenor = str(row.get("tenor") or "")
+            rates_output.append(
+                MacroMaterialChangeCandidate(
+                    change_id=f"{dataset_id}:{tenor}:{current.get('reference_date')}",
+                    dataset_id=dataset_id,
+                    label=f"{tenor} 美国财政部名义国债收益率",
+                    value=(float(current["yield_pct"]) if isinstance(current.get("yield_pct"), int | float) else None),
+                    unit="percent",
+                    metrics={
+                        "change_1d_bp": (
+                            float(one_day["change_bp"]) if isinstance(one_day.get("change_bp"), int | float) else None
+                        )
+                    },
+                    evidence_refs=refs,
+                )
+            )
+        return rates_output
     summary = module.get("summary")
     changes = summary.get("top_changes", ()) if isinstance(summary, Mapping) else ()
     output: list[MacroMaterialChangeCandidate] = []

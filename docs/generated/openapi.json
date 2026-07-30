@@ -3059,6 +3059,13 @@
             "title": "Breakeven Pct",
             "type": "number"
           },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
           "tenor": {
             "title": "Tenor",
             "type": "string"
@@ -3071,7 +3078,8 @@
         "required": [
           "tenor",
           "years",
-          "breakeven_pct"
+          "breakeven_pct",
+          "input_fact_ids"
         ],
         "title": "MacroCurveBreakevenPointData",
         "type": "object"
@@ -3094,8 +3102,9 @@
           "window": {
             "enum": [
               "current",
+              "previous",
               "1w",
-              "1m",
+              "mtd",
               "3m"
             ],
             "title": "Window",
@@ -3114,7 +3123,7 @@
         "additionalProperties": false,
         "properties": {
           "formula_version": {
-            "const": "level_slope_curvature_classification_v2",
+            "const": "level_slope_curvature_classification_v3",
             "title": "Formula Version",
             "type": "string"
           },
@@ -3127,8 +3136,10 @@
           },
           "state": {
             "enum": [
+              "unaligned",
               "insufficient_history",
               "insufficient_tenors",
+              "twist_steepening",
               "parallel_up",
               "parallel_down",
               "bear_steepening",
@@ -3139,9 +3150,20 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "window": {
+            "enum": [
+              "1d",
+              "1w",
+              "mtd",
+              "3m"
+            ],
+            "title": "Window",
+            "type": "string"
           }
         },
         "required": [
+          "window",
           "state",
           "label",
           "formula_version",
@@ -3174,6 +3196,28 @@
               }
             ],
             "title": "2Y Change Bp"
+          },
+          "30y_change_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "30Y Change Bp"
+          },
+          "current_10s30s_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current 10S30S Bp"
           },
           "current_2s10s_bp": {
             "anyOf": [
@@ -3257,9 +3301,6 @@
             "title": "Breakeven Snapshots",
             "type": "array"
           },
-          "classification": {
-            "$ref": "#/components/schemas/MacroCurveClassificationData"
-          },
           "nominal_snapshots": {
             "items": {
               "$ref": "#/components/schemas/MacroCurveYieldSnapshotData"
@@ -3282,8 +3323,7 @@
           "nominal_snapshots",
           "real_snapshots",
           "breakeven_snapshots",
-          "spreads",
-          "classification"
+          "spreads"
         ],
         "title": "MacroCurveData",
         "type": "object"
@@ -3296,6 +3336,13 @@
             "title": "Date",
             "type": "string"
           },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
           "value_bp": {
             "title": "Value Bp",
             "type": "number"
@@ -3303,7 +3350,8 @@
         },
         "required": [
           "date",
-          "value_bp"
+          "value_bp",
+          "input_fact_ids"
         ],
         "title": "MacroCurveSpreadPointData",
         "type": "object"
@@ -3311,6 +3359,13 @@
       "MacroCurveSpreadsData": {
         "additionalProperties": false,
         "properties": {
+          "10s30s": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCurveSpreadPointData"
+            },
+            "title": "10S30S",
+            "type": "array"
+          },
           "2s10s": {
             "items": {
               "$ref": "#/components/schemas/MacroCurveSpreadPointData"
@@ -3335,6 +3390,7 @@
         },
         "required": [
           "2s10s",
+          "10s30s",
           "3m10s",
           "5s30s"
         ],
@@ -3344,6 +3400,23 @@
       "MacroCurveYieldPointData": {
         "additionalProperties": false,
         "properties": {
+          "dataset_id": {
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "source_role": {
+            "const": "decision_primary",
+            "title": "Source Role",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
           "tenor": {
             "title": "Tenor",
             "type": "string"
@@ -3360,7 +3433,11 @@
         "required": [
           "tenor",
           "years",
-          "yield_pct"
+          "yield_pct",
+          "dataset_id",
+          "source_role",
+          "fact_id",
+          "source_url"
         ],
         "title": "MacroCurveYieldPointData",
         "type": "object"
@@ -3383,8 +3460,9 @@
           "window": {
             "enum": [
               "current",
+              "previous",
               "1w",
-              "1m",
+              "mtd",
               "3m"
             ],
             "title": "Window",
@@ -6258,7 +6336,7 @@
           "summary": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/MacroModuleSummaryStateData"
+                "$ref": "#/components/schemas/MacroOverviewModuleSummaryStateData"
               },
               {
                 "type": "null"
@@ -6948,6 +7026,39 @@
         "title": "MacroOutcomeReplayV2",
         "type": "object"
       },
+      "MacroOverviewModuleSummaryStateData": {
+        "additionalProperties": false,
+        "properties": {
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "interpretation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interpretation"
+          }
+        },
+        "required": [
+          "headline",
+          "interpretation"
+        ],
+        "title": "MacroOverviewModuleSummaryStateData",
+        "type": "object"
+      },
       "MacroOverviewReadData": {
         "additionalProperties": false,
         "properties": {
@@ -7226,6 +7337,321 @@
         "title": "MacroPublicationHistoryItemData",
         "type": "object"
       },
+      "MacroRatesBoundedAssessmentData": {
+        "additionalProperties": false,
+        "properties": {
+          "assessment_id": {
+            "title": "Assessment Id",
+            "type": "string"
+          },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "uncertainty": {
+            "title": "Uncertainty",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement",
+          "input_fact_ids",
+          "assessment_id",
+          "uncertainty"
+        ],
+        "title": "MacroRatesBoundedAssessmentData",
+        "type": "object"
+      },
+      "MacroRatesDecisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "classifications": {
+            "items": {
+              "$ref": "#/components/schemas/MacroCurveClassificationData"
+            },
+            "title": "Classifications",
+            "type": "array"
+          },
+          "decompositions": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesDecompositionData"
+            },
+            "title": "Decompositions",
+            "type": "array"
+          },
+          "explanation": {
+            "$ref": "#/components/schemas/MacroRatesExplanationData"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "reference_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Date"
+          },
+          "session_completeness": {
+            "$ref": "#/components/schemas/MacroRatesSessionCompletenessData"
+          },
+          "source_policy": {
+            "$ref": "#/components/schemas/MacroRatesSourcePolicyData"
+          },
+          "spread_summary": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesSpreadSummaryData"
+            },
+            "title": "Spread Summary",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unaligned",
+              "incomplete",
+              "insufficient_history"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "tenor_matrix": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesTenorDecisionData"
+            },
+            "title": "Tenor Matrix",
+            "type": "array"
+          }
+        },
+        "required": [
+          "state",
+          "reference_date",
+          "headline",
+          "session_completeness",
+          "tenor_matrix",
+          "spread_summary",
+          "decompositions",
+          "classifications",
+          "explanation",
+          "source_policy"
+        ],
+        "title": "MacroRatesDecisionData",
+        "type": "object"
+      },
+      "MacroRatesDecompositionData": {
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment"
+          },
+          "assessment_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "inflation_compensation_dominant",
+                  "real_yield_dominant",
+                  "mixed_real_and_inflation_compensation"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assessment State"
+          },
+          "breakeven_change_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakeven Change Bp"
+          },
+          "current_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Date"
+          },
+          "gap": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gap"
+          },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "nominal_change_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nominal Change Bp"
+          },
+          "prior_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prior Date"
+          },
+          "real_change_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Change Bp"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unaligned",
+              "insufficient_history"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "tenor": {
+            "enum": [
+              "10Y",
+              "30Y"
+            ],
+            "title": "Tenor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenor",
+          "state",
+          "current_date",
+          "prior_date",
+          "nominal_change_bp",
+          "real_change_bp",
+          "breakeven_change_bp",
+          "assessment_state",
+          "assessment",
+          "input_fact_ids",
+          "gap"
+        ],
+        "title": "MacroRatesDecompositionData",
+        "type": "object"
+      },
+      "MacroRatesExplanationData": {
+        "additionalProperties": false,
+        "properties": {
+          "bounded_assessments": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesBoundedAssessmentData"
+            },
+            "title": "Bounded Assessments",
+            "type": "array"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesExplanationStatementData"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "hypotheses": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesExplanationStatementData"
+            },
+            "title": "Hypotheses",
+            "type": "array"
+          }
+        },
+        "required": [
+          "facts",
+          "bounded_assessments",
+          "hypotheses"
+        ],
+        "title": "MacroRatesExplanationData",
+        "type": "object"
+      },
+      "MacroRatesExplanationStatementData": {
+        "additionalProperties": false,
+        "properties": {
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement",
+          "input_fact_ids"
+        ],
+        "title": "MacroRatesExplanationStatementData",
+        "type": "object"
+      },
       "MacroRatesFedReadData": {
         "additionalProperties": false,
         "properties": {
@@ -7234,25 +7660,14 @@
             "title": "Availability",
             "type": "string"
           },
-          "contradictions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Contradictions",
-            "type": "array"
-          },
           "curve": {
             "$ref": "#/components/schemas/MacroCurveData"
           },
+          "decision": {
+            "$ref": "#/components/schemas/MacroRatesDecisionData"
+          },
           "evidence": {
             "$ref": "#/components/schemas/MacroModuleEvidenceData"
-          },
-          "falsifiers": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Falsifiers",
-            "type": "array"
           },
           "fed": {
             "$ref": "#/components/schemas/MacroFedData"
@@ -7298,31 +7713,26 @@
             ]
           },
           "schema_version": {
-            "const": "macro_rates_fed_v5",
+            "const": "macro_rates_fed_v6",
             "title": "Schema Version",
             "type": "string"
           },
           "status": {
             "$ref": "#/components/schemas/MacroModuleStatusData"
           },
-          "summary": {
-            "$ref": "#/components/schemas/MacroModuleSummaryStateData"
-          },
           "thesis_context": {
             "$ref": "#/components/schemas/MacroModuleThesisContextData"
           }
         },
         "required": [
+          "schema_version",
+          "module_id",
           "label",
           "status",
           "latest_fact_at_ms",
-          "summary",
-          "contradictions",
-          "falsifiers",
           "next_checkpoints",
           "evidence",
-          "schema_version",
-          "module_id",
+          "decision",
           "curve",
           "policy_pricing",
           "fed",
@@ -7332,6 +7742,426 @@
           "thesis_context"
         ],
         "title": "MacroRatesFedReadData",
+        "type": "object"
+      },
+      "MacroRatesLatestObservationData": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Id"
+          },
+          "reference_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Date"
+          },
+          "tenor": {
+            "enum": [
+              "2Y",
+              "10Y",
+              "30Y"
+            ],
+            "title": "Tenor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenor",
+          "reference_date",
+          "fact_id"
+        ],
+        "title": "MacroRatesLatestObservationData",
+        "type": "object"
+      },
+      "MacroRatesSessionCompletenessData": {
+        "additionalProperties": false,
+        "properties": {
+          "latest_observations": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesLatestObservationData"
+            },
+            "title": "Latest Observations",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reference_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Date"
+          },
+          "required_tenors": {
+            "items": {
+              "enum": [
+                "2Y",
+                "10Y",
+                "30Y"
+              ],
+              "type": "string"
+            },
+            "title": "Required Tenors",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "unaligned",
+              "incomplete"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reference_date",
+          "required_tenors",
+          "latest_observations",
+          "reason"
+        ],
+        "title": "MacroRatesSessionCompletenessData",
+        "type": "object"
+      },
+      "MacroRatesSourcePolicyData": {
+        "additionalProperties": false,
+        "properties": {
+          "decision_primary_dataset_ids": {
+            "items": {
+              "enum": [
+                "treasury.daily_nominal_curve",
+                "treasury.daily_real_curve"
+              ],
+              "type": "string"
+            },
+            "title": "Decision Primary Dataset Ids",
+            "type": "array"
+          },
+          "history_only_dataset_ids": {
+            "items": {
+              "enum": [
+                "fred.dgs2",
+                "fred.dgs10",
+                "fred.dgs30",
+                "fred.dfii10",
+                "fred.t10yie"
+              ],
+              "type": "string"
+            },
+            "title": "History Only Dataset Ids",
+            "type": "array"
+          },
+          "selection_policy": {
+            "const": "treasury_completed_session_primary_fred_history_only",
+            "title": "Selection Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_primary_dataset_ids",
+          "history_only_dataset_ids",
+          "selection_policy"
+        ],
+        "title": "MacroRatesSourcePolicyData",
+        "type": "object"
+      },
+      "MacroRatesSpreadSummaryData": {
+        "additionalProperties": false,
+        "properties": {
+          "change_1d_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1D Bp"
+          },
+          "current_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Date"
+          },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "prior_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prior Date"
+          },
+          "spread_id": {
+            "enum": [
+              "2s10s",
+              "10s30s"
+            ],
+            "title": "Spread Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unaligned",
+              "incomplete",
+              "insufficient_history"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "value_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Bp"
+          }
+        },
+        "required": [
+          "spread_id",
+          "label",
+          "state",
+          "current_date",
+          "prior_date",
+          "value_bp",
+          "change_1d_bp",
+          "input_fact_ids"
+        ],
+        "title": "MacroRatesSpreadSummaryData",
+        "type": "object"
+      },
+      "MacroRatesTenorCurrentData": {
+        "additionalProperties": false,
+        "properties": {
+          "dataset_id": {
+            "const": "treasury.daily_nominal_curve",
+            "title": "Dataset Id",
+            "type": "string"
+          },
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "reference_date": {
+            "format": "date",
+            "title": "Reference Date",
+            "type": "string"
+          },
+          "source_role": {
+            "const": "decision_primary",
+            "title": "Source Role",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "tenor": {
+            "enum": [
+              "2Y",
+              "10Y",
+              "30Y"
+            ],
+            "title": "Tenor",
+            "type": "string"
+          },
+          "yield_pct": {
+            "title": "Yield Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "tenor",
+          "reference_date",
+          "yield_pct",
+          "dataset_id",
+          "source_role",
+          "fact_id",
+          "source_url"
+        ],
+        "title": "MacroRatesTenorCurrentData",
+        "type": "object"
+      },
+      "MacroRatesTenorDecisionData": {
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MacroRatesTenorCurrentData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tenor": {
+            "enum": [
+              "2Y",
+              "10Y",
+              "30Y"
+            ],
+            "title": "Tenor",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/MacroRatesWindowChangeData"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tenor",
+          "current",
+          "windows"
+        ],
+        "title": "MacroRatesTenorDecisionData",
+        "type": "object"
+      },
+      "MacroRatesWindowChangeData": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Date"
+          },
+          "change_bp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Bp"
+          },
+          "current_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Date"
+          },
+          "input_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Fact Ids",
+            "type": "array"
+          },
+          "selection_policy": {
+            "enum": [
+              "previous_treasury_observation",
+              "bounded_previous_observation_4_calendar_days",
+              "first_available_treasury_observation_in_calendar_month"
+            ],
+            "title": "Selection Policy",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "baseline",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "window": {
+            "enum": [
+              "1d",
+              "1w",
+              "mtd",
+              "3m",
+              "past_30d"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "state",
+          "current_date",
+          "baseline_date",
+          "change_bp",
+          "selection_policy",
+          "input_fact_ids"
+        ],
+        "title": "MacroRatesWindowChangeData",
         "type": "object"
       },
       "MacroReason": {

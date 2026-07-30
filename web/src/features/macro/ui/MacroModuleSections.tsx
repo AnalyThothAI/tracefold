@@ -48,6 +48,7 @@ import {
   type MacroChartSeries,
 } from "./MacroCharts";
 
+import "./MacroRatesDecision.css";
 import "./MacroModuleSections.css";
 
 type Section = { id: string; label: string };
@@ -191,6 +192,152 @@ function useHashSection(sections: readonly Section[]) {
   return active;
 }
 
+export function RatesDecisionSummary({ module }: { module: MacroRatesFedReadData }) {
+  const decision = module.decision;
+  const oneDayClassification = decision.classifications.find((item) => item.window === "1d");
+  return (
+    <section
+      aria-label="最近完整交易日收益率决策摘要"
+      className="macro-decision__rates-decision"
+      data-state={decision.state}
+    >
+      <header>
+        <div>
+          <span>OFFICIAL COMPLETED SESSION · 1D PRIMARY</span>
+          <h2>{decision.headline ?? "最近完整交易日无法形成对齐结论"}</h2>
+          <p>
+            {decision.session_completeness.reference_date
+              ? `财政部同日曲线 · ${decision.session_completeness.reference_date}`
+              : (decision.session_completeness.reason ?? "缺少可审计的同日财政部曲线。")}
+          </p>
+        </div>
+        <div className="macro-decision__rates-badges">
+          <span data-state={decision.session_completeness.state}>
+            Session {ratesCompletenessLabel(decision.session_completeness.state)}
+          </span>
+          {oneDayClassification ? (
+            <span data-state={oneDayClassification.state}>1D · {oneDayClassification.label}</span>
+          ) : null}
+          <span>Thesis · {thesisRoleLabel(module.thesis_context.role)}</span>
+        </div>
+      </header>
+
+      <div aria-label="2Y 10Y 30Y 收益率矩阵" className="macro-decision__rates-matrix" role="table">
+        <div role="row">
+          <span role="columnheader">期限</span>
+          <span role="columnheader">当前</span>
+          <span role="columnheader">1D</span>
+          <span role="columnheader">1W</span>
+          <span role="columnheader">MTD</span>
+        </div>
+        {decision.tenor_matrix.map((row) => {
+          const oneDay = ratesWindow(row, "1d");
+          const oneWeek = ratesWindow(row, "1w");
+          const mtd = ratesWindow(row, "mtd");
+          return (
+            <div key={row.tenor} role="row">
+              <strong role="cell">{row.tenor}</strong>
+              <span role="cell">
+                {row.current ? `${formatNumber(row.current.yield_pct)}%` : "—"}
+                <small>{row.current?.reference_date ?? "缺少观测"}</small>
+              </span>
+              <RatesWindowCell window={oneDay} />
+              <RatesWindowCell window={oneWeek} />
+              <RatesWindowCell window={mtd} />
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="macro-decision__rates-second-line">
+        <section aria-label="核心期限利差">
+          <header>
+            <span>CORE SPREADS</span>
+            <strong>曲线斜率</strong>
+          </header>
+          {decision.spread_summary.map((spread) => (
+            <article key={spread.spread_id}>
+              <span>{spread.label}</span>
+              <strong>{formatOptional(spread.value_bp, "basis_points")}</strong>
+              <small>
+                1D {formatSignedBp(spread.change_1d_bp)}
+                {spread.prior_date ? ` · ${spread.prior_date}→${spread.current_date}` : ""}
+              </small>
+            </article>
+          ))}
+        </section>
+        <section aria-label="名义收益率单日机械分解">
+          <header>
+            <span>MECHANICAL DECOMPOSITION</span>
+            <strong>名义 = 实际 + Breakeven</strong>
+          </header>
+          {decision.decompositions.map((item) => (
+            <article data-state={item.state} key={item.tenor}>
+              <span>{item.tenor}</span>
+              {item.state === "available" ? (
+                <>
+                  <strong>
+                    名义 {formatSignedBp(item.nominal_change_bp)} = 实际{" "}
+                    {formatSignedBp(item.real_change_bp)} + Breakeven{" "}
+                    {formatSignedBp(item.breakeven_change_bp)}
+                  </strong>
+                  {item.assessment ? <small>{item.assessment}</small> : null}
+                </>
+              ) : (
+                <small>{item.gap ?? "对应分解不可用。"}</small>
+              )}
+            </article>
+          ))}
+        </section>
+      </div>
+
+      <details className="macro-decision__rates-audit">
+        <summary>查看窗口、期限与来源审计</summary>
+        <p>
+          当日判断只使用 U.S. Treasury 名义与实际曲线；FRED
+          单期限序列仅作历史延伸和来源核对，不参与当日 headline。
+        </p>
+        {decision.tenor_matrix.map((row) => (
+          <article key={row.tenor}>
+            <strong>{row.tenor}</strong>
+            <span>
+              {row.current?.dataset_id ?? "treasury.daily_nominal_curve"} ·{" "}
+              {row.current?.reference_date ?? "无当前观测"}
+            </span>
+            {row.current ? (
+              <a href={row.current.source_url} rel="noreferrer" target="_blank">
+                财政部原始来源 <ExternalLink aria-hidden="true" />
+              </a>
+            ) : null}
+            <small>{row.current?.fact_id ?? "无事实引用"}</small>
+            {row.windows.map((window) => (
+              <small key={window.window}>
+                {ratesWindowLabel(window.window)} · {window.baseline_date ?? "无基准"}→
+                {window.current_date ?? "无当前"} · {formatSignedBp(window.change_bp)}
+              </small>
+            ))}
+          </article>
+        ))}
+      </details>
+    </section>
+  );
+}
+
+function RatesWindowCell({
+  window,
+}: {
+  window: MacroRatesFedReadData["decision"]["tenor_matrix"][number]["windows"][number] | undefined;
+}) {
+  return (
+    <span data-direction={ratesDirection(window?.change_bp ?? null)} role="cell">
+      {formatSignedBp(window?.change_bp ?? null)}
+      <small>
+        {window?.baseline_date ? `${window.baseline_date}→${window.current_date}` : "基准不足"}
+      </small>
+    </span>
+  );
+}
+
 function RatesSection({ module, active }: { module: MacroRatesFedReadData; active: string }) {
   if (active === "policy") {
     const indicators = parseIndicators(module.policy_pricing.rates);
@@ -249,30 +396,87 @@ function RatesSection({ module, active }: { module: MacroRatesFedReadData; activ
       points: parsePointRecords(value, "value_bp"),
     }),
   );
-  const classification = readRecord(curve, "classification");
+  const oneDayClassification = module.decision.classifications.find((item) => item.window === "1d");
   return (
     <ModuleWorkbench
       description="横轴始终是统一期限；名义、实际与 breakeven 分图，避免双轴与历史 sparkline 冒充收益率曲线。"
       eyebrow="TREASURY CURVE"
       module={module}
-      title={`${readText(classification, "label") ?? "收益率曲线形态尚未解释"} · 当前 / 1W / 1M / 3M`}
+      title={`${oneDayClassification?.label ?? "收益率曲线形态尚未解释"} · 1D 主时钟`}
     >
-      <div className="macro-decision__chart-stack">
-        <MacroCurveChart snapshots={nominal} title="名义 Treasury 曲线" />
-        <div className="macro-decision__chart-pair">
-          <MacroCurveChart snapshots={real} title="实际 Treasury 曲线" />
-          <MacroCurveChart snapshots={breakeven} title="Breakeven 通胀补偿" />
-        </div>
-        <ModuleTimeSeriesChart
-          baseline={0}
-          description="2s10s、3m10s 与 5s30s，统一使用基点。"
-          module={module}
-          series={spreadSeries}
-          title="关键期限利差"
-          unit="basis_points"
-        />
-      </div>
+      <RatesCurveCharts
+        breakeven={breakeven}
+        module={module}
+        nominal={nominal}
+        real={real}
+        spreadSeries={spreadSeries}
+      />
     </ModuleWorkbench>
+  );
+}
+
+function RatesCurveCharts({
+  nominal,
+  real,
+  breakeven,
+  spreadSeries,
+  module,
+}: {
+  nominal: ReturnType<typeof parseCurveSnapshots>;
+  real: ReturnType<typeof parseCurveSnapshots>;
+  breakeven: ReturnType<typeof parseCurveSnapshots>;
+  spreadSeries: MacroChartSeries[];
+  module: MacroRatesFedReadData;
+}) {
+  const [backgroundWindows, setBackgroundWindows] = useState<Set<"1w" | "mtd" | "3m">>(
+    () => new Set(),
+  );
+  const visible = new Set(["current", "previous", ...backgroundWindows]);
+  const filter = (snapshots: ReturnType<typeof parseCurveSnapshots>) =>
+    snapshots.filter((snapshot) => visible.has(snapshot.window));
+  return (
+    <div className="macro-decision__chart-stack">
+      <fieldset className="macro-decision__curve-window-controls">
+        <legend>曲线叠加窗口</legend>
+        <span>当前与前一交易日固定显示</span>
+        {(
+          [
+            ["1w", "1W"],
+            ["mtd", "MTD"],
+            ["3m", "3M"],
+          ] as const
+        ).map(([window, label]) => (
+          <label key={window}>
+            <input
+              checked={backgroundWindows.has(window)}
+              onChange={(event) => {
+                setBackgroundWindows((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(window);
+                  else next.delete(window);
+                  return next;
+                });
+              }}
+              type="checkbox"
+            />
+            {label}
+          </label>
+        ))}
+      </fieldset>
+      <MacroCurveChart snapshots={filter(nominal)} title="名义 Treasury 曲线" />
+      <div className="macro-decision__chart-pair">
+        <MacroCurveChart snapshots={filter(real)} title="实际 Treasury 曲线" />
+        <MacroCurveChart snapshots={filter(breakeven)} title="Breakeven 通胀补偿" />
+      </div>
+      <ModuleTimeSeriesChart
+        baseline={0}
+        description="2s10s、10s30s、3m10s 与 5s30s，统一使用基点。"
+        module={module}
+        series={spreadSeries}
+        title="关键期限利差"
+        unit="basis_points"
+      />
+    </div>
   );
 }
 
@@ -750,6 +954,9 @@ function ModuleWorkbench({
 }
 
 function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }) {
+  if (module.module_id === "rates_fed") {
+    return <RatesDecisionAnnotationRail module={module} />;
+  }
   const thesisContext = module.thesis_context;
   const summaryInterpretation = module.summary.interpretation;
   return (
@@ -867,6 +1074,45 @@ function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }
           </ul>
         </article>
       ) : null}
+    </aside>
+  );
+}
+
+function RatesDecisionAnnotationRail({ module }: { module: MacroRatesFedReadData }) {
+  const decision = module.decision;
+  const classification = decision.classifications.find((item) => item.window === "1d");
+  return (
+    <aside aria-label="图表决策注释" className="macro-decision__annotation-rail">
+      <header>
+        <span>1D DECISION AUDIT</span>
+        <strong>期限、窗口和来源均由持久化合同提供</strong>
+      </header>
+      <article data-state={decision.state === "available" ? "change" : "weakening"}>
+        <span>最近完整交易日</span>
+        <strong>{decision.reference_date ?? "未对齐"}</strong>
+        <small>{decision.headline ?? decision.session_completeness.reason}</small>
+      </article>
+      <article>
+        <span>1D 曲线分类</span>
+        <strong>{classification?.label ?? "不可用"}</strong>
+        {classification?.inputs.prior_as_of ? (
+          <small>
+            {classification.inputs.prior_as_of}→{classification.inputs.current_as_of}
+          </small>
+        ) : null}
+      </article>
+      <article>
+        <span>来源权威</span>
+        <strong>U.S. Treasury · decision primary</strong>
+        <small>FRED · history / reconciliation only</small>
+      </article>
+      <article data-context-state={module.thesis_context.state}>
+        <span>Thesis 次级状态</span>
+        <strong>{thesisRoleLabel(module.thesis_context.role)}</strong>
+        {module.thesis_context.assessment ? (
+          <small>{module.thesis_context.assessment.analysis}</small>
+        ) : null}
+      </article>
     </aside>
   );
 }
@@ -1288,21 +1534,24 @@ function moduleChartAnnotations(
   series: MacroChartSeries[],
 ): MacroChartAnnotation[] {
   const visibleDatasetIds = new Set(series.map((item) => item.id));
-  const changes = module.summary.top_changes.flatMap((change) =>
-    change.as_of && visibleDatasetIds.has(change.dataset_id)
-      ? [
-          {
-            id: `change:${change.concept_id}:${change.dataset_id}:${change.as_of}`,
-            date: change.as_of,
-            detail: change.importance_explanation,
-            label: change.label,
-            seriesId: change.dataset_id,
-            tone: "change" as const,
-            value: change.value,
-          },
-        ]
-      : [],
-  );
+  const changes =
+    module.module_id === "rates_fed"
+      ? []
+      : module.summary.top_changes.flatMap((change) =>
+          change.as_of && visibleDatasetIds.has(change.dataset_id)
+            ? [
+                {
+                  id: `change:${change.concept_id}:${change.dataset_id}:${change.as_of}`,
+                  date: change.as_of,
+                  detail: change.importance_explanation,
+                  label: change.label,
+                  seriesId: change.dataset_id,
+                  tone: "change" as const,
+                  value: change.value,
+                },
+              ]
+            : [],
+        );
   const cutoffInstant =
     module.thesis_context.cutoff_ms == null
       ? null
@@ -1413,10 +1662,39 @@ function spreadLabel(value: string): string {
   return (
     {
       "2s10s": "2Y–10Y",
+      "10s30s": "10Y–30Y",
       "3m10s": "3M–10Y",
       "5s30s": "5Y–30Y",
     }[value] ?? "期限利差"
   );
+}
+
+function ratesWindow(
+  row: MacroRatesFedReadData["decision"]["tenor_matrix"][number],
+  window: "1d" | "1w" | "mtd",
+) {
+  return row.windows.find((item) => item.window === window);
+}
+
+function ratesWindowLabel(value: string): string {
+  return (
+    {
+      "1d": "1D",
+      "1w": "1W",
+      mtd: "MTD",
+      "3m": "3M",
+      past_30d: "过去30日",
+    }[value] ?? value
+  );
+}
+
+function ratesCompletenessLabel(value: string): string {
+  return { complete: "完整", unaligned: "未对齐", incomplete: "不完整" }[value] ?? value;
+}
+
+function ratesDirection(value: number | null): string {
+  if (value == null || value === 0) return "flat";
+  return value > 0 ? "up" : "down";
 }
 
 function stanceLabel(value: string): string {
@@ -1486,6 +1764,10 @@ function formatOptional(value: number | null, unit: string | null): string {
 function formatSigned(value: number | null): string {
   if (value == null) return "—";
   return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
+}
+
+function formatSignedBp(value: number | null): string {
+  return value == null ? "—" : `${value > 0 ? "+" : ""}${formatNumber(value)}bp`;
 }
 
 function formatNumber(value: number): string {

@@ -401,7 +401,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert "is_watched" not in radar_rank_source_columns
-    assert version == latest_migration_version() == "20260730_0219"
+    assert version == latest_migration_version() == "20260730_0220"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -426,7 +426,72 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260730_0219"
+    assert version == latest_migration_version() == "20260730_0220"
+
+
+def test_rates_curve_v6_migration_deletes_only_old_rates_projection_and_rejects_v5(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        command.upgrade(config, "20260729_0216")
+        conn.execute(
+            """
+            INSERT INTO macro_module_current (
+              module_id, fact_cutoff_ms, payload_json, payload_hash,
+              updated_at_ms, current_health_state, history_depth_state
+            ) VALUES
+            (
+              'rates_fed', 1, '{"schema_version":"macro_rates_fed_v5"}'::jsonb,
+              'sha256:old-rates', 1, 'current', 'not_required'
+            ),
+            (
+              'credit', 1, '{"schema_version":"macro_credit_v7"}'::jsonb,
+              'sha256:current-credit', 1, 'current', 'not_required'
+            )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        assert [
+            row["module_id"]
+            for row in conn.execute("SELECT module_id FROM macro_module_current ORDER BY module_id").fetchall()
+        ] == ["credit"]
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                INSERT INTO macro_module_current (
+                  module_id, fact_cutoff_ms, payload_json, payload_hash,
+                  updated_at_ms, current_health_state, history_depth_state
+                ) VALUES (
+                  'rates_fed', 2, '{"schema_version":"macro_rates_fed_v5"}'::jsonb,
+                  'sha256:stale-rates', 2, 'current', 'not_required'
+                )
+                """
+            )
+        conn.rollback()
+        conn.execute(
+            """
+            INSERT INTO macro_module_current (
+              module_id, fact_cutoff_ms, payload_json, payload_hash,
+              updated_at_ms, current_health_state, history_depth_state
+            ) VALUES (
+              'rates_fed', 3, '{"schema_version":"macro_rates_fed_v6"}'::jsonb,
+              'sha256:rates-v6', 3, 'current', 'not_required'
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def test_macro_reader_hard_cut_deletes_old_projections_and_requires_reprojection(
@@ -576,7 +641,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260730_0219"
+        assert version == "20260730_0220"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

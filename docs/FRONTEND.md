@@ -147,8 +147,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   the actual market timestamp rather than the HTTP receipt time. Dataset
   details show data, market, and source state independently plus group health;
   closed and maintenance sessions are not painted stale merely because wall
-  time advanced. Rates renders true maturity cross-sections and a detailed tenor
-  table. Fed renders institutional stance, recent officials distribution, then
+  time advanced. Rates begins with the persisted 2Y/10Y/30Y completed-session
+  matrix, 2s10s/10s30s, and aligned 10Y/30Y nominal-real-Breakeven
+  decomposition. It then renders true maturity cross-sections and a detailed
+  tenor audit. Current and the prior Treasury observation are the default curve
+  overlay; 1W, MTD, and 3M are opt-in background windows. Fed renders
+  institutional stance, recent officials distribution, then
   the event timeline. Credit keeps four concurrent dimensions visible above
   its ladder/funding/banks/quality/confirmation sections and never renders a
   composite score. Volatility owns the official-expiry CFE VX settlement curve;

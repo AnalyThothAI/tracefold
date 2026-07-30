@@ -458,6 +458,23 @@ def _module_summary(
     coverage = dict(status["coverage"])
     current_health = dict(status["current_health"])
     history_depth = dict(status["history_depth"])
+    if module_id == "rates_fed":
+        decision = dict(payload["decision"])
+        assessments = dict(decision["explanation"]).get("bounded_assessments", ())
+        summary = {
+            "headline": decision.get("headline"),
+            "interpretation": (
+                str(assessments[0]["statement"])
+                if assessments and isinstance(assessments[0], dict) and assessments[0].get("statement")
+                else None
+            ),
+        }
+    else:
+        module_summary = dict(payload["summary"])
+        summary = {
+            "headline": module_summary.get("headline"),
+            "interpretation": module_summary.get("interpretation"),
+        }
     return {
         "module_id": payload["module_id"],
         "label": payload["label"],
@@ -469,7 +486,7 @@ def _module_summary(
         "history_depth_state": history_depth["state"],
         "backfill_execution": status["backfill_execution"],
         "latest_fact_at_ms": int(payload["latest_fact_at_ms"]),
-        "summary": payload["summary"],
+        "summary": summary,
         "coverage_gap_count": sum(item["state"] != "available" for item in coverage["capabilities"]),
         "current_health_gap_count": max(
             0,

@@ -18,7 +18,7 @@ import type {
   MacroTypedModuleReadData,
 } from "../model/macroTypes";
 
-import { MacroModuleSections } from "./MacroModuleSections";
+import { MacroModuleSections, RatesDecisionSummary } from "./MacroModuleSections";
 import { MacroThesisReport } from "./MacroThesisReport";
 
 import "./MacroDecisionBrief.css";
@@ -125,7 +125,11 @@ export function MacroModulePage({
         {module.thesis_context.reason ? (
           <ReasonPanel reason={module.thesis_context.reason} title="当前 Thesis 状态" />
         ) : null}
-        <ModuleThesisContext module={module} />
+        {module.module_id === "rates_fed" ? (
+          <RatesDecisionSummary module={module} />
+        ) : (
+          <ModuleThesisContext module={module} />
+        )}
         <MacroModuleSections module={module} />
       </section>
     </PageState.Stale>

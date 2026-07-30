@@ -144,7 +144,7 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
 publication.
 
-A good macro status reports Alembic `20260730_0219`, bounded acquisition target
+A good macro status reports Alembic `20260730_0220`, bounded acquisition target
 states, recent source and reconciliation receipts, all six module rows, and the
 current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
 read-only frozen-corpus readiness: nine distinct real sessions remain the
@@ -162,7 +162,7 @@ immutable Evidence Packs, Thesis runs/reviews/publications, Live Delta, Outcome
 Replay, append-only Research Inputs, and the retained historical review/checkpoint
 tables.
 `20260728_0210` remains the compact current-schema baseline and
-`20260730_0219` is the required hard-cut head. A new empty database applies the
+`20260730_0220` is the required hard-cut head. A new empty database applies the
 baseline and head without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
 at `20260728_0210` migrates forward once; retired Judgment/Research tables and

@@ -394,13 +394,13 @@ export function MacroCurveChart({
         <div>
           <h3 id={headingId}>{title}</h3>
           <p id={descriptionId}>
-            按实际到期年数定位横轴；当前、1周、1月和3月快照共享同一 maturity scale。
+            按实际到期年数定位横轴；当前、前一交易日与选定背景窗口共享同一 maturity scale。
           </p>
         </div>
       </figcaption>
       <svg aria-label={title} role="img" viewBox="0 0 720 300">
         <title>{title}</title>
-        <desc>收益率曲线横轴按实际到期年数缩放，折线比较四个历史快照。</desc>
+        <desc>收益率曲线横轴按实际到期年数缩放，折线比较已选中的官方日度快照。</desc>
         {[0, 1, 2, 3, 4].map((index) => {
           const y = 24 + index * 58;
           const label = maximum - (span * index) / 4;
@@ -1203,7 +1203,13 @@ function unitLabel(unit?: string): string {
 }
 
 function windowLabel(value: MacroCurveSnapshotView["window"]): string {
-  return { current: "当前", "1w": "1周前", "1m": "1月前", "3m": "3月前" }[value];
+  return {
+    current: "当前",
+    previous: "前一交易日",
+    "1w": "1周基准",
+    mtd: "月初基准",
+    "3m": "3月基准",
+  }[value];
 }
 
 function truncate(value: string, length: number): string {

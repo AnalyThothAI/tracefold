@@ -1355,6 +1355,8 @@ export interface components {
         MacroCurveBreakevenPointData: {
             /** Breakeven Pct */
             breakeven_pct: number;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
             /** Tenor */
             tenor: string;
             /** Years */
@@ -1373,7 +1375,7 @@ export interface components {
              * Window
              * @enum {string}
              */
-            window: "current" | "1w" | "1m" | "3m";
+            window: "current" | "previous" | "1w" | "mtd" | "3m";
         };
         /** MacroCurveClassificationData */
         MacroCurveClassificationData: {
@@ -1381,7 +1383,7 @@ export interface components {
              * Formula Version
              * @constant
              */
-            formula_version: "level_slope_curvature_classification_v2";
+            formula_version: "level_slope_curvature_classification_v3";
             inputs: components["schemas"]["MacroCurveClassificationInputsData"];
             /** Label */
             label: string;
@@ -1389,7 +1391,12 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "insufficient_history" | "insufficient_tenors" | "parallel_up" | "parallel_down" | "bear_steepening" | "bull_steepening" | "bear_flattening" | "bull_flattening" | "stable";
+            state: "unaligned" | "insufficient_history" | "insufficient_tenors" | "twist_steepening" | "parallel_up" | "parallel_down" | "bear_steepening" | "bull_steepening" | "bear_flattening" | "bull_flattening" | "stable";
+            /**
+             * Window
+             * @enum {string}
+             */
+            window: "1d" | "1w" | "mtd" | "3m";
         };
         /** MacroCurveClassificationInputsData */
         MacroCurveClassificationInputsData: {
@@ -1397,6 +1404,10 @@ export interface components {
             "10y_change_bp"?: number | null;
             /** 2Y Change Bp */
             "2y_change_bp"?: number | null;
+            /** 30Y Change Bp */
+            "30y_change_bp"?: number | null;
+            /** Current 10S30S Bp */
+            current_10s30s_bp?: number | null;
             /** Current 2S10S Bp */
             current_2s10s_bp?: number | null;
             /** Current As Of */
@@ -1414,7 +1425,6 @@ export interface components {
         MacroCurveData: {
             /** Breakeven Snapshots */
             breakeven_snapshots: components["schemas"]["MacroCurveBreakevenSnapshotData"][];
-            classification: components["schemas"]["MacroCurveClassificationData"];
             /** Nominal Snapshots */
             nominal_snapshots: components["schemas"]["MacroCurveYieldSnapshotData"][];
             /** Real Snapshots */
@@ -1428,11 +1438,15 @@ export interface components {
              * Format: date
              */
             date: string;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
             /** Value Bp */
             value_bp: number;
         };
         /** MacroCurveSpreadsData */
         MacroCurveSpreadsData: {
+            /** 10S30S */
+            "10s30s": components["schemas"]["MacroCurveSpreadPointData"][];
             /** 2S10S */
             "2s10s": components["schemas"]["MacroCurveSpreadPointData"][];
             /** 3M10S */
@@ -1442,6 +1456,17 @@ export interface components {
         };
         /** MacroCurveYieldPointData */
         MacroCurveYieldPointData: {
+            /** Dataset Id */
+            dataset_id: string;
+            /** Fact Id */
+            fact_id: string;
+            /**
+             * Source Role
+             * @constant
+             */
+            source_role: "decision_primary";
+            /** Source Url */
+            source_url: string;
             /** Tenor */
             tenor: string;
             /** Years */
@@ -1462,7 +1487,7 @@ export interface components {
              * Window
              * @enum {string}
              */
-            window: "current" | "1w" | "1m" | "3m";
+            window: "current" | "previous" | "1w" | "mtd" | "3m";
         };
         /** MacroDataQualityOverviewData */
         MacroDataQualityOverviewData: {
@@ -2446,7 +2471,7 @@ export interface components {
              * @enum {string}
              */
             role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material";
-            summary: components["schemas"]["MacroModuleSummaryStateData"] | null;
+            summary: components["schemas"]["MacroOverviewModuleSummaryStateData"] | null;
             thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroModuleSummaryStateData */
@@ -2657,6 +2682,13 @@ export interface components {
              */
             schema_version: "macro_outcome_replay_v2";
         };
+        /** MacroOverviewModuleSummaryStateData */
+        MacroOverviewModuleSummaryStateData: {
+            /** Headline */
+            headline: string | null;
+            /** Interpretation */
+            interpretation: string | null;
+        };
         /** MacroOverviewReadData */
         MacroOverviewReadData: {
             /** Cutoff Ms */
@@ -2756,6 +2788,87 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** MacroRatesBoundedAssessmentData */
+        MacroRatesBoundedAssessmentData: {
+            /** Assessment Id */
+            assessment_id: string;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
+            /** Statement */
+            statement: string;
+            /** Uncertainty */
+            uncertainty: string;
+        };
+        /** MacroRatesDecisionData */
+        MacroRatesDecisionData: {
+            /** Classifications */
+            classifications: components["schemas"]["MacroCurveClassificationData"][];
+            /** Decompositions */
+            decompositions: components["schemas"]["MacroRatesDecompositionData"][];
+            explanation: components["schemas"]["MacroRatesExplanationData"];
+            /** Headline */
+            headline: string | null;
+            /** Reference Date */
+            reference_date: string | null;
+            session_completeness: components["schemas"]["MacroRatesSessionCompletenessData"];
+            source_policy: components["schemas"]["MacroRatesSourcePolicyData"];
+            /** Spread Summary */
+            spread_summary: components["schemas"]["MacroRatesSpreadSummaryData"][];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "unaligned" | "incomplete" | "insufficient_history";
+            /** Tenor Matrix */
+            tenor_matrix: components["schemas"]["MacroRatesTenorDecisionData"][];
+        };
+        /** MacroRatesDecompositionData */
+        MacroRatesDecompositionData: {
+            /** Assessment */
+            assessment: string | null;
+            /** Assessment State */
+            assessment_state: ("inflation_compensation_dominant" | "real_yield_dominant" | "mixed_real_and_inflation_compensation") | null;
+            /** Breakeven Change Bp */
+            breakeven_change_bp: number | null;
+            /** Current Date */
+            current_date: string | null;
+            /** Gap */
+            gap: string | null;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
+            /** Nominal Change Bp */
+            nominal_change_bp: number | null;
+            /** Prior Date */
+            prior_date: string | null;
+            /** Real Change Bp */
+            real_change_bp: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "unaligned" | "insufficient_history";
+            /**
+             * Tenor
+             * @enum {string}
+             */
+            tenor: "10Y" | "30Y";
+        };
+        /** MacroRatesExplanationData */
+        MacroRatesExplanationData: {
+            /** Bounded Assessments */
+            bounded_assessments: components["schemas"]["MacroRatesBoundedAssessmentData"][];
+            /** Facts */
+            facts: components["schemas"]["MacroRatesExplanationStatementData"][];
+            /** Hypotheses */
+            hypotheses: components["schemas"]["MacroRatesExplanationStatementData"][];
+        };
+        /** MacroRatesExplanationStatementData */
+        MacroRatesExplanationStatementData: {
+            /** Input Fact Ids */
+            input_fact_ids: string[];
+            /** Statement */
+            statement: string;
+        };
         /** MacroRatesFedReadData */
         MacroRatesFedReadData: {
             /**
@@ -2763,12 +2876,9 @@ export interface components {
              * @constant
              */
             availability: "available";
-            /** Contradictions */
-            contradictions: string[];
             curve: components["schemas"]["MacroCurveData"];
+            decision: components["schemas"]["MacroRatesDecisionData"];
             evidence: components["schemas"]["MacroModuleEvidenceData"];
-            /** Falsifiers */
-            falsifiers: string[];
             fed: components["schemas"]["MacroFedData"];
             /** Label */
             label: string;
@@ -2789,10 +2899,140 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_rates_fed_v5";
+            schema_version: "macro_rates_fed_v6";
             status: components["schemas"]["MacroModuleStatusData"];
-            summary: components["schemas"]["MacroModuleSummaryStateData"];
             thesis_context: components["schemas"]["MacroModuleThesisContextData"];
+        };
+        /** MacroRatesLatestObservationData */
+        MacroRatesLatestObservationData: {
+            /** Fact Id */
+            fact_id: string | null;
+            /** Reference Date */
+            reference_date: string | null;
+            /**
+             * Tenor
+             * @enum {string}
+             */
+            tenor: "2Y" | "10Y" | "30Y";
+        };
+        /** MacroRatesSessionCompletenessData */
+        MacroRatesSessionCompletenessData: {
+            /** Latest Observations */
+            latest_observations: components["schemas"]["MacroRatesLatestObservationData"][];
+            /** Reason */
+            reason: string | null;
+            /** Reference Date */
+            reference_date: string | null;
+            /** Required Tenors */
+            required_tenors: ("2Y" | "10Y" | "30Y")[];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "complete" | "unaligned" | "incomplete";
+        };
+        /** MacroRatesSourcePolicyData */
+        MacroRatesSourcePolicyData: {
+            /** Decision Primary Dataset Ids */
+            decision_primary_dataset_ids: ("treasury.daily_nominal_curve" | "treasury.daily_real_curve")[];
+            /** History Only Dataset Ids */
+            history_only_dataset_ids: ("fred.dgs2" | "fred.dgs10" | "fred.dgs30" | "fred.dfii10" | "fred.t10yie")[];
+            /**
+             * Selection Policy
+             * @constant
+             */
+            selection_policy: "treasury_completed_session_primary_fred_history_only";
+        };
+        /** MacroRatesSpreadSummaryData */
+        MacroRatesSpreadSummaryData: {
+            /** Change 1D Bp */
+            change_1d_bp: number | null;
+            /** Current Date */
+            current_date: string | null;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
+            /** Label */
+            label: string;
+            /** Prior Date */
+            prior_date: string | null;
+            /**
+             * Spread Id
+             * @enum {string}
+             */
+            spread_id: "2s10s" | "10s30s";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "unaligned" | "incomplete" | "insufficient_history";
+            /** Value Bp */
+            value_bp: number | null;
+        };
+        /** MacroRatesTenorCurrentData */
+        MacroRatesTenorCurrentData: {
+            /**
+             * Dataset Id
+             * @constant
+             */
+            dataset_id: "treasury.daily_nominal_curve";
+            /** Fact Id */
+            fact_id: string;
+            /**
+             * Reference Date
+             * Format: date
+             */
+            reference_date: string;
+            /**
+             * Source Role
+             * @constant
+             */
+            source_role: "decision_primary";
+            /** Source Url */
+            source_url: string;
+            /**
+             * Tenor
+             * @enum {string}
+             */
+            tenor: "2Y" | "10Y" | "30Y";
+            /** Yield Pct */
+            yield_pct: number;
+        };
+        /** MacroRatesTenorDecisionData */
+        MacroRatesTenorDecisionData: {
+            current: components["schemas"]["MacroRatesTenorCurrentData"] | null;
+            /**
+             * Tenor
+             * @enum {string}
+             */
+            tenor: "2Y" | "10Y" | "30Y";
+            /** Windows */
+            windows: components["schemas"]["MacroRatesWindowChangeData"][];
+        };
+        /** MacroRatesWindowChangeData */
+        MacroRatesWindowChangeData: {
+            /** Baseline Date */
+            baseline_date: string | null;
+            /** Change Bp */
+            change_bp: number | null;
+            /** Current Date */
+            current_date: string | null;
+            /** Input Fact Ids */
+            input_fact_ids: string[];
+            /**
+             * Selection Policy
+             * @enum {string}
+             */
+            selection_policy: "previous_treasury_observation" | "bounded_previous_observation_4_calendar_days" | "first_available_treasury_observation_in_calendar_month";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "baseline" | "unavailable";
+            /**
+             * Window
+             * @enum {string}
+             */
+            window: "1d" | "1w" | "mtd" | "3m" | "past_30d";
         };
         /** MacroReason */
         MacroReason: {

@@ -16,10 +16,16 @@ describe("macro module evidence workbench", () => {
 
     render(<MacroModuleSections module={module} />);
 
-    expect(screen.getByRole("heading", { name: "牛陡 · 当前 / 1W / 1M / 3M" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "扭转式陡峭化 · 1D 主时钟" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "名义 Treasury 曲线" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "政策走廊与当前市场定价" })).toBeNull();
     expect(screen.getByText("实际利率是本次主线的主要驱动。")).toBeVisible();
+    expect(screen.getAllByText("前一交易日").length).toBeGreaterThan(0);
+    expect(screen.queryByText("1周基准")).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "1W" }));
+
+    expect(screen.getByText("1周基准 · 2026-07-22")).toBeVisible();
   });
 
   it("switches category through the compact selector without mounting peer panels", async () => {
@@ -34,7 +40,7 @@ describe("macro module evidence workbench", () => {
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "政策走廊与当前市场定价" })).toBeVisible(),
     );
-    expect(screen.queryByRole("heading", { name: "牛陡 · 当前 / 1W / 1M / 3M" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "扭转式陡峭化 · 1D 主时钟" })).toBeNull();
   });
 
   it("uses the stable closed-condition identity for chart annotations", () => {
@@ -57,7 +63,7 @@ describe("macro module evidence workbench", () => {
         '[data-annotation-id="thesis:mainline:mainline:confirmation:rates.real10y.tail:fred.dff:leq20"]',
       ),
     ).not.toBeNull();
-    expect(screen.getByText(/闭集条件 1/)).toBeVisible();
+    expect(screen.getByText("实际利率是本次主线的主要驱动。")).toBeVisible();
   });
 
   it("renders CFE settlement expiry only in the volatility term structure", () => {

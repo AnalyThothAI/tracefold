@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "20260730_0219"
-down_revision = "20260730_0218"
+revision = "20260730_0220"
+down_revision = "20260730_0219"
 branch_labels = None
 depends_on = None
 
@@ -67,4 +67,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260730_0219 is an irreversible asset-profile queue hard cut")
+    raise RuntimeError("20260730_0220 is an irreversible asset-profile queue hard cut")

@@ -206,8 +206,14 @@ describe("Macro Thin Thesis workbench", () => {
     expect(screen.getByText(/当前事实 当前/)).toBeVisible();
     expect(screen.getByText(/required 历史 完整/)).toBeVisible();
     expect(screen.getByText(/数据合同 完整/)).toBeVisible();
-    expect(screen.getByRole("heading", { name: "实际利率是本次主线的主要驱动。" })).toBeVisible();
-    expect(screen.getByText(/1 个闭集条件/)).toBeVisible();
+    expect(
+      screen.getByRole("heading", {
+        name: "最近完整交易日：2Y 下行4bp，10Y 上行6bp，30Y 上行11bp（2026-07-29）",
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole("table", { name: "2Y 10Y 30Y 收益率矩阵" })).toBeVisible();
+    expect(screen.getByText("Thesis · 驱动主线")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "实际利率是本次主线的主要驱动。" })).toBeNull();
   });
 
   it("owns the official CFE curve on volatility and does not duplicate it on cross-asset", async () => {

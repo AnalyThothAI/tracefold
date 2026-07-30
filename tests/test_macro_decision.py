@@ -313,44 +313,177 @@ def test_economy_release_sources_are_canonical_and_fred_is_history_only() -> Non
         assert DATASET_REGISTRY[history_id].source_role == "history"
 
 
-def test_rates_payload_contains_true_curve_snapshots_spreads_and_shape() -> None:
+def test_rates_payload_is_tenor_native_and_matches_the_issue_31_acceptance_sample() -> None:
     rows = []
-    for reference_date, values in (
-        (date(2026, 7, 17), {"3M": 4.3, "2Y": 4.0, "5Y": 4.1, "10Y": 4.2, "30Y": 4.5}),
-        (date(2026, 7, 24), {"3M": 4.25, "2Y": 4.1, "5Y": 4.25, "10Y": 4.45, "30Y": 4.7}),
+    nominal = (
+        (date(2026, 6, 29), {"2Y": 4.34, "7Y": 4.20, "10Y": 4.38, "30Y": 4.91}),
+        (date(2026, 7, 1), {"2Y": 4.31, "7Y": 4.26, "10Y": 4.43, "30Y": 4.96}),
+        (date(2026, 7, 22), {"2Y": 4.28, "7Y": 4.43, "10Y": 4.55, "30Y": 5.06}),
+        (date(2026, 7, 28), {"2Y": 4.26, "7Y": 4.47, "10Y": 4.61, "30Y": 5.09}),
+        (date(2026, 7, 29), {"2Y": 4.22, "7Y": 4.51, "10Y": 4.67, "30Y": 5.20}),
+    )
+    real = (
+        (date(2026, 7, 28), {"10Y": 2.41, "30Y": 2.92}),
+        (date(2026, 7, 29), {"10Y": 2.41, "30Y": 2.98}),
+    )
+    for dataset_id, observations in (
+        ("treasury.daily_nominal_curve", nominal),
+        ("treasury.daily_real_curve", real),
     ):
         rows.extend(
             _series_row(
-                dataset_id="treasury.daily_nominal_curve",
+                dataset_id=dataset_id,
                 reference_date=reference_date,
                 value=value,
                 series_id=tenor,
             )
+            for reference_date, values in observations
             for tenor, value in values.items()
         )
-    module = _module(
-        "rates_fed",
-        series_rows=rows,
-        target_states=[
-            {
-                "dataset_id": "treasury.daily_nominal_curve",
-                "partition_key": "latest",
-                "status": "current",
-            }
-        ],
-    )
+
+    module = _module("rates_fed", series_rows=rows)
+    reversed_module = _module("rates_fed", series_rows=list(reversed(rows)))
 
     api_schemas.MacroRatesFedPersistedData.model_validate(module)
-    snapshots = module["curve"]["nominal_snapshots"]
-    assert [point["tenor"] for point in snapshots[0]["points"]] == [
-        "3M",
-        "2Y",
-        "5Y",
-        "10Y",
-        "30Y",
+    assert module == reversed_module
+    assert module["schema_version"] == "macro_rates_fed_v6"
+    assert "summary" not in module
+    assert "contradictions" not in module
+    assert "falsifiers" not in module
+    assert "classification" not in module["curve"]
+    assert "top_changes" not in json.dumps(module, sort_keys=True)
+
+    decision = module["decision"]
+    assert decision["state"] == "available"
+    assert decision["reference_date"] == "2026-07-29"
+    assert decision["headline"] == ("最近完整交易日：2Y 下行4bp，10Y 上行6bp，30Y 上行11bp（2026-07-29）")
+    assert decision["session_completeness"]["state"] == "complete"
+    matrix = {item["tenor"]: item for item in decision["tenor_matrix"]}
+    assert [item["tenor"] for item in decision["tenor_matrix"]] == ["2Y", "10Y", "30Y"]
+    assert matrix["2Y"]["current"]["yield_pct"] == 4.22
+    assert matrix["10Y"]["current"]["yield_pct"] == 4.67
+    assert matrix["30Y"]["current"]["yield_pct"] == 5.20
+    assert {
+        tenor: next(item for item in row["windows"] if item["window"] == "1d")["change_bp"]
+        for tenor, row in matrix.items()
+    } == {"2Y": -4.0, "10Y": 6.0, "30Y": 11.0}
+    ten_year_one_week = next(item for item in matrix["10Y"]["windows"] if item["window"] == "1w")
+    assert (ten_year_one_week["baseline_date"], ten_year_one_week["change_bp"]) == (
+        "2026-07-22",
+        12.0,
+    )
+    ten_year_mtd = next(item for item in matrix["10Y"]["windows"] if item["window"] == "mtd")
+    assert (ten_year_mtd["baseline_date"], ten_year_mtd["change_bp"]) == ("2026-07-01", 24.0)
+
+    ten_year_30d = next(item for item in matrix["10Y"]["windows"] if item["window"] == "past_30d")
+    assert ten_year_30d["baseline_date"] == "2026-06-29"
+    assert ten_year_30d["change_bp"] == 29.0
+    assert all(":10Y:" in fact_id for fact_id in ten_year_30d["input_fact_ids"])
+    assert matrix["10Y"]["current"]["yield_pct"] != 4.51
+
+    spreads = {item["spread_id"]: item for item in decision["spread_summary"]}
+    assert (spreads["2s10s"]["value_bp"], spreads["2s10s"]["change_1d_bp"]) == (45.0, 10.0)
+    assert (spreads["10s30s"]["value_bp"], spreads["10s30s"]["change_1d_bp"]) == (53.0, 5.0)
+    classification = next(item for item in decision["classifications"] if item["window"] == "1d")
+    assert classification["state"] == "twist_steepening"
+    assert classification["label"] == "扭转式陡峭化"
+
+    decompositions = {item["tenor"]: item for item in decision["decompositions"]}
+    assert (
+        decompositions["10Y"]["nominal_change_bp"],
+        decompositions["10Y"]["real_change_bp"],
+        decompositions["10Y"]["breakeven_change_bp"],
+    ) == (6.0, 0.0, 6.0)
+    assert decompositions["10Y"]["assessment_state"] == "inflation_compensation_dominant"
+    assert (
+        decompositions["30Y"]["nominal_change_bp"],
+        decompositions["30Y"]["real_change_bp"],
+        decompositions["30Y"]["breakeven_change_bp"],
+    ) == (11.0, 6.0, 5.0)
+    assert all("期限溢价" not in item["statement"] for item in decision["explanation"]["bounded_assessments"])
+    assert decision["explanation"]["hypotheses"] == []
+
+    assert [item["window"] for item in module["curve"]["nominal_snapshots"][:2]] == [
+        "current",
+        "previous",
     ]
-    assert module["curve"]["spreads"]["2s10s"][-1]["value_bp"] == 35.0
-    assert module["curve"]["classification"]["state"] == "bear_steepening"
+    assert "10s30s" in module["curve"]["spreads"]
+    assert decision["source_policy"]["selection_policy"] == ("treasury_completed_session_primary_fred_history_only")
+
+
+def test_rates_one_day_uses_the_previous_official_observation_across_a_weekend() -> None:
+    rows = [
+        _series_row(
+            dataset_id="treasury.daily_nominal_curve",
+            reference_date=reference_date,
+            value=value,
+            series_id=tenor,
+        )
+        for reference_date, values in (
+            (date(2026, 7, 31), {"2Y": 4.25, "10Y": 4.60, "30Y": 5.10}),
+            (date(2026, 8, 3), {"2Y": 4.21, "10Y": 4.66, "30Y": 5.21}),
+        )
+        for tenor, value in values.items()
+    ]
+
+    decision = _module("rates_fed", series_rows=rows)["decision"]
+    matrix = {item["tenor"]: item for item in decision["tenor_matrix"]}
+
+    assert decision["reference_date"] == "2026-08-03"
+    assert {
+        tenor: (
+            next(item for item in row["windows"] if item["window"] == "1d")["baseline_date"],
+            next(item for item in row["windows"] if item["window"] == "1d")["change_bp"],
+        )
+        for tenor, row in matrix.items()
+    } == {
+        "2Y": ("2026-07-31", -4.0),
+        "10Y": ("2026-07-31", 6.0),
+        "30Y": ("2026-07-31", 11.0),
+    }
+    assert {
+        tenor: next(item for item in row["windows"] if item["window"] == "mtd")["state"]
+        for tenor, row in matrix.items()
+    } == {"2Y": "baseline", "10Y": "baseline", "30Y": "baseline"}
+
+
+def test_rates_decision_fails_closed_when_primary_tenors_or_real_curve_are_unaligned() -> None:
+    rows = [
+        _series_row(
+            dataset_id="treasury.daily_nominal_curve",
+            reference_date=reference_date,
+            value=value,
+            series_id=tenor,
+        )
+        for tenor, reference_date, value in (
+            ("2Y", date(2026, 7, 28), 4.26),
+            ("2Y", date(2026, 7, 29), 4.22),
+            ("10Y", date(2026, 7, 28), 4.61),
+            ("10Y", date(2026, 7, 29), 4.67),
+            ("30Y", date(2026, 7, 28), 5.09),
+        )
+    ]
+    rows.extend(
+        _series_row(
+            dataset_id="treasury.daily_real_curve",
+            reference_date=reference_date,
+            value=value,
+            series_id="10Y",
+        )
+        for reference_date, value in ((date(2026, 7, 27), 2.40), (date(2026, 7, 28), 2.41))
+    )
+
+    module = _module("rates_fed", series_rows=rows)
+
+    assert module["decision"]["state"] == "unaligned"
+    assert module["decision"]["headline"] is None
+    assert module["decision"]["session_completeness"]["state"] == "unaligned"
+    assert all(item["state"] == "unaligned" for item in module["decision"]["spread_summary"])
+    assert all(item["state"] == "unaligned" for item in module["decision"]["classifications"])
+    ten_year = next(item for item in module["decision"]["decompositions"] if item["tenor"] == "10Y")
+    assert ten_year["state"] == "unaligned"
+    assert ten_year["breakeven_change_bp"] is None
+    assert "未进行跨日拼接" in ten_year["gap"]
 
 
 def test_liquidity_payload_exposes_server_calculated_sofr_iorb_spread_history() -> None:
@@ -703,12 +836,14 @@ def test_running_backfill_without_durable_schedule_has_no_next_check() -> None:
     assert execution["reason"]["next_check_at_ms"] is None
 
 
-def test_empty_module_summary_does_not_invent_analysis_or_falsifiers() -> None:
+def test_empty_rates_decision_does_not_invent_analysis_or_hypotheses() -> None:
     module = _module("rates_fed")
 
-    assert module["summary"]["headline"] is None
-    assert module["summary"]["interpretation"] is None
-    assert module["falsifiers"] == []
+    assert module["decision"]["headline"] is None
+    assert module["decision"]["state"] == "incomplete"
+    assert module["decision"]["explanation"]["facts"] == []
+    assert module["decision"]["explanation"]["bounded_assessments"] == []
+    assert module["decision"]["explanation"]["hypotheses"] == []
     assert all(item["reason"] is not None for item in module["next_checkpoints"])
 
 
@@ -765,15 +900,7 @@ def test_release_payload_preserves_latest_fields_and_bounds_twelve_observations(
     assert reversed_module["inflation"]["official_releases"] == module["inflation"]["official_releases"]
 
 
-def test_natural_change_metrics_follow_dataset_cadence_and_are_comparable() -> None:
-    daily_rows = [
-        _series_row(
-            dataset_id="fred.dgs2",
-            reference_date=date(2026, 7, day),
-            value=value,
-        )
-        for day, value in ((1, 4.0), (20, 4.1), (27, 4.25))
-    ]
+def test_natural_change_metrics_follow_non_curve_dataset_cadence() -> None:
     monthly_rows = [
         _series_row(
             dataset_id="fred.cpiaucsl",
@@ -783,44 +910,15 @@ def test_natural_change_metrics_follow_dataset_cadence_and_are_comparable() -> N
         for month in range(1, 15)
     ]
 
-    rates = _module("rates_fed", series_rows=daily_rows)
     economy = _module("economy_inflation", series_rows=monthly_rows)
-    rates_change = next(change for change in rates["summary"]["top_changes"] if change["dataset_id"] == "fred.dgs2")
     cpi_change = next(change for change in economy["summary"]["top_changes"] if change["dataset_id"] == "fred.cpiaucsl")
 
-    assert rates_change["cadence"] == "daily"
-    assert set(rates_change["metrics"]) == {"change_1d_bp", "change_1w_bp", "change_1m_bp"}
-    assert rates_change["metric_unit"] == "basis_points"
     assert cpi_change["cadence"] == "monthly"
     assert set(cpi_change["metrics"]) == {"mom_pct", "three_month_annualized_pct", "yoy_pct"}
     assert cpi_change["metric_unit"] == "percent"
-    assert rates_change["importance_rank"] >= 1
-    assert rates_change["importance_factors"]["standardized_magnitude"] >= 0
-    assert rates_change["importance_explanation"].startswith("1周变化+15bp")
-    assert "basis_points" not in rates["summary"]["headline"]
-    assert rates["summary"]["headline"].endswith("+15bp，截至 2026-07-27")
 
 
 def test_natural_change_does_not_relabel_out_of_window_or_missing_period_data() -> None:
-    daily = _module(
-        "rates_fed",
-        series_rows=[
-            _series_row(
-                dataset_id="fred.dgs2",
-                reference_date=date(2026, 7, 20),
-                value=4.0,
-            ),
-            _series_row(
-                dataset_id="fred.dgs2",
-                reference_date=date(2026, 7, 27),
-                value=4.25,
-            ),
-        ],
-    )
-    daily_change = next(change for change in daily["summary"]["top_changes"] if change["dataset_id"] == "fred.dgs2")
-    assert daily_change["metrics"]["change_1d_bp"] is None
-    assert daily_change["metrics"]["change_1w_bp"] == 25.0
-
     monthly = _module(
         "economy_inflation",
         series_rows=[

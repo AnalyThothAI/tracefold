@@ -50,7 +50,7 @@ def _modules(
 ) -> tuple[dict[str, Any], ...]:
     output: list[dict[str, Any]] = []
     for module_id in MACRO_MODULE_IDS:
-        dataset_id = "fred.dgs2" if module_id == "rates_fed" else f"test.{module_id}"
+        dataset_id = "treasury.daily_nominal_curve" if module_id == "rates_fed" else f"test.{module_id}"
         states = [_dataset_state(dataset_id)]
         facts = [_fact(f"fact:{module_id}", dataset_id, value=1.0)]
         for index in range(1, facts_per_module):
@@ -67,7 +67,38 @@ def _modules(
                 "current_health": {"state": "current"},
                 "history_depth": {"state": "complete"},
             },
-            "summary": {
+            "next_checkpoints": [],
+            "evidence": {
+                "dataset_states": states,
+                "latest_facts": facts,
+                "asset_changes": [],
+                "reconciliation_receipts": [],
+            },
+        }
+        if module_id == "rates_fed":
+            module["decision"] = {
+                "tenor_matrix": [
+                    {
+                        "tenor": "2Y",
+                        "current": {
+                            "dataset_id": dataset_id,
+                            "reference_date": SESSION.isoformat(),
+                            "yield_pct": 1.0,
+                            "fact_id": "fact:rates_fed",
+                        },
+                        "windows": [
+                            {
+                                "window": "1w",
+                                "state": "available",
+                                "change_bp": 30.0,
+                                "input_fact_ids": ["fact:rates_fed"],
+                            }
+                        ],
+                    }
+                ]
+            }
+        else:
+            module["summary"] = {
                 "top_changes": [
                     {
                         "dataset_id": dataset_id,
@@ -80,15 +111,7 @@ def _modules(
                         "as_of": SESSION.isoformat(),
                     }
                 ]
-            },
-            "next_checkpoints": [],
-            "evidence": {
-                "dataset_states": states,
-                "latest_facts": facts,
-                "asset_changes": [],
-                "reconciliation_receipts": [],
-            },
-        }
+            }
         if module_id == "rates_fed" and real_rate_history_count:
             history = [
                 {

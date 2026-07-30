@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "20260730_0217"
-down_revision = "20260729_0216"
+revision = "20260730_0218"
+down_revision = "20260730_0217"
 branch_labels = None
 depends_on = None
 
@@ -34,4 +34,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260730_0217 is an irreversible News projection-state hard cut")
+    raise RuntimeError("20260730_0218 is an irreversible News input-state hard cut")

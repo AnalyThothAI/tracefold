@@ -231,22 +231,30 @@ Each route returns exactly one matching schema:
 - overview: `macro_overview_v8`
 - current research: `macro_thesis_detail_v4`
 - explicit archive: `macro_thesis_archive_detail_v2`
-- `macro_rates_fed_v5`
+- `macro_rates_fed_v6`
 - `macro_economy_inflation_v5`
 - `macro_liquidity_funding_v5`
 - `macro_credit_v7`
 - `macro_volatility_v7`
 - `macro_cross_asset_v7`
 
-Shared fields are limited to identity, clocks, status, summary, contradictions,
-falsifiers, checkpoints, and evidence lineage. Treasury cross-sections, Fed
-events, credit ladders, and the ETF comparison matrix are explicit typed
+The five non-rates modules share identity, clocks, status, summary,
+contradictions, falsifiers, checkpoints, and evidence lineage. Rates v6
+deliberately has no generic `summary`, `top_changes`, contradiction, or
+falsifier fields. Its `decision` contract is tenor-native: 2Y/10Y/30Y current
+facts, actual baseline dates for 1D/1W/MTD/3M/past-30-day changes,
+session-completeness state, 2s10s/10s30s summaries, same-day 10Y/30Y
+nominal-real-Breakeven decomposition, window-qualified classifications, and
+fact references. Treasury completed-session curves are decision-primary; FRED
+single-tenor series are history/reconciliation only. Treasury cross-sections,
+Fed events, credit ladders, and the ETF comparison matrix are explicit typed
 fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
-Health is `current`, `degraded`, or `unavailable`; History Depth is `complete`,
-`partial`, `insufficient`, or `not_required`. Each Dataset additionally exposes
-market state and source state. Optional history cannot lower Current Health.
-Only declared required windows affect reader-facing History Depth; optional
-maximum public history remains audit-only.
+Health is `current`, `degraded`, or `unavailable`; rates session completeness
+is an independent `complete`, `unaligned`, or `incomplete` axis. History Depth
+is `complete`, `partial`, `insufficient`, or `not_required`. Each Dataset
+additionally exposes market state and source state. Optional history cannot
+lower Current Health. Only declared required windows affect reader-facing
+History Depth; optional maximum public history remains audit-only.
 The Macro overview read always returns the intended Thesis session and
 deterministic cutoff, even before publication. Its Thesis state is one of
 `published`, `pending`, `running`, `retryable`, `failed`, `config_error`,
