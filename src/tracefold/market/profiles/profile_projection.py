@@ -27,6 +27,8 @@ PROFILE_PROJECTION_VERSION = "token-profile-current-serving-v1"
 _CLAIM_LEASE_MS = 5_000
 _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
 _PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
+_STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0
+_MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
@@ -298,7 +300,11 @@ class ProfileProjectionService:
     ) -> Any:
         return self.db.worker_session(
             self.worker_name,
-            statement_timeout_seconds=3.0,
+            statement_timeout_seconds=(
+                _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS
+                if self.worker_name == "profile_maintenance_rebuild"
+                else _STEADY_STATEMENT_TIMEOUT_SECONDS
+            ),
             transaction_timeout_seconds=transaction_timeout_seconds,
         )
 

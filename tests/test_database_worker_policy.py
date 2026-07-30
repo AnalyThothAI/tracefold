@@ -8,6 +8,10 @@ import pytest
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
+from tracefold.macro.projection import MacroProjectionService
+from tracefold.market.profiles.profile_projection import ProfileProjectionService
+from tracefold.market.radar.projection import RadarProjectionService
+from tracefold.news.projection import NewsProjectionService
 
 
 def test_background_projection_session_bounds_postgres_parallelism() -> None:
@@ -55,6 +59,48 @@ def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
     configured = [params for sql, params in conn.executed if sql.startswith("SELECT set_config")]
     assert ("transaction_timeout", "500ms") in configured
     assert ("transaction_timeout", "0ms") in configured
+
+
+def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() -> None:
+    cases = (
+        (
+            RadarProjectionService,
+            {},
+            "radar_maintenance_rebuild",
+        ),
+        (
+            MacroProjectionService,
+            {"settings": object(), "backfill_worker_enabled": False},
+            "macro_maintenance_rebuild",
+        ),
+        (
+            NewsProjectionService,
+            {},
+            "news_maintenance_rebuild",
+        ),
+        (
+            ProfileProjectionService,
+            {},
+            "profile_maintenance_rebuild",
+        ),
+    )
+    for service_type, kwargs, worker_name in cases:
+        database = _RecordingSessionDatabase()
+        service = service_type(
+            db=database,
+            worker_name=worker_name,
+            **kwargs,
+        )
+
+        service._session()
+
+        assert database.calls == [
+            {
+                "name": worker_name,
+                "statement_timeout_seconds": 120.0,
+                "transaction_timeout_seconds": None,
+            }
+        ]
 
 
 def test_serve_admission_reserves_search_and_control_lanes() -> None:
@@ -137,3 +183,24 @@ class _TimedOutApiPool:
     def connection(self, timeout: float | None = None):
         raise PoolTimeout("test")
         yield
+
+
+class _RecordingSessionDatabase:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def worker_session(
+        self,
+        name: str,
+        *,
+        statement_timeout_seconds: float | None = None,
+        transaction_timeout_seconds: float | None = None,
+    ) -> object:
+        self.calls.append(
+            {
+                "name": name,
+                "statement_timeout_seconds": statement_timeout_seconds,
+                "transaction_timeout_seconds": transaction_timeout_seconds,
+            }
+        )
+        return object()
