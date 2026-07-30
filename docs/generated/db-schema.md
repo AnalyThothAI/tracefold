@@ -905,6 +905,21 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_projection_summary`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton_key` | `TEXT` | False | `None` |
+| `active_item_count` | `INTEGER` | False | `None` |
+| `active_story_count` | `INTEGER` | False | `None` |
+| `unmaterialized_item_count` | `INTEGER` | False | `None` |
+| `invalid_owner_count` | `INTEGER` | False | `None` |
+| `invalid_story_aggregate_count` | `INTEGER` | False | `None` |
+| `newest_item_at_ms` | `BIGINT` | True | `None` |
+| `newest_story_at_ms` | `BIGINT` | True | `None` |
+| `last_material_change_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_similarity_edges`
 
 | Column | Type | Nullable | Default |

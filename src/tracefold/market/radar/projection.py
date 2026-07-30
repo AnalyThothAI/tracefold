@@ -83,9 +83,12 @@ class RadarProjectionService:
         self.worker_name = worker_name
 
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             repos.radar_source_edges.expire_due(
                 now_ms=now_ms,
                 limit=_EXPIRY_BATCH_SIZE,
@@ -105,9 +108,12 @@ class RadarProjectionService:
         runtime_id: str,
         now_ms: int,
     ) -> RadarProjectionClaim | None:
-        with self._session(
-            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             row = repos.projection_frontiers.claim(
                 RADAR_FRONTIER,
                 key=key,
@@ -250,9 +256,12 @@ class RadarProjectionService:
         _require_bounded_output(closure)
         if set(closure["rows_by_venue"]) != {claim.venue}:
             raise RuntimeError("radar_publish_cross_venue_shard_forbidden")
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             frontier = repos.conn.execute(
                 """
                 SELECT status, claimed_by, input_fingerprint, projection_version
@@ -373,10 +382,7 @@ class RadarProjectionService:
     ) -> None:
         if claim.venue != TOKEN_RADAR_DEFAULT_VENUE:
             return
-        affected = {
-            str(venue)
-            for venue in target_projection["old_venues"]
-        } | {str(target_projection["target_venue"])}
+        affected = {str(venue) for venue in target_projection["old_venues"]} | {str(target_projection["target_venue"])}
         affected.discard(TOKEN_RADAR_DEFAULT_VENUE)
         for venue in sorted(affected):
             repos.projection_frontiers.mark_dirty(
@@ -407,9 +413,12 @@ class RadarProjectionService:
         *,
         now_ms: int,
     ) -> None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             repos.projection_frontiers.release_stale(
                 RADAR_FRONTIER,
                 key=claim.key,
@@ -424,9 +433,12 @@ class RadarProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -445,9 +457,12 @@ class RadarProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.fail_transient(
                     RADAR_FRONTIER,
@@ -868,12 +883,15 @@ def _require_bounded_output(payload: dict[str, Any]) -> None:
             lane = str(row.get("lane") or "")
             rows_by_lane.setdefault(lane, []).append(dict(row))
         for lane, lane_rows in rows_by_lane.items():
-            if _serialized_size(
-                {
-                    "window_venue_lane": [str(venue), lane],
-                    "rows": lane_rows,
-                }
-            ) > _OUTPUT_BYTE_CAP:
+            if (
+                _serialized_size(
+                    {
+                        "window_venue_lane": [str(venue), lane],
+                        "rows": lane_rows,
+                    }
+                )
+                > _OUTPUT_BYTE_CAP
+            ):
                 raise RadarShardOversized("radar_output_byte_overflow")
 
 

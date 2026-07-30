@@ -93,9 +93,12 @@ class ProfileProjectionService:
             "target_type": str(target_type),
             "target_id": str(target_id),
         }
-        with self._session(
-            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             row = repos.projection_frontiers.claim(
                 PROFILE_FRONTIER,
                 key=key,
@@ -139,9 +142,12 @@ class ProfileProjectionService:
         now_ms: int,
     ) -> dict[str, Any]:
         _require_bounded_output(output)
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             frontier = repos.conn.execute(
                 """
                 SELECT status, claimed_by, input_fingerprint, projection_version
@@ -243,9 +249,12 @@ class ProfileProjectionService:
         *,
         now_ms: int,
     ) -> None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             repos.projection_frontiers.release_stale(
                 PROFILE_FRONTIER,
                 key=claim.key,
@@ -260,9 +269,12 @@ class ProfileProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -281,9 +293,12 @@ class ProfileProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.fail_transient(
                     PROFILE_FRONTIER,
@@ -823,10 +838,7 @@ def _serialized_size(value: Any) -> int:
 def _canonical_json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         if all(isinstance(key, str) for key in value):
-            return {
-                str(key): _canonical_json_value(item)
-                for key, item in value.items()
-            }
+            return {str(key): _canonical_json_value(item) for key, item in value.items()}
         entries = [
             {
                 "key": _canonical_json_value(key),

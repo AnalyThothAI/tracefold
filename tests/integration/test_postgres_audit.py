@@ -32,6 +32,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["counts"]["registry_assets"] == 0
     assert payload["projection_schema"]["token_radar_current_rows"] is True
     assert payload["projection_schema"]["token_radar_publication_state"] is True
+    assert payload["projection_schema"]["news_projection_summary"] is True
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
     assert payload["foreign_key_checks"]["token_radar_current_rows_missing_intents"] == 0
@@ -49,8 +50,9 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     names = {item["name"] for item in payload["queries"]}
     assert payload["ok"] is True
     assert payload["analyze"] is False
-    expected = {"recent_all", "search_v2_lexical", "search_v2_trigram", "token_radar_latest", "target_posts_recent"}
+    expected = {"recent_all", "search_v2_lexical", "search_v2_substring", "token_radar_latest", "target_posts_recent"}
     assert expected.issubset(names)
+    assert "search_v2_trigram" not in names
     assert all(item["plan"] for item in payload["queries"])
 
 
@@ -88,6 +90,24 @@ def test_query_audit_token_radar_latest_declares_caller_supplied_projection_vers
 
     assert "%(token_radar_projection_version)s" in query["sql"]
     assert query["params"] == {"token_radar_projection_version": None}
+
+
+def test_query_audit_search_paths_use_the_public_24h_window_and_bounded_routes():
+    lexical = next(item for item in HOT_QUERIES if item["name"] == "search_v2_lexical")
+    substring = next(item for item in HOT_QUERIES if item["name"] == "search_v2_substring")
+
+    assert "received_at_ms >= %(search_cutoff_at_ms)s" in lexical["sql"]
+    assert "received_at_ms >= %(search_cutoff_at_ms)s" in substring["sql"]
+    assert lexical["params"]["search_cutoff_at_ms"] is None
+    assert substring["params"]["search_cutoff_at_ms"] is None
+    assert all(item["name"] != "search_v2_trigram" for item in HOT_QUERIES)
+
+
+def test_query_audit_news_status_reads_the_singleton_projection_summary():
+    query = next(item for item in HOT_QUERIES if item["name"] == "news_status")
+
+    assert "news_projection_summary" in query["sql"]
+    assert "FROM news_stories" not in query["sql"]
 
 
 def test_query_audit_does_not_restore_retired_token_factor_settlement_hot_path():

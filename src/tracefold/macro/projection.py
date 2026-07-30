@@ -141,9 +141,12 @@ class MacroProjectionService:
         now_ms: int,
     ) -> MacroModuleClaim | None:
         parsed_module_id = _module_id(module_id)
-        with self._session(
-            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             row = repos.projection_frontiers.claim(
                 MACRO_FRONTIER,
                 key={"module_id": parsed_module_id},
@@ -212,10 +215,7 @@ class MacroProjectionService:
             )
             analysis_rows = (
                 repos.macro.document_analysis_projection_history(
-                    document_ids=tuple(
-                        str(row["document_id"])
-                        for row in document_rows
-                    ),
+                    document_ids=tuple(str(row["document_id"]) for row in document_rows),
                     row_cap=_INPUT_ROW_CAP,
                 )
                 if claim.module_id == "rates_fed"
@@ -272,9 +272,12 @@ class MacroProjectionService:
             raise ValueError("macro_projection_output_module_mismatch")
         features = [dict(feature) for feature in output["features"]]
         module_payload = dict(output["module_payload"])
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             states = repos.macro.dataset_projection_states(
                 dataset_ids=MODULE_DATASET_DEPENDENCIES[claim.module_id],
             )
@@ -333,9 +336,12 @@ class MacroProjectionService:
         }
 
     def release_stale(self, claim: MacroModuleClaim, *, now_ms: int) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.release_stale(
                     MACRO_FRONTIER,
@@ -352,9 +358,12 @@ class MacroProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -373,9 +382,12 @@ class MacroProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.fail_transient(
                     MACRO_FRONTIER,

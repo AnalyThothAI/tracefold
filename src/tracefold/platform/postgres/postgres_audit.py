@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -7,6 +8,8 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 from tracefold.platform.validation import require_nonnegative_int
 
 TOKEN_RADAR_PROJECTION_VERSION_PARAM = "token_radar_projection_version"
+SEARCH_CUTOFF_AT_MS_PARAM = "search_cutoff_at_ms"
+SEARCH_AUDIT_WINDOW_MS = 24 * 60 * 60 * 1000
 MAX_READ_RETURN_AMPLIFICATION = 20.0
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
 
@@ -31,6 +34,7 @@ CORE_TABLES = (
 PROJECTION_TABLES = (
     "token_radar_current_rows",
     "token_radar_publication_state",
+    "news_projection_summary",
 )
 
 FOREIGN_KEY_CHECKS = {
@@ -99,13 +103,16 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "sql": """
             WITH query AS (
               SELECT
-                websearch_to_tsquery('simple', %s) AS simple_q,
-                websearch_to_tsquery('english', %s) AS english_q
+                websearch_to_tsquery('simple', %(query)s) AS simple_q,
+                websearch_to_tsquery('english', %(query)s) AS english_q
             )
             SELECT e.event_id
             FROM events e, query
-            WHERE e.search_tsv @@ query.simple_q
-               OR e.search_tsv @@ query.english_q
+            WHERE (
+                e.search_tsv @@ query.simple_q
+                OR e.search_tsv @@ query.english_q
+              )
+              AND e.received_at_ms >= %(search_cutoff_at_ms)s
             ORDER BY
               (
                 ts_rank_cd(e.search_tsv, query.simple_q)
@@ -115,18 +122,25 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
               e.event_id DESC
             LIMIT 20
         """,
-        "params": ("pepe", "pepe"),
+        "params": {
+            "query": "pepe",
+            "search_cutoff_at_ms": None,
+        },
     },
     {
-        "name": "search_v2_trigram",
+        "name": "search_v2_substring",
         "sql": """
             SELECT event_id
             FROM events
-            WHERE search_text %% %s
-            ORDER BY similarity(search_text, %s) DESC, received_at_ms DESC, event_id DESC
+            WHERE search_text ILIKE %(substring_pattern)s ESCAPE '\\'
+              AND received_at_ms >= %(search_cutoff_at_ms)s
+            ORDER BY received_at_ms DESC, event_id DESC
             LIMIT 20
         """,
-        "params": ("pepe", "pepe"),
+        "params": {
+            "substring_pattern": "%pepe%",
+            "search_cutoff_at_ms": None,
+        },
     },
     {
         "name": "token_radar_latest",
@@ -339,9 +353,10 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_status",
         "sql": """
-            SELECT count(*) FILTER (WHERE active) AS active_count,
-                   max(last_published_at_ms) FILTER (WHERE active) AS newest_story_at_ms
-            FROM news_stories
+            SELECT active_story_count AS active_count,
+                   newest_story_at_ms
+            FROM news_projection_summary
+            WHERE singleton_key = 'current'
         """,
         "params": (),
     },
@@ -419,10 +434,10 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/token-radar": ("token_radar_latest", "token_profile_target"),
     "/api/stocks-radar": ("stocks_radar_recent",),
     "/api/live-market": ("live_market_current",),
-    "/api/search": ("search_v2_lexical", "search_v2_trigram"),
+    "/api/search": ("search_v2_lexical", "search_v2_substring"),
     "/api/search/inspect": (
         "search_v2_lexical",
-        "search_v2_trigram",
+        "search_v2_substring",
         "token_profile_target",
     ),
     "/api/token-case": (
@@ -557,9 +572,12 @@ class PostgresQueryAudit:
         conn: Any,
         *,
         token_radar_projection_version: str | None = None,
+        now_ms: int | None = None,
     ):
         self.conn = conn
         self.token_radar_projection_version = token_radar_projection_version
+        resolved_now_ms = int(now_ms if now_ms is not None else time.time() * 1_000)
+        self.search_cutoff_at_ms = resolved_now_ms - SEARCH_AUDIT_WINDOW_MS
 
     def run(self, *, analyze: bool = False) -> dict[str, Any]:
         queries = [self._explain(item, analyze=analyze) for item in HOT_QUERIES]
@@ -620,6 +638,8 @@ class PostgresQueryAudit:
         bound = dict(params)
         if TOKEN_RADAR_PROJECTION_VERSION_PARAM in bound:
             bound[TOKEN_RADAR_PROJECTION_VERSION_PARAM] = self.token_radar_projection_version
+        if SEARCH_CUTOFF_AT_MS_PARAM in bound:
+            bound[SEARCH_CUTOFF_AT_MS_PARAM] = self.search_cutoff_at_ms
         return bound
 
 

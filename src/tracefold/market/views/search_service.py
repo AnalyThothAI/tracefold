@@ -21,7 +21,6 @@ ROUTE_WEIGHTS = {
     "handle": 0.85,
     "lexical": 0.65,
     "substring": 0.45,
-    "trigram": 0.35,
 }
 _ROUTE_LIMIT = 500
 
@@ -256,7 +255,7 @@ def _match_type(hits: list[dict[str, Any]]) -> str:
         return "handle"
     if "lexical" in routes:
         return "lexical"
-    return "trigram"
+    return "substring"
 
 
 def _sort_tuple(item: dict[str, Any]) -> tuple[float, int, str]:

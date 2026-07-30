@@ -9,8 +9,6 @@ from tracefold.market.identity.chain_identity import canonical_chain_address
 from tracefold.market.radar.constants import TOKEN_RADAR_RESOLVER_POLICY_VERSION
 from tracefold.platform.validation import require_nonnegative_int
 
-_MIN_TRIGRAM_QUERY_LEN = 4
-_TRIGRAM_THRESHOLD = 0.18
 _SUBSTRING_QUERY_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 _EVM_REGISTRY_CHAINS = ("eip155:1", "eip155:8453", "eip155:56")
 _REGISTRY_CHAIN_ALIASES = {
@@ -131,8 +129,6 @@ class SearchEventsQuery:
         if len(hits) < limit and _safe_substring_query(lexical_query):
             substring_hits = self._substring_hits(lexical_query, limit=limit, since_ms=since_ms)
             hits.extend(substring_hits)
-        if len(hits) < limit and not substring_hits and _safe_trigram_query(lexical_query):
-            hits.extend(self._trigram_hits(lexical_query, limit=limit, since_ms=since_ms))
         return hits
 
     def target_hits_page(
@@ -460,34 +456,6 @@ class SearchEventsQuery:
         ).fetchall()
         return [_hit(row) for row in rows]
 
-    def _trigram_hits(self, query: str, *, limit: int, since_ms: int) -> list[dict[str, Any]]:
-        row_limit = require_nonnegative_int(limit, error_code="search_events_route_limit_required")
-        if row_limit <= 0:
-            return []
-        rows = self.conn.execute(
-            """
-            SELECT
-              events.*,
-              NULL::text AS target_type,
-              NULL::text AS target_id,
-              NULL::text AS target_symbol,
-              similarity(events.search_text, %s) AS route_score,
-              row_number() OVER (
-                ORDER BY similarity(events.search_text, %s) DESC, events.received_at_ms DESC, events.event_id DESC
-              ) AS route_rank,
-              'trigram' AS route,
-              jsonb_build_array('trigram') AS match_reasons_json
-            FROM events
-            WHERE events.search_text %% %s
-              AND similarity(events.search_text, %s) >= %s
-              AND events.received_at_ms >= %s
-            ORDER BY route_score DESC, events.received_at_ms DESC, events.event_id DESC
-            LIMIT %s
-            """,
-            (query, query, query, query, _TRIGRAM_THRESHOLD, since_ms, row_limit),
-        ).fetchall()
-        return [_hit(row) for row in rows]
-
     def _substring_hits(self, query: str, *, limit: int, since_ms: int) -> list[dict[str, Any]]:
         row_limit = require_nonnegative_int(limit, error_code="search_events_route_limit_required")
         if row_limit <= 0:
@@ -581,10 +549,3 @@ def _safe_substring_query(query: str) -> bool:
 def _substring_pattern(query: str) -> str:
     escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
-
-
-def _safe_trigram_query(query: str) -> bool:
-    normalized = query.strip()
-    if len(normalized) < _MIN_TRIGRAM_QUERY_LEN:
-        return False
-    return '"' not in normalized and " OR " not in normalized.upper() and " NOT " not in normalized.upper()

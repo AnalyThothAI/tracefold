@@ -63,6 +63,8 @@ RADAR_ROW_INSERT_COLUMNS_SQL = """
   data_health_json, source_event_ids_json, payload_hash,
   listed_at_ms, created_at_ms
 """
+
+
 class PublicationResult(TypedDict):
     status: str
     generation_id: str
@@ -256,11 +258,7 @@ class TokenRadarRepository:
         payloads = [_json_payload(row) for row in rows]
         row_placeholders = f"({', '.join(['%s'] * len(RADAR_ROW_COLUMNS))})"
         values_sql = ", ".join([row_placeholders] * len(payloads))
-        params = [
-            payload[column]
-            for payload in payloads
-            for column in RADAR_ROW_COLUMNS
-        ]
+        params = [payload[column] for payload in payloads for column in RADAR_ROW_COLUMNS]
         cursor = self.conn.execute(
             f"""
             INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})

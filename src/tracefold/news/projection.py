@@ -118,9 +118,12 @@ class NewsProjectionService:
         now_ms: int,
     ) -> NewsProjectionClaim | None:
         kind, entity_id = _parse_bucket(bucket_id)
-        with self._session(
-            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             row = repos.projection_frontiers.claim(
                 NEWS_FRONTIER,
                 key={"bucket_id": bucket_id},
@@ -617,9 +620,12 @@ class NewsProjectionService:
         now_ms: int,
     ) -> dict[str, Any]:
         _require_bounded_output(projection)
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             conn = repos.conn
             current_rows = [
                 dict(row)
@@ -651,6 +657,33 @@ class NewsProjectionService:
                     now_ms=now_ms,
                 )
                 return {"projection_status": "stale_snapshot", "rows_written": 0}
+
+            target_row = next(
+                (row for row in current_rows if str(row["item_id"]) == str(context["target_item_id"])),
+                None,
+            )
+            if target_row is None:
+                raise RuntimeError("news_projection_target_item_missing")
+            target_was_active = bool(target_row["active"])
+            affected_story_ids = sorted(
+                {
+                    str(value)
+                    for value in (
+                        list(projection["old_story_ids"]) + [story["story_id"] for story in projection["stories"]]
+                    )
+                }
+            )
+            active_story_count_before = int(
+                conn.execute(
+                    """
+                    SELECT count(*) AS count
+                    FROM news_stories
+                    WHERE active
+                      AND story_id = ANY(%s)
+                    """,
+                    (affected_story_ids or [""],),
+                ).fetchone()["count"]
+            )
 
             feature_writes = int(
                 conn.execute(
@@ -902,7 +935,62 @@ class NewsProjectionService:
                     ),
                 )
 
-            serving_rows = item_active_writes + item_score_writes + story_writes + membership_writes
+            base_serving_rows = item_active_writes + item_score_writes + story_writes + membership_writes
+            summary_writes = 0
+            if base_serving_rows:
+                active_story_count_after = int(
+                    conn.execute(
+                        """
+                        SELECT count(*) AS count
+                        FROM news_stories
+                        WHERE active
+                          AND story_id = ANY(%s)
+                        """,
+                        (affected_story_ids or [""],),
+                    ).fetchone()["count"]
+                )
+                summary_writes = int(
+                    conn.execute(
+                        """
+                        UPDATE news_projection_summary
+                           SET active_item_count = (
+                                 active_item_count + %s
+                               ),
+                               active_story_count = (
+                                 active_story_count + %s
+                               ),
+                               newest_item_at_ms = (
+                                 SELECT published_at_ms
+                                 FROM news_items
+                                 WHERE active
+                                 ORDER BY published_at_ms DESC, item_id
+                                 LIMIT 1
+                               ),
+                               newest_story_at_ms = (
+                                 SELECT last_published_at_ms
+                                 FROM news_stories
+                                 WHERE active
+                                 ORDER BY last_published_at_ms DESC,
+                                          importance_score DESC,
+                                          story_id
+                                 LIMIT 1
+                               ),
+                               last_material_change_at_ms = %s,
+                               updated_at_ms = %s
+                         WHERE singleton_key = 'current'
+                        """,
+                        (
+                            int(bool(feature["active"])) - int(target_was_active),
+                            active_story_count_after - active_story_count_before,
+                            now_ms,
+                            now_ms,
+                        ),
+                    ).rowcount
+                    or 0
+                )
+                if summary_writes != 1:
+                    raise RuntimeError("news_projection_summary_missing")
+            serving_rows = base_serving_rows + summary_writes
             if serving_rows:
                 brief_candidates = repos.news.brief_candidates()
                 repos.projection_frontiers.mark_dirty(
@@ -981,15 +1069,19 @@ class NewsProjectionService:
             "edge_rows_written": edge_writes,
             "story_rows_written": story_writes,
             "membership_rows_written": membership_writes,
+            "summary_rows_written": summary_writes,
             "candidate_pairs": len(edge_plan["recompute_pairs"]),
             "pair_blocks": int(edge_plan["pair_blocks"]),
             "closure_items": len(projection["closure_item_ids"]),
         }
 
     def release_stale(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.release_stale(
                     NEWS_FRONTIER,
@@ -1000,9 +1092,12 @@ class NewsProjectionService:
             )
 
     def complete_obsolete(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.complete(
                     NEWS_FRONTIER,
@@ -1021,9 +1116,12 @@ class NewsProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -1042,9 +1140,12 @@ class NewsProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session(
-            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-        ) as repos, repos.transaction():
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
             return bool(
                 repos.projection_frontiers.fail_transient(
                     NEWS_FRONTIER,
@@ -1426,11 +1527,7 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
         existing_edges=[dict(edge) for edge in payload["existing_edges"]],
         final_edges=[dict(edge) for edge in payload["final_edges"]],
     )
-    affected_roots = {
-        root
-        for root, member_ids in merged.items()
-        if affected_ids.intersection(member_ids)
-    }
+    affected_roots = {root for root, member_ids in merged.items() if affected_ids.intersection(member_ids)}
 
     entity_sources: dict[str, dict[str, int]] = {}
     entity_members: dict[str, dict[str, int]] = {}
@@ -1619,13 +1716,7 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
     ]
     output: dict[str, Any] = {
         "closure_item_ids": sorted(affected_ids),
-        "old_story_ids": sorted(
-            {
-                previous[item_id]
-                for item_id in affected_ids
-                if item_id in previous
-            }
-        ),
+        "old_story_ids": sorted({previous[item_id] for item_id in affected_ids if item_id in previous}),
         "item_updates": sorted(item_updates, key=lambda row: str(row["item_id"])),
         "stories": sorted(stories, key=lambda row: str(row["story_id"])),
         "memberships": sorted(memberships, key=lambda row: str(row["item_id"])),
@@ -1660,11 +1751,7 @@ def _affected_component_item_ids(
     changed_pairs = existing_pairs.symmetric_difference(final_pairs)
     seeds = {
         target_id,
-        *(
-            item_id
-            for changed_pair in changed_pairs
-            for item_id in changed_pair
-        ),
+        *(item_id for changed_pair in changed_pairs for item_id in changed_pair),
     }
 
     adjacency: dict[str, set[str]] = {}
@@ -1678,17 +1765,9 @@ def _affected_component_item_ids(
         if item_id in topology_ids:
             continue
         topology_ids.add(item_id)
-        pending.extend(
-            neighbor
-            for neighbor in sorted(adjacency.get(item_id, ()))
-            if neighbor not in topology_ids
-        )
+        pending.extend(neighbor for neighbor in sorted(adjacency.get(item_id, ())) if neighbor not in topology_ids)
 
-    story_ids = {
-        previous[item_id]
-        for item_id in topology_ids
-        if item_id in previous
-    }
+    story_ids = {previous[item_id] for item_id in topology_ids if item_id in previous}
     story_ids.update(
         aliases[alias_key]
         for item_id in topology_ids
@@ -1702,8 +1781,7 @@ def _affected_component_item_ids(
         selected = {
             root
             for root in remaining
-            if affected_ids.intersection(merged[root])
-            or story_ids.intersection(merged_candidates[root])
+            if affected_ids.intersection(merged[root]) or story_ids.intersection(merged_candidates[root])
         }
         if not selected:
             break

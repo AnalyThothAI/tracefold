@@ -1341,6 +1341,7 @@ class NewsRepository:
                 now_ms,
             ),
         )
+        self.refresh_projection_summary_for_maintenance(now_ms=now_ms)
         return {
             "items": len(items),
             "temporary_clusters": len(temporary_clusters),
@@ -1453,6 +1454,61 @@ class NewsRepository:
             "invalid_story_aggregate_count": invalid_aggregates,
             "total": invalid_owners + invalid_aggregates,
         }
+
+    def refresh_projection_summary_for_maintenance(self, *, now_ms: int) -> None:
+        invariants = self._story_invariant_counts()
+        self.conn.execute(
+            """
+            UPDATE news_projection_summary
+               SET active_item_count = (
+                     SELECT count(*) FROM news_items WHERE active
+                   ),
+                   active_story_count = (
+                     SELECT count(*) FROM news_stories WHERE active
+                   ),
+                   unmaterialized_item_count = (
+                     SELECT count(*)
+                     FROM news_items item
+                     WHERE item.active
+                       AND NOT EXISTS (
+                         SELECT 1
+                         FROM news_story_members member
+                         WHERE member.item_id = item.item_id
+                           AND member.current
+                       )
+                   ),
+                   invalid_owner_count = %s,
+                   invalid_story_aggregate_count = %s,
+                   newest_item_at_ms = (
+                     SELECT published_at_ms
+                     FROM news_items
+                     WHERE active
+                     ORDER BY published_at_ms DESC, item_id
+                     LIMIT 1
+                   ),
+                   newest_story_at_ms = (
+                     SELECT last_published_at_ms
+                     FROM news_stories
+                     WHERE active
+                     ORDER BY last_published_at_ms DESC,
+                              importance_score DESC,
+                              story_id
+                     LIMIT 1
+                   ),
+                   last_material_change_at_ms = (
+                     SELECT max(updated_at_ms)
+                     FROM news_stories
+                     WHERE active
+                   ),
+                   updated_at_ms = %s
+             WHERE singleton_key = 'current'
+            """,
+            (
+                invariants["invalid_owner_count"],
+                invariants["invalid_story_aggregate_count"],
+                int(now_ms),
+            ),
+        )
 
     # Read contract ------------------------------------------------------------
 
@@ -2286,39 +2342,18 @@ class NewsRepository:
             gate_counts.update({str(key): int(value) for key, value in dict(fetch["rejection_counts"]).items()})
         story = self.conn.execute(
             """
-            SELECT count(*) FILTER (WHERE active) AS active_count,
-                   max(last_published_at_ms) FILTER (WHERE active)
-                     AS newest_story_at_ms,
-                   max(updated_at_ms) FILTER (WHERE active)
-                     AS last_material_change_at_ms,
-                   (SELECT count(*) FROM news_items WHERE active)
-                     AS active_item_count,
-                   (SELECT max(published_at_ms) FROM news_items WHERE active)
-                     AS newest_item_at_ms,
-                   (
-                     SELECT count(*)
-                       FROM news_items i
-                      WHERE i.active
-                        AND NOT EXISTS (
-                          SELECT 1
-                            FROM news_story_members m
-                           WHERE m.item_id = i.item_id AND m.current
-                        )
-                   ) AS unmaterialized_item_count,
-                   (
-                     SELECT count(*)
-                       FROM (
-                         SELECT m.item_id, count(*) AS owners
-                           FROM news_story_members m
-                          WHERE m.current
-                          GROUP BY m.item_id
-                         HAVING count(*) <> 1
-                       ) invalid
-                   ) AS invalid_owner_count
-              FROM news_stories
+            SELECT active_story_count AS active_count,
+                   newest_story_at_ms,
+                   last_material_change_at_ms,
+                   active_item_count,
+                   newest_item_at_ms,
+                   unmaterialized_item_count,
+                   invalid_owner_count,
+                   invalid_story_aggregate_count
+              FROM news_projection_summary
+             WHERE singleton_key = 'current'
             """
         ).fetchone()
-        invariant_counts = self._story_invariant_counts()
         brief = self.get_brief(now_ms=now_ms, history_limit=1)
         enabled = int(source["enabled_count"] or 0)
         attempted = int(source["attempted_count"] or 0)
@@ -2344,8 +2379,8 @@ class NewsRepository:
             ingest_status = "ready"
 
         unmaterialized = int(story["unmaterialized_item_count"] or 0)
-        invalid_owners = invariant_counts["invalid_owner_count"]
-        invalid_aggregates = invariant_counts["invalid_story_aggregate_count"]
+        invalid_owners = int(story["invalid_owner_count"] or 0)
+        invalid_aggregates = int(story["invalid_story_aggregate_count"] or 0)
         active_stories = int(story["active_count"] or 0)
         story_reasons: list[str] = []
         if unmaterialized or invalid_owners or invalid_aggregates:
@@ -2401,7 +2436,7 @@ class NewsRepository:
                 "unmaterialized_item_count": unmaterialized,
                 "invalid_owner_count": invalid_owners,
                 "invalid_story_aggregate_count": invalid_aggregates,
-                "invariant_error_count": invariant_counts["total"],
+                "invariant_error_count": invalid_owners + invalid_aggregates,
                 "identity_version": STORY_IDENTITY_VERSION,
                 "classifier_version": CLASSIFIER_VERSION,
                 "importance_version": IMPORTANCE_VERSION,

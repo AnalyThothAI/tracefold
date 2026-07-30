@@ -100,10 +100,7 @@ def test_news_component_output_keeps_both_sides_of_deleted_bridge():
         }
     )
 
-    assert projection["closure_item_ids"] == [
-        str(row["item_id"])
-        for row in rows
-    ]
+    assert projection["closure_item_ids"] == [str(row["item_id"]) for row in rows]
     assert len(projection["memberships"]) == 3
     assert projection["old_story_ids"] == ["story-old"]
 

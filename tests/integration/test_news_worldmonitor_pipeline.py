@@ -1284,6 +1284,7 @@ def test_news_status_detects_persisted_story_aggregate_corruption(tmp_path) -> N
                  WHERE active
                 """
             )
+            repository.refresh_projection_summary_for_maintenance(now_ms=NOW_MS)
 
         health = repository.health_snapshot(now_ms=NOW_MS)
         story = health["layers"]["story"]
@@ -1455,6 +1456,7 @@ def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
             "news_story_members",
             "news_story_aliases",
             "news_story_input_state",
+            "news_projection_summary",
             "news_projection_frontiers",
             "news_identity_features",
             "news_similarity_edges",
