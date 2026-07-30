@@ -38,6 +38,12 @@ _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
 _EXPIRY_BATCH_SIZE = 100
 _PROFILE_DEADLINE_MS = 30_000
 _RANK_LIMIT = 100
+_DEADLINE_MS = {
+    "5m": 10_000,
+    "1h": 60_000,
+    "4h": 60_000,
+    "24h": 60_000,
+}
 _MAINTENANCE_EVENT_BATCH_SIZE = 1_000
 _MAINTENANCE_SHARD_CAP = 1_000_000
 
@@ -220,7 +226,7 @@ class RadarProjectionService:
             for identity in ranked["selected_identities"]
             if tuple(str(part) for part in identity) != new_identity
         ]
-        if len(identities) > 2 * _RANK_LIMIT:
+        if len(identities) > _RANK_LIMIT:
             raise RadarShardOversized("radar_rank_hydration_shard_oversized")
         with self._session() as repos:
             rows = cast(
@@ -245,6 +251,8 @@ class RadarProjectionService:
         now_ms: int,
     ) -> dict[str, Any]:
         _require_bounded_output(closure)
+        if set(closure["rows_by_venue"]) != {claim.venue}:
+            raise RuntimeError("radar_publish_cross_venue_shard_forbidden")
         with self._session(
             transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
         ) as repos, repos.transaction():
@@ -332,6 +340,12 @@ class RadarProjectionService:
                 publication_status[venue] = status
                 publication_writes += int(result["rows_written"])
 
+            self._mark_affected_venue_frontiers(
+                repos,
+                claim=claim,
+                target_projection=target_projection,
+                now_ms=int(now_ms),
+            )
             if not repos.projection_frontiers.complete(
                 RADAR_FRONTIER,
                 key=claim.key,
@@ -351,6 +365,44 @@ class RadarProjectionService:
             "target_id": claim.target_id,
             "window": claim.window,
         }
+
+    @staticmethod
+    def _mark_affected_venue_frontiers(
+        repos: Any,
+        *,
+        claim: RadarProjectionClaim,
+        target_projection: dict[str, Any],
+        now_ms: int,
+    ) -> None:
+        if claim.venue != TOKEN_RADAR_DEFAULT_VENUE:
+            return
+        affected = {
+            str(venue)
+            for venue in target_projection["old_venues"]
+        } | {str(target_projection["target_venue"])}
+        affected.discard(TOKEN_RADAR_DEFAULT_VENUE)
+        for venue in sorted(affected):
+            repos.projection_frontiers.mark_dirty(
+                RADAR_FRONTIER,
+                key={
+                    "target_type": claim.target_type,
+                    "target_id": claim.target_id,
+                    "window_key": claim.window,
+                    "venue": venue,
+                },
+                dirty_at_ms=int(now_ms),
+                deadline_at_ms=int(now_ms) + _DEADLINE_MS[claim.window],
+                input_fingerprint=_fingerprint(
+                    {
+                        "parent_input_fingerprint": claim.input_fingerprint,
+                        "target_type": claim.target_type,
+                        "target_id": claim.target_id,
+                        "window": claim.window,
+                        "venue": venue,
+                    }
+                ),
+                version=claim.projection_version,
+            )
 
     def release_stale(
         self,
@@ -576,13 +628,11 @@ def rebuild_all_token_radar_for_maintenance(
             raise RuntimeError("radar_maintenance_claim_missing")
         loaded = service.load_target(claim, now_ms=int(now_ms))
         target_projection = compute_token_radar_target_projection(loaded)
-        venues = set(str(item) for item in loaded["old_venues"])
-        venues.add(str(target_projection["target_venue"]))
         ranked = rank_token_radar_closure(
             {
                 **loaded,
                 "feature": target_projection["feature"],
-                "venues": sorted(venues),
+                "venues": [claim.venue],
                 "rank_limit": _RANK_LIMIT,
             }
         )

@@ -113,14 +113,12 @@ class RadarProjectionCandidate:
                 loaded,
                 timeout_seconds=_CPU_TIMEOUT_SECONDS,
             )
-            venues = set(str(item) for item in loaded["old_venues"])
-            venues.add(str(target_projection["target_venue"]))
             ranked = await self.resources.run_cpu(
                 rank_token_radar_closure,
                 {
                     **loaded,
                     "feature": target_projection["feature"],
-                    "venues": sorted(venues),
+                    "venues": [claim.venue],
                     "rank_limit": _RANK_LIMIT,
                 },
                 timeout_seconds=_CPU_TIMEOUT_SECONDS,

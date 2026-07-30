@@ -168,7 +168,7 @@ def test_expiry_removes_only_due_edges_and_redirties_only_affected_shards() -> N
         conn.close()
 
 
-def test_one_target_window_publishes_all_affected_venues_and_frontier_atomically() -> None:
+def test_one_target_window_splits_affected_venues_into_bounded_frontiers() -> None:
     conn = connect_postgres_test()
     try:
         reset_postgres_schema(conn)
@@ -182,53 +182,69 @@ def test_one_target_window_publishes_all_affected_venues_and_frontier_atomically
             )
         service = RadarProjectionService(db=_SingleConnectionDB(conn))
         runtime_id = str(uuid4())
-        claim = service.claim(
-            key={
-                "target_type": "Asset",
-                "target_id": _asset_id(conn),
-                "window_key": "1h",
-                "venue": "all",
-            },
-            runtime_id=runtime_id,
-            now_ms=FIXED_NOW_MS,
-        )
-        assert claim is not None
 
-        loaded = service.load_target(claim, now_ms=FIXED_NOW_MS)
-        assert conn.info.transaction_status == pq.TransactionStatus.IDLE
-        target_projection = compute_token_radar_target_projection(loaded)
-        assert conn.info.transaction_status == pq.TransactionStatus.IDLE
-        venues = sorted(set(loaded["old_venues"]) | {target_projection["target_venue"]})
-        ranked = rank_token_radar_closure(
-            {
-                **loaded,
-                "feature": target_projection["feature"],
-                "venues": venues,
-                "rank_limit": 100,
-            }
-        )
-        hydrated = service.load_hydration(
-            claim,
-            target_projection=target_projection,
-            ranked=ranked,
-        )
-        closure = build_token_radar_current_closure(
-            {
-                "feature": target_projection["feature"],
-                "selected_by_venue": ranked["selected_by_venue"],
-                "hydrated_inputs": hydrated,
-            }
-        )
-        result = service.publish(
-            claim,
-            target_projection=target_projection,
-            ranked=ranked,
-            closure=closure,
-            now_ms=FIXED_NOW_MS,
-        )
+        def publish_venue(venue: str) -> dict[str, Any]:
+            claim = service.claim(
+                key={
+                    "target_type": "Asset",
+                    "target_id": _asset_id(conn),
+                    "window_key": "1h",
+                    "venue": venue,
+                },
+                runtime_id=runtime_id,
+                now_ms=FIXED_NOW_MS,
+            )
+            assert claim is not None
+            loaded = service.load_target(claim, now_ms=FIXED_NOW_MS)
+            assert conn.info.transaction_status == pq.TransactionStatus.IDLE
+            target_projection = compute_token_radar_target_projection(loaded)
+            ranked = rank_token_radar_closure(
+                {
+                    **loaded,
+                    "feature": target_projection["feature"],
+                    "venues": [claim.venue],
+                    "rank_limit": 100,
+                }
+            )
+            hydrated = service.load_hydration(
+                claim,
+                target_projection=target_projection,
+                ranked=ranked,
+            )
+            closure = build_token_radar_current_closure(
+                {
+                    "feature": target_projection["feature"],
+                    "selected_by_venue": ranked["selected_by_venue"],
+                    "hydrated_inputs": hydrated,
+                }
+            )
+            return service.publish(
+                claim,
+                target_projection=target_projection,
+                ranked=ranked,
+                closure=closure,
+                now_ms=FIXED_NOW_MS,
+            )
 
-        assert result["projection_status"] == "published"
-        assert set(result["venues"]) == {"all", "eth"}
+        all_result = publish_venue("all")
+        assert all_result["projection_status"] == "published"
+        assert set(all_result["venues"]) == {"all"}
+        venue_frontier = conn.execute(
+            """
+            SELECT status
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset'
+              AND target_id = %s
+              AND window_key = '1h'
+              AND venue = 'eth'
+            """,
+            (_asset_id(conn),),
+        ).fetchone()
+        assert venue_frontier == {"status": "dirty"}
+
+        venue_result = publish_venue("eth")
+        assert venue_result["projection_status"] == "published"
+        assert set(venue_result["venues"]) == {"eth"}
         rows = conn.execute(
             """
             SELECT venue, target_type_key, identity_id
@@ -258,15 +274,23 @@ def test_one_target_window_publishes_all_affected_venues_and_frontier_atomically
             WHERE target_type = 'Asset'
               AND target_id = %s
               AND window_key = '1h'
-              AND venue = 'all'
+              AND venue IN ('all', 'eth')
+            ORDER BY venue
             """,
             (_asset_id(conn),),
-        ).fetchone()
-        assert frontier == {
-            "status": "clean",
-            "first_dirty_at_ms": None,
-            "deadline_at_ms": None,
-        }
+        ).fetchall()
+        assert frontier == [
+            {
+                "status": "clean",
+                "first_dirty_at_ms": None,
+                "deadline_at_ms": None,
+            },
+            {
+                "status": "clean",
+                "first_dirty_at_ms": None,
+                "deadline_at_ms": None,
+            },
+        ]
         profile = conn.execute(
             """
             SELECT status
@@ -295,7 +319,7 @@ def test_maintenance_rebuild_seeds_edges_and_drains_typed_radar_frontiers() -> N
         assert result["projection_status"] == "rebuilt"
         assert result["events_scanned"] == 1
         assert result["source_edges_written"] == 4
-        assert result["shards_computed"] == 4
+        assert result["shards_computed"] == 7
         assert result["current_rows"] > 0
         assert conn.execute(
             """

@@ -1384,6 +1384,7 @@ def compute_token_radar_target_projection(
             "feature": None,
             "projected": None,
             "target_venue": TOKEN_RADAR_DEFAULT_VENUE,
+            "old_venues": list(payload["old_venues"]),
             "source_rows": len(source_rows),
         }
     feature = token_radar_target_feature_payload(
@@ -1399,6 +1400,7 @@ def compute_token_radar_target_projection(
         "feature": feature,
         "projected": projected,
         "target_venue": token_radar_venue_for_rank_input(feature),
+        "old_venues": list(payload["old_venues"]),
         "source_rows": len(source_rows),
     }
 

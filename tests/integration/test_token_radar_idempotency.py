@@ -135,12 +135,11 @@ def _run_radar_projection(
         return {"projection_status": "idle", "rows_written": 0}
     loaded = service.load_target(claim, now_ms=now_ms)
     target_projection = compute_token_radar_target_projection(loaded)
-    venues = sorted(set(loaded["old_venues"]) | {target_projection["target_venue"]})
     ranked = rank_token_radar_closure(
         {
             **loaded,
             "feature": target_projection["feature"],
-            "venues": venues,
+            "venues": [claim.venue],
             "rank_limit": 100,
         }
     )
