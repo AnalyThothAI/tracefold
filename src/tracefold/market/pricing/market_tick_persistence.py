@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from tracefold.market.pricing.live_market import live_market_update_payload
 from tracefold.market.pricing.market_tick import MarketTick
 from tracefold.market.pricing.market_tick_current_repository import (
     market_tick_current_row,
@@ -50,7 +51,7 @@ class MarketTickPersistenceService:
         inserted_rows = self.repos.market_ticks.insert_ticks_returning_rows(materialized)
         latest_rows = _latest_rows_by_target(inserted_rows)
         current_rows = self._advance_current(latest_rows)
-        product_targets = self._enqueue_changed_targets(current_rows, now_ms=now_ms)
+        product_targets = self._mark_changed_targets(current_rows, now_ms=now_ms)
         live_market_rows = [
             {
                 **row,
@@ -60,6 +61,16 @@ class MarketTickPersistenceService:
             for row in current_rows
             if (key := (str(row["target_type"]), str(row["target_id"]))) in product_targets
         ]
+        for row in live_market_rows:
+            payload = live_market_update_payload(row)
+            self.repos.persisted_live.append(
+                source_key=f"market_tick:{row['tick_id']}",
+                event_kind="live_market_update",
+                target_type=str(payload["target_type"]),
+                target_id=str(payload["target_id"]),
+                payload=payload,
+                committed_at_ms=int(now_ms),
+            )
         return MarketTickPersistenceResult(
             inserted_ids=[str(row["tick_id"]) for row in inserted_rows],
             current_rows=current_rows,
@@ -76,7 +87,7 @@ class MarketTickPersistenceService:
         self.repos.require_transaction(operation="market_tick_current_rebuild")
         latest_rows = self.repos.market_ticks.latest_target_ticks_after(after=after, limit=limit)
         current_rows = self._advance_current(latest_rows)
-        self._enqueue_changed_targets(current_rows, now_ms=now_ms)
+        self._mark_changed_targets(current_rows, now_ms=now_ms)
         next_cursor = None
         if latest_rows:
             last = latest_rows[-1]
@@ -97,7 +108,7 @@ class MarketTickPersistenceService:
             if self.repos.market_tick_current.upsert_current_from_tick(row)
         ]
 
-    def _enqueue_changed_targets(
+    def _mark_changed_targets(
         self,
         current_rows: list[dict[str, Any]],
         *,
@@ -109,10 +120,10 @@ class MarketTickPersistenceService:
         )
         changed_product_targets = list(dict.fromkeys(product_targets.values()))
         if changed_product_targets:
-            self.repos.token_radar_dirty_targets.enqueue_market_product_targets(
+            self.repos.radar_source_edges.mark_market_targets(
                 changed_product_targets,
-                reason="market_tick_current_changed",
                 now_ms=int(now_ms),
+                input_fingerprint="|".join(sorted(str(row["tick_id"]) for row in current_rows)),
             )
         return product_targets
 

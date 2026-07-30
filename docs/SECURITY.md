@@ -11,19 +11,21 @@
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
 
-## Single config source boundaries
+## Single config source boundary
 
-The supported operator-owned config files are
-`~/.tracefold/config.yaml` and
-`~/.tracefold/workers.yaml`. `config.yaml` owns application,
-provider, credential, storage, API, and public-surface settings.
-`workers.yaml` owns worker runtime knobs such as enabled state,
-intervals, batches, concurrency, leases, attempts, explicit boundary
-timeouts, and retry bounds.
+The only Tracefold application configuration file is the operator-owned
+`~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
+and password-file references, provider credentials and URLs, API/auth,
+domain/source-family enablement, model provider/name, and logging.
 
-Do not introduce a third config path, shadow config in environment
-variables, or duplicate worker runtime knobs under `config.yaml`.
-Schemas and public config contracts live in `CONTRACTS.md`.
+Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
+resource budgets, history limits, product windows/venues, and model
+reservations are code-owned. `workers.yaml` was deleted by the Issue #32 hard
+cut and is rejected rather than read as a fallback.
+
+Do not introduce a second application config path, shadow config in
+environment variables, or move code-owned safety budgets into
+`config.yaml`. Schemas and public config contracts live in `CONTRACTS.md`.
 
 `~/.tracefold/rsshub.env` is an optional infrastructure credential injection
 file consumed only by the pinned RSSHub Compose sidecar. It is not a third

@@ -8,9 +8,7 @@ import json
 import math
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
-from functools import partial
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -906,24 +904,20 @@ class MacroSourceClient:
         documents: list[DocumentFact] = []
         latest_published_at_ms = _optional_int(cursor.get("published_at_ms")) or 0
         document_items = sorted(document_links.items())
-        with ThreadPoolExecutor(max_workers=min(8, len(document_items) or 1)) as executor:
-            fetched_documents = executor.map(
-                partial(
-                    self._fetch_fomc_document,
-                    spec,
-                    calendar_url=calendar_url,
-                    received_at_ms=received_at_ms,
-                ),
-                document_items,
+        for document_item in document_items:
+            document = self._fetch_fomc_document(
+                spec,
+                document_item,
+                calendar_url=calendar_url,
+                received_at_ms=received_at_ms,
             )
-            for document in fetched_documents:
-                if document is None:
-                    continue
-                documents.append(document)
-                latest_published_at_ms = max(
-                    latest_published_at_ms,
-                    document.published_at_ms,
-                )
+            if document is None:
+                continue
+            documents.append(document)
+            latest_published_at_ms = max(
+                latest_published_at_ms,
+                document.published_at_ms,
+            )
         documents.sort(key=lambda item: (item.published_at_ms, item.document_id))
         completed = year >= last_year
         return _batch(
@@ -1138,26 +1132,22 @@ class MacroSourceClient:
             response = response or discovery_response
             page_limit = 60
             selected = candidates[:page_limit]
-            with ThreadPoolExecutor(max_workers=min(8, len(selected) or 1)) as executor:
-                fetched_documents = executor.map(
-                    partial(
-                        self._fetch_reserve_bank_document,
-                        spec,
-                        root=root,
-                        lower_bound=lower_bound,
-                        upper_bound=upper_bound,
-                        received_at_ms=received_at_ms,
-                    ),
-                    selected,
+            for candidate in selected:
+                document = self._fetch_reserve_bank_document(
+                    spec,
+                    candidate,
+                    root=root,
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
+                    received_at_ms=received_at_ms,
                 )
-                for document in fetched_documents:
-                    if document is None:
-                        continue
-                    documents.append(document)
-                    latest_published_at_ms = max(
-                        latest_published_at_ms,
-                        document.published_at_ms,
-                    )
+                if document is None:
+                    continue
+                documents.append(document)
+                latest_published_at_ms = max(
+                    latest_published_at_ms,
+                    document.published_at_ms,
+                )
             if len(candidates) > page_limit:
                 next_url_after = selected[-1]
             else:

@@ -17,6 +17,7 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
   return {
     ok: true,
     reasons: [],
+    runtime_role: "serve",
     store: "postgresql",
     snapshot_gate: {},
     db: { ok: true },
@@ -54,7 +55,7 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         enabled: true,
         running: true,
       }),
-      token_radar_projection: workerStatusFixture({
+      steady_projection_coordinator: workerStatusFixture({
         enabled: true,
         running: true,
         last_started_at_ms: NOW,
@@ -73,8 +74,17 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         running: true,
         last_started_at_ms: NOW,
       }),
+      event_anchor_capture: workerStatusFixture(),
+      macro_intraday_market: workerStatusFixture(),
+      macro_settlements: workerStatusFixture(),
+      macro_economic_releases: workerStatusFixture(),
+      macro_official_state: workerStatusFixture(),
+      macro_official_documents: workerStatusFixture(),
+      news_ingest: workerStatusFixture(),
       asset_profile_refresh: workerStatusFixture(),
+      token_image_mirror: workerStatusFixture(),
       resolution_refresh: workerStatusFixture(),
+      model_generation_coordinator: workerStatusFixture(),
     },
     ...overrides,
   };
@@ -89,11 +99,18 @@ function workerStatusFixture(overrides: Partial<OpenApiStatusData["workers"][str
     effective_status:
       overrides.effective_status ?? (!enabled ? "disabled" : running ? "running" : "stopped"),
     unavailable_reason: null,
+    runtime_id: null,
+    runtime_version: null,
+    heartbeat_at_ms: null,
     last_started_at_ms: null,
     last_finished_at_ms: null,
     last_result: null,
     last_error: null,
     iteration_duration_p99_ms: null,
+    deadline_at_ms: null,
+    queue_depth: null,
+    oldest_due_at_ms: null,
+    quarantine_count: 0,
     ...overrides,
   };
 }

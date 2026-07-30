@@ -3,12 +3,12 @@ from __future__ import annotations
 import secrets
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
-from tracefold.platform.paths import app_home, app_log_path, config_path, workers_config_path
+from tracefold.platform.paths import app_home, app_log_path, config_path
 
 DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc")
 DEFAULT_UPSTREAM_CHANNELS = ("twitter_monitor_basic", "twitter_monitor_token")
@@ -21,25 +21,34 @@ class ApiConfig(BaseModel):
     host: str = "0.0.0.0"  # noqa: S104 -- configurable API bind address; defaults to all interfaces intentionally
     port: int = 8765
     heartbeat_interval: int = 30
-    replay_limit: int = 100
+    replay_limit: int = Field(default=100, ge=0, le=100)
 
 
 class PostgresConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dsn: str = "postgresql://tracefold_app@postgres:5432/tracefold"
-    password_file: str | None = "postgres_password"
-    pool_min_size: int = 1
-    pool_max_size: int = 16
+    serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
+    workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
+    migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
+    serve_password_file: str | None = "postgres_serve_password"
+    workers_password_file: str | None = "postgres_workers_password"
+    migrate_password_file: str | None = "postgres_migrate_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("dsn", mode="before")
+    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
-        return normalized or "postgresql://tracefold_app@postgres:5432/tracefold"
+        if not normalized:
+            raise ValueError("postgres role DSN is required")
+        return normalized
 
-    @field_validator("password_file", mode="before")
+    @field_validator(
+        "serve_password_file",
+        "workers_password_file",
+        "migrate_password_file",
+        mode="before",
+    )
     @classmethod
     def parse_optional_path(cls, value: Any) -> str | None:
         if value is None:
@@ -263,13 +272,11 @@ class MarketTickStreamWorkerSettings(PerWorkerSettings):
 class MarketTickPollWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=15.0, ge=0)
     batch_size: int = Field(default=100, ge=1)
-    concurrency: int = Field(default=4, ge=1)
 
 
 class EventAnchorBackfillWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=1.0, ge=0)
     batch_size: int = Field(default=50, ge=1)
-    concurrency: int = Field(default=8, ge=1)
     max_attempts: int = Field(default=3, ge=1)
     lease_ms: int = Field(default=120_000, ge=1)
     statement_timeout_seconds: float = Field(default=30.0, ge=0)
@@ -315,34 +322,6 @@ class TokenImageMirrorWorkerSettings(PerWorkerSettings):
     retry_ms: int = Field(default=300_000, ge=1)
     max_attempts: int = Field(default=3, ge=1)
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class TokenProfileCurrentWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=500, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-    retry_ms: int = Field(default=30_000, ge=1)
-
-
-class TokenRadarProjectionWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=10.0, ge=0)
-    batch_size: int = Field(default=100, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    retry_ms: int = Field(default=30_000, ge=1)
-    private_cache_retention_ms: int = Field(default=172_800_000, ge=1)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    windows: tuple[str, ...] = ("5m", "1h", "4h", "24h")
-    venues: tuple[str, ...] = ("all", "sol", "eth", "base", "bsc", "cex")
-    hot_windows: tuple[str, ...] = ("5m",)
-    cold_interval_seconds: float = Field(default=60.0, ge=0)
-
-    @field_validator("windows", "venues", "hot_windows", mode="before")
-    @classmethod
-    def parse_tuple(cls, value: Any) -> tuple[str, ...]:
-        return tuple(_split_values(value))
 
 
 class MacroThesisWorkerSettings(PerWorkerSettings):
@@ -399,10 +378,9 @@ class MacroProjectionWorkerSettings(PerWorkerSettings):
     statement_timeout_seconds: float = Field(default=120.0, ge=0)
 
 
-class NewsPipelineWorkerSettings(PerWorkerSettings):
+class NewsIngestWorkerSettings(PerWorkerSettings):
     interval_seconds: float = Field(default=120.0, ge=0)
     batch_size: int = Field(default=200, ge=1)
-    fetch_concurrency: int = Field(default=16, ge=1, le=64)
     statement_timeout_seconds: float = Field(default=180.0, ge=0)
     fetch_timeout_seconds: float = Field(default=20.0, ge=1)
 
@@ -427,14 +405,10 @@ class WorkersSettings(BaseModel):
     collector: CollectorWorkerSettings = Field(default_factory=CollectorWorkerSettings)
     market_tick_stream: MarketTickStreamWorkerSettings = Field(default_factory=MarketTickStreamWorkerSettings)
     market_tick_poll: MarketTickPollWorkerSettings = Field(default_factory=MarketTickPollWorkerSettings)
-    event_anchor_backfill: EventAnchorBackfillWorkerSettings = Field(default_factory=EventAnchorBackfillWorkerSettings)
+    event_anchor_capture: EventAnchorBackfillWorkerSettings = Field(default_factory=EventAnchorBackfillWorkerSettings)
     resolution_refresh: ResolutionRefreshWorkerSettings = Field(default_factory=ResolutionRefreshWorkerSettings)
     asset_profile_refresh: AssetProfileRefreshWorkerSettings = Field(default_factory=AssetProfileRefreshWorkerSettings)
     token_image_mirror: TokenImageMirrorWorkerSettings = Field(default_factory=TokenImageMirrorWorkerSettings)
-    token_profile_current: TokenProfileCurrentWorkerSettings = Field(default_factory=TokenProfileCurrentWorkerSettings)
-    token_radar_projection: TokenRadarProjectionWorkerSettings = Field(
-        default_factory=TokenRadarProjectionWorkerSettings
-    )
     macro_intraday_market: MacroAcquisitionWorkerSettings = Field(
         default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=32, retry_ms=300_000)
     )
@@ -458,14 +432,21 @@ class WorkersSettings(BaseModel):
         default_factory=MacroDocumentAnalysisWorkerSettings
     )
     macro_thesis: MacroThesisWorkerSettings = Field(default_factory=MacroThesisWorkerSettings)
-    news_pipeline: NewsPipelineWorkerSettings = Field(default_factory=NewsPipelineWorkerSettings)
+    news_ingest: NewsIngestWorkerSettings = Field(default_factory=NewsIngestWorkerSettings)
     news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
+    steady_projection_coordinator: PerWorkerSettings = Field(
+        default_factory=lambda: PerWorkerSettings(interval_seconds=0.05)
+    )
+    model_generation_coordinator: PerWorkerSettings = Field(
+        default_factory=lambda: PerWorkerSettings(interval_seconds=0.25)
+    )
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     _config_dir: Path = PrivateAttr(default_factory=app_home)
+    _workers: WorkersSettings = PrivateAttr(default_factory=WorkersSettings)
 
     ws_token: str | None = None
     api: ApiConfig = Field(default_factory=ApiConfig)
@@ -475,7 +456,16 @@ class Settings(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
-    workers: WorkersSettings = Field(default_factory=WorkersSettings)
+
+    @property
+    def workers(self) -> WorkersSettings:
+        """Return the code-owned steady worker policy.
+
+        Worker resource and cadence policy is deliberately not a deployment
+        configuration surface.
+        """
+
+        return self._workers
 
     def set_config_dir(self, value: Path) -> None:
         self._config_dir = value
@@ -484,9 +474,14 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    @property
-    def postgres_password_file(self) -> Path | None:
-        value = self.storage.postgres.password_file
+    def postgres_dsn(self, role: Literal["serve", "workers", "migrate"]) -> str:
+        return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
+
+    def postgres_password_file(
+        self,
+        role: Literal["serve", "workers", "migrate"],
+    ) -> Path | None:
+        value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
         if not value:
             return None
         configured = Path(value).expanduser()
@@ -528,14 +523,8 @@ def load_settings(*, require_ws_token: bool = True) -> Settings:
     path = config_path()
     if not path.exists():
         raise FileNotFoundError(f"config.yaml not found at {path}; run `tracefold init` first")
-    workers_path = workers_config_path(path.parent)
-    if not workers_path.exists():
-        raise FileNotFoundError(f"workers.yaml not found at {workers_path}; run `tracefold init` first")
     data = _load_yaml_mapping(path)
-    if "workers" in data:
-        raise ValueError("workers runtime settings must be configured in workers.yaml, not config.yaml")
-    workers = WorkersSettings(**_load_yaml_mapping(workers_path))
-    settings = Settings(**dict(data), workers=workers)
+    settings = Settings(**dict(data))
     settings.set_config_dir(path.parent)
     if require_ws_token and not settings.ws_token:
         raise ValueError("ws_token is required in config.yaml")
@@ -545,13 +534,10 @@ def load_settings(*, require_ws_token: bool = True) -> Settings:
 def write_default_config(*, force: bool = False) -> Path:
     home = app_home()
     path = config_path(home)
-    workers_path = workers_config_path(home)
     home.mkdir(parents=True, exist_ok=True)
     (home / "logs").mkdir(parents=True, exist_ok=True)
     if force or not path.exists():
         path.write_text(default_config_yaml(), encoding="utf-8")
-    if force or not workers_path.exists():
-        workers_path.write_text(default_workers_yaml(), encoding="utf-8")
     return path
 
 
@@ -568,10 +554,12 @@ api:
 
 storage:
   postgres:
-    dsn: "postgresql://tracefold_app@postgres:5432/tracefold"
-    password_file: "postgres_password"
-    pool_min_size: 1
-    pool_max_size: 16
+    serve_dsn: "postgresql://tracefold_serve@postgres:5432/tracefold"
+    workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
+    migrate_dsn: "postgresql://tracefold_migrate@postgres:5432/tracefold"
+    serve_password_file: "postgres_serve_password"
+    workers_password_file: "postgres_workers_password"
+    migrate_password_file: "postgres_migrate_password"
     connect_timeout_seconds: 5
 
 llm:
@@ -629,12 +617,6 @@ upstream:
   heartbeat_interval: 25
   idle_timeout: 90
 """
-
-
-def default_workers_yaml() -> str:
-    payload = WorkersSettings().model_dump(mode="json")
-    rendered = yaml.safe_dump(payload, sort_keys=False)
-    return f"# Tracefold worker runtime\n{rendered}"
 
 
 def _load_yaml_mapping(path: Path) -> Mapping[str, Any]:

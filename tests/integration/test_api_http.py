@@ -1,16 +1,23 @@
 import json
 import math
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
-from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
-from tests.runtime_settings import runtime_workers_settings, workers_settings_with_enabled
+from tests.integration.test_token_radar_idempotency import _run_radar_projection
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_settings_storage,
+    prepare_postgres_database,
+)
+from tracefold.app.bootstrap import _ingest_service_for_repos
 from tracefold.app.http.app import create_app
 from tracefold.app.http.responses import _json
+from tracefold.app.repositories import repositories_for_connection
 from tracefold.app.worker_manifest import all_worker_manifests
 from tracefold.market import (
     Author,
@@ -57,7 +64,7 @@ def test_api_json_response_replaces_non_finite_float_payloads_with_null():
 
 
 def test_token_images_serves_ready_local_file_without_auth(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         image_id = seed_ready_token_image(client, content=b"fake-png")
@@ -70,7 +77,7 @@ def test_token_images_serves_ready_local_file_without_auth(tmp_path):
 
 
 def test_token_images_rejects_invalid_image_ids(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         responses = [client.get(f"/api/token-images/{image_id}") for image_id in ("a" * 63, "A" * 64, "g" * 64)]
@@ -79,11 +86,11 @@ def test_token_images_rejects_invalid_image_ids(tmp_path):
 
 
 def test_token_images_returns_404_for_missing_and_error_rows(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         source_url = "https://gmgn.ai/external-res/error-token.png"
-        with client.app.state.service.repositories() as repos:
+        with write_repositories() as repos:
             repos.token_image_assets.upsert_pending_sources(
                 [
                     {
@@ -110,7 +117,7 @@ def test_token_images_returns_404_for_missing_and_error_rows(tmp_path):
 
 
 def test_token_images_returns_404_when_ready_file_is_missing(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         image_id = seed_ready_token_image(client, storage_path="missing.png", write_file=False)
@@ -120,7 +127,7 @@ def test_token_images_returns_404_when_ready_file_is_missing(tmp_path):
 
 
 def test_token_images_rejects_storage_path_traversal(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         runtime = client.app.state.service
@@ -136,7 +143,7 @@ def test_token_images_rejects_storage_path_traversal(tmp_path):
 
 
 def test_old_token_image_proxy_route_is_absent(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -161,7 +168,7 @@ def seed_ready_token_image(
     if write_file:
         cache_dir.mkdir(parents=True, exist_ok=True)
         (cache_dir / storage_path).write_bytes(content)
-    with runtime.repositories() as repos:
+    with write_repositories() as repos:
         repos.token_image_assets.upsert_pending_sources(
             [
                 {
@@ -192,7 +199,7 @@ def insert_ready_token_image_row(
     storage_path: str,
 ) -> str:
     image_id = _sha256(source_url)
-    with client.app.state.service.repositories() as repos:
+    with write_repositories() as repos:
         repos.conn.execute(
             """
             INSERT INTO token_image_assets(
@@ -226,15 +233,31 @@ def _sha256(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
-def make_settings(tmp_path, *, enabled_workers: tuple[str, ...] = ("token_radar_projection",)) -> Settings:
+def make_settings(tmp_path) -> Settings:
     prepare_postgres_database()
     settings = Settings(
         ws_token="secret",
         storage=postgres_settings_storage(),
-        workers=workers_settings_with_enabled(*enabled_workers),
     )
     settings.set_config_dir(tmp_path / "app-home")
     return settings
+
+
+@contextmanager
+def write_repositories():
+    conn = connect_postgres_test(read_only=False)
+    try:
+        yield repositories_for_connection(conn)
+    finally:
+        conn.close()
+
+
+def ingest_event(event: TwitterEvent):
+    with write_repositories() as repos:
+        return _ingest_service_for_repos(
+            repos,
+            event_anchor_active_window_ms=300_000,
+        ).ingest_event(event)
 
 
 def make_event(
@@ -301,54 +324,38 @@ def make_token_event(
 
 
 def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> None:
-    worker_entry = client.app.state.service.scheduler.workers["token_radar_projection"]
-    worker = getattr(worker_entry, "worker", worker_entry)
-    assert worker is not None
-    deadline = time.monotonic() + 10.0
-    drained_once = False
+    del client
     base_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    interval_ms = (
-        int(
-            max(
-                float(getattr(worker.settings, "interval_seconds", 1.0)),
-                float(getattr(worker.settings, "cold_interval_seconds", 1.0)),
-            )
-            * 1000
-        )
-        + 1
-    )
-    attempt = 0
-    while True:
-        worker.rebuild_once(now_ms=base_now_ms + attempt * interval_ms)
-        attempt += 1
-        pending, leased = _token_radar_dirty_queue_counts(client)
-        while leased:
-            if time.monotonic() >= deadline:
-                raise AssertionError("token radar projection dirty leases did not drain")
-            time.sleep(0.05)
-            pending, leased = _token_radar_dirty_queue_counts(client)
-        if pending == 0:
-            if drained_once:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        for attempt in range(1_000):
+            frontier = conn.execute(
+                """
+                SELECT target_type, target_id, window_key
+                FROM radar_projection_frontiers
+                WHERE status = 'dirty'
+                ORDER BY deadline_at_ms, target_type, target_id, window_key
+                LIMIT 1
+                """
+            ).fetchone()
+            conn.commit()
+            if frontier is None:
                 return
-            drained_once = True
-            continue
-        if time.monotonic() >= deadline:
-            raise AssertionError("token radar projection dirty queues did not drain")
-        time.sleep(0.05)
-
-
-def _token_radar_dirty_queue_counts(client: TestClient) -> tuple[int, int]:
-    runtime = client.app.state.service
-    with runtime.db.api_pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT
-              COUNT(*) AS pending,
-              COUNT(*) FILTER (WHERE lease_owner IS NOT NULL) AS leased
-            FROM token_radar_dirty_targets
-            """
-        ).fetchone()
-    return int(row["pending"] or 0), int(row["leased"] or 0)
+            result = _run_radar_projection(
+                conn,
+                target_type=str(frontier["target_type"]),
+                target_id=str(frontier["target_id"]),
+                window=str(frontier["window_key"]),
+                now_ms=base_now_ms + attempt,
+            )
+            assert result["projection_status"] in {
+                "published",
+                "unchanged",
+                "deleted",
+            }
+        raise AssertionError("radar projection frontiers did not drain")
+    finally:
+        conn.close()
 
 
 def seed_resolved_asset_with_event(
@@ -366,7 +373,7 @@ def seed_resolved_asset_with_event(
         text=f"${symbol} ignition {address}",
         received_at_ms=now_ms if now_ms is not None else int(time.time() * 1000),
     )
-    client.app.state.service.ingest.ingest_event(event)
+    ingest_event(event)
     search = client.get(
         "/api/search",
         params={"q": f"${symbol}", "limit": 5, "window": "24h"},
@@ -380,7 +387,7 @@ def seed_resolved_asset_with_event(
 
 
 def test_api_bootstrap_exposes_frontend_runtime_config_without_token(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/bootstrap")
@@ -395,7 +402,7 @@ def test_api_bootstrap_exposes_frontend_runtime_config_without_token(tmp_path):
 
 
 def test_api_rejects_protected_reads_without_token(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/recent")
@@ -404,8 +411,74 @@ def test_api_rejects_protected_reads_without_token(tmp_path):
     assert response.json() == {"ok": False, "error": "unauthorized"}
 
 
+def test_recent_uses_stable_cursor_and_rejects_filter_drift(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = 1_800_000_000_000
+    for event_id, received_at_ms in (
+        ("recent-3", now_ms),
+        ("recent-2", now_ms),
+        ("recent-1", now_ms - 1),
+    ):
+        ingest_event(
+            make_event(
+                event_id,
+                handle="cursor-source",
+                received_at_ms=received_at_ms,
+            )
+        )
+
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        first = client.get(
+            "/api/recent",
+            params={"handles": "cursor-source", "limit": 2},
+            headers=headers,
+        )
+        cursor = first.json()["data"]["page"]["next_cursor"]
+        second = client.get(
+            "/api/recent",
+            params={
+                "handles": "cursor-source",
+                "limit": 2,
+                "cursor": cursor,
+            },
+            headers=headers,
+        )
+        drifted = client.get(
+            "/api/recent",
+            params={"handles": "other-source", "limit": 2, "cursor": cursor},
+            headers=headers,
+        )
+
+    assert first.status_code == 200
+    assert [row["event_id"] for row in first.json()["data"]["events"]] == [
+        "recent-3",
+        "recent-2",
+    ]
+    assert first.json()["data"]["page"] == {
+        "returned_count": 2,
+        "has_more": True,
+        "next_cursor": cursor,
+    }
+    assert second.status_code == 200
+    assert [row["event_id"] for row in second.json()["data"]["events"]] == [
+        "recent-1",
+    ]
+    assert second.json()["data"]["page"] == {
+        "returned_count": 1,
+        "has_more": False,
+        "next_cursor": None,
+    }
+    assert drifted.status_code == 400
+    assert drifted.json() == {
+        "ok": False,
+        "error": "invalid_cursor",
+        "field": "cursor",
+    }
+
+
 def test_api_removed_token_signal_reads_are_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         snapshots = client.get("/api/token-signal-snapshots", headers={"Authorization": "Bearer secret"})
@@ -418,7 +491,7 @@ def test_api_removed_token_signal_reads_are_not_registered(tmp_path):
 
 
 def test_api_search_rejects_removed_filter_params(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/search", params={"symbol": "PEPE"}, headers={"Authorization": "Bearer secret"})
@@ -428,7 +501,7 @@ def test_api_search_rejects_removed_filter_params(tmp_path):
 
 
 def test_api_search_rejects_malformed_cursor(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -442,13 +515,7 @@ def test_api_search_rejects_malformed_cursor(tmp_path):
 
 
 def test_api_status_exposes_flat_worker_status(tmp_path):
-    app = create_app(
-        settings=make_settings(
-            tmp_path,
-            enabled_workers=("event_anchor_backfill", "token_radar_projection"),
-        ),
-        start_collector=False,
-    )
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/status", headers={"Authorization": "Bearer secret"})
@@ -456,17 +523,11 @@ def test_api_status_exposes_flat_worker_status(tmp_path):
     assert response.status_code == 200
     data = response.json()["data"]
     assert "_".join(("anchor", "price")) not in data
-    assert "resolution_refresh" not in data
+    assert "resolution_refresh" not in data["reasons"]
     assert "token_radar_projection" not in data
     assert "worker_lanes" not in data
     workers = data["workers"]
-    for name in (
-        "market_tick_stream",
-        "market_tick_poll",
-        "event_anchor_backfill",
-        "resolution_refresh",
-        "token_radar_projection",
-    ):
+    for name in ("market_tick_stream", "market_tick_poll", "event_anchor_capture", "resolution_refresh"):
         assert set(workers[name]) >= {
             "enabled",
             "running",
@@ -474,13 +535,16 @@ def test_api_status_exposes_flat_worker_status(tmp_path):
             "last_finished_at_ms",
             "last_result",
             "last_error",
+            "queue_depth",
+            "oldest_due_at_ms",
+            "quarantine_count",
         }
-    assert "event_anchor_backfill" in workers
-    assert workers["event_anchor_backfill"]["enabled"] is True
+    assert "event_anchor_capture" in workers
+    assert workers["event_anchor_capture"]["effective_status"] == "unavailable"
 
 
 def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
     source_definition = NewsSourceDefinition(
         source_id="source-story-test",
@@ -498,7 +562,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     )
 
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             repos.news.sync_sources((source_definition, second_source), now_ms=now_ms)
             repos.news.record_fetch_success(
                 source=source_definition,
@@ -556,6 +620,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                 source_count=2,
                 now_ms=now_ms,
                 max_attempts=3,
+                lease_owner="test-runtime",
             )
             assert claim is not None
             repos.news.publish_brief(
@@ -613,6 +678,11 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert source["memberships"] == ["economic"]
     assert source["last_success_at_ms"] == now_ms
     assert source["last_http_status"] == 200
+    assert sources_response.json()["data"]["page"] == {
+        "returned_count": 2,
+        "has_more": False,
+        "next_cursor": None,
+    }
 
     assert feed_response.status_code == 200
     assert latest_feed_response.status_code == 200
@@ -641,6 +711,11 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail["members"][0]["current"] is True
     assert detail["members"][0]["first_joined_at_ms"] <= detail["members"][0]["last_confirmed_at_ms"]
     assert detail["members"][0]["reporting_origin"]
+    assert detail["members_page"] == {
+        "returned_count": 1,
+        "has_more": False,
+        "next_cursor": None,
+    }
     assert "analysis" not in detail
     assert "revisions" not in detail
 
@@ -655,7 +730,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
 
 
 def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
     sources = (
         NewsSourceDefinition(
@@ -675,7 +750,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
     )
 
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             repos.news.sync_sources(sources, now_ms=now_ms)
             repos.news.record_fetch_success(
                 source=sources[0],
@@ -760,7 +835,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         now_ms = int(time.time() * 1000)
@@ -772,7 +847,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
             text=f"$PEPE ignition {PEPE}",
             received_at_ms=now_ms - 1_000,
         )
-        client.app.state.service.ingest.ingest_event(event)
+        ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         headers = {"Authorization": "Bearer secret"}
@@ -851,13 +926,12 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
 
 def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         now_ms = int(time.time() * 1000)
         rebuild_now_ms = now_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
-        runtime = client.app.state.service
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_token_event(
                 "event-pepe-diagnostics",
                 symbol="PEPE",
@@ -866,7 +940,7 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
                 received_at_ms=now_ms - 1_000,
             ),
         )
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_event(
                 "event-unknown-diagnostics",
                 text="$NEWTOKEN soon",
@@ -892,12 +966,11 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
 
 
 def test_live_market_reads_durable_current_without_gateway(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         now_ms = int(time.time() * 1000)
-        runtime = client.app.state.service
-        ingested = runtime.ingest.ingest_event(
+        ingested = ingest_event(
             make_token_event(
                 "event-pepe-live-overlay",
                 symbol="PEPE",
@@ -907,7 +980,7 @@ def test_live_market_reads_durable_current_without_gateway(tmp_path):
             ),
         )
         resolution = next(item for item in ingested.token_resolutions if item["resolution_status"] == "EXACT")
-        with runtime.repositories() as repos:
+        with write_repositories() as repos:
             market_target = repos.registry.chain_token_market_target(str(resolution["target_id"]))
             assert market_target is not None
             chain, _, token_address = str(market_target["target_id"]).rpartition(":")
@@ -954,12 +1027,11 @@ def test_live_market_reads_durable_current_without_gateway(tmp_path):
 
 
 def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quote_state(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
 
     with TestClient(app) as client:
-        runtime = client.app.state.service
-        with runtime.repositories() as repos:
+        with write_repositories() as repos:
             repos.registry.upsert_us_equity_symbol(
                 symbol="AAPL",
                 exchange="NASDAQ",
@@ -981,16 +1053,16 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
                 observed_at_ms=now_ms,
             )
 
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_event("event-aapl-1", handle="toly", text="$AAPL breakout", received_at_ms=now_ms - 10_000),
         )
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_event("event-aapl-2", handle="elonmusk", text="$AAPL still bid", received_at_ms=now_ms - 5_000),
         )
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_event("event-rklb-1", handle="toly", text="$RKLB launch cadence", received_at_ms=now_ms - 3_000),
         )
-        runtime.ingest.ingest_event(
+        ingest_event(
             make_token_event(
                 "event-pepe-stock-radar-exclusion",
                 symbol="PEPE",
@@ -1033,7 +1105,7 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
 
 
 def test_api_notification_routes_are_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -1048,7 +1120,7 @@ def test_api_notification_routes_are_not_registered(tmp_path):
 
 
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -1066,7 +1138,7 @@ def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
 
 
 def test_api_token_radar_rejects_removed_scope(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -1083,7 +1155,7 @@ def test_api_token_radar_rejects_removed_scope(tmp_path):
 
 
 def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1103,7 +1175,7 @@ def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):
 
 
 def test_api_token_case_returns_dossier_for_resolved_asset(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         target = seed_resolved_asset_with_event(client, symbol="HANSA")
@@ -1136,7 +1208,7 @@ def test_api_token_case_returns_dossier_for_resolved_asset(tmp_path):
 
 
 def test_api_token_case_returns_404_when_target_not_found(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1150,7 +1222,7 @@ def test_api_token_case_returns_404_when_target_not_found(tmp_path):
 
 
 def test_api_token_case_requires_auth(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get("/api/token-case", params={"target_type": "Asset", "target_id": "asset:x"})
@@ -1160,7 +1232,7 @@ def test_api_token_case_requires_auth(tmp_path):
 
 
 def test_api_token_case_rejects_invalid_window_and_removed_scope(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         bad_window = client.get(
@@ -1183,7 +1255,7 @@ def test_api_token_case_rejects_invalid_window_and_removed_scope(tmp_path):
 def test_api_token_case_matches_search_inspect_token_result_shape(tmp_path, monkeypatch):
     now_ms = 1_778_562_000_000
     monkeypatch.setattr("tracefold.app.http.routes_search._now_ms", lambda: now_ms)
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         target = seed_resolved_asset_with_event(client, symbol="HANSA", now_ms=now_ms - 60_000)
@@ -1208,7 +1280,7 @@ def test_api_token_case_matches_search_inspect_token_result_shape(tmp_path, monk
 
 
 def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         base_ms = int(time.time() * 1000)
@@ -1222,7 +1294,7 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
                 text=f"$PEPE post {index}",
                 received_at_ms=base_ms - index * 1_000,
             )
-            client.app.state.service.ingest.ingest_event(event)
+            ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         asset_flow = client.get(
@@ -1272,7 +1344,7 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
 
 
 def test_api_target_posts_rejects_malformed_cursor(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1291,7 +1363,7 @@ def test_api_target_posts_rejects_malformed_cursor(tmp_path):
 
 
 def test_api_target_posts_rejects_retired_sort_query(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1314,7 +1386,7 @@ def test_api_target_posts_rejects_retired_sort_query(tmp_path):
 
 
 def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         base_ms = int(time.time() * 1000)
@@ -1328,7 +1400,7 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
                 text=f"$PEPE timeline mcap liquidity {index}",
                 received_at_ms=base_ms - index * 30_000,
             )
-            client.app.state.service.ingest.ingest_event(event)
+            ingest_event(event)
         rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         asset_flow = client.get(
@@ -1361,7 +1433,7 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
 
 
 def test_api_target_social_timeline_rejects_manual_bucket_param(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1375,7 +1447,7 @@ def test_api_target_social_timeline_rejects_manual_bucket_param(tmp_path):
 
 
 def test_api_rejects_removed_1m_window(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1389,7 +1461,7 @@ def test_api_rejects_removed_1m_window(tmp_path):
 
 
 def test_api_target_posts_requires_target_identity(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1404,8 +1476,7 @@ def test_api_target_posts_requires_target_identity(tmp_path):
 
 def test_api_status_exposes_operational_state(tmp_path):
     settings = make_settings(tmp_path)
-    settings.workers = runtime_workers_settings()
-    app = create_app(settings=settings, start_collector=False)
+    app = create_app(settings=settings)
 
     with TestClient(app) as client:
         response = client.get("/api/status", headers={"Authorization": "Bearer secret"})
@@ -1423,23 +1494,19 @@ def test_api_status_exposes_operational_state(tmp_path):
     assert "notifications" not in data
 
     collector = data["workers"]["collector"]
-    assert collector["enabled"] is False
+    assert collector["enabled"] is True
     assert collector["running"] is False
-    assert collector["effective_status"] == "intentionally_not_started"
-    assert "queue_depth" not in collector
+    assert collector["effective_status"] == "unavailable"
+    assert collector["unavailable_reason"] == "worker_status_missing"
+    assert collector["queue_depth"] is None
+    assert collector["quarantine_count"] == 0
     assert "details" not in collector
-    assert data["snapshot_gate"] == {
-        "immediate_complete": 0,
-        "debounced_complete": 0,
-        "debounced_timeout": 0,
-        "non_tw_channel": 0,
-    }
+    assert data["snapshot_gate"] == {}
 
 
 def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     settings = make_settings(tmp_path)
-    settings.workers = runtime_workers_settings()
-    app = create_app(settings=settings, start_collector=False)
+    app = create_app(settings=settings)
 
     with TestClient(app) as client:
         client.app.state.service.db.api_pool.close()
@@ -1461,7 +1528,7 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -1479,7 +1546,7 @@ def test_api_rejects_removed_narrative_product_surfaces(tmp_path):
 
 
 def test_social_events_by_ids_returns_full_records(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     ids = ["event-watched", "event-public"]
     with TestClient(app) as client:
         _seed_social_event_batch(client.app)
@@ -1500,7 +1567,7 @@ def test_social_events_by_ids_returns_full_records(tmp_path):
 
 
 def test_social_events_by_ids_skips_missing(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     with TestClient(app) as client:
         _seed_social_event_batch(client.app)
         response = client.get(
@@ -1516,7 +1583,7 @@ def test_social_events_by_ids_skips_missing(tmp_path):
 
 
 def test_social_events_by_ids_rejects_too_many(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     huge = ",".join(f"id-{i}" for i in range(201))
     with TestClient(app) as client:
         response = client.get(
@@ -1530,7 +1597,7 @@ def test_social_events_by_ids_rejects_too_many(tmp_path):
 
 
 def test_social_events_by_ids_requires_ids(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    app = create_app(settings=make_settings(tmp_path))
     with TestClient(app) as client:
         response = client.get(
             "/api/events/by-ids",
@@ -1542,7 +1609,7 @@ def test_social_events_by_ids_requires_ids(tmp_path):
 
 
 def _seed_social_event_batch(app) -> None:
-    with app.state.service.repositories() as repos, repos.transaction():
+    with write_repositories() as repos, repos.transaction():
         repos.evidence.insert_event(
             make_event("event-watched", handle="toly", text="$PEPE watched", received_at_ms=1_700_000_000_000),
         )

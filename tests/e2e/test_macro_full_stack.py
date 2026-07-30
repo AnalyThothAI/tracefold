@@ -23,9 +23,9 @@ from tests.test_macro_thesis import CUTOFF_MS, SESSION
 from tracefold.integrations.deepagents.macro_thesis_deepagent import (
     MacroThesisDeepAgent,
 )
+from tracefold.macro import rebuild_all_macro_modules_for_maintenance
 from tracefold.macro.assets import MACRO_ASSET_DATASETS, MACRO_THESIS_ASSETS
 from tracefold.macro.domain import SeriesFact
-from tracefold.macro.projection import MacroProjectionService
 from tracefold.macro.registry import DATASET_REGISTRY
 from tracefold.macro.thesis_service import MacroThesisService
 from tracefold.macro.thesis_v2 import (
@@ -73,13 +73,11 @@ def test_macro_real_vertical_seam_with_fake_outer_provider_only(
     with psycopg.connect(e2e_postgres, row_factory=dict_row) as conn:
         with repository_session_for_connection(conn) as repos, repos.transaction():
             _seed_material_macro_facts(repos)
-        projection = MacroProjectionService(
+        projection_result = rebuild_all_macro_modules_for_maintenance(
             db=_E2EDatabase(conn),
             settings=SimpleNamespace(statement_timeout_seconds=30),
-            backfill_worker_enabled=True,
-            clock_ms=lambda: CUTOFF_MS,
+            now_ms=CUTOFF_MS,
         )
-        projection_result = projection.rebuild(now_ms=CUTOFF_MS)
         assert projection_result["modules_computed"] == 6
         assert projection_result["module_rows_written"] == 6
         _assert_projection_keeps_best_effort_failure_local(conn)

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
 from tracefold.market.identity.chain_identity import chain_address_key
-from tracefold.market.pricing.live_market import live_market_update_payload
 from tracefold.market.pricing.market_tick import (
     MarketTick,
     MarketTickSourceProvider,
@@ -49,7 +48,6 @@ class MarketTickStreamWorker(WorkerBase):
         name: str = "market_tick_stream",
         settings: MarketTickStreamWorkerSettings,
         telemetry: Any,
-        on_live_market_update: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         if pool_bundle is None:
             raise RuntimeError("market_tick_stream_db_required")
@@ -65,10 +63,9 @@ class MarketTickStreamWorker(WorkerBase):
         self.subscription_limit = settings.subscription_limit
         self.stream_cycle_seconds = settings.stream_cycle_seconds
         self.clock = clock or _now_ms
-        self.on_live_market_update = on_live_market_update
 
     async def run_once(self) -> WorkerResult:
-        rows = self._list_stream_rows()
+        rows = await self.require_runtime_resources().run_realtime_db(self._list_stream_rows)
         targets, skipped_targets = _stream_targets(rows, limit=self.subscription_limit)
         if not targets:
             return WorkerResult(
@@ -77,7 +74,8 @@ class MarketTickStreamWorker(WorkerBase):
             )
 
         stream_dex_market = self.stream_dex_market
-        stream_result = await self._stream_and_persist_ticks(targets, stream_dex_market=stream_dex_market)
+        async with self.require_provider_governor().acquire(host="dex_stream"):
+            stream_result = await self._stream_and_persist_ticks(targets, stream_dex_market=stream_dex_market)
         notes: dict[str, Any] = {
             "targets_selected": len(rows),
             "stream_targets": len(targets),
@@ -179,8 +177,13 @@ class MarketTickStreamWorker(WorkerBase):
         materialized = list(ticks)
         if not materialized:
             return 0
-        result = await asyncio.to_thread(self._persist_ticks_sync, materialized)
-        await self._publish_current_rows(result.live_market_rows)
+        result = cast(
+            MarketTickPersistenceResult,
+            await self.require_runtime_resources().run_realtime_db(
+                self._persist_ticks_sync,
+                materialized,
+            ),
+        )
         return result.inserted
 
     def _persist_ticks_sync(self, ticks: list[MarketTick]) -> MarketTickPersistenceResult:
@@ -189,15 +192,6 @@ class MarketTickStreamWorker(WorkerBase):
                 ticks,
                 now_ms=int(self.clock()),
             )
-
-    async def _publish_current_rows(self, rows: list[dict[str, Any]]) -> None:
-        if self.on_live_market_update is None:
-            return
-        for row in rows:
-            try:
-                await self.on_live_market_update(live_market_update_payload(row))
-            except Exception as exc:
-                self.logger.bind(error=type(exc).__name__).warning("live market WebSocket publish failed")
 
 
 @dataclass(frozen=True, slots=True)

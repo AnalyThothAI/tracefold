@@ -44,10 +44,10 @@ def search(
     _reject_removed_scope(request)
     parsed_window = _window(window)
     try:
-        with runtime.repositories() as repos:
+        with runtime.repositories(lane="search") as repos:
             results = SearchService(search_query=SearchEventsQuery(repos.conn)).search(
                 q,
-                limit=_limit(limit, maximum=200),
+                limit=_limit(limit),
                 cursor=cursor or None,
                 window=parsed_window,
                 now_ms=_now_ms(),
@@ -81,12 +81,12 @@ def search_inspect(
     request: Request,
     q: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "24h",
-    limit: Annotated[int, Query()] = 200,
+    limit: Annotated[int, Query()] = 100,
 ) -> JSONResponse:
     _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
-    with runtime.repositories() as repos:
+    with runtime.repositories(lane="search") as repos:
         profiles = TokenProfileReadModel(token_profiles=repos.token_profiles)
         data = SearchInspectService(
             search_query=SearchEventsQuery(repos.conn),
@@ -97,7 +97,7 @@ def search_inspect(
         ).inspect(
             q,
             window=parsed_window,
-            limit=_limit(limit, maximum=200),
+            limit=_limit(limit),
             now_ms=_now_ms(),
         )
     return _validated_json(
@@ -123,7 +123,7 @@ def token_case(
         raise ApiBadRequest("invalid_target", field="target_id")
     parsed_window = _window(window)
     try:
-        with runtime.repositories() as repos:
+        with runtime.repositories(lane="search") as repos:
             data = TokenCaseService(
                 targets=repos.token_targets,
                 profiles=TokenProfileReadModel(token_profiles=repos.token_profiles),
@@ -167,13 +167,13 @@ def target_posts(
         raise ApiBadRequest("target_required", field="target_id")
     parsed_window = _window(window)
     try:
-        with runtime.repositories() as repos:
+        with runtime.repositories(lane="search") as repos:
             data = TokenTargetPostsService(targets=repos.token_targets).target_posts(
                 target_type=parsed_target_type,
                 target_id=target_id,
                 window=parsed_window,
                 post_range=_post_range(post_range),
-                limit=_limit(limit, maximum=200),
+                limit=_limit(limit),
                 cursor=cursor or None,
             )
     except TokenTargetPostsRangeError:
@@ -203,7 +203,7 @@ def target_social_timeline(
     target_type: Annotated[str, Query()] = "",
     target_id: Annotated[str, Query()] = "",
     window: Annotated[str, Query()] = "1h",
-    limit: Annotated[int, Query()] = 200,
+    limit: Annotated[int, Query()] = 100,
     cursor: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     if "bucket" in request.query_params:
@@ -215,7 +215,7 @@ def target_social_timeline(
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
     try:
-        with runtime.repositories() as repos:
+        with runtime.repositories(lane="search") as repos:
             data = TokenTargetSocialTimelineService(
                 targets=repos.token_targets,
                 market_candles=_market_candles_service(),

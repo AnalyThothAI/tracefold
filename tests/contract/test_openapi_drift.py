@@ -33,7 +33,7 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
     from tracefold.platform.config.settings import Settings
 
     settings = Settings(ws_token="schema-gen-placeholder")
-    app = create_app(settings=settings, start_collector=False)
+    app = create_app(settings=settings)
     fresh = json.dumps(app.openapi(), indent=2, sort_keys=True) + "\n"
     committed = OPENAPI_PATH.read_text(encoding="utf-8")
     if fresh != committed:

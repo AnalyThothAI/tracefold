@@ -180,6 +180,23 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
         )
         conn.commit()
         second = service.run_once()
+        projection_states = conn.execute(
+            """
+            SELECT dataset_id, material_fingerprint, acquisition_status,
+                   source_frontier_ms
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchall()
+        module_frontiers = conn.execute(
+            """
+            SELECT module_id, status, first_dirty_at_ms, deadline_at_ms,
+                   input_fingerprint, projection_version
+            FROM macro_module_frontiers
+            WHERE module_id IN ('rates_fed', 'credit')
+            ORDER BY module_id
+            """
+        ).fetchall()
 
         fact_count = conn.execute(
             """
@@ -213,6 +230,12 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
     assert fact_count == 1
     assert receipt_count == 2
     assert legacy_tables == []
+    assert len(projection_states) == 1
+    assert projection_states[0]["acquisition_status"] == "current"
+    assert projection_states[0]["source_frontier_ms"] == 3_000
+    assert [row["module_id"] for row in module_frontiers] == ["credit", "rates_fed"]
+    assert all(row["status"] == "dirty" for row in module_frontiers)
+    assert all(row["deadline_at_ms"] - row["first_dirty_at_ms"] == 60_000 for row in module_frontiers)
 
 
 def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(

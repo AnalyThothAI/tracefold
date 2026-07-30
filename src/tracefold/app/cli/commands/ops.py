@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
 from tracefold.app.cli.commands import queue_ops
+from tracefold.app.database import WorkerDatabase
+from tracefold.app.hard_cut import rebuild_hard_cut_read_models
 from tracefold.app.read_models import rebuild_market_tick_current_batch
 from tracefold.app.reference_data import (
     sync_binance_cex_profiles_once,
@@ -11,9 +15,13 @@ from tracefold.app.reference_data import (
 )
 from tracefold.app.repositories import repositories
 from tracefold.app.run_worker_once import (
+    mirror_token_images_once,
     refresh_asset_profiles_once,
-    repair_token_profile_images_once,
-    run_worker_once,
+    refresh_resolutions_once,
+)
+from tracefold.app.worker_acceptance import (
+    issue_32_evidence_template,
+    seal_issue_32_evidence,
 )
 from tracefold.market import (
     TOKEN_RADAR_DEFAULT_VENUE,
@@ -25,33 +33,58 @@ from tracefold.market import (
 )
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
-from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 
 
 def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
+    if args.ops_command == "seal-worker-acceptance":
+        if bool(args.template):
+            return 0, {
+                "ok": True,
+                "data": {
+                    "template": issue_32_evidence_template(),
+                },
+            }
+        seal = seal_issue_32_evidence(Path(args.bundle))
+        return 0, {"ok": True, "data": seal}
     settings = load_settings(require_ws_token=False)
+    lock_db = WorkerDatabase.create(settings)
+    lock_conn = None
+    try:
+        lock_conn = lock_db.acquire_maintenance_runtime_lock()
+        return _handle_ops_locked(args, settings=settings, lock_db=lock_db)
+    finally:
+        if lock_conn is not None:
+            lock_db.release_maintenance_runtime_lock(lock_conn)
+        asyncio.run(lock_db.aclose())
+
+
+def _handle_ops_locked(
+    args: object,
+    *,
+    settings: Any,
+    lock_db: WorkerDatabase,
+) -> tuple[int, dict[str, Any]]:
+    if args.ops_command == "hard-cut-rebuild":
+        data = rebuild_hard_cut_read_models(
+            db=lock_db,
+            settings=settings,
+            now_ms=_now_ms(),
+        )
+        return 0, {"ok": True, "data": data}
 
     if args.ops_command == "refresh-asset-profiles":
         data = refresh_asset_profiles_once(settings, limit=args.limit).payload()
         return 0, {"ok": True, "data": data}
 
-    if args.ops_command == "rebuild-token-profiles":
-        data = run_worker_once(settings, "token_profile_current", {"batch_size": args.limit}).payload()
-        return 0, {"ok": True, "data": data}
-
     if args.ops_command == "mirror-token-images":
-        data = run_worker_once(settings, "token_image_mirror", {"batch_size": args.limit}).payload()
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "repair-token-profile-images":
-        data = repair_token_profile_images_once(settings, limit=args.limit).payload()
+        data = mirror_token_images_once(settings, limit=args.limit).payload()
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "run-resolution-refresh":
-        data = run_worker_once(
+        data = refresh_resolutions_once(
             settings,
-            "resolution_refresh",
-            {"batch_size": args.limit, "reprocess_limit": args.reprocess_limit},
+            limit=args.limit,
+            reprocess_limit=args.reprocess_limit,
         ).payload()
         return 0, {"ok": True, "data": data}
 
@@ -65,12 +98,7 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
                 limit=args.limit,
                 lookup_keys=args.lookup_key or None,
             )
-        projection = run_worker_once(
-            settings,
-            "token_radar_projection",
-            {"batch_size": args.projection_limit},
-        ).payload()
-        return 0, {"ok": True, "data": {"reprocess": reprocess, "projection": projection}}
+        return 0, {"ok": True, "data": {"reprocess": reprocess}}
 
     if args.ops_command == "rebuild-token-intents":
         now_ms = _now_ms()
@@ -81,19 +109,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
                 window=args.window,
                 limit=args.limit,
             )
-        data["projection"] = run_worker_once(
-            settings,
-            "token_radar_projection",
-            {"batch_size": args.projection_limit},
-        ).payload()
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "rebuild-token-radar":
-        data = run_worker_once(
-            settings,
-            "token_radar_projection",
-            {"windows": (args.window,), "batch_size": args.limit},
-        ).payload()
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "rebuild-market-current":
@@ -160,18 +175,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
             data = factor_distribution_report(rows)
             return (0 if data["ok"] else 1), {"ok": data["ok"], "data": data}
 
-        if args.ops_command == "enqueue-token-radar-dirty-targets":
-            data = _enqueue_token_radar_dirty_targets(
-                repos,
-                source=args.source,
-                since_ms=args.since_ms,
-                limit=args.limit,
-                dry_run=bool(args.dry_run),
-                execute=bool(args.execute),
-                now_ms=_now_ms(),
-            )
-            return 0, {"ok": True, "data": data}
-
         if args.ops_command == "projection-status":
             return 0, {
                 "ok": True,
@@ -190,88 +193,6 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
             return 0, {"ok": True, "data": data}
 
     return 2, {"ok": False, "error": f"unknown ops command: {args.ops_command}"}
-
-
-def _enqueue_token_radar_dirty_targets(
-    repos: object,
-    *,
-    source: str,
-    since_ms: int,
-    limit: int,
-    dry_run: bool,
-    execute: bool,
-    now_ms: int,
-) -> dict[str, Any]:
-    parsed_since_ms = require_nonnegative_int(
-        since_ms,
-        error_code="ops_token_radar_dirty_targets_since_ms_required",
-    )
-    parsed_limit = require_positive_int(
-        limit,
-        error_code="ops_token_radar_dirty_targets_limit_required",
-    )
-    data: dict[str, Any] = {
-        "source": str(source),
-        "since_ms": parsed_since_ms,
-        "limit": parsed_limit,
-        "dry_run": bool(dry_run),
-        "execute": bool(execute),
-    }
-    if source == "events":
-        repository = repos.token_radar_dirty_targets
-        candidates = repository.count_recent_resolved_target_candidates(
-            since_ms=parsed_since_ms,
-            now_ms=now_ms,
-            limit=parsed_limit,
-        )
-        data["candidates"] = int(candidates)
-        if dry_run:
-            data["would_enqueue"] = int(
-                repository.count_recent_resolved_target_enqueue_candidates(
-                    since_ms=parsed_since_ms,
-                    now_ms=now_ms,
-                    limit=parsed_limit,
-                )
-            )
-            return data
-        with repos.transaction():
-            data["enqueued"] = int(
-                repository.enqueue_recent_resolved_targets(
-                    since_ms=parsed_since_ms,
-                    now_ms=now_ms,
-                    limit=parsed_limit,
-                    reason="ops_events_repair",
-                )
-            )
-        return data
-    if source == "market-current":
-        repository = repos.token_radar_dirty_targets
-        candidates = repository.count_market_current_target_candidates(
-            since_ms=parsed_since_ms,
-            now_ms=now_ms,
-            limit=parsed_limit,
-        )
-        data["candidates"] = int(candidates)
-        if dry_run:
-            data["would_enqueue"] = int(
-                repository.count_market_current_target_enqueue_candidates(
-                    since_ms=parsed_since_ms,
-                    now_ms=now_ms,
-                    limit=parsed_limit,
-                )
-            )
-            return data
-        with repos.transaction():
-            data["enqueued"] = int(
-                repository.enqueue_market_current_targets(
-                    since_ms=parsed_since_ms,
-                    now_ms=now_ms,
-                    limit=parsed_limit,
-                    reason="ops_market_current_repair",
-                )
-            )
-        return data
-    raise ValueError(f"unknown token radar dirty target source: {source}")
 
 
 def _audit_token_intent(repos: object, *, event_id: str | None, intent_id: str | None) -> dict:

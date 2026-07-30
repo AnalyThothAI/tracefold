@@ -5,12 +5,11 @@ diagnosis, and safe repair boundaries.
 
 ## Runtime truth
 
-Real configuration is operator-owned:
-
-- `~/.tracefold/config.yaml`: application, PostgreSQL, providers, credentials,
-  and storage;
-- `~/.tracefold/workers.yaml`: enabled state, cadence, batch, lease, retry, and
-  timeout settings.
+The only operator-owned Tracefold application configuration is
+`~/.tracefold/config.yaml`: deployment/domain choices, role-specific
+PostgreSQL references, providers, credentials, API/auth, models, and storage.
+Worker topology, cadence, deadlines, batches, leases, retry policy, timeouts,
+and resource budgets are code-owned.
 
 Confirm the active paths with `uv run tracefold config`. Never infer live state
 from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
@@ -23,7 +22,7 @@ results; never secret values.
 |---|---|---|
 | `/healthz` | process liveness | none |
 | `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
-| `/api/status` | authenticated typed in-memory runtime snapshot | none |
+| `/api/status` | serve snapshot plus persisted worker status | bounded control read |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
 Queue backlog, optional provider degradation, and an Agent-authored Macro
@@ -32,27 +31,51 @@ state remain visible through their own API and operator diagnostics.
 
 ## Worker ownership
 
-`src/tracefold/app/worker_manifest.py` is the executable inventory for
-worker names, start order, queue tables, and worker-owned stable read-model
-identities. `worker_factories()` is the only callable composition registry.
-Configuration may disable workers but cannot invent names or owners.
-
-Every long-running worker is a `WorkerBase` subclass:
+`src/tracefold/app/worker_manifest.py` is the exact 15-unit executable
+inventory. The units are logical lifecycle/clock owners inside one workers
+process, not separate containers or OS processes. Configuration cannot invent
+names or owners.
 
 ```text
-WorkerScheduler
-  -> phased start (serving -> current projections -> cold/backfill)
-  -> run_once() on a fixed start-to-start cadence
-  -> WorkerResult + duration telemetry
-  -> bounded interval catch-up / backoff
+tracefold serve
+  -> read-only pool -> HTTP/static/shared persisted-live WebSocket poller
+
+tracefold workers
+  -> one singleton advisory lock and runtime_id
+  -> realtime DB executor 1 / background DB executor 1
+  -> provider executor 3 / model executor 1
+  -> Pebble spawn ProcessPool 1
+  -> acquisition clocks + one EDF projection coordinator
+  -> one model-generation coordinator
 ```
 
-The scheduler owns start, stop, and status. One iteration runs at a time.
-Provider, DB, subprocess, and network boundaries own their explicit timeouts.
-The manifest also assigns deterministic projections to iteration groups:
-Token Radar has a dedicated latency slot, while at most two News, Macro,
-profile, or image projection iterations run together. Group wait time holds no
-database connection and is not a correctness dependency.
+Every acquisition/projection/model task uses a short claim transaction,
+bounded load plus provider/compute/model work with no database connection, and
+a short compare-and-set publication transaction. The stateless EDF
+coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
+semantic shard at a time. There is no generic scheduler, database wake plane,
+startup rebuild, phased load shifting, or configurable concurrency.
+
+The exact steady units are `collector`, `market_tick_stream`,
+`market_tick_poll`, `event_anchor_capture`, `resolution_refresh`,
+`macro_intraday_market`, `macro_settlements`,
+`macro_economic_releases`, `macro_official_state`,
+`macro_official_documents`, `news_ingest`, `asset_profile_refresh`,
+`token_image_mirror`, `steady_projection_coordinator`, and
+`model_generation_coordinator`.
+
+Serve owns a read-only pool of eight with ordinary/search/control admission
+`6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
+JIT off, parallel gather off, and 8 MiB work memory. Workers owns one pool of
+twelve, the four explicit executors above, one spawn-only Pebble CPU child,
+and a process-wide ProviderGovernor (`global=3`, `per-host=2`, GMGN Profile,
+Binance Profile, and image lanes each `1`). A provider-wide failure opens
+durable circuit state and consumes no target attempt.
+
+One semantic shard is capped at 10,000 input rows/4 MiB and 1 MiB output.
+Claim, compute, publish, and full-turn hard timeouts are respectively 500 ms,
+2 s, 1 s, and 5 s. Overflow is split deterministically or quarantined as
+`shard_oversized`; it is never sampled or truncated.
 
 `/metrics` exposes low-cardinality worker transaction duration, projection
 source/candidate/hydrated/written row counts, change-driven cache hit/miss,
@@ -102,8 +125,9 @@ For missing or stale live data:
 Token Radar:
 
 ```text
-event -> intent -> resolution -> token_radar_dirty_targets
-  -> factor edges/features -> token_radar_current_rows -> publication
+event -> intent -> resolution -> stable Radar source edges
+  -> typed target x window frontier -> affected window x venue rank closure
+  -> token_radar_current_rows
 ```
 
 Market current is maintained transactionally with `market_ticks`; it has no
@@ -113,22 +137,21 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-73 physical sources / 73 logical memberships
-  -> NewsPipelineWorker
-  -> FetchReceipt + immutable FeedObservation + NewsItem
-  -> full active-window cluster + Story/member/alias projection
+source claim -> news_ingest -> one provider attempt -> receipt/observation/item
+  -> typed identity/scoring frontiers + persisted features/similarity edges
+  -> bounded affected component Story/member/alias closure
   -> /api/news/feed + /api/news/stories/{story_id}
 
 Top-8 changed Story fingerprint
-  -> NewsWorldBriefWorker
-  -> provider chain under one 60s budget
+  -> model_generation_coordinator
+  -> one admitted model lane
   -> validated Chinese immutable publication + current pointer
   -> /api/news/brief
 ```
 
-`news_pipeline` runs every 120 seconds by default. It claims due sources in
-one short transaction, performs up to 16 fetches concurrently outside the
-database, and closes each source independently. One source failure records a
+`news_ingest` claims one due source in a short transaction, performs provider
+I/O outside the database under the process-wide ProviderGovernor, and closes
+the source in a short transaction. One source failure records a
 failed receipt, increments its failure count, and cannot block another source.
 A successful response retains ETag and Last-Modified; a `304` still permits
 the deterministic 96-hour expiry/recluster pass. Direct transport/403/429/5xx/
@@ -138,17 +161,15 @@ without secrets. HTTP, localhost, Docker service names, link-local, loopback,
 private, and other non-public destinations never use the relay. The internal
 6551NEWS and WallStEngine RSSHub sources therefore record failures directly.
 
-The same worker is the only NewsItem, Story, membership, and alias writer.
-There is no News dirty queue or repair command: restart recovery is the normal
-full-window projection. Unchanged items, membership, and Story fingerprints
-write zero serving rows. The hourly persisted recency epoch prevents a
-two-minute worker tick from masquerading as a Story revision.
+`news_ingest` is the only NewsItem writer. The EDF projection domain is the
+only Story, membership, alias, feature, and edge writer. Restart re-reads typed
+frontiers; it never performs a full-window steady rebuild. Unchanged
+component closures write zero serving rows.
 
-`news_world_brief` runs every 300 seconds by default. It exits before any
-model call when fewer than three Stories, fewer than two physical sources, or
-an unchanged ordered Story fingerprint is observed. On provider or validation
-failure it records the failed run and keeps the last-known-good current
-pointer.
+The model coordinator exits before any Brief model call when fewer than three
+Stories, fewer than two physical sources, or an unchanged ordered Story
+fingerprint is observed. On provider or validation failure it records the
+failed run and keeps the last-known-good current pointer.
 
 Diagnose News in this order:
 
@@ -181,40 +202,35 @@ The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
 the model.
 
-#### News WorldMonitor hard-cut runbook
+#### Issue #32 maintenance hard cut
 
-The `20260728_0210` current-schema baseline plus `20260730_0221` create the
-exact twelve-table WorldMonitor-backed News schema. The twelfth table is the
-singleton, rebuildable Story input-fingerprint control state; it is not a
-second fact or serving model. The schema contains no prior News model, ID
-redirect, dual writer, or compatibility read.
+The authoritative hard cut is system-wide, not a separate News migration:
 
-1. Stop the service so no older News worker can write during the cut.
-2. Confirm the intended checkout and current Alembic version.
-3. Remove every retired News worker key, configure `news.relay` when relay
-   fallback is required, and reject every old source field.
-4. Run `uv run tracefold db migrate` and verify the repository's reported
-   latest head.
-5. Start exactly `news_pipeline` and `news_world_brief` with the rest of the
-   service.
-6. Verify exactly twelve `news_*` tables, 73 synchronized physical sources,
-   73 memberships, a terminal attempt for every source, fresh receipts and
-   observations, non-empty NewsItems and Stories, membership closure, the five
-   HTTP routes, ETag `304`, a truthful Brief state, and zero old routes.
-7. Leave the deployment stopped and repair forward if any acceptance check
-   fails; there is no historical News restore path in this release.
+1. stop the old combined runtime;
+2. take and verify a recoverable PostgreSQL volume snapshot;
+3. run the explicit maintenance-profile `tracefold db hard-cut` command from
+   `SETUP.md`;
+4. require the role, semantic, queue, history-cleanup, and invariant audits to
+   pass before the legacy login is revoked;
+5. start serve and workers only after the command reports `cutover_ready`;
+6. restore the snapshot or repair forward while still in maintenance if any
+   gate fails.
+
+Old and new writers never coexist. There is no dual read/write, compatibility
+alias, automatic fallback, or rolling mixed version.
 
 Macro:
 
-The `20260728_0210` baseline plus irreversible migrations through
-`20260730_0221` contain the current Macro fact, coverage, module,
+The `20260728_0210` baseline plus irreversible migrations through the
+generated Alembic head contain the current Macro fact, coverage, module,
 ResearchInput, Thesis v2, Live Delta v2, Outcome Replay v2, and Fed evidence
 contracts. Current reads have one v2 path. Existing v1 publications remain
 byte-for-byte immutable and are available only through explicit archive reads.
 
 ```text
 clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
-  -> macro_projection -> six macro_module_current rows
+  -> typed affected-module frontier -> EDF module-local projection
+  -> stable macro_module_current row
   -> 08:50 New York macro_evidence_pack_v3
   -> deterministic bounded macro_research_input_v1
   -> one Thin DeepAgent graph invocation -> exactly one model invocation
@@ -272,15 +288,13 @@ exhausted jobs remain visible in the affected evidence scope; they do not
 become a global publication gate. Restart reclaims expired leases without
 duplicating analysis identity.
 
-`macro_projection` first compares the compact fact/target/version fingerprint.
-Unchanged inputs load no histories and compute no features/modules. Changed
-inputs load per-Dataset narrow histories derived from Calculation Registry and
-module presentation semantics; full available history remains only where an
-actual-history percentile requires it. Computation occurs outside the database
-transaction, then the worker compares the fingerprint again and publishes the
-Calculation Registry plus six stable module rows in one short transaction;
-unchanged payloads still write zero serving rows.
-`macro_thesis` runs after 08:50 `America/New_York` on U.S. trading days, creates
+The Macro projection domain maps changed datasets through the static
+dataset/calculation/module dependency graph. One EDF turn loads only the
+affected module's declared bounded history, computes outside the database,
+rechecks the input fingerprint, and publishes that module plus its feature
+frontier in one transaction. Unchanged payloads write zero serving rows.
+The model coordinator schedules Thesis after 08:50 `America/New_York` on U.S.
+trading days, creates
 or re-reads one stable session run, and claims at most one due run per
 iteration. Before model work it freezes the session, cutoff, pack identity,
 six ordered module payloads, prior material delta, catalysts, twelve-asset
@@ -412,9 +426,18 @@ ORDER BY total_exec_time DESC
 LIMIT 20;
 ```
 
-Use `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded query. Since
-`ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`, or `MERGE`
-in `BEGIN` and `ROLLBACK`.
+`uv run tracefold db query-audit` verifies that every public HTTP/WS route is
+assigned to a bounded read-query family and checks that every query can be
+planned. `uv run tracefold db query-audit --analyze` executes those read-only
+queries with JSON `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated
+large-table sequential scan, any temporary read/write blocks, or read/return
+amplification above 20:1. An empty development database proves only SQL and
+route coverage; production-scale output belongs in the real 30-minute
+acceptance bundle.
+
+Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
+query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,
+or `MERGE` in `BEGIN` and `ROLLBACK`.
 
 Hot paths claim narrow stable keys and hydrate wide JSONB only after selection.
 Partial indexes must match the real due/status predicate. An idle worker must
@@ -450,3 +473,29 @@ For a migration or production cutover:
 6. start one writer per current model, then verify readiness, queue movement,
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
+
+## Issue #32 acceptance and sealing
+
+Controlled offline workload, isolated startup/recovery, and the real continuous
+30-minute run are independent gates. Tests or a healthy Compose stack cannot
+substitute for the real run. Print the deliberately non-passing
+`evidence.json` template from the current code:
+
+```bash
+uv run tracefold ops seal-worker-acceptance --template
+```
+
+After the operator-approved production cutover, fill a new external bundle
+with measured evidence and an independent reviewer disposition. Seal only a
+complete bundle:
+
+```bash
+uv run tracefold ops seal-worker-acceptance \
+  --bundle /absolute/path/to/issue-32-evidence
+```
+
+The sealer requires all 15 steady paths, at least 1,800 seconds of real
+continuous evidence, production query analysis without route gaps or plan
+violations, resource/latency/shard/lane/queue/PostgreSQL evidence, semantic and
+permission passes, runtime/model-reservation evidence, and reviewer pass. It
+hashes every evidence file and refuses post-seal changes.

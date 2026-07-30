@@ -3,19 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from tracefold.market import EVM_QUERY_CHAINS, EventRead, normalize_ca
+from tracefold.market import EVM_QUERY_CHAINS, normalize_ca
 
 DEFAULT_SEND_TIMEOUT_SECONDS = 0.25
-MAX_REPLAY_LIMIT = 1000
+MAX_REPLAY_LIMIT = 100
 MAX_SUBSCRIPTION_FILTER_VALUES = 50
-SUBSCRIBE_MESSAGE_KEYS = frozenset({"type", "cas", "symbols", "market_targets", "replay"})
+SUBSCRIBE_MESSAGE_KEYS = frozenset({"type", "cas", "symbols", "market_targets", "replay", "after_cursor"})
+_BROADCAST_POLL_INTERVAL_SECONDS = 0.250
+_BROADCAST_BATCH_SIZE = 500
+_BROADCAST_CACHE_SIZE = 2_000
 
 
 @dataclass(eq=False)
@@ -26,10 +31,11 @@ class ClientSubscription:
     cas: set[tuple[str, str]] = field(default_factory=set)
     symbols: set[str] = field(default_factory=set)
     market_targets: set[tuple[str, str]] = field(default_factory=set)
+    live_after_cursor: int = 0
 
 
-class PublicWebSocketHub:
-    """Publishes event/replay payloads and material live_market_update messages."""
+class PersistedLiveBroadcaster:
+    """One read-only PostgreSQL cursor reader with in-memory client fanout."""
 
     def __init__(
         self,
@@ -44,13 +50,39 @@ class PublicWebSocketHub:
         self.default_replay_limit = default_replay_limit
         self.send_timeout_seconds = max(0.001, float(send_timeout_seconds))
         self._clients: set[ClientSubscription] = set()
+        self._records: list[dict[str, Any]] = []
+        self._cursor = 0
+        self._stop_event = asyncio.Event()
+        self._subscriber_event = asyncio.Event()
+        self._state_lock = asyncio.Lock()
+        self._poll_task: asyncio.Task[None] | None = None
+        self._db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tracefold-live-broadcaster-db")
+
+    async def start(self) -> None:
+        if self._poll_task is not None:
+            raise RuntimeError("persisted_live_broadcaster_already_started")
+        self._stop_event.clear()
+        self._poll_task = asyncio.create_task(self._poll_loop(), name="serve:persisted_live_broadcaster")
+
+    async def aclose(self) -> None:
+        self._stop_event.set()
+        self._subscriber_event.set()
+        if self._poll_task is not None:
+            await self._poll_task
+            self._poll_task = None
+        self._db_executor.shutdown(wait=True, cancel_futures=True)
 
     async def publish(self, payload: dict[str, Any]) -> None:
         if not self._clients:
             return
 
         message = _json_message(payload)
-        send_targets = [client for client in list(self._clients) if self._payload_matches_subscription(payload, client)]
+        async with self._state_lock:
+            send_targets = [
+                client
+                for client in list(self._clients)
+                if _is_new_for_client(payload, client) and self._payload_matches_subscription(payload, client)
+            ]
         results = await asyncio.gather(
             *(self._send_with_timeout(client, message) for client in send_targets),
             return_exceptions=True,
@@ -77,6 +109,7 @@ class PublicWebSocketHub:
         try:
             await self._authenticate(websocket)
             self._clients.add(client)
+            self._subscriber_event.set()
             await websocket.send_text(_json_message({"type": "ready"}))
             while True:
                 raw_message = await websocket.receive_text()
@@ -85,6 +118,8 @@ class PublicWebSocketHub:
             pass
         finally:
             self._clients.discard(client)
+            if not self._clients:
+                self._subscriber_event.clear()
 
     async def _authenticate(self, websocket: WebSocket) -> None:
         try:
@@ -125,6 +160,7 @@ class PublicWebSocketHub:
                 _list_value(message.get("market_targets", []), field="market_targets")
             )
             replay_limit = _replay_limit(message.get("replay"), self.default_replay_limit)
+            after_cursor = _after_cursor(message.get("after_cursor"))
         except ValueError:
             await client.websocket.send_text(_json_message({"type": "error", "code": "invalid_subscription"}))
             return
@@ -142,32 +178,98 @@ class PublicWebSocketHub:
             )
             return
 
-        client.cas = cas
-        client.symbols = symbols
-        client.market_targets = market_targets
-        replay_events = self._replay_events(client, replay_limit)
-        for payload in reversed(replay_events):
+        async with self._state_lock:
+            client.cas = cas
+            client.symbols = symbols
+            client.market_targets = market_targets
+            replay_events = await self._replay_events(client, replay_limit, after_cursor=after_cursor)
+        for payload in replay_events:
             await client.websocket.send_text(_json_message(payload))
 
-    def _replay_events(self, client: ClientSubscription, limit: int) -> list[dict[str, Any]]:
-        if limit <= 0 or not (client.cas or client.symbols):
+    async def _replay_events(
+        self,
+        client: ClientSubscription,
+        limit: int,
+        *,
+        after_cursor: int | None,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0 or not (client.cas or client.symbols or client.market_targets):
+            client.live_after_cursor = self._cursor
             return []
-        collected: dict[str, dict[str, Any]] = {}
-        with self.repository_session() as repos:
-            per_filter_limit = _per_filter_replay_limit(
-                total_limit=limit,
-                filter_count=len(client.cas) + len(client.symbols),
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(
+            self._db_executor,
+            partial(
+                self._read_replay,
+                after_cursor=after_cursor,
+                limit=MAX_REPLAY_LIMIT,
+            ),
+        )
+        self._extend_records([row for row in rows if int(row["cursor"]) > self._cursor])
+        client.live_after_cursor = max(
+            (int(row["cursor"]) for row in rows),
+            default=self._cursor,
+        )
+        matching = [
+            _payload_from_row(record)
+            for record in rows
+            if self._payload_matches_subscription(_payload_from_row(record), client)
+        ]
+        return matching[-limit:]
+
+    async def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            if not self._clients:
+                await self._subscriber_event.wait()
+                if self._stop_event.is_set():
+                    break
+                continue
+            loop = asyncio.get_running_loop()
+            rows = await loop.run_in_executor(
+                self._db_executor,
+                partial(self._read_after, cursor=self._cursor, limit=_BROADCAST_BATCH_SIZE),
             )
-            for event in repos.evidence.recent_events_for_token_filters(
-                limit=limit,
-                per_filter_limit=per_filter_limit,
-                cas=client.cas,
-                symbols=client.symbols,
-            ):
-                collected[str(event["event_id"])] = event
-            events = list(collected.values())
-            events.sort(key=lambda item: item.get("received_at_ms") or 0, reverse=True)
-            return self._payloads_for_events(repos, events[:limit])
+            records = self._extend_records(rows)
+            for record in records:
+                await self.publish(record["payload"])
+            with suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=_BROADCAST_POLL_INTERVAL_SECONDS,
+                )
+
+    def _read_replay(
+        self,
+        *,
+        after_cursor: int | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self.repository_session() as repos:
+            if after_cursor is None:
+                return repos.persisted_live.latest(limit=limit)
+            return repos.persisted_live.after_cursor(cursor=after_cursor, limit=limit)
+
+    def _read_after(self, *, cursor: int, limit: int) -> list[dict[str, Any]]:
+        with self.repository_session() as repos:
+            return repos.persisted_live.after_cursor(cursor=cursor, limit=limit)
+
+    def _extend_records(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        known_cursors = {int(record["cursor"]) for record in self._records}
+        for row in rows:
+            cursor = int(row["cursor"])
+            if cursor in known_cursors:
+                continue
+            payload = dict(row["payload_json"])
+            payload["cursor"] = cursor
+            record = {"cursor": cursor, "payload": payload}
+            records.append(record)
+            known_cursors.add(cursor)
+            self._cursor = max(self._cursor, cursor)
+        if records:
+            self._records.extend(records)
+            del self._records[:-_BROADCAST_CACHE_SIZE]
+        return records
 
     def _payload_matches_subscription(self, payload: dict[str, Any], client: ClientSubscription) -> bool:
         if payload.get("type") == "live_market_update":
@@ -199,22 +301,16 @@ class PublicWebSocketHub:
                 return True
         return False
 
-    @staticmethod
-    def _payloads_for_events(repos: Any, events: list[EventRead]) -> list[dict[str, Any]]:
-        event_ids = tuple(str(event["event_id"]) for event in events)
-        entities_by_event = repos.entities.entities_for_events(event_ids)
-        intents_by_event = repos.token_intents.intents_for_events(event_ids)
-        token_resolutions_by_event = repos.event_tokens.for_events(event_ids)
-        return [
-            {
-                "type": "event",
-                "event": event,
-                "entities": entities_by_event.get(str(event["event_id"]), []),
-                "token_intents": intents_by_event.get(str(event["event_id"]), []),
-                "token_resolutions": token_resolutions_by_event.get(str(event["event_id"]), []),
-            }
-            for event in events
-        ]
+
+def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row["payload_json"])
+    payload["cursor"] = int(row["cursor"])
+    return payload
+
+
+def _is_new_for_client(payload: dict[str, Any], client: ClientSubscription) -> bool:
+    cursor = payload.get("cursor")
+    return cursor is None or int(cursor) > client.live_after_cursor
 
 
 def _json_message(message: dict[str, Any]) -> str:
@@ -227,6 +323,14 @@ def _replay_limit(value: Any, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("invalid_replay")
     return max(0, min(value, MAX_REPLAY_LIMIT))
+
+
+def _after_cursor(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("invalid_after_cursor")
+    return value
 
 
 def _subscription_filter_count(
@@ -307,12 +411,40 @@ def _string_list(value: Any, *, field: str) -> list[str]:
 
 def _ca_subscription_matches(ca_key: tuple[Any, Any], subscribed: set[tuple[str, str]]) -> bool:
     chain, address = ca_key
-    if (chain, address) in subscribed:
+    try:
+        normalized_chain, canonical_address = normalize_ca(
+            str(address or ""),
+            chain=str(chain) if chain else None,
+        )
+    except ValueError:
+        normalized_chain = str(chain or "")
+        canonical_address = str(address or "")
+    normalized_address = canonical_address.casefold()
+    normalized_subscribed = {
+        _normalized_ca_pair(subscribed_chain, subscribed_address) for subscribed_chain, subscribed_address in subscribed
+    }
+    if any(
+        normalized_chain == subscribed_chain and normalized_address == subscribed_address
+        for subscribed_chain, subscribed_address in normalized_subscribed
+    ):
         return True
     return any(
-        subscribed_chain == "evm_unknown" and address == subscribed_address and chain in EVM_QUERY_CHAINS
-        for subscribed_chain, subscribed_address in subscribed
+        subscribed_chain == "evm_unknown"
+        and normalized_address == subscribed_address
+        and normalized_chain in EVM_QUERY_CHAINS
+        for subscribed_chain, subscribed_address in normalized_subscribed
     )
+
+
+def _normalized_ca_pair(chain: Any, address: Any) -> tuple[str, str]:
+    try:
+        normalized_chain, normalized_address = normalize_ca(
+            str(address or ""),
+            chain=str(chain) if chain else None,
+        )
+    except ValueError:
+        return str(chain or ""), str(address or "").casefold()
+    return normalized_chain, normalized_address.casefold()
 
 
 async def _close_if_connected(websocket: WebSocket, *, code: int, reason: str) -> None:

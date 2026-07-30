@@ -242,46 +242,6 @@ def _retry_token_image_source_target(
     }
 
 
-def _retry_token_profile_current_dirty_target(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    source_row = _source_row(event)
-    requeued = repos.token_profile_current_dirty_targets.enqueue_targets(
-        [{**source_row, "due_at_ms": int(now_ms)}],
-        reason=f"terminal_retry:{reason}",
-        now_ms=int(now_ms),
-        due_at_ms=int(now_ms),
-    )
-    requeued_count = int((requeued or {}).get("targets") or 0)
-    if requeued_count <= 0:
-        raise ValueError("token_profile_current_dirty_target_retry_not_requeued")
-    return {"requeued": requeued_count, "due_at_ms": int(now_ms)}
-
-
-def _retry_token_radar_dirty_target(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    source_row = _source_row(event)
-    requeued = repos.token_radar_dirty_targets.enqueue_targets(
-        [source_row],
-        reason=f"terminal_retry:{reason}",
-        now_ms=int(now_ms),
-        due_at_ms=int(now_ms),
-    )
-    requeued_count = int(requeued or 0)
-    if requeued_count <= 0:
-        raise ValueError("token_radar_dirty_target_retry_not_requeued")
-    return {"requeued": requeued_count, "due_at_ms": int(now_ms)}
-
-
 def _source_row(event: dict[str, Any]) -> dict[str, Any]:
     source_row = event.get("source_row_json")
     if not isinstance(source_row, dict):
@@ -317,8 +277,6 @@ QUEUE_RETRY_TRANSITIONS = {
     ("resolution_refresh", "token_discovery_dirty_lookup_keys"): _retry_discovery_lookup_key,
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
-    ("token_profile_current", "token_profile_current_dirty_targets"): _retry_token_profile_current_dirty_target,
-    ("token_radar_projection", "token_radar_dirty_targets"): _retry_token_radar_dirty_target,
 }
 
 

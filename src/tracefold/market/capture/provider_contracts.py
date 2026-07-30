@@ -12,10 +12,6 @@ class IngestStoreProtocol(Protocol):
     def ingest_event(self, event: TwitterEvent) -> IngestedEvent: ...
 
 
-class EventPublisherProtocol(Protocol):
-    async def publish(self, payload: dict[str, Any]) -> None: ...
-
-
 class UpstreamClientProtocol(Protocol):
     async def run(self) -> None: ...
 
@@ -25,7 +21,6 @@ class UpstreamClientProtocol(Protocol):
 
 
 __all__ = [
-    "EventPublisherProtocol",
     "IngestStoreProtocol",
     "UpstreamClientProtocol",
 ]

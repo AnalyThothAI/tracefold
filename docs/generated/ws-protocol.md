@@ -8,16 +8,16 @@ Source: `src/tracefold/app/http/ws.py`
 
 | Message type literal | Source context |
 |----------------------|----------------|
-| `auth` | `PublicWebSocketHub._authenticate` |
-| `error` | `PublicWebSocketHub._handle_client_message` |
-| `event` | `PublicWebSocketHub._payload_matches_subscription`, `PublicWebSocketHub._payloads_for_events` |
-| `live_market_update` | `PublicWebSocketHub._payload_matches_subscription` |
-| `ready` | `PublicWebSocketHub.handle` |
-| `subscribe` | `PublicWebSocketHub._handle_client_message` |
+| `auth` | `PersistedLiveBroadcaster._authenticate` |
+| `error` | `PersistedLiveBroadcaster._handle_client_message` |
+| `event` | `PersistedLiveBroadcaster._payload_matches_subscription` |
+| `live_market_update` | `PersistedLiveBroadcaster._payload_matches_subscription` |
+| `ready` | `PersistedLiveBroadcaster.handle` |
+| `subscribe` | `PersistedLiveBroadcaster._handle_client_message` |
 
 ## Source Classes
 
 | Message class | Doc |
 |---------------|-----|
 | `ClientSubscription` | Client filters for replay events and material live market target updates. |
-| `PublicWebSocketHub` | Publishes event/replay payloads and material live_market_update messages. |
+| `PersistedLiveBroadcaster` | One read-only PostgreSQL cursor reader with in-memory client fanout. |

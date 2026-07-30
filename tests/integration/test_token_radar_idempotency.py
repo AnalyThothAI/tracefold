@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from uuid import uuid4
 
+from psycopg import pq
 from psycopg.types.json import Jsonb
 
 from tests.factories import make_event
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    repository_session_for_connection,
+)
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
@@ -14,8 +21,12 @@ from tracefold.market import (
     TOKEN_RADAR_RESOLVER_POLICY_VERSION,
     EvidenceRepository,
     RegistryRepository,
-    TokenRadarProjector,
-    TokenRadarPublisher,
+)
+from tracefold.market.radar.projection import RadarProjectionService
+from tracefold.market.radar.token_radar_projector import (
+    build_token_radar_current_closure,
+    compute_token_radar_target_projection,
+    rank_token_radar_closure,
 )
 
 FIXED_NOW_MS = 1_800_000_000_000
@@ -23,48 +34,61 @@ EVENT_MS = FIXED_NOW_MS - 10 * 60 * 1000
 ASSET_ADDRESS = "0x1111111111111111111111111111111111111111"
 
 
-def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tmp_path):
+class _SingleConnectionDB:
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+
+    @contextmanager
+    def worker_session(
+        self,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Iterator[Any]:
+        try:
+            with repository_session_for_connection(self.conn) as repos:
+                yield repos
+        finally:
+            if self.conn.info.transaction_status != pq.TransactionStatus.IDLE:
+                self.conn.rollback()
+
+
+def test_token_radar_incremental_projection_is_idempotent(tmp_path):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
         _seed_resolved_radar_source(conn)
         conn.commit()
 
-        repos = repositories_for_connection(
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            first_enqueued = repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        first_result = _run_radar_projection(
             conn,
-        )
-        projection = TokenRadarPublisher(repos=repos, projector=TokenRadarProjector(repos=repos))
-        first_enqueued = _enqueue_radar_repair_targets(conn, now_ms=FIXED_NOW_MS)
-        first_result = projection.rebuild_dirty_targets(
-            lease_ms=120_000,
-            retry_ms=30_000,
-            max_attempts=3,
-            windows=("1h",),
+            window="1h",
             now_ms=FIXED_NOW_MS,
-            limit=10,
-            rank_limit=10,
-            lease_owner="test_token_radar_idempotency",
         )
         first_rows = _radar_rows(conn)
 
-        second_enqueued = _enqueue_radar_repair_targets(conn, now_ms=FIXED_NOW_MS)
-        second_result = projection.rebuild_dirty_targets(
-            lease_ms=120_000,
-            retry_ms=30_000,
-            max_attempts=3,
-            windows=("1h",),
+        with repos.transaction():
+            second_enqueued = repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        second_result = _run_radar_projection(
+            conn,
+            window="1h",
             now_ms=FIXED_NOW_MS,
-            limit=10,
-            rank_limit=10,
-            lease_owner="test_token_radar_idempotency",
         )
         second_rows = _radar_rows(conn)
     finally:
         conn.close()
 
-    assert first_result["status"] == "ready"
-    assert second_result["status"] == "idle"
-    assert first_enqueued == 1
+    assert first_result["projection_status"] == "published"
+    assert second_result["projection_status"] == "idle"
+    assert first_enqueued == 4
     assert second_enqueued == 0
     assert first_result["rows_written"] >= 1
     assert second_result["rows_written"] == 0
@@ -72,19 +96,73 @@ def test_token_radar_rebuild_is_idempotent_from_explicit_repair_dirty_targets(tm
     assert _semantic_rows(first_rows) == _semantic_rows(second_rows)
 
 
-def _enqueue_radar_repair_targets(conn: Any, *, now_ms: int) -> int:
-    repos = repositories_for_connection(
-        conn,
+def _run_radar_projection(
+    conn: Any,
+    *,
+    window: str,
+    now_ms: int,
+    target_id: str | None = None,
+    target_type: str = "Asset",
+) -> dict[str, Any]:
+    if target_id is None:
+        row = conn.execute(
+            """
+            SELECT target_type, target_id
+            FROM radar_projection_frontiers
+            WHERE window_key = %s AND venue = 'all'
+            ORDER BY first_dirty_at_ms, target_type, target_id
+            LIMIT 1
+            """,
+            (window,),
+        ).fetchone()
+        if row is None:
+            return {"projection_status": "idle", "rows_written": 0}
+        target_type = str(row["target_type"])
+        target_id = str(row["target_id"])
+    conn.commit()
+    service = RadarProjectionService(db=_SingleConnectionDB(conn))
+    claim = service.claim(
+        key={
+            "target_type": target_type,
+            "target_id": target_id,
+            "window_key": window,
+            "venue": "all",
+        },
+        runtime_id=str(uuid4()),
+        now_ms=now_ms,
     )
-    with repos.transaction():
-        return int(
-            repos.token_radar_dirty_targets.enqueue_recent_resolved_targets(
-                since_ms=now_ms - 60 * 60 * 1000,
-                now_ms=now_ms,
-                limit=10,
-                reason="integration_catch_up",
-            )
-        )
+    if claim is None:
+        return {"projection_status": "idle", "rows_written": 0}
+    loaded = service.load_target(claim, now_ms=now_ms)
+    target_projection = compute_token_radar_target_projection(loaded)
+    venues = sorted(set(loaded["old_venues"]) | {target_projection["target_venue"]})
+    ranked = rank_token_radar_closure(
+        {
+            **loaded,
+            "feature": target_projection["feature"],
+            "venues": venues,
+            "rank_limit": 100,
+        }
+    )
+    hydrated = service.load_hydration(
+        claim,
+        target_projection=target_projection,
+        ranked=ranked,
+    )
+    closure = build_token_radar_current_closure(
+        {
+            "feature": target_projection["feature"],
+            "selected_by_venue": ranked["selected_by_venue"],
+            "hydrated_inputs": hydrated,
+        }
+    )
+    return service.publish(
+        claim,
+        target_projection=target_projection,
+        ranked=ranked,
+        closure=closure,
+        now_ms=now_ms,
+    )
 
 
 def _radar_rows(conn: Any) -> list[dict[str, Any]]:

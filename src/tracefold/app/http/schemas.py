@@ -60,6 +60,7 @@ class NewsHealthData(ExactApiSchema):
 class StatusData(ExactApiSchema):
     ok: bool
     reasons: list[str]
+    runtime_role: Literal["serve"]
     store: Literal["postgresql"]
     snapshot_gate: JsonObject
     db: JsonObject
@@ -89,11 +90,18 @@ class WorkerStatusData(ExactApiSchema):
         "failed",
     ]
     unavailable_reason: str | None
+    runtime_id: str | None
+    runtime_version: str | None
+    heartbeat_at_ms: int | None
     last_started_at_ms: int | None
     last_finished_at_ms: int | None
     last_result: JsonObject | None
     last_error: str | None
     iteration_duration_p99_ms: float | None
+    deadline_at_ms: int | None
+    queue_depth: int | None
+    oldest_due_at_ms: int | None
+    quarantine_count: int
 
 
 class MacroCoverageCapabilityData(ExactApiSchema):
@@ -1107,15 +1115,16 @@ class MacroThesisArchiveDetailReadData(ExactApiSchema):
         return self
 
 
-class RecentData(ExactApiSchema):
-    events: list[JsonObject]
-    items: list[JsonObject]
-
-
 class SearchPageData(ExactApiSchema):
     returned_count: int
     has_more: bool
     next_cursor: str | None
+
+
+class RecentData(ExactApiSchema):
+    events: list[JsonObject]
+    items: list[JsonObject]
+    page: SearchPageData
 
 
 class SearchData(ExactApiSchema):

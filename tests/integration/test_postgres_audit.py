@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.platform.postgres.postgres_audit import HOT_QUERIES, PostgresOperationalAudit, PostgresQueryAudit
+from tracefold.platform.postgres.postgres_audit import (
+    HOT_QUERIES,
+    PUBLIC_NO_SQL_ROUTES,
+    PUBLIC_ROUTE_QUERY_COVERAGE,
+    PostgresOperationalAudit,
+    PostgresQueryAudit,
+)
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 
 
@@ -45,6 +54,26 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     assert all(item["plan"] for item in payload["queries"])
 
 
+def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
+    tmp_path,
+):
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+
+        payload = PostgresQueryAudit(
+            conn,
+            token_radar_projection_version="token-radar-test",
+        ).run(analyze=True)
+    finally:
+        conn.close()
+
+    assert payload["ok"] is True
+    assert payload["analyze"] is True
+    assert all(item["metrics"]["plan_json_valid"] for item in payload["queries"])
+    assert all(item["violations"] == [] for item in payload["queries"])
+
+
 def test_query_audit_target_posts_uses_resolution_targets():
     query = next(item for item in HOT_QUERIES if item["name"] == "target_posts_recent")
 
@@ -77,6 +106,56 @@ def test_query_audit_binds_caller_supplied_token_radar_projection_version():
     assert {"token_radar_projection_version": "token-radar-custom"} in conn.params_seen
 
 
+def test_query_audit_covers_every_public_openapi_route_and_websocket():
+    root = Path(__file__).resolve().parents[2]
+    openapi = json.loads((root / "docs/generated/openapi.json").read_text())
+    openapi_paths = set(openapi["paths"])
+    covered_http_paths = set(PUBLIC_ROUTE_QUERY_COVERAGE) - {"/ws"}
+
+    assert "/ws" in PUBLIC_ROUTE_QUERY_COVERAGE
+    assert covered_http_paths | set(PUBLIC_NO_SQL_ROUTES) == openapi_paths
+    query_names = {str(item["name"]) for item in HOT_QUERIES}
+    assert all(
+        query_name in query_names
+        for route_queries in PUBLIC_ROUTE_QUERY_COVERAGE.values()
+        for query_name in route_queries
+    )
+
+
+def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
+    conn = RecordingJsonPlanConn(
+        {
+            "Plan": {
+                "Node Type": "Aggregate",
+                "Actual Rows": 1,
+                "Actual Loops": 1,
+                "Temp Read Blocks": 2,
+                "Temp Written Blocks": 3,
+                "Plans": [
+                    {
+                        "Node Type": "Seq Scan",
+                        "Relation Name": "events",
+                        "Plan Rows": 50_000,
+                        "Actual Rows": 500,
+                        "Actual Loops": 1,
+                    }
+                ],
+            },
+            "Planning Time": 0.5,
+            "Execution Time": 2.0,
+        }
+    )
+
+    payload = PostgresQueryAudit(conn).run(analyze=True)
+
+    assert payload["ok"] is False
+    assert set(payload["queries"][0]["violations"]) == {
+        "unexpected_large_table_seq_scan",
+        "temp_spill",
+        "read_return_amplification_exceeded",
+    }
+
+
 class RecordingExplainConn:
     def __init__(self):
         self.params_seen = []
@@ -87,3 +166,15 @@ class RecordingExplainConn:
 
     def fetchall(self):
         return [{"QUERY PLAN": "ok"}]
+
+
+class RecordingJsonPlanConn:
+    def __init__(self, statement):
+        self.statement = statement
+
+    def execute(self, sql, params=None):
+        del sql, params
+        return self
+
+    def fetchall(self):
+        return [{"QUERY PLAN": [self.statement]}]

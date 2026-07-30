@@ -34,17 +34,35 @@ class NewsInterface:
             cursor=str(cursor or "").strip() or None,
         )
 
-    def get_story(self, *, story_id: str) -> dict[str, Any] | None:
+    def get_story(
+        self,
+        *,
+        story_id: str,
+        members_limit: int = 100,
+        members_cursor: str | None = None,
+    ) -> dict[str, Any] | None:
         normalized = str(story_id or "").strip()
         if not normalized:
             raise ValueError("news_story_id_required")
-        return self._repository.get_story(story_id=normalized)
+        return self._repository.get_story(
+            story_id=normalized,
+            members_limit=members_limit,
+            members_cursor=str(members_cursor or "").strip() or None,
+        )
 
     def get_world_brief(self, *, now_ms: int) -> dict[str, Any]:
         return self._repository.get_brief(now_ms=now_ms)
 
-    def get_sources(self) -> dict[str, Any]:
-        return self._repository.list_sources()
+    def get_sources(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        return self._repository.list_sources(
+            limit=limit,
+            cursor=str(cursor or "").strip() or None,
+        )
 
     def health(self, *, now_ms: int) -> dict[str, Any]:
         return self._repository.health_snapshot(now_ms=now_ms)

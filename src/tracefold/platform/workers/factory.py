@@ -15,10 +15,11 @@ class WorkerFactoryContext:
     db: Any
     telemetry: Any
     asset_market: Any | None
-    hub: Any | None
     collector: WorkerBase | None
     collector_enabled: bool
-    collector_start_requested: bool
+    resources: Any
+    provider_governor: Any
+    runtime_id: str
 
 
 WorkerFactory = Callable[[WorkerFactoryContext], Mapping[str, WorkerBase]]

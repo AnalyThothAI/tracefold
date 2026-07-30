@@ -32,7 +32,7 @@ from .capture.gmgn_token_payload import parse_gmgn_token_payload
 from .capture.ingest_contracts import IngestedEvent
 from .capture.ingest_service import IngestService, require_event_anchor_active_window_ms
 from .capture.normalizer import normalize_gmgn_payload, parse_gmgn_frame
-from .capture.provider_contracts import EventPublisherProtocol, IngestStoreProtocol, UpstreamClientProtocol
+from .capture.provider_contracts import IngestStoreProtocol, UpstreamClientProtocol
 from .identity.asset_market_sync import BinanceUsdtPerpRoute, sync_binance_usdt_perp_routes
 from .identity.chain_identity import canonical_chain_address, canonical_chain_id, chain_address_key
 from .identity.contracts import TokenIdentityLookup, TokenIdentityLookupResult
@@ -90,10 +90,11 @@ from .profiles.asset_profile_refresh_target_repository import AssetProfileRefres
 from .profiles.asset_profile_repository import AssetProfileRepository
 from .profiles.cex_token_profile_repository import CexTokenProfileRepository
 from .profiles.cex_token_profile_sync import sync_cex_token_profiles
+from .profiles.profile_projection import rebuild_all_profiles_for_maintenance
 from .profiles.token_image_asset_repository import TokenImageAssetRepository
 from .profiles.token_image_source_dirty_target_repository import TokenImageSourceDirtyTargetRepository
-from .profiles.token_profile_current_dirty_target_repository import TokenProfileCurrentDirtyTargetRepository
 from .profiles.token_profile_current_repository import TokenProfileCurrentRepository
+from .profiles.token_profile_current_worker import ProfileProjectionCandidate
 from .profiles.token_profile_read_model import TokenProfileReadModel
 from .profiles.token_profile_source_query import TokenProfileSourceQuery
 from .provider_contracts import (
@@ -122,19 +123,17 @@ from .radar.constants import (
     TOKEN_RADAR_PROJECTION_NAME,
     TOKEN_RADAR_PROJECTION_VERSION,
     TOKEN_RADAR_RESOLVER_POLICY_VERSION,
-    TOKEN_RADAR_SOURCE_TABLE,
     TOKEN_RADAR_VENUES,
     WINDOW_MS,
 )
 from .radar.factor_diagnostics import factor_distribution_report
 from .radar.factor_snapshot_contract import is_token_factor_snapshot, require_token_factor_snapshot
 from .radar.operations import token_profile_image_repair_targets, token_radar_publication_status
-from .radar.projection_worker import TokenRadarProjectionWorker
+from .radar.projection import rebuild_all_token_radar_for_maintenance
+from .radar.projection_worker import RadarProjectionCandidate
+from .radar.radar_projection_source_repository import RadarProjectionSourceRepository
+from .radar.radar_source_edge_repository import RadarSourceEdgeRepository
 from .radar.scoring_common import clamp_score, safe_float, safe_int
-from .radar.token_radar_dirty_target_repository import TokenRadarDirtyTargetRepository
-from .radar.token_radar_projector import TokenRadarProjector
-from .radar.token_radar_publisher import TokenRadarPublisher
-from .radar.token_radar_rank_source_repository import TokenRadarRankSourceRepository
 from .radar.token_radar_repository import TokenRadarRepository
 from .views.asset_flow_service import AssetFlowService
 from .views.event_token_projection_query import EventTokenProjectionQuery
@@ -157,7 +156,6 @@ from .views.token_target_social_timeline_service import TokenTargetSocialTimelin
 from .views.token_target_stage_builder import build_token_target_stages
 from .workers_capture import construct_ingestion_workers
 from .workers_market import construct_market_workers
-from .workers_radar import construct_radar_workers
 
 __all__ = [
     "CONFIDENCE_MANUAL",
@@ -180,7 +178,6 @@ __all__ = [
     "TOKEN_RADAR_PROJECTION_NAME",
     "TOKEN_RADAR_PROJECTION_VERSION",
     "TOKEN_RADAR_RESOLVER_POLICY_VERSION",
-    "TOKEN_RADAR_SOURCE_TABLE",
     "TOKEN_RADAR_VENUES",
     "TOKEN_REPROCESS_WINDOW",
     "WINDOW_MS",
@@ -219,7 +216,6 @@ __all__ = [
     "EventAnchorBackfillJobRepository",
     "EventAnchorBackfillWorker",
     "EventMarketCaptureService",
-    "EventPublisherProtocol",
     "EventRead",
     "EventTokenProjectionQuery",
     "EvidenceRepository",
@@ -245,7 +241,11 @@ __all__ = [
     "Media",
     "MentionKeys",
     "NasdaqTraderSymbolClient",
+    "ProfileProjectionCandidate",
     "ProviderHealth",
+    "RadarProjectionCandidate",
+    "RadarProjectionSourceRepository",
+    "RadarSourceEdgeRepository",
     "Reference",
     "RegistryRepository",
     "ResolutionRefreshWorker",
@@ -269,15 +269,9 @@ __all__ = [
     "TokenIntentRepository",
     "TokenIntentResolutionDecision",
     "TokenIntentResolver",
-    "TokenProfileCurrentDirtyTargetRepository",
     "TokenProfileCurrentRepository",
     "TokenProfileReadModel",
     "TokenProfileSourceQuery",
-    "TokenRadarDirtyTargetRepository",
-    "TokenRadarProjectionWorker",
-    "TokenRadarProjector",
-    "TokenRadarPublisher",
-    "TokenRadarRankSourceRepository",
     "TokenRadarRepository",
     "TokenSnapshot",
     "TokenTargetCursorError",
@@ -298,7 +292,6 @@ __all__ = [
     "clamp_score",
     "construct_ingestion_workers",
     "construct_market_workers",
-    "construct_radar_workers",
     "decode_event_row",
     "event_to_row",
     "extract_entities_from_surfaces",
@@ -312,6 +305,8 @@ __all__ = [
     "normalize_gmgn_payload",
     "parse_gmgn_frame",
     "parse_gmgn_token_payload",
+    "rebuild_all_profiles_for_maintenance",
+    "rebuild_all_token_radar_for_maintenance",
     "rebuild_recent_token_intents",
     "reprocess_recent_token_intents",
     "require_event_anchor_active_window_ms",

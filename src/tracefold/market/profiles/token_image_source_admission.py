@@ -144,6 +144,37 @@ def admit_token_image_sources(
     candidates: list[TokenImageSourceCandidate],
     now_ms: int,
 ) -> TokenImageSourceAdmissionResult:
+    return _resolve_token_image_sources(
+        repos=repos,
+        candidates=candidates,
+        now_ms=now_ms,
+        persist=True,
+    )
+
+
+def inspect_token_image_sources(
+    *,
+    repos: Any,
+    candidates: list[TokenImageSourceCandidate],
+    now_ms: int,
+) -> TokenImageSourceAdmissionResult:
+    """Return the exact post-admission image states without mutating recovery state."""
+
+    return _resolve_token_image_sources(
+        repos=repos,
+        candidates=candidates,
+        now_ms=now_ms,
+        persist=False,
+    )
+
+
+def _resolve_token_image_sources(
+    *,
+    repos: Any,
+    candidates: list[TokenImageSourceCandidate],
+    now_ms: int,
+    persist: bool,
+) -> TokenImageSourceAdmissionResult:
     unique_candidates = _dedupe_candidates(
         [candidate for candidate in candidates if _is_admissible_source_url(candidate.source_url)]
     )
@@ -256,13 +287,15 @@ def admit_token_image_sources(
             "target_id": candidate.target_id,
         }
 
-    if enqueues:
+    if enqueues and persist:
         enqueue_result = repos.token_image_source_dirty_targets.enqueue_targets(
             enqueues,
             reason=DIRTY_REASON,
             now_ms=int(now_ms),
         )
         counts["admitted"] = int(enqueue_result.get("targets") or 0)
+    elif enqueues:
+        counts["admitted"] = len(enqueues)
 
     return TokenImageSourceAdmissionResult(counts=counts, image_states_by_source_key=image_states)
 

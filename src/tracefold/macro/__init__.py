@@ -54,7 +54,8 @@ from .fed_analysis import (
     MacroDocumentAnalysisService,
 )
 from .module_payloads import build_typed_module_payload, schema_version_for_module
-from .projection_worker import MacroProjectionWorker
+from .projection import rebuild_all_macro_modules_for_maintenance
+from .projection_worker import MacroProjectionCandidate
 from .read_models import (
     MacroAlternativePresentation,
     MacroAssetHorizonPresentation,
@@ -92,6 +93,7 @@ from .read_models import (
 from .reasons import MacroReason, MacroReasonImpact, MacroReasonRecovery, macro_reason
 from .registry import DATASET_REGISTRY, datasets_for_clock, datasets_for_module, require_dataset
 from .repository import MacroRepository
+from .session_calendar import is_us_market_session
 from .thesis import (
     MACRO_EVIDENCE_PACK_SCHEMA_VERSION,
     MACRO_LIVE_DELTA_SCHEMA_VERSION,
@@ -234,7 +236,7 @@ __all__ = [
     "MacroOutcomeReplayRead",
     "MacroOutcomeReplayV1",
     "MacroOutcomeReplayV2",
-    "MacroProjectionWorker",
+    "MacroProjectionCandidate",
     "MacroPublicationAppendixRead",
     "MacroPublicationDataQualityRead",
     "MacroPublicationModuleQualityRead",
@@ -286,6 +288,7 @@ __all__ = [
     "evaluate_outcome_replay_v2",
     "freeze_macro_eval_manifest",
     "inspect_macro_eval_readiness",
+    "is_us_market_session",
     "macro_reason",
     "natural_change_calculation",
     "parse_current_thesis_v2",
@@ -301,6 +304,7 @@ __all__ = [
     "project_module_reader_narrative",
     "project_outcome_replay_for_read",
     "project_publication_appendix",
+    "rebuild_all_macro_modules_for_maintenance",
     "require_dataset",
     "resolve_thesis_session",
     "schema_version_for_module",

@@ -5,35 +5,24 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
-from tracefold.app.database import DBPoolBundle
+from tracefold.app.database import WorkerDatabase
 from tracefold.app.market_providers import wire_asset_market
 from tracefold.app.provider_types import AssetMarketProviders
-from tracefold.app.worker_manifest import require_worker_manifest, worker_names
+from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
 from tracefold.app.workers import construct_worker
-from tracefold.market import token_profile_image_repair_targets
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
 _ASSET_PROVIDER_WORKERS = frozenset({"asset_profile_refresh", "resolution_refresh"})
-_SUPPORTED_WORKERS = frozenset(
+_STEADY_ONE_SHOT_UNITS = frozenset(
     {
         "asset_profile_refresh",
         "resolution_refresh",
         "token_image_mirror",
-        "token_profile_current",
-        "token_radar_projection",
-        "macro_intraday_market",
-        "macro_settlements",
-        "macro_economic_releases",
-        "macro_official_state",
-        "macro_official_documents",
-        "macro_backfill",
-        "macro_document_analysis",
-        "macro_projection",
-        "macro_thesis",
     }
 )
 
@@ -62,39 +51,34 @@ class WorkerExecution:
         return payload
 
 
-def run_worker_once(
+def mirror_token_images_once(settings: Settings, *, limit: int) -> WorkerExecution:
+    return _run_maintenance_once(
+        settings,
+        unit_name="token_image_mirror",
+        overrides={"batch_size": limit},
+    )
+
+
+def refresh_resolutions_once(
     settings: Settings,
-    worker_name: str,
-    overrides: Mapping[str, object] | None = None,
+    *,
+    limit: int,
+    reprocess_limit: int,
 ) -> WorkerExecution:
-    """Compose and run one production-equivalent worker iteration."""
-    return asyncio.run(
-        _run_worker_once(
-            settings=settings,
-            worker_name=worker_name,
-            overrides=overrides,
-        )
+    return _run_maintenance_once(
+        settings,
+        unit_name="resolution_refresh",
+        overrides={"batch_size": limit, "reprocess_limit": reprocess_limit},
     )
 
 
 def refresh_asset_profiles_once(settings: Settings, *, limit: int) -> WorkerExecution:
     return asyncio.run(
-        _run_worker_once(
+        _run_unit_once(
             settings=settings,
-            worker_name="asset_profile_refresh",
+            unit_name="asset_profile_refresh",
             overrides={"batch_size": limit},
             prepare=_enqueue_missing_asset_profile_targets,
-        )
-    )
-
-
-def repair_token_profile_images_once(settings: Settings, *, limit: int) -> WorkerExecution:
-    return asyncio.run(
-        _run_worker_once(
-            settings=settings,
-            worker_name="token_profile_current",
-            overrides={"batch_size": limit},
-            prepare=_enqueue_token_profile_image_repair_targets,
         )
     )
 
@@ -102,15 +86,16 @@ def repair_token_profile_images_once(settings: Settings, *, limit: int) -> Worke
 @dataclass(slots=True)
 class _OneShotComposition:
     settings: Settings
-    db: DBPoolBundle
+    db: WorkerDatabase
     asset_market: AssetMarketProviders | None
     worker: WorkerBase
+    resources: RuntimeResources
 
     async def aclose(self) -> None:
         errors: list[Exception] = []
-        resources = [self.worker, self.asset_market, self.db]
+        closeables = [self.worker, self.asset_market, self.db]
         closed: set[int] = set()
-        for resource in resources:
+        for resource in closeables:
             if resource is None:
                 continue
             if id(resource) in closed:
@@ -120,6 +105,10 @@ class _OneShotComposition:
                 await resource.aclose()
             except Exception as exc:
                 errors.append(exc)
+        try:
+            self.resources.close()
+        except Exception as exc:
+            errors.append(exc)
         if errors:
             raise ExceptionGroup("worker_once_cleanup_failed", errors)
 
@@ -127,20 +116,20 @@ class _OneShotComposition:
 Preparation = Callable[[_OneShotComposition, int], dict[str, Any]]
 
 
-async def _run_worker_once(
+async def _run_unit_once(
     *,
     settings: Settings,
-    worker_name: str,
+    unit_name: str,
     overrides: Mapping[str, object] | None,
     prepare: Preparation | None = None,
 ) -> WorkerExecution:
-    composition = await _compose_worker(settings=settings, worker_name=worker_name, overrides=overrides)
+    composition = await _compose_unit(settings=settings, unit_name=unit_name, overrides=overrides)
     primary_error: BaseException | None = None
     try:
         now_ms = _now_ms()
         preparation = prepare(composition, now_ms) if prepare is not None else None
         result = await composition.worker.run_one_iteration()
-        return _execution(worker_name=worker_name, result=result, preparation=preparation)
+        return _execution(worker_name=unit_name, result=result, preparation=preparation)
     except BaseException as exc:
         primary_error = exc
         raise
@@ -153,41 +142,50 @@ async def _run_worker_once(
             primary_error.add_note(f"worker_once_cleanup_failed: {cleanup_exc}")
 
 
-async def _compose_worker(
+async def _compose_unit(
     *,
     settings: Settings,
-    worker_name: str,
+    unit_name: str,
     overrides: Mapping[str, object] | None,
 ) -> _OneShotComposition:
-    require_worker_manifest(worker_name)
-    if worker_name not in _SUPPORTED_WORKERS:
-        raise ValueError(f"worker_once_unsupported:{worker_name}")
+    if unit_name not in _STEADY_ONE_SHOT_UNITS:
+        raise ValueError(f"maintenance_unit_unsupported:{unit_name}")
 
-    one_shot_settings = _one_shot_settings(settings, worker_name=worker_name, overrides=overrides)
+    one_shot_settings = _one_shot_settings(
+        settings,
+        policy_name=unit_name,
+        overrides=overrides,
+    )
     telemetry = TelemetryRegistry()
-    db = DBPoolBundle.create(one_shot_settings, telemetry=telemetry)
+    db = WorkerDatabase.create(one_shot_settings, telemetry=telemetry)
+    resources = RuntimeResources()
+    provider_governor = ProviderGovernor()
     asset_market: AssetMarketProviders | None = None
     worker: WorkerBase | None = None
     try:
-        asset_market = wire_asset_market(one_shot_settings) if worker_name in _ASSET_PROVIDER_WORKERS else None
+        asset_market = wire_asset_market(one_shot_settings) if unit_name in _ASSET_PROVIDER_WORKERS else None
         worker = construct_worker(
-            worker_name=worker_name,
+            worker_name=unit_name,
             settings=one_shot_settings,
             db=db,
             telemetry=telemetry,
             asset_market=asset_market,
-            hub=None,
             collector=None,
             collector_enabled=False,
-            collector_start_requested=False,
+            resources=resources,
+            provider_governor=provider_governor,
+            runtime_id=str(uuid4()),
         )
+        worker.bind_runtime_resources(resources)
+        worker.bind_provider_governor(provider_governor)
         if worker.effective_status == "unavailable":
-            raise RuntimeError(f"worker_once_unavailable:{worker_name}:{worker.unavailable_reason or 'unknown'}")
+            raise RuntimeError(f"maintenance_unit_unavailable:{unit_name}:{worker.unavailable_reason or 'unknown'}")
         return _OneShotComposition(
             settings=one_shot_settings,
             db=db,
             asset_market=asset_market,
             worker=worker,
+            resources=resources,
         )
     except BaseException as exc:
         await _close_partial_composition(
@@ -195,6 +193,7 @@ async def _compose_worker(
             worker=worker,
             asset_market=asset_market,
             db=db,
+            resources=resources,
         )
         raise
 
@@ -202,16 +201,31 @@ async def _compose_worker(
 def _one_shot_settings(
     settings: Settings,
     *,
-    worker_name: str,
+    policy_name: str,
     overrides: Mapping[str, object] | None,
 ) -> Settings:
     worker_payload = settings.workers.model_dump()
-    for name in worker_names():
-        worker_payload[name]["enabled"] = name == worker_name
-    worker_payload[worker_name].update(dict(overrides or {}))
-    worker_payload[worker_name]["enabled"] = True
+    worker_payload[policy_name].update(dict(overrides or {}))
+    worker_payload[policy_name]["enabled"] = True
     configured_workers = type(settings.workers).model_validate(worker_payload)
-    return settings.model_copy(update={"workers": configured_workers})
+    copied = settings.model_copy(deep=True)
+    copied._workers = configured_workers
+    return copied
+
+
+def _run_maintenance_once(
+    settings: Settings,
+    *,
+    unit_name: str,
+    overrides: Mapping[str, object] | None,
+) -> WorkerExecution:
+    return asyncio.run(
+        _run_unit_once(
+            settings=settings,
+            unit_name=unit_name,
+            overrides=overrides,
+        )
+    )
 
 
 def _execution(
@@ -261,34 +275,17 @@ def _enqueue_missing_asset_profile_targets(composition: _OneShotComposition, now
     }
 
 
-def _enqueue_token_profile_image_repair_targets(
-    composition: _OneShotComposition,
-    now_ms: int,
-) -> dict[str, Any]:
-    limit = int(composition.settings.workers.token_profile_current.batch_size)
-    with composition.db.worker_session("token_profile_image_repair") as repos, repos.transaction():
-        targets = token_profile_image_repair_targets(repos.conn, limit=limit)
-        enqueue_result = repos.token_profile_current_dirty_targets.enqueue_targets(
-            targets,
-            reason="token_profile_image_repair",
-            now_ms=now_ms,
-        )
-    return {
-        "selected_targets": len(targets),
-        "profile_targets_enqueued": int(enqueue_result.get("targets") or 0),
-    }
-
-
 async def _close_partial_composition(
     primary_error: BaseException,
     *,
     worker: WorkerBase | None,
     asset_market: AssetMarketProviders | None,
-    db: DBPoolBundle,
+    db: WorkerDatabase,
+    resources: RuntimeResources,
 ) -> None:
-    resources = [worker, asset_market, db]
+    closeables = [worker, asset_market, db]
     closed: set[int] = set()
-    for resource in resources:
+    for resource in closeables:
         if resource is None:
             continue
         if id(resource) in closed:
@@ -298,6 +295,10 @@ async def _close_partial_composition(
             await resource.aclose()
         except Exception as exc:
             primary_error.add_note(f"worker_once_partial_cleanup_failed: {exc}")
+    try:
+        resources.close()
+    except Exception as exc:
+        primary_error.add_note(f"worker_once_partial_cleanup_failed: {exc}")
 
 
 def _now_ms() -> int:
@@ -306,7 +307,7 @@ def _now_ms() -> int:
 
 __all__ = [
     "WorkerExecution",
+    "mirror_token_images_once",
     "refresh_asset_profiles_once",
-    "repair_token_profile_images_once",
-    "run_worker_once",
+    "refresh_resolutions_once",
 ]

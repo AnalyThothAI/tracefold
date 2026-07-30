@@ -1,31 +1,30 @@
 # Architecture
 
-Tracefold is one Python service, one CLI, one React console, and one PostgreSQL
-database. The architecture remains Kappa/CQRS: append-oriented material facts
-are the only business truth; deterministic current views and immutable research
+Tracefold is one Python codebase/image with two mutually exclusive runtime
+composition roots, one CLI, one React console, and one PostgreSQL database.
+The architecture remains Kappa/CQRS: append-oriented material facts are the
+only business truth; deterministic current views and immutable research
 publications are derived state.
 
 ## Data flow
 
 ```text
 providers / public streams
-  -> integrations
-  -> PostgreSQL material facts
-  -> durable dirty targets or bounded catch-up
+  -> tracefold workers
+  -> PostgreSQL material facts + typed frontiers
   -> single-writer read models or immutable publications
-  -> HTTP / WebSocket / CLI / React
+  -> tracefold serve
+  -> HTTP / persisted-live WebSocket / React
 ```
 
-Workers recover exclusively by re-reading PostgreSQL on bounded
-`interval_seconds` start-to-start loops. Startup is phased: collectors and
-market/Radar serving writers start first, bounded News/Macro current
-projections start second, and backfill/profile/analysis workers start last.
-The latency-sensitive Radar projection owns a separate one-slot iteration
-group; News, Macro, profile, and image projections share a two-slot background
-group. These process-local gates bound concurrent recomputation but do not
-carry correctness state: restart recovery still comes only from PostgreSQL.
-There is no database wake plane or in-memory correctness dependency. Provider
-raw frames remain inputs until normalized and persisted as material facts.
+`tracefold serve` initializes only public HTTP/static/WebSocket, read
+repositories, and serve telemetry. `tracefold workers` initializes ingestion,
+acquisition, provider/model lanes, persisted status, and one EDF projection
+coordinator. Workers recover exclusively by re-reading PostgreSQL typed
+frontiers and queues on bounded code-owned clocks. Startup performs no full
+rebuild, backlog-clear loop, backfill, or phased load shifting. There is no
+database wake plane or in-memory correctness dependency. Provider raw frames
+remain inputs until normalized and persisted as material facts.
 
 ## Truth, control state, and derived state
 
@@ -51,12 +50,13 @@ business payload is unchanged.
 
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
-or audit state. The singleton `news_story_input_state` and
-`macro_projection_state` rows store only deterministic input fingerprints and
-counts so unchanged ticks can skip clustering/history loads; both are
-rebuildable control state, not alternate business truth. Profile refresh heat
-tiers, retry attempts, and terminal reasons are likewise queue policy, not
-profile facts.
+or audit state. Typed Radar, Macro, News, and Profile frontiers store stable
+domain/shard identity, input fingerprint, earliest deadline, lease, failure,
+and publication checkpoints. Persisted News identity features and similarity
+edges and Radar source edges are deterministic rebuildable state, not
+alternate business truth. Profile refresh heat tiers, retry attempts,
+provider circuits, and terminal reasons are likewise queue policy, not profile
+facts.
 `macro_thesis_publications` and `news_brief_publications` are immutable
 derived research keyed by frozen evidence; they are not material facts.
 
@@ -79,7 +79,8 @@ tracefold.news
   brief.py          Chinese Brief fingerprint and citation index lock
   repository.py     PostgreSQL observation, item, Story, and Brief state
   interface.py      sole external News read interface
-  workers.py        the two bounded News workers
+  workers.py        source-only ingest and model candidates
+  projection.py     incremental identity/scoring reducer
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -163,8 +164,9 @@ fact replay rebuilds it.
 
 ```text
 events + intents + resolutions + market facts
-  -> token_radar_dirty_targets
-  -> source edges + target features
+  -> stable Radar source edges
+  -> typed target x window frontiers
+  -> affected target features and window x venue rank closure
   -> compact scalar rank inputs
   -> Top-N identity selection
   -> hydrate wide JSON only for selected identities
@@ -210,20 +212,23 @@ explicit regional exceptions. General local/regional news feeds are retired
 from serving. Trump Truth Social is a tier-1 first-party source and enters the
 ordinary Story/Brief lane without a separate corroboration gate.
 
-`news_pipeline` is the only NewsItem/Story writer. It synchronizes the
-code-owned source catalog, claims due sources, performs concurrent provider I/O
-outside transactions, records one FetchReceipt per attempt, and commits each
-source independently. Every parsed entry first becomes an immutable
+`news_ingest` is the only NewsItem writer. It synchronizes the code-owned
+source catalog, claims one due source, performs provider I/O outside
+transactions under the global governor, records one FetchReceipt per attempt,
+and commits each source independently. Every parsed entry first becomes an immutable
 `news_feed_observations` row. Missing title, non-HTTP URL, missing date, and
 future time beyond one hour remain auditable rejected observations and never
 become NewsItems. Valid entries older than 96 hours are persisted as
 historical inactive NewsItems so acquisition loss stays distinguishable from
 active-cluster eligibility.
 
-Story candidate loading, vectorization, and clustering occur outside the write
-transaction. The write phase compares the input fingerprint again before
-publishing; an unchanged fingerprint performs zero clustering and zero serving
-writes.
+The EDF News projection domain is the only Story/member/alias/feature/edge
+writer. It runs ordered identity work before scoring, keeps candidate-pair
+blocks at or below 4,096 and buckets at or below 250, and recomputes only
+affected components and expiry closures. Pure calculation occurs outside the
+write transaction. The CAS publication compares the input fingerprint again
+and writes the complete affected component closure; unchanged input performs
+zero serving writes.
 
 WallStEngine is one ordinary tier-4 English source in the Finance membership.
 Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
@@ -239,12 +244,13 @@ content fingerprint covers canonical URL, title, and description,
 but deliberately excludes `pubDate`: a source timestamp drift produces a new
 observation and zero NewsItem or Story writes.
 
-Story clustering is the Python port of WorldMonitor's
+Story identity is the Python port of WorldMonitor's
 `shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
 512-dimensional vectors, uniform and boosted cosine channels, threshold
 `0.615`, exact-duplicate union, high-containment rescue, 250-item candidate
-buckets, and deterministic union-find. The entire active 96-hour set is
-reclustered per pipeline cycle. Existing member ownership and seven-day title
+buckets, and deterministic union-find. Persisted features and similarity edges
+let the reducer close only affected components. Crossing the 250/251 boundary
+dirties the complete bucket. Existing member ownership and seven-day title
 aliases preserve a stable Story ID across representative changes; dropped
 Stories are archived, not treated as current. There is no embedding,
 translation, full-article extraction, browser clustering, revision product, or
@@ -298,9 +304,10 @@ code-owned Dataset Registry + Coverage Manifest
   -> macro_acquisition_targets claim
   -> free official / exchange / disclosed proxy adapter
   -> typed append-only Market or Macro fact + source receipt + cursor
-  -> compact fact/target watermark fingerprint
-  -> macro_projection only when that fingerprint changes
-  -> six macro_module_current rows
+  -> static dataset -> calculation -> module dependency graph
+  -> typed affected-module frontier
+  -> one EDF module-local reducer
+  -> one stable macro_module_current closure
   -> persisted-only overview and module reads
 
 official FOMC / speech body + effective-dated role fact

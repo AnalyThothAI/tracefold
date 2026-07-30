@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
@@ -11,17 +10,34 @@ from tracefold.market.profiles.asset_profile_refresh import (
     write_ready_asset_profile,
     write_unsupported_asset_profile,
 )
+from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.provider_contracts import (
     DexProfileSource,
     DexProviderTemporarilyUnavailable,
     DexTokenProfile,
 )
 from tracefold.platform.config.settings import AssetProfileRefreshWorkerSettings
+from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
+_CLAIM_LEASE_MS = 120_000
+_PROVIDER_RETRY_MS = 300_000
+_READY_REFRESH_MS = 6 * 60 * 60_000
+_MISSING_RETRY_MS = (15 * 60_000, 30 * 60_000, 60 * 60_000, 120 * 60_000)
+_ERROR_RETRY_BASE_MS = 15 * 60_000
+_ERROR_RETRY_CAP_MS = 24 * 60 * 60_000
+_ERROR_MAX_ATTEMPTS = 5
+_STATEMENT_TIMEOUT_SECONDS = 3.0
+_PROVIDER_LANES = {
+    "gmgn_dex_profile": "profile_gmgn",
+    "binance_web3_profile": "profile_binance",
+}
+
 
 class AssetProfileRefreshWorker(WorkerBase):
+    """One host for two durable provider lanes with no connection held over I/O."""
+
     def __init__(
         self,
         *,
@@ -33,301 +49,341 @@ class AssetProfileRefreshWorker(WorkerBase):
     ) -> None:
         super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
         self.dex_profile_sources = tuple(dex_profile_sources)
+        unknown = sorted(
+            source.provider for source in self.dex_profile_sources if source.provider not in _PROVIDER_LANES
+        )
+        if unknown:
+            raise ValueError(f"asset_profile_provider_invalid:{','.join(unknown)}")
+        self._source_cursor = 0
 
     async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-        result = await asyncio.to_thread(self._refresh_once, observed_at_ms)
+        if not self.dex_profile_sources:
+            return WorkerResult(
+                skipped=1,
+                notes={"reason": "no_asset_profile_sources", "claimed": 0},
+            )
+
+        selected = await self._claim_next(observed_at_ms)
+        if selected is None:
+            return WorkerResult(
+                skipped=1,
+                notes={"reason": "no_due_asset_profile_refresh_targets", "claimed": 0},
+            )
+        profile_source, claim, queue = selected
+
+        try:
+            async with self.require_provider_governor().acquire(
+                host=profile_source.provider,
+                lane=_PROVIDER_LANES[profile_source.provider],
+            ):
+                profile = await self.require_runtime_resources().run_provider_io(
+                    fetch_asset_profile,
+                    profile_source=profile_source,
+                    row=claim,
+                )
+        except DexProviderTemporarilyUnavailable as exc:
+            publish = await self.require_runtime_resources().run_background_db(
+                self._publish_provider_failure,
+                claim,
+                exc,
+                observed_at_ms,
+            )
+            return self._result(
+                status="provider_blocked",
+                queue=queue,
+                publish=publish,
+                error=str(exc),
+            )
+        except Exception as exc:
+            publish = await self.require_runtime_resources().run_background_db(
+                self._publish_target_error,
+                claim,
+                exc,
+                observed_at_ms,
+            )
+            return self._result(
+                status="error",
+                queue=queue,
+                publish=publish,
+                error=str(exc),
+            )
+
+        publish = await self.require_runtime_resources().run_background_db(
+            self._publish_profile,
+            claim,
+            profile,
+            observed_at_ms,
+        )
+        return self._result(
+            status="ready" if isinstance(profile, DexTokenProfile) else "missing",
+            queue=queue,
+            publish=publish,
+        )
+
+    async def _claim_next(
+        self,
+        now_ms: int,
+    ) -> tuple[DexProfileSource, dict[str, Any], dict[str, int]] | None:
+        source_count = len(self.dex_profile_sources)
+        resources = self.require_runtime_resources()
+        for offset in range(source_count):
+            index = (self._source_cursor + offset) % source_count
+            source = self.dex_profile_sources[index]
+            claim, queue = await resources.run_background_db(
+                self._claim_source,
+                source.provider,
+                now_ms,
+            )
+            if claim is None:
+                continue
+            self._source_cursor = (index + 1) % source_count
+            return source, claim, queue
+        self._source_cursor = (self._source_cursor + 1) % source_count
+        return None
+
+    def _claim_source(
+        self,
+        provider: str,
+        now_ms: int,
+    ) -> tuple[dict[str, Any] | None, dict[str, int]]:
+        with (
+            self.db.worker_session(
+                self.name,
+                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            if not repos.provider_circuits.can_attempt(provider=provider, now_ms=now_ms):
+                return None, {"due": 0, "oldest_due_age_ms": 0}
+            rows = repos.asset_profile_refresh_targets.claim_due(
+                provider=provider,
+                now_ms=now_ms,
+                limit=1,
+                lease_owner=self.claim_owner,
+                lease_ms=_CLAIM_LEASE_MS,
+            )
+            queue = repos.asset_profile_refresh_targets.queue_health(
+                provider=provider,
+                now_ms=now_ms,
+            )
+        return (rows[0] if rows else None), queue
+
+    def _publish_provider_failure(
+        self,
+        claim: dict[str, Any],
+        exc: Exception,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        due_at_ms = int(now_ms) + _PROVIDER_RETRY_MS
+        with (
+            self.db.worker_session(
+                self.name,
+                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            repos.provider_circuits.open(
+                provider=str(claim["provider"]),
+                error=str(exc),
+                now_ms=now_ms,
+                retry_ms=_PROVIDER_RETRY_MS,
+            )
+            released = repos.asset_profile_refresh_targets.release_provider_failure(
+                claim,
+                due_at_ms=due_at_ms,
+                now_ms=now_ms,
+            )
+            if released != 1:
+                raise RuntimeError("asset_profile_provider_failure_claim_stale")
+        return {
+            "rows_written": 0,
+            "terminal": 0,
+            "next_attempt_at_ms": due_at_ms,
+            "target_attempt_consumed": False,
+        }
+
+    def _publish_target_error(
+        self,
+        claim: dict[str, Any],
+        exc: Exception,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        attempt_count = int(claim["attempt_count"])
+        terminal_reason = _terminal_error_reason(
+            exc,
+            attempt_count=attempt_count,
+            max_attempts=_ERROR_MAX_ATTEMPTS,
+        )
+        retry_delay_ms = _retry_delay_ms(
+            base_ms=_ERROR_RETRY_BASE_MS,
+            attempt_count=attempt_count,
+            cap_ms=_ERROR_RETRY_CAP_MS,
+        )
+        next_refresh_at_ms = int(now_ms) + retry_delay_ms
+        with (
+            self.db.worker_session(
+                self.name,
+                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            repos.provider_circuits.close(
+                provider=str(claim["provider"]),
+                now_ms=now_ms,
+            )
+            if terminal_reason == "profile_unsupported":
+                write_unsupported_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    exc=exc,
+                    now_ms=now_ms,
+                )
+            else:
+                write_error_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    exc=exc,
+                    now_ms=now_ms,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                )
+            if terminal_reason is not None:
+                changed = repos.asset_profile_refresh_targets.mark_terminal(
+                    [claim],
+                    reason=terminal_reason,
+                    now_ms=now_ms,
+                )
+            else:
+                changed = repos.asset_profile_refresh_targets.reschedule(
+                    [claim],
+                    due_at_ms=next_refresh_at_ms,
+                    now_ms=now_ms,
+                    reason="profile_error_written",
+                )
+            if changed != 1:
+                raise RuntimeError("asset_profile_target_error_claim_stale")
+            _enqueue_profile_current(repos=repos, row=claim, now_ms=now_ms)
+        return {
+            "rows_written": 1,
+            "terminal": int(terminal_reason is not None),
+            "next_attempt_at_ms": next_refresh_at_ms,
+            "target_attempt_consumed": True,
+        }
+
+    def _publish_profile(
+        self,
+        claim: dict[str, Any],
+        profile: DexTokenProfile | None,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        attempt_count = int(claim["attempt_count"])
+        with (
+            self.db.worker_session(
+                self.name,
+                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            repos.provider_circuits.close(
+                provider=str(claim["provider"]),
+                now_ms=now_ms,
+            )
+            if isinstance(profile, DexTokenProfile):
+                next_refresh_at_ms = int(now_ms) + _READY_REFRESH_MS
+                write_ready_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    profile=profile,
+                    now_ms=now_ms,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                )
+                changed = repos.asset_profile_refresh_targets.reschedule(
+                    [claim],
+                    due_at_ms=next_refresh_at_ms,
+                    now_ms=now_ms,
+                    reason="profile_ready_written",
+                    reset_attempts=True,
+                )
+                terminal = False
+            else:
+                retry_delay_ms = _missing_retry_delay_ms(attempt_count)
+                next_refresh_at_ms = int(now_ms) + retry_delay_ms
+                write_missing_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    now_ms=now_ms,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                )
+                terminal = attempt_count >= len(_MISSING_RETRY_MS)
+                if terminal:
+                    changed = repos.asset_profile_refresh_targets.mark_terminal(
+                        [claim],
+                        reason="profile_missing_after_max_attempts",
+                        now_ms=now_ms,
+                    )
+                else:
+                    changed = repos.asset_profile_refresh_targets.reschedule(
+                        [claim],
+                        due_at_ms=next_refresh_at_ms,
+                        now_ms=now_ms,
+                        reason="profile_missing_written",
+                    )
+            if changed != 1:
+                raise RuntimeError("asset_profile_publish_claim_stale")
+            _enqueue_profile_current(repos=repos, row=claim, now_ms=now_ms)
+        return {
+            "rows_written": 1,
+            "terminal": int(terminal),
+            "next_attempt_at_ms": next_refresh_at_ms,
+            "target_attempt_consumed": True,
+        }
+
+    @staticmethod
+    def _result(
+        *,
+        status: str,
+        queue: dict[str, int],
+        publish: dict[str, Any],
+        error: str | None = None,
+    ) -> WorkerResult:
+        failed = int(status in {"error", "provider_blocked"})
+        processed = int(status in {"ready", "missing"})
         return WorkerResult(
-            processed=int(result.get("ready") or 0) + int(result.get("missing") or 0),
-            failed=int(result.get("error") or 0) + int(result.get("provider_blocked") or 0),
-            skipped=int(result.get("skipped") or 0),
+            processed=processed,
+            failed=failed,
             notes={
-                "claimed": int(result.get("claimed") or 0),
-                "queue_depth": int(result.get("queue_depth") or 0),
-                "oldest_due_age_ms": int(result.get("oldest_due_age_ms") or 0),
-                "source_rows_scanned": int(result.get("source_rows_scanned") or 0),
-                "targets_loaded": int(result.get("targets_loaded") or 0),
-                "rows_written": int(result.get("rows_written") or 0),
-                "terminal": int(result.get("terminal") or 0),
-                "result": result,
+                "claimed": 1,
+                "status": status,
+                "queue_depth": int(queue.get("due") or 0),
+                "oldest_due_age_ms": int(queue.get("oldest_due_age_ms") or 0),
+                "rows_written": int(publish.get("rows_written") or 0),
+                "terminal": int(publish.get("terminal") or 0),
+                "target_attempt_consumed": bool(publish.get("target_attempt_consumed")),
+                "next_attempt_at_ms": publish.get("next_attempt_at_ms"),
+                **({"last_error": str(error)[:500]} if error else {}),
             },
         )
 
-    def _refresh_once(self, now_ms: int) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "providers": [source.provider for source in self.dex_profile_sources],
-            "selected": 0,
-            "claimed": 0,
-            "queue_depth": 0,
-            "oldest_due_age_ms": 0,
-            "queue_hot": 0,
-            "queue_warm": 0,
-            "queue_cold": 0,
-            "queue_terminal": 0,
-            "source_rows_scanned": 0,
-            "targets_loaded": 0,
-            "rows_written": 0,
-            "ready": 0,
-            "missing": 0,
-            "error": 0,
-            "provider_blocked": 0,
-            "terminal": 0,
-            "skipped": 0,
-            "sources": {},
-            "started_at_ms": int(now_ms),
-            "finished_at_ms": int(now_ms),
-        }
-        if not self.dex_profile_sources:
-            result["skipped"] = 1
-            return result
-        for profile_source in self.dex_profile_sources:
-            source_result = self._refresh_source_once(profile_source=profile_source, now_ms=now_ms)
-            result["sources"][profile_source.provider] = source_result
-            for key in (
-                "selected",
-                "claimed",
-                "queue_depth",
-                "source_rows_scanned",
-                "targets_loaded",
-                "rows_written",
-                "ready",
-                "missing",
-                "error",
-                "provider_blocked",
-                "terminal",
-                "skipped",
-            ):
-                result[key] += int(source_result.get(key) or 0)
-            queue = dict(source_result.get("queue") or {})
-            result["oldest_due_age_ms"] = max(
-                int(result["oldest_due_age_ms"]),
-                int(queue.get("oldest_due_age_ms") or 0),
-            )
-            for queue_key, health_key in (
-                ("queue_hot", "hot"),
-                ("queue_warm", "warm"),
-                ("queue_cold", "cold"),
-                ("queue_terminal", "terminal"),
-            ):
-                result[queue_key] += int(queue.get(health_key) or 0)
-        return result
-
-    def _refresh_source_once(self, *, profile_source: DexProfileSource, now_ms: int) -> dict[str, Any]:
-        source_result: dict[str, Any] = {
-            "provider": profile_source.provider,
-            "selected": 0,
-            "claimed": 0,
-            "queue_depth": 0,
-            "source_rows_scanned": 0,
-            "targets_loaded": 0,
-            "rows_written": 0,
-            "ready": 0,
-            "missing": 0,
-            "error": 0,
-            "provider_blocked": 0,
-            "terminal": 0,
-            "skipped": 0,
-            "started_at_ms": int(now_ms),
-            "finished_at_ms": int(now_ms),
-        }
-        with (
-            self.db.worker_session(
-                self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
-            ) as repos,
-            repos.transaction(),
-        ):
-            rows = repos.asset_profile_refresh_targets.claim_due(
-                provider=profile_source.provider,
-                now_ms=now_ms,
-                limit=self.settings.batch_size,
-                lease_owner=self.name,
-                lease_ms=self.settings.lease_ms,
-            )
-            queue_health = repos.asset_profile_refresh_targets.queue_health(
-                provider=profile_source.provider,
-                now_ms=now_ms,
-            )
-            source_result["queue_depth"] = queue_health["due"]
-            source_result["queue"] = queue_health
-        source_result["selected"] = len(rows)
-        source_result["claimed"] = len(rows)
-        source_result["targets_loaded"] = len(rows)
-        if not rows:
-            source_result["skipped"] = 1
-            source_result["reason"] = "no_due_asset_profile_refresh_targets"
-            return source_result
-        ready_refresh_ms = self.settings.ready_refresh_ms
-        missing_refresh_ms = self.settings.missing_refresh_ms
-        error_refresh_ms = self.settings.error_refresh_ms
-        backoff_cap_ms = self.settings.retry_backoff_cap_ms
-        for row in rows:
-            try:
-                profile = fetch_asset_profile(profile_source=profile_source, row=row)
-            except DexProviderTemporarilyUnavailable as exc:
-                source_result["provider_blocked"] = 1
-                source_result["last_error"] = str(exc)[:500]
-                self._reschedule_claims(
-                    [item for item in rows if int(item.get("due_at_ms") or 0) <= int(now_ms)],
-                    due_at_ms=now_ms + self.settings.provider_retry_ms,
-                    now_ms=now_ms,
-                    reason="provider_blocked",
-                    reset_attempts=True,
-                )
-                break
-            except Exception as exc:
-                terminal_reason = _terminal_error_reason(
-                    exc,
-                    attempt_count=int(row["attempt_count"]),
-                    max_attempts=self.settings.error_max_attempts,
-                )
-                retry_delay_ms = _retry_delay_ms(
-                    base_ms=error_refresh_ms,
-                    attempt_count=int(row["attempt_count"]),
-                    cap_ms=backoff_cap_ms,
-                )
-                next_refresh_at_ms = now_ms + retry_delay_ms
-                with (
-                    self.db.worker_session(
-                        self.name,
-                        statement_timeout_seconds=self.settings.statement_timeout_seconds,
-                    ) as repos,
-                    repos.transaction(),
-                ):
-                    if terminal_reason == "profile_unsupported":
-                        write_unsupported_asset_profile(
-                            repos=repos,
-                            provider=profile_source.provider,
-                            row=row,
-                            exc=exc,
-                            now_ms=now_ms,
-                        )
-                    else:
-                        write_error_asset_profile(
-                            repos=repos,
-                            provider=profile_source.provider,
-                            row=row,
-                            exc=exc,
-                            now_ms=now_ms,
-                            next_refresh_at_ms=next_refresh_at_ms,
-                        )
-                    if terminal_reason is not None:
-                        repos.asset_profile_refresh_targets.mark_terminal(
-                            [row],
-                            reason=terminal_reason,
-                            now_ms=now_ms,
-                        )
-                    else:
-                        repos.asset_profile_refresh_targets.reschedule(
-                            [row],
-                            due_at_ms=next_refresh_at_ms,
-                            now_ms=now_ms,
-                            reason="profile_error_written",
-                        )
-                    _enqueue_profile_current(repos=repos, row=row, now_ms=now_ms)
-                source_result["rows_written"] += 1
-                source_result["error"] += 1
-                source_result["terminal"] += int(terminal_reason is not None)
-                continue
-            with (
-                self.db.worker_session(
-                    self.name,
-                    statement_timeout_seconds=self.settings.statement_timeout_seconds,
-                ) as repos,
-                repos.transaction(),
-            ):
-                if isinstance(profile, DexTokenProfile):
-                    next_refresh_at_ms = now_ms + ready_refresh_ms
-                    write_ready_asset_profile(
-                        repos=repos,
-                        provider=profile_source.provider,
-                        row=row,
-                        profile=profile,
-                        now_ms=now_ms,
-                        next_refresh_at_ms=next_refresh_at_ms,
-                    )
-                    repos.asset_profile_refresh_targets.reschedule(
-                        [row],
-                        due_at_ms=next_refresh_at_ms,
-                        now_ms=now_ms,
-                        reason="profile_ready_written",
-                        reset_attempts=True,
-                    )
-                    source_result["ready"] += 1
-                else:
-                    terminal = int(row["attempt_count"]) >= self.settings.missing_max_attempts
-                    retry_delay_ms = _retry_delay_ms(
-                        base_ms=missing_refresh_ms,
-                        attempt_count=int(row["attempt_count"]),
-                        cap_ms=backoff_cap_ms,
-                    )
-                    next_refresh_at_ms = now_ms + retry_delay_ms
-                    write_missing_asset_profile(
-                        repos=repos,
-                        provider=profile_source.provider,
-                        row=row,
-                        now_ms=now_ms,
-                        next_refresh_at_ms=next_refresh_at_ms,
-                    )
-                    if terminal:
-                        repos.asset_profile_refresh_targets.mark_terminal(
-                            [row],
-                            reason="profile_missing_after_max_attempts",
-                            now_ms=now_ms,
-                        )
-                    else:
-                        repos.asset_profile_refresh_targets.reschedule(
-                            [row],
-                            due_at_ms=next_refresh_at_ms,
-                            now_ms=now_ms,
-                            reason="profile_missing_written",
-                        )
-                    source_result["missing"] += 1
-                    source_result["terminal"] += int(terminal)
-                _enqueue_profile_current(repos=repos, row=row, now_ms=now_ms)
-                source_result["rows_written"] += 1
-        return source_result
-
-    def _reschedule_claims(
-        self,
-        claims: list[dict[str, Any]],
-        *,
-        due_at_ms: int,
-        now_ms: int,
-        reason: str,
-        reset_attempts: bool = False,
-    ) -> None:
-        if not claims:
-            return
-        with (
-            self.db.worker_session(
-                self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
-            ) as repos,
-            repos.transaction(),
-        ):
-            repos.asset_profile_refresh_targets.reschedule(
-                claims,
-                due_at_ms=due_at_ms,
-                now_ms=now_ms,
-                reason=reason,
-                reset_attempts=reset_attempts,
-            )
-
 
 def _enqueue_profile_current(*, repos: Any, row: dict[str, Any], now_ms: int) -> None:
-    source_watermark_ms = _required_source_watermark_ms(row, error="asset_profile_refresh_source_watermark_required")
-    repos.token_profile_current_dirty_targets.enqueue_targets(
-        [
-            {
-                "target_type": "Asset",
-                "target_id": str(row["target_id"]),
-                "source_watermark_ms": source_watermark_ms,
-                "priority": 40,
-            }
-        ],
-        reason="asset_profile_refresh_changed",
-        now_ms=now_ms,
+    _required_source_watermark_ms(
+        row,
+        error="asset_profile_refresh_source_watermark_required",
+    )
+    repos.projection_frontiers.mark_dirty(
+        PROFILE_FRONTIER,
+        key={
+            "target_type": "Asset",
+            "target_id": str(row["target_id"]),
+        },
+        dirty_at_ms=int(now_ms),
+        deadline_at_ms=int(now_ms) + 30_000,
+        input_fingerprint=(f"asset-profile:{row['provider']}:{row['payload_hash']}:{int(now_ms)}"),
+        version=PROFILE_PROJECTION_VERSION,
     )
 
 
@@ -341,6 +397,11 @@ def _required_source_watermark_ms(row: dict[str, Any], *, error: str) -> int:
     if value <= 0:
         raise RuntimeError(error)
     return int(value)
+
+
+def _missing_retry_delay_ms(attempt_count: int) -> int:
+    index = min(max(1, int(attempt_count)), len(_MISSING_RETRY_MS)) - 1
+    return _MISSING_RETRY_MS[index]
 
 
 def _retry_delay_ms(*, base_ms: int, attempt_count: int, cap_ms: int) -> int:
@@ -361,3 +422,6 @@ def _terminal_error_reason(
     if int(attempt_count) >= int(max_attempts):
         return "profile_error_after_max_attempts"
     return None
+
+
+__all__ = ["AssetProfileRefreshWorker"]

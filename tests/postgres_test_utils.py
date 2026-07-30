@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from psycopg import OperationalError, pq
 from psycopg.rows import RowMaker
+from psycopg.sql import Composable
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
 from tracefold.platform.postgres.postgres_client import connect_postgres
@@ -33,7 +34,17 @@ def connect_postgres_test(*_: Any, read_only: bool = False, **__: Any):
 
 
 def postgres_settings_storage() -> dict[str, Any]:
-    return {"postgres": {"dsn": test_postgres_dsn(), "password_file": None}}
+    dsn = test_postgres_dsn()
+    return {
+        "postgres": {
+            "serve_dsn": dsn,
+            "workers_dsn": dsn,
+            "migrate_dsn": dsn,
+            "serve_password_file": None,
+            "workers_password_file": None,
+            "migrate_password_file": None,
+        }
+    }
 
 
 def prepare_postgres_database() -> None:
@@ -99,5 +110,5 @@ class _TestConnection:
         return getattr(self._conn, name)
 
 
-def _postgres_sql(sql: str) -> str:
-    return str(sql)
+def _postgres_sql(sql: str | Composable) -> str | Composable:
+    return sql if isinstance(sql, Composable) else str(sql)

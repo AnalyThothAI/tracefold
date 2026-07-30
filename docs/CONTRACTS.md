@@ -6,10 +6,12 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 ## Runtime configuration
 
-The active operator-owned files are:
-
-- `~/.tracefold/config.yaml` for application, PostgreSQL, providers, credentials, API, and public WebSocket settings.
-- `~/.tracefold/workers.yaml` for worker enablement, cadence, and batch/lease/timeout settings.
+The active operator-owned application file is
+`~/.tracefold/config.yaml`. It contains deployment/domain choices,
+PostgreSQL role DSNs and password-file references, providers, credentials,
+API, and public WebSocket settings. Worker topology, cadence, deadlines,
+resource limits, batches, leases, retries, and model reservations are
+code-owned and are not configuration fields.
 
 Repository examples, fixtures, `.env` files, and generated docs are not runtime configuration. `uv run tracefold config` reports the effective paths and redacted settings. Unknown settings or worker keys fail validation.
 
@@ -23,31 +25,16 @@ The configuration schema uses typed nested models directly
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
-### Watchlist and Notifications config cutover
-
-Before starting this hard cut, edit the active operator-owned files rather than
-copying repository examples over them:
-
-1. Remove top-level `handles`, top-level `notifications`, and `news.sources`
-   from `~/.tracefold/config.yaml`.
-2. Remove top-level `notification_rule`, top-level
-   `notification_delivery`, and `token_radar_projection.scopes` from
-   `~/.tracefold/workers.yaml`.
-3. Run `uv run tracefold config` and confirm only the reported paths and
-   redacted configuration. Any retired key must fail validation; there is no
-   alias, merge, or generated-source fallback.
-4. Stop older workers, run `uv run tracefold db migrate`, and then start the
-   current service so no process can write a retired persistence contract
-   during the irreversible migration.
+`workers.yaml`, top-level `handles`, top-level `notifications`, and
+`news.sources` are retired inputs. Any equivalent retired key fails
+validation; there is no alias, merge, or generated-source fallback.
 
 `llm` contains operator-owned provider credentials: `api_key` and `base_url`
 for the current OpenAI-compatible provider plus optional
 `openrouter_api_key` and `groq_api_key` for the News fallback chain. They are
-consumed only by enabled AI workers. Model, endpoint, request timeout, token,
-cadence, lease, and retry settings remain typed under the owning worker in
-`workers.yaml`. News World Brief attempts configured local Ollama, the current
-OpenAI-compatible provider, OpenRouter, then Groq once each under one
-60-second chain budget. Environment variables are not a credential contract.
+consumed only by enabled AI workers. Model execution policy, timeouts, token
+budgets, cadence, leases, retries, and reservations are code-owned.
+Environment variables are not a credential contract.
 
 `src/tracefold/app/worker_manifest.py` owns the worker inventory and
 writer/queue declarations. The current keys are:
@@ -56,27 +43,23 @@ writer/queue declarations. The current keys are:
 collector
 market_tick_stream
 market_tick_poll
-event_anchor_backfill
+event_anchor_capture
 resolution_refresh
-asset_profile_refresh
-token_radar_projection
+macro_intraday_market
 macro_settlements
 macro_economic_releases
 macro_official_state
 macro_official_documents
-macro_backfill
-macro_document_analysis
-macro_projection
-macro_thesis
+news_ingest
+asset_profile_refresh
 token_image_mirror
-token_profile_current
-news_pipeline
-news_world_brief
+steady_projection_coordinator
+model_generation_coordinator
 ```
 
-`workers.yaml`, `WorkersSettings`, factories, status output, and this manifest
-must use these exact names. Configuration cannot add another worker or derived
-product lane.
+Factories, runtime status, and this manifest use these exact names.
+Configuration cannot add another worker or derived product lane. Macro
+backfill is maintenance-only and is absent from the steady manifest.
 
 ## HTTP
 
@@ -84,9 +67,8 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/status` captures one typed in-memory runtime snapshot for worker status,
-  collector details, provider connections, and startup/schema state. It
-  performs no SQL.
+- `/api/status` combines the serve startup/schema snapshot with persisted
+  `worker_runtime_status`; stale worker heartbeats fail closed as unavailable.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no model configuration, model policy, capacity counters,
@@ -420,8 +402,8 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 `uv run tracefold --help` is the exact CLI source of truth. Stable top-level families are:
 
-- service/config: `serve`, `init`, `config`;
-- database: `db migrate|health|audit|query-audit`;
+- service/config: `serve`, `workers`, `init`, `config`;
+- database: `db migrate|hard-cut|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
 - read models: `recent`, `search`, `asset-flow`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
@@ -439,8 +421,9 @@ or becomes a daily publication or schema-migration gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
-News has no repair/rebuild CLI: normal recovery is a full 96-hour PostgreSQL
-recluster by `news_pipeline` on each bounded catch-up cycle. Token Radar
+News steady recovery re-reads typed identity/scoring frontiers and recomputes
+only affected components. The system-wide maintenance hard cut rebuilds News
+from persisted items through the same incremental reducer. Token Radar
 contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.

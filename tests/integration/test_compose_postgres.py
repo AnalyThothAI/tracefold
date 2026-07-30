@@ -13,11 +13,18 @@ RSSHUB_IMAGE = (
 )
 
 
-def test_compose_runs_postgres_and_migration_before_app() -> None:
+def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
     services = compose["services"]
 
-    assert set(services) == {"app", "migrate", "postgres", "rsshub"}
+    assert set(services) == {
+        "cutover",
+        "migrate",
+        "postgres",
+        "rsshub",
+        "serve",
+        "workers",
+    }
     assert services["postgres"]["image"] == POSTGRES_IMAGE
     assert "build" not in services["postgres"]
     assert any("pg_stat_statements" in part for part in services["postgres"]["command"])
@@ -31,12 +38,22 @@ def test_compose_runs_postgres_and_migration_before_app() -> None:
     assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
     assert "pg_isready" in services["postgres"]["healthcheck"]["test"][1]
 
-    app_depends = services["app"]["depends_on"]
-    assert app_depends["postgres"]["condition"] == "service_healthy"
-    assert app_depends["migrate"]["condition"] == "service_completed_successfully"
-    assert "rsshub" not in app_depends
-    assert services["app"]["healthcheck"]["test"][2] == "-c"
-    assert "/healthz" in services["app"]["healthcheck"]["test"][3]
+    for role in ("serve", "workers"):
+        depends = services[role]["depends_on"]
+        assert depends["postgres"]["condition"] == "service_healthy"
+        assert depends["migrate"]["condition"] == "service_completed_successfully"
+        assert "rsshub" not in depends
+    assert services["serve"]["command"] == ["tracefold", "serve"]
+    assert services["workers"]["command"] == ["tracefold", "workers"]
+    assert services["serve"]["healthcheck"]["test"][2] == "-c"
+    assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
+    assert "ports" not in services["workers"]
+    assert services["cutover"]["profiles"] == ["maintenance"]
+    assert services["cutover"]["command"] == [
+        "tracefold",
+        "db",
+        "hard-cut",
+    ]
 
     rsshub = services["rsshub"]
     assert rsshub["image"] == RSSHUB_IMAGE
@@ -53,11 +70,20 @@ def test_compose_runs_postgres_and_migration_before_app() -> None:
     assert "ports" not in rsshub
 
 
-def test_compose_no_longer_mounts_sqlite_data_volume_into_app() -> None:
+def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
-    app_volumes = compose["services"]["app"].get("volumes", [])
+    serve_volumes = compose["services"]["serve"].get("volumes", [])
+    worker_volumes = compose["services"]["workers"].get("volumes", [])
 
-    assert all("/root/.tracefold/data" not in volume for volume in app_volumes)
+    assert any("postgres_serve_password" in volume for volume in serve_volumes)
+    assert not any(
+        "postgres_workers_password" in volume or "postgres_migrate_password" in volume for volume in serve_volumes
+    )
+    assert any("postgres_workers_password" in volume for volume in worker_volumes)
+    assert not any(
+        "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
+    )
+    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes])
     assert "tracefold-postgres" in compose["volumes"]
 
 

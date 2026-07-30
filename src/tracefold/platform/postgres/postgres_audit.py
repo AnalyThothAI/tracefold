@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
 
 TOKEN_RADAR_PROJECTION_VERSION_PARAM = "token_radar_projection_version"
+MAX_READ_RETURN_AMPLIFICATION = 20.0
+LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
 
 CORE_TABLES = (
     "raw_frames",
@@ -67,6 +70,11 @@ FOREIGN_KEY_CHECKS = {
 
 HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
+        "name": "readiness_schema",
+        "sql": "SELECT version_num FROM alembic_version LIMIT 1",
+        "params": (),
+    },
+    {
         "name": "recent_all",
         "sql": """
             SELECT event_id
@@ -75,6 +83,16 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             LIMIT 50
         """,
         "params": (),
+    },
+    {
+        "name": "events_by_ids",
+        "sql": """
+            SELECT event_id
+            FROM events
+            WHERE event_id = ANY(%s::text[])
+            LIMIT 100
+        """,
+        "params": (["audit-missing-event"],),
     },
     {
         "name": "search_v2_lexical",
@@ -113,39 +131,363 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "token_radar_latest",
         "sql": """
+            WITH ranked AS (
+              SELECT current_rows.row_id, current_rows.lane, current_rows.rank,
+                     row_number() OVER (
+                       PARTITION BY current_rows.lane
+                       ORDER BY current_rows.rank
+                     ) AS lane_rank
+              FROM token_radar_current_rows current_rows
+              JOIN token_radar_publication_state state
+                ON state.projection_version = current_rows.projection_version
+               AND state."window" = current_rows."window"
+               AND state.venue = current_rows.venue
+              WHERE current_rows.projection_version = %(token_radar_projection_version)s
+                AND current_rows."window" = '5m'
+                AND current_rows.venue = 'all'
+                AND state.current_generation_id IS NOT NULL
+            )
             SELECT row_id
-            FROM token_radar_current_rows
-            WHERE projection_version = %(token_radar_projection_version)s
-              AND "window" = '5m'
-              AND venue = 'all'
-            ORDER BY computed_at_ms DESC, lane DESC, rank ASC
-            LIMIT 50
+            FROM ranked
+            WHERE lane_rank <= 50
+            ORDER BY lane DESC, rank
+            LIMIT 100
         """,
         "params": {TOKEN_RADAR_PROJECTION_VERSION_PARAM: None},
     },
     {
+        "name": "token_profile_target",
+        "sql": """
+            SELECT target_type, target_id, payload_hash
+            FROM token_profile_current
+            WHERE target_type = 'Asset'
+              AND target_id = %s
+            LIMIT 1
+        """,
+        "params": ("audit-missing-target",),
+    },
+    {
+        "name": "stocks_radar_recent",
+        "sql": """
+            SELECT tir.target_id, count(*) AS mentions,
+                   max(events.received_at_ms) AS latest_seen_ms
+            FROM events
+            JOIN token_intents intents ON intents.event_id = events.event_id
+            JOIN token_intent_resolutions tir
+              ON tir.intent_id = intents.intent_id
+             AND tir.is_current
+             AND tir.target_type = 'MarketInstrument'
+            WHERE events.received_at_ms >= %s
+              AND events.received_at_ms <= %s
+            GROUP BY tir.target_id
+            ORDER BY mentions DESC, latest_seen_ms DESC, tir.target_id
+            LIMIT 100
+        """,
+        "params": (0, 9_999_999_999_999),
+    },
+    {
+        "name": "live_market_current",
+        "sql": """
+            SELECT current.tick_id
+            FROM registry_assets assets
+            JOIN market_tick_current current
+              ON current.target_type = 'chain_token'
+             AND current.target_id = assets.chain_id || ':' || assets.address
+            WHERE assets.asset_id = %s
+            LIMIT 1
+        """,
+        "params": ("audit-missing-target",),
+    },
+    {
         "name": "target_posts_recent",
         "sql": """
-            WITH latest_target AS (
-              SELECT target_type, target_id
-              FROM token_intent_resolutions
-              WHERE is_current = true
-                AND target_type IS NOT NULL
-                AND target_id IS NOT NULL
-              ORDER BY decision_time_ms DESC, resolution_id DESC
-              LIMIT 1
-            )
-            SELECT tir.event_id
+            SELECT events.event_id
             FROM token_intent_resolutions tir
-            JOIN latest_target
-              ON latest_target.target_type = tir.target_type
-             AND latest_target.target_id = tir.target_id
-            WHERE tir.is_current = true
-            ORDER BY tir.decision_time_ms DESC, tir.event_id DESC
-            LIMIT 50
+            JOIN events ON events.event_id = tir.event_id
+            WHERE tir.target_type = %s
+              AND tir.target_id = %s
+              AND tir.is_current
+            ORDER BY events.received_at_ms DESC, events.event_id DESC
+            LIMIT 51
+        """,
+        "params": ("Asset", "audit-missing-target"),
+    },
+    {
+        "name": "news_feed",
+        "sql": """
+            SELECT stories.story_id
+            FROM news_stories stories
+            JOIN news_sources sources
+              ON sources.source_id = stories.representative_source_id
+            WHERE stories.active
+            ORDER BY stories.importance_score DESC,
+                     stories.last_published_at_ms DESC,
+                     stories.story_id
+            LIMIT 101
         """,
         "params": (),
     },
+    {
+        "name": "news_feed_story_facets",
+        "sql": """
+            SELECT category, level, count(*) AS story_count
+            FROM news_stories
+            WHERE active
+            GROUP BY GROUPING SETS ((category), (level))
+            ORDER BY story_count DESC, category, level
+            LIMIT 101
+        """,
+        "params": (),
+    },
+    {
+        "name": "news_feed_source_facets",
+        "sql": """
+            SELECT sources.source_id, count(DISTINCT members.story_id) AS story_count
+            FROM news_story_members members
+            JOIN news_stories stories ON stories.story_id = members.story_id
+            JOIN news_items items ON items.item_id = members.item_id
+            JOIN news_sources sources ON sources.source_id = items.source_id
+            WHERE stories.active
+              AND members.current
+            GROUP BY sources.source_id, sources.name
+            ORDER BY story_count DESC, sources.name, sources.source_id
+            LIMIT 101
+        """,
+        "params": (),
+    },
+    {
+        "name": "news_story",
+        "sql": """
+            SELECT stories.story_id
+            FROM news_stories stories
+            JOIN news_sources sources
+              ON sources.source_id = stories.representative_source_id
+            WHERE stories.story_id = %s
+            LIMIT 1
+        """,
+        "params": ("audit-missing-story",),
+    },
+    {
+        "name": "news_story_members",
+        "sql": """
+            SELECT members.item_id
+            FROM news_story_members members
+            JOIN news_items items ON items.item_id = members.item_id
+            JOIN news_sources sources ON sources.source_id = items.source_id
+            WHERE members.story_id = %s
+            ORDER BY members.current DESC,
+                     items.published_at_ms DESC,
+                     items.item_id
+            LIMIT 101
+        """,
+        "params": ("audit-missing-story",),
+    },
+    {
+        "name": "news_brief",
+        "sql": """
+            WITH candidates AS (
+              SELECT stories.story_id, stories.importance_score,
+                     stories.last_published_at_ms,
+                     row_number() OVER (
+                       PARTITION BY stories.representative_source_id
+                       ORDER BY stories.importance_score DESC,
+                                stories.last_published_at_ms DESC,
+                                stories.story_id
+                     ) AS source_rank
+              FROM news_stories stories
+              JOIN news_sources sources
+                ON sources.source_id = stories.representative_source_id
+              JOIN news_items items
+                ON items.item_id = stories.representative_item_id
+              WHERE stories.active
+                AND sources.enabled
+                AND NOT items.brief_excluded
+            ),
+            selected AS (
+              SELECT story_id
+              FROM candidates
+              WHERE source_rank <= 3
+              ORDER BY importance_score DESC, last_published_at_ms DESC, story_id
+              LIMIT 8
+            )
+            SELECT current.publication_id, count(selected.story_id) AS candidate_count
+            FROM news_brief_current current
+            LEFT JOIN selected ON true
+            WHERE current.singleton_key
+            GROUP BY current.publication_id
+        """,
+        "params": (),
+    },
+    {
+        "name": "news_sources",
+        "sql": """
+            SELECT sources.source_id, fetches.fetch_id
+            FROM news_sources sources
+            LEFT JOIN LATERAL (
+              SELECT fetch_id
+              FROM news_source_fetches
+              WHERE source_id = sources.source_id
+              ORDER BY finished_at_ms DESC, fetch_id DESC
+              LIMIT 1
+            ) fetches ON true
+            WHERE sources.enabled
+            ORDER BY sources.tier, sources.name, sources.source_id
+            LIMIT 101
+        """,
+        "params": (),
+    },
+    {
+        "name": "news_status",
+        "sql": """
+            SELECT count(*) FILTER (WHERE active) AS active_count,
+                   max(last_published_at_ms) FILTER (WHERE active) AS newest_story_at_ms
+            FROM news_stories
+        """,
+        "params": (),
+    },
+    {
+        "name": "macro_modules_current",
+        "sql": """
+            SELECT module_id, payload_hash
+            FROM macro_module_current
+            ORDER BY module_id
+            LIMIT 6
+        """,
+        "params": (),
+    },
+    {
+        "name": "macro_module_current",
+        "sql": """
+            SELECT module_id, payload_hash
+            FROM macro_module_current
+            WHERE module_id = %s
+            LIMIT 1
+        """,
+        "params": ("rates_fed",),
+    },
+    {
+        "name": "macro_thesis_state",
+        "sql": """
+            SELECT runs.session_date, runs.status, publications.publication_id
+            FROM macro_thesis_runs runs
+            LEFT JOIN macro_thesis_publications publications USING (session_date)
+            ORDER BY runs.session_date DESC
+            LIMIT 1
+        """,
+        "params": (),
+    },
+    {
+        "name": "macro_thesis_history",
+        "sql": """
+            SELECT publication_id, session_date
+            FROM macro_thesis_publications
+            ORDER BY session_date DESC
+            LIMIT 30
+        """,
+        "params": (),
+    },
+    {
+        "name": "worker_runtime_status",
+        "sql": """
+            SELECT unit_name, heartbeat_at_ms
+            FROM worker_runtime_status
+            ORDER BY unit_name
+            LIMIT 15
+        """,
+        "params": (),
+    },
+    {
+        "name": "persisted_live_after_cursor",
+        "sql": """
+            SELECT cursor, payload_json
+            FROM persisted_live_events
+            WHERE cursor > %s
+            ORDER BY cursor
+            LIMIT 500
+        """,
+        "params": (0,),
+    },
+)
+
+
+PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
+    "/readyz": ("readiness_schema",),
+    "/ws": ("persisted_live_after_cursor",),
+    "/api/status": ("worker_runtime_status",),
+    "/api/recent": ("recent_all", "events_by_ids"),
+    "/api/events/by-ids": ("events_by_ids",),
+    "/api/token-radar": ("token_radar_latest", "token_profile_target"),
+    "/api/stocks-radar": ("stocks_radar_recent",),
+    "/api/live-market": ("live_market_current",),
+    "/api/search": ("search_v2_lexical", "search_v2_trigram"),
+    "/api/search/inspect": (
+        "search_v2_lexical",
+        "search_v2_trigram",
+        "token_profile_target",
+    ),
+    "/api/token-case": (
+        "token_profile_target",
+        "token_radar_latest",
+        "target_posts_recent",
+    ),
+    "/api/target-posts": ("target_posts_recent",),
+    "/api/target-social-timeline": ("target_posts_recent",),
+    "/api/news/feed": (
+        "news_feed",
+        "news_feed_story_facets",
+        "news_feed_source_facets",
+    ),
+    "/api/news/stories/{story_id}": ("news_story", "news_story_members"),
+    "/api/news/brief": ("news_brief",),
+    "/api/news/sources": ("news_sources",),
+    "/api/news/status": ("news_status", "news_brief"),
+    "/api/macro/overview": (
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/rates-fed": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/economy-inflation": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/liquidity-funding": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/credit": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/volatility": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/cross-asset": (
+        "macro_module_current",
+        "macro_modules_current",
+        "macro_thesis_state",
+    ),
+    "/api/macro/research": (
+        "macro_modules_current",
+        "macro_thesis_state",
+        "macro_thesis_history",
+    ),
+}
+
+PUBLIC_NO_SQL_ROUTES = frozenset(
+    {
+        "/healthz",
+        "/metrics",
+        "/api/bootstrap",
+    }
 )
 
 
@@ -221,21 +563,45 @@ class PostgresQueryAudit:
 
     def run(self, *, analyze: bool = False) -> dict[str, Any]:
         queries = [self._explain(item, analyze=analyze) for item in HOT_QUERIES]
+        audited_names = {str(item["name"]) for item in HOT_QUERIES}
+        missing_query_names = sorted(
+            {
+                query_name
+                for query_names in PUBLIC_ROUTE_QUERY_COVERAGE.values()
+                for query_name in query_names
+                if query_name not in audited_names
+            }
+        )
         return {
-            "ok": all(item["ok"] for item in queries),
+            "ok": not missing_query_names and all(item["ok"] for item in queries),
             "engine": "postgresql",
             "analyze": bool(analyze),
+            "thresholds": {
+                "large_seq_scan_plan_rows": LARGE_SEQ_SCAN_PLAN_ROWS,
+                "max_read_return_amplification": MAX_READ_RETURN_AMPLIFICATION,
+                "temp_blocks": 0,
+            },
+            "route_coverage": {
+                "query_routes": PUBLIC_ROUTE_QUERY_COVERAGE,
+                "no_sql_routes": sorted(PUBLIC_NO_SQL_ROUTES),
+                "missing_query_names": missing_query_names,
+            },
             "queries": queries,
         }
 
     def _explain(self, item: dict[str, Any], *, analyze: bool) -> dict[str, Any]:
-        prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)" if analyze else "EXPLAIN (FORMAT TEXT)"
+        prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" if analyze else "EXPLAIN (FORMAT JSON)"
         try:
             rows = self.conn.execute(f"{prefix} {item['sql']}", self._params(item["params"])).fetchall()
+            plan = _json_plan(rows)
+            metrics = _plan_metrics(plan) if analyze else None
+            violations = _plan_violations(metrics) if metrics is not None else []
             return {
-                "ok": True,
+                "ok": not violations,
                 "name": item["name"],
-                "plan": [_plan_line(row) for row in rows],
+                "plan": plan,
+                "metrics": metrics,
+                "violations": violations,
             }
         except Exception as exc:
             return {
@@ -244,6 +610,8 @@ class PostgresQueryAudit:
                 "error": type(exc).__name__,
                 "detail": str(exc),
                 "plan": [],
+                "metrics": None,
+                "violations": ["explain_failed"],
             }
 
     def _params(self, params: Any) -> Any:
@@ -323,7 +691,96 @@ class ProjectionValidationAudit:
         }
 
 
-def _plan_line(row: Any) -> str:
+def _json_plan(rows: list[Any]) -> Any:
+    if not rows:
+        return []
+    row = rows[0]
     if isinstance(row, dict):
-        return str(row.get("QUERY PLAN") or row.get("?column?") or next(iter(row.values()), ""))
-    return str(row[0])
+        value: Any = row.get("QUERY PLAN") or row.get("?column?") or next(iter(row.values()), [])
+    else:
+        value = row[0]
+    if isinstance(value, str):
+        return [{"Plan": {"Node Type": value}}]
+    return value
+
+
+def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
+    statement = _plan_statement(plan_payload)
+    root = statement.get("Plan")
+    if not isinstance(root, dict):
+        return {
+            "plan_json_valid": False,
+            "execution_time_ms": None,
+            "planning_time_ms": None,
+            "returned_rows": 0,
+            "read_rows": 0,
+            "read_return_amplification": 0.0,
+            "temp_read_blocks": 0,
+            "temp_written_blocks": 0,
+            "large_seq_scans": [],
+        }
+    nodes = list(_walk_plan_nodes(root))
+    returned_rows = _executed_rows(root)
+    leaf_nodes = [node for node in nodes if not node.get("Plans")]
+    read_rows = sum(_executed_rows(node) for node in leaf_nodes)
+    denominator = max(1, returned_rows)
+    amplification = read_rows / denominator
+    large_seq_scans = [
+        {
+            "relation": str(node.get("Relation Name") or ""),
+            "plan_rows": int(node.get("Plan Rows") or 0),
+            "actual_rows": _executed_rows(node),
+        }
+        for node in nodes
+        if str(node.get("Node Type") or "") == "Seq Scan"
+        and int(node.get("Plan Rows") or 0) >= LARGE_SEQ_SCAN_PLAN_ROWS
+    ]
+    return {
+        "plan_json_valid": True,
+        "execution_time_ms": _optional_float(statement.get("Execution Time")),
+        "planning_time_ms": _optional_float(statement.get("Planning Time")),
+        "returned_rows": returned_rows,
+        "read_rows": read_rows,
+        "read_return_amplification": round(amplification, 6),
+        "temp_read_blocks": int(root.get("Temp Read Blocks") or 0),
+        "temp_written_blocks": int(root.get("Temp Written Blocks") or 0),
+        "large_seq_scans": large_seq_scans,
+    }
+
+
+def _plan_violations(metrics: dict[str, Any]) -> list[str]:
+    violations: list[str] = []
+    if not bool(metrics["plan_json_valid"]):
+        violations.append("plan_json_missing")
+    if metrics["large_seq_scans"]:
+        violations.append("unexpected_large_table_seq_scan")
+    if int(metrics["temp_read_blocks"]) or int(metrics["temp_written_blocks"]):
+        violations.append("temp_spill")
+    if float(metrics["read_return_amplification"]) > MAX_READ_RETURN_AMPLIFICATION:
+        violations.append("read_return_amplification_exceeded")
+    return violations
+
+
+def _plan_statement(plan_payload: Any) -> dict[str, Any]:
+    if isinstance(plan_payload, list) and plan_payload and isinstance(plan_payload[0], dict):
+        return plan_payload[0]
+    if isinstance(plan_payload, dict):
+        return plan_payload
+    return {}
+
+
+def _walk_plan_nodes(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    yield node
+    for child in node.get("Plans") or ():
+        if isinstance(child, dict):
+            yield from _walk_plan_nodes(child)
+
+
+def _executed_rows(node: dict[str, Any]) -> int:
+    return int(node.get("Actual Rows") or 0) * int(node.get("Actual Loops") or 0)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)

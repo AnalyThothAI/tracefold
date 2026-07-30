@@ -146,6 +146,7 @@ class EvidenceRepository:
         chain: str | None = None,
         symbol: str | None = None,
         since_ms: int | None = None,
+        before: tuple[int, str] | None = None,
     ) -> list[EventRead]:
         parsed_limit = require_nonnegative_int(limit, error_code="evidence_recent_events_limit_required")
         if parsed_limit == 0:
@@ -155,6 +156,9 @@ class EvidenceRepository:
         if since_ms is not None:
             clauses.append("e.received_at_ms >= %s")
             params.append(int(since_ms))
+        if before is not None:
+            clauses.append("(e.received_at_ms, e.event_id) < (%s, %s)")
+            params.extend([int(before[0]), str(before[1])])
         normalized_handles = {item.strip().lstrip("@").lower() for item in handles or set() if item.strip()}
         if normalized_handles:
             placeholders = ",".join("%s" for _ in normalized_handles)
@@ -179,7 +183,14 @@ class EvidenceRepository:
             params.append(symbol.strip().lstrip("$").upper())
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
-            f"SELECT e.* FROM events e {join} {where} ORDER BY e.received_at_ms DESC LIMIT %s",
+            f"""
+            SELECT e.*
+            FROM events e
+            {join}
+            {where}
+            ORDER BY e.received_at_ms DESC, e.event_id DESC
+            LIMIT %s
+            """,
             (*params, parsed_limit),
         ).fetchall()
         return [decode_event_row(row) for row in rows]

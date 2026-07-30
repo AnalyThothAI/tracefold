@@ -12,6 +12,8 @@ from tracefold.market.profiles.profile_source_selection import (
     select_okx_dex_source,
 )
 
+_IDENTITY_EVIDENCE_ROW_CAP = 10_000
+
 
 class TokenProfileSourceQuery:
     def __init__(self, conn: Any) -> None:
@@ -113,9 +115,12 @@ class TokenProfileSourceQuery:
               AND evidence_kind = ANY(%s)
               AND asset_id = ANY(%s)
             ORDER BY asset_id ASC, observed_at_ms DESC, evidence_id DESC
+            LIMIT %s
             """,
-            (provider, kinds, requested),
+            (provider, kinds, requested, _IDENTITY_EVIDENCE_ROW_CAP + 1),
         ).fetchall()
+        if len(rows) > _IDENTITY_EVIDENCE_ROW_CAP:
+            raise RuntimeError("token_profile_identity_evidence_input_oversized")
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             item = dict(row)

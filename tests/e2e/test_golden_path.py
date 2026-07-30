@@ -9,9 +9,8 @@ Asserts the runtime signals from spec §6.4 across a real cross-process boundary
 3. /api/recent returns the injected mention (cross-process read; the API runs
    in one process, the writer ran in another).
 4. WebSocket /ws receives a push within 5s of a follow-up writer (async
-   propagation through the replay path -- the hub reads recent events from PG
-   when a client subscribes with replay, which is the cross-process channel
-   available without the live collector).
+   propagation through the persisted live journal read by the single Serve
+   broadcaster).
 5. Resource cleanup is implicit (testcontainers ryuk + subprocess.terminate
    in conftest; no orphan containers/processes).
 """
@@ -87,10 +86,9 @@ def test_golden_path_websocket_pushes_after_writer(
 ) -> None:
     """Spec §6.4 step 4: WS /ws delivers the writer's event within 5s.
 
-    Cross-process channel: writer subprocess inserts into PG; the API server
-    process serves a WS subscription with replay=N which reads from PG. The
-    in-memory hub.publish path is collector-only and disabled in this setup,
-    so replay is the right channel to assert cross-process propagation.
+    Cross-process channel: writer subprocess atomically inserts the material
+    event and its persisted live journal row; the API server's one broadcaster
+    serves a WS subscription with replay=N by reading that journal.
 
     The replay uses an explicit symbol filter and returns matching events in
     chronological order (oldest first), so we drain the subscription and assert

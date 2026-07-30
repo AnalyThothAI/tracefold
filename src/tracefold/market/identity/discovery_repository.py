@@ -307,6 +307,63 @@ class DiscoveryRepository:
         )
         return mutation_count(cursor, error_code="discovery_repository_rowcount_invalid")
 
+    def reschedule_lookup_claims_without_attempt(
+        self,
+        claims: Iterable[Mapping[str, Any]],
+        *,
+        due_at_ms: int,
+        now_ms: int,
+        last_error: str,
+    ) -> int:
+        """Release provider-wide failures without spending target attempts."""
+
+        records = _claim_records(claims)
+        if not records:
+            return 0
+        params = _claim_params(records)
+        params.update(
+            {
+                "due_at_ms": int(due_at_ms),
+                "now_ms": int(now_ms),
+                "last_error": str(last_error)[:2048],
+            }
+        )
+        cursor = self.conn.execute(
+            """
+            WITH rescheduled AS (
+              SELECT *
+              FROM unnest(
+                %(providers)s::text[],
+                %(lookup_keys)s::text[],
+                %(payload_hashes)s::text[],
+                %(lease_owners)s::text[],
+                %(attempt_counts)s::bigint[]
+              ) AS rescheduled(
+                provider, lookup_key, payload_hash, lease_owner, attempt_count
+              )
+            )
+            UPDATE token_discovery_dirty_lookup_keys queue
+            SET due_at_ms = %(due_at_ms)s,
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                attempt_count = queue.attempt_count - 1,
+                last_error = %(last_error)s,
+                updated_at_ms = %(now_ms)s
+            FROM rescheduled
+            WHERE queue.provider = rescheduled.provider
+              AND queue.lookup_key = rescheduled.lookup_key
+              AND queue.payload_hash = rescheduled.payload_hash
+              AND queue.lease_owner = rescheduled.lease_owner
+              AND queue.attempt_count = rescheduled.attempt_count
+              AND queue.attempt_count > 0
+            """,
+            params,
+        )
+        return mutation_count(
+            cursor,
+            error_code="discovery_repository_rowcount_invalid",
+        )
+
     def terminalize_lookup_claims(
         self,
         claims: Iterable[Mapping[str, Any]],

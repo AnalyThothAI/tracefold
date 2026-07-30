@@ -28,7 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tracefold")
     subcommands = parser.add_subparsers(dest="command")
 
-    subcommands.add_parser("serve", help="run the collector service")
+    subcommands.add_parser("serve", help="run the read-only HTTP, frontend, and WebSocket runtime")
+    subcommands.add_parser("workers", help="run the ingestion, projection, provider, and model runtime")
 
     init = subcommands.add_parser("init", help="create ~/.tracefold/config.yaml")
     init.add_argument("--force", action="store_true", help="overwrite existing config.yaml")
@@ -38,6 +39,30 @@ def build_parser() -> argparse.ArgumentParser:
     db = subcommands.add_parser("db", help="database lifecycle commands")
     db_subcommands = db.add_subparsers(dest="db_command", required=True)
     db_subcommands.add_parser("migrate", help="apply PostgreSQL migrations")
+    hard_cut = db_subcommands.add_parser(
+        "hard-cut",
+        help="execute the maintenance-window schema/read-model hard cut",
+    )
+    hard_cut.add_argument(
+        "--bootstrap-dsn",
+        required=True,
+        help="legacy tracefold_app maintenance DSN without a password",
+    )
+    hard_cut.add_argument(
+        "--bootstrap-password-file",
+        default="postgres_password",
+        help="legacy maintenance password file",
+    )
+    hard_cut.add_argument(
+        "--snapshot-confirmed",
+        action="store_true",
+        required=True,
+    )
+    hard_cut.add_argument(
+        "--execute",
+        action="store_true",
+        required=True,
+    )
     db_subcommands.add_parser("health", help="check PostgreSQL liveness and migration version")
     db_subcommands.add_parser("audit", help="run PostgreSQL count, FK, and projection schema audit")
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
@@ -77,18 +102,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     ops = subcommands.add_parser("ops", help="maintenance commands")
     ops_subcommands = ops.add_subparsers(dest="ops_command", required=True)
-    enqueue_token_radar_dirty_targets = ops_subcommands.add_parser(
-        "enqueue-token-radar-dirty-targets",
-        help="enqueue Token Radar dirty targets from persisted facts",
+    hard_cut_rebuild = ops_subcommands.add_parser(
+        "hard-cut-rebuild",
+        help="rebuild and audit all hard-cut current read models",
     )
-    enqueue_token_radar_dirty_targets.add_argument("--source", choices=("events", "market-current"), required=True)
-    enqueue_token_radar_dirty_targets.add_argument("--since-ms", type=_nonnegative_int, default=0)
-    enqueue_token_radar_dirty_targets.add_argument("--limit", type=_positive_int, default=5000)
-    enqueue_token_radar_dirty_targets_mode = enqueue_token_radar_dirty_targets.add_mutually_exclusive_group(
-        required=True
+    hard_cut_rebuild.add_argument(
+        "--execute",
+        action="store_true",
+        required=True,
     )
-    enqueue_token_radar_dirty_targets_mode.add_argument("--dry-run", action="store_true")
-    enqueue_token_radar_dirty_targets_mode.add_argument("--execute", action="store_true")
+    seal_acceptance = ops_subcommands.add_parser(
+        "seal-worker-acceptance",
+        help="validate and seal a complete Issue #32 acceptance bundle",
+    )
+    seal_acceptance_mode = seal_acceptance.add_mutually_exclusive_group(
+        required=True,
+    )
+    seal_acceptance_mode.add_argument(
+        "--bundle",
+        help="directory containing evidence.json and supporting evidence files",
+    )
+    seal_acceptance_mode.add_argument(
+        "--template",
+        action="store_true",
+        help="print a deliberately non-passing evidence.json template",
+    )
     rebuild_market_current = ops_subcommands.add_parser(
         "rebuild-market-current",
         help="rebuild current market rows from persisted market tick facts",
@@ -153,36 +191,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="enqueue missing DEX profile targets and refresh due profile facts",
     )
     refresh_asset_profiles.add_argument("--limit", type=_positive_int, default=50)
-    rebuild_token_profiles = ops_subcommands.add_parser(
-        "rebuild-token-profiles",
-        help="rebuild canonical token profile current facts",
-    )
-    rebuild_token_profiles.add_argument("--limit", type=_positive_int, default=500)
     mirror_token_images = ops_subcommands.add_parser(
         "mirror-token-images",
         help="mirror provider token images into the local cache",
     )
     mirror_token_images.add_argument("--limit", type=_positive_int, default=500)
-    repair_token_profile_images = ops_subcommands.add_parser(
-        "repair-token-profile-images",
-        help="enqueue current profile targets so token image source admission can repair stuck icons",
-    )
-    repair_token_profile_images.add_argument("--limit", type=_positive_int, default=500)
     reprocess_token_intents = ops_subcommands.add_parser(
         "reprocess-token-intents",
-        help="re-resolve recent unresolved token intents and rebuild token radar",
+        help="re-resolve recent unresolved token intents",
     )
     reprocess_token_intents.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="24h")
     reprocess_token_intents.add_argument("--limit", type=_positive_int, default=500)
-    reprocess_token_intents.add_argument("--projection-limit", type=_positive_int, default=100)
     reprocess_token_intents.add_argument("--lookup-key", action="append", default=[])
     rebuild_token_intents = ops_subcommands.add_parser(
         "rebuild-token-intents",
-        help="rebuild recent token evidence, intents, resolutions, lookup keys, and token radar",
+        help="rebuild recent token evidence, intents, resolutions, and lookup keys",
     )
     rebuild_token_intents.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="24h")
     rebuild_token_intents.add_argument("--limit", type=_positive_int, default=500)
-    rebuild_token_intents.add_argument("--projection-limit", type=_positive_int, default=100)
     audit_token_intent = ops_subcommands.add_parser(
         "audit-token-intent",
         help="inspect token intent evidence and resolution",
@@ -190,12 +216,6 @@ def build_parser() -> argparse.ArgumentParser:
     audit_token_intent_target = audit_token_intent.add_mutually_exclusive_group(required=True)
     audit_token_intent_target.add_argument("--event-id", default="")
     audit_token_intent_target.add_argument("--intent-id", default="")
-    rebuild_token_radar = ops_subcommands.add_parser(
-        "rebuild-token-radar",
-        help="write the current token radar read model",
-    )
-    rebuild_token_radar.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
-    rebuild_token_radar.add_argument("--limit", type=_positive_int, default=50)
     factor_diagnostics = ops_subcommands.add_parser(
         "factor-diagnostics",
         help="inspect token factor distribution health for latest radar rows",

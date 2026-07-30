@@ -51,8 +51,9 @@ def test_market_tick_persistence_is_idempotent_and_updates_current_in_same_trans
         dirty_count = conn.execute(
             """
             SELECT count(*) AS count
-            FROM token_radar_dirty_targets
-            WHERE target_type_key = 'Asset' AND identity_id = %s
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+              AND status = 'dirty'
             """,
             (asset["asset_id"],),
         ).fetchone()
@@ -62,7 +63,7 @@ def test_market_tick_persistence_is_idempotent_and_updates_current_in_same_trans
         assert current["tick_id"] == tick.tick_id
         assert "raw_payload_json" not in current
         assert "payload_hash" not in current
-        assert dirty_count["count"] == 1
+        assert dirty_count["count"] == 4
     finally:
         conn.close()
 
@@ -123,7 +124,7 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
             MarketTickPersistenceService(repos).persist_ticks([_tick(source_provider="okx_dex_ws")], now_ms=NOW_MS)
         with repos.transaction():
             conn.execute("DELETE FROM market_tick_current")
-            conn.execute("DELETE FROM token_radar_dirty_targets")
+            conn.execute("DELETE FROM radar_projection_frontiers")
 
         with repos.transaction():
             rebuilt = MarketTickPersistenceService(repos).rebuild_current_batch(
@@ -141,9 +142,10 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
         current = repos.market_tick_current.get(target_type="chain_token", target_id=TARGET_ID)
         dirty = conn.execute(
             """
-            SELECT dirty_reason, market_dirty
-            FROM token_radar_dirty_targets
-            WHERE target_type_key = 'Asset' AND identity_id = %s
+            SELECT count(*) AS count
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+              AND status = 'dirty'
             """,
             (asset["asset_id"],),
         ).fetchone()
@@ -156,7 +158,7 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
         assert exhausted.next_cursor is None
         assert current is not None
         assert current["tick_id"] == _tick(source_provider="okx_dex_ws").tick_id
-        assert dirty == {"dirty_reason": "market_tick_current_changed", "market_dirty": True}
+        assert dirty == {"count": 4}
     finally:
         conn.close()
 
@@ -183,7 +185,7 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
                 """,
                 (TARGET_ID,),
             )
-            conn.execute("DELETE FROM token_radar_dirty_targets")
+            conn.execute("DELETE FROM radar_projection_frontiers")
 
         with repos.transaction():
             repaired = MarketTickPersistenceService(repos).rebuild_current_batch(
@@ -194,9 +196,10 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
         current = repos.market_tick_current.get(target_type="chain_token", target_id=TARGET_ID)
         dirty = conn.execute(
             """
-            SELECT dirty_reason, market_dirty
-            FROM token_radar_dirty_targets
-            WHERE target_type_key = 'Asset' AND identity_id = %s
+            SELECT count(*) AS count
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+              AND status = 'dirty'
             """,
             (asset["asset_id"],),
         ).fetchone()
@@ -205,17 +208,17 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
         assert current is not None
         assert current["price_usd"] == Decimal("1.23")
         assert current["liquidity_usd"] == Decimal("1000")
-        assert dirty == {"dirty_reason": "market_tick_current_changed", "market_dirty": True}
+        assert dirty == {"count": 4}
 
         with repos.transaction():
-            conn.execute("DELETE FROM token_radar_dirty_targets")
+            conn.execute("DELETE FROM radar_projection_frontiers")
             unchanged = MarketTickPersistenceService(repos).rebuild_current_batch(
                 after=None,
                 limit=50,
                 now_ms=NOW_MS + 200,
             )
         assert unchanged.changed_targets == ()
-        assert conn.execute("SELECT count(*) AS count FROM token_radar_dirty_targets").fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM radar_projection_frontiers").fetchone()["count"] == 0
     finally:
         conn.close()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from tests.factories import make_event
@@ -8,11 +9,38 @@ from tests.postgres_test_utils import connect_postgres_test, repository_session_
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
+    DexProviderTemporarilyUnavailable,
     DexTokenCandidate,
     DexTokenQuote,
     IngestService,
-    ResolutionRefreshWorker,
 )
+from tracefold.market import (
+    ResolutionRefreshWorker as ProductionResolutionRefreshWorker,
+)
+
+
+class _InlineResources:
+    async def run_background_db(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def run_provider_io(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
+class _InlineProviderGovernor:
+    @asynccontextmanager
+    async def acquire(self, *, host: str, lane: str | None = None):
+        del host, lane
+        yield
+
+
+class ResolutionRefreshWorker(ProductionResolutionRefreshWorker):
+    """Production worker with deterministic inline resources for integration tests."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.bind_runtime_resources(_InlineResources())
+        self.bind_provider_governor(_InlineProviderGovernor())
 
 
 def _evm_address(index: int) -> str:
@@ -61,7 +89,8 @@ def _ingest_service_for_connection(conn) -> IngestService:
         market_tick_current=repos.market_tick_current,
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
-        token_radar_dirty_targets=repos.token_radar_dirty_targets,
+        radar_source_edges=repos.radar_source_edges,
+        persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,
     )
@@ -287,6 +316,70 @@ def test_resolution_refresh_worker_retries_hot_not_found_before_default_ttl(tmp_
     assert second["reprocessed_intents"] == 1
     assert after["resolution_status"] == "UNIQUE_BY_CONTEXT"
     assert after["target_id"] == f"asset:eip155:1:erc20:{address}"
+
+
+def test_provider_outage_opens_circuit_without_spending_target_attempt(tmp_path):
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    now_ms = 1_778_145_100_000
+    market = UnavailableDexMarket()
+    try:
+        migrate(conn)
+        ingest = _ingest_service_for_connection(conn)
+        ingest.ingest_event(
+            make_event(
+                "event-provider-outage",
+                text="$OUTAGE needs discovery",
+                received_at_ms=now_ms,
+            )
+        )
+        worker = ResolutionRefreshWorker(
+            name="resolution_refresh",
+            settings=resolution_worker_settings(
+                interval_seconds=60,
+                chain_ids=("eip155:1",),
+            ),
+            db=FakeWorkerDB(conn),
+            telemetry=object(),
+            dex_discovery_market=market,
+        )
+
+        first = asyncio.run(worker.run_once(now_ms=now_ms + 60_000))
+        target = conn.execute(
+            """
+            SELECT attempt_count, lease_owner, due_at_ms
+            FROM token_discovery_dirty_lookup_keys
+            WHERE provider = 'okx_dex_search'
+              AND lookup_key = 'symbol:OUTAGE'
+            """
+        ).fetchone()
+        circuit = conn.execute(
+            """
+            SELECT status, consecutive_failures, next_probe_at_ms
+            FROM provider_circuit_state
+            WHERE provider = 'okx_dex_search'
+            """
+        ).fetchone()
+        second = asyncio.run(worker.run_once(now_ms=now_ms + 61_000))
+    finally:
+        conn.close()
+
+    assert market.search_requests == 1
+    assert first.failed == 0
+    assert first.notes["degraded"] is True
+    assert first.notes["result"]["provider_unavailable"] == 1
+    assert target == {
+        "attempt_count": 0,
+        "lease_owner": None,
+        "due_at_ms": now_ms + 90_000,
+    }
+    assert circuit == {
+        "status": "open",
+        "consecutive_failures": 1,
+        "next_probe_at_ms": now_ms + 90_000,
+    }
+    assert second.notes["degraded"] is True
+    assert second.notes["result"]["lookups_selected"] == 0
+    assert market.search_requests == 1
 
 
 def test_discovery_terminalize_claimed_payload_hash_deletes_active_row(tmp_path):
@@ -643,3 +736,13 @@ class FakeDexMarket:
                 if candidate.chain_id == request.chain_id and candidate.address.lower() == request.address.lower()
             )
         return prices
+
+
+class UnavailableDexMarket:
+    def __init__(self) -> None:
+        self.search_requests = 0
+
+    def search_tokens(self, *, query, chain_ids):
+        del query, chain_ids
+        self.search_requests += 1
+        raise DexProviderTemporarilyUnavailable("provider unavailable")

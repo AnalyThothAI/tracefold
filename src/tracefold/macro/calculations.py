@@ -457,8 +457,8 @@ def calculate_series_statistics(
             "as_of": str(latest["reference_date"]),
             "change_1w": _series_change(rows, 7),
             "change_1m": _series_change(rows, 30),
-            "sample_count": len(values),
-            "history_start": str(rows[0]["reference_date"]),
+            "sample_count": int(latest.get("semantic_sample_count") or len(values)),
+            "history_start": str(latest.get("semantic_history_start") or rows[0]["reference_date"]),
             "history_end": str(rows[-1]["reference_date"]),
             "source_url": str(latest["source_url"]),
             "history": [
@@ -466,7 +466,11 @@ def calculate_series_statistics(
             ],
         }
         if dataset_id in percentile_dataset_ids:
-            item["percentile"] = _percentile_rank(values, latest_value)
+            item["percentile"] = (
+                float(latest["semantic_percentile"])
+                if latest.get("semantic_percentile") is not None
+                else _percentile_rank(values, latest_value)
+            )
         output.append(item)
     return output
 

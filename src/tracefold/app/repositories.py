@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from tracefold.macro import MacroRepository, MacroThesisRepository
 from tracefold.market import (
@@ -22,27 +22,29 @@ from tracefold.market import (
     IntentResolutionRepository,
     MarketTickCurrentRepository,
     MarketTickRepository,
+    RadarProjectionSourceRepository,
+    RadarSourceEdgeRepository,
     RegistryRepository,
     TokenEvidenceRepository,
     TokenImageAssetRepository,
     TokenImageSourceDirtyTargetRepository,
     TokenIntentLookupRepository,
     TokenIntentRepository,
-    TokenProfileCurrentDirtyTargetRepository,
     TokenProfileCurrentRepository,
     TokenProfileSourceQuery,
-    TokenRadarDirtyTargetRepository,
-    TokenRadarRankSourceRepository,
     TokenRadarRepository,
     TokenTargetRepository,
 )
 from tracefold.news import NewsRepository
+from tracefold.platform.postgres.persisted_live import PersistedLiveEventRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     require_transaction,
     transaction,
     with_password_from_file,
 )
+from tracefold.platform.postgres.projection_frontier import ProjectionFrontierRepository
+from tracefold.platform.postgres.provider_circuit import ProviderCircuitRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +57,6 @@ class RepositorySession:
     source_query: TokenProfileSourceQuery
     cex_token_profiles: CexTokenProfileRepository
     token_profiles: TokenProfileCurrentRepository
-    token_profile_current_dirty_targets: TokenProfileCurrentDirtyTargetRepository
     token_image_assets: TokenImageAssetRepository
     token_image_source_dirty_targets: TokenImageSourceDirtyTargetRepository
     token_evidence: TokenEvidenceRepository
@@ -70,14 +71,17 @@ class RepositorySession:
     event_anchor_jobs: EventAnchorBackfillJobRepository
     token_intent_lookup: TokenIntentLookupRepository
     event_tokens: EventTokenProjectionQuery
-    token_radar_dirty_targets: TokenRadarDirtyTargetRepository
-    token_radar_rank_sources: TokenRadarRankSourceRepository
+    radar_projection_sources: RadarProjectionSourceRepository
+    radar_source_edges: RadarSourceEdgeRepository
     token_radar: TokenRadarRepository
     token_targets: TokenTargetRepository
     news: NewsRepository
     macro: MacroRepository
     macro_market: GeneralMarketRepository
     macro_thesis: MacroThesisRepository
+    persisted_live: PersistedLiveEventRepository
+    projection_frontiers: ProjectionFrontierRepository
+    provider_circuits: ProviderCircuitRepository
     transaction_observer: Callable[[float], None] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
@@ -111,7 +115,6 @@ def repositories_for_connection(
         source_query=TokenProfileSourceQuery(conn),
         cex_token_profiles=CexTokenProfileRepository(conn),
         token_profiles=TokenProfileCurrentRepository(conn),
-        token_profile_current_dirty_targets=TokenProfileCurrentDirtyTargetRepository(conn),
         token_image_assets=TokenImageAssetRepository(conn),
         token_image_source_dirty_targets=TokenImageSourceDirtyTargetRepository(conn),
         token_evidence=TokenEvidenceRepository(conn),
@@ -126,23 +129,33 @@ def repositories_for_connection(
         event_anchor_jobs=EventAnchorBackfillJobRepository(conn),
         token_intent_lookup=TokenIntentLookupRepository(conn),
         event_tokens=EventTokenProjectionQuery(conn),
-        token_radar_dirty_targets=TokenRadarDirtyTargetRepository(conn),
-        token_radar_rank_sources=TokenRadarRankSourceRepository(conn),
+        radar_projection_sources=RadarProjectionSourceRepository(conn),
+        radar_source_edges=RadarSourceEdgeRepository(conn),
         token_radar=TokenRadarRepository(conn),
         token_targets=TokenTargetRepository(conn),
         news=NewsRepository(conn),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
         macro_thesis=MacroThesisRepository(conn),
+        persisted_live=PersistedLiveEventRepository(conn),
+        projection_frontiers=ProjectionFrontierRepository(conn),
+        provider_circuits=ProviderCircuitRepository(conn),
         transaction_observer=transaction_observer,
     )
 
 
 @contextmanager
-def postgres_connection(settings: Any) -> Iterator[Any]:
+def postgres_connection(
+    settings: Any,
+    *,
+    role: Literal["serve", "workers", "migrate"],
+) -> Iterator[Any]:
     """Open the short-lived PostgreSQL connection used by application operations."""
     postgres = settings.storage.postgres
-    dsn = with_password_from_file(postgres.dsn, settings.postgres_password_file)
+    dsn = with_password_from_file(
+        settings.postgres_dsn(role),
+        settings.postgres_password_file(role),
+    )
     conn = connect_postgres(dsn, connect_timeout_seconds=postgres.connect_timeout_seconds)
     try:
         yield conn
@@ -151,7 +164,11 @@ def postgres_connection(settings: Any) -> Iterator[Any]:
 
 
 @contextmanager
-def repositories(settings: Any) -> Iterator[RepositorySession]:
+def repositories(
+    settings: Any,
+    *,
+    role: Literal["serve", "workers"] = "workers",
+) -> Iterator[RepositorySession]:
     """Open one short-lived repository session for a CLI/application operation."""
-    with postgres_connection(settings) as conn:
+    with postgres_connection(settings, role=role) as conn:
         yield repositories_for_connection(conn)

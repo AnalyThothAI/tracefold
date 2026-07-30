@@ -32,8 +32,6 @@ DIRTY_TARGET_TABLES = frozenset(
         "asset_profile_refresh_targets",
         "token_discovery_dirty_lookup_keys",
         "token_image_source_dirty_targets",
-        "token_profile_current_dirty_targets",
-        "token_radar_dirty_targets",
     }
 )
 

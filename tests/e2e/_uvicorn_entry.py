@@ -4,7 +4,7 @@ Run as:
   python -m tests.e2e._uvicorn_entry --port 0
 
 Reads TRACEFOLD_POSTGRES_DSN and TRACEFOLD_E2E_WS_TOKEN from env. Starts the FastAPI app
-with start_collector=False so no upstream WebSocket is attempted, using a
+using a
 hand-built Settings object that points at the test Postgres (no YAML config
 file is required). Prints the bound port to stdout once ready in the form
 `READY port=12345` so the parent test process can parse it.
@@ -34,13 +34,20 @@ def main() -> int:
     # Import after env validation to keep error pretty.
     from tracefold.app.http import routes_macro
     from tracefold.app.http.app import create_app
-    from tracefold.app.worker_manifest import all_worker_manifests
     from tracefold.platform.config.settings import Settings
 
     settings = Settings(
         ws_token=ws_token,
-        storage={"postgres": {"dsn": dsn, "password_file": None}},
-        workers={manifest.name: {"enabled": False} for manifest in all_worker_manifests()},
+        storage={
+            "postgres": {
+                "serve_dsn": dsn,
+                "workers_dsn": dsn,
+                "migrate_dsn": dsn,
+                "serve_password_file": None,
+                "workers_password_file": None,
+                "migrate_password_file": None,
+            }
+        },
     )
 
     fixed_now_ms = os.environ.get("TRACEFOLD_E2E_FIXED_NOW_MS")
@@ -49,7 +56,6 @@ def main() -> int:
 
     app = create_app(
         settings=settings,
-        start_collector=False,
         frontend_dist=os.environ.get("TRACEFOLD_FRONTEND_DIST"),
     )
 

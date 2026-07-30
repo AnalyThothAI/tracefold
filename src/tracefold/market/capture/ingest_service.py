@@ -40,7 +40,8 @@ from tracefold.market.pricing.market_tick import EnrichedEventCapture, MarketTic
 from tracefold.market.pricing.market_tick_current_repository import MarketTickCurrentRepository
 from tracefold.market.pricing.market_tick_persistence import MarketTickPersistenceService
 from tracefold.market.pricing.market_tick_repository import MarketTickRepository
-from tracefold.market.radar.token_radar_dirty_target_repository import TokenRadarDirtyTargetRepository
+from tracefold.market.radar.radar_source_edge_repository import RadarSourceEdgeRepository
+from tracefold.platform.postgres.persisted_live import PersistedLiveEventRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,8 @@ class IngestService:
         market_tick_current: MarketTickCurrentRepository,
         enriched_events: EnrichedEventRepository,
         event_anchor_jobs: EventAnchorBackfillJobRepository,
-        token_radar_dirty_targets: TokenRadarDirtyTargetRepository,
+        radar_source_edges: RadarSourceEdgeRepository,
+        persisted_live: PersistedLiveEventRepository,
         transaction: Callable[[], AbstractContextManager[None]],
         event_anchor_active_window_ms: int,
     ) -> None:
@@ -93,7 +95,8 @@ class IngestService:
         self.market_tick_current = market_tick_current
         self.enriched_events = enriched_events
         self.event_anchor_jobs = event_anchor_jobs
-        self.token_radar_dirty_targets = token_radar_dirty_targets
+        self.radar_source_edges = radar_source_edges
+        self.persisted_live = persisted_live
         self.transaction = transaction
         self.event_anchor_active_window_ms = require_event_anchor_active_window_ms(event_anchor_active_window_ms)
 
@@ -222,13 +225,10 @@ class IngestService:
                 reason="intent_resolution_unresolved",
                 now_ms=prepared.event_ms,
             )
-        dirty_targets = _dirty_targets_for_resolutions(resolutions)
-        if dirty_targets:
-            self.token_radar_dirty_targets.enqueue_targets(
-                dirty_targets,
-                reason="ingest_resolution",
-                now_ms=prepared.event_ms,
-            )
+        self.radar_source_edges.sync_event(
+            event_id=prepared.event_id,
+            now_ms=prepared.event_ms,
+        )
         capture_ticks = [item.tick for item in capture_results if item.tick is not None]
         if capture_ticks:
             MarketTickPersistenceService(self).persist_ticks(
@@ -242,13 +242,26 @@ class IngestService:
                 active_window_ms=self.event_anchor_active_window_ms,
             )
         token_resolutions = self.intent_resolutions.resolutions_for_event(prepared.event_id)
-        return IngestedEvent(
+        result = IngestedEvent(
             event=prepared.event_read,
             entities=[_entity_payload(entity) for entity in prepared.entities],
             token_intents=token_intents,
             token_resolutions=token_resolutions,
             inserted=True,
         )
+        self.persisted_live.append(
+            source_key=f"event:{result.event['event_id']}",
+            event_kind="event",
+            payload={
+                "type": "event",
+                "event": result.event,
+                "entities": result.entities,
+                "token_intents": result.token_intents,
+                "token_resolutions": result.token_resolutions,
+            },
+            committed_at_ms=int(result.event["received_at_ms"]),
+        )
+        return result
 
     def market_resolution_for_decision(self, decision: TokenIntentResolutionDecision) -> dict[str, Any] | None:
         _require_resolution_decision(decision)
@@ -460,24 +473,6 @@ def _require_capture_result(item: Any) -> CaptureResult:
     if not isinstance(item.capture, EnrichedEventCapture):
         raise RuntimeError("ingest_capture_result_contract_required")
     return item
-
-
-def _dirty_targets_for_resolutions(
-    resolutions: list[TokenIntentResolutionDecision],
-) -> list[dict[str, Any]]:
-    dirty_targets: list[dict[str, Any]] = []
-    for decision in resolutions:
-        formal_decision = _require_resolution_decision(decision)
-        target_type = formal_decision.target_type
-        target_id = formal_decision.target_id
-        if target_type in {"Asset", "CexToken"} and target_id:
-            dirty_targets.append(
-                {
-                    "target_type_key": str(target_type),
-                    "identity_id": str(target_id),
-                }
-            )
-    return dirty_targets
 
 
 def _discovery_lookup_keys_for_resolutions(

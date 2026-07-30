@@ -56,12 +56,12 @@ def capture_runtime_snapshot(runtime: Any) -> RuntimeSnapshot:
         raise TypeError("runtime_snapshot_required")
 
     collector = _collector_details(runtime.collector)
-    workers = manifest_worker_statuses(runtime.scheduler.status_payload())
+    workers = manifest_worker_statuses(runtime.supervisor.status_payload())
     provider_states = {
         "gmgn_direct_ws": _provider_connection_state(runtime.collector.upstream_client),
         "okx_dex_ws": _provider_connection_state(runtime.providers.asset_market.stream_dex_market),
     }
-    reasons = _worker_degradation_reasons(workers, runtime.scheduler.tasks)
+    reasons = _worker_degradation_reasons(workers, runtime.supervisor.tasks)
     reasons.extend(_provider_degradation_reasons(provider_states))
     return RuntimeSnapshot(
         workers=workers,

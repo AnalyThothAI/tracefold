@@ -9,7 +9,6 @@ from loguru import logger
 
 from tracefold.market.capture.normalizer import normalize_gmgn_payload, parse_gmgn_frame
 from tracefold.market.capture.provider_contracts import (
-    EventPublisherProtocol,
     IngestStoreProtocol,
     UpstreamClientProtocol,
 )
@@ -24,7 +23,6 @@ class CollectorStatus:
     last_event_at_ms: int | None = None
     frames_received: int = 0
     twitter_events: int = 0
-    events_published: int = 0
     duplicate_twitter_events: int = 0
     parse_errors: int = 0
     snapshot_gate_outcomes: dict[str, int] = field(
@@ -49,12 +47,10 @@ class CollectorService(WorkerBase):
         db: Any,
         telemetry: Any,
         store: IngestStoreProtocol,
-        publisher: EventPublisherProtocol,
         upstream_client: UpstreamClientProtocol | None,
     ):
         super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
         self.store = store
-        self.publisher = publisher
         self.upstream_client = upstream_client
         self.snapshot_timeout = float(settings.snapshot_timeout_seconds)
         self._pending_snapshots: dict[str, asyncio.Task[None]] = {}
@@ -64,25 +60,26 @@ class CollectorService(WorkerBase):
     async def run_once(self) -> WorkerResult:
         if self.upstream_client is None:
             raise RuntimeError("upstream_client is required")
-        self._upstream_task = asyncio.create_task(self.upstream_client.run(), name="collector:upstream")
-        stop_task = asyncio.create_task(self._stop_event.wait(), name="collector:stop_wait")
-        try:
-            done, _ = await asyncio.wait(
-                {self._upstream_task, stop_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if self._upstream_task in done:
-                if self._upstream_task.cancelled() and self._stop_event.is_set():
-                    return WorkerResult(processed=1, notes={"upstream_cancelled": True})
-                await self._upstream_task
-                return WorkerResult(processed=1, notes={"upstream_cancelled": False})
-            self._upstream_task.cancel()
-            await asyncio.gather(self._upstream_task, return_exceptions=True)
-            return WorkerResult(processed=1, notes={"upstream_cancelled": True})
-        finally:
-            stop_task.cancel()
-            await asyncio.gather(stop_task, return_exceptions=True)
-            self._upstream_task = None
+        async with self.require_provider_governor().acquire(host="gmgn_stream"):
+            self._upstream_task = asyncio.create_task(self.upstream_client.run(), name="collector:upstream")
+            stop_task = asyncio.create_task(self._stop_event.wait(), name="collector:stop_wait")
+            try:
+                done, _ = await asyncio.wait(
+                    {self._upstream_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._upstream_task in done:
+                    if self._upstream_task.cancelled() and self._stop_event.is_set():
+                        return WorkerResult(processed=1, notes={"upstream_cancelled": True})
+                    await self._upstream_task
+                    return WorkerResult(processed=1, notes={"upstream_cancelled": False})
+                self._upstream_task.cancel()
+                await asyncio.gather(self._upstream_task, return_exceptions=True)
+                return WorkerResult(processed=1, notes={"upstream_cancelled": True})
+            finally:
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+                self._upstream_task = None
 
     async def stop(self) -> None:
         await super().stop()
@@ -128,7 +125,7 @@ class CollectorService(WorkerBase):
             return
 
         channel = parsed["channel"]
-        await asyncio.to_thread(
+        await self.require_runtime_resources().run_realtime_db(
             self.store.insert_raw_frame,
             source="gmgn",
             channel=channel,
@@ -185,24 +182,12 @@ class CollectorService(WorkerBase):
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
         payload = {"channel": channel, "data": [item]}
         for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
-            ingested = await asyncio.to_thread(self.store.ingest_event, event)
+            ingested = await self.require_runtime_resources().run_realtime_db(self.store.ingest_event, event)
             if ingested.inserted:
                 self.status.twitter_events += 1
                 self.status.last_event_at_ms = received_at_ms
             else:
                 self.status.duplicate_twitter_events += 1
-            if not ingested.inserted:
-                continue
-            self.status.events_published += 1
-            await self.publisher.publish(
-                {
-                    "type": "event",
-                    "event": ingested.event,
-                    "entities": ingested.entities,
-                    "token_intents": ingested.token_intents,
-                    "token_resolutions": ingested.token_resolutions,
-                }
-            )
 
     def _record_snapshot_gate_outcome(self, outcome: str) -> None:
         self.status.snapshot_gate_outcomes[outcome] = self.status.snapshot_gate_outcomes.get(outcome, 0) + 1

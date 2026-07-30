@@ -39,7 +39,8 @@ def open_ingest(tmp_path):
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
         token_intent_lookup=repos.token_intent_lookup,
-        token_radar_dirty_targets=repos.token_radar_dirty_targets,
+        radar_source_edges=repos.radar_source_edges,
+        persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,
     )
@@ -157,13 +158,22 @@ def test_ingest_capture_tick_updates_current_and_enqueues_token_radar(tmp_path):
             target_type=capture_result.tick.target_type,
             target_id=capture_result.tick.target_id,
         )
-        dirty_row = conn.execute(
+        dirty_rows = conn.execute(
             """
-            SELECT *
-            FROM token_radar_dirty_targets
-            WHERE target_type_key = 'Asset' AND identity_id = %s
+            SELECT window_key, venue, status
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+            ORDER BY window_key
             """,
             (asset_id,),
+        ).fetchall()
+        live_row = conn.execute(
+            """
+            SELECT event_kind, payload_json
+            FROM persisted_live_events
+            WHERE source_key = %s
+            """,
+            (f"event:{event.event_id}",),
         ).fetchone()
     finally:
         conn.close()
@@ -171,9 +181,12 @@ def test_ingest_capture_tick_updates_current_and_enqueues_token_radar(tmp_path):
     assert result.inserted is True
     assert current_row is not None
     assert current_row["tick_id"] == capture_result.tick.tick_id
-    assert dirty_row is not None
-    assert dirty_row["dirty_reason"] == "mixed"
-    assert dirty_row["market_dirty"] is True
+    assert len(dirty_rows) == 4
+    assert {row["venue"] for row in dirty_rows} == {"all"}
+    assert {row["status"] for row in dirty_rows} == {"dirty"}
+    assert live_row is not None
+    assert live_row["event_kind"] == "event"
+    assert live_row["payload_json"]["event"]["event_id"] == event.event_id
 
 
 def test_ingest_capture_tick_current_and_downstream_dirty_roll_back_with_event_transaction(tmp_path):
@@ -200,7 +213,7 @@ def test_ingest_capture_tick_current_and_downstream_dirty_roll_back_with_event_t
             target_type=capture_result.tick.target_type,
             target_id=capture_result.tick.target_id,
         )
-        dirty_row = conn.execute("SELECT * FROM token_radar_dirty_targets").fetchone()
+        dirty_row = conn.execute("SELECT * FROM radar_projection_frontiers").fetchone()
     finally:
         conn.close()
 
@@ -208,6 +221,43 @@ def test_ingest_capture_tick_current_and_downstream_dirty_roll_back_with_event_t
     assert tick_row is None
     assert current_row is None
     assert dirty_row is None
+
+
+def test_ingest_event_and_persisted_live_journal_roll_back_together(
+    tmp_path,
+):
+    conn, repos, ingest = open_ingest(tmp_path)
+    event = make_event(
+        "event-live-journal-rollback",
+        text="$ROLLBACK event and live journal",
+        received_at_ms=1_800_000_020_000,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="rollback_after_live_append"), repos.transaction():
+            prepared = ingest.prepare_event(event)
+            ingest.prepare_registry_for_resolution(prepared)
+            resolutions = ingest.resolve_prepared(prepared, persist=False)
+            result = ingest.commit_prepared_event(
+                prepared,
+                resolutions=resolutions,
+                captures=[],
+            )
+            assert result.inserted is True
+            raise RuntimeError("rollback_after_live_append")
+
+        event_row = conn.execute(
+            "SELECT event_id FROM events WHERE event_id = %s",
+            (event.event_id,),
+        ).fetchone()
+        live_row = conn.execute(
+            "SELECT cursor FROM persisted_live_events WHERE source_key = %s",
+            (f"event:{event.event_id}",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert event_row is None
+    assert live_row is None
 
 
 def test_ingest_registry_asset_rolls_back_with_failed_event_transaction(tmp_path):

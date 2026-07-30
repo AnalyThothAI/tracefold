@@ -1,19 +1,241 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from threading import Lock
+from typing import Any, ClassVar
+
+from psycopg import pq
+
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
     reset_postgres_schema,
 )
-from tracefold.market.profiles.asset_profile_refresh_worker import _retry_delay_ms
+from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
+from tracefold.market.profiles.asset_profile_refresh_worker import (
+    AssetProfileRefreshWorker,
+    _missing_retry_delay_ms,
+    _retry_delay_ms,
+)
+from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirrorWorker
+from tracefold.market.provider_contracts import (
+    DexProfileSource,
+    DexProviderTemporarilyUnavailable,
+)
+from tracefold.platform.config.settings import (
+    AssetProfileRefreshWorkerSettings,
+    TokenImageMirrorWorkerSettings,
+)
 
 NOW_MS = 1_779_000_000_000
+PROVIDER = "gmgn_dex_profile"
+
+
+class _SessionTrackingDB:
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+        self._lock = Lock()
+        self._active_sessions = 0
+
+    @property
+    def active_sessions(self) -> int:
+        with self._lock:
+            return self._active_sessions
+
+    @contextmanager
+    def worker_session(self, *_args: Any, **_kwargs: Any) -> Iterator[Any]:
+        with self._lock:
+            self._active_sessions += 1
+        try:
+            with repository_session_for_connection(self.conn) as repos:
+                yield repos
+        finally:
+            if self.conn.info.transaction_status != pq.TransactionStatus.IDLE:
+                self.conn.rollback()
+            with self._lock:
+                self._active_sessions -= 1
+
+
+class _ProviderFailureMarket:
+    def __init__(self, db: _SessionTrackingDB) -> None:
+        self.db = db
+        self.calls = 0
+
+    def token_profile(self, *, chain_id: str, address: str) -> None:
+        del chain_id, address
+        self.calls += 1
+        assert self.db.active_sessions == 0
+        raise DexProviderTemporarilyUnavailable("provider unavailable")
+
+
+class _ImageResponse:
+    url = "https://gmgn.ai/external-res/logo.png"
+    status_code = 200
+    headers: ClassVar[dict[str, str]] = {"content-type": "image/png"}
+    content = b"\x89PNG\r\n\x1a\nfixture"
+
+
+class _ImageHttpClient:
+    def __init__(self, db: _SessionTrackingDB) -> None:
+        self.db = db
+        self.calls = 0
+
+    def get(self, url: str, **kwargs: Any) -> _ImageResponse:
+        del url, kwargs
+        self.calls += 1
+        assert self.db.active_sessions == 0
+        return _ImageResponse()
+
+
+def _enqueue_profile_target(conn: Any, *, target_id: str = "asset-1") -> None:
+    with repository_session_for_connection(conn) as repos, repos.transaction():
+        repos.asset_profile_refresh_targets.enqueue_targets(
+            [
+                {
+                    "provider": PROVIDER,
+                    "target_type": "Asset",
+                    "target_id": target_id,
+                    "chain_id": "sol",
+                    "address": "address-1",
+                    "symbol": "ONE",
+                    "source_watermark_ms": NOW_MS,
+                    "priority": 20,
+                    "heat_tier": "hot",
+                    "payload_hash": "sha256:evidence-v1",
+                }
+            ],
+            reason="token_radar_entered",
+            now_ms=NOW_MS,
+        )
 
 
 def test_profile_retry_delay_is_exponential_and_bounded() -> None:
     assert _retry_delay_ms(base_ms=900_000, attempt_count=1, cap_ms=86_400_000) == 900_000
     assert _retry_delay_ms(base_ms=900_000, attempt_count=3, cap_ms=86_400_000) == 3_600_000
     assert _retry_delay_ms(base_ms=900_000, attempt_count=20, cap_ms=86_400_000) == 86_400_000
+
+
+def test_missing_profile_retry_schedule_is_code_owned_and_exact() -> None:
+    assert [_missing_retry_delay_ms(attempt) for attempt in range(1, 5)] == [
+        15 * 60_000,
+        30 * 60_000,
+        60 * 60_000,
+        120 * 60_000,
+    ]
+
+
+def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> None:
+    conn = connect_postgres_test()
+    resources = RuntimeResources()
+    try:
+        reset_postgres_schema(conn)
+        _enqueue_profile_target(conn)
+        db = _SessionTrackingDB(conn)
+        market = _ProviderFailureMarket(db)
+        worker = AssetProfileRefreshWorker(
+            name="asset_profile_refresh",
+            settings=AssetProfileRefreshWorkerSettings(),
+            db=db,
+            telemetry=None,
+            dex_profile_sources=(DexProfileSource(provider=PROVIDER, market=market),),
+        )
+        worker.bind_runtime_resources(resources)
+        worker.bind_provider_governor(ProviderGovernor())
+
+        result = asyncio.run(worker.run_once(now_ms=NOW_MS))
+
+        row = conn.execute(
+            """
+            SELECT attempt_count, lease_owner, due_at_ms
+            FROM asset_profile_refresh_targets
+            WHERE provider = %s AND target_id = 'asset-1'
+            """,
+            (PROVIDER,),
+        ).fetchone()
+        circuit = conn.execute(
+            """
+            SELECT status, consecutive_failures, next_probe_at_ms
+            FROM provider_circuit_state
+            WHERE provider = %s
+            """,
+            (PROVIDER,),
+        ).fetchone()
+        conn.commit()
+
+        assert market.calls == 1
+        assert result.failed == 1
+        assert row == {
+            "attempt_count": 0,
+            "lease_owner": None,
+            "due_at_ms": NOW_MS + 300_000,
+        }
+        assert circuit == {
+            "status": "open",
+            "consecutive_failures": 1,
+            "next_probe_at_ms": NOW_MS + 300_000,
+        }
+    finally:
+        resources.close()
+        conn.close()
+
+
+def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
+    conn = connect_postgres_test()
+    resources = RuntimeResources()
+    try:
+        reset_postgres_schema(conn)
+        db = _SessionTrackingDB(conn)
+        http_client = _ImageHttpClient(db)
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.token_image_source_dirty_targets.enqueue_targets(
+                [
+                    {
+                        "source_url": "https://gmgn.ai/external-res/logo.png",
+                        "source_provider": PROVIDER,
+                        "source_kind": "logo",
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "raw_ref_json": {},
+                        "source_watermark_ms": NOW_MS,
+                        "priority": 20,
+                    }
+                ],
+                reason="profile_image_candidate",
+                now_ms=NOW_MS,
+            )
+        worker = TokenImageMirrorWorker(
+            name="token_image_mirror",
+            settings=TokenImageMirrorWorkerSettings(),
+            db=db,
+            telemetry=None,
+            app_home=tmp_path,
+            http_client=http_client,
+        )
+        worker.bind_runtime_resources(resources)
+        worker.bind_provider_governor(ProviderGovernor())
+
+        result = asyncio.run(worker.run_once(now_ms=NOW_MS))
+
+        asset = conn.execute(
+            """
+            SELECT status, storage_path
+            FROM token_image_assets
+            WHERE source_url = 'https://gmgn.ai/external-res/logo.png'
+            """
+        ).fetchone()
+        queue_depth = conn.execute("SELECT count(*) AS count FROM token_image_source_dirty_targets").fetchone()["count"]
+        conn.commit()
+        assert http_client.calls == 1
+        assert result.processed == 1
+        assert result.failed == 0
+        assert asset["status"] == "ready"
+        assert (tmp_path / "cache" / "token-images" / asset["storage_path"]).is_file()
+        assert queue_depth == 0
+    finally:
+        resources.close()
+        conn.close()
 
 
 def test_hot_profile_target_claims_before_older_cold_target() -> None:

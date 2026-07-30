@@ -83,6 +83,6 @@ COPY --from=python-deps /app /app
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
-EXPOSE 8765
+EXPOSE 8765 8766
 
 CMD ["tracefold", "serve"]

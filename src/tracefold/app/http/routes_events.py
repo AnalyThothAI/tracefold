@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
@@ -23,17 +25,37 @@ def recent(
     ca: Annotated[str, Query()] = "",
     chain: Annotated[str, Query()] = "",
     symbol: Annotated[str, Query()] = "",
+    cursor: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
-    data = _recent_data(
-        runtime,
-        limit=_limit(limit),
-        handles=_handle_set(handles),
-        ca=ca or None,
-        chain=chain or None,
-        symbol=symbol or None,
+    parsed_handles = _handle_set(handles)
+    parsed_ca = ca or None
+    parsed_chain = chain or None
+    parsed_symbol = symbol or None
+    cursor_filters = _recent_cursor_filters(
+        handles=parsed_handles,
+        ca=parsed_ca,
+        chain=parsed_chain,
+        symbol=parsed_symbol,
     )
+    try:
+        before = _decode_recent_cursor(
+            cursor or None,
+            expected_filters=cursor_filters,
+        )
+        data = _recent_data(
+            runtime,
+            limit=_limit(limit),
+            handles=parsed_handles,
+            ca=parsed_ca,
+            chain=parsed_chain,
+            symbol=parsed_symbol,
+            before=before,
+            cursor_filters=cursor_filters,
+        )
+    except ValueError as exc:
+        raise ApiBadRequest("invalid_cursor", field="cursor") from exc
     return _validated_json(
         api_schemas.ApiEnvelope[api_schemas.RecentData],
         {
@@ -58,12 +80,12 @@ def events_by_ids(
             {"ok": False, "error": "ids_required", "field": "ids"},
             status_code=400,
         )
-    if len(raw) > 200:
+    if len(raw) > 100:
         return JSONResponse(
-            {"ok": False, "error": "too_many_ids", "field": "ids", "limit": 200},
+            {"ok": False, "error": "too_many_ids", "field": "ids", "limit": 100},
             status_code=400,
         )
-    with runtime.repositories() as repos:
+    with runtime.repositories(lane="search") as repos:
         records = repos.evidence.events_by_ids(raw)
         events_payload = [_source_event_detail(records[event_id]) for event_id in raw if event_id in records]
         not_found = [event_id for event_id in raw if event_id not in records]
@@ -116,21 +138,94 @@ def _recent_data(
     ca: str | None,
     chain: str | None,
     symbol: str | None,
+    before: tuple[int, str] | None,
+    cursor_filters: dict[str, Any],
 ) -> dict[str, Any]:
     with runtime.repositories() as repos:
-        events = repos.evidence.recent_events(
-            limit=limit,
+        rows = repos.evidence.recent_events(
+            limit=limit + 1,
             handles=handles,
             ca=ca,
             chain=chain,
             symbol=symbol,
+            before=before,
+        )
+        has_more = len(rows) > limit
+        events = rows[:limit]
+        next_cursor = (
+            _encode_recent_cursor(
+                events[-1],
+                filters=cursor_filters,
+            )
+            if has_more and events
+            else None
         )
         return {
             "events": events,
             "items": _payloads_for_events(repos, events),
+            "page": {
+                "returned_count": len(events),
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
         }
 
 
 def _reject_removed_scope(request: Request) -> None:
     if "scope" in request.query_params:
         raise ApiBadRequest("unsupported_query_param", field="scope")
+
+
+def _recent_cursor_filters(
+    *,
+    handles: set[str],
+    ca: str | None,
+    chain: str | None,
+    symbol: str | None,
+) -> dict[str, Any]:
+    return {
+        "handles": sorted(handles),
+        "ca": ca,
+        "chain": chain,
+        "symbol": symbol,
+    }
+
+
+def _encode_recent_cursor(
+    event: EventRead,
+    *,
+    filters: dict[str, Any],
+) -> str:
+    payload = json.dumps(
+        {
+            "v": 1,
+            "received_at_ms": int(event["received_at_ms"]),
+            "event_id": str(event["event_id"]),
+            "filters": filters,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_recent_cursor(
+    cursor: str | None,
+    *,
+    expected_filters: dict[str, Any],
+) -> tuple[int, str] | None:
+    if cursor is None:
+        return None
+    try:
+        encoded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded.encode()).decode())
+        if not isinstance(payload, dict) or payload.get("v") != 1 or payload.get("filters") != expected_filters:
+            raise ValueError("recent_cursor_contract_mismatch")
+        received_at_ms = int(payload["received_at_ms"])
+        event_id = str(payload["event_id"])
+        if received_at_ms < 0 or not event_id:
+            raise ValueError("recent_cursor_value_invalid")
+        return received_at_ms, event_id
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("recent_cursor_invalid") from exc

@@ -6,7 +6,6 @@ from tracefold.market.pricing.market_tick_poll_worker import MarketTickPollWorke
 from tracefold.market.pricing.market_tick_stream_worker import MarketTickStreamWorker
 from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileRefreshWorker
 from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirrorWorker
-from tracefold.market.profiles.token_profile_current_worker import TokenProfileCurrentWorker
 from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_worker, unavailable_worker
 from tracefold.platform.workers.worker_base import WorkerBase
 
@@ -21,15 +20,6 @@ def construct_market_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]
     stream_dex_market = asset_market.stream_dex_market if asset_market is not None else None
     constructed: dict[str, WorkerBase] = {}
 
-    if workers.token_profile_current.enabled:
-        constructed["token_profile_current"] = TokenProfileCurrentWorker(
-            name="token_profile_current",
-            settings=workers.token_profile_current,
-            db=ctx.db,
-            telemetry=ctx.telemetry,
-        )
-    else:
-        constructed["token_profile_current"] = disabled_worker(ctx, "token_profile_current")
     if workers.token_image_mirror.enabled:
         constructed["token_image_mirror"] = TokenImageMirrorWorker(
             name="token_image_mirror",
@@ -48,7 +38,6 @@ def construct_market_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]
                 pool_bundle=ctx.db,
                 telemetry=ctx.telemetry,
                 stream_dex_market=stream_dex_market,
-                on_live_market_update=ctx.hub.publish if ctx.hub is not None else None,
             )
         else:
             constructed["market_tick_stream"] = unavailable_worker(
@@ -64,7 +53,6 @@ def construct_market_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]
                 pool_bundle=ctx.db,
                 telemetry=ctx.telemetry,
                 providers=asset_market,
-                on_live_market_update=ctx.hub.publish if ctx.hub is not None else None,
             )
         else:
             constructed["market_tick_poll"] = unavailable_worker(
@@ -72,21 +60,21 @@ def construct_market_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]
             )
     else:
         constructed["market_tick_poll"] = disabled_worker(ctx, "market_tick_poll")
-    if workers.event_anchor_backfill.enabled:
+    if workers.event_anchor_capture.enabled:
         if asset_market is not None:
-            constructed["event_anchor_backfill"] = EventAnchorBackfillWorker(
-                name="event_anchor_backfill",
-                settings=workers.event_anchor_backfill,
+            constructed["event_anchor_capture"] = EventAnchorBackfillWorker(
+                name="event_anchor_capture",
+                settings=workers.event_anchor_capture,
                 pool_bundle=ctx.db,
                 telemetry=ctx.telemetry,
                 providers=asset_market,
             )
         else:
-            constructed["event_anchor_backfill"] = unavailable_worker(
-                ctx, "event_anchor_backfill", "missing_asset_market_provider"
+            constructed["event_anchor_capture"] = unavailable_worker(
+                ctx, "event_anchor_capture", "missing_asset_market_provider"
             )
     else:
-        constructed["event_anchor_backfill"] = disabled_worker(ctx, "event_anchor_backfill")
+        constructed["event_anchor_capture"] = disabled_worker(ctx, "event_anchor_capture")
     if workers.asset_profile_refresh.enabled:
         if dex_profile_sources:
             constructed["asset_profile_refresh"] = AssetProfileRefreshWorker(

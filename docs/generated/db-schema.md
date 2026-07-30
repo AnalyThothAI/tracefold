@@ -306,6 +306,16 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `macro_dataset_projection_states`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `dataset_id` | `TEXT` | False | `None` |
+| `material_fingerprint` | `TEXT` | False | `None` |
+| `acquisition_status` | `TEXT` | False | `None` |
+| `source_frontier_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `macro_document_analyses`
 
 | Column | Type | Nullable | Default |
@@ -428,6 +438,25 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `current_health_state` | `TEXT` | False | `None` |
 | `history_depth_state` | `TEXT` | False | `None` |
+
+## `macro_module_frontiers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `module_id` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `transient_failure_count` | `INTEGER` | False | `0` |
+| `source_frontier_ms` | `BIGINT` | True | `None` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `projection_version` | `TEXT` | False | `None` |
+| `claimed_by` | `UUID` | True | `None` |
+| `claimed_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `macro_outcome_replays`
 
@@ -730,6 +759,25 @@
 | `payload_hash` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
+## `model_generation_frontiers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `candidate_kind` | `TEXT` | False | `None` |
+| `shard_key` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `transient_failure_count` | `INTEGER` | False | `0` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `workflow_version` | `TEXT` | False | `None` |
+| `claimed_by` | `UUID` | True | `None` |
+| `claimed_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_brief_current`
 
 | Column | Type | Nullable | Default |
@@ -797,6 +845,19 @@
 | `rejection_reason` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
+## `news_identity_features`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `item_id` | `TEXT` | False | `None` |
+| `normalized_title` | `TEXT` | False | `None` |
+| `candidate_tokens` | `ARRAY` | False | `None` |
+| `feature_fingerprint` | `TEXT` | False | `None` |
+| `published_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `active` | `BOOLEAN` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_items`
 
 | Column | Type | Nullable | Default |
@@ -823,6 +884,36 @@
 | `brief_excluded` | `BOOLEAN` | False | `false` |
 | `active` | `BOOLEAN` | False | `true` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_projection_frontiers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `bucket_id` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `transient_failure_count` | `INTEGER` | False | `0` |
+| `active_item_count` | `INTEGER` | False | `0` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `projection_version` | `TEXT` | False | `None` |
+| `claimed_by` | `UUID` | True | `None` |
+| `claimed_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_similarity_edges`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `left_item_id` | `TEXT` | False | `None` |
+| `right_item_id` | `TEXT` | False | `None` |
+| `similarity` | `DOUBLE PRECISION` | False | `None` |
+| `identity_version` | `TEXT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_source_fetches`
@@ -932,6 +1023,18 @@
 | `first_joined_at_ms` | `BIGINT` | False | `None` |
 | `last_confirmed_at_ms` | `BIGINT` | False | `None` |
 
+## `persisted_live_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `cursor` | `BIGINT` | False | `None` |
+| `source_key` | `TEXT` | False | `None` |
+| `event_kind` | `TEXT` | False | `None` |
+| `target_type` | `TEXT` | True | `None` |
+| `target_id` | `TEXT` | True | `None` |
+| `payload_json` | `JSONB` | False | `None` |
+| `committed_at_ms` | `BIGINT` | False | `None` |
+
 ## `price_feeds`
 
 | Column | Type | Nullable | Default |
@@ -952,6 +1055,55 @@
 | `status` | `TEXT` | False | `None` |
 | `evidence_level` | `TEXT` | False | `None` |
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `provider_circuit_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `provider` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `consecutive_failures` | `INTEGER` | False | `0` |
+| `opened_at_ms` | `BIGINT` | True | `None` |
+| `next_probe_at_ms` | `BIGINT` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `radar_projection_frontiers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `target_type` | `TEXT` | False | `None` |
+| `target_id` | `TEXT` | False | `None` |
+| `window_key` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `transient_failure_count` | `INTEGER` | False | `0` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `projection_version` | `TEXT` | False | `None` |
+| `claimed_by` | `UUID` | True | `None` |
+| `claimed_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `radar_source_edges`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `target_type` | `TEXT` | False | `None` |
+| `target_id` | `TEXT` | False | `None` |
+| `window_key` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `source_kind` | `TEXT` | False | `None` |
+| `source_id` | `TEXT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `input_fingerprint` | `TEXT` | False | `None` |
+| `payload_json` | `JSONB` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `raw_frames`
@@ -1180,22 +1332,23 @@
 | `logo_source_url_hash` | `TEXT` | True | `None` |
 | `payload_hash` | `TEXT` | False | `None` |
 
-## `token_profile_current_dirty_targets`
+## `token_profile_projection_frontiers`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `target_type` | `TEXT` | False | `None` |
 | `target_id` | `TEXT` | False | `None` |
-| `dirty_reason` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `source_watermark_ms` | `BIGINT` | False | `None` |
-| `priority` | `INTEGER` | False | `100` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
+| `status` | `TEXT` | False | `None` |
+| `first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
 | `attempt_count` | `INTEGER` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `first_dirty_at_ms` | `BIGINT` | False | `None` |
+| `transient_failure_count` | `INTEGER` | False | `0` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `projection_version` | `TEXT` | False | `None` |
+| `claimed_by` | `UUID` | True | `None` |
+| `claimed_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `token_radar_current_rows`
@@ -1234,24 +1387,6 @@
 | `degraded_reasons_json` | `JSONB` | False | `'[]'::jsonb` |
 | `venue` | `TEXT` | False | `'all'::text` |
 
-## `token_radar_dirty_targets`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `target_type_key` | `TEXT` | False | `None` |
-| `identity_id` | `TEXT` | False | `None` |
-| `dirty_reason` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `attempt_count` | `BIGINT` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `first_dirty_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `market_dirty` | `BOOLEAN` | False | `false` |
-| `repair_dirty` | `BOOLEAN` | False | `false` |
-
 ## `token_radar_publication_state`
 
 | Column | Type | Nullable | Default |
@@ -1270,26 +1405,6 @@
 | `latest_attempt_finished_at_ms` | `BIGINT` | True | `None` |
 | `latest_attempt_error` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `token_radar_rank_source_events`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `projection_version` | `TEXT` | False | `None` |
-| `target_type_key` | `TEXT` | False | `None` |
-| `identity_id` | `TEXT` | False | `None` |
-| `source_kind` | `TEXT` | False | `None` |
-| `source_id` | `TEXT` | False | `None` |
-| `event_received_at_ms` | `BIGINT` | False | `None` |
-| `projected_at_ms` | `BIGINT` | False | `None` |
-| `source_payload_hash` | `TEXT` | False | `None` |
-| `intent_id` | `TEXT` | True | `None` |
-| `event_id` | `TEXT` | True | `None` |
-| `resolution_id` | `TEXT` | True | `None` |
-| `target_type` | `TEXT` | True | `None` |
-| `target_id` | `TEXT` | True | `None` |
-| `pricefeed_id` | `TEXT` | True | `None` |
-| `resolution_status` | `TEXT` | True | `None` |
 
 ## `token_radar_target_features`
 
@@ -1391,3 +1506,22 @@
 | `operator_reason` | `TEXT` | True | `None` |
 | `operator_action_at_ms` | `BIGINT` | True | `None` |
 | `final_reason_bucket` | `TEXT` | False | `'other'::text` |
+
+## `worker_runtime_status`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `unit_name` | `TEXT` | False | `None` |
+| `runtime_id` | `UUID` | False | `None` |
+| `runtime_version` | `TEXT` | False | `None` |
+| `effective_status` | `TEXT` | False | `None` |
+| `heartbeat_at_ms` | `BIGINT` | False | `None` |
+| `last_started_at_ms` | `BIGINT` | True | `None` |
+| `last_finished_at_ms` | `BIGINT` | True | `None` |
+| `last_result_json` | `JSONB` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
+| `deadline_at_ms` | `BIGINT` | True | `None` |
+| `queue_depth` | `BIGINT` | True | `None` |
+| `oldest_due_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `quarantine_count` | `BIGINT` | False | `0` |

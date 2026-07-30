@@ -26,6 +26,11 @@ from tracefold.market import (
 FIXTURES = Path(__file__).resolve().parent / "provider_frames"
 
 
+class _InlineRuntimeResources:
+    async def run_realtime_db(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
 def test_gmgn_complete_public_tw_fixture_parses_persists_and_extracts_token_identity() -> None:
     raw_frame = _load_json("gmgn_public_tw_complete.json")
 
@@ -65,7 +70,6 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
     async def scenario() -> None:
         raw_frames = _load_json("gmgn_public_tw_partial_then_complete.json")
         store = MemoryStore()
-        publisher = MemoryPublisher()
         service = CollectorService(
             name="collector",
             settings=SimpleNamespace(
@@ -77,9 +81,9 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
             db=object(),
             telemetry=object(),
             store=store,
-            publisher=publisher,
             upstream_client=None,
         )
+        service.bind_runtime_resources(_InlineRuntimeResources())
 
         await service.handle_frame(raw_frames[0], received_at_ms=1_777_729_877_000)
         await service.handle_frame(raw_frames[1], received_at_ms=1_777_729_877_010)
@@ -92,8 +96,6 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
         assert store.twitter_events[0].content.text == "complete snapshot with final token text"
         assert store.twitter_events[0].token_snapshot is not None
         assert store.twitter_events[0].token_snapshot.icon_url == "https://example.test/token.png"
-        assert len(publisher.payloads) == 1
-        assert publisher.payloads[0]["event"]["event_id"] == "gmgn:twitter_monitor_token:fixture-internal-002"
 
     asyncio.run(scenario())
 
@@ -205,11 +207,3 @@ class MemoryStore:
             token_resolutions=[{"event_id": event.event_id, "target_id": "fixture:mirror"}],
             inserted=True,
         )
-
-
-class MemoryPublisher:
-    def __init__(self) -> None:
-        self.payloads = []
-
-    async def publish(self, payload: dict[str, Any]) -> None:
-        self.payloads.append(payload)

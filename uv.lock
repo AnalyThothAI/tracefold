@@ -1777,6 +1777,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pebble"
+version = "5.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/6b/fba8cb6ca12e6bbcfac48da790b6a9d262d5beb6f34dc1b63fccc32a9ff8/pebble-5.2.1.tar.gz", hash = "sha256:9743537aa0e40751a1cbf297928e141bd2202a24624a7c0f9fc14818a7f227b1", size = 40496, upload-time = "2026-07-19T20:18:17.044Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/cf/f838e54b229bb202575daf7542d39da3c38434959d7a9252d4be66cb7d9a/pebble-5.2.1-py3-none-any.whl", hash = "sha256:154feb48f187ffff842cbc2fe0768ed1524d6fa72e90577a78bcea21a2f929f9", size = 34984, upload-time = "2026-07-19T20:18:15.692Z" },
+]
+
+[[package]]
 name = "peewee"
 version = "4.2.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2705,6 +2714,7 @@ dependencies = [
     { name = "langchain-litellm" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "loguru" },
+    { name = "pebble" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
@@ -2745,6 +2755,7 @@ requires-dist = [
     { name = "langchain-litellm", specifier = "==0.7.0" },
     { name = "langgraph-checkpoint-postgres", specifier = "==3.1.0" },
     { name = "loguru", specifier = ">=0.7.2" },
+    { name = "pebble", specifier = ">=5.2,<5.3" },
     { name = "prometheus-client", specifier = ">=0.22.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.0" },
     { name = "pydantic", specifier = ">=2.8.0" },

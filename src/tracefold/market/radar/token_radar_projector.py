@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -30,20 +29,17 @@ from tracefold.market.radar.factor_snapshot import (
 )
 from tracefold.market.radar.factor_snapshot_contract import require_token_factor_snapshot
 from tracefold.market.radar.token_radar_feature_builder import (
-    BASELINE_SLOT_COUNT,
     build_radar_features,
 )
-from tracefold.market.radar.token_radar_rank_source_query import (
-    TokenRadarFeatureSourceRequest,
+from tracefold.market.radar.token_radar_repository import (
+    token_radar_target_feature_payload,
 )
-from tracefold.platform.validation import require_nonnegative_int, require_positive_int
+from tracefold.platform.validation import require_nonnegative_int
 
 PROJECTION_VERSION = TOKEN_RADAR_PROJECTION_VERSION
 TOKEN_RADAR_DECISION_PRIORITY = {"high_alert": 0, "watch": 1, "discard": 2}
 RANKED_NORMALIZATION_STATUSES = frozenset({"ranked", "no_signal"})
 RANKED_COHORT_STATUSES = frozenset({"ready", "insufficient", "all_tied"})
-MAX_ANALYSIS_LOOKBACK_MS = 48 * 60 * 60 * 1000
-RANK_SOURCE_REPAIR_SAFETY_MARGIN_MS = 5 * 60 * 1000
 DEX_DECISION_FLOORS = {
     "holders": 100,
     "liquidity_usd": 25_000.0,
@@ -57,392 +53,88 @@ class TokenRadarProjectionWindowError(ValueError):
     pass
 
 
-@dataclass(frozen=True)
-class ProjectedClaim:
-    claim: Mapping[str, Any]
-    rank_sets: frozenset[tuple[str, str]]
-    source_rows: int
-    error: str | None = None
+def rank_compact_inputs(
+    rank_inputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pure cross-sectional rank normalization for one window/venue closure."""
 
+    factor_scores: dict[str, dict[str, float | None]] = {}
+    factor_weights: dict[str, dict[str, float]] = {}
+    cohort: set[str] = set()
+    cohort_metadata: dict[str, dict[str, Any]] = {}
 
-@dataclass(frozen=True)
-class RankSetProjection:
-    rows: tuple[dict[str, Any], ...]
-    source_rows: int
-    hydrated_rows: int
-
-
-def prune_token_radar_private_cache(
-    *,
-    repos: Any,
-    windows: tuple[str, ...],
-    now_ms: int,
-    retention_ms: int,
-    limit: int,
-) -> dict[str, Any]:
-    computed_at_ms = int(now_ms)
-    parsed_retention_ms = require_positive_int(
-        retention_ms,
-        error_code="token_radar_private_cache_retention_ms_required",
-    )
-    parsed_limit = require_positive_int(limit, error_code="token_radar_private_cache_limit_required")
-    cutoff_ms = computed_at_ms - parsed_retention_ms
-    remaining = parsed_limit
-    target_features_deleted = 0
-    rank_source_edges_deleted = 0
-    with repos.transaction():
-        for window in windows:
-            if remaining <= 0:
-                break
-            deleted = int(
-                repos.token_radar.prune_target_features(
-                    projection_version=PROJECTION_VERSION,
-                    window=str(window),
-                    latest_event_before_ms=cutoff_ms,
-                    limit=remaining,
-                )
-                or 0
-            )
-            target_features_deleted += deleted
-            remaining = max(0, remaining - deleted)
-        if remaining > 0:
-            rank_source_edges_deleted = int(
-                repos.token_radar_rank_sources.prune_edges(
-                    projection_version=PROJECTION_VERSION,
-                    event_received_before_ms=cutoff_ms,
-                    limit=remaining,
-                )
-                or 0
-            )
-    return {
-        "status": "ready" if target_features_deleted or rank_source_edges_deleted else "idle",
-        "cutoff_ms": cutoff_ms,
-        "target_features_deleted": target_features_deleted,
-        "rank_source_edges_deleted": rank_source_edges_deleted,
-        "limit": parsed_limit,
-    }
-
-
-class TokenRadarProjector:
-    """Builds rebuildable Token Radar private features and ranked row candidates."""
-
-    def __init__(self, *, repos: Any) -> None:
-        self.repos = repos
-
-    def project_claims(
-        self,
-        *,
-        claimed_targets: Sequence[Mapping[str, Any]],
-        work_items: tuple[str, ...],
-        now_ms: int,
-    ) -> tuple[ProjectedClaim, ...]:
-        computed_at_ms = int(now_ms)
-        source_work_items = _score_work_items(work_items)
-        targets = [dict(claim) for claim in claimed_targets]
-        projected: list[ProjectedClaim] = []
-
-        edge_refresh_targets = [target for target in targets if not _is_market_only_claim(target)]
-        if edge_refresh_targets:
-            try:
-                with self.repos.transaction():
-                    self.repos.token_radar_rank_sources.populate_edges_for_targets(
-                        edge_refresh_targets,
-                        projected_at_ms=computed_at_ms,
-                        analysis_since_ms=_rank_source_repair_analysis_since_ms(
-                            computed_at_ms=computed_at_ms,
-                            work_items=source_work_items,
-                        ),
-                    )
-            except Exception as exc:
-                failed_identities = {_target_identity_key(target) for target in edge_refresh_targets}
-                projected.extend(
-                    ProjectedClaim(
-                        claim=target,
-                        rank_sets=frozenset(),
-                        source_rows=0,
-                        error=str(exc),
-                    )
-                    for target in edge_refresh_targets
-                )
-                targets = [target for target in targets if _target_identity_key(target) not in failed_identities]
-
-        requests = _source_requests_for_targets(targets, source_work_items, now_ms=computed_at_ms)
-        rows_by_request = self.repos.token_radar_rank_sources.load_rows_for_requests(requests) if requests else {}
-        market_targets = [target for target in targets if bool(target.get("market_dirty"))]
-        market_context_by_target = (
-            self.repos.token_radar_rank_sources.latest_market_context_for_targets(market_targets)
-            if market_targets
-            else {}
-        )
-        requests_by_target = _source_requests_by_target(requests)
-
-        for target_index, target in enumerate(targets):
-            source_row_count = 0
-            touched: set[tuple[str, str]] = set()
-            try:
-                for request in requests_by_target.get(target_index, []):
-                    source_rows = rows_by_request.get(request.request_key, [])
-                    if bool(target.get("market_dirty")):
-                        source_rows = _with_latest_market_context(
-                            source_rows,
-                            market_context_by_target.get(_source_request_target_key(request)),
-                        )
-                    result = self.project_source_request(
-                        request=request,
-                        target=target,
-                        source_rows=source_rows,
-                        now_ms=computed_at_ms,
-                    )
-                    source_row_count += int(result.get("source_rows") or 0)
-                    if bool(result.get("rank_set_changed")):
-                        touched.update(_rank_items_for_projection_change(request=request, score_result=result))
-                projected.append(
-                    ProjectedClaim(
-                        claim=target,
-                        rank_sets=frozenset(touched),
-                        source_rows=source_row_count,
-                    )
-                )
-            except Exception as exc:
-                projected.append(
-                    ProjectedClaim(
-                        claim=target,
-                        rank_sets=frozenset(),
-                        source_rows=source_row_count,
-                        error=str(exc),
-                    )
-                )
-        return tuple(projected)
-
-    def project_source_request(
-        self,
-        *,
-        request: TokenRadarFeatureSourceRequest,
-        target: dict[str, Any],
-        source_rows: list[dict[str, Any]],
-        now_ms: int,
-    ) -> dict[str, Any]:
-        window = request.window
-        target_type_key = _required_target_identity_text(target, "target_type_key")
-        identity_id = _required_target_identity_text(target, "identity_id")
-        window_ms = _window_ms(window)
-        score_since_ms = int(request.score_since_ms)
-        total_window_events = len(
-            {str(row["event_id"]) for row in source_rows if int(row.get("received_at_ms") or 0) >= score_since_ms}
-        )
-        projected = _project_group(
-            source_rows,
-            now_ms=int(now_ms),
-            window=window,
-            score_since_ms=score_since_ms,
-            window_ms=window_ms,
-            total_window_events=total_window_events,
-        )
-        with self.repos.transaction():
-            if projected is None:
-                deleted = 0
-                for lane in ("resolved", "attention"):
-                    deleted += int(
-                        self.repos.token_radar.delete_target_feature(
-                            projection_version=PROJECTION_VERSION,
-                            window=window,
-                            lane=lane,
-                            target_type_key=target_type_key,
-                            identity_id=identity_id,
-                        )
-                        or 0
-                    )
-                return {
-                    "status": "deleted" if deleted else "empty",
-                    "source_rows": len(source_rows),
-                    "rows_written": 0,
-                    "rank_set_changed": deleted > 0,
-                    "target_venue": _venue_for_identity(target_type_key=target_type_key, identity_id=identity_id),
-                }
-
-            target_venue = token_radar_venue_for_rank_input(projected)
-            written = int(
-                self.repos.token_radar.upsert_target_feature(
-                    projection_version=PROJECTION_VERSION,
-                    window=window,
-                    row=projected,
-                    computed_at_ms=int(now_ms),
-                )
-                or 0
-            )
-            opposite_lane = "attention" if projected["lane"] == "resolved" else "resolved"
-            deleted = int(
-                self.repos.token_radar.delete_target_feature(
-                    projection_version=PROJECTION_VERSION,
-                    window=window,
-                    lane=opposite_lane,
-                    target_type_key=target_type_key,
-                    identity_id=identity_id,
-                )
-                or 0
-            )
-        changed = written > 0 or deleted > 0
-        return {
-            "status": "updated" if changed else "unchanged",
-            "source_rows": len(source_rows),
-            "rows_written": written,
-            "rank_set_changed": changed,
-            "target_venue": target_venue,
+    for row in rank_inputs:
+        target_id = _compact_target_id(row)
+        if not target_id:
+            continue
+        factor_scores[target_id] = {
+            family: _compact_family_raw_score(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
+        }
+        factor_weights[target_id] = {
+            family: _compact_family_weight(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
+        }
+        high_conf = int(row.get("cohort_high_confidence_mentions") or 0)
+        kol_count = int(row.get("cohort_kol_mentions") or 0)
+        first_seen_global = row.get("cohort_first_seen_global_24h") is True
+        symbol = str(row.get("cohort_symbol") or "").upper()
+        if is_active_cohort_member(
+            target_id=target_id,
+            symbol=symbol,
+            high_confidence_mention_count=high_conf,
+            kol_mention_count=kol_count,
+            was_first_seen_global_24h=first_seen_global,
+        ):
+            cohort.add(target_id)
+        cohort_metadata[target_id] = {
+            "high_confidence_mentions": high_conf,
+            "kol_mentions": kol_count,
+            "followup_authors": int(row.get("cohort_followup_authors") or 0),
+            "first_seen_global_24h": first_seen_global,
+            "symbol": symbol,
         }
 
-    def build_rank_set(
-        self,
-        *,
-        window: str,
-        venue: str,
-        now_ms: int,
-        limit: int,
-    ) -> RankSetProjection:
-        return self.build_rank_sets(
-            window=window,
-            venues=(venue,),
-            now_ms=now_ms,
-            limit=limit,
-        )[venue]
-
-    def build_rank_sets(
-        self,
-        *,
-        window: str,
-        venues: tuple[str, ...],
-        now_ms: int,
-        limit: int,
-    ) -> dict[str, RankSetProjection]:
-        min_latest_event_received_at_ms = int(now_ms) - _window_ms(window)
-        rank_inputs = self.repos.token_radar.list_compact_rank_inputs_for_rank_set(
-            projection_version=PROJECTION_VERSION,
-            window=window,
-            min_latest_event_received_at_ms=min_latest_event_received_at_ms,
+    cohort_status = _cohort_rank_status(
+        factor_scores=factor_scores,
+        cohort=cohort,
+    )
+    factor_ranks_by_id = rank_factors_within_cohort(
+        factor_scores=factor_scores,
+        cohort=cohort,
+    )
+    compact_rows: list[dict[str, Any]] = []
+    for row in rank_inputs:
+        target_id = _compact_target_id(row)
+        factor_ranks = factor_ranks_by_id.get(target_id) or {family: None for family in TOKEN_RADAR_FACTOR_FAMILIES}
+        weights = factor_weights.get(target_id) or {
+            family: _compact_family_weight(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
+        }
+        alpha_rank = weighted_rank_score(factor_ranks, weights)
+        rank_score = (
+            round(float(alpha_rank) * 100.0)
+            if alpha_rank is not None
+            else _rank_input_display_score(row, "raw_composite_score")
         )
-        current_inputs = [
-            row
-            for row in rank_inputs
-            if _rank_input_latest_event_received_at_ms(row) >= min_latest_event_received_at_ms
-        ]
-        selected_by_venue: dict[str, list[dict[str, Any]]] = {}
-        for venue in dict.fromkeys(str(item) for item in venues):
-            venue_inputs = (
-                current_inputs
-                if venue == TOKEN_RADAR_DEFAULT_VENUE
-                else [row for row in current_inputs if token_radar_venue_for_rank_input(row) == venue]
-            )
-            ranked = self.rank_compact_inputs(venue_inputs)
-            selected_by_venue[venue] = _select_top_ranked_by_lane(ranked, limit=limit)
-
-        selected_identities = list(
-            dict.fromkeys(
-                _rank_input_identity(row) for selected_ranked in selected_by_venue.values() for row in selected_ranked
-            )
+        max_decision = _rank_input_decision(row, "gates_max_decision")
+        decision = _decision_from_score_and_gates(
+            rank_score,
+            {"max_decision": max_decision},
         )
-        hydrated_inputs = self.repos.token_radar.hydrate_rank_inputs_for_rank_set(
-            projection_version=PROJECTION_VERSION,
-            window=window,
-            identities=selected_identities,
+        compact_rows.append(
+            {
+                **dict(row),
+                "rank_score": rank_score,
+                "recommended_decision": decision,
+                "normalization_status": ("ranked" if alpha_rank is not None else "no_signal"),
+                "cohort_status": cohort_status,
+                "cohort_in_cohort": target_id in cohort,
+                "cohort_size": len(cohort),
+                "cohort_metadata": cohort_metadata.get(target_id, {}),
+                "factor_ranks": factor_ranks,
+                "alpha_rank": alpha_rank,
+            }
         )
-        hydrated_by_identity = {_rank_input_identity(row): row for row in hydrated_inputs}
-
-        projections: dict[str, RankSetProjection] = {}
-        for venue, selected_ranked in selected_by_venue.items():
-            rows = tuple(
-                _patch_ranked_current_row(
-                    _row_from_target_feature(
-                        _required_hydrated_rank_input(
-                            hydrated_by_identity,
-                            identity=_rank_input_identity(row),
-                        ),
-                        venue=venue,
-                    ),
-                    row,
-                )
-                for row in selected_ranked
-            )
-            venue_inputs = (
-                current_inputs
-                if venue == TOKEN_RADAR_DEFAULT_VENUE
-                else [row for row in current_inputs if token_radar_venue_for_rank_input(row) == venue]
-            )
-            projections[venue] = RankSetProjection(
-                rows=rows,
-                source_rows=len(venue_inputs),
-                hydrated_rows=len(selected_ranked),
-            )
-        return projections
-
-    @staticmethod
-    def rank_compact_inputs(rank_inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        factor_scores: dict[str, dict[str, float | None]] = {}
-        factor_weights: dict[str, dict[str, float]] = {}
-        cohort: set[str] = set()
-        cohort_metadata: dict[str, dict[str, Any]] = {}
-
-        for row in rank_inputs:
-            target_id = _compact_target_id(row)
-            if not target_id:
-                continue
-            factor_scores[target_id] = {
-                family: _compact_family_raw_score(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
-            }
-            factor_weights[target_id] = {
-                family: _compact_family_weight(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
-            }
-            high_conf = int(row.get("cohort_high_confidence_mentions") or 0)
-            kol_count = int(row.get("cohort_kol_mentions") or 0)
-            first_seen_global = row.get("cohort_first_seen_global_24h") is True
-            symbol = str(row.get("cohort_symbol") or "").upper()
-            if is_active_cohort_member(
-                target_id=target_id,
-                symbol=symbol,
-                high_confidence_mention_count=high_conf,
-                kol_mention_count=kol_count,
-                was_first_seen_global_24h=first_seen_global,
-            ):
-                cohort.add(target_id)
-            cohort_metadata[target_id] = {
-                "high_confidence_mentions": high_conf,
-                "kol_mentions": kol_count,
-                "followup_authors": int(row.get("cohort_followup_authors") or 0),
-                "first_seen_global_24h": first_seen_global,
-                "symbol": symbol,
-            }
-
-        cohort_status = _cohort_rank_status(factor_scores=factor_scores, cohort=cohort)
-        factor_ranks_by_id = rank_factors_within_cohort(factor_scores=factor_scores, cohort=cohort)
-        compact_rows: list[dict[str, Any]] = []
-        for row in rank_inputs:
-            target_id = _compact_target_id(row)
-            factor_ranks = factor_ranks_by_id.get(target_id) or {family: None for family in TOKEN_RADAR_FACTOR_FAMILIES}
-            weights = factor_weights.get(target_id) or {
-                family: _compact_family_weight(row, family) for family in TOKEN_RADAR_FACTOR_FAMILIES
-            }
-            alpha_rank = weighted_rank_score(factor_ranks, weights)
-            rank_score = (
-                round(float(alpha_rank) * 100.0)
-                if alpha_rank is not None
-                else _rank_input_display_score(row, "raw_composite_score")
-            )
-            max_decision = _rank_input_decision(row, "gates_max_decision")
-            decision = _decision_from_score_and_gates(rank_score, {"max_decision": max_decision})
-            compact_rows.append(
-                {
-                    **dict(row),
-                    "rank_score": rank_score,
-                    "recommended_decision": decision,
-                    "normalization_status": "ranked" if alpha_rank is not None else "no_signal",
-                    "cohort_status": cohort_status,
-                    "cohort_in_cohort": target_id in cohort,
-                    "cohort_size": len(cohort),
-                    "cohort_metadata": cohort_metadata.get(target_id, {}),
-                    "factor_ranks": factor_ranks,
-                    "alpha_rank": alpha_rank,
-                }
-            )
-        compact_rows.sort(key=_compact_rank_key)
-        return compact_rows
+    compact_rows.sort(key=_compact_rank_key)
+    return compact_rows
 
 
 def _cohort_rank_status(
@@ -467,184 +159,6 @@ def _window_ms(window: str) -> int:
         return WINDOW_MS[window]
     except KeyError as exc:
         raise TokenRadarProjectionWindowError(window) from exc
-
-
-def _analysis_since_ms(*, computed_at_ms: int, window_ms: int) -> int:
-    score_since_ms = computed_at_ms - window_ms
-    baseline_since_ms = score_since_ms - BASELINE_SLOT_COUNT * window_ms
-    return max(baseline_since_ms, computed_at_ms - MAX_ANALYSIS_LOOKBACK_MS)
-
-
-def _rank_source_repair_analysis_since_ms(
-    *,
-    computed_at_ms: int,
-    work_items: tuple[str, ...],
-) -> int:
-    window_names = [str(item) for item in work_items if item]
-    if not window_names:
-        raise TokenRadarProjectionWindowError("token_radar_projection_work_item_window_required")
-    max_window_ms = max(_window_ms(window) for window in window_names)
-    return max(
-        0,
-        _analysis_since_ms(computed_at_ms=int(computed_at_ms), window_ms=max_window_ms)
-        - RANK_SOURCE_REPAIR_SAFETY_MARGIN_MS,
-    )
-
-
-def _score_work_items(work_items: tuple[str, ...]) -> tuple[str, ...]:
-    """Collapse product venues before loading or scoring target features."""
-
-    return tuple(dict.fromkeys(str(item) for item in work_items if item))
-
-
-def _source_requests_for_targets(
-    targets: list[dict[str, Any]],
-    work_items: tuple[str, ...],
-    *,
-    now_ms: int,
-) -> list[TokenRadarFeatureSourceRequest]:
-    requests: list[TokenRadarFeatureSourceRequest] = []
-    for target_index, target in enumerate(targets):
-        target_type_key = _required_target_identity_text(target, "target_type_key")
-        identity_id = _required_target_identity_text(target, "identity_id")
-        for window in work_items:
-            window_ms = _window_ms(window)
-            score_since_ms = int(now_ms) - window_ms
-            requests.append(
-                TokenRadarFeatureSourceRequest(
-                    request_key=_target_source_request_key(
-                        target_index=target_index,
-                        target_type_key=target_type_key,
-                        identity_id=identity_id,
-                        window=window,
-                    ),
-                    target_type_key=target_type_key,
-                    identity_id=identity_id,
-                    window=window,
-                    analysis_since_ms=_analysis_since_ms(computed_at_ms=int(now_ms), window_ms=window_ms),
-                    score_since_ms=score_since_ms,
-                    now_ms=int(now_ms),
-                )
-            )
-    return requests
-
-
-def _source_requests_by_target(
-    requests: list[TokenRadarFeatureSourceRequest],
-) -> dict[int, list[TokenRadarFeatureSourceRequest]]:
-    grouped: dict[int, list[TokenRadarFeatureSourceRequest]] = {}
-    for request in requests:
-        parts = request.request_key.split(":", 1)
-        if not parts or not parts[0].startswith("target-"):
-            continue
-        target_index = int(parts[0].removeprefix("target-"))
-        grouped.setdefault(target_index, []).append(request)
-    return grouped
-
-
-def _rank_items_for_projection_change(
-    *,
-    request: TokenRadarFeatureSourceRequest,
-    score_result: Mapping[str, Any],
-) -> tuple[tuple[str, str], ...]:
-    target_venue = str(score_result.get("target_venue") or "").strip()
-    venues = [TOKEN_RADAR_DEFAULT_VENUE]
-    if target_venue and target_venue != TOKEN_RADAR_DEFAULT_VENUE and target_venue in TOKEN_RADAR_VENUES:
-        venues.append(target_venue)
-    return tuple((request.window, venue) for venue in dict.fromkeys(venues))
-
-
-def _venue_for_identity(*, target_type_key: str, identity_id: str) -> str:
-    if str(target_type_key) == "CexToken":
-        return "cex"
-    if str(target_type_key) != "Asset":
-        return TOKEN_RADAR_DEFAULT_VENUE
-    parts = str(identity_id).split(":")
-    if len(parts) >= 3 and parts[0] == "asset" and parts[1] == "eip155":
-        return _venue_for_chain(parts[2])
-    if len(parts) >= 2 and parts[0] == "asset":
-        return _venue_for_chain(parts[1])
-    return TOKEN_RADAR_DEFAULT_VENUE
-
-
-LATEST_MARKET_FIELDS = (
-    "latest_price_tick_id",
-    "latest_price_provider",
-    "latest_price_source_tier",
-    "latest_price_pricefeed_id",
-    "latest_price_observed_at_ms",
-    "latest_price_received_at_ms",
-    "latest_price_usd",
-    "latest_price_quote",
-    "latest_price_quote_symbol",
-    "latest_price_basis",
-    "latest_price_market_cap_usd",
-    "latest_price_liquidity_usd",
-    "latest_price_volume_24h_usd",
-    "latest_price_open_interest_usd",
-    "latest_price_holders",
-)
-
-
-def _with_latest_market_context(
-    source_rows: list[dict[str, Any]],
-    latest_market_context: Mapping[str, Any] | None,
-) -> list[dict[str, Any]]:
-    market_overlay = {
-        field: latest_market_context.get(field) if latest_market_context else None for field in LATEST_MARKET_FIELDS
-    }
-    return [{**row, **market_overlay} for row in source_rows]
-
-
-def _source_request_target_key(request: TokenRadarFeatureSourceRequest) -> tuple[str, str]:
-    return (str(request.target_type_key), str(request.identity_id))
-
-
-def _target_identity_key(target: Mapping[str, Any]) -> tuple[str, str]:
-    return (
-        _required_target_identity_text(target, "target_type_key"),
-        _required_target_identity_text(target, "identity_id"),
-    )
-
-
-def _is_market_only_claim(target: Mapping[str, Any]) -> bool:
-    if not bool(target.get("market_dirty")) or bool(target.get("repair_dirty")):
-        return False
-    return str(target.get("dirty_reason") or "").strip() in {
-        "market_tick_current_changed",
-        "market_tick_current_updated",
-        "market_tick_written",
-    }
-
-
-def _target_source_request_key(
-    *,
-    target_index: int,
-    target_type_key: str,
-    identity_id: str,
-    window: str,
-) -> str:
-    stable = _stable_id(
-        "token-radar-source-request",
-        str(target_index),
-        target_type_key,
-        identity_id,
-        window,
-    )
-    return f"target-{target_index}:{stable}"
-
-
-def _required_target_identity_text(target: Mapping[str, Any], column: str) -> str:
-    try:
-        value = target[column]
-    except KeyError as exc:
-        raise RuntimeError(f"token_radar_projection_target_identity_required:{column}") from exc
-    if value is None:
-        raise RuntimeError(f"token_radar_projection_target_identity_required:{column}")
-    text = str(value).strip()
-    if not text:
-        raise RuntimeError(f"token_radar_projection_target_identity_required:{column}")
-    return text
 
 
 def _rank_change_payload_hash(row: Mapping[str, Any]) -> str:
@@ -1840,15 +1354,138 @@ def _decision_from_score_and_gates(score: int, gates: dict[str, Any]) -> str:
     return "discard"
 
 
+def compute_token_radar_target_projection(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Pure spawn-safe reducer for one target-window source-edge closure."""
+
+    window = str(payload["window"])
+    now_ms = int(payload["now_ms"])
+    target_type = str(payload["target_type"])
+    target_id = str(payload["target_id"])
+    source_rows = [dict(row) for row in payload["source_rows"]]
+    window_ms = _window_ms(window)
+    score_since_ms = now_ms - window_ms
+    projected = _project_group(
+        source_rows,
+        now_ms=now_ms,
+        window=window,
+        score_since_ms=score_since_ms,
+        window_ms=window_ms,
+        total_window_events=len(
+            {str(row["event_id"]) for row in source_rows if int(row.get("received_at_ms") or 0) >= score_since_ms}
+        ),
+    )
+    if projected is None:
+        return {
+            "target_type": target_type,
+            "target_id": target_id,
+            "window": window,
+            "feature": None,
+            "projected": None,
+            "target_venue": TOKEN_RADAR_DEFAULT_VENUE,
+            "source_rows": len(source_rows),
+        }
+    feature = token_radar_target_feature_payload(
+        projected,
+        projection_version=PROJECTION_VERSION,
+        window=window,
+        computed_at_ms=now_ms,
+    )
+    return {
+        "target_type": target_type,
+        "target_id": target_id,
+        "window": window,
+        "feature": feature,
+        "projected": projected,
+        "target_venue": token_radar_venue_for_rank_input(feature),
+        "source_rows": len(source_rows),
+    }
+
+
+def rank_token_radar_closure(payload: dict[str, Any]) -> dict[str, Any]:
+    """Pure cross-sectional ranking after replacing one target feature in memory."""
+
+    target_type = str(payload["target_type"])
+    target_id = str(payload["target_id"])
+    window = str(payload["window"])
+    now_ms = int(payload["now_ms"])
+    feature = payload.get("feature")
+    compact_inputs = [
+        dict(row)
+        for row in payload["compact_inputs"]
+        if (
+            str(row.get("target_type_key") or ""),
+            str(row.get("identity_id") or ""),
+        )
+        != (target_type, target_id)
+    ]
+    if isinstance(feature, dict):
+        compact_inputs.append(dict(feature))
+    cutoff_ms = now_ms - _window_ms(window)
+    current_inputs = [row for row in compact_inputs if _rank_input_latest_event_received_at_ms(row) >= cutoff_ms]
+    selected_by_venue: dict[str, list[dict[str, Any]]] = {}
+    source_rows_by_venue: dict[str, int] = {}
+    for venue in dict.fromkeys(str(item) for item in payload["venues"]):
+        venue_inputs = (
+            current_inputs
+            if venue == TOKEN_RADAR_DEFAULT_VENUE
+            else [row for row in current_inputs if token_radar_venue_for_rank_input(row) == venue]
+        )
+        ranked = rank_compact_inputs(venue_inputs)
+        selected_by_venue[venue] = _select_top_ranked_by_lane(
+            ranked,
+            limit=int(payload["rank_limit"]),
+        )
+        source_rows_by_venue[venue] = len(venue_inputs)
+    selected_identities = list(
+        dict.fromkeys(_rank_input_identity(row) for selected in selected_by_venue.values() for row in selected)
+    )
+    return {
+        "selected_by_venue": selected_by_venue,
+        "selected_identities": [list(identity) for identity in selected_identities],
+        "source_rows_by_venue": source_rows_by_venue,
+    }
+
+
+def build_token_radar_current_closure(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Pure hydration of selected rank inputs into stable current rows."""
+
+    hydrated = [dict(row) for row in payload["hydrated_inputs"]]
+    feature = payload.get("feature")
+    if isinstance(feature, dict):
+        hydrated.append(dict(feature))
+    hydrated_by_identity = {_rank_input_identity(row): row for row in hydrated}
+    rows_by_venue: dict[str, list[dict[str, Any]]] = {}
+    for venue, selected in dict(payload["selected_by_venue"]).items():
+        rows_by_venue[str(venue)] = [
+            _patch_ranked_current_row(
+                _row_from_target_feature(
+                    _required_hydrated_rank_input(
+                        hydrated_by_identity,
+                        identity=_rank_input_identity(dict(row)),
+                    ),
+                    venue=str(venue),
+                ),
+                dict(row),
+            )
+            for row in selected
+        ]
+    return {"rows_by_venue": rows_by_venue}
+
+
 def _stable_id(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
 __all__ = [
     "PROJECTION_VERSION",
-    "ProjectedClaim",
-    "RankSetProjection",
     "TokenRadarProjectionWindowError",
-    "TokenRadarProjector",
+    "build_token_radar_current_closure",
+    "compute_token_radar_target_projection",
+    "rank_compact_inputs",
+    "rank_token_radar_closure",
     "token_radar_venue_for_rank_input",
 ]

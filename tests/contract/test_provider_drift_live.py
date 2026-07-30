@@ -15,7 +15,6 @@ pytestmark = pytest.mark.skipif(
 def test_live_provider_configuration_shape_matches_redacted_contract() -> None:
     from tracefold.app.cli.commands.config import handle_config
     from tracefold.platform.config.settings import load_settings
-    from tracefold.platform.paths import workers_config_path
 
     try:
         settings = load_settings(require_ws_token=False)
@@ -25,7 +24,6 @@ def test_live_provider_configuration_shape_matches_redacted_contract() -> None:
     code, payload = handle_config(object())
     summary = {
         "config_path": str(settings.app_home / "config.yaml"),
-        "workers_config_path": str(workers_config_path(settings.app_home)),
         "providers": {
             "gmgn_configured": settings.gmgn_configured,
             "okx_dex_configured": settings.okx_dex_configured,
@@ -40,8 +38,6 @@ def test_live_provider_configuration_shape_matches_redacted_contract() -> None:
         mismatches.append("config command did not return ok=true")
     if Path(summary["config_path"]).parent != Path.home() / ".tracefold":
         mismatches.append("config_path is not under ~/.tracefold")
-    if Path(summary["workers_config_path"]).name != "workers.yaml":
-        mismatches.append("workers_config_path does not end in workers.yaml")
     mismatches.extend(_secret_leaks(payload.get("data", {})))
 
     if mismatches:

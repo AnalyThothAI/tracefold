@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -61,7 +60,113 @@ class ResolutionRefreshWorker(WorkerBase):
 
     async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
         observed_at_ms = int(now_ms if now_ms is not None else _now_ms())
-        result = await asyncio.to_thread(self._run_refresh_once, observed_at_ms)
+        resources = self.require_runtime_resources()
+        result = _empty_result(observed_at_ms)
+        lookups, circuit_open = await resources.run_background_db(
+            self._claim_due_lookups,
+            observed_at_ms,
+        )
+        result["lookups_selected"] = len(lookups)
+        if circuit_open:
+            result["provider_unavailable"] = 1
+            result["errors"].append(
+                {
+                    "lookup_key": "",
+                    "error": "provider_circuit_open",
+                }
+            )
+        affected_lookup_keys: set[str] = set()
+        processed_claims: list[dict[str, Any]] = []
+        queue_due_by_lookup_key: dict[str, int] = {}
+        for index, lookup in enumerate(lookups):
+            lookup_key = str(lookup.get("lookup_key") or "")
+            lookup_type = str(lookup.get("lookup_type") or "")
+            await resources.run_background_db(
+                self._start_lookup,
+                lookup_key,
+                lookup_type,
+                observed_at_ms,
+            )
+            try:
+                async with self.require_provider_governor().acquire(host="asset_discovery"):
+                    lookup_result = await resources.run_provider_io(
+                        _fetch_lookup_provider_result,
+                        lookup_key=lookup_key,
+                        lookup_type=lookup_type,
+                        dex_discovery_market=self.dex_discovery_market,
+                        chain_ids=self.chain_ids,
+                    )
+            except DexProviderTemporarilyUnavailable as exc:
+                unavailable = await resources.run_background_db(
+                    self._publish_provider_unavailable,
+                    lookups[index:],
+                    lookup_key,
+                    lookup_type,
+                    observed_at_ms,
+                    exc,
+                )
+                result["provider_unavailable"] += int(unavailable["claims"])
+                result["errors"].append(
+                    {
+                        "lookup_key": lookup_key,
+                        "error": unavailable["last_error"],
+                    }
+                )
+                break
+            except Exception as exc:
+                failed = await resources.run_background_db(
+                    self._publish_lookup_error,
+                    lookup,
+                    lookup_key,
+                    lookup_type,
+                    observed_at_ms,
+                    exc,
+                )
+                result["lookups_failed"] += 1
+                result["provider_errors"] += 1
+                result["lookups_terminalized"] += int(failed["terminalized"])
+                result["errors"].append(
+                    {
+                        "lookup_key": lookup_key,
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            published = await resources.run_background_db(
+                self._publish_lookup_success,
+                lookup,
+                lookup_result,
+                observed_at_ms,
+            )
+            processed_claims.append(dict(lookup))
+            queue_due_by_lookup_key[lookup_key] = int(published["queue_due_at_ms"])
+            _merge_lookup_result(result, published["lookup_result"])
+            result["lookups_done"] += 1
+            affected_lookup_keys.update(str(key) for key in published["affected_lookup_keys"])
+
+        resolved_lookup_keys: set[str] = set()
+        if affected_lookup_keys:
+            sorted_lookup_keys = sorted(affected_lookup_keys)
+            result["affected_lookup_keys"] = sorted_lookup_keys
+            reprocess_result = await resources.run_background_db(
+                self._reprocess_lookup_keys,
+                sorted_lookup_keys,
+                observed_at_ms,
+            )
+            result["reprocess"] = reprocess_result
+            result["reprocessed_intents"] = int(reprocess_result["reprocessed_intents"])
+            if reprocess_result["resolved_intents"]:
+                resolved_lookup_keys.update(sorted_lookup_keys)
+        if processed_claims:
+            result["lookups_terminalized"] += await resources.run_background_db(
+                self._complete_processed_claims,
+                processed_claims,
+                resolved_lookup_keys,
+                queue_due_by_lookup_key,
+                observed_at_ms,
+            )
+        result["discovery_result_counts"] = await resources.run_background_db(self._discovery_counts)
         notes: dict[str, Any] = {"result": result}
         if int(result.get("provider_unavailable") or 0) > 0:
             notes["status"] = "degraded"
@@ -72,178 +177,212 @@ class ResolutionRefreshWorker(WorkerBase):
             notes=notes,
         )
 
-    def _run_refresh_once(self, now_ms: int) -> dict[str, Any]:
-        result = _empty_result(now_ms)
+    def _claim_due_lookups(
+        self,
+        now_ms: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
         with self.db.worker_session(self.name) as repos, repos.transaction():
+            if not repos.provider_circuits.can_attempt(
+                provider=DISCOVERY_PROVIDER,
+                now_ms=now_ms,
+            ):
+                return [], True
             lookups = repos.discovery.claim_due_lookup_keys(
                 now_ms=now_ms,
                 limit=self.settings.batch_size,
                 lease_ms=self.lease_ms,
                 running_timeout_ms=self.lease_ms,
-                lease_owner=self.name,
+                lease_owner=self.claim_owner,
                 hot_since_ms=int(now_ms) - HOT_LOOKBACK_MS,
                 hot_not_found_retry_ms=self.hot_not_found_retry_ms,
             )
-        result["lookups_selected"] = len(lookups)
-        affected_lookup_keys: set[str] = set()
-        processed_claims: list[dict[str, Any]] = []
-        queue_due_by_lookup_key: dict[str, int] = {}
-        for index, lookup in enumerate(lookups):
-            lookup_key = str(lookup.get("lookup_key") or "")
-            lookup_type = str(lookup.get("lookup_type") or "")
-            try:
-                with self.db.worker_session(self.name) as repos, repos.transaction():
-                    repos.discovery.start_lookup(
-                        provider=DISCOVERY_PROVIDER,
-                        lookup_key=lookup_key,
-                        lookup_type=lookup_type,
-                        now_ms=now_ms,
-                        running_timeout_ms=self.lease_ms,
-                    )
-                lookup_result = _fetch_lookup_provider_result(
-                    lookup_key=lookup_key,
-                    lookup_type=lookup_type,
-                    dex_discovery_market=self.dex_discovery_market,
-                    chain_ids=self.chain_ids,
-                )
-                with self.db.worker_session(self.name) as repos, repos.transaction():
-                    _persist_lookup_provider_result(repos=repos, lookup_result=lookup_result, now_ms=now_ms)
-                    candidate_ids = sorted(set(lookup_result["candidate_ids"]))
-                    status = "found" if candidate_ids else "not_found"
-                    next_refresh_at_ms = now_ms + _refresh_ms(lookup_key=lookup_key, status=status)
-                    repos.discovery.finish_lookup(
-                        provider=DISCOVERY_PROVIDER,
-                        lookup_key=lookup_key,
-                        lookup_type=lookup_type,
-                        status=status,
-                        candidate_ids=candidate_ids,
-                        result_hash=_result_hash(candidate_ids),
-                        next_refresh_at_ms=next_refresh_at_ms,
-                        now_ms=now_ms,
-                    )
-                processed_claims.append(dict(lookup))
-                queue_due_by_lookup_key[lookup_key] = _next_queue_due_at_ms(
-                    lookup=lookup,
-                    status=status,
-                    next_refresh_at_ms=next_refresh_at_ms,
-                    now_ms=now_ms,
-                    hot_not_found_retry_ms=self.hot_not_found_retry_ms,
-                )
-                _merge_lookup_result(result, lookup_result)
-                result["lookups_done"] += 1
-                if lookup_result["affected_lookup_keys"]:
-                    affected_lookup_keys.update(lookup_result["affected_lookup_keys"])
-            except DexProviderTemporarilyUnavailable as exc:
-                provider_unavailable_claims = [dict(item) for item in lookups[index:]]
-                retry_due_at_ms = now_ms + _refresh_ms(
-                    lookup_key=lookup_key,
-                    status="error",
-                    error_count=_claim_error_count(lookup),
-                )
-                last_error = _provider_unavailable_error(exc)
-                retryable_claims = [
-                    claim
-                    for claim in provider_unavailable_claims
-                    if not _claim_retry_budget_exhausted(claim, max_attempts=self.max_attempts)
-                ]
-                exhausted_claims = [
-                    claim
-                    for claim in provider_unavailable_claims
-                    if _claim_retry_budget_exhausted(claim, max_attempts=self.max_attempts)
-                ]
-                with self.db.worker_session(self.name) as repos, repos.transaction():
-                    repos.discovery.fail_lookup(
-                        provider=DISCOVERY_PROVIDER,
-                        lookup_key=lookup_key,
-                        lookup_type=lookup_type or _lookup_type(lookup_key),
-                        last_error=last_error,
-                        next_refresh_at_ms=retry_due_at_ms,
-                        now_ms=now_ms,
-                    )
-                    if exhausted_claims:
-                        terminal = repos.discovery.terminalize_lookup_claims(
-                            exhausted_claims,
-                            worker_name=self.name,
-                            final_status="error",
-                            final_reason="provider_unavailable_retry_budget_exhausted",
-                            now_ms=now_ms,
-                        )
-                        result["lookups_terminalized"] += int(terminal.get("terminalized") or 0)
-                    if retryable_claims:
-                        repos.discovery.reschedule_lookup_claims(
-                            retryable_claims,
-                            due_at_ms=retry_due_at_ms,
-                            now_ms=now_ms,
-                            last_error=last_error,
-                        )
-                result["provider_unavailable"] += len(provider_unavailable_claims)
-                result["errors"].append({"lookup_key": lookup_key, "error": last_error})
-                break
-            except Exception as exc:
-                retry_due_at_ms = now_ms + _refresh_ms(
-                    lookup_key=lookup_key,
-                    status="error",
-                    error_count=_claim_error_count(lookup),
-                )
-                with self.db.worker_session(self.name) as repos, repos.transaction():
-                    repos.discovery.fail_lookup(
-                        provider=DISCOVERY_PROVIDER,
-                        lookup_key=lookup_key,
-                        lookup_type=lookup_type or _lookup_type(lookup_key),
-                        last_error=str(exc),
-                        next_refresh_at_ms=retry_due_at_ms,
-                        now_ms=now_ms,
-                    )
-                    if _claim_retry_budget_exhausted(lookup, max_attempts=self.max_attempts):
-                        terminal = repos.discovery.terminalize_lookup_claims(
-                            [lookup],
-                            worker_name=self.name,
-                            final_status="error",
-                            final_reason="provider_error_retry_budget_exhausted",
-                            now_ms=now_ms,
-                        )
-                        result["lookups_terminalized"] += int(terminal.get("terminalized") or 0)
-                    else:
-                        repos.discovery.reschedule_lookup_claims(
-                            [lookup],
-                            due_at_ms=retry_due_at_ms,
-                            now_ms=now_ms,
-                            last_error=str(exc),
-                        )
-                result["lookups_failed"] += 1
-                result["provider_errors"] += 1
-                result["errors"].append({"lookup_key": lookup_key, "error": str(exc)})
-        resolved_lookup_keys: set[str] = set()
-        if affected_lookup_keys:
-            sorted_lookup_keys = sorted(affected_lookup_keys)
-            result["affected_lookup_keys"] = sorted_lookup_keys
-            with self.db.worker_session(self.name) as repos:
-                reprocess_result = reprocess_recent_token_intents(
-                    repos=repos,
-                    lookup_keys=sorted_lookup_keys,
-                    now_ms=now_ms,
-                    window=TOKEN_REPROCESS_WINDOW,
-                    limit=self.settings.reprocess_limit,
-                )
-            result["reprocess"] = reprocess_result
-            result["reprocessed_intents"] = reprocess_result["reprocessed_intents"]
-            if reprocess_result["resolved_intents"]:
-                resolved_lookup_keys.update(sorted_lookup_keys)
-        if processed_claims:
-            _complete_lookup_claims(
-                db=self.db,
-                worker_name=self.name,
-                claims=processed_claims,
-                resolved_lookup_keys=resolved_lookup_keys,
-                due_by_lookup_key=queue_due_by_lookup_key,
+        return [dict(row) for row in lookups], False
+
+    def _start_lookup(
+        self,
+        lookup_key: str,
+        lookup_type: str,
+        now_ms: int,
+    ) -> None:
+        with self.db.worker_session(self.name) as repos, repos.transaction():
+            repos.discovery.start_lookup(
+                provider=DISCOVERY_PROVIDER,
+                lookup_key=lookup_key,
+                lookup_type=lookup_type,
                 now_ms=now_ms,
-                max_attempts=self.max_attempts,
-                hot_not_found_retry_ms=self.hot_not_found_retry_ms,
-                result=result,
+                running_timeout_ms=self.lease_ms,
             )
+
+    def _publish_lookup_success(
+        self,
+        lookup: dict[str, Any],
+        lookup_result: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        lookup_key = str(lookup["lookup_key"])
+        lookup_type = str(lookup["lookup_type"])
+        with self.db.worker_session(self.name) as repos, repos.transaction():
+            _persist_lookup_provider_result(
+                repos=repos,
+                lookup_result=lookup_result,
+                now_ms=now_ms,
+            )
+            candidate_ids = sorted(set(lookup_result["candidate_ids"]))
+            status = "found" if candidate_ids else "not_found"
+            next_refresh_at_ms = now_ms + _refresh_ms(
+                lookup_key=lookup_key,
+                status=status,
+            )
+            repos.discovery.finish_lookup(
+                provider=DISCOVERY_PROVIDER,
+                lookup_key=lookup_key,
+                lookup_type=lookup_type,
+                status=status,
+                candidate_ids=candidate_ids,
+                result_hash=_result_hash(candidate_ids),
+                next_refresh_at_ms=next_refresh_at_ms,
+                now_ms=now_ms,
+            )
+            repos.provider_circuits.close(
+                provider=DISCOVERY_PROVIDER,
+                now_ms=now_ms,
+            )
+        return {
+            "lookup_result": lookup_result,
+            "affected_lookup_keys": list(lookup_result["affected_lookup_keys"]),
+            "queue_due_at_ms": _next_queue_due_at_ms(
+                lookup=lookup,
+                status=status,
+                next_refresh_at_ms=next_refresh_at_ms,
+                now_ms=now_ms,
+                hot_not_found_retry_ms=self.hot_not_found_retry_ms,
+            ),
+        }
+
+    def _publish_provider_unavailable(
+        self,
+        claims: list[dict[str, Any]],
+        lookup_key: str,
+        lookup_type: str,
+        now_ms: int,
+        error: Exception,
+    ) -> dict[str, Any]:
+        retry_due_at_ms = now_ms + _refresh_ms(
+            lookup_key=lookup_key,
+            status="error",
+            error_count=_claim_error_count(claims[0]),
+        )
+        last_error = _provider_unavailable_error(error)
+        with self.db.worker_session(self.name) as repos, repos.transaction():
+            repos.discovery.fail_lookup(
+                provider=DISCOVERY_PROVIDER,
+                lookup_key=lookup_key,
+                lookup_type=lookup_type or _lookup_type(lookup_key),
+                last_error=last_error,
+                next_refresh_at_ms=retry_due_at_ms,
+                now_ms=now_ms,
+            )
+            released = repos.discovery.reschedule_lookup_claims_without_attempt(
+                claims,
+                due_at_ms=retry_due_at_ms,
+                now_ms=now_ms,
+                last_error=last_error,
+            )
+            if released != len(claims):
+                raise RuntimeError("resolution_refresh_provider_release_cas_mismatch")
+            repos.provider_circuits.open(
+                provider=DISCOVERY_PROVIDER,
+                error=last_error,
+                now_ms=now_ms,
+                retry_ms=retry_due_at_ms - now_ms,
+            )
+        return {
+            "claims": len(claims),
+            "last_error": last_error,
+        }
+
+    def _publish_lookup_error(
+        self,
+        lookup: dict[str, Any],
+        lookup_key: str,
+        lookup_type: str,
+        now_ms: int,
+        error: Exception,
+    ) -> dict[str, int]:
+        retry_due_at_ms = now_ms + _refresh_ms(
+            lookup_key=lookup_key,
+            status="error",
+            error_count=_claim_error_count(lookup),
+        )
+        terminalized = 0
+        with self.db.worker_session(self.name) as repos, repos.transaction():
+            repos.discovery.fail_lookup(
+                provider=DISCOVERY_PROVIDER,
+                lookup_key=lookup_key,
+                lookup_type=lookup_type or _lookup_type(lookup_key),
+                last_error=str(error),
+                next_refresh_at_ms=retry_due_at_ms,
+                now_ms=now_ms,
+            )
+            if _claim_retry_budget_exhausted(
+                lookup,
+                max_attempts=self.max_attempts,
+            ):
+                terminal = repos.discovery.terminalize_lookup_claims(
+                    [lookup],
+                    worker_name=self.name,
+                    final_status="error",
+                    final_reason="provider_error_retry_budget_exhausted",
+                    now_ms=now_ms,
+                )
+                terminalized = int(terminal.get("terminalized") or 0)
+            else:
+                repos.discovery.reschedule_lookup_claims(
+                    [lookup],
+                    due_at_ms=retry_due_at_ms,
+                    now_ms=now_ms,
+                    last_error=str(error),
+                )
+        return {"terminalized": terminalized}
+
+    def _reprocess_lookup_keys(
+        self,
+        lookup_keys: list[str],
+        now_ms: int,
+    ) -> dict[str, Any]:
         with self.db.worker_session(self.name) as repos:
-            result["discovery_result_counts"] = repos.discovery.counts()
-        return result
+            return reprocess_recent_token_intents(
+                repos=repos,
+                lookup_keys=lookup_keys,
+                now_ms=now_ms,
+                window=TOKEN_REPROCESS_WINDOW,
+                limit=self.settings.reprocess_limit,
+            )
+
+    def _complete_processed_claims(
+        self,
+        claims: list[dict[str, Any]],
+        resolved_lookup_keys: set[str],
+        due_by_lookup_key: dict[str, int],
+        now_ms: int,
+    ) -> int:
+        summary = {"lookups_terminalized": 0}
+        _complete_lookup_claims(
+            db=self.db,
+            worker_name=self.name,
+            claims=claims,
+            resolved_lookup_keys=resolved_lookup_keys,
+            due_by_lookup_key=due_by_lookup_key,
+            now_ms=now_ms,
+            max_attempts=self.max_attempts,
+            hot_not_found_retry_ms=self.hot_not_found_retry_ms,
+            result=summary,
+        )
+        return int(summary["lookups_terminalized"])
+
+    def _discovery_counts(self) -> dict[str, int]:
+        with self.db.worker_session(self.name) as repos:
+            return {str(key): int(value) for key, value in dict(repos.discovery.counts()).items()}
 
 
 def _fetch_lookup_provider_result(

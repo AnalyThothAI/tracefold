@@ -4,10 +4,14 @@ from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
-from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
-from tests.runtime_settings import disabled_workers_settings
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_settings_storage,
+    prepare_postgres_database,
+    repository_session_for_connection,
+)
 from tracefold.app.http.app import create_app
-from tracefold.app.http.ws import ClientSubscription, PublicWebSocketHub
+from tracefold.app.http.ws import ClientSubscription, PersistedLiveBroadcaster
 from tracefold.market import Author, Content, Source, TwitterEvent
 from tracefold.platform.config.settings import Settings
 
@@ -17,7 +21,6 @@ def make_settings(tmp_path) -> Settings:
     settings = Settings(
         ws_token="secret",
         storage=postgres_settings_storage(),
-        workers=disabled_workers_settings(),
     )
     settings.set_config_dir(tmp_path / "app-home")
     return settings
@@ -52,60 +55,52 @@ def make_event(event_id: str, handle: str, text: str | None = None) -> TwitterEv
 
 
 def test_websocket_auth_subscribe_replay_and_live_filtering(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    settings = make_settings(tmp_path)
+    _append_live_payload(_event_payload(make_event("event-1", "toly", text="$PEPE replay")))
+    app = create_app(settings=settings)
 
-    with TestClient(app) as client:
-        client.app.state.service.ingest.ingest_event(make_event("event-1", "toly", text="$PEPE replay"))
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": "secret"})
+        assert ws.receive_json()["type"] == "ready"
 
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "secret"})
-            assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "subscribe", "symbols": ["PEPE"], "replay": 5})
+        replay = ws.receive_json()
+        assert replay["type"] == "event"
+        assert replay["event"]["event_id"] == "event-1"
+        assert "entities" in replay
+        assert "alerts" not in replay
+        assert "token_intents" in replay
+        assert "token_resolutions" in replay
+        assert "harness" not in replay
+        replay_event_fields = set(replay["event"])
 
-            ws.send_json({"type": "subscribe", "symbols": ["PEPE"], "replay": 5})
-            replay = ws.receive_json()
-            assert replay["type"] == "event"
-            assert replay["event"]["event_id"] == "event-1"
-            assert "entities" in replay
-            assert "alerts" not in replay
-            assert "token_intents" in replay
-            assert "token_resolutions" in replay
-            assert "harness" not in replay
-            replay_event_fields = set(replay["event"])
-
-            ignored = _ingest_payload(client, make_event("event-2", "elonmusk", text="no token"))
-            matched = _ingest_payload(client, make_event("event-3", "toly", text="$PEPE live"))
-            client.portal.call(client.app.state.service.hub.publish, ignored)
-            client.portal.call(client.app.state.service.hub.publish, matched)
-            live = ws.receive_json()
-            assert live["event"]["event_id"] == "event-3"
-            assert set(live["event"]) == replay_event_fields
+        _append_live_payload(_event_payload(make_event("event-2", "elonmusk", text="no token")))
+        _append_live_payload(_event_payload(make_event("event-3", "toly", text="$PEPE live")))
+        live = ws.receive_json()
+        assert live["event"]["event_id"] == "event-3"
+        assert set(live["event"]) == replay_event_fields
 
 
 def test_websocket_can_subscribe_by_ca_for_replay_and_live_events(tmp_path):
-    app = create_app(settings=make_settings(tmp_path), start_collector=False)
+    settings = make_settings(tmp_path)
+    replay_event = make_event("event-ca-replay", "toly", text=f"$PEPE replay {PEPE}")
+    _append_live_payload(_event_payload(replay_event))
+    app = create_app(settings=settings)
 
-    with TestClient(app) as client:
-        replay_event = make_event("event-ca-replay", "toly", text=f"$PEPE replay {PEPE}")
-        client.app.state.service.ingest.ingest_event(replay_event)
+    with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": "secret"})
+        assert ws.receive_json()["type"] == "ready"
 
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "secret"})
-            assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "subscribe", "cas": [{"ca": PEPE}], "replay": 5})
+        replay = ws.receive_json()
+        assert replay["type"] == "event"
+        assert replay["event"]["event_id"] == "event-ca-replay"
+        assert replay["entities"][0]["entity_type"] in {"symbol", "ca"}
 
-            ws.send_json({"type": "subscribe", "cas": [{"ca": PEPE}], "replay": 5})
-            replay = ws.receive_json()
-            assert replay["type"] == "event"
-            assert replay["event"]["event_id"] == "event-ca-replay"
-            assert replay["entities"][0]["entity_type"] in {"symbol", "ca"}
-
-            ignored = make_event("event-ignore", "toly", text="no token")
-            matched = make_event("event-ca-live", "elonmusk", text=f"$PEPE live {PEPE}")
-            ignored_payload = _ingest_payload(client, ignored)
-            matched_payload = _ingest_payload(client, matched)
-            client.portal.call(client.app.state.service.hub.publish, ignored_payload)
-            client.portal.call(client.app.state.service.hub.publish, matched_payload)
-            live = ws.receive_json()
-            assert live["event"]["event_id"] == "event-ca-live"
+        _append_live_payload(_event_payload(make_event("event-ignore", "toly", text="no token")))
+        _append_live_payload(_event_payload(make_event("event-ca-live", "elonmusk", text=f"$PEPE live {PEPE}")))
+        live = ws.receive_json()
+        assert live["event"]["event_id"] == "event-ca-live"
 
 
 def test_websocket_rejects_retired_subscription_aliases_and_malformed_shapes():
@@ -128,7 +123,7 @@ def test_websocket_rejects_retired_subscription_aliases_and_malformed_shapes():
     for message in invalid_messages:
         socket = _DummyWebSocket()
         client = ClientSubscription(websocket=socket)
-        hub = PublicWebSocketHub(token="secret", repository_session=_empty_repository_session)
+        hub = PersistedLiveBroadcaster(token="secret", repository_session=_empty_repository_session)
 
         asyncio.run(hub._handle_client_message(client, json.dumps(message)))
 
@@ -139,7 +134,7 @@ def test_websocket_rejects_retired_subscription_aliases_and_malformed_shapes():
 
 
 def test_websocket_repeated_subscribe_replaces_market_targets():
-    hub = PublicWebSocketHub(token="secret", repository_session=_empty_repository_session)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=_empty_repository_session)
     client = ClientSubscription(websocket=_DummyWebSocket())
 
     asyncio.run(
@@ -183,7 +178,7 @@ def test_websocket_repeated_subscribe_replaces_market_targets():
 
 def test_websocket_publish_is_bounded_when_a_client_send_hangs():
     async def scenario() -> None:
-        hub = PublicWebSocketHub(
+        hub = PersistedLiveBroadcaster(
             token="secret",
             repository_session=_empty_repository_session,
             send_timeout_seconds=0.01,
@@ -210,11 +205,8 @@ def test_websocket_publish_is_bounded_when_a_client_send_hangs():
     asyncio.run(asyncio.wait_for(scenario(), timeout=0.1))
 
 
-def test_websocket_empty_event_filter_replays_and_broadcasts_no_events():
-    def unexpected_repository_session():
-        raise AssertionError("empty event filters must not query replay evidence")
-
-    hub = PublicWebSocketHub(token="secret", repository_session=unexpected_repository_session)
+def test_websocket_market_only_filter_replays_and_broadcasts_no_event_rows():
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=_empty_repository_session)
     client = ClientSubscription(
         websocket=None,
         market_targets={("Asset", "asset:solana:token:one")},
@@ -227,12 +219,12 @@ def test_websocket_empty_event_filter_replays_and_broadcasts_no_events():
         "token_resolutions": [],
     }
 
-    assert hub._replay_events(client, 10) == []
+    assert asyncio.run(hub._replay_events(client, 10, after_cursor=None)) == []
     assert hub._payload_matches_subscription(payload, client) is False
 
 
 def test_websocket_symbol_filter_matches_token_intents_without_entities():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(websocket=None, symbols={"MIRROR"})
     payload = {
         "type": "event",
@@ -252,7 +244,7 @@ def test_websocket_symbol_filter_matches_token_intents_without_entities():
 
 
 def test_websocket_symbol_filter_matches_projected_token_resolution_symbol_not_target_id():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(websocket=None, symbols={"MIRROR"})
     payload = {
         "type": "event",
@@ -272,7 +264,7 @@ def test_websocket_symbol_filter_matches_projected_token_resolution_symbol_not_t
 
 
 def test_websocket_symbol_filter_does_not_match_target_id_substrings():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(websocket=None, symbols={"SET"})
     payload = {
         "type": "event",
@@ -292,7 +284,7 @@ def test_websocket_symbol_filter_does_not_match_target_id_substrings():
 
 
 def test_websocket_ca_filter_matches_token_intents_without_entities():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(
         websocket=None,
         cas={("ethereum", "0x6982508145454ce325ddbe47a25d4ec3d2311933")},
@@ -314,8 +306,31 @@ def test_websocket_ca_filter_matches_token_intents_without_entities():
     assert hub._payload_matches_subscription(payload, client) is True
 
 
+def test_websocket_ca_filter_matches_lowercase_intent_against_checksum_subscription():
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
+    client = ClientSubscription(
+        websocket=None,
+        cas={("evm_unknown", "0x6982508145454Ce325dDbE47a25d4ec3d2311933")},
+    )
+    payload = {
+        "type": "event",
+        "event": {"event_id": "event-1", "author_handle": "alice"},
+        "entities": [],
+        "token_intents": [
+            {
+                "intent_id": "intent:pepe",
+                "display_symbol": "PEPE",
+                "chain_hint": "ethereum",
+                "address_hint": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+            }
+        ],
+    }
+
+    assert hub._payload_matches_subscription(payload, client) is True
+
+
 def test_websocket_routes_live_market_update_for_explicit_market_target_subscription():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(
         websocket=None,
         market_targets={("Asset", "asset:solana:token:5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2")},
@@ -333,7 +348,7 @@ def test_websocket_routes_live_market_update_for_explicit_market_target_subscrip
 
 
 def test_websocket_does_not_broadcast_live_market_update_without_matching_subscription():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(
         websocket=None,
         market_targets={("Asset", "asset:solana:token:other")},
@@ -349,7 +364,7 @@ def test_websocket_does_not_broadcast_live_market_update_without_matching_subscr
 
 
 def test_websocket_ignores_legacy_market_update_even_when_subscribed():
-    hub = PublicWebSocketHub(token="secret", repository_session=lambda: None)
+    hub = PersistedLiveBroadcaster(token="secret", repository_session=lambda: None)
     client = ClientSubscription(
         websocket=None,
         market_targets={("Asset", "asset:solana:token:5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2")},
@@ -363,18 +378,63 @@ def test_websocket_ignores_legacy_market_update_even_when_subscribed():
     assert hub._payload_matches_subscription(payload, client) is False
 
 
-def _ingest_payload(client, event: TwitterEvent) -> dict:
-    result = client.app.state.service.ingest.ingest_event(event)
-    with client.app.state.service.repositories() as repos:
-        token_resolutions = repos.event_tokens.for_event(event.event_id)
+def _event_payload(event: TwitterEvent) -> dict:
+    text = str(event.content.text or "")
+    has_pepe = "PEPE" in text.upper() or PEPE.lower() in text.lower()
+    entities = []
+    if has_pepe:
+        entities.append(
+            {
+                "entity_type": "symbol",
+                "normalized_value": "PEPE",
+                "chain": None,
+            }
+        )
+    if PEPE.lower() in text.lower():
+        entities.append(
+            {
+                "entity_type": "ca",
+                "normalized_value": PEPE.lower(),
+                "chain": "ethereum",
+            }
+        )
     return {
         "type": "event",
-        "event": result.event,
-        "entities": result.entities,
-        "token_intents": result.token_intents,
-        "token_resolutions": token_resolutions,
-        "harness": None,
+        "event": {
+            "event_id": event.event_id,
+            "author_handle": event.author.handle,
+            "text": text,
+        },
+        "entities": entities,
+        "token_intents": (
+            [
+                {
+                    "intent_id": f"intent:{event.event_id}",
+                    "display_symbol": "PEPE",
+                    "chain_hint": "ethereum" if PEPE.lower() in text.lower() else None,
+                    "address_hint": PEPE.lower() if PEPE.lower() in text.lower() else None,
+                }
+            ]
+            if has_pepe
+            else []
+        ),
+        "token_resolutions": [],
     }
+
+
+def _append_live_payload(payload: dict) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            event_id = str(payload["event"]["event_id"])
+            repos.persisted_live.append(
+                source_key=f"event:{event_id}",
+                event_kind="event",
+                payload=payload,
+                committed_at_ms=1_000,
+            )
+    finally:
+        conn.close()
 
 
 class _DummyWebSocket:
@@ -392,11 +452,14 @@ class _HangingWebSocket:
 
 @contextmanager
 def _empty_repository_session():
-    class Evidence:
-        def recent_events(self, *args, **kwargs):
+    class PersistedLive:
+        def latest(self, *args, **kwargs):
+            return []
+
+        def after_cursor(self, *args, **kwargs):
             return []
 
     class Repositories:
-        evidence = Evidence()
+        persisted_live = PersistedLive()
 
     yield Repositories()

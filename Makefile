@@ -3,7 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 
-.PHONY: help sync install uninstall tool-path test lint compile check init config db-migrate db-health serve status recent asset-flow docker-check docker-up docker-status docker-logs docker-down docker-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers status recent asset-flow docker-check docker-up docker-status docker-logs docker-down docker-serve-shell docker-workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -59,7 +59,7 @@ regen-contract: ## regenerate openapi.json + web/src/lib/types/openapi.ts
 install-hooks: ## install pre-commit hooks
 	@uv run pre-commit install
 
-init: ## create ~/.tracefold/config.yaml + workers.yaml
+init: ## create ~/.tracefold/config.yaml + PostgreSQL role password files
 	@$(TRACEFOLD) init
 
 config: ## print effective runtime config
@@ -71,8 +71,11 @@ db-migrate: ## apply PostgreSQL migrations
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
 
-serve: ## run collector and API in foreground
+serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
+
+workers: ## run the ingestion/projection/provider/model runtime in foreground
+	@$(TRACEFOLD) workers
 
 status: ## print health and readiness for the running API
 	@curl -fsS http://127.0.0.1:8765/healthz
@@ -106,14 +109,17 @@ docker-status: ## show container and readiness
 	@docker compose ps
 	@curl -fsS http://127.0.0.1:8765/readyz || true
 
-docker-logs: ## tail application, PostgreSQL, and RSSHub logs
-	@docker compose logs -f --tail=100 app postgres rsshub
+docker-logs: ## tail serve, workers, PostgreSQL, and RSSHub logs
+	@docker compose logs -f --tail=100 serve workers postgres rsshub
 
 docker-down: ## stop container service
 	@docker compose down
 
-docker-shell: ## open shell in container
-	@docker compose exec app /bin/sh
+docker-serve-shell: ## open shell in the serve container
+	@docker compose exec serve /bin/sh
+
+docker-workers-shell: ## open shell in the workers container
+	@docker compose exec workers /bin/sh
 
 clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__

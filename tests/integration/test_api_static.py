@@ -2,16 +2,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
-from tests.runtime_settings import disabled_workers_settings
 from tracefold.app.http.app import _mount_frontend, create_app
-from tracefold.platform.config.settings import PerWorkerSettings, Settings
-
-
-def _disable_workers(settings: Settings) -> None:
-    for name in settings.workers.__class__.model_fields:
-        worker_settings = getattr(settings.workers, name)
-        if isinstance(worker_settings, PerWorkerSettings):
-            worker_settings.enabled = False
+from tracefold.platform.config.settings import Settings
 
 
 def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
@@ -19,9 +11,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     settings = Settings(
         ws_token="secret",
         storage=postgres_settings_storage(),
-        workers=disabled_workers_settings(),
     )
-    _disable_workers(settings)
     settings.set_config_dir(tmp_path / "app-home")
     dist = tmp_path / "dist"
     assets = dist / "assets"
@@ -33,7 +23,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     (dist / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
     (assets / "app.js").write_text("window.__cockpit = true;", encoding="utf-8")
 
-    app = create_app(settings=settings, start_collector=False, frontend_dist=dist)
+    app = create_app(settings=settings, frontend_dist=dist)
 
     with TestClient(app) as client:
         home = client.get("/")

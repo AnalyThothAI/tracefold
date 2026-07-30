@@ -10,6 +10,11 @@ services:
     environment:
       NODE_ENV: production
       CACHE_TYPE: memory
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
     healthcheck:
       test:
         [
@@ -46,6 +51,8 @@ services:
         "track_wal_io_timing=on",
         "-c",
         "track_activity_query_size=4096",
+        "-c",
+        "max_connections=100",
       ]
     environment:
       POSTGRES_DB: tracefold
@@ -64,6 +71,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "5.0"
 
   migrate:
     build:
@@ -75,10 +86,33 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ${HOME}/.tracefold:/root/.tracefold
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_migrate_password:/root/.tracefold/postgres_migrate_password:ro
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "db", "migrate"]
 
-  app:
+  cutover:
+    profiles: ["maintenance"]
+    build:
+      context: .
+      secrets:
+        - github_token
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - postgres_password
+    volumes:
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
+      - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
+      - ${HOME}/.tracefold/postgres_migrate_password:/root/.tracefold/postgres_migrate_password:ro
+      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "db", "hard-cut"]
+
+  serve:
     build:
       context: .
       secrets:
@@ -92,20 +126,67 @@ services:
         condition: service_completed_successfully
     ports:
       - "8765:8765"
-    environment:
-      FINANCE_FRED_API_KEY: ${FINANCE_FRED_API_KEY:-}
     volumes:
-      - ${HOME}/.tracefold:/root/.tracefold
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
+      - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "serve"]
+    stop_grace_period: 35s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/healthz', timeout=10).read()",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/healthz', timeout=1).read()",
         ]
-      interval: 30s
-      timeout: 10s
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 20s
+
+  workers:
+    build:
+      context: .
+      secrets:
+        - github_token
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      FINANCE_FRED_API_KEY: ${FINANCE_FRED_API_KEY:-}
+    volumes:
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
+      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "workers"]
+    stop_grace_period: 35s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8766/healthz', timeout=1).read()",
+        ]
+      interval: 10s
+      timeout: 2s
       retries: 3
       start_period: 20s
 

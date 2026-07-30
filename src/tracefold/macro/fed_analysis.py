@@ -5,7 +5,7 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from datetime import date
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -75,47 +75,31 @@ class MacroDocumentAnalysisService:
         settings: Any,
         agent: FedDocumentAnalysisAgentProtocol,
         worker_name: str = "macro_document_analysis",
+        lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
+        resources: Any | None = None,
     ) -> None:
         self.db = db
         self.settings = settings
         self.agent = agent
         self.worker_name = worker_name
+        self.lease_owner = str(lease_owner or worker_name)
         self.clock_ms = clock_ms or _now_ms
+        self.resources = resources
 
     async def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
         now = int(now_ms if now_ms is not None else self.clock_ms())
-        with self._session() as repos, repos.transaction():
-            jobs_written = repos.macro.ensure_document_analysis_jobs(
-                model_name=self.agent.model_name,
-                prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
-                max_attempts=int(self.settings.max_attempts),
-                now_ms=now,
-                fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
-                speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
-            )
-            job = repos.macro.claim_document_analysis_job(
-                model_name=self.agent.model_name,
-                prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
-                lease_owner=self.worker_name,
-                lease_ms=int(self.settings.lease_ms),
-                now_ms=now,
-            )
+        prepared = await self._run_db(self._prepare_job, now)
+        jobs_written = int(prepared["jobs_written"])
+        job = prepared["job"]
         if job is None:
             return {"status": "idle", "jobs_written": jobs_written}
 
         try:
-            with self._session() as repos:
-                document = repos.macro.document_analysis_job_document(str(job["analysis_job_id"]))
-                if document is None:
-                    raise RuntimeError("macro_document_analysis_document_missing")
-                role_rows = repos.macro.fed_official_role_history()
-                roster_context = _document_roster_context(document, role_rows)
-                prior = repos.macro.prior_document_analysis(
-                    effective_date=_required_date(document["effective_date"]),
-                    official_id=(str(roster_context["official_id"]) if roster_context is not None else None),
-                    document_type=str(document["document_type"]),
-                )
+            loaded = await self._run_db(self._load_job, job)
+            document = loaded["document"]
+            roster_context = loaded["roster_context"]
+            prior = loaded["prior"]
             _require_document_hash(document, str(job["document_hash"]))
             if str(document["document_type"]) == "speech" and roster_context is None:
                 draft = _unmatched_speaker_draft(document)
@@ -131,71 +115,161 @@ class MacroDocumentAnalysisService:
                 roster_context=roster_context,
                 prior_analysis=prior,
             )
-            payload_hash = _payload_hash(
-                {
-                    "document_id": str(document["document_id"]),
-                    "analysis": analysis,
-                }
-            )
-            identity = (
-                f"{document['document_id']}|{job['document_hash']}|"
-                f"{self.agent.model_name}|{FED_DOCUMENT_ANALYSIS_PROMPT_VERSION}|{payload_hash}"
-            )
-            analysis_id = "macroan_" + hashlib.sha256(identity.encode()).hexdigest()
-            completed_at_ms = int(self.clock_ms())
-            with self._session() as repos, repos.transaction():
-                written = repos.macro.insert_document_analysis(
-                    analysis_id=analysis_id,
-                    document_id=str(document["document_id"]),
-                    document_hash=str(job["document_hash"]),
-                    official_id=(str(roster_context["official_id"]) if roster_context is not None else None),
-                    policy_relevance=str(analysis["policy_relevance"]),
-                    stance=str(analysis["stance"]),
-                    confidence=(float(analysis["confidence"]) if analysis["confidence"] is not None else None),
-                    analysis=analysis,
-                    model_name=self.agent.model_name,
-                    prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
-                    reviewer_disposition="pass",
-                    created_at_ms=completed_at_ms,
-                    payload_hash=payload_hash,
-                )
-                if written != 1:
-                    raise RuntimeError("macro_document_analysis_insert_conflict")
-                completed = repos.macro.complete_document_analysis_job(
-                    analysis_job_id=str(job["analysis_job_id"]),
-                    lease_owner=self.worker_name,
-                    completed_at_ms=completed_at_ms,
-                )
-                if not completed:
-                    raise RuntimeError("macro_document_analysis_stale_claim")
-            return {
-                "status": "published",
-                "analysis_id": analysis_id,
-                "document_id": document["document_id"],
-                "rows_written": written,
-                "jobs_written": jobs_written,
-                "policy_relevance": analysis["policy_relevance"],
-                "stance": analysis["stance"],
-            }
-        except Exception as exc:
-            completed_at_ms = int(self.clock_ms())
-            error_code = _error_code(exc)
-            with self._session() as repos, repos.transaction():
-                failed = repos.macro.fail_document_analysis_job(
+            return cast(
+                dict[str, Any],
+                await self._run_db(
+                    self._publish_job,
                     job=job,
-                    lease_owner=self.worker_name,
-                    error_code=error_code,
-                    next_due_at_ms=completed_at_ms + int(self.settings.retry_ms),
-                    completed_at_ms=completed_at_ms,
-                )
-                if not failed:
-                    raise RuntimeError("macro_document_analysis_stale_claim") from exc
-            return {
-                "status": "failed",
-                "document_id": job["document_id"],
-                "error_code": error_code,
-                "jobs_written": jobs_written,
+                    document=document,
+                    roster_context=roster_context,
+                    analysis=analysis,
+                    jobs_written=jobs_written,
+                ),
+            )
+        except Exception as exc:
+            return cast(
+                dict[str, Any],
+                await self._run_db(
+                    self._fail_job,
+                    job=job,
+                    error=exc,
+                    jobs_written=jobs_written,
+                ),
+            )
+
+    def _prepare_job(self, now: int) -> dict[str, Any]:
+        with self._session() as repos, repos.transaction():
+            jobs_written = repos.macro.ensure_document_analysis_jobs(
+                model_name=self.agent.model_name,
+                prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+                max_attempts=int(self.settings.max_attempts),
+                now_ms=now,
+                fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
+                speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+            )
+            job = repos.macro.claim_document_analysis_job(
+                model_name=self.agent.model_name,
+                prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+                lease_owner=self.lease_owner,
+                lease_ms=int(self.settings.lease_ms),
+                now_ms=now,
+            )
+        return {"jobs_written": jobs_written, "job": dict(job) if job is not None else None}
+
+    def _load_job(self, job: Mapping[str, Any]) -> dict[str, Any]:
+        with self._session() as repos:
+            document = repos.macro.document_analysis_job_document(str(job["analysis_job_id"]))
+            if document is None:
+                raise RuntimeError("macro_document_analysis_document_missing")
+            role_rows = repos.macro.fed_official_role_history()
+            roster_context = _document_roster_context(document, role_rows)
+            prior = repos.macro.prior_document_analysis(
+                effective_date=_required_date(document["effective_date"]),
+                official_id=(str(roster_context["official_id"]) if roster_context is not None else None),
+                document_type=str(document["document_type"]),
+            )
+        return {
+            "document": document,
+            "roster_context": roster_context,
+            "prior": prior,
+        }
+
+    def _publish_job(
+        self,
+        *,
+        job: Mapping[str, Any],
+        document: Mapping[str, Any],
+        roster_context: Mapping[str, Any] | None,
+        analysis: Mapping[str, Any],
+        jobs_written: int,
+    ) -> dict[str, Any]:
+        payload_hash = _payload_hash(
+            {
+                "document_id": str(document["document_id"]),
+                "analysis": analysis,
             }
+        )
+        identity = (
+            f"{document['document_id']}|{job['document_hash']}|"
+            f"{self.agent.model_name}|{FED_DOCUMENT_ANALYSIS_PROMPT_VERSION}|{payload_hash}"
+        )
+        analysis_id = "macroan_" + hashlib.sha256(identity.encode()).hexdigest()
+        completed_at_ms = int(self.clock_ms())
+        with self._session() as repos, repos.transaction():
+            written = repos.macro.insert_document_analysis(
+                analysis_id=analysis_id,
+                document_id=str(document["document_id"]),
+                document_hash=str(job["document_hash"]),
+                official_id=(str(roster_context["official_id"]) if roster_context is not None else None),
+                policy_relevance=str(analysis["policy_relevance"]),
+                stance=str(analysis["stance"]),
+                confidence=(float(analysis["confidence"]) if analysis["confidence"] is not None else None),
+                analysis=analysis,
+                model_name=self.agent.model_name,
+                prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+                reviewer_disposition="pass",
+                created_at_ms=completed_at_ms,
+                payload_hash=payload_hash,
+            )
+            if written != 1:
+                raise RuntimeError("macro_document_analysis_insert_conflict")
+            completed = repos.macro.complete_document_analysis_job(
+                analysis_job_id=str(job["analysis_job_id"]),
+                lease_owner=self.lease_owner,
+                completed_at_ms=completed_at_ms,
+            )
+            if not completed:
+                raise RuntimeError("macro_document_analysis_stale_claim")
+        return {
+            "status": "published",
+            "analysis_id": analysis_id,
+            "document_id": document["document_id"],
+            "rows_written": written,
+            "jobs_written": jobs_written,
+            "policy_relevance": analysis["policy_relevance"],
+            "stance": analysis["stance"],
+        }
+
+    def _fail_job(
+        self,
+        *,
+        job: Mapping[str, Any],
+        error: Exception,
+        jobs_written: int,
+    ) -> dict[str, Any]:
+        completed_at_ms = int(self.clock_ms())
+        error_code = _error_code(error)
+        with self._session() as repos, repos.transaction():
+            failed = repos.macro.fail_document_analysis_job(
+                job=job,
+                lease_owner=self.lease_owner,
+                error_code=error_code,
+                next_due_at_ms=completed_at_ms + int(self.settings.retry_ms),
+                completed_at_ms=completed_at_ms,
+            )
+            if not failed:
+                raise RuntimeError("macro_document_analysis_stale_claim") from error
+        return {
+            "status": "failed",
+            "document_id": job["document_id"],
+            "error_code": error_code,
+            "jobs_written": jobs_written,
+        }
+
+    async def _run_db(
+        self,
+        function: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if self.resources is None:
+            return function(*args, **kwargs)
+        return await self.resources.run_background_db(
+            function,
+            *args,
+            **kwargs,
+        )
 
     def _session(self) -> Any:
         return self.db.worker_session(

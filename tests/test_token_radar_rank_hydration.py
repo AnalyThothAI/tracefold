@@ -1,63 +1,37 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import Any
 
 import tracefold.market.radar.token_radar_projector as projector_module
-from tracefold.market import TOKEN_RADAR_DEFAULT_VENUE, TokenRadarProjector
-from tracefold.market.radar.token_radar_rank_source_query import TokenRadarFeatureSourceRequest
+from tracefold.market.radar.token_radar_projector import (
+    build_token_radar_current_closure,
+    rank_token_radar_closure,
+)
 
 
-class _RankRepository:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.token_radar = self
-        self.rows = rows
-        self.hydrated_identities: list[tuple[str, str, str]] = []
-
-    def list_compact_rank_inputs_for_rank_set(self, **_: Any) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.rows]
-
-    def hydrate_rank_inputs_for_rank_set(
-        self,
-        *,
-        identities: list[tuple[str, str, str]],
-        **_: Any,
-    ) -> list[dict[str, Any]]:
-        self.hydrated_identities = list(identities)
-        selected = set(identities)
-        return [
-            {**row, "wide_payload_marker": row["identity_id"]}
-            for row in self.rows
-            if (row["lane"], row["target_type_key"], row["identity_id"]) in selected
-        ]
-
-
-class _TransactionTrackingRepository:
-    def __init__(self) -> None:
-        self.token_radar = self
-        self.in_transaction = False
-        self.transaction_count = 0
-        self.deleted_lanes: list[str] = []
-
-    @contextmanager
-    def transaction(self):
-        assert not self.in_transaction
-        self.in_transaction = True
-        self.transaction_count += 1
-        try:
-            yield
-        finally:
-            self.in_transaction = False
-
-    def delete_target_feature(self, *, lane: str, **_: Any) -> int:
-        assert self.in_transaction
-        self.deleted_lanes.append(lane)
-        return 0
-
-
-def test_rank_set_hydrates_wide_payload_only_after_top_n_selection(monkeypatch) -> None:
+def test_rank_closure_selects_top_n_before_wide_hydration(
+    monkeypatch,
+) -> None:
     rows = [_compact_row(identity_id=f"asset-{index}", rank_score=100 - index) for index in range(6)]
-    repository = _RankRepository(rows)
+    ranked = rank_token_radar_closure(
+        {
+            "target_type": "Asset",
+            "target_id": "not-in-cohort",
+            "window": "5m",
+            "now_ms": 1_800_000_000_000,
+            "feature": None,
+            "compact_inputs": rows,
+            "venues": ["all"],
+            "rank_limit": 2,
+        }
+    )
+
+    assert ranked["source_rows_by_venue"] == {"all": 6}
+    assert ranked["selected_identities"] == [
+        ["resolved", "Asset", "asset-0"],
+        ["resolved", "Asset", "asset-1"],
+    ]
+
     monkeypatch.setattr(
         projector_module,
         "_row_from_target_feature",
@@ -70,52 +44,31 @@ def test_rank_set_hydrates_wide_payload_only_after_top_n_selection(monkeypatch) 
     monkeypatch.setattr(
         projector_module,
         "_patch_ranked_current_row",
-        lambda row, ranked: {**row, "rank": ranked["rank"]},
+        lambda row, ranked_row: {**row, "rank": ranked_row["rank"]},
     )
-
-    projection = TokenRadarProjector(repos=repository).build_rank_set(
-        window="5m",
-        venue=TOKEN_RADAR_DEFAULT_VENUE,
-        now_ms=1_800_000_000_000,
-        limit=2,
-    )
-
-    assert projection.source_rows == 6
-    assert projection.hydrated_rows == 2
-    assert len(projection.rows) == 2
-    assert repository.hydrated_identities == [
-        ("resolved", "Asset", "asset-0"),
-        ("resolved", "Asset", "asset-1"),
+    selected = set(tuple(identity) for identity in ranked["selected_identities"])
+    hydrated = [
+        {**row, "wide_payload_marker": row["identity_id"]}
+        for row in rows
+        if (
+            row["lane"],
+            row["target_type_key"],
+            row["identity_id"],
+        )
+        in selected
     ]
-    assert [row["identity_id"] for row in projection.rows] == ["asset-0", "asset-1"]
-
-
-def test_target_feature_computation_finishes_before_write_transaction(monkeypatch) -> None:
-    repository = _TransactionTrackingRepository()
-
-    def project_group(*_: Any, **__: Any) -> None:
-        assert not repository.in_transaction
-
-    monkeypatch.setattr(projector_module, "_project_group", project_group)
-    result = TokenRadarProjector(repos=repository).project_source_request(
-        request=TokenRadarFeatureSourceRequest(
-            request_key="target-0:test",
-            target_type_key="Asset",
-            identity_id="asset-0",
-            window="5m",
-            analysis_since_ms=1_799_999_000_000,
-            score_since_ms=1_799_999_700_000,
-            now_ms=1_800_000_000_000,
-        ),
-        target={"target_type_key": "Asset", "identity_id": "asset-0"},
-        source_rows=[],
-        now_ms=1_800_000_000_000,
+    closure = build_token_radar_current_closure(
+        {
+            "feature": None,
+            "selected_by_venue": ranked["selected_by_venue"],
+            "hydrated_inputs": hydrated,
+        }
     )
 
-    assert result["status"] == "empty"
-    assert repository.transaction_count == 1
-    assert repository.deleted_lanes == ["resolved", "attention"]
-    assert not repository.in_transaction
+    assert [row["identity_id"] for row in closure["rows_by_venue"]["all"]] == [
+        "asset-0",
+        "asset-1",
+    ]
 
 
 def _compact_row(*, identity_id: str, rank_score: int) -> dict[str, Any]:

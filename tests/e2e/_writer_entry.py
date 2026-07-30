@@ -3,10 +3,9 @@
 Run as:
   python -m tests.e2e._writer_entry --event-id <id> --text <text>
 
-Reads TRACEFOLD_POSTGRES_DSN (and optional TRACEFOLD_E2E_WS_TOKEN, defaults to
-"e2e-token") from env. Builds a Runtime via the same bootstrap path
-the production app uses (start_collector=False, no upstream WS), then calls
-runtime.ingest.ingest_event(event) with a synthetic mention.
+Reads TRACEFOLD_POSTGRES_DSN from env, opens the production workers database
+boundary, then commits a synthetic mention through the same ingestion service
+used by the collector.
 
 By writing through the production wiring chain we exercise the same
 EvidenceRepository -> events table path the API will read from.
@@ -33,11 +32,8 @@ def main() -> int:
     if not dsn:
         print("FATAL: TRACEFOLD_POSTGRES_DSN not set", file=sys.stderr)
         return 1
-    ws_token = os.environ.get("TRACEFOLD_E2E_WS_TOKEN", "e2e-token")
-
-    import asyncio
-
-    from tracefold.app.bootstrap import bootstrap
+    from tracefold.app.bootstrap import _ingest_service_for_repos
+    from tracefold.app.database import WorkerDatabase
     from tracefold.market import (
         Author,
         Content,
@@ -47,11 +43,17 @@ def main() -> int:
     from tracefold.platform.config.settings import Settings
 
     settings = Settings(
-        ws_token=ws_token,
-        storage={"postgres": {"dsn": dsn, "password_file": None}},
+        storage={
+            "postgres": {
+                "serve_dsn": dsn,
+                "workers_dsn": dsn,
+                "migrate_dsn": dsn,
+                "serve_password_file": None,
+                "workers_password_file": None,
+                "migrate_password_file": None,
+            }
+        },
     )
-    runtime = bootstrap(settings, start_collector=False)
-
     received_at_ms = int(time.time() * 1000)
     event = TwitterEvent(
         event_id=args.event_id,
@@ -75,11 +77,17 @@ def main() -> int:
         bio_change=None,
         raw={"id": args.event_id},
     )
+    db = WorkerDatabase.create(settings)
     try:
-        runtime.ingest.ingest_event(event)
+        with db.worker_session("collector") as repos:
+            ingest = _ingest_service_for_repos(
+                repos,
+                event_anchor_active_window_ms=300_000,
+            )
+            ingest.ingest_event(event)
         print(f"INGESTED {args.event_id}", flush=True)
     finally:
-        asyncio.run(runtime.aclose())
+        db.worker_pool.close()
     return 0
 
 

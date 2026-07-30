@@ -7,11 +7,12 @@ from tests.factories_token_radar import (
     make_token_event,
     open_token_radar_runtime,
 )
+from tests.integration.test_token_radar_idempotency import (
+    _run_radar_projection,
+)
 from tracefold.market import (
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
-    TokenRadarProjector,
-    TokenRadarPublisher,
 )
 
 
@@ -52,11 +53,6 @@ def test_unresolved_attention_never_projects_as_driver(tmp_path):
         for index in range(7)
     ]
 
-    _publisher(repos).publish_rank_set(
-        window="5m",
-        now_ms=1_777_800_060_000,
-        limit=20,
-    )
     rows = repos.token_radar.latest_current_rows(
         window="5m",
         venue=TOKEN_RADAR_DEFAULT_VENUE,
@@ -129,24 +125,9 @@ def test_gmgn_payload_identity_does_not_project_market_snapshot_into_radar(tmp_p
 
 
 def _rebuild_resolved_current_rows(repos, *, now_ms: int) -> None:
-    with repos.transaction():
-        repos.token_radar_dirty_targets.enqueue_recent_resolved_targets(
-            since_ms=now_ms - 5 * 60 * 1000,
-            now_ms=now_ms,
-            limit=20,
-            reason="golden_corpus_projection",
-        )
-    _publisher(repos).rebuild_dirty_targets(
-        lease_ms=120_000,
-        retry_ms=30_000,
-        max_attempts=3,
-        windows=("5m",),
+    result = _run_radar_projection(
+        repos.conn,
+        window="5m",
         now_ms=now_ms,
-        limit=20,
-        rank_limit=20,
-        lease_owner="golden_corpus_projection",
     )
-
-
-def _publisher(repos) -> TokenRadarPublisher:
-    return TokenRadarPublisher(repos=repos, projector=TokenRadarProjector(repos=repos))
+    assert result["projection_status"] in {"published", "unchanged"}

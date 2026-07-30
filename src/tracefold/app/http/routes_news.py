@@ -57,11 +57,26 @@ def get_news_feed(
 
 
 @router.get("/news/stories/{story_id}", response_model=_Envelope)
-def get_news_story(request: Request, story_id: str) -> JSONResponse:
-    _validate_query_params(request, supported={"token"})
+def get_news_story(
+    request: Request,
+    story_id: str,
+    members_limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    members_cursor: Annotated[str, Query()] = "",
+) -> JSONResponse:
+    _validate_query_params(
+        request,
+        supported={"token", "members_limit", "members_cursor"},
+    )
     runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        data = _news_interface(repos).get_story(story_id=story_id)
+    try:
+        with runtime.repositories() as repos:
+            data = _news_interface(repos).get_story(
+                story_id=story_id,
+                members_limit=members_limit,
+                members_cursor=members_cursor or None,
+            )
+    except ValueError as exc:
+        raise ApiBadRequest(str(exc), field="members_cursor") from exc
     if data is None:
         return _validated_json(
             _Envelope,
@@ -81,11 +96,21 @@ def get_news_world_brief(request: Request) -> Response:
 
 
 @router.get("/news/sources", response_model=_Envelope)
-def get_news_sources(request: Request) -> JSONResponse:
-    _validate_query_params(request, supported={"token"})
+def get_news_sources(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    cursor: Annotated[str, Query()] = "",
+) -> JSONResponse:
+    _validate_query_params(request, supported={"token", "limit", "cursor"})
     runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        data = _news_interface(repos).get_sources()
+    try:
+        with runtime.repositories() as repos:
+            data = _news_interface(repos).get_sources(
+                limit=limit,
+                cursor=cursor or None,
+            )
+    except ValueError as exc:
+        raise ApiBadRequest(str(exc), field="cursor") from exc
     return _validated_json(_Envelope, {"ok": True, "data": data})
 
 
@@ -98,7 +123,7 @@ def get_news_status(request: Request) -> JSONResponse:
     measured_at_ms = int(data["measured_at_ms"])
     attach_pipeline_runtime_health(
         data,
-        worker_status=runtime.current_snapshot().workers.get("news_pipeline"),
+        worker_status=runtime.current_snapshot().workers.get("news_ingest"),
         now_ms=measured_at_ms,
     )
     return _validated_json(_Envelope, {"ok": True, "data": data})

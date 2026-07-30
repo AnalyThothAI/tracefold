@@ -11,6 +11,9 @@ from unittest.mock import patch
 import yaml
 from pydantic import ValidationError
 
+from tests.integration.test_token_radar_idempotency import (
+    _run_radar_projection,
+)
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
@@ -22,12 +25,10 @@ from tracefold.market import (
     Content,
     IngestService,
     Source,
-    TokenRadarProjector,
-    TokenRadarPublisher,
     TwitterEvent,
     parse_gmgn_token_payload,
 )
-from tracefold.platform.config.settings import Settings, WorkersSettings, default_workers_yaml
+from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 
@@ -81,7 +82,8 @@ def seed_postgres(db_path: Path) -> None:
             market_tick_current=repos.market_tick_current,
             enriched_events=repos.enriched_events,
             event_anchor_jobs=repos.event_anchor_jobs,
-            token_radar_dirty_targets=repos.token_radar_dirty_targets,
+            radar_source_edges=repos.radar_source_edges,
+            persisted_live=repos.persisted_live,
             transaction=repos.transaction,
             event_anchor_active_window_ms=300_000,
         )
@@ -109,23 +111,11 @@ def seed_postgres(db_path: Path) -> None:
         )
         with repos.transaction():
             ingest.ingest_event(token_event)
-            now_ms = token_event.received_at_ms + 1
-            repos.token_radar_dirty_targets.enqueue_recent_resolved_targets(
-                since_ms=max(0, token_event.received_at_ms - 5 * 60 * 1000),
-                now_ms=now_ms,
-                limit=20,
-                reason="test_seed",
-            )
-            TokenRadarPublisher(repos=repos, projector=TokenRadarProjector(repos=repos)).rebuild_dirty_targets(
-                lease_ms=120_000,
-                retry_ms=30_000,
-                max_attempts=3,
-                windows=("5m",),
-                now_ms=now_ms,
-                limit=20,
-                rank_limit=20,
-                lease_owner="test_cli_seed",
-            )
+        _run_radar_projection(
+            conn,
+            window="5m",
+            now_ms=token_event.received_at_ms + 1,
+        )
     finally:
         conn.close()
 
@@ -134,21 +124,34 @@ def write_runtime_config(home: Path, *, db_path: Path, ws_token: str | None = No
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True, exist_ok=True)
     payload = {
-        "storage": {"postgres": {"dsn": postgres_test_dsn(), "password_file": None}},
+        "storage": {
+            "postgres": {
+                "serve_dsn": postgres_test_dsn(),
+                "workers_dsn": postgres_test_dsn(),
+                "migrate_dsn": postgres_test_dsn(),
+                "serve_password_file": None,
+                "workers_password_file": None,
+                "migrate_password_file": None,
+            }
+        },
     }
     if ws_token is not None:
         payload["ws_token"] = ws_token
     payload["gmgn"] = {"api_key": "gmgn-test", "openapi_base_url": "https://openapi.gmgn.ai"}
-    workers_payload = yaml.safe_load(default_workers_yaml())
     if llm:
         payload["llm"] = {"api_key": "sk-test"}
     path = app_home / "config.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-    (app_home / "workers.yaml").write_text(yaml.safe_dump(workers_payload, sort_keys=False), encoding="utf-8")
     return path
 
 
 class CliTests(unittest.TestCase):
+    def test_runtime_roles_are_explicit_cli_commands(self):
+        parser = build_parser()
+
+        assert parser.parse_args(["serve"]).command == "serve"
+        assert parser.parse_args(["workers"]).command == "workers"
+
     def test_audit_and_token_radar_projection_commands_are_registered(self):
         parser = build_parser()
 
@@ -165,24 +168,12 @@ class CliTests(unittest.TestCase):
             ["ops", "run-resolution-refresh", "--limit", "5"],
             ["ops", "refresh-asset-profiles", "--limit", "5"],
             ["ops", "mirror-token-images", "--limit", "5"],
-            ["ops", "repair-token-profile-images", "--limit", "5"],
             ["ops", "reprocess-token-intents", "--window", "24h", "--limit", "5", "--lookup-key", "symbol:SLOP"],
             ["ops", "rebuild-token-intents", "--window", "5m", "--limit", "5"],
             ["ops", "audit-token-intent", "--event-id", "event-1"],
-            ["ops", "rebuild-token-radar", "--window", "1h"],
             ["ops", "factor-diagnostics", "--window", "1h", "--limit", "200"],
             ["ops", "sync-us-equity-symbols"],
-            ["ops", "rebuild-token-profiles", "--limit", "5"],
-            ["ops", "enqueue-token-radar-dirty-targets", "--source", "events", "--since-ms", "0", "--dry-run"],
-            [
-                "ops",
-                "enqueue-token-radar-dirty-targets",
-                "--source",
-                "market-current",
-                "--since-ms",
-                "0",
-                "--execute",
-            ],
+            ["ops", "seal-worker-acceptance", "--template"],
         ]
 
         parsed = [parser.parse_args(command) for command in commands]
@@ -206,28 +197,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parsed[10].limit, 5)
         self.assertEqual(parsed[11].ops_command, "mirror-token-images")
         self.assertEqual(parsed[11].limit, 5)
-        self.assertEqual(parsed[12].ops_command, "repair-token-profile-images")
-        self.assertEqual(parsed[12].limit, 5)
-        self.assertEqual(parsed[13].ops_command, "reprocess-token-intents")
-        self.assertEqual(parsed[13].window, "24h")
-        self.assertEqual(parsed[13].lookup_key, ["symbol:SLOP"])
-        self.assertEqual(parsed[14].ops_command, "rebuild-token-intents")
-        self.assertEqual(parsed[14].window, "5m")
-        self.assertEqual(parsed[15].ops_command, "audit-token-intent")
-        self.assertEqual(parsed[16].ops_command, "rebuild-token-radar")
-        self.assertEqual(parsed[17].ops_command, "factor-diagnostics")
-        self.assertEqual(parsed[17].limit, 200)
-        self.assertEqual(parsed[18].ops_command, "sync-us-equity-symbols")
-        self.assertEqual(parsed[19].ops_command, "rebuild-token-profiles")
-        self.assertEqual(parsed[19].limit, 5)
-        self.assertEqual(parsed[20].ops_command, "enqueue-token-radar-dirty-targets")
-        self.assertEqual(parsed[20].source, "events")
-        self.assertEqual(parsed[20].since_ms, 0)
-        self.assertEqual(parsed[20].limit, 5000)
-        self.assertTrue(parsed[20].dry_run)
-        self.assertEqual(parsed[21].ops_command, "enqueue-token-radar-dirty-targets")
-        self.assertEqual(parsed[21].source, "market-current")
-        self.assertTrue(parsed[21].execute)
+        self.assertEqual(parsed[12].ops_command, "reprocess-token-intents")
+        self.assertEqual(parsed[12].window, "24h")
+        self.assertEqual(parsed[12].lookup_key, ["symbol:SLOP"])
+        self.assertEqual(parsed[13].ops_command, "rebuild-token-intents")
+        self.assertEqual(parsed[13].window, "5m")
+        self.assertEqual(parsed[14].ops_command, "audit-token-intent")
+        self.assertEqual(parsed[15].ops_command, "factor-diagnostics")
+        self.assertEqual(parsed[15].limit, 200)
+        self.assertEqual(parsed[16].ops_command, "sync-us-equity-symbols")
+        self.assertEqual(parsed[17].ops_command, "seal-worker-acceptance")
+        self.assertTrue(parsed[17].template)
+
+    def test_issue_32_acceptance_template_does_not_require_runtime_config(self):
+        stdout = io.StringIO()
+
+        exit_code = main(
+            ["ops", "seal-worker-acceptance", "--template"],
+            stdout=stdout,
+        )
+
+        assert exit_code == 0
+        payload = json.loads(stdout.getvalue())
+        assert payload["ok"] is True
+        template = payload["data"]["template"]
+        assert template["issue"] == 32
+        assert template["gates"]["real_continuous_30m"]["status"] == "pending"
 
     def test_cli_ops_mirror_token_images_has_no_source_limit_option(self):
         parser = build_parser()
@@ -235,12 +230,24 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["ops", "mirror-token-images", "--source-limit", "9"])
 
-    def test_cli_ops_repair_token_profile_images_rejects_non_positive_limit(self):
+    def test_cli_rejects_retired_projection_queue_commands(self):
         parser = build_parser()
 
-        for limit in ("0", "-1"):
-            with self.subTest(limit=limit), self.assertRaises(SystemExit):
-                parser.parse_args(["ops", "repair-token-profile-images", "--limit", limit])
+        retired = (
+            ["ops", "repair-token-profile-images", "--limit", "5"],
+            ["ops", "rebuild-token-profiles", "--limit", "5"],
+            ["ops", "rebuild-token-radar", "--window", "1h"],
+            [
+                "ops",
+                "enqueue-token-radar-dirty-targets",
+                "--source",
+                "events",
+                "--dry-run",
+            ],
+        )
+        for command in retired:
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                parser.parse_args(command)
 
     def test_config_prints_effective_runtime_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -274,14 +281,15 @@ class CliTests(unittest.TestCase):
         )
         self.assertNotIn("gmgn-test", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
-        self.assertIn("postgres_dsn", payload["data"]["store"])
-        self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
         self.assertEqual(
-            payload["data"]["workers_config_path"],
-            str(home / ".tracefold" / "workers.yaml"),
+            set(payload["data"]["store"]["postgres_roles"]),
+            {"serve", "workers", "migrate"},
         )
-        self.assertEqual(payload["data"]["workers"]["collector"]["mode"], "continuous")
-        self.assertTrue(payload["data"]["workers"]["collector"]["enabled"])
+        self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 8)
+        self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 12)
+        self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
+        self.assertNotIn("workers_config_path", payload["data"])
+        self.assertNotIn("workers", payload["data"])
 
     def test_config_example_matches_the_current_hard_cut_schema(self):
         example_path = Path(__file__).resolve().parents[2] / "config.example.yaml"
@@ -312,20 +320,9 @@ class CliTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(ValidationError):
                 Settings.model_validate(payload)
 
-    def test_workers_settings_reject_retired_notification_and_radar_scope_config(self):
-        retired_payloads = {
-            "notification rule worker": {"notification_rule": {"enabled": True}},
-            "notification delivery worker": {"notification_delivery": {"enabled": True}},
-            "radar scopes": {
-                "token_radar_projection": {
-                    "scopes": ["all", "matched"],
-                }
-            },
-        }
-
-        for label, payload in retired_payloads.items():
-            with self.subTest(label=label), self.assertRaises(ValidationError):
-                WorkersSettings.model_validate(payload)
+    def test_settings_reject_worker_runtime_configuration(self):
+        with self.assertRaises(ValidationError):
+            Settings.model_validate({"workers": {"collector": {"enabled": False}}})
 
     def test_recent_search_and_asset_flow_use_postgres_runtime_store(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -415,6 +412,17 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert exit_code == 0
     assert payload["data"]["created"] is True
     assert (tmp_path / ".tracefold" / "config.yaml").is_file()
+    assert not (tmp_path / ".tracefold" / "workers.yaml").exists()
+    assert "workers_config_path" not in payload["data"]
+    for name in (
+        "postgres_password",
+        "postgres_serve_password",
+        "postgres_workers_password",
+        "postgres_migrate_password",
+    ):
+        path = tmp_path / ".tracefold" / name
+        assert path.is_file()
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkeypatch, tmp_path):

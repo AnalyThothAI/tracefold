@@ -627,6 +627,119 @@ class MacroRepository:
             "analysis_job_state": analysis_job_state,
         }
 
+    def maintenance_dataset_fact_states(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              dataset_id,
+              count(*)::bigint AS row_count,
+              max(received_at_ms)::bigint AS source_frontier_ms,
+              max(fact_hash) AS max_fact_hash
+            FROM (
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM macro_series_facts
+              UNION ALL
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM macro_release_facts
+              UNION ALL
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM macro_documents
+              UNION ALL
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM macro_fed_official_role_facts
+              UNION ALL
+              SELECT
+                'federal_reserve.document.analysis' AS dataset_id,
+                created_at_ms AS received_at_ms,
+                payload_hash AS fact_hash
+              FROM macro_document_analyses
+            ) facts
+            GROUP BY dataset_id
+            ORDER BY dataset_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_dataset_projection_state(
+        self,
+        *,
+        dataset_id: str,
+        material_fingerprint: str,
+        acquisition_status: str,
+        source_frontier_ms: int,
+        updated_at_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_dataset_projection_states(
+              dataset_id, material_fingerprint, acquisition_status,
+              source_frontier_ms, updated_at_ms
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT(dataset_id) DO UPDATE SET
+              material_fingerprint = excluded.material_fingerprint,
+              acquisition_status = excluded.acquisition_status,
+              source_frontier_ms = excluded.source_frontier_ms,
+              updated_at_ms = excluded.updated_at_ms
+            WHERE (
+              macro_dataset_projection_states.material_fingerprint,
+              macro_dataset_projection_states.acquisition_status,
+              macro_dataset_projection_states.source_frontier_ms
+            ) IS DISTINCT FROM (
+              excluded.material_fingerprint,
+              excluded.acquisition_status,
+              excluded.source_frontier_ms
+            )
+            """,
+            (
+                str(dataset_id),
+                str(material_fingerprint),
+                str(acquisition_status),
+                int(source_frontier_ms),
+                int(updated_at_ms),
+            ),
+        )
+        return int(cursor.rowcount or 0) == 1
+
+    def ensure_dataset_projection_state(
+        self,
+        *,
+        dataset_id: str,
+        updated_at_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO macro_dataset_projection_states(
+              dataset_id, material_fingerprint, acquisition_status,
+              source_frontier_ms, updated_at_ms
+            )
+            VALUES (%s, 'missing', 'uninitialized', 0, %s)
+            ON CONFLICT(dataset_id) DO NOTHING
+            """,
+            (str(dataset_id), int(updated_at_ms)),
+        )
+        return int(cursor.rowcount or 0) == 1
+
+    def dataset_projection_states(
+        self,
+        *,
+        dataset_ids: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        if not dataset_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT
+              dataset_id, material_fingerprint, acquisition_status,
+              source_frontier_ms, updated_at_ms
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = ANY(%s)
+            ORDER BY dataset_id
+            """,
+            (list(dataset_ids),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def projection_state(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
@@ -742,6 +855,7 @@ class MacroRepository:
         *,
         history_limits: Mapping[str, int],
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
         if not requested:
@@ -789,11 +903,134 @@ class MacroRepository:
             FROM ranked
             WHERE row_number <= max_rows
             ORDER BY dataset_id, series_id, reference_date
+            LIMIT %s
             """,
             (
                 list(requested),
                 list(requested.values()),
                 received_before_ms,
+                _row_limit(row_cap),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def series_projection_history(
+        self,
+        *,
+        history_limits: Mapping[str, int],
+        received_before_ms: int | None = None,
+        row_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load bounded presentation rows plus exact capped-history statistics.
+
+        Full-history percentile datasets retain their former 10,000-row semantic
+        window without sending that window through the projection process.
+        """
+
+        requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
+        if not requested:
+            return []
+        rows = self.conn.execute(
+            """
+            WITH requested AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::integer[])
+                AS requested(dataset_id, semantic_rows)
+            ), latest_vintage AS (
+              SELECT DISTINCT ON (facts.dataset_id, facts.series_id, facts.reference_date)
+                facts.fact_id,
+                facts.dataset_id,
+                facts.series_id,
+                facts.reference_date,
+                facts.vintage_date,
+                facts.value_numeric,
+                facts.value_text,
+                facts.unit,
+                facts.published_at_ms,
+                facts.received_at_ms,
+                facts.source_url,
+                facts.fact_hash,
+                requested.semantic_rows
+              FROM macro_series_facts AS facts
+              JOIN requested USING (dataset_id)
+              WHERE facts.received_at_ms <= COALESCE(%s::bigint, facts.received_at_ms)
+              ORDER BY
+                facts.dataset_id, facts.series_id, facts.reference_date,
+                facts.vintage_date DESC, facts.received_at_ms DESC
+            ), semantic_ranked AS (
+              SELECT
+                latest_vintage.*,
+                row_number() OVER (
+                  PARTITION BY dataset_id, series_id
+                  ORDER BY reference_date DESC
+                ) AS semantic_row_number
+              FROM latest_vintage
+            ), semantic_window AS (
+              SELECT *
+              FROM semantic_ranked
+              WHERE semantic_row_number <= semantic_rows
+            ), latest_numeric AS (
+              SELECT DISTINCT ON (dataset_id)
+                dataset_id,
+                value_numeric AS latest_numeric
+              FROM semantic_window
+              WHERE value_numeric IS NOT NULL
+              ORDER BY
+                dataset_id, reference_date DESC, vintage_date DESC, received_at_ms DESC
+            ), semantic_stats AS (
+              SELECT
+                rows.dataset_id,
+                count(*) FILTER (WHERE rows.value_numeric IS NOT NULL) AS semantic_sample_count,
+                min(rows.reference_date) FILTER (
+                  WHERE rows.value_numeric IS NOT NULL
+                ) AS semantic_history_start,
+                round(
+                  (
+                    count(*) FILTER (
+                      WHERE rows.value_numeric IS NOT NULL
+                        AND rows.value_numeric <= latest.latest_numeric
+                    )::numeric
+                    / NULLIF(
+                        count(*) FILTER (WHERE rows.value_numeric IS NOT NULL),
+                        0
+                      )::numeric
+                    * 100
+                  ),
+                  2
+                ) AS semantic_percentile
+              FROM semantic_window AS rows
+              JOIN latest_numeric AS latest USING (dataset_id)
+              GROUP BY rows.dataset_id
+            ), projection_ranked AS (
+              SELECT
+                semantic_window.*,
+                row_number() OVER (
+                  PARTITION BY dataset_id, series_id
+                  ORDER BY reference_date DESC
+                ) AS projection_row_number
+              FROM semantic_window
+            )
+            SELECT
+              rows.fact_id, rows.dataset_id, rows.series_id,
+              rows.reference_date, rows.vintage_date,
+              rows.value_numeric, rows.value_text, rows.unit,
+              rows.published_at_ms, rows.received_at_ms,
+              rows.source_url, rows.fact_hash,
+              rows.projection_row_number AS row_number,
+              stats.semantic_sample_count,
+              stats.semantic_history_start,
+              stats.semantic_percentile
+            FROM projection_ranked AS rows
+            JOIN semantic_stats AS stats USING (dataset_id)
+            WHERE rows.projection_row_number <= LEAST(rows.semantic_rows, 500)
+            ORDER BY rows.dataset_id, rows.series_id, rows.reference_date
+            LIMIT %s
+            """,
+            (
+                list(requested),
+                list(requested.values()),
+                received_before_ms,
+                _row_limit(row_cap),
             ),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -803,6 +1040,7 @@ class MacroRepository:
         *,
         dataset_ids: tuple[str, ...],
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         if not dataset_ids:
             return []
@@ -817,8 +1055,9 @@ class MacroRepository:
               reference_period,
               received_at_ms,
               fact_hash
+            LIMIT %s
             """,
-            (list(dataset_ids), received_before_ms),
+            (list(dataset_ids), received_before_ms, _row_limit(row_cap)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -827,6 +1066,7 @@ class MacroRepository:
         *,
         dataset_ids: tuple[str, ...],
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         if not dataset_ids:
             return []
@@ -837,8 +1077,9 @@ class MacroRepository:
             WHERE dataset_id = ANY(%s)
               AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
             ORDER BY dataset_id, published_at_ms
+            LIMIT %s
             """,
-            (list(dataset_ids), received_before_ms),
+            (list(dataset_ids), received_before_ms, _row_limit(row_cap)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -846,6 +1087,7 @@ class MacroRepository:
         self,
         *,
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -853,8 +1095,9 @@ class MacroRepository:
             FROM macro_fed_official_role_facts
             WHERE received_at_ms <= COALESCE(%s::bigint, received_at_ms)
             ORDER BY effective_start, official_id, role_fact_id
+            LIMIT %s
             """,
-            (received_before_ms,),
+            (received_before_ms, _row_limit(row_cap)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -862,6 +1105,7 @@ class MacroRepository:
         self,
         *,
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -884,10 +1128,11 @@ class MacroRepository:
               AND analyses.created_at_ms <= COALESCE(
                 %s::bigint,
                 analyses.created_at_ms
-              )
+            )
             ORDER BY documents.effective_date, analyses.created_at_ms, analyses.analysis_id
+            LIMIT %s
             """,
-            (received_before_ms, received_before_ms),
+            (received_before_ms, received_before_ms, _row_limit(row_cap)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1389,6 +1634,15 @@ class MacroRepository:
 def _payload_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _row_limit(value: int | None) -> int:
+    if value is None:
+        return 2_147_483_647
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError("macro_repository_row_cap_required")
+    return parsed + 1
 
 
 __all__ = ["MacroRepository"]

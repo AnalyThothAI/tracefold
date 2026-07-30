@@ -8,7 +8,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.app.database import DBPoolBundle
+from tracefold.app.database import WorkerDatabase
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
     MarketTick,
@@ -20,11 +20,8 @@ from tracefold.platform.postgres import postgres_client
 from tracefold.platform.postgres.postgres_client import create_pool
 
 
-def _worker_pool_bundle(pool: Any) -> DBPoolBundle:
-    return DBPoolBundle(
-        api_pool=None,
-        worker_pool=pool,
-    )
+def _worker_pool_bundle(pool: Any) -> WorkerDatabase:
+    return WorkerDatabase(worker_pool=pool)
 
 
 def test_worker_session_explicit_transaction_rolls_back_all_statements() -> None:
@@ -157,8 +154,8 @@ def test_market_tick_persistence_rolls_back_fact_current_and_downstream_dirty_ta
         dirty_count = setup_conn.execute(
             """
             SELECT count(*) AS row_count
-            FROM token_radar_dirty_targets
-            WHERE target_type_key = 'Asset' AND identity_id = %s
+            FROM radar_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
             """,
             (asset_id,),
         ).fetchone()
@@ -195,7 +192,7 @@ def _delete_market_tick_target(conn: Any, tick: MarketTick, *, asset_id: str) ->
         (tick.target_type, tick.target_id),
     )
     conn.execute(
-        "DELETE FROM token_radar_dirty_targets WHERE target_type_key = 'Asset' AND identity_id = %s",
+        "DELETE FROM radar_projection_frontiers WHERE target_type = 'Asset' AND target_id = %s",
         (asset_id,),
     )
     conn.execute(

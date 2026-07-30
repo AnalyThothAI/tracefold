@@ -53,11 +53,9 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_analysis",
     "verification_status",
     "evidence_set_hash",
-    "news_ingest",
     "news_story_project",
     "news_brief_plan",
     "news_ai_publish",
-    "NewsIngestWorker",
     "NewsStoryProjectWorker",
     "NewsBriefPlanWorker",
     "NewsAiPublishWorker",
@@ -179,12 +177,9 @@ def test_worker_manifest_has_one_writer_per_current_read_model() -> None:
     assert len(tables) == len(set(tables))
 
 
-def test_news_runtime_has_exactly_the_three_worldmonitor_pipeline_workers() -> None:
+def test_news_runtime_has_only_the_source_ingest_unit() -> None:
     news_workers = {manifest.name for manifest in all_worker_manifests() if manifest.name.startswith("news_")}
-    assert news_workers == {
-        "news_pipeline",
-        "news_world_brief",
-    }
+    assert news_workers == {"news_ingest"}
 
 
 def test_current_read_models_use_stable_product_keys() -> None:

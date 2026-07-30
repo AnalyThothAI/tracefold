@@ -198,7 +198,7 @@ function SourcesRoute({ token }: { token: string }) {
       ) : null}
       {query.isError && !query.data ? <PageState.Error error={query.error} /> : null}
       {!query.isLoading && !query.isError && !sources.length ? (
-        <PageState.Empty title="尚无来源状态" hint="news_pipeline 首轮同步后会显示来源。" />
+        <PageState.Empty title="尚无来源状态" hint="news_ingest 首轮同步后会显示来源。" />
       ) : null}
       {sources.length ? (
         <div className="news-source-list">

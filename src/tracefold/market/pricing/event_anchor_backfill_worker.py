@@ -9,7 +9,6 @@ semantically valid event anchor.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
@@ -99,7 +98,6 @@ class EventAnchorBackfillWorker(WorkerBase):
             )
         self._capture_service = capture_service
         self.batch_size = settings.batch_size
-        self.concurrency = settings.concurrency
         self.max_attempts = settings.max_attempts
         self.min_age_ms = settings.min_age_ms
         self.lease_ms = settings.lease_ms
@@ -108,10 +106,11 @@ class EventAnchorBackfillWorker(WorkerBase):
 
     async def run_once(self) -> WorkerResult:
         now_ms = int(self.clock())
-        stale_jobs = await asyncio.to_thread(self._expire_stale_jobs, now_ms=now_ms)
+        resources = self.require_runtime_resources()
+        stale_jobs = await resources.run_realtime_db(self._expire_stale_jobs, now_ms=now_ms)
         stale_terminal = int(stale_jobs["expired"]) + int(stale_jobs["failed"])
         stale_rescheduled = int(stale_jobs["rescheduled"])
-        rows = await asyncio.to_thread(self._claim_due_jobs, now_ms=now_ms)
+        rows = await resources.run_realtime_db(self._claim_due_jobs, now_ms=now_ms)
         if not rows:
             return WorkerResult(
                 processed=0,
@@ -127,8 +126,7 @@ class EventAnchorBackfillWorker(WorkerBase):
                 },
             )
 
-        semaphore = asyncio.Semaphore(self.concurrency)
-        outcomes = await asyncio.gather(*(self._capture_one(row, semaphore, now_ms=now_ms) for row in rows))
+        outcomes = [await self._capture_one(row, now_ms=now_ms) for row in rows]
 
         attaches: list[_AttachOutcome] = []
         terminals: list[_TerminalOutcome] = []
@@ -145,7 +143,7 @@ class EventAnchorBackfillWorker(WorkerBase):
             terminals.append(outcome)
             skipped_reasons[outcome.reason] += 1
 
-        inserted, attached_ticks, terminal_count, rescheduled_count = await asyncio.to_thread(
+        inserted, attached_ticks, terminal_count, rescheduled_count = await resources.run_realtime_db(
             self._persist,
             attaches=attaches,
             terminals=terminals,
@@ -171,26 +169,32 @@ class EventAnchorBackfillWorker(WorkerBase):
     async def _capture_one(
         self,
         row: Mapping[str, Any],
-        semaphore: asyncio.Semaphore,
         *,
         now_ms: int,
     ) -> _BackfillOutcome:
         resolution = _resolution_from_row(row)
-        async with semaphore:
-            existing = await asyncio.to_thread(
-                self._capture_existing_tick,
-                row=row,
-                now_ms=now_ms,
+        existing = await self.require_runtime_resources().run_realtime_db(
+            self._capture_existing_tick,
+            row=row,
+            now_ms=now_ms,
+        )
+        if existing is not None:
+            return cast(_BackfillOutcome, existing)
+        if abs(now_ms - int(row["t_event_ms"])) > self.max_anchor_lag_ms:
+            return _TerminalOutcome(
+                row=dict(row),
+                reason="backfill_expired",
+                status="expired",
             )
-            if existing is not None:
-                return existing
-            if abs(now_ms - int(row["t_event_ms"])) > self.max_anchor_lag_ms:
-                return _TerminalOutcome(row=dict(row), reason="backfill_expired", status="expired")
-            return await asyncio.to_thread(
-                self._capture_provider_quote,
-                row,
-                resolution,
-                now_ms,
+        async with self.require_provider_governor().acquire(host="asset_market"):
+            return cast(
+                _BackfillOutcome,
+                await self.require_runtime_resources().run_provider_io(
+                    self._capture_provider_quote,
+                    row,
+                    resolution,
+                    now_ms,
+                ),
             )
 
     def _capture_provider_quote(
@@ -295,7 +299,7 @@ class EventAnchorBackfillWorker(WorkerBase):
                 limit=self.batch_size,
                 now_ms=now_ms,
                 min_age_ms=self.min_age_ms,
-                lease_owner=self.name,
+                lease_owner=self.claim_owner,
                 lease_ms=self.lease_ms,
             )
         return [dict(row) for row in rows]

@@ -6,4 +6,4 @@
 |---------|------|------|---------|
 | `post_quality_v1` | `src/tracefold/market/radar/post_text_quality.py` | 80 | `score_version="post_quality_v1",` |
 | `token-radar-v15-provider-neutral` | `src/tracefold/market/radar/constants.py` | 7 | `TOKEN_RADAR_PROJECTION_VERSION = "token-radar-v15-provider-neutral"` |
-| `token_factor_snapshot_v5_provider_neutral` | `src/tracefold/market/radar/constants.py` | 12 | `TOKEN_FACTOR_SNAPSHOT_VERSION = "token_factor_snapshot_v5_provider_neutral"` |
+| `token_factor_snapshot_v5_provider_neutral` | `src/tracefold/market/radar/constants.py` | 11 | `TOKEN_FACTOR_SNAPSHOT_VERSION = "token_factor_snapshot_v5_provider_neutral"` |

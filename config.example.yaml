@@ -9,10 +9,12 @@ api:
 
 storage:
   postgres:
-    dsn: "postgresql://tracefold_app@postgres:5432/tracefold"
-    password_file: "postgres_password"
-    pool_min_size: 1
-    pool_max_size: 16
+    serve_dsn: "postgresql://tracefold_serve@postgres:5432/tracefold"
+    workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
+    migrate_dsn: "postgresql://tracefold_migrate@postgres:5432/tracefold"
+    serve_password_file: "postgres_serve_password"
+    workers_password_file: "postgres_workers_password"
+    migrate_password_file: "postgres_migrate_password"
     connect_timeout_seconds: 5
 
 llm:
@@ -59,7 +61,8 @@ news:
   # The pinned WorldMonitor full/en inventory plus Tracefold's crypto,
   # 6551NEWS, and WallStEngine feeds are always used. RSSHub is internal to
   # compose and its optional credentials live only in ~/.tracefold/rsshub.env.
-  # Worker timing and provider endpoints/models live in workers.yaml.
+  # Worker topology, cadence, budgets, retries, and model reservations are
+  # code-owned. config.yaml retains only deployment/domain choices.
   relay:
     # WorldMonitor-compatible independent egress fallback. Direct fetch is
     # always attempted first; only code-owned public HTTPS URLs are relayed.

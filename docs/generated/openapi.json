@@ -10094,11 +10094,15 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/SearchPageData"
           }
         },
         "required": [
           "events",
-          "items"
+          "items",
+          "page"
         ],
         "title": "RecentData",
         "type": "object"
@@ -10516,6 +10520,11 @@
             "title": "Reasons",
             "type": "array"
           },
+          "runtime_role": {
+            "const": "serve",
+            "title": "Runtime Role",
+            "type": "string"
+          },
           "snapshot_gate": {
             "additionalProperties": true,
             "title": "Snapshot Gate",
@@ -10537,6 +10546,7 @@
         "required": [
           "ok",
           "reasons",
+          "runtime_role",
           "store",
           "snapshot_gate",
           "db",
@@ -12403,6 +12413,17 @@
       "WorkerStatusData": {
         "additionalProperties": false,
         "properties": {
+          "deadline_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At Ms"
+          },
           "effective_status": {
             "enum": [
               "disabled",
@@ -12419,6 +12440,17 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
           },
           "iteration_duration_p99_ms": {
             "anyOf": [
@@ -12476,9 +12508,57 @@
             ],
             "title": "Last Started At Ms"
           },
+          "oldest_due_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Due At Ms"
+          },
+          "quarantine_count": {
+            "title": "Quarantine Count",
+            "type": "integer"
+          },
+          "queue_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Depth"
+          },
           "running": {
             "title": "Running",
             "type": "boolean"
+          },
+          "runtime_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Id"
+          },
+          "runtime_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Version"
           },
           "unavailable_reason": {
             "anyOf": [
@@ -12497,11 +12577,18 @@
           "running",
           "effective_status",
           "unavailable_reason",
+          "runtime_id",
+          "runtime_version",
+          "heartbeat_at_ms",
           "last_started_at_ms",
           "last_finished_at_ms",
           "last_result",
           "last_error",
-          "iteration_duration_p99_ms"
+          "iteration_duration_p99_ms",
+          "deadline_at_ms",
+          "queue_depth",
+          "oldest_due_at_ms",
+          "quarantine_count"
         ],
         "title": "WorkerStatusData",
         "type": "object"
@@ -12948,6 +13035,30 @@
     "/api/news/sources": {
       "get": {
         "operationId": "get_news_sources_api_news_sources_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -12958,6 +13069,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get News Sources",
@@ -12997,6 +13118,28 @@
             "required": true,
             "schema": {
               "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "members_limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Members Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "members_cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Members Cursor",
               "type": "string"
             }
           }
@@ -13080,6 +13223,16 @@
             "schema": {
               "default": "",
               "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
               "type": "string"
             }
           }
@@ -13214,7 +13367,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 200,
+              "default": 100,
               "title": "Limit",
               "type": "integer"
             }
@@ -13454,7 +13607,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 200,
+              "default": 100,
               "title": "Limit",
               "type": "integer"
             }

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from tests.postgres_test_utils import postgres_settings_storage
-from tracefold.app.worker_manifest import all_worker_manifests
 from tracefold.platform.config.settings import Settings
 
 WS_TOKEN = "hot-path-token"
@@ -19,7 +17,6 @@ MARKET_TARGET_ID = f"{CHAIN_ID}:{ADDRESS}"
 
 
 def backend_hot_path_settings(tmp_path: Path) -> Settings:
-    workers = _disabled_workers()
     settings = Settings(
         ws_token=WS_TOKEN,
         storage=postgres_settings_storage(),
@@ -31,7 +28,6 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
             "binance": {"enabled": False},
             "macro_sources": {"enabled": False},
         },
-        workers=workers,
     )
     settings.set_config_dir(tmp_path / "gmgn-hot-path-home")
     return settings
@@ -39,27 +35,3 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
 
 def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {WS_TOKEN}"}
-
-
-def _disabled_workers() -> dict[str, dict[str, Any]]:
-    workers = {manifest.name: {"enabled": False} for manifest in all_worker_manifests()}
-    workers.update(
-        {
-            "event_anchor_backfill": {
-                "enabled": False,
-                "batch_size": 10,
-                "concurrency": 2,
-                "min_age_ms": 0,
-                "active_window_ms": 300_000,
-                "max_anchor_lag_ms": 60_000,
-            },
-            "token_radar_projection": {
-                "enabled": False,
-                "batch_size": 20,
-                "windows": ("1h",),
-                "hot_windows": ("1h",),
-                "cold_interval_seconds": 0,
-            },
-        }
-    )
-    return workers

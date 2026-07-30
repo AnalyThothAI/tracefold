@@ -6,11 +6,6 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from tracefold.market.radar.constants import (
-    TOKEN_RADAR_PROJECTION_VERSION,
-    TOKEN_RADAR_RESOLVER_POLICY_VERSION,
-)
-from tracefold.platform.postgres.write_contract import mutation_count
 from tracefold.platform.validation import require_positive_int
 
 TOKEN_RADAR_RANK_SOURCE_REQUEST_CHUNK_SIZE = 200
@@ -38,13 +33,30 @@ class TokenRadarRankSourceQuery:
     def load_rows_for_requests(
         self,
         requests: Sequence[TokenRadarFeatureSourceRequest],
+        *,
+        row_cap: int | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        parsed_cap = (
+            require_positive_int(
+                row_cap,
+                error_code="token_radar_rank_source_row_cap_required",
+            )
+            if row_cap is not None
+            else None
+        )
         rows_by_request: dict[str, list[dict[str, Any]]] = {str(request.request_key): [] for request in requests}
         for chunk in _chunks(tuple(requests), self.chunk_size):
+            sql = _RANK_SOURCE_ROWS_FOR_REQUESTS_SQL
+            params: tuple[Any, ...] = (Jsonb([_feature_request_payload(r) for r in chunk]),)
+            if parsed_cap is not None:
+                sql = f"{sql}\nLIMIT %s"
+                params = (*params, parsed_cap + 1)
             rows = self.conn.execute(
-                _RANK_SOURCE_ROWS_FOR_REQUESTS_SQL,
-                (Jsonb([_feature_request_payload(r) for r in chunk]), TOKEN_RADAR_PROJECTION_VERSION),
+                sql,
+                params,
             ).fetchall()
+            if parsed_cap is not None and len(rows) > parsed_cap:
+                raise RuntimeError("token_radar_rank_source_shard_oversized")
             for row in rows:
                 payload = dict(row)
                 request_key = str(payload.get("request_key") or "")
@@ -72,75 +84,12 @@ class TokenRadarRankSourceQuery:
             rows_by_target[target_key] = payload
         return rows_by_target
 
-    def populate_edges_for_targets(
-        self,
-        targets: Sequence[Mapping[str, Any]],
-        *,
-        projected_at_ms: int,
-        analysis_since_ms: int,
-    ) -> int:
-        target_payloads = _target_payloads(targets)
-        if not target_payloads:
-            return 0
-        changed = 0
-        for chunk in _target_chunks(tuple(target_payloads), self.chunk_size):
-            row = self.conn.execute(
-                _POPULATE_RANK_SOURCE_EDGES_FOR_TARGETS_SQL,
-                (
-                    Jsonb(list(chunk)),
-                    TOKEN_RADAR_PROJECTION_VERSION,
-                    int(projected_at_ms),
-                    TOKEN_RADAR_RESOLVER_POLICY_VERSION,
-                    int(analysis_since_ms),
-                    TOKEN_RADAR_PROJECTION_VERSION,
-                    int(analysis_since_ms),
-                ),
-            ).fetchone()
-            count_result = _mutation_count_result(row)
-            changed += _required_mutation_count(count_result, "upserted_count")
-            changed += _required_mutation_count(count_result, "deleted_count")
-        return changed
-
-    def prune_edges(
-        self,
-        *,
-        projection_version: str,
-        event_received_before_ms: int,
-        limit: int,
-    ) -> int:
-        row_limit = require_positive_int(
-            limit,
-            error_code="token_radar_rank_source_prune_limit_required",
-        )
-        cursor = self.conn.execute(
-            """
-            DELETE FROM token_radar_rank_source_events
-            WHERE ctid IN (
-              SELECT ctid
-              FROM token_radar_rank_source_events
-              WHERE projection_version = %s
-                AND event_received_at_ms < %s
-              ORDER BY event_received_at_ms ASC
-              LIMIT %s
-            )
-            """,
-            (projection_version, int(event_received_before_ms), row_limit),
-        )
-        return mutation_count(cursor, error_code="token_radar_rank_source_rowcount_invalid")
-
 
 def _chunks(
     requests: tuple[TokenRadarFeatureSourceRequest, ...],
     chunk_size: int,
 ) -> Sequence[tuple[TokenRadarFeatureSourceRequest, ...]]:
     return tuple(requests[index : index + chunk_size] for index in range(0, len(requests), chunk_size))
-
-
-def _target_chunks(
-    targets: tuple[dict[str, str], ...],
-    chunk_size: int,
-) -> Sequence[tuple[dict[str, str], ...]]:
-    return tuple(targets[index : index + chunk_size] for index in range(0, len(targets), chunk_size))
 
 
 def _feature_request_payload(request: TokenRadarFeatureSourceRequest) -> dict[str, Any]:
@@ -180,28 +129,6 @@ def _required_target_payload_text(target: Mapping[str, Any], column: str) -> str
     if not text:
         raise ValueError(f"token_radar_rank_source_target_identity_required:{column}")
     return text
-
-
-def _mutation_count_result(row: Any) -> Mapping[str, Any]:
-    if not isinstance(row, Mapping):
-        raise TypeError("token_radar_rank_source_write_count_required:result")
-    return row
-
-
-def _required_mutation_count(row: Mapping[str, Any], column: str) -> int:
-    try:
-        value = row[column]
-    except KeyError as exc:
-        raise TypeError(f"token_radar_rank_source_write_count_required:{column}") from exc
-    if isinstance(value, bool):
-        raise TypeError(f"token_radar_rank_source_write_count_invalid:{column}")
-    try:
-        count = int(value)
-    except (TypeError, ValueError):
-        raise TypeError(f"token_radar_rank_source_write_count_invalid:{column}") from None
-    if count < 0:
-        raise TypeError(f"token_radar_rank_source_write_count_invalid:{column}")
-    return count
 
 
 _LATEST_MARKET_CONTEXT_FOR_TARGETS_SQL = """
@@ -302,27 +229,29 @@ source_edges AS (
     requested.request_key,
     requested."window",
     requested.score_since_ms,
-    rank_source.source_payload_hash,
-    rank_source.intent_id,
-    rank_source.event_id,
-    rank_source.resolution_id,
+    rank_source.input_fingerprint AS source_payload_hash,
+    rank_source.payload_json ->> 'intent_id' AS intent_id,
+    rank_source.payload_json ->> 'event_id' AS event_id,
+    rank_source.payload_json ->> 'resolution_id' AS resolution_id,
     rank_source.target_type,
     rank_source.target_id,
-    rank_source.pricefeed_id,
-    rank_source.resolution_status,
-    rank_source.event_received_at_ms,
+    rank_source.payload_json ->> 'pricefeed_id' AS pricefeed_id,
+    rank_source.payload_json ->> 'resolution_status' AS resolution_status,
+    rank_source.observed_at_ms AS event_received_at_ms,
     row_number() OVER (
-      PARTITION BY requested.request_key, rank_source.target_type_key, rank_source.identity_id
-      ORDER BY rank_source.event_received_at_ms ASC, rank_source.source_id ASC
+      PARTITION BY requested.request_key, rank_source.target_type, rank_source.target_id
+      ORDER BY rank_source.observed_at_ms ASC, rank_source.source_id ASC
     ) - 1 AS source_rank
   FROM requested
-  JOIN token_radar_rank_source_events rank_source
-    ON rank_source.projection_version = %s
-   AND rank_source.target_type_key = requested.target_type_key
-   AND rank_source.identity_id = requested.identity_id
+  JOIN radar_source_edges rank_source
+    ON rank_source.target_type = requested.target_type_key
+   AND rank_source.target_id = requested.identity_id
+   AND rank_source.window_key = requested."window"
+   AND rank_source.venue = 'all'
   WHERE rank_source.source_kind = 'event'
-    AND rank_source.event_received_at_ms >= requested.analysis_since_ms
-    AND rank_source.event_received_at_ms <= requested.now_ms
+    AND rank_source.observed_at_ms >= requested.analysis_since_ms
+    AND rank_source.observed_at_ms <= requested.now_ms
+    AND rank_source.expires_at_ms > requested.now_ms
 ),
 hydrated AS (
   SELECT
@@ -529,139 +458,4 @@ hydrated AS (
 SELECT *
 FROM hydrated
 ORDER BY request_key ASC, source_rank ASC, received_at_ms ASC, event_id ASC
-"""
-
-
-_POPULATE_RANK_SOURCE_EDGES_FOR_TARGETS_SQL = """
-WITH requested_targets AS (
-  SELECT DISTINCT target_type_key, identity_id
-  FROM jsonb_to_recordset(%s::jsonb) AS r(
-    target_type_key text,
-    identity_id text
-  )
-  WHERE target_type_key IN ('Asset', 'CexToken')
-    AND identity_id IS NOT NULL
-    AND identity_id <> ''
-),
-raw_edges AS (
-  SELECT
-    %s::text AS projection_version,
-    token_intent_resolutions.target_type AS target_type_key,
-    token_intent_resolutions.target_id AS identity_id,
-    'event'::text AS source_kind,
-    events.event_id AS source_id,
-    events.received_at_ms AS event_received_at_ms,
-    %s::bigint AS projected_at_ms,
-    md5(
-      concat_ws(
-        '|',
-        events.event_id,
-        token_intents.intent_id,
-        token_intent_resolutions.resolution_id,
-        token_intent_resolutions.target_type,
-        token_intent_resolutions.target_id,
-        COALESCE(token_intent_resolutions.pricefeed_id, ''),
-        COALESCE(token_intent_resolutions.resolution_status, ''),
-        events.received_at_ms::text
-      )
-    ) AS source_payload_hash,
-    token_intents.intent_id,
-    events.event_id,
-    token_intent_resolutions.resolution_id,
-    token_intent_resolutions.target_type,
-    token_intent_resolutions.target_id,
-    token_intent_resolutions.pricefeed_id,
-    token_intent_resolutions.resolution_status
-  FROM requested_targets
-  JOIN token_intent_resolutions
-    ON token_intent_resolutions.target_type = requested_targets.target_type_key
-   AND token_intent_resolutions.target_id = requested_targets.identity_id
-  JOIN events
-    ON events.event_id = token_intent_resolutions.event_id
-  JOIN token_intents
-    ON token_intents.intent_id = token_intent_resolutions.intent_id
-   AND token_intents.event_id = events.event_id
-  WHERE token_intent_resolutions.is_current = true
-    AND token_intent_resolutions.resolver_policy_version = %s
-    AND token_intent_resolutions.target_type IN ('Asset', 'CexToken')
-    AND token_intent_resolutions.target_id IS NOT NULL
-    AND events.received_at_ms >= %s
-),
-fresh_edges AS (
-  SELECT DISTINCT ON (projection_version, target_type_key, identity_id, source_kind, source_id)
-    projection_version,
-    target_type_key,
-    identity_id,
-    source_kind,
-    source_id,
-    event_received_at_ms,
-    projected_at_ms,
-    source_payload_hash,
-    intent_id,
-    event_id,
-    resolution_id,
-    target_type,
-    target_id,
-    pricefeed_id,
-    resolution_status
-  FROM raw_edges
-  ORDER BY
-    projection_version,
-    target_type_key,
-    identity_id,
-    source_kind,
-    source_id,
-    intent_id ASC,
-    resolution_id ASC
-),
-upserted AS (
-  INSERT INTO token_radar_rank_source_events(
-    projection_version, target_type_key, identity_id, source_kind, source_id,
-    event_received_at_ms, projected_at_ms, source_payload_hash,
-    intent_id, event_id, resolution_id, target_type, target_id, pricefeed_id,
-    resolution_status
-  )
-  SELECT
-    projection_version, target_type_key, identity_id, source_kind, source_id,
-    event_received_at_ms, projected_at_ms, source_payload_hash,
-    intent_id, event_id, resolution_id, target_type, target_id, pricefeed_id,
-    resolution_status
-  FROM fresh_edges
-  ON CONFLICT(projection_version, target_type_key, identity_id, source_kind, source_id)
-  DO UPDATE SET
-    event_received_at_ms = excluded.event_received_at_ms,
-    projected_at_ms = excluded.projected_at_ms,
-    source_payload_hash = excluded.source_payload_hash,
-    intent_id = excluded.intent_id,
-    event_id = excluded.event_id,
-    resolution_id = excluded.resolution_id,
-    target_type = excluded.target_type,
-    target_id = excluded.target_id,
-    pricefeed_id = excluded.pricefeed_id,
-    resolution_status = excluded.resolution_status
-  WHERE token_radar_rank_source_events.source_payload_hash IS DISTINCT FROM excluded.source_payload_hash
-  RETURNING 1
-),
-deleted AS (
-  DELETE FROM token_radar_rank_source_events stale_edges
-  USING requested_targets requested
-  WHERE stale_edges.projection_version = %s
-    AND stale_edges.source_kind = 'event'
-    AND stale_edges.target_type_key = requested.target_type_key
-    AND stale_edges.identity_id = requested.identity_id
-    AND stale_edges.event_received_at_ms >= %s
-    AND NOT EXISTS (
-      SELECT 1
-      FROM fresh_edges fresh
-      WHERE fresh.projection_version = stale_edges.projection_version
-        AND fresh.target_type_key = stale_edges.target_type_key
-        AND fresh.identity_id = stale_edges.identity_id
-        AND fresh.source_kind = stale_edges.source_kind
-        AND fresh.source_id = stale_edges.source_id
-    )
-  RETURNING 1
-)
-SELECT
-  (SELECT COUNT(*) FROM upserted) AS upserted_count,
-  (SELECT COUNT(*) FROM deleted) AS deleted_count
 """

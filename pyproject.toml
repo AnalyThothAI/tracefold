@@ -22,6 +22,7 @@ dependencies = [
     "prometheus-client>=0.22.0",
     "psycopg[binary,pool]>=3.2.0",
     "pydantic>=2.8.0",
+    "pebble>=5.2,<5.3",
     "pypdf>=6.0,<7",
     "pyyaml>=6.0.3",
     "requests>=2.32,<3",

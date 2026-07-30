@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from tracefold.market.identity.chain_identity import chain_address_key
-from tracefold.market.pricing.live_market import live_market_update_payload
 from tracefold.market.pricing.market_tick import (
     DEX_QUOTE_SOURCE_PROVIDERS,
     MarketTick,
@@ -44,7 +42,6 @@ class MarketTickPollWorker(WorkerBase):
         clock: Any | None = None,
         name: str = "market_tick_poll",
         telemetry: Any | None = None,
-        on_live_market_update: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         if providers is None:
             raise RuntimeError("market_tick_poll_providers_required")
@@ -60,31 +57,25 @@ class MarketTickPollWorker(WorkerBase):
         self.dex_quote_market = providers.dex_quote_market
         self.cex_market = providers.cex_market
         self.batch_size = settings.batch_size
-        self.concurrency = settings.concurrency
         self.clock = clock or _now_ms
-        self.on_live_market_update = on_live_market_update
         self._recent_attempts: set[tuple[str, str]] = set()
 
     async def run_once(self) -> WorkerResult:
         # DB read happens off the event loop; provider IO must not run while a
         # DB session is held, so we materialize rows first, then drop the session.
-        rows = await asyncio.to_thread(self._list_poll_rows)
+        resources = self.require_runtime_resources()
+        rows = await resources.run_realtime_db(self._list_poll_rows)
         targets = _poll_targets(rows)
 
-        # New semaphore per cycle so concurrency state does not leak across runs.
-        semaphore = asyncio.Semaphore(self.concurrency)
-        chain_result, cex_result = await asyncio.gather(
-            self._poll_chain_targets_async(targets.chain_targets, semaphore),
-            self._poll_cex_targets_async(targets.cex_targets, semaphore),
-        )
+        chain_result = await self._poll_chain_targets_async(targets.chain_targets)
+        cex_result = await self._poll_cex_targets_async(targets.cex_targets)
 
         skipped_reasons: Counter[str] = Counter(targets.skipped_reasons)
         skipped_reasons.update(chain_result.skipped_reasons)
         skipped_reasons.update(cex_result.skipped_reasons)
         ticks = [*chain_result.ticks, *cex_result.ticks]
 
-        persistence = await asyncio.to_thread(self._persist_ticks, ticks)
-        await self._publish_current_rows(persistence.live_market_rows)
+        persistence = await resources.run_realtime_db(self._persist_ticks, ticks)
         inserted = persistence.inserted
         return WorkerResult(
             processed=inserted,
@@ -134,7 +125,6 @@ class MarketTickPollWorker(WorkerBase):
     async def _poll_chain_targets_async(
         self,
         targets: list[_ChainTarget],
-        semaphore: asyncio.Semaphore,
     ) -> _PollProviderResult:
         provider = self.dex_quote_market
         if provider is None:
@@ -146,12 +136,18 @@ class MarketTickPollWorker(WorkerBase):
 
         requests = [DexTokenQuoteRequest(chain_id=target.chain_id, address=target.address) for target in targets]
         try:
-            quotes = await asyncio.to_thread(provider.token_quotes, requests)
+            async with self.require_provider_governor().acquire(host="dex_quote"):
+                quotes = await self.require_runtime_resources().run_provider_io(provider.token_quotes, requests)
         except Exception as exc:
-            self.logger.bind(reason=_provider_error_reason(exc), target_count=len(targets)).warning(
-                "market tick poll batch quote failed; retrying individually"
+            reason = _provider_error_reason(exc)
+            self.logger.bind(
+                reason=reason,
+                target_count=len(targets),
+            ).warning("market tick poll batch quote failed")
+            return _PollProviderResult(
+                ticks=[],
+                skipped_reasons=Counter({reason: len(targets)}),
             )
-            return await self._poll_chain_targets_individually_async(provider, targets, semaphore)
 
         skipped_reasons: Counter[str] = Counter()
         quotes_by_key = {_target_key(quote.chain_id, quote.address): quote for quote in quotes}
@@ -178,36 +174,9 @@ class MarketTickPollWorker(WorkerBase):
             ticks.append(tick)
         return _PollProviderResult(ticks=ticks, skipped_reasons=skipped_reasons)
 
-    async def _poll_chain_targets_individually_async(
-        self,
-        provider: Any,
-        targets: list[_ChainTarget],
-        semaphore: asyncio.Semaphore,
-    ) -> _PollProviderResult:
-        async def _one(target: _ChainTarget) -> _SingleTargetOutcome:
-            async with semaphore:
-                try:
-                    quotes = await asyncio.to_thread(
-                        provider.token_quotes,
-                        [DexTokenQuoteRequest(chain_id=target.chain_id, address=target.address)],
-                    )
-                except Exception as exc:
-                    return _SingleTargetOutcome(tick=None, skip_reason=_provider_error_reason(exc))
-            quote = _quote_for_chain_target(quotes, target=target)
-            if quote is None:
-                return _SingleTargetOutcome(tick=None, skip_reason="dex_quote_unavailable")
-            tick = _tick_from_dex_quote(quote, target=target, received_at_ms=int(self.clock()))
-            if tick is None:
-                return _SingleTargetOutcome(tick=None, skip_reason="invalid_price")
-            return _SingleTargetOutcome(tick=tick, skip_reason=None)
-
-        outcomes = await asyncio.gather(*[_one(target) for target in targets])
-        return self._collect_outcomes(targets_kind="chain_token", targets=targets, outcomes=outcomes)
-
     async def _poll_cex_targets_async(
         self,
         targets: list[_CexTarget],
-        semaphore: asyncio.Semaphore,
     ) -> _PollProviderResult:
         provider = self.cex_market
         if provider is None:
@@ -217,20 +186,41 @@ class MarketTickPollWorker(WorkerBase):
         if not targets:
             return _PollProviderResult(ticks=[], skipped_reasons=Counter())
 
-        async def _one(target: _CexTarget) -> _SingleTargetOutcome:
-            async with semaphore:
-                try:
-                    ticker = await asyncio.to_thread(provider.ticker, inst_id=target.instrument)
-                except Exception as exc:
-                    return _SingleTargetOutcome(tick=None, skip_reason=_provider_error_reason(exc))
+        outcomes: list[_SingleTargetOutcome] = []
+        for target in targets:
+            try:
+                async with self.require_provider_governor().acquire(host="cex_market"):
+                    ticker = await self.require_runtime_resources().run_provider_io(
+                        provider.ticker,
+                        inst_id=target.instrument,
+                    )
+            except Exception as exc:
+                outcomes.append(
+                    _SingleTargetOutcome(
+                        tick=None,
+                        skip_reason=_provider_error_reason(exc),
+                    )
+                )
+                continue
             if ticker is None:
-                return _SingleTargetOutcome(tick=None, skip_reason="cex_quote_unavailable")
+                outcomes.append(
+                    _SingleTargetOutcome(
+                        tick=None,
+                        skip_reason="cex_quote_unavailable",
+                    )
+                )
+                continue
             tick = _tick_from_cex_ticker(ticker, target=target, received_at_ms=int(self.clock()))
             if tick is None:
-                return _SingleTargetOutcome(tick=None, skip_reason="invalid_price")
-            return _SingleTargetOutcome(tick=tick, skip_reason=None)
+                outcomes.append(
+                    _SingleTargetOutcome(
+                        tick=None,
+                        skip_reason="invalid_price",
+                    )
+                )
+                continue
+            outcomes.append(_SingleTargetOutcome(tick=tick, skip_reason=None))
 
-        outcomes = await asyncio.gather(*[_one(target) for target in targets])
         return self._collect_outcomes(targets_kind="cex_symbol", targets=targets, outcomes=outcomes)
 
     def _collect_outcomes(
@@ -268,15 +258,6 @@ class MarketTickPollWorker(WorkerBase):
                 materialized,
                 now_ms=int(self.clock()),
             )
-
-    async def _publish_current_rows(self, rows: list[dict[str, Any]]) -> None:
-        if self.on_live_market_update is None:
-            return
-        for row in rows:
-            try:
-                await self.on_live_market_update(live_market_update_payload(row))
-            except Exception as exc:
-                self.logger.bind(error=type(exc).__name__).warning("live market WebSocket publish failed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,14 +344,6 @@ def _cex_target(target_id: str) -> _CexTarget | None:
     if not exchange or not instrument or ":" in instrument:
         return None
     return _CexTarget(target_id=target_id, exchange=exchange, instrument=instrument)
-
-
-def _quote_for_chain_target(quotes: list[DexTokenQuote], *, target: _ChainTarget) -> DexTokenQuote | None:
-    target_key = _target_key(target.chain_id, target.address)
-    for quote in quotes:
-        if _target_key(quote.chain_id, quote.address) == target_key:
-            return quote
-    return None
 
 
 def _tick_from_dex_quote(

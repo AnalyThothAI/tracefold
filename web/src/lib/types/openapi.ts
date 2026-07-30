@@ -3666,6 +3666,7 @@ export interface components {
             items: {
                 [key: string]: unknown;
             }[];
+            page: components["schemas"]["SearchPageData"];
         };
         /** SearchData */
         SearchData: {
@@ -3801,6 +3802,11 @@ export interface components {
             };
             /** Reasons */
             reasons: string[];
+            /**
+             * Runtime Role
+             * @constant
+             */
+            runtime_role: "serve";
             /** Snapshot Gate */
             snapshot_gate: {
                 [key: string]: unknown;
@@ -4353,6 +4359,8 @@ export interface components {
         };
         /** WorkerStatusData */
         WorkerStatusData: {
+            /** Deadline At Ms */
+            deadline_at_ms: number | null;
             /**
              * Effective Status
              * @enum {string}
@@ -4360,6 +4368,8 @@ export interface components {
             effective_status: "disabled" | "intentionally_not_started" | "unavailable" | "degraded" | "running" | "stopped" | "failed";
             /** Enabled */
             enabled: boolean;
+            /** Heartbeat At Ms */
+            heartbeat_at_ms: number | null;
             /** Iteration Duration P99 Ms */
             iteration_duration_p99_ms: number | null;
             /** Last Error */
@@ -4372,8 +4382,18 @@ export interface components {
             } | null;
             /** Last Started At Ms */
             last_started_at_ms: number | null;
+            /** Oldest Due At Ms */
+            oldest_due_at_ms: number | null;
+            /** Quarantine Count */
+            quarantine_count: number;
+            /** Queue Depth */
+            queue_depth: number | null;
             /** Running */
             running: boolean;
+            /** Runtime Id */
+            runtime_id: string | null;
+            /** Runtime Version */
+            runtime_version: string | null;
             /** Unavailable Reason */
             unavailable_reason: string | null;
         };
@@ -4698,7 +4718,10 @@ export interface operations {
     };
     get_news_sources_api_news_sources_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4712,6 +4735,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4738,7 +4770,10 @@ export interface operations {
     };
     get_news_story_api_news_stories__story_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                members_limit?: number;
+                members_cursor?: string;
+            };
             header?: never;
             path: {
                 story_id: string;
@@ -4775,6 +4810,7 @@ export interface operations {
                 ca?: string;
                 chain?: string;
                 symbol?: string;
+                cursor?: string;
             };
             header?: never;
             path?: never;

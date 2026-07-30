@@ -259,6 +259,47 @@ class AssetProfileRefreshTargetRepository:
             "source_rows_scanned": len(rows),
         }
 
+    def release_provider_failure(
+        self,
+        claim: Mapping[str, Any],
+        *,
+        due_at_ms: int,
+        now_ms: int,
+    ) -> int:
+        """Release one claim without consuming its target attempt."""
+
+        cursor = self.conn.execute(
+            """
+            UPDATE asset_profile_refresh_targets
+            SET due_at_ms = %s,
+                leased_until_ms = NULL,
+                lease_owner = NULL,
+                attempt_count = GREATEST(0, attempt_count - 1),
+                last_error = NULL,
+                updated_at_ms = %s
+            WHERE provider = %s
+              AND target_type = %s
+              AND target_id = %s
+              AND payload_hash = %s
+              AND lease_owner = %s
+              AND attempt_count = %s
+            """,
+            (
+                int(due_at_ms),
+                int(now_ms),
+                str(claim["provider"]),
+                str(claim["target_type"]),
+                str(claim["target_id"]),
+                str(claim["payload_hash"]),
+                str(claim["lease_owner"]),
+                int(claim["attempt_count"]),
+            ),
+        )
+        return mutation_count(
+            cursor,
+            error_code="asset_profile_provider_failure_release_count_invalid",
+        )
+
     def claim_due(
         self,
         *,

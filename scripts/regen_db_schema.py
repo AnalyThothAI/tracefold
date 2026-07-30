@@ -96,7 +96,10 @@ def _sqlalchemy_url(settings: Settings | None) -> str:
         if settings is None:
             settings = load_settings(require_ws_token=False)
         dsn = local_docker_host_dsn(
-            with_password_from_file(settings.storage.postgres.dsn, settings.postgres_password_file)
+            with_password_from_file(
+                settings.postgres_dsn("serve"),
+                settings.postgres_password_file("serve"),
+            )
         )
     if dsn.startswith("postgresql://"):
         return "postgresql+psycopg://" + dsn.removeprefix("postgresql://")

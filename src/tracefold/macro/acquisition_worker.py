@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from tracefold.macro.acquisition import MacroAcquisitionService
@@ -32,36 +31,66 @@ class MacroAcquisitionWorker(WorkerBase):
         )
 
     async def run_once(self) -> WorkerResult:
-        return await asyncio.to_thread(self._run_once_sync)
-
-    async def on_close(self) -> None:
-        await asyncio.to_thread(self.source_client.close)
-
-    def _run_once_sync(self) -> WorkerResult:
-        target_rows_written = self.service.ensure_targets()
+        self.service.lease_owner = self.claim_owner
+        resources = self.require_runtime_resources()
+        target_rows_written = await resources.run_background_db(self.service.ensure_targets)
         results: list[dict[str, Any]] = []
         for _ in range(int(self.settings.batch_size)):
-            result = self.service.run_once()
-            if result is None:
+            claim = await resources.run_background_db(self.service.claim_next)
+            if claim is None:
                 break
+            try:
+                async with self.require_provider_governor().acquire(host=claim.spec.source_id):
+                    batch = await resources.run_provider_io(
+                        self.service.fetch_claim,
+                        claim,
+                    )
+            except Exception as exc:
+                result = await resources.run_background_db(
+                    self.service.publish_failure,
+                    claim,
+                    exc,
+                )
+            else:
+                result = await resources.run_background_db(
+                    self.service.publish_success,
+                    claim,
+                    batch,
+                )
             results.append(result)
-        processed = sum(1 for result in results if result["status"] == "current")
-        failed = sum(1 for result in results if result["status"] == "failed")
-        unavailable = sum(1 for result in results if result["status"] == "unavailable")
-        return WorkerResult(
-            processed=processed,
-            failed=failed,
-            skipped=1 if not results else 0,
-            notes={
-                "clock_kind": self.clock_kind,
-                "claimed": len(results),
-                "targets_written": target_rows_written,
-                "rows_seen": sum(int(result["rows_seen"]) for result in results),
-                "rows_inserted": sum(int(result["rows_inserted"]) for result in results),
-                "unavailable": unavailable,
-                "datasets": [result["dataset_id"] for result in results],
-            },
+        return _worker_result(
+            clock_kind=self.clock_kind,
+            target_rows_written=target_rows_written,
+            results=results,
         )
+
+    async def on_close(self) -> None:
+        await self.require_runtime_resources().run_provider_cleanup(self.source_client.close)
+
+
+def _worker_result(
+    *,
+    clock_kind: str,
+    target_rows_written: int,
+    results: list[dict[str, Any]],
+) -> WorkerResult:
+    processed = sum(1 for result in results if result["status"] == "current")
+    failed = sum(1 for result in results if result["status"] == "failed")
+    unavailable = sum(1 for result in results if result["status"] == "unavailable")
+    return WorkerResult(
+        processed=processed,
+        failed=failed,
+        skipped=1 if not results else 0,
+        notes={
+            "clock_kind": clock_kind,
+            "claimed": len(results),
+            "targets_written": target_rows_written,
+            "rows_seen": sum(int(result["rows_seen"]) for result in results),
+            "rows_inserted": sum(int(result["rows_inserted"]) for result in results),
+            "unavailable": unavailable,
+            "datasets": [result["dataset_id"] for result in results],
+        },
+    )
 
 
 __all__ = ["MacroAcquisitionWorker"]

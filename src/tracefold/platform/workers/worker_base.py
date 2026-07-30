@@ -56,7 +56,9 @@ class WorkerBase(ABC):
         self._iteration_duration_ms: list[float] = []
         self._consecutive_failures = 0
         self._closed = False
-        self._iteration_gate: asyncio.Semaphore | None = None
+        self.resources: Any | None = None
+        self.provider_governor: Any | None = None
+        self.runtime_id: str | None = None
 
     async def on_start(self) -> None:
         return None
@@ -129,10 +131,41 @@ class WorkerBase(ABC):
         self._closed = True
         await self.on_close()
 
-    def set_iteration_gate(self, gate: asyncio.Semaphore) -> None:
+    def bind_runtime_resources(self, resources: Any) -> None:
         if self.running:
-            raise RuntimeError(f"worker:{self.name}:iteration_gate_after_start")
-        self._iteration_gate = gate
+            raise RuntimeError(f"worker:{self.name}:resources_after_start")
+        self.resources = resources
+
+    def require_runtime_resources(self) -> Any:
+        if self.resources is None:
+            raise RuntimeError(f"worker:{self.name}:runtime_resources_required")
+        return self.resources
+
+    def bind_provider_governor(self, governor: Any) -> None:
+        if self.running:
+            raise RuntimeError(f"worker:{self.name}:provider_governor_after_start")
+        self.provider_governor = governor
+
+    def bind_runtime_id(self, runtime_id: str) -> None:
+        if self.running:
+            raise RuntimeError(f"worker:{self.name}:runtime_id_after_start")
+        normalized = str(runtime_id).strip()
+        if not normalized:
+            raise ValueError("worker_runtime_id_required")
+        if self.runtime_id is not None and self.runtime_id != normalized:
+            raise RuntimeError(f"worker:{self.name}:runtime_id_rebind")
+        self.runtime_id = normalized
+
+    @property
+    def claim_owner(self) -> str:
+        if self.runtime_id is None:
+            return self.name
+        return f"{self.name}:{self.runtime_id}"
+
+    def require_provider_governor(self) -> Any:
+        if self.provider_governor is None:
+            raise RuntimeError(f"worker:{self.name}:provider_governor_required")
+        return self.provider_governor
 
     def status_payload(self) -> dict[str, Any]:
         return WorkerStatus(
@@ -186,12 +219,7 @@ class WorkerBase(ABC):
         self.running = True
 
     async def _run_iteration(self, *, started: float | None = None) -> WorkerResult:
-        if self._iteration_gate is None:
-            return await self._run_ungated_iteration(started=started)
-        async with self._iteration_gate:
-            if self._stop_event.is_set():
-                return WorkerResult(skipped=1, notes={"reason": "stopped"})
-            return await self._run_ungated_iteration(started=time.perf_counter())
+        return await self._run_ungated_iteration(started=started)
 
     async def _run_ungated_iteration(self, *, started: float | None = None) -> WorkerResult:
         iteration_started = time.perf_counter() if started is None else started

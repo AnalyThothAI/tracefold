@@ -6,11 +6,14 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,init,config,db,macro,recent,search,asset-flow,ops} ...
+                 {serve,workers,init,config,db,macro,recent,search,asset-flow,ops} ...
 
 positional arguments:
-  {serve,init,config,db,macro,recent,search,asset-flow,ops}
-    serve               run the collector service
+  {serve,workers,init,config,db,macro,recent,search,asset-flow,ops}
+    serve               run the read-only HTTP, frontend, and WebSocket
+                        runtime
+    workers             run the ingestion, projection, provider, and model
+                        runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
@@ -29,11 +32,13 @@ options:
 ## `db`
 
 ```
-usage: tracefold db [-h] {migrate,health,audit,query-audit} ...
+usage: tracefold db [-h] {migrate,hard-cut,health,audit,query-audit} ...
 
 positional arguments:
-  {migrate,health,audit,query-audit}
+  {migrate,hard-cut,health,audit,query-audit}
     migrate             apply PostgreSQL migrations
+    hard-cut            execute the maintenance-window schema/read-model hard
+                        cut
     health              check PostgreSQL liveness and migration version
     audit               run PostgreSQL count, FK, and projection schema audit
     query-audit         explain PostgreSQL hot read paths
@@ -47,12 +52,14 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {enqueue-token-radar-dirty-targets,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics} ...
+                     {hard-cut-rebuild,seal-worker-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
 
 positional arguments:
-  {enqueue-token-radar-dirty-targets,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,rebuild-token-profiles,mirror-token-images,repair-token-profile-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,rebuild-token-radar,factor-diagnostics}
-    enqueue-token-radar-dirty-targets
-                        enqueue Token Radar dirty targets from persisted facts
+  {hard-cut-rebuild,seal-worker-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
+    hard-cut-rebuild    rebuild and audit all hard-cut current read models
+    seal-worker-acceptance
+                        validate and seal a complete Issue #32 acceptance
+                        bundle
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
@@ -81,22 +88,14 @@ positional arguments:
     refresh-asset-profiles
                         enqueue missing DEX profile targets and refresh due
                         profile facts
-    rebuild-token-profiles
-                        rebuild canonical token profile current facts
     mirror-token-images
                         mirror provider token images into the local cache
-    repair-token-profile-images
-                        enqueue current profile targets so token image source
-                        admission can repair stuck icons
     reprocess-token-intents
-                        re-resolve recent unresolved token intents and rebuild
-                        token radar
+                        re-resolve recent unresolved token intents
     rebuild-token-intents
                         rebuild recent token evidence, intents, resolutions,
-                        lookup keys, and token radar
+                        and lookup keys
     audit-token-intent  inspect token intent evidence and resolution
-    rebuild-token-radar
-                        write the current token radar read model
     factor-diagnostics  inspect token factor distribution health for latest
                         radar rows
 

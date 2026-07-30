@@ -50,6 +50,7 @@ def create_pool(
     connect_timeout_seconds: float,
     application_name: str | None = None,
     statement_timeout_seconds: float | None = None,
+    lock_timeout_seconds: float | None = None,
     idle_in_transaction_session_timeout_seconds: float | None = None,
     keepalives: bool | None = None,
     keepalives_idle: int | None = None,
@@ -67,6 +68,7 @@ def create_pool(
         kwargs["application_name"] = application_name
     options = _postgres_runtime_options(
         statement_timeout_seconds=statement_timeout_seconds,
+        lock_timeout_seconds=lock_timeout_seconds,
         idle_in_transaction_session_timeout_seconds=idle_in_transaction_session_timeout_seconds,
         read_only=read_only,
     )
@@ -92,12 +94,15 @@ def create_pool(
 def _postgres_runtime_options(
     *,
     statement_timeout_seconds: float | None,
+    lock_timeout_seconds: float | None,
     idle_in_transaction_session_timeout_seconds: float | None,
     read_only: bool = False,
 ) -> str:
     options: list[str] = []
     if statement_timeout_seconds is not None:
         options.append(f"-c statement_timeout={_seconds_to_ms(statement_timeout_seconds)}")
+    if lock_timeout_seconds is not None:
+        options.append(f"-c lock_timeout={_seconds_to_ms(lock_timeout_seconds)}")
     if idle_in_transaction_session_timeout_seconds is not None:
         options.append(
             f"-c idle_in_transaction_session_timeout={_seconds_to_ms(idle_in_transaction_session_timeout_seconds)}"

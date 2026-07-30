@@ -74,6 +74,7 @@ class MacroThesisService:
         worker_name: str = "macro_thesis",
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
+        resources: Any | None = None,
     ) -> None:
         if db is None:
             raise RuntimeError("macro_thesis_db_required")
@@ -85,6 +86,7 @@ class MacroThesisService:
         self._worker_name = worker_name
         self._lease_owner = lease_owner or f"{worker_name}:{uuid4().hex}"
         self._clock_ms = clock_ms or _now_ms
+        self._resources = resources
 
     async def run_due(self, *, now_ms: int | None = None) -> MacroThesisRunView:
         now = int(now_ms if now_ms is not None else self._clock_ms())
@@ -93,9 +95,9 @@ class MacroThesisService:
         if now < cutoff_ms:
             return MacroThesisRunView(session_date, "not_due", None, None, None)
 
-        existing = await asyncio.to_thread(self._state, session_date)
+        existing = await self._run_db(self._state, session_date)
         if _is_current_v2_publication(existing):
-            live, outcome = await asyncio.to_thread(self._refresh_deterministic, existing, now)
+            live, outcome = await self._run_db(self._refresh_deterministic, existing, now)
             return MacroThesisRunView(
                 session_date=session_date,
                 status="published",
@@ -115,7 +117,7 @@ class MacroThesisService:
 
         if self._configuration_error is not None:
             try:
-                await asyncio.to_thread(
+                await self._run_db(
                     self._prepare_inputs,
                     session_date=session_date,
                     cutoff_ms=cutoff_ms,
@@ -124,17 +126,17 @@ class MacroThesisService:
             except _ResearchInputCompilationPersisted:
                 return _view_from_state(
                     session_date,
-                    await asyncio.to_thread(self._state, session_date),
+                    await self._run_db(self._state, session_date),
                 )
-            await asyncio.to_thread(
+            await self._run_db(
                 self._mark_preflight_configuration_error,
                 session_date=session_date,
                 now_ms=now,
             )
-            return _view_from_state(session_date, await asyncio.to_thread(self._state, session_date))
+            return _view_from_state(session_date, await self._run_db(self._state, session_date))
 
         try:
-            prepared = await asyncio.to_thread(
+            prepared = await self._run_db(
                 self._prepare_and_claim,
                 session_date=session_date,
                 cutoff_ms=cutoff_ms,
@@ -143,10 +145,10 @@ class MacroThesisService:
         except _ResearchInputCompilationPersisted:
             return _view_from_state(
                 session_date,
-                await asyncio.to_thread(self._state, session_date),
+                await self._run_db(self._state, session_date),
             )
         if prepared is None:
-            return _view_from_state(session_date, await asyncio.to_thread(self._state, session_date))
+            return _view_from_state(session_date, await self._run_db(self._state, session_date))
 
         evidence_pack = MacroEvidencePackV3.model_validate(prepared["evidence_pack"])
         research_input = MacroResearchInputV1.model_validate(prepared["research_input"])
@@ -166,7 +168,7 @@ class MacroThesisService:
                 published_at_ms=max(now, int(self._clock_ms()), cutoff_ms),
             )
             try:
-                written = await asyncio.to_thread(self._publish, publication)
+                written = await self._run_db(self._publish, publication)
             except Exception as exc:
                 raise _write_gate_failure(
                     exc,
@@ -174,9 +176,9 @@ class MacroThesisService:
                     research_input=research_input,
                 ) from exc
 
-            current_state = await asyncio.to_thread(self._state, session_date)
+            current_state = await self._run_db(self._state, session_date)
             live, outcome = (
-                await asyncio.to_thread(
+                await self._run_db(
                     self._refresh_deterministic,
                     current_state,
                     max(now, int(self._clock_ms())),
@@ -197,7 +199,7 @@ class MacroThesisService:
             )
         except PublicationGateFailure as exc:
             error_at_ms = max(now, int(self._clock_ms()))
-            status = await asyncio.to_thread(
+            status = await self._run_db(
                 self._mark_error,
                 session_date=session_date,
                 error_code=exc.code,
@@ -221,7 +223,7 @@ class MacroThesisService:
         except Exception as exc:
             error_code, retryable, terminal_status = _classify_error(exc)
             error_message = str(exc or "macro thesis failed").replace("\n", " ")[:2_000]
-            status = await asyncio.to_thread(
+            status = await self._run_db(
                 self._mark_error,
                 session_date=session_date,
                 error_code=error_code,
@@ -460,13 +462,18 @@ class MacroThesisService:
     async def _heartbeat(self, session_date: date) -> None:
         while True:
             await asyncio.sleep(max(1.0, self._lease_ms() / 3_000))
-            renewed = await asyncio.to_thread(
+            renewed = await self._run_db(
                 self._renew_lease,
                 session_date=session_date,
                 now_ms=int(self._clock_ms()),
             )
             if not renewed:
                 raise RuntimeError("macro_thesis_lease_lost")
+
+    async def _run_db(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        if self._resources is None:
+            return function(*args, **kwargs)
+        return await self._resources.run_background_db(function, *args, **kwargs)
 
     def _publish(self, publication: MacroThesisV2) -> bool:
         with self._session() as repos, repos.transaction():

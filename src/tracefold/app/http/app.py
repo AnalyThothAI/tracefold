@@ -11,7 +11,6 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from tracefold.app.bootstrap import Runtime, bootstrap
 from tracefold.app.http.exceptions import (
     ApiBadRequest,
     ApiUnauthorized,
@@ -23,7 +22,8 @@ from tracefold.app.http.exceptions import (
 from tracefold.app.http.http import create_api_router
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.schemas import ReadinessData
-from tracefold.app.http.ws import PublicWebSocketHub
+from tracefold.app.http.ws import PersistedLiveBroadcaster
+from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
 from tracefold.news import NewsInterface, attach_pipeline_runtime_health
 from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
@@ -44,29 +44,18 @@ class FrontendStaticFiles(StaticFiles):
 def create_app(
     settings: Settings | None = None,
     *,
-    start_collector: bool = True,
     frontend_dist: str | Path | None = None,
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime = bootstrap(
-            resolved_settings,
-            start_collector=start_collector,
-            publisher_factory=lambda db: PublicWebSocketHub(
-                token=resolved_settings.ws_token,
-                repository_session=db.api_session,
-                default_replay_limit=resolved_settings.api.replay_limit,
-            ),
-        )
+        runtime = bootstrap_serve(resolved_settings)
         primary_error: BaseException | None = None
         try:
-            await runtime.scheduler.start()
+            await runtime.hub.start()
             app.state.service = runtime
-            logger.info(
-                f"Starting Tracefold | channels={','.join(resolved_settings.upstream.channels)} storage=postgresql"
-            )
+            logger.info("Starting Tracefold serve runtime | storage=postgresql")
             yield
         except BaseException as exc:
             primary_error = exc
@@ -105,7 +94,7 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        await cast(PublicWebSocketHub, app.state.service.hub).handle(websocket)
+        await cast(PersistedLiveBroadcaster, app.state.service.hub).handle(websocket)
 
     _mount_frontend(app, frontend_dist=frontend_dist)
 
@@ -174,7 +163,7 @@ def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:
     return None
 
 
-def _readiness_payload(runtime: Runtime) -> tuple[dict[str, Any], int]:
+def _readiness_payload(runtime: ServeRuntime) -> tuple[dict[str, Any], int]:
     db_status = _db_status(runtime)
     composition = dict(runtime.snapshot.composition)
     reasons: list[str] = []
@@ -192,16 +181,16 @@ def _readiness_payload(runtime: Runtime) -> tuple[dict[str, Any], int]:
     return payload, 503 if reasons else 200
 
 
-def _status_payload(runtime: Runtime) -> dict[str, Any]:
+def _status_payload(runtime: ServeRuntime) -> dict[str, Any]:
     snapshot = runtime.current_snapshot()
     measured_at_ms = int(time.time() * 1000)
     reasons = list(snapshot.degradation_reasons)
     try:
-        with runtime.repositories() as repos:
+        with runtime.repositories(lane="control") as repos:
             news_health = NewsInterface(repos.news).health(now_ms=measured_at_ms)
         attach_pipeline_runtime_health(
             news_health,
-            worker_status=snapshot.workers.get("news_pipeline"),
+            worker_status=snapshot.workers.get("news_ingest"),
             now_ms=measured_at_ms,
         )
     except Exception as exc:
@@ -218,6 +207,7 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
     payload = {
         "ok": not reasons,
         "reasons": reasons,
+        "runtime_role": runtime.role,
         "snapshot_gate": snapshot.collector.get("snapshot_gate_outcomes", {}),
         "store": "postgresql",
         "db": dict(snapshot.startup_db_status),
@@ -228,10 +218,10 @@ def _status_payload(runtime: Runtime) -> dict[str, Any]:
     return payload
 
 
-def _db_status(runtime: Runtime) -> dict[str, object]:
+def _db_status(runtime: ServeRuntime) -> dict[str, object]:
     try:
-        with runtime.db.api_pool.connection() as conn:
-            liveness = postgres_liveness_check(conn)
+        with runtime.repositories(lane="control") as repos:
+            liveness = postgres_liveness_check(repos.conn)
         startup_schema = dict(runtime.snapshot.startup_db_status)
         schema_ok = bool(startup_schema.get("ok"))
         return {

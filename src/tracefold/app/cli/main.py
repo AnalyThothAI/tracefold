@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import TextIO
 
 from . import parser as cli_parser
-from .commands import CommandResult, config, db, macro, ops, read_models, serve
+from .commands import CommandResult, config, db, macro, ops, read_models, serve, workers
 
 
 def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
@@ -21,6 +21,8 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         return _finish(config.handle_init(args), stdout)
     if command == "serve":
         return _finish(serve.handle_serve(args), stdout)
+    if command == "workers":
+        return _finish(workers.handle_workers(args), stdout)
     if command == "config":
         return _finish(config.handle_config(args), stdout)
     if command == "db":

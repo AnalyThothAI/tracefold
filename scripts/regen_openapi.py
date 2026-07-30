@@ -26,7 +26,7 @@ def main() -> int:
     # the local config.yaml (and requires ws_token + valid local config at dev time).
     # The lifespan (Postgres, workers) only runs under uvicorn — not during schema gen.
     settings = Settings(ws_token="schema-gen-placeholder")
-    app = create_app(settings=settings, start_collector=False)
+    app = create_app(settings=settings)
     schema = app.openapi()
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

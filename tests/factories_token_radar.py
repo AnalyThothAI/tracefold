@@ -106,7 +106,8 @@ def open_token_radar_runtime(tmp_path):
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
         token_intent_lookup=repos.token_intent_lookup,
-        token_radar_dirty_targets=repos.token_radar_dirty_targets,
+        radar_source_edges=repos.radar_source_edges,
+        persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,
     )

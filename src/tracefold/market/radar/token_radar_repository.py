@@ -581,9 +581,26 @@ class TokenRadarRepository:
         projection_version: str,
         window: str,
         min_latest_event_received_at_ms: int,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
+        parsed_cap = (
+            require_positive_int(
+                row_cap,
+                error_code="token_radar_compact_rank_input_row_cap_required",
+            )
+            if row_cap is not None
+            else None
+        )
+        limit_sql = "LIMIT %s" if parsed_cap is not None else ""
+        params: tuple[Any, ...] = (
+            projection_version,
+            window,
+            int(min_latest_event_received_at_ms),
+        )
+        if parsed_cap is not None:
+            params = (*params, parsed_cap + 1)
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
               projection_version,
               "window",
@@ -612,15 +629,18 @@ class TokenRadarRepository:
               raw_composite_score,
               recommended_decision,
               gates_max_decision,
-              factor_snapshot_json #>> '{subject,chain}' AS subject_chain
+              factor_snapshot_json #>> '{{subject,chain}}' AS subject_chain
             FROM token_radar_target_features
             WHERE projection_version = %s
               AND "window" = %s
               AND latest_event_received_at_ms >= %s
             ORDER BY lane DESC, rank_score DESC, latest_event_received_at_ms DESC, identity_id ASC
+            {limit_sql}
             """,
-            (projection_version, window, int(min_latest_event_received_at_ms)),
+            params,
         ).fetchall()
+        if parsed_cap is not None and len(rows) > parsed_cap:
+            raise RuntimeError("token_radar_compact_rank_input_shard_oversized")
         return [dict(row) for row in rows]
 
     def hydrate_rank_inputs_for_rank_set(
@@ -1018,6 +1038,26 @@ def _target_feature_payload(
     ):
         payload[key] = Jsonb(_json_ready(payload[key]))
     return payload
+
+
+def token_radar_target_feature_payload(
+    row: dict[str, Any],
+    *,
+    projection_version: str,
+    window: str,
+    computed_at_ms: int,
+) -> dict[str, Any]:
+    """Return the pure, serialization-safe target-feature publication payload."""
+
+    return {
+        key: _json_ready(value)
+        for key, value in _target_feature_payload(
+            row,
+            projection_version=projection_version,
+            window=window,
+            computed_at_ms=computed_at_ms,
+        ).items()
+    }
 
 
 def _required_target_feature_payload_mapping(row: Mapping[str, Any], column: str) -> dict[str, Any]:

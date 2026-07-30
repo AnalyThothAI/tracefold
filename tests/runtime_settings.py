@@ -29,7 +29,7 @@ def runtime_workers_settings() -> WorkersSettings:
         "macro_document_analysis",
         "macro_projection",
         "macro_thesis",
-        "news_pipeline",
+        "news_ingest",
         "news_world_brief",
     )
     return workers.model_copy(

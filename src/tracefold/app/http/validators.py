@@ -4,16 +4,17 @@ from tracefold.app.http.exceptions import ApiBadRequest
 
 WINDOWS = {"5m", "1h", "4h", "24h"}
 TOKEN_RADAR_VENUES = {"all", "sol", "eth", "base", "bsc", "cex"}
+MAX_RESPONSE_LIST_ITEMS = 100
 
 
-def _limit(value: int, *, maximum: int = 1000, field: str = "limit") -> int:
+def _limit(value: int, *, maximum: int = MAX_RESPONSE_LIST_ITEMS, field: str = "limit") -> int:
     parsed = _api_limit_int(value, field=field)
     if parsed < 0:
         raise ApiBadRequest("invalid_limit", field=field)
     return min(parsed, maximum)
 
 
-def _positive_limit(value: int, *, maximum: int = 1000, field: str = "limit") -> int:
+def _positive_limit(value: int, *, maximum: int = MAX_RESPONSE_LIST_ITEMS, field: str = "limit") -> int:
     parsed = _api_limit_int(value, field=field)
     if parsed <= 0:
         raise ApiBadRequest("invalid_limit", field=field)

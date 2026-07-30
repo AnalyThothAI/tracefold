@@ -64,6 +64,30 @@ class GeneralMarketRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def maintenance_dataset_fact_states(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              dataset_id,
+              count(*)::bigint AS row_count,
+              max(received_at_ms)::bigint AS source_frontier_ms,
+              max(fact_hash) AS max_fact_hash
+            FROM (
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM market_observations
+              UNION ALL
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM market_position_facts
+              UNION ALL
+              SELECT dataset_id, received_at_ms, fact_hash
+              FROM market_settlements
+            ) facts
+            GROUP BY dataset_id
+            ORDER BY dataset_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_observation(self, fact: MarketObservationFact) -> int:
         payload = _observation_payload(fact)
         fact_hash = _payload_hash(payload)
@@ -214,6 +238,7 @@ class GeneralMarketRepository:
         *,
         history_limits: Mapping[str, int],
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
         if not requested:
@@ -258,11 +283,91 @@ class GeneralMarketRepository:
             ) AS ranked
             WHERE row_number <= max_rows
             ORDER BY dataset_id, observed_at_ms
+            LIMIT %s
             """,
             (
                 list(requested),
                 list(requested.values()),
                 received_before_ms,
+                _row_limit(row_cap),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def market_projection_history(
+        self,
+        *,
+        history_limits: Mapping[str, int],
+        received_before_ms: int | None = None,
+        row_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Reduce repeated intraday facts to their exact end-of-UTC-day points."""
+
+        requested = {str(dataset_id): int(limit) for dataset_id, limit in history_limits.items() if int(limit) > 0}
+        if not requested:
+            return []
+        rows = self.conn.execute(
+            """
+            WITH requested AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::integer[])
+                AS requested(dataset_id, max_days)
+            ), daily_last AS (
+              SELECT DISTINCT ON (
+                observations.dataset_id,
+                (to_timestamp(observations.observed_at_ms / 1000.0)
+                  AT TIME ZONE 'UTC')::date
+              )
+                observations.observation_id,
+                observations.dataset_id,
+                observations.instrument_id,
+                observations.source_id,
+                observations.field_name,
+                observations.value_numeric,
+                observations.unit,
+                observations.observed_at_ms,
+                observations.published_at_ms,
+                observations.received_at_ms,
+                observations.trust_tier,
+                observations.source_url,
+                observations.fact_hash,
+                requested.max_days
+              FROM market_observations AS observations
+              JOIN requested USING (dataset_id)
+              WHERE observations.received_at_ms <= COALESCE(
+                  %s::bigint,
+                  observations.received_at_ms
+                )
+              ORDER BY
+                observations.dataset_id,
+                (to_timestamp(observations.observed_at_ms / 1000.0)
+                  AT TIME ZONE 'UTC')::date,
+                observations.observed_at_ms DESC,
+                observations.received_at_ms DESC,
+                observations.observation_id DESC
+            ), ranked AS (
+              SELECT
+                daily_last.*,
+                row_number() OVER (
+                  PARTITION BY dataset_id
+                  ORDER BY observed_at_ms DESC, received_at_ms DESC
+                ) AS row_number
+              FROM daily_last
+            )
+            SELECT
+              observation_id, dataset_id, instrument_id, source_id, field_name,
+              value_numeric, unit, observed_at_ms, published_at_ms,
+              received_at_ms, trust_tier, source_url, fact_hash, row_number
+            FROM ranked
+            WHERE row_number <= max_days
+            ORDER BY dataset_id, observed_at_ms
+            LIMIT %s
+            """,
+            (
+                list(requested),
+                list(requested.values()),
+                received_before_ms,
+                _row_limit(row_cap),
             ),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -273,6 +378,7 @@ class GeneralMarketRepository:
         dataset_ids: tuple[str, ...],
         limit_per_dataset: int = 400,
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         if not dataset_ids:
             return []
@@ -317,11 +423,13 @@ class GeneralMarketRepository:
             FROM ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, trade_date, contract_expiration_date, contract_code
+            LIMIT %s
             """,
             (
                 list(dataset_ids),
                 received_before_ms,
                 int(limit_per_dataset),
+                _row_limit(row_cap),
             ),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -332,6 +440,7 @@ class GeneralMarketRepository:
         dataset_ids: tuple[str, ...],
         limit_per_contract: int = 100,
         received_before_ms: int | None = None,
+        row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
         if not dataset_ids:
             return []
@@ -355,14 +464,25 @@ class GeneralMarketRepository:
             ) AS ranked
             WHERE row_number <= %s
             ORDER BY dataset_id, contract_code, report_date
+            LIMIT %s
             """,
             (
                 list(dataset_ids),
                 received_before_ms,
                 int(limit_per_contract),
+                _row_limit(row_cap),
             ),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _row_limit(value: int | None) -> int:
+    if value is None:
+        return 2_147_483_647
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError("macro_market_repository_row_cap_required")
+    return parsed + 1
 
 
 def _observation_payload(fact: MarketObservationFact) -> dict[str, Any]:

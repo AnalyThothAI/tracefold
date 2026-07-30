@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -14,13 +15,14 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
 )
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
 from tracefold.integrations.news_feeds import RssFeedReader
 from tracefold.news import (
     NewsBriefDraft,
     NewsFeedEntry,
     NewsFeedFetch,
+    NewsIngestWorker,
     NewsInterface,
-    NewsPipelineWorker,
     NewsRepository,
     NewsSourceDefinition,
     NewsWorldBriefWorker,
@@ -28,6 +30,15 @@ from tracefold.news import (
     default_sources,
 )
 from tracefold.news.brief import brief_fingerprint
+from tracefold.news.projection import (
+    NewsProjectionService,
+    compute_news_component_projection,
+    compute_news_edge_block,
+    compute_news_identity_feature,
+    merge_final_edges,
+    plan_news_edge_pairs,
+    rebuild_all_news_for_maintenance,
+)
 
 NOW_MS = 1_779_000_000_000
 
@@ -164,7 +175,7 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
     try:
         migrate(conn)
         clock = SimpleNamespace(now_ms=NOW_MS)
-        pipeline = NewsPipelineWorker(
+        pipeline = NewsIngestWorker(
             settings=SimpleNamespace(
                 batch_size=20,
                 fetch_concurrency=1,
@@ -176,9 +187,15 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
             feed_reader=OneItemReader(),
             clock_ms=lambda: clock.now_ms,
         )
-        assert asyncio.run(pipeline.run_once()).processed == 1
-        clock.now_ms = NOW_MS + 120_000
-        assert asyncio.run(pipeline.run_once()).processed == 1
+        resources = RuntimeResources()
+        pipeline.bind_runtime_resources(resources)
+        pipeline.bind_provider_governor(ProviderGovernor())
+        try:
+            assert asyncio.run(pipeline.run_once()).processed == 1
+            clock.now_ms = NOW_MS + 120_000
+            assert asyncio.run(pipeline.run_once()).processed == 1
+        finally:
+            resources.close()
         assert conn.execute(
             """
             SELECT started_at_ms
@@ -189,6 +206,151 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
             {"started_at_ms": NOW_MS},
             {"started_at_ms": NOW_MS + 120_000},
         ]
+    finally:
+        conn.close()
+
+
+def test_incremental_news_projection_persists_edges_and_publishes_only_affected_closure(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        reuters = source("reuters", "Reuters")
+        ap = source("ap", "AP")
+        with conn.transaction():
+            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
+            record(
+                repository,
+                reuters,
+                guid="iran-r",
+                title="Iran threatens to close Strait of Hormuz",
+                published_at_ms=NOW_MS - 60_000,
+            )
+            record(
+                repository,
+                ap,
+                guid="iran-a",
+                title="Iran threatens to close Strait of Hormuz — live updates",
+                published_at_ms=NOW_MS - 30_000,
+                started_at_ms=NOW_MS + 1,
+            )
+
+        service = NewsProjectionService(db=SingleConnectionDB(conn))
+        runtime_id = str(uuid4())
+        projection_now_ms = NOW_MS + 60_001
+        processed = 0
+        while row := conn.execute(
+            """
+            SELECT bucket_id
+              FROM news_projection_frontiers
+             WHERE status IN ('dirty', 'retry_wait')
+               AND deadline_at_ms <= %s
+             ORDER BY deadline_at_ms, bucket_id
+             LIMIT 1
+            """,
+            (projection_now_ms,),
+        ).fetchone():
+            claim = service.claim(
+                bucket_id=str(row["bucket_id"]),
+                runtime_id=runtime_id,
+                now_ms=projection_now_ms,
+            )
+            assert claim is not None
+            target = service.load_target(claim, now_ms=projection_now_ms)
+            feature = compute_news_identity_feature(target)
+            context = service.load_context(
+                claim,
+                feature,
+                now_ms=projection_now_ms,
+            )
+            edge_plan = plan_news_edge_pairs(context)
+            new_edges = compute_news_edge_block(edge_plan["recompute_pairs"])
+            edge_plan["new_edges"] = new_edges
+            projection = compute_news_component_projection(
+                {
+                    **context,
+                    "final_edges": merge_final_edges(
+                        existing_edges=context["existing_edges"],
+                        affected_pairs=edge_plan["affected_pairs"],
+                        new_edges=new_edges,
+                    ),
+                }
+            )
+            result = service.publish(
+                claim,
+                feature=feature,
+                context=context,
+                edge_plan=edge_plan,
+                projection=projection,
+                now_ms=projection_now_ms,
+            )
+            assert result["projection_status"] == "published"
+            processed += 1
+
+        assert processed == 2
+        assert conn.execute("SELECT count(*) AS n FROM news_identity_features").fetchone()["n"] == 2
+        assert conn.execute("SELECT count(*) AS n FROM news_similarity_edges").fetchone()["n"] == 1
+        assert conn.execute(
+            """
+            SELECT item_count, source_count
+              FROM news_stories
+             WHERE active
+            """
+        ).fetchall() == [{"item_count": 2, "source_count": 2}]
+        assert conn.execute("SELECT count(*) AS n FROM news_story_members WHERE current").fetchone()["n"] == 2
+
+        score_row = conn.execute(
+            """
+            SELECT bucket_id, deadline_at_ms
+              FROM news_projection_frontiers
+             WHERE bucket_id LIKE 'score:%'
+             ORDER BY bucket_id
+            """
+        ).fetchone()
+        assert score_row is not None
+        score_now_ms = int(score_row["deadline_at_ms"])
+        score_claim = service.claim(
+            bucket_id=str(score_row["bucket_id"]),
+            runtime_id=runtime_id,
+            now_ms=score_now_ms,
+        )
+        assert score_claim is not None
+        loaded_score = service.load_score(score_claim, now_ms=score_now_ms)
+        score_context = loaded_score["context"]
+        score_feature = loaded_score["feature"]
+        score_projection = compute_news_component_projection(
+            {
+                **score_context,
+                "final_edges": [],
+            }
+        )
+        score_result = service.publish(
+            score_claim,
+            feature=score_feature,
+            context=score_context,
+            edge_plan={
+                "affected_pairs": [],
+                "recompute_pairs": [],
+                "new_edges": [],
+                "pair_blocks": 0,
+            },
+            projection=score_projection,
+            now_ms=score_now_ms,
+        )
+        assert score_result["projection_status"] == "published"
+        assert conn.execute(
+            """
+            SELECT status, deadline_at_ms
+              FROM news_projection_frontiers
+             WHERE bucket_id = %s
+            """,
+            (score_row["bucket_id"],),
+        ).fetchone() == {
+            "status": "dirty",
+            "deadline_at_ms": score_now_ms + 60 * 60 * 1000,
+        }
     finally:
         conn.close()
 
@@ -280,7 +442,7 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         migrate(conn)
         wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
         clock = SimpleNamespace(now_ms=NOW_MS)
-        pipeline = NewsPipelineWorker(
+        pipeline = NewsIngestWorker(
             settings=SimpleNamespace(
                 batch_size=1,
                 fetch_concurrency=1,
@@ -292,31 +454,45 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
             feed_reader=reader,
             clock_ms=lambda: clock.now_ms,
         )
+        resources = RuntimeResources()
+        pipeline.bind_runtime_resources(resources)
+        pipeline.bind_provider_governor(ProviderGovernor())
 
-        first = asyncio.run(pipeline.run_once())
-        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-        not_modified = asyncio.run(pipeline.run_once())
-        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-        duplicate = asyncio.run(pipeline.run_once())
+        try:
+            first = asyncio.run(pipeline.run_once())
+            clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+            not_modified = asyncio.run(pipeline.run_once())
+            clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+            duplicate = asyncio.run(pipeline.run_once())
+        finally:
+            resources.close()
 
         assert first.notes["entries_seen"] == 6
         assert first.notes["observations_inserted"] == 5
         assert first.notes["items_inserted"] == 5
-        assert first.notes["story_writes"] == 5
+        assert first.notes["projection_frontiers_written"] == 5
         assert not_modified.notes["entries_seen"] == 0
         assert not_modified.notes["observations_inserted"] == 0
         assert not_modified.notes["items_inserted"] == 0
-        assert not_modified.notes["story_writes"] == 0
-        assert not_modified.notes["projection_status"] == "unchanged_input"
-        assert not_modified.notes["clustered"] == 0
+        assert not_modified.notes["projection_frontiers_written"] == 0
         assert duplicate.notes["entries_seen"] == 6
         assert duplicate.notes["observations_inserted"] == 5
         assert duplicate.notes["items_inserted"] == 0
         assert duplicate.notes["items_updated"] == 0
-        assert duplicate.notes["story_writes"] == 0
-        assert duplicate.notes["projection_status"] == "unchanged_input"
-        assert duplicate.notes["clustered"] == 0
-        assert cluster_transaction_states == [pq.TransactionStatus.IDLE]
+        assert duplicate.notes["projection_frontiers_written"] == 0
+        assert cluster_transaction_states == []
+        assert conn.execute("SELECT count(*) AS n FROM news_stories").fetchone()["n"] == 0
+        assert (
+            conn.execute(
+                """
+            SELECT count(*) AS n
+              FROM news_projection_frontiers
+             WHERE bucket_id LIKE 'identity:%'
+               AND status = 'dirty'
+            """
+            ).fetchone()["n"]
+            == 5
+        )
 
         fetches = conn.execute(
             """
@@ -346,16 +522,6 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
             "SELECT count(*) AS count FROM news_items WHERE source_id = %s",
             (wallstengine.source_id,),
         ).fetchone() == {"count": 5}
-        assert conn.execute(
-            """
-            SELECT source_count, count(*) AS story_count
-              FROM news_stories
-             WHERE representative_source_id = %s
-             GROUP BY source_count
-            """,
-            (wallstengine.source_id,),
-        ).fetchone() == {"source_count": 1, "story_count": 5}
-
         quote = conn.execute(
             """
             SELECT title, description
@@ -428,6 +594,30 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
         detail = interface.get_story(story_id=iran["story_id"])
         assert detail is not None
         assert len(detail["members"]) == 2
+        first_member_page = interface.get_story(
+            story_id=iran["story_id"],
+            members_limit=1,
+        )
+        assert first_member_page is not None
+        assert first_member_page["members_page"]["has_more"] is True
+        second_member_page = interface.get_story(
+            story_id=iran["story_id"],
+            members_limit=1,
+            members_cursor=first_member_page["members_page"]["next_cursor"],
+        )
+        assert second_member_page is not None
+        assert second_member_page["members_page"]["has_more"] is False
+        assert {
+            first_member_page["members"][0]["item_id"],
+            second_member_page["members"][0]["item_id"],
+        } == {member["item_id"] for member in detail["members"]}
+        first_source_page = interface.get_sources(limit=1)
+        assert first_source_page["page"]["has_more"] is True
+        second_source_page = interface.get_sources(
+            limit=1,
+            cursor=first_source_page["page"]["next_cursor"],
+        )
+        assert second_source_page["items"][0]["source_id"] != first_source_page["items"][0]["source_id"]
 
         publisher = FixedBriefPublisher()
         worker = NewsWorldBriefWorker(
@@ -437,12 +627,12 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
             publisher=publisher,
             clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert asyncio.run(worker.run_once()).processed == 1
+        assert worker.run_once_sync().processed == 1
         brief = interface.get_world_brief(now_ms=NOW_MS + 120_000)
         assert brief["state"] == "ready"
         assert len(brief["publication"]["selected_story_ids"]) == 3
         assert publisher.calls == 1
-        assert asyncio.run(worker.run_once()).skipped == 1
+        assert worker.run_once_sync().skipped == 1
         assert publisher.calls == 1
     finally:
         conn.close()
@@ -838,14 +1028,14 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
             publisher=publisher,
             clock_ms=lambda: NOW_MS + 60_000,
         )
-        insufficient = asyncio.run(worker.run_once())
+        insufficient = worker.run_once_sync()
         assert insufficient.skipped == 1
         assert insufficient.notes["model_calls"] == 0
         assert publisher.calls == 0
         assert repository.get_brief(now_ms=NOW_MS + 60_000)["state"] == ("insufficient_material")
         first_updated_at_ms = conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"]
         worker.clock_ms = lambda: NOW_MS + 90_000
-        assert asyncio.run(worker.run_once()).skipped == 1
+        assert worker.run_once_sync().skipped == 1
         assert publisher.calls == 0
         assert (
             conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"] == first_updated_at_ms
@@ -869,7 +1059,7 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
                 started_at_ms=NOW_MS + 2,
             )
             repository.rebuild_stories(now_ms=NOW_MS)
-        assert asyncio.run(worker.run_once()).processed == 1
+        assert worker.run_once_sync().processed == 1
         ready = repository.get_brief(now_ms=NOW_MS + 60_000)
         assert ready["state"] == "ready"
         publication_id = ready["publication"]["publication_id"]
@@ -895,7 +1085,7 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
             publisher=RaisingBriefPublisher(),
             clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert asyncio.run(failing.run_once()).failed == 1
+        assert failing.run_once_sync().failed == 1
         after_failure = repository.get_brief(now_ms=NOW_MS + 120_000)
         assert after_failure["state"] == "stale_fallback"
         assert after_failure["publication"]["publication_id"] == publication_id
@@ -977,6 +1167,50 @@ def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
         story = degraded["layers"]["story"]
         assert story["last_complete_rebuild_at_ms"] == NOW_MS
         assert story["last_complete_rebuild_age_ms"] == 0
+    finally:
+        conn.close()
+
+
+def test_news_maintenance_rebuild_seeds_incremental_features_and_edges(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(
+        tmp_path / "postgres_test_db",
+        read_only=False,
+    )
+    try:
+        migrate(conn)
+        repository = NewsRepository(conn)
+        reuters = source("reuters", "Reuters")
+        ap = source("ap", "AP")
+        with conn.transaction():
+            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
+            record(
+                repository,
+                reuters,
+                guid="maintenance-r",
+                title="Iran threatens to close Strait of Hormuz",
+                published_at_ms=NOW_MS - 60_000,
+            )
+            record(
+                repository,
+                ap,
+                guid="maintenance-a",
+                title="Iran threatens to close Strait of Hormuz — live updates",
+                published_at_ms=NOW_MS - 30_000,
+                started_at_ms=NOW_MS + 1,
+            )
+
+        result = rebuild_all_news_for_maintenance(
+            db=SingleConnectionDB(conn),
+            now_ms=NOW_MS + 60_001,
+        )
+
+        assert result["projection_status"] == "rebuilt"
+        assert result["items_seeded"] == 2
+        assert result["active_features"] == 2
+        assert result["similarity_edges"] == 1
+        assert result["active_stories"] == 1
     finally:
         conn.close()
 
@@ -1101,6 +1335,7 @@ def test_expired_brief_lease_is_publicly_failed_not_running(tmp_path) -> None:
                 source_count=2,
                 now_ms=NOW_MS,
                 max_attempts=3,
+                lease_owner="test-runtime",
             )
             assert claim is not None
         expired = repository.get_brief(now_ms=NOW_MS + 121_000)
@@ -1153,6 +1388,7 @@ def test_brief_publication_rejects_changed_source_fingerprint(tmp_path) -> None:
                 source_count=2,
                 now_ms=NOW_MS,
                 max_attempts=3,
+                lease_owner="test-runtime",
             )
         assert claim is not None
         with conn.transaction():
@@ -1219,6 +1455,9 @@ def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
             "news_story_members",
             "news_story_aliases",
             "news_story_input_state",
+            "news_projection_frontiers",
+            "news_identity_features",
+            "news_similarity_edges",
             "news_brief_runs",
             "news_brief_publications",
             "news_brief_current",

@@ -44,7 +44,10 @@ def _eval_session(offset: int):
         fact["dataset_id"] = dataset_id
         fact["fact_ref"] = f"fact:{module_id}:{offset}"
         module["evidence"]["dataset_states"][0]["dataset_id"] = dataset_id
-        module["summary"]["top_changes"][0]["dataset_id"] = dataset_id
+        if summary := module.get("summary"):
+            summary["top_changes"][0]["dataset_id"] = dataset_id
+        else:
+            module["decision"]["tenor_matrix"][0]["current"]["dataset_id"] = dataset_id
     pack = compile_evidence_pack_v3(
         session_date=session,
         cutoff_ms=cutoff_ms,

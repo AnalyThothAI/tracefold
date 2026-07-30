@@ -6,7 +6,6 @@ from __future__ import annotations
 TOKEN_RADAR_PROJECTION_NAME = "token-radar"
 TOKEN_RADAR_PROJECTION_VERSION = "token-radar-v15-provider-neutral"
 TOKEN_RADAR_RESOLVER_POLICY_VERSION = "token_radar_v5_identity_resolver"
-TOKEN_RADAR_SOURCE_TABLE = "token_radar_rank_source_events"
 TOKEN_RADAR_DEFAULT_VENUE = "all"
 TOKEN_RADAR_VENUES = ("all", "sol", "eth", "base", "bsc", "cex")
 TOKEN_FACTOR_SNAPSHOT_VERSION = "token_factor_snapshot_v5_provider_neutral"

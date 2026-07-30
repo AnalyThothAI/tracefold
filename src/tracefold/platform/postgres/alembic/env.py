@@ -22,7 +22,10 @@ def _database_url() -> str:
         return local_docker_host_dsn(str(configured))
     settings = load_settings(require_ws_token=False)
     return local_docker_host_dsn(
-        with_password_from_file(settings.storage.postgres.dsn, settings.postgres_password_file)
+        with_password_from_file(
+            settings.postgres_dsn("migrate"),
+            settings.postgres_password_file("migrate"),
+        )
     )
 
 
@@ -53,6 +56,23 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        owner_role_exists = bool(
+            connection.exec_driver_sql(
+                """
+                SELECT CASE
+                  WHEN current_user = 'tracefold_migrate'
+                    AND EXISTS (
+                    SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner'
+                  )
+                  THEN pg_has_role(current_user, 'tracefold_owner', 'MEMBER')
+                  ELSE false
+                END
+                """
+            ).scalar()
+        )
+        if owner_role_exists:
+            connection.exec_driver_sql("SET ROLE tracefold_owner")
+        connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()

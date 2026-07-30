@@ -14,17 +14,16 @@ uv run python -m compileall src tests
 Bring up the service:
 
 ```bash
-uv run tracefold init      # create config.yaml + workers.yaml
-uv run tracefold serve     # run collector + API in one ASGI worker
-uv run tracefold db migrate
+uv run tracefold init      # create config.yaml and four role password files
+uv run tracefold serve     # read-only HTTP/static/WebSocket runtime
+uv run tracefold workers   # ingestion/projection/provider/model runtime
 ```
 
-`init` writes `~/.tracefold/config.yaml` for application and
-provider settings, plus `~/.tracefold/workers.yaml` for worker
-runtime knobs. Existing deployments from before the worker-runtime hard
-cut must create `workers.yaml` before starting the service; rerun
-`uv run tracefold init --force` only when you intentionally
-want to rewrite the default config files.
+`init` writes `~/.tracefold/config.yaml` plus separate bootstrap, serve,
+workers, and migrate PostgreSQL password files with mode `0600`.
+`workers.yaml` no longer exists. Worker topology and all safety/resource
+budgets are code-owned. Rerun `uv run tracefold init --force` only when you
+intentionally want to replace these operator-owned files.
 
 For real data, edit the operator-owned files in `~/.tracefold/`
 instead of adding repository-local `.env` files or editing generated examples.
@@ -35,24 +34,22 @@ or DEX WebSocket lanes when those workers are enabled. Keep secrets out of
 terminal output, docs, tests, and commits.
 The `llm` block owns operator credentials: `api_key` plus `base_url` for the
 current OpenAI-compatible provider, and optional `openrouter_api_key` and
-`groq_api_key` for News provider fallback. Endpoints, model names, request
-timeouts, token budgets, cadence, and enabled state live in the owning worker
-section of `workers.yaml`; there is no environment-variable credential path.
+`groq_api_key` for News provider fallback. Worker timeouts, token budgets,
+cadence, and resource limits are code-owned; there is no environment-variable
+credential path.
 An enabled AI worker with no configured provider reports an explicit
 unavailable state and makes no model call.
 
-News correctness does not depend on the model. The production defaults are a
-120-second deterministic `news_pipeline` interval and a 300-second
-`news_world_brief` interval with one 60-second total provider budget. There is
-no item-level AI worker. Source refresh intervals remain source-specific in
-`config.yaml`.
+News correctness does not depend on the model. `news_ingest` owns source
+claim/fetch/persist, the EDF coordinator owns deterministic Story projection,
+and the single-capacity model coordinator owns World Brief. There is no
+item-level AI worker.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
-Use `uv run tracefold config` to inspect both config paths and the effective
-worker settings. Inspect the running process through authenticated
-`/api/status`; a new CLI process cannot report the state of an already-running
-scheduler.
+Use `uv run tracefold config` to inspect the active config path and redacted
+enablement. Inspect serve through authenticated `/api/status` and workers
+through its internal health/readiness/metrics surface.
 
 Useful live-data smoke checks:
 
@@ -79,8 +76,8 @@ mirror rows should surface as explicit diagnostic results or fallback marks,
 not as fake public profile facts.
 
 Macro live-data debugging starts the same way: first run
-`uv run tracefold config` and confirm `config_path` /
-`workers_config_path` point at `~/.tracefold/`. Report only paths,
+`uv run tracefold config` and confirm `config_path` points at
+`~/.tracefold/config.yaml`. Report only paths,
 booleans, and diagnostic command status; do not paste WebSocket tokens, API
 keys, provider passwords, or full config payloads into docs or chat.
 
@@ -103,13 +100,12 @@ current product contract and are not filled with a fake proxy.
 Five automatic acquisition workers own distinct clocks:
 `macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
 `macro_official_state`, and
-`macro_official_documents`. `macro_backfill` is
-disabled by default and processes only operator-created bounded targets.
-`macro_projection` rebuilds six stable current rows only when the persisted
-fact/target/version fingerprint changes;
-`macro_document_analysis` writes immutable evidence-bound FOMC/speech analyses
-and is disabled by default;
-`macro_thesis` seals the 08:50 New York Evidence Pack, compiles one bounded
+`macro_official_documents`. `macro_backfill` exists only in the maintenance
+runtime and processes operator-created bounded targets.
+The EDF projection coordinator rebuilds only affected module-local current
+rows from the static dataset/calculation/module dependency graph. The model
+coordinator writes immutable evidence-bound FOMC/speech analyses and seals the
+08:50 New York Evidence Pack, compiles one bounded
 `MacroResearchInputV1`, performs exactly one native structured model invocation
 per durable attempt through the Thin DeepAgent profile, and publishes at most
 one immutable v2 Thesis for the session.
@@ -144,7 +140,7 @@ enable `macro_document_analysis` until its durable queue has no open or failed
 jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
 publication.
 
-A good macro status reports Alembic `20260730_0221`, bounded acquisition target
+A good macro status reports the generated Alembic head, bounded acquisition target
 states, recent source and reconciliation receipts, all six module rows, and the
 current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
 read-only frozen-corpus readiness: nine distinct real sessions remain the
@@ -162,7 +158,7 @@ immutable Evidence Packs, Thesis runs/reviews/publications, Live Delta, Outcome
 Replay, append-only Research Inputs, and the retained historical review/checkpoint
 tables.
 `20260728_0210` remains the compact current-schema baseline and
-`20260730_0221` is the required hard-cut head. A new empty database applies the
+the generated Alembic head is the required hard-cut version. A new empty database applies the
 baseline and head without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
 at `20260728_0210` migrates forward once; retired Judgment/Research tables and
@@ -188,6 +184,34 @@ here. A snapshot lives at `generated/cli-help.md`.
 
 ## Docker Compose
 
+### First Issue #32 hard cut
+
+Normal `migrate` uses `tracefold_migrate`, so an existing deployment must
+provision the new roles through the explicit maintenance profile first.
+Do not run these steps until the old combined runtime is stopped and a
+recoverable PostgreSQL volume snapshot has been verified.
+
+```bash
+uv run tracefold init
+docker compose up -d postgres
+docker compose --profile maintenance run --rm cutover \
+  tracefold db hard-cut \
+  --bootstrap-dsn postgresql://tracefold_app@postgres:5432/tracefold \
+  --bootstrap-password-file /run/secrets/postgres_password \
+  --snapshot-confirmed \
+  --execute
+docker compose up -d
+```
+
+The hard-cut command acquires the exclusive maintenance gate, refuses visible
+Tracefold runtime sessions, migrates to head, provisions role passwords,
+rebuilds and audits Radar/News/Macro/current Profile, and only then changes
+`tracefold_app` to `NOLOGIN`. It never takes the snapshot itself. A failure
+before finalization remains in maintenance for fix-forward or snapshot
+restore. Because the legacy bootstrap superuser login is deliberately revoked,
+cluster-owner recovery afterward requires local/container PostgreSQL
+administration rather than the old network credential.
+
 ```bash
 export GITHUB_TOKEN="$(gh auth token)"  # required when GitHub dependencies are private
 make docker-check
@@ -197,12 +221,13 @@ make docker-logs
 make docker-down
 ```
 
-Bind-mounts host `~/.tracefold/` into the container, including
-both `config.yaml` and `workers.yaml`; PostgreSQL data is pinned to the
-`tracefold-postgres` named volume.
+Bind-mounts only the role-appropriate files from host `~/.tracefold/`.
+Serve receives only its SELECT credential; workers receives only its DML
+credential; the migrate credential is absent from both steady containers.
+PostgreSQL data is pinned to the `tracefold-postgres` named volume.
 
-`make docker-up` starts the full four-service stack: PostgreSQL, the one-shot
-migration service, Tracefold, and RSSHub. PostgreSQL and RSSHub use
+Normal Compose starts PostgreSQL, the one-shot migration service, separate
+serve/workers runtimes, and RSSHub. PostgreSQL and RSSHub use
 version-and-digest-pinned upstream images. RSSHub has no host port, uses memory
 cache only, and is not an application-startup dependency.
 

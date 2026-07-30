@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from tests.postgres_test_utils import postgres_settings_storage, prepare_postgres_database
-from tests.runtime_settings import disabled_workers_settings
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_settings_storage,
+    prepare_postgres_database,
+)
 from tests.test_macro_thesis import (
     CUTOFF_MS,
     SESSION,
@@ -16,12 +20,14 @@ from tests.test_macro_thesis import (
     _publication,
     _research_input,
 )
+from tracefold.app.database import WorkerDatabase
 from tracefold.app.http import routes_macro
 from tracefold.app.http.app import create_app
+from tracefold.app.repositories import repositories_for_connection
 from tracefold.macro.assets import MACRO_THESIS_ASSETS
 from tracefold.macro.domain import MACRO_MODULE_IDS, SeriesFact
 from tracefold.macro.module_payloads import build_typed_module_payload
-from tracefold.macro.projection import MacroProjectionService
+from tracefold.macro.projection import rebuild_all_macro_modules_for_maintenance
 from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
 from tracefold.macro.thesis import (
     MacroAssetOutlook,
@@ -52,9 +58,9 @@ def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
 ) -> None:
     _current_time(monkeypatch)
     now_ms = int(datetime(2026, 7, 30, 12, tzinfo=UTC).timestamp() * 1_000)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             for dataset_id, observations in (
                 (
                     "treasury.daily_nominal_curve",
@@ -89,15 +95,17 @@ def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
                                 raw_data={"fixture": "issue-31-rates-vertical-seam"},
                             )
                         )
-        projection = MacroProjectionService(
-            db=client.app.state.service.db,
-            settings=SimpleNamespace(statement_timeout_seconds=30),
-            backfill_worker_enabled=False,
-            clock_ms=lambda: now_ms,
-        )
-        result = projection.rebuild(now_ms=now_ms)
+        worker_db = WorkerDatabase.create(client.app.state.service.settings)
+        try:
+            result = rebuild_all_macro_modules_for_maintenance(
+                db=worker_db,
+                settings=SimpleNamespace(statement_timeout_seconds=30),
+                now_ms=now_ms,
+            )
+        finally:
+            worker_db.worker_pool.close()
         assert result["modules_computed"] == 6
-        with client.app.state.service.repositories() as repos:
+        with write_repositories() as repos:
             persisted = repos.macro.module_current("rates_fed")
         response = client.get("/api/macro/rates-fed", headers=AUTH)
 
@@ -171,9 +179,9 @@ def test_terminal_required_target_reason_reaches_module_and_overview_http(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             spec = DATASET_REGISTRY["fred.effr"]
             repos.macro.ensure_target(spec, now_ms=CUTOFF_MS - 2_000, max_attempts=1)
@@ -248,9 +256,9 @@ def test_claimable_required_targets_publish_automatic_next_check_over_http(
 ) -> None:
     _current_time(monkeypatch)
     next_check_at_ms = CUTOFF_MS + 60_000
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             acquired_specs = tuple(spec for spec in datasets_for_module("rates_fed") if spec.clock_kind != "derived")
             for spec in acquired_specs:
@@ -306,10 +314,18 @@ def _settings(tmp_path) -> Settings:
     settings = Settings(
         ws_token="secret",
         storage=postgres_settings_storage(),
-        workers=disabled_workers_settings(),
     )
     settings.set_config_dir(tmp_path / "app-home")
     return settings
+
+
+@contextmanager
+def write_repositories():
+    conn = connect_postgres_test(read_only=False)
+    try:
+        yield repositories_for_connection(conn)
+    finally:
+        conn.close()
 
 
 def _module_payload(module_id: str) -> dict:
@@ -604,9 +620,9 @@ def test_current_routes_return_current_session_state_without_prior_fallback(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
         overview = client.get("/api/macro/overview", headers=AUTH)
         research = client.get("/api/macro/research", headers=AUTH)
@@ -629,9 +645,9 @@ def test_current_v2_publication_serves_sparse_thesis_and_current_module_context(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             publication = _insert_v2_publication(repos)
         overview = client.get("/api/macro/overview", headers=AUTH)
@@ -661,9 +677,9 @@ def test_explicit_v2_archive_is_frozen_omits_deltas_and_keeps_external_recovery(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             publication = _insert_v2_publication(repos)
         archive = client.get(
@@ -693,9 +709,9 @@ def test_current_v1_is_not_published_but_remains_explicit_archive(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             publication = _insert_v1_publication(repos)
         overview = client.get("/api/macro/overview", headers=AUTH)
@@ -726,12 +742,12 @@ def test_macro_http_reads_are_persisted_only_and_write_zero_rows(
     monkeypatch,
 ) -> None:
     _current_time(monkeypatch)
-    app = create_app(settings=_settings(tmp_path), start_collector=False)
+    app = create_app(settings=_settings(tmp_path))
     with TestClient(app) as client:
-        with client.app.state.service.repositories() as repos, repos.transaction():
+        with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             _insert_v2_publication(repos)
-        with client.app.state.service.repositories() as repos:
+        with write_repositories() as repos:
             before = {
                 "runs": repos.macro_thesis.conn.execute("SELECT count(*) AS count FROM macro_thesis_runs").fetchone()[
                     "count"
@@ -750,7 +766,7 @@ def test_macro_http_reads_are_persisted_only_and_write_zero_rows(
             f"/api/macro/research?session_date={SESSION.isoformat()}",
         ):
             assert client.get(path, headers=AUTH).status_code == 200
-        with client.app.state.service.repositories() as repos:
+        with write_repositories() as repos:
             after = {
                 "runs": repos.macro_thesis.conn.execute("SELECT count(*) AS count FROM macro_thesis_runs").fetchone()[
                     "count"

@@ -5,22 +5,25 @@ from pathlib import Path
 from typing import Any
 
 from tracefold.platform.config.settings import load_settings, write_default_config
-from tracefold.platform.paths import config_path, workers_config_path
+from tracefold.platform.paths import config_path
 
 
 def handle_init(args: object) -> tuple[int, dict[str, Any]]:
-    existed = config_path().exists() and workers_config_path().exists()
+    existed = config_path().exists()
     path = write_default_config(force=args.force)
-    password_path = _ensure_postgres_password_file(path.parent)
+    password_paths = {
+        role: _ensure_postgres_password_file(path.parent, role=role) for role in ("serve", "workers", "migrate")
+    }
+    bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     return (
         0,
         {
             "ok": True,
             "data": {
                 "config_path": str(path),
-                "workers_config_path": str(workers_config_path(path.parent)),
                 "app_home": str(path.parent),
-                "postgres_password_file": str(password_path),
+                "postgres_password_files": {role: str(password_path) for role, password_path in password_paths.items()},
+                "postgres_bootstrap_password_file": str(bootstrap_password_path),
                 "created": args.force or not existed,
             },
         },
@@ -35,7 +38,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
             "ok": True,
             "data": {
                 "config_path": str(settings.app_home / "config.yaml"),
-                "workers_config_path": str(workers_config_path(settings.app_home)),
                 "api": {
                     "host": settings.api.host,
                     "port": settings.api.port,
@@ -45,12 +47,19 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 "store": {
                     "app_home": str(settings.app_home),
                     "engine": "postgresql",
-                    "postgres_dsn": _redacted_postgres_dsn(settings.storage.postgres.dsn),
-                    "postgres_password_file": (
-                        str(settings.postgres_password_file) if settings.postgres_password_file else None
-                    ),
-                    "pool_min_size": settings.storage.postgres.pool_min_size,
-                    "pool_max_size": settings.storage.postgres.pool_max_size,
+                    "postgres_roles": {
+                        role: {
+                            "dsn": _redacted_postgres_dsn(settings.postgres_dsn(role)),
+                            "password_file": (
+                                str(settings.postgres_password_file(role))
+                                if settings.postgres_password_file(role)
+                                else None
+                            ),
+                        }
+                        for role in ("serve", "workers", "migrate")
+                    },
+                    "serve_pool_max_size": 8,
+                    "workers_pool_max_size": 12,
                     "log_file": str(settings.log_file),
                 },
                 "upstream": {
@@ -87,16 +96,26 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "yfinance_enabled": settings.providers.macro_sources.yfinance_enabled,
                     },
                 },
-                "workers": settings.workers.model_dump(mode="json"),
             },
         },
     )
 
 
-def _ensure_postgres_password_file(app_home: Path) -> Path:
-    path = app_home / "postgres_password"
+def _ensure_postgres_password_file(app_home: Path, *, role: str) -> Path:
+    path = app_home / f"postgres_{role}_password"
     if not path.exists():
         path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    return path
+
+
+def _ensure_bootstrap_postgres_password_file(app_home: Path) -> Path:
+    path = app_home / "postgres_password"
+    if not path.exists():
+        path.write_text(
+            secrets.token_urlsafe(32) + "\n",
+            encoding="utf-8",
+        )
         path.chmod(0o600)
     return path
 

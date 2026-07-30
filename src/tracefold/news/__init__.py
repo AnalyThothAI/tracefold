@@ -35,10 +35,12 @@ from .models import (
     NewsSourceDefinition,
     source_definition,
 )
+from .projection import rebuild_all_news_for_maintenance
+from .projection_worker import NewsProjectionCandidate
 from .ranking import importance_score, is_delayed_brief_excluded, select_top_stories
 from .repository import NewsRepository
 from .sources import WORLDMONITOR_COMMIT, default_sources
-from .workers import NewsPipelineWorker, NewsWorldBriefWorker
+from .workers import NewsIngestWorker, NewsWorldBriefWorker
 
 __all__ = [
     "BRIEF_PROMPT_VERSION",
@@ -59,8 +61,9 @@ __all__ = [
     "NewsFeedEntry",
     "NewsFeedFetch",
     "NewsFeedReader",
+    "NewsIngestWorker",
     "NewsInterface",
-    "NewsPipelineWorker",
+    "NewsProjectionCandidate",
     "NewsRepository",
     "NewsSourceDefinition",
     "NewsWorldBriefWorker",
@@ -74,6 +77,7 @@ __all__ = [
     "is_delayed_brief_excluded",
     "is_same_story",
     "normalize_story_text",
+    "rebuild_all_news_for_maintenance",
     "select_top_stories",
     "source_definition",
     "story_similarity",
