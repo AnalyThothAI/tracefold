@@ -13,11 +13,6 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        CREATE EXTENSION IF NOT EXISTS btree_gin;
-
-        CREATE INDEX idx_events_search_window_tsv
-          ON events USING gin(received_at_ms, search_tsv);
-
         CREATE TABLE stock_attention_target_features (
           window_key text NOT NULL
             CHECK (window_key IN ('5m', '1h', '4h', '24h')),

@@ -119,13 +119,7 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
                 OR e.search_tsv @@ query.english_q
               )
               AND e.received_at_ms >= %(search_cutoff_at_ms)s
-            ORDER BY
-              (
-                ts_rank_cd(e.search_tsv, query.simple_q)
-                + ts_rank_cd(e.search_tsv, query.english_q)
-              ) DESC,
-              e.received_at_ms DESC,
-              e.event_id DESC
+            ORDER BY e.received_at_ms DESC, e.event_id DESC
             LIMIT 20
         """,
         "params": {

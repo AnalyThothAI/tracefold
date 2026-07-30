@@ -445,11 +445,13 @@ class SearchEventsQuery:
             )
             SELECT
               *,
-              row_number() OVER (ORDER BY route_score DESC, received_at_ms DESC, event_id DESC) AS route_rank,
+              row_number() OVER (
+                ORDER BY received_at_ms DESC, event_id DESC
+              ) AS route_rank,
               'lexical' AS route,
               jsonb_build_array('fts') AS match_reasons_json
             FROM ranked
-            ORDER BY route_score DESC, received_at_ms DESC, event_id DESC
+            ORDER BY received_at_ms DESC, event_id DESC
             LIMIT %s
             """,
             (query, query, since_ms, row_limit),
