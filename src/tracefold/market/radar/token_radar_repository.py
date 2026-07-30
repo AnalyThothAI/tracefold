@@ -63,19 +63,6 @@ RADAR_ROW_INSERT_COLUMNS_SQL = """
   data_health_json, source_event_ids_json, payload_hash,
   listed_at_ms, created_at_ms
 """
-RADAR_ROW_INSERT_VALUES_SQL = """
-  %(row_id)s, %(projection_version)s, %(window)s, %(venue)s, %(computed_at_ms)s,
-  %(source_max_received_at_ms)s, %(generation_id)s, %(published_at_ms)s,
-  %(source_frontier_ms)s, %(lane)s, %(target_type_key)s, %(identity_id)s,
-  %(rank)s, %(rank_score)s, %(intent_id)s, %(event_id)s, %(target_type)s, %(target_id)s,
-  %(pricefeed_id)s, %(intent_json)s, %(resolution_json)s,
-  %(factor_snapshot_json)s, %(factor_version)s,
-  %(decision)s, %(quality_status)s, %(degraded_reasons_json)s, %(data_health_json)s,
-  %(source_event_ids_json)s, %(payload_hash)s,
-  %(listed_at_ms)s, %(created_at_ms)s
-"""
-
-
 class PublicationResult(TypedDict):
     status: str
     generation_id: str
@@ -186,60 +173,13 @@ class TokenRadarRepository:
         existing_by_key = {_current_key(row): row for row in existing_current}
         current_keys = {_current_key(row) for row in rows_to_insert}
         exited_rows = [row for key, row in existing_by_key.items() if key not in current_keys]
-        rows_written = 0
-        for row in exited_rows:
-            cursor = self.conn.execute(
-                """
-                DELETE FROM token_radar_current_rows
-                WHERE projection_version = %s
-                  AND "window" = %s
-                  AND venue = %s
-                  AND lane = %s
-                  AND target_type_key = %s
-                  AND identity_id = %s
-                """,
-                (projection_version, window, venue, *_current_key(row)),
-            )
-            rows_written += mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
-        for row in rows_to_insert:
-            cursor = self.conn.execute(
-                f"""
-                INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
-                VALUES ({RADAR_ROW_INSERT_VALUES_SQL})
-                ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
-                DO UPDATE SET
-                  row_id = excluded.row_id,
-                  computed_at_ms = excluded.computed_at_ms,
-                  source_max_received_at_ms = excluded.source_max_received_at_ms,
-                  generation_id = excluded.generation_id,
-                  published_at_ms = excluded.published_at_ms,
-                  source_frontier_ms = excluded.source_frontier_ms,
-                  rank = excluded.rank,
-                  rank_score = excluded.rank_score,
-                  intent_id = excluded.intent_id,
-                  event_id = excluded.event_id,
-                  target_type = excluded.target_type,
-                  target_id = excluded.target_id,
-                  pricefeed_id = excluded.pricefeed_id,
-                  intent_json = excluded.intent_json,
-                  resolution_json = excluded.resolution_json,
-                  factor_snapshot_json = excluded.factor_snapshot_json,
-                  factor_version = excluded.factor_version,
-                  decision = excluded.decision,
-                  quality_status = excluded.quality_status,
-                  degraded_reasons_json = excluded.degraded_reasons_json,
-                  data_health_json = excluded.data_health_json,
-                  source_event_ids_json = excluded.source_event_ids_json,
-                  payload_hash = excluded.payload_hash,
-                  listed_at_ms = excluded.listed_at_ms
-                WHERE token_radar_current_rows.payload_hash IS DISTINCT FROM excluded.payload_hash
-                   OR token_radar_current_rows.quality_status IS DISTINCT FROM excluded.quality_status
-                   OR token_radar_current_rows.rank IS DISTINCT FROM excluded.rank
-                   OR token_radar_current_rows.decision IS DISTINCT FROM excluded.decision
-                """,
-                _json_payload(row),
-            )
-            rows_written += mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
+        rows_written = self._delete_current_rows_batch(
+            projection_version=projection_version,
+            window=window,
+            venue=venue,
+            rows=exited_rows,
+        )
+        rows_written += self._upsert_current_rows_batch(rows_to_insert)
         self.upsert_first_seen_batch(
             projection_version=projection_version,
             window=window,
@@ -269,6 +209,96 @@ class TokenRadarRepository:
                 computed_at_ms=int(published_at_ms),
             )
         return {"status": "published", "generation_id": str(generation_id), "rows_written": rows_written}
+
+    def _delete_current_rows_batch(
+        self,
+        *,
+        projection_version: str,
+        window: str,
+        venue: str,
+        rows: list[dict[str, Any]],
+    ) -> int:
+        if not rows:
+            return 0
+        keys = [_current_key(row) for row in rows]
+        cursor = self.conn.execute(
+            """
+            WITH keys(lane, target_type_key, identity_id) AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::text[], %s::text[])
+            )
+            DELETE FROM token_radar_current_rows current
+            USING keys
+            WHERE current.projection_version = %s
+              AND current."window" = %s
+              AND current.venue = %s
+              AND current.lane = keys.lane
+              AND current.target_type_key = keys.target_type_key
+              AND current.identity_id = keys.identity_id
+            """,
+            (
+                [lane for lane, _target_type, _identity_id in keys],
+                [target_type for _lane, target_type, _identity_id in keys],
+                [identity_id for _lane, _target_type, identity_id in keys],
+                projection_version,
+                window,
+                venue,
+            ),
+        )
+        return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
+
+    def _upsert_current_rows_batch(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> int:
+        if not rows:
+            return 0
+        payloads = [_json_payload(row) for row in rows]
+        row_placeholders = f"({', '.join(['%s'] * len(RADAR_ROW_COLUMNS))})"
+        values_sql = ", ".join([row_placeholders] * len(payloads))
+        params = [
+            payload[column]
+            for payload in payloads
+            for column in RADAR_ROW_COLUMNS
+        ]
+        cursor = self.conn.execute(
+            f"""
+            INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
+            VALUES {values_sql}
+            ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
+            DO UPDATE SET
+              row_id = excluded.row_id,
+              computed_at_ms = excluded.computed_at_ms,
+              source_max_received_at_ms = excluded.source_max_received_at_ms,
+              generation_id = excluded.generation_id,
+              published_at_ms = excluded.published_at_ms,
+              source_frontier_ms = excluded.source_frontier_ms,
+              rank = excluded.rank,
+              rank_score = excluded.rank_score,
+              intent_id = excluded.intent_id,
+              event_id = excluded.event_id,
+              target_type = excluded.target_type,
+              target_id = excluded.target_id,
+              pricefeed_id = excluded.pricefeed_id,
+              intent_json = excluded.intent_json,
+              resolution_json = excluded.resolution_json,
+              factor_snapshot_json = excluded.factor_snapshot_json,
+              factor_version = excluded.factor_version,
+              decision = excluded.decision,
+              quality_status = excluded.quality_status,
+              degraded_reasons_json = excluded.degraded_reasons_json,
+              data_health_json = excluded.data_health_json,
+              source_event_ids_json = excluded.source_event_ids_json,
+              payload_hash = excluded.payload_hash,
+              listed_at_ms = excluded.listed_at_ms
+            WHERE token_radar_current_rows.payload_hash IS DISTINCT FROM excluded.payload_hash
+               OR token_radar_current_rows.quality_status IS DISTINCT FROM excluded.quality_status
+               OR token_radar_current_rows.rank IS DISTINCT FROM excluded.rank
+               OR token_radar_current_rows.decision IS DISTINCT FROM excluded.decision
+            """,
+            params,
+        )
+        return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
     def _upsert_ready_publication_state(
         self,
