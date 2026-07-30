@@ -602,19 +602,17 @@ def _load_profile_snapshot(
     target_id: str,
     now_ms: int,
 ) -> dict[str, Any]:
-    serving_rows = [
-        dict(row)
-        for row in repos.conn.execute(
+    serving = (
+        repos.conn.execute(
             """
-            SELECT "window", venue, lane, payload_hash
+            SELECT 1
             FROM token_radar_current_rows
             WHERE projection_version = %s
               AND "window" = ANY(%s)
               AND venue = ANY(%s)
               AND target_type_key = %s
               AND identity_id = %s
-            ORDER BY "window", venue, lane
-            LIMIT 101
+            LIMIT 1
             """,
             (
                 TOKEN_RADAR_PROJECTION_VERSION,
@@ -623,15 +621,14 @@ def _load_profile_snapshot(
                 target_type,
                 target_id,
             ),
-        ).fetchall()
-    ]
-    if len(serving_rows) > 100:
-        raise ProfileShardOversized("profile_serving_set_input_oversized")
+        ).fetchone()
+        is not None
+    )
     target = {
         "target_type": str(target_type),
         "target_id": str(target_id),
     }
-    if not serving_rows:
+    if not serving:
         snapshot = {
             "serving": False,
             "target": target,
@@ -700,7 +697,7 @@ def _load_profile_snapshot(
     }
     snapshot["snapshot_fingerprint"] = _fingerprint(
         {
-            "serving": serving_rows,
+            "serving": True,
             "gmgn_openapi": gmgn_openapi,
             "binance_web3": binance_web3,
             "gmgn_stream": gmgn_stream,

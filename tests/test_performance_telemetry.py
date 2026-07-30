@@ -30,6 +30,8 @@ class _ProjectionWorker(WorkerBase):
                 "merged_rank_set_triggers": 3,
                 "queue_depth": 7,
                 "oldest_due_age_ms": 2_500,
+                "projection_domain": "profile",
+                "projection_deadline_lag_ms": 125,
             },
         )
 
@@ -64,4 +66,5 @@ def test_worker_metrics_cover_transactions_amplification_cache_and_queue_age() -
     assert 'tracefold_worker_projection_rows{stage="hydrated",worker="projection"} 5.0' in metrics
     assert 'tracefold_worker_projection_cache_total{outcome="hit",worker="projection"} 1.0' in metrics
     assert 'tracefold_worker_projection_merged_total{worker="projection"} 3.0' in metrics
+    assert 'tracefold_worker_projection_deadline_misses_total{domain="profile",worker="projection"} 1.0' in metrics
     assert 'tracefold_worker_queue_oldest_delay_seconds{queue="primary",worker="projection"} 2.5' in metrics

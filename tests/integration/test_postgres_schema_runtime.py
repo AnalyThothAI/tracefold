@@ -323,6 +323,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 """
             ).fetchall()
         }
+        projection_eligibility_indexes = {
+            row["indexname"]
+            for row in conn.execute(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname LIKE '%frontiers_eligible'
+                """
+            ).fetchall()
+        }
         event_reloptions = {
             str(row["option"])
             for row in conn.execute(
@@ -462,11 +473,17 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
     }
+    assert projection_eligibility_indexes == {
+        "idx_radar_projection_frontiers_eligible",
+        "idx_macro_module_frontiers_eligible",
+        "idx_news_projection_frontiers_eligible",
+        "idx_token_profile_projection_frontiers_eligible",
+    }
     assert event_reloptions == {
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0229"
+    assert version == latest_migration_version() == "20260731_0230"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -491,7 +508,68 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0229"
+    assert version == latest_migration_version() == "20260731_0230"
+
+
+def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        command.upgrade(config, "20260731_0229")
+        conn.execute(
+            """
+            INSERT INTO news_projection_frontiers(
+              bucket_id, status, first_dirty_at_ms, deadline_at_ms,
+              next_attempt_at_ms, attempt_count, transient_failure_count,
+              active_item_count, input_fingerprint, projection_version,
+              claimed_by, claimed_until_ms, last_error_code, updated_at_ms
+            )
+            VALUES
+              (
+                'identity:material', 'dirty', 1000, 61000,
+                NULL, 0, 0, 1, 'material', 'news-v1',
+                NULL, NULL, NULL, 1000
+              ),
+              (
+                'identity:scheduled', 'dirty', 1000, 1000000,
+                NULL, 0, 0, 1, 'scheduled', 'news-v1',
+                NULL, NULL, NULL, 1000
+              )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        rows = conn.execute(
+            """
+            SELECT bucket_id, deadline_at_ms, next_attempt_at_ms
+            FROM news_projection_frontiers
+            ORDER BY bucket_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [
+        {
+            "bucket_id": "identity:material",
+            "deadline_at_ms": 61_000,
+            "next_attempt_at_ms": None,
+        },
+        {
+            "bucket_id": "identity:scheduled",
+            "deadline_at_ms": 1_060_000,
+            "next_attempt_at_ms": 1_000_000,
+        },
+    ]
 
 
 def test_rates_curve_v6_migration_deletes_only_old_rates_projection_and_rejects_v5(
@@ -706,7 +784,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0229"
+        assert version == "20260731_0230"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

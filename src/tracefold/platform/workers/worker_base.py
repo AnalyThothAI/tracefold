@@ -294,6 +294,16 @@ class WorkerBase(ABC):
         merged = _first_metric(notes, "merged_rank_set_triggers")
         if merged:
             self._call_telemetry("record_projection_merged", self.name, merged)
+        deadline_lag_ms = _first_metric(
+            notes,
+            "projection_deadline_lag_ms",
+        )
+        if deadline_lag_ms is not None and deadline_lag_ms > 0:
+            self._call_telemetry(
+                "record_projection_deadline_miss",
+                self.name,
+                str(notes.get("projection_domain") or "unknown"),
+            )
 
         queue_depth = _first_metric(notes, "queue_depth")
         if queue_depth is not None:

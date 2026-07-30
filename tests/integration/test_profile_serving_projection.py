@@ -27,6 +27,7 @@ from tracefold.market.profiles.profile_projection import (
 from tracefold.market.profiles.token_profile_current_projection import (
     project_token_profile_current,
 )
+from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.market.radar.projection import RadarProjectionService
 from tracefold.market.radar.token_radar_projector import (
     build_token_radar_current_closure,
@@ -252,6 +253,139 @@ def test_serving_profile_projection_is_one_target_and_activates_only_provider_re
             "first_dirty_at_ms": None,
             "deadline_at_ms": None,
         }
+    finally:
+        conn.close()
+
+
+def test_profile_publish_ignores_rank_only_payload_changes() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        target_id = _seed_radar_current(conn)
+        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        claim = service.claim(
+            target_type="Asset",
+            target_id=target_id,
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS + 30_000,
+        )
+        assert claim is not None
+        loaded = service.load_target(
+            claim,
+            now_ms=FIXED_NOW_MS + 30_000,
+        )
+        output = compute_profile_current_projection(loaded)
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE token_radar_current_rows
+                SET payload_hash = 'sha256:rank-only-change'
+                WHERE projection_version = %s
+                  AND target_type_key = 'Asset'
+                  AND identity_id = %s
+                """,
+                (TOKEN_RADAR_PROJECTION_VERSION, target_id),
+            )
+
+        result = service.publish(
+            claim,
+            loaded=loaded,
+            output=output,
+            now_ms=FIXED_NOW_MS + 30_001,
+        )
+
+        assert result["projection_status"] in {"published", "unchanged"}
+        assert conn.execute(
+            """
+            SELECT status
+            FROM token_profile_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+            """,
+            (target_id,),
+        ).fetchone() == {"status": "clean"}
+    finally:
+        conn.close()
+
+
+def test_rank_only_publication_does_not_redirty_a_clean_profile() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        target_id = _seed_radar_current(conn)
+        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        claim = service.claim(
+            target_type="Asset",
+            target_id=target_id,
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS + 30_000,
+        )
+        assert claim is not None
+        loaded = service.load_target(
+            claim,
+            now_ms=FIXED_NOW_MS + 30_000,
+        )
+        result = service.publish(
+            claim,
+            loaded=loaded,
+            output=compute_profile_current_projection(loaded),
+            now_ms=FIXED_NOW_MS + 30_001,
+        )
+        assert result["projection_status"] in {"published", "unchanged"}
+
+        previous = dict(
+            conn.execute(
+                """
+                SELECT *
+                FROM token_radar_current_rows
+                WHERE projection_version = %s
+                  AND target_type_key = 'Asset'
+                  AND identity_id = %s
+                LIMIT 1
+                """,
+                (TOKEN_RADAR_PROJECTION_VERSION, target_id),
+            ).fetchone()
+        )
+        current = {
+            **previous,
+            "payload_hash": "sha256:rank-only-change",
+        }
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            conn.execute(
+                """
+                UPDATE token_radar_current_rows
+                SET payload_hash = %s
+                WHERE row_id = %s
+                """,
+                (current["payload_hash"], previous["row_id"]),
+            )
+            RadarProjectionService._profile_frontier_callback(repos)(
+                window=str(current["window"]),
+                venue=str(current["venue"]),
+                rows=[current],
+                exited_rows=[],
+                previous_by_key={
+                    (
+                        str(previous["lane"]),
+                        str(previous["target_type_key"]),
+                        str(previous["identity_id"]),
+                    ): previous
+                },
+                computed_at_ms=FIXED_NOW_MS + 30_002,
+            )
+
+        assert conn.execute(
+            """
+            SELECT status
+            FROM token_profile_projection_frontiers
+            WHERE target_type = 'Asset' AND target_id = %s
+            """,
+            (target_id,),
+        ).fetchone() == {"status": "clean"}
     finally:
         conn.close()
 

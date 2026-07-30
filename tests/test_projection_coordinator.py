@@ -40,5 +40,29 @@ def test_projection_coordinator_runs_one_earliest_deadline_shard_with_stable_tie
 
         assert ran == ["5m:all"]
         assert result.processed == 1
+        assert result.notes["projection_deadline_lag_ms"] == 400
+
+    asyncio.run(scenario())
+
+
+def test_projection_coordinator_runs_an_already_eligible_shard_before_its_deadline():
+    async def scenario() -> None:
+        ran: list[str] = []
+        candidate = _Candidate(
+            ProjectionShard("profile", "Asset:asset:test", 30_000, 1),
+            ran,
+        )
+        coordinator = SteadyProjectionCoordinator(
+            settings=PerWorkerSettings(interval_seconds=0),
+            candidates=(candidate,),
+            telemetry=None,
+            now_ms=lambda: 1_000,
+        )
+
+        result = await coordinator.run_once()
+
+        assert ran == ["Asset:asset:test"]
+        assert result.processed == 1
+        assert result.notes["projection_deadline_lag_ms"] == 0
 
     asyncio.run(scenario())

@@ -263,6 +263,66 @@ def test_frontier_completion_is_input_and_version_cas():
         conn.close()
 
 
+def test_dirty_frontier_uses_next_attempt_only_as_eligibility_not_as_deadline():
+    prepare_postgres_database()
+    conn = connect_postgres_test(read_only=False)
+    key = {
+        "target_type": "Asset",
+        "target_id": "asset:test:scheduled-frontier",
+    }
+    repo = ProjectionFrontierRepository(conn)
+    try:
+        with conn.transaction():
+            repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=1_000,
+                deadline_at_ms=31_000,
+                eligible_at_ms=5_000,
+                input_fingerprint="sha256:scheduled",
+                version="profile-v1",
+            )
+            repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=2_000,
+                deadline_at_ms=32_000,
+                eligible_at_ms=7_000,
+                input_fingerprint="sha256:scheduled-new-input",
+                version="profile-v1",
+            )
+
+        assert repo.next_due(PROFILE_FRONTIER, now_ms=4_999) is None
+        due = repo.next_due(PROFILE_FRONTIER, now_ms=5_000)
+        assert due is not None
+        assert due["deadline_at_ms"] == 31_000
+        assert due["next_attempt_at_ms"] == 5_000
+        assert due["input_fingerprint"] == "sha256:scheduled-new-input"
+
+        with conn.transaction():
+            repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=3_000,
+                deadline_at_ms=33_000,
+                input_fingerprint="sha256:material-input",
+                version="profile-v1",
+            )
+        immediate = repo.next_due(PROFILE_FRONTIER, now_ms=3_000)
+        assert immediate is not None
+        assert immediate["next_attempt_at_ms"] is None
+    finally:
+        conn.execute(
+            """
+            DELETE FROM token_profile_projection_frontiers
+            WHERE target_type = %s AND target_id = %s
+            """,
+            (key["target_type"], key["target_id"]),
+        )
+        conn.commit()
+        conn.close()
+
+
 def _frontier_row(conn, key):
     row = conn.execute(
         """

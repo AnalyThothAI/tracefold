@@ -52,6 +52,7 @@ _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
 _PAIR_BLOCK_CAP = 4_096
 _ENTITY_PREFIX = "__entity__:"
+_PUBLIC_STORY_DEADLINE_MS = 60_000
 NEWS_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:incremental-v1"
 
 _CATEGORY_ORDER: tuple[EventCategory, ...] = (
@@ -1039,7 +1040,8 @@ class NewsProjectionService:
                     NEWS_FRONTIER,
                     key={"bucket_id": claim.bucket_id},
                     dirty_at_ms=now_ms,
-                    deadline_at_ms=int(feature["expires_at_ms"]),
+                    deadline_at_ms=(int(feature["expires_at_ms"]) + _PUBLIC_STORY_DEADLINE_MS),
+                    eligible_at_ms=int(feature["expires_at_ms"]),
                     input_fingerprint=_stable_hash(
                         {
                             "kind": "expiry",
@@ -1068,7 +1070,8 @@ class NewsProjectionService:
                     NEWS_FRONTIER,
                     key={"bucket_id": f"score:{story_id}"},
                     dirty_at_ms=now_ms,
-                    deadline_at_ms=next_score_at_ms,
+                    deadline_at_ms=(next_score_at_ms + _PUBLIC_STORY_DEADLINE_MS),
+                    eligible_at_ms=next_score_at_ms,
                     input_fingerprint=_stable_hash(
                         {
                             "kind": "score",

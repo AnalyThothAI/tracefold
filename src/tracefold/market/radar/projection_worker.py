@@ -60,7 +60,7 @@ class RadarProjectionCandidate:
         return ProjectionShard(
             domain="radar",
             shard_key=_shard_key(key),
-            deadline_at_ms=int(row["effective_deadline_at_ms"]),
+            deadline_at_ms=int(row["deadline_at_ms"]),
             stable_order=self.stable_order,
         )
 

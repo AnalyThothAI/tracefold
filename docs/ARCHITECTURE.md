@@ -52,11 +52,14 @@ Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
 or audit state. Typed Radar, Macro, News, and Profile frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
-and publication checkpoints. Persisted News identity features and similarity
-edges and Radar source edges are deterministic rebuildable state, not
-alternate business truth. Profile refresh heat tiers, retry attempts,
-provider circuits, and terminal reasons are likewise queue policy, not profile
-facts.
+and publication checkpoints. `first_dirty_at_ms` records the causal change,
+`deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
+eligibility clock for a scheduled recheck or retry. An eligible shard may run
+before its deadline; the deadline is never a start gate. Persisted News
+identity features and similarity edges and Radar source edges are
+deterministic rebuildable state, not alternate business truth. Profile refresh
+heat tiers, retry attempts, provider circuits, and terminal reasons are
+likewise queue policy, not profile facts.
 `macro_thesis_publications` and `news_brief_publications` are immutable
 derived research keyed by frozen evidence; they are not material facts.
 
@@ -184,7 +187,11 @@ atomically publishes that snapshot and promotes the pending input for the next
 turn. Unchanged rank sets write zero serving rows.
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a
-new evidence fingerprint reactivates that target.
+new evidence fingerprint reactivates that target. Radar rank, window,
+watermark, and row-payload changes do not enter the Profile fingerprint:
+Radar can dirty Profile only when the target enters or exits the deduplicated
+serving-set union. Provider, image, identity, or Profile version changes own
+the remaining Profile invalidations.
 
 ### News
 

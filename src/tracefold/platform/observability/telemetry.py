@@ -71,6 +71,12 @@ class TelemetryRegistry:
             ("worker",),
             registry=self.registry,
         )
+        self.projection_deadline_misses_total = Counter(
+            "tracefold_worker_projection_deadline_misses_total",
+            "Projection shards completed after their freshness deadline.",
+            ("worker", "domain"),
+            registry=self.registry,
+        )
         self.queue_oldest_delay_seconds = Gauge(
             "tracefold_worker_queue_oldest_delay_seconds",
             "Age of the oldest due queue item.",
@@ -120,6 +126,16 @@ class TelemetryRegistry:
 
     def record_projection_merged(self, worker: str, count: int) -> None:
         self.projection_merged_total.labels(worker=_label(worker)).inc(max(0, int(count)))
+
+    def record_projection_deadline_miss(
+        self,
+        worker: str,
+        domain: str,
+    ) -> None:
+        self.projection_deadline_misses_total.labels(
+            worker=_label(worker),
+            domain=_label(domain),
+        ).inc()
 
     def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
         self.queue_oldest_delay_seconds.labels(

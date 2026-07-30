@@ -79,7 +79,14 @@ class ProjectionFrontierRepository:
             FROM {spec.table}
             WHERE deadline_at_ms IS NOT NULL
               AND (
-                status = 'dirty'
+                (
+                  status = 'dirty'
+                  AND COALESCE(
+                    next_attempt_at_ms,
+                    first_dirty_at_ms,
+                    deadline_at_ms
+                  ) <= %(now_ms)s
+                )
                 OR (
                   status = 'retry_wait'
                   AND COALESCE(next_attempt_at_ms, deadline_at_ms) <= %(now_ms)s
@@ -103,6 +110,7 @@ class ProjectionFrontierRepository:
         key: dict[str, str],
         dirty_at_ms: int,
         deadline_at_ms: int,
+        eligible_at_ms: int | None = None,
         input_fingerprint: str,
         version: str,
         extra_insert: dict[str, object] | None = None,
@@ -113,7 +121,7 @@ class ProjectionFrontierRepository:
             "status": "dirty",
             "first_dirty_at_ms": int(dirty_at_ms),
             "deadline_at_ms": int(deadline_at_ms),
-            "next_attempt_at_ms": None,
+            "next_attempt_at_ms": (int(eligible_at_ms) if eligible_at_ms is not None else None),
             "attempt_count": 0,
             "input_fingerprint": _required_text(input_fingerprint, "input_fingerprint"),
             spec.version_column: _required_text(version, spec.version_column),
@@ -156,7 +164,20 @@ class ProjectionFrontierRepository:
                 )
               END,
               next_attempt_at_ms = CASE
-                WHEN {changed_input} THEN NULL
+                WHEN {changed_input}
+                  AND {spec.table}.status IN ('clean', 'quarantined')
+                THEN EXCLUDED.next_attempt_at_ms
+                WHEN {changed_input}
+                  AND (
+                    {spec.table}.next_attempt_at_ms IS NULL
+                    OR EXCLUDED.next_attempt_at_ms IS NULL
+                  )
+                THEN NULL
+                WHEN {changed_input}
+                THEN LEAST(
+                  {spec.table}.next_attempt_at_ms,
+                  EXCLUDED.next_attempt_at_ms
+                )
                 ELSE {spec.table}.next_attempt_at_ms
               END,
               attempt_count = CASE
@@ -212,7 +233,14 @@ class ProjectionFrontierRepository:
                 updated_at_ms = %(now_ms)s
             WHERE {_key_predicate(spec)}
               AND (
-                status = 'dirty'
+                (
+                  status = 'dirty'
+                  AND COALESCE(
+                    next_attempt_at_ms,
+                    first_dirty_at_ms,
+                    deadline_at_ms
+                  ) <= %(now_ms)s
+                )
                 OR (
                   status = 'retry_wait'
                   AND COALESCE(next_attempt_at_ms, deadline_at_ms) <= %(now_ms)s

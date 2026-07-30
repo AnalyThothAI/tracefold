@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from tracefold.platform.workers.projection_candidate import (
     ProjectionCandidate,
@@ -83,17 +84,21 @@ class SteadyProjectionCoordinator(WorkerBase):
                 item[0].shard_key,
             ),
         )
-        if shard.deadline_at_ms > now_ms:
-            return WorkerResult(
-                skipped=1,
-                notes={
-                    "reason": "next_projection_not_due",
-                    "deadline_at_ms": shard.deadline_at_ms,
-                    "domain": shard.domain,
-                    "shard_key": shard.shard_key,
-                },
-            )
-        return await candidate.run_shard(shard)
+        result = await candidate.run_shard(shard)
+        completed_at_ms = self._now_ms()
+        return replace(
+            result,
+            notes={
+                **result.notes,
+                "projection_domain": shard.domain,
+                "projection_deadline_at_ms": shard.deadline_at_ms,
+                "projection_completed_at_ms": completed_at_ms,
+                "projection_deadline_lag_ms": max(
+                    0,
+                    completed_at_ms - shard.deadline_at_ms,
+                ),
+            },
+        )
 
 
 def _now_ms() -> int:

@@ -53,8 +53,13 @@ Every acquisition/projection/model task uses a short claim transaction,
 bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
 coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
-semantic shard at a time. There is no generic scheduler, database wake plane,
-startup rebuild, phased load shifting, or configurable concurrency.
+eligible semantic shard at a time, ordered by the real freshness deadline.
+`deadline_at_ms` is not a not-before time. Material changes are eligible
+immediately; `next_attempt_at_ms` delays only a scheduled recheck or retry.
+The eligibility expression has a bounded partial index on every projection
+frontier, so an idle poll does not scan future News expiry rows. There is no
+generic scheduler, database wake plane, startup rebuild, phased load shifting,
+or configurable concurrency.
 
 The exact steady units are `collector`, `market_tick_stream`,
 `market_tick_poll`, `event_anchor_capture`, `resolution_refresh`,
@@ -96,8 +101,11 @@ statistics.
 
 `/metrics` exposes low-cardinality worker transaction duration, projection
 source/candidate/hydrated/written row counts, change-driven cache hit/miss,
-queue depth, and oldest-due delay. Use these amplification and latency signals
-with PostgreSQL activity/lock evidence; CPU alone is not a root-cause claim.
+queue depth, oldest-due delay, and the cumulative per-domain projection
+deadline-miss counter. A real acceptance interval requires a zero counter
+delta as well as zero sampled unresolved misses. Use these amplification and
+latency signals with PostgreSQL activity/lock evidence; CPU alone is not a
+root-cause claim.
 
 ## Durable queue and transaction rules
 
