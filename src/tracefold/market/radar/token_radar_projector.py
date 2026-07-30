@@ -608,7 +608,11 @@ def _has_resolved_target(row: dict[str, Any], *, resolution_status: str) -> bool
     if target_type not in {"Asset", "CexToken"}:
         raise RuntimeError("token_radar_projection_resolved_target_invalid:target_type")
     _required_resolved_target_text(row, "target_id")
-    return target_type != "Asset" or row.get("asset_registry_status") in {"candidate", "canonical"}
+    if target_type != "Asset":
+        return True
+    if row.get("asset_registry_status") not in {"candidate", "canonical"}:
+        return False
+    return _asset_identity_payload(row, required=False) is not None
 
 
 def _resolution_discovery(*, lookup_keys_json: list[Any]) -> list[dict[str, Any]]:
@@ -697,7 +701,7 @@ def _target(row: dict[str, Any], *, resolved: bool) -> dict[str, Any]:
         }
     asset_target = {
         "target_type": "Asset",
-        "target_id": target_id,
+        "target_id": target_id if resolved else None,
         "symbol": _target_symbol(row),
         "name": row.get("asset_name"),
         "chain": row.get("asset_chain_id"),

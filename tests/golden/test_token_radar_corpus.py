@@ -124,6 +124,37 @@ def test_gmgn_payload_identity_does_not_project_market_snapshot_into_radar(tmp_p
     assert "market_metadata_missing" in factor_snapshot["gates"]["risk_reasons"]
 
 
+def test_asset_without_current_identity_projects_to_attention_instead_of_inventing_confidence(
+    tmp_path,
+):
+    _, repos, ingest = open_token_radar_runtime(tmp_path)
+    event = make_gmgn_payload_event(
+        symbol="PEPE",
+        chain="eth",
+        address="0x6982508145454ce325ddbe47a25d4ec3d2311933",
+        received_at_ms=1_777_800_000_000,
+    )
+    result = ingest.ingest_event(event)
+    target_id = str(result.token_resolutions[0]["target_id"])
+    with repos.transaction():
+        repos.conn.execute(
+            "DELETE FROM asset_identity_current WHERE asset_id = %s",
+            (target_id,),
+        )
+
+    _rebuild_resolved_current_rows(repos, now_ms=1_777_800_060_000)
+    rows = repos.token_radar.latest_current_rows(
+        window="5m",
+        venue=TOKEN_RADAR_DEFAULT_VENUE,
+        limit=20,
+        projection_version=TOKEN_RADAR_PROJECTION_VERSION,
+    )
+
+    assert rows[0]["lane"] == "attention"
+    assert rows[0]["factor_snapshot_json"]["data_health"]["identity"] == "missing"
+    assert rows[0]["factor_snapshot_json"]["subject"]["target_id"] is None
+
+
 def _rebuild_resolved_current_rows(repos, *, now_ms: int) -> None:
     result = _run_radar_projection(
         repos.conn,
