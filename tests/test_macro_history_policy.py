@@ -12,11 +12,15 @@ def test_series_history_policy_preserves_full_percentiles_without_universal_cap(
             "fred.bamlc0a0cm",
             "fred.dgs10",
             "fred.cpiaucsl",
+            "treasury.daily_nominal_curve",
+            "treasury.daily_real_curve",
         )
     )
     assert limits["fred.bamlc0a0cm"] == 10_000
     assert limits["fred.dgs10"] == 500
     assert limits["fred.cpiaucsl"] == 500
+    assert limits["treasury.daily_nominal_curve"] == 130
+    assert limits["treasury.daily_real_curve"] == 130
 
 
 def test_market_history_policy_matches_formula_frequency() -> None:

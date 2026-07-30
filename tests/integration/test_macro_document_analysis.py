@@ -136,6 +136,12 @@ def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_p
         with repository_session_for_connection(conn) as repos:
             analyses_before_creation = repos.macro.document_analysis_history(received_before_ms=2_500)
             analyses = repos.macro.document_analysis_history(received_before_ms=5_000)
+            projection_documents = repos.macro.document_projection_history(
+                dataset_ids=("federal_reserve.fomc.documents",),
+            )
+            projection_analyses = repos.macro.document_analysis_projection_history(
+                document_ids=(document.document_id,),
+            )
             jobs = repos.macro.document_analysis_job_state(received_before_ms=2_500)
         assert analyses_before_creation == []
         stored = analyses[0]
@@ -146,6 +152,10 @@ def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_p
         assert stored["document_hash"] == content_hash
         assert stored["prompt_version"] == FED_DOCUMENT_ANALYSIS_PROMPT_VERSION
         assert stored["analysis_json"]["evidence"][0]["excerpt"] == ("Inflation remains too high")
+        assert len(projection_documents) == 1
+        assert "content_text" not in projection_documents[0]
+        assert projection_documents[0]["semantic_sample_count"] == 1
+        assert [row["analysis_id"] for row in projection_analyses] == [stored["analysis_id"]]
         retired_job = conn.execute(
             """
             SELECT status, attempt_count

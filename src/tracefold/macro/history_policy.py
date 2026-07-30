@@ -9,6 +9,7 @@ from tracefold.macro.calculations import (
 from tracefold.macro.registry import DATASET_REGISTRY
 
 _PRESENTATION_HISTORY_ROWS = 500
+_CURVE_PRESENTATION_HISTORY_ROWS = 130
 _FULL_AVAILABLE_HISTORY_ROWS = 10_000
 _INTRADAY_MONTH_HISTORY_ROWS = 5_000
 _DAILY_COMPARISON_ROWS = 260
@@ -35,6 +36,12 @@ _FULL_HISTORY_PERCENTILE_DATASETS = frozenset(
 
 def series_history_limits(dataset_ids: Iterable[str]) -> dict[str, int]:
     limits = {str(dataset_id): _PRESENTATION_HISTORY_ROWS for dataset_id in dict.fromkeys(dataset_ids)}
+    for dataset_id in (
+        "treasury.daily_nominal_curve",
+        "treasury.daily_real_curve",
+    ):
+        if dataset_id in limits:
+            limits[dataset_id] = _CURVE_PRESENTATION_HISTORY_ROWS
     for calculation in CALCULATION_REGISTRY.values():
         for dataset_id in calculation.input_dataset_ids:
             if dataset_id in limits:

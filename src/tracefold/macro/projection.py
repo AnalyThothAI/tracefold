@@ -187,6 +187,39 @@ class MacroProjectionService:
                     "module_id": claim.module_id,
                     "current_input_fingerprint": current_fingerprint,
                 }
+            document_rows = (
+                repos.macro.document_projection_history(
+                    dataset_ids=document_ids,
+                    row_cap=_INPUT_ROW_CAP,
+                )
+                if claim.module_id == "rates_fed"
+                else repos.macro.document_history(
+                    dataset_ids=document_ids,
+                    row_cap=_INPUT_ROW_CAP,
+                )
+            )
+            role_rows = (
+                repos.macro.fed_official_role_projection_history(
+                    effective_from=min(
+                        (row["effective_date"] for row in document_rows),
+                        default=None,
+                    ),
+                    row_cap=_INPUT_ROW_CAP,
+                )
+                if claim.module_id == "rates_fed"
+                else []
+            )
+            analysis_rows = (
+                repos.macro.document_analysis_projection_history(
+                    document_ids=tuple(
+                        str(row["document_id"])
+                        for row in document_rows
+                    ),
+                    row_cap=_INPUT_ROW_CAP,
+                )
+                if claim.module_id == "rates_fed"
+                else []
+            )
             payload = {
                 "status": "loaded",
                 "module_id": claim.module_id,
@@ -203,6 +236,7 @@ class MacroProjectionService:
                 ),
                 "position_rows": repos.macro_market.position_history(
                     dataset_ids=position_ids,
+                    limit_per_contract=1,
                     row_cap=_INPUT_ROW_CAP,
                 ),
                 "settlement_rows": repos.macro_market.settlement_history(
@@ -213,20 +247,9 @@ class MacroProjectionService:
                     dataset_ids=release_ids,
                     row_cap=_INPUT_ROW_CAP,
                 ),
-                "document_rows": repos.macro.document_history(
-                    dataset_ids=document_ids,
-                    row_cap=_INPUT_ROW_CAP,
-                ),
-                "role_rows": (
-                    repos.macro.fed_official_role_history(row_cap=_INPUT_ROW_CAP)
-                    if claim.module_id == "rates_fed"
-                    else []
-                ),
-                "analysis_rows": (
-                    repos.macro.document_analysis_history(row_cap=_INPUT_ROW_CAP)
-                    if claim.module_id == "rates_fed"
-                    else []
-                ),
+                "document_rows": document_rows,
+                "role_rows": role_rows,
+                "analysis_rows": analysis_rows,
                 "analysis_job_state": (
                     repos.macro.document_analysis_job_state()
                     if claim.module_id == "rates_fed"

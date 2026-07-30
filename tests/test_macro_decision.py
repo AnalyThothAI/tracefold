@@ -113,6 +113,22 @@ def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
     assert _dataset_state(module, "fred.dgs2")["current_health"] == "current"
 
 
+def test_semantic_history_start_survives_bounded_projection_window() -> None:
+    spec = DATASET_REGISTRY["fred.dgs10"]
+    current = _series_row(
+        dataset_id=spec.dataset_id,
+        reference_date=date(2026, 7, 27),
+    )
+    current["semantic_history_start"] = date(2021, 7, 27)
+
+    assert module_payloads._dataset_history_depth(
+        spec,
+        [],
+        [current],
+        active_backfills=[],
+    ) == ("complete", "expected_history_window_present")
+
+
 def test_daily_fact_without_publication_clock_uses_received_time_not_future_close() -> None:
     now_ms = int(datetime(2026, 7, 29, 6, 30, tzinfo=UTC).timestamp() * 1_000)
     received_at_ms = now_ms - 5_000

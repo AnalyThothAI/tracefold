@@ -530,8 +530,19 @@ def _dataset_history_depth(
         return "not_required", "no_history_requirement"
 
     dated_facts = sorted(value for row in facts if (value := _fact_date(row)) is not None)
+    semantic_starts = sorted(
+        value
+        for row in facts
+        if (value := _history_start_date(row.get("semantic_history_start"))) is not None
+    )
     expected_years = int(spec.metadata.get("history_years") or 5)
-    covered_days = (dated_facts[-1] - dated_facts[0]).days if dated_facts else 0
+    history_start = min((*dated_facts, *semantic_starts), default=None)
+    history_end = max(dated_facts, default=None)
+    covered_days = (
+        (history_end - history_start).days
+        if history_start is not None and history_end is not None
+        else 0
+    )
     if covered_days >= expected_years * 365 - 14:
         return "complete", "expected_history_window_present"
     if any(str(row.get("status") or "") in {"stale", "unavailable", "invalid", "failed"} for row in backfills):
@@ -2337,6 +2348,17 @@ def _fact_date(row: dict[str, Any]) -> date | None:
                 return date(int(parts[0]), int(parts[1]), 1)
             except ValueError:
                 return None
+    return None
+
+
+def _history_start_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if value:
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
     return None
 
 

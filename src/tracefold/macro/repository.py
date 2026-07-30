@@ -1013,10 +1013,9 @@ class MacroRepository:
             SELECT
               rows.fact_id, rows.dataset_id, rows.series_id,
               rows.reference_date, rows.vintage_date,
-              rows.value_numeric, rows.value_text, rows.unit,
+              rows.value_numeric, rows.unit,
               rows.published_at_ms, rows.received_at_ms,
-              rows.source_url, rows.fact_hash,
-              rows.projection_row_number AS row_number,
+              rows.source_url,
               stats.semantic_sample_count,
               stats.semantic_history_start,
               stats.semantic_percentile
@@ -1029,6 +1028,154 @@ class MacroRepository:
             (
                 list(requested),
                 list(requested.values()),
+                received_before_ms,
+                _row_limit(row_cap),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def document_projection_history(
+        self,
+        *,
+        dataset_ids: tuple[str, ...],
+        timeline_limit: int = 80,
+        communication_window_days: int = 90,
+        received_before_ms: int | None = None,
+        row_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load the metadata window consumed by the rates/Fed read model."""
+
+        if not dataset_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            WITH eligible AS (
+              SELECT
+                document_id, dataset_id, document_type, title,
+                effective_date, published_at_ms, received_at_ms,
+                source_url, fact_hash, metadata_json,
+                row_number() OVER (
+                  ORDER BY effective_date DESC, published_at_ms DESC, document_id DESC
+                ) AS timeline_rank,
+                max(effective_date) OVER () AS reference_date,
+                min(effective_date) OVER (
+                  PARTITION BY dataset_id
+                ) AS semantic_history_start,
+                count(*) OVER (
+                  PARTITION BY dataset_id
+                ) AS semantic_sample_count
+              FROM macro_documents
+              WHERE dataset_id = ANY(%s)
+                AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
+            )
+            SELECT
+              document_id, dataset_id, document_type, title,
+              effective_date, published_at_ms, received_at_ms,
+              source_url, fact_hash, metadata_json,
+              semantic_history_start, semantic_sample_count
+            FROM eligible
+            WHERE timeline_rank <= %s
+               OR effective_date >= reference_date - %s::integer
+            ORDER BY dataset_id, effective_date, published_at_ms, document_id
+            LIMIT %s
+            """,
+            (
+                list(dataset_ids),
+                received_before_ms,
+                int(timeline_limit),
+                int(communication_window_days),
+                _row_limit(row_cap),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def fed_official_role_projection_history(
+        self,
+        *,
+        effective_from: date | None,
+        received_before_ms: int | None = None,
+        row_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load the roster snapshots needed by the selected document window."""
+
+        rows = self.conn.execute(
+            """
+            WITH eligible AS (
+              SELECT *
+              FROM macro_fed_official_role_facts
+              WHERE received_at_ms <= COALESCE(%s::bigint, received_at_ms)
+            ), boundary AS (
+              SELECT COALESCE(
+                max(effective_start) FILTER (
+                  WHERE %s::date IS NOT NULL
+                    AND effective_start <= %s::date
+                ),
+                max(effective_start)
+              ) AS effective_start
+              FROM eligible
+            )
+            SELECT
+              role_fact_id, dataset_id, official_id, official_name,
+              role_title, organization, effective_start, effective_end,
+              fomc_participant, fomc_voter, source_url, received_at_ms
+            FROM eligible
+            WHERE effective_start >= (SELECT effective_start FROM boundary)
+            ORDER BY effective_start, official_id, role_fact_id
+            LIMIT %s
+            """,
+            (
+                received_before_ms,
+                effective_from,
+                effective_from,
+                _row_limit(row_cap),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def document_analysis_projection_history(
+        self,
+        *,
+        document_ids: tuple[str, ...],
+        received_before_ms: int | None = None,
+        row_cap: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load only the latest passed analysis for selected documents."""
+
+        if not document_ids:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT ON (analyses.document_id)
+              analyses.*,
+              'federal_reserve.document.analysis' AS dataset_id,
+              documents.received_at_ms AS received_at_ms,
+              documents.document_type,
+              documents.title,
+              documents.effective_date,
+              documents.published_at_ms,
+              documents.source_url,
+              documents.metadata_json
+            FROM macro_document_analyses AS analyses
+            JOIN macro_documents AS documents USING (document_id)
+            WHERE analyses.document_id = ANY(%s)
+              AND analyses.reviewer_disposition = 'pass'
+              AND documents.received_at_ms <= COALESCE(
+                %s::bigint,
+                documents.received_at_ms
+              )
+              AND analyses.created_at_ms <= COALESCE(
+                %s::bigint,
+                analyses.created_at_ms
+              )
+            ORDER BY
+              analyses.document_id,
+              analyses.created_at_ms DESC,
+              analyses.analysis_id DESC
+            LIMIT %s
+            """,
+            (
+                list(document_ids),
+                received_before_ms,
                 received_before_ms,
                 _row_limit(row_cap),
             ),
