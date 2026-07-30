@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 import tracefold.market.radar.token_radar_projector as projector_module
+from tracefold.market.radar.output_envelope import split_bounded_rows
 from tracefold.market.radar.projection import (
     RadarShardOversized,
     _require_bounded_output,
@@ -77,17 +78,27 @@ def test_rank_closure_selects_top_n_before_wide_hydration(
     ]
 
 
-def test_radar_output_cap_is_enforced_per_stable_venue_lane_identity() -> None:
+def test_radar_output_cap_splits_one_stable_venue_lane_deterministically() -> None:
+    rows = [
+        {"lane": "resolved", "payload": "r" * 600_000},
+        {"lane": "resolved", "payload": "a" * 600_000},
+    ]
     _require_bounded_output(
         {
             "rows_by_venue": {
-                "all": [
-                    {"lane": "resolved", "payload": "r" * 600_000},
-                    {"lane": "attention", "payload": "a" * 600_000},
-                ]
+                "all": rows,
             }
         }
     )
+    batches = split_bounded_rows(
+        rows,
+        context={"window_venue_lane": ["all", "resolved"]},
+        byte_cap=1024 * 1024,
+    )
+    assert [[row["payload"][0] for row in batch] for batch in batches] == [
+        ["r"],
+        ["a"],
+    ]
 
     with pytest.raises(RadarShardOversized, match="radar_output_byte_overflow"):
         _require_bounded_output(

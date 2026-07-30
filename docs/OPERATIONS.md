@@ -77,6 +77,13 @@ Claim, compute, publish, and full-turn hard timeouts are respectively 500 ms,
 2 s, 1 s, and 5 s. Overflow is split deterministically or quarantined as
 `shard_oversized`; it is never sampled or truncated.
 
+Radar keeps one `window × venue` publication atomic while splitting an
+oversized ordered row set into deterministic write batches no larger than
+1 MiB. A single row that exceeds the envelope is quarantined. The high-churn
+`events` table uses a one-percent/10,000-row auto-analyze threshold so the
+24-hour Search planner does not choose a recency scan from stale time
+distribution statistics.
+
 `/metrics` exposes low-cardinality worker transaction duration, projection
 source/candidate/hydrated/written row counts, change-driven cache hit/miss,
 queue depth, and oldest-due delay. Use these amplification and latency signals

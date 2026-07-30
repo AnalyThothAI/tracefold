@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 from tests.postgres_test_utils import connect_postgres_test, prepare_postgres_database
+from tracefold.app.cli.commands.queue_ops import QUEUE_RETRY_TRANSITIONS
 from tracefold.platform.postgres.projection_frontier import (
     PROFILE_FRONTIER,
     ProjectionFrontierRepository,
 )
+from tracefold.platform.postgres.queue_terminal import resolve_terminal_event
 
 
 def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
@@ -117,6 +120,64 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
             "payload_hash": "sha256:input-a2",
         }
         conn.commit()
+
+        terminal_id = str(
+            conn.execute(
+                """
+                SELECT terminal_id
+                FROM worker_queue_terminal_events
+                WHERE worker_name = 'profile_projection'
+                  AND source_table = 'token_profile_projection_frontiers'
+                  AND operator_action IS NULL
+                """
+            ).fetchone()["terminal_id"]
+        )
+        transition = QUEUE_RETRY_TRANSITIONS[("profile_projection", "token_profile_projection_frontiers")]
+        with conn.transaction():
+            resolved = resolve_terminal_event(
+                conn,
+                terminal_id=terminal_id,
+                action="retry",
+                reason="fixed projection output envelope",
+                now_ms=160_000,
+                retry_transitions={
+                    (
+                        "profile_projection",
+                        "token_profile_projection_frontiers",
+                    ): lambda event, *, now_ms, reason: transition(
+                        SimpleNamespace(projection_frontiers=repo),
+                        event,
+                        now_ms=now_ms,
+                        reason=reason,
+                    )
+                },
+            )
+        assert resolved["operator_action"] == "retry"
+        assert resolved["transition"]["requeued"] == 1
+        row = _frontier_row(conn, key)
+        assert row["status"] == "dirty"
+        assert row["attempt_count"] == 0
+        assert row["first_dirty_at_ms"] == 1_000
+        assert row["deadline_at_ms"] == 31_000
+        assert row["last_error_code"] is None
+
+        with conn.transaction():
+            retried_claim = repo.claim(
+                PROFILE_FRONTIER,
+                key=key,
+                runtime_id=runtime_id,
+                now_ms=160_000,
+                lease_ms=5_000,
+            )
+            assert retried_claim is not None
+            assert repo.complete(
+                PROFILE_FRONTIER,
+                key=key,
+                runtime_id=runtime_id,
+                input_fingerprint="sha256:input-a2",
+                version="profile-v1",
+                now_ms=160_100,
+            )
 
         with conn.transaction():
             repo.mark_dirty(

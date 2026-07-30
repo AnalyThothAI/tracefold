@@ -406,6 +406,47 @@ class ProjectionFrontierRepository:
             )
         return result
 
+    def retry_quarantined(
+        self,
+        spec: FrontierSpec,
+        *,
+        key: dict[str, str],
+        input_fingerprint: str,
+        version: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        """Explicitly retry the same quarantined input without losing its deadline."""
+
+        require_transaction(self.conn, operation=f"{spec.domain}_frontier_retry_quarantined")
+        row = self.conn.execute(
+            f"""
+            UPDATE {spec.table}
+            SET status = 'dirty',
+                next_attempt_at_ms = NULL,
+                attempt_count = 0,
+                transient_failure_count = 0,
+                claimed_by = NULL,
+                claimed_until_ms = NULL,
+                last_error_code = NULL,
+                updated_at_ms = %(now_ms)s
+            WHERE {_key_predicate(spec)}
+              AND status = 'quarantined'
+              AND input_fingerprint = %(input_fingerprint)s
+              AND {spec.version_column} = %(version)s
+            RETURNING *
+            """,
+            {
+                **_validated_key(spec, key),
+                "input_fingerprint": _required_text(
+                    input_fingerprint,
+                    "input_fingerprint",
+                ),
+                "version": _required_text(version, spec.version_column),
+                "now_ms": int(now_ms),
+            },
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def _release(
         self,
         spec: FrontierSpec,

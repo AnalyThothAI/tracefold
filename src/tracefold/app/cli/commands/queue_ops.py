@@ -6,6 +6,10 @@ from typing import Any
 from tracefold.app.queue_health import fetch_queue_table_health
 from tracefold.app.worker_manifest import worker_queue_tables
 from tracefold.market import DISCOVERY_PROVIDER
+from tracefold.platform.postgres.projection_frontier import (
+    FRONTIER_SPECS,
+    FrontierSpec,
+)
 from tracefold.platform.postgres.queue_terminal import (
     inspect_terminal_events,
     list_terminal_event_ids,
@@ -242,11 +246,71 @@ def _retry_token_image_source_target(
     }
 
 
+def _retry_projection_frontier(
+    repos: Any,
+    event: dict[str, Any],
+    *,
+    now_ms: int,
+    reason: str,
+    spec: FrontierSpec,
+) -> dict[str, Any]:
+    del reason
+    source_row = _source_row(event)
+    key = {column: _required_source_text(source_row, column) for column in spec.key_columns}
+    row = repos.projection_frontiers.retry_quarantined(
+        spec,
+        key=key,
+        input_fingerprint=_required_source_text(
+            source_row,
+            "input_fingerprint",
+        ),
+        version=_required_source_text(source_row, spec.version_column),
+        now_ms=int(now_ms),
+    )
+    if row is None:
+        raise ValueError("projection_frontier_retry_not_requeued")
+    return {
+        "requeued": 1,
+        "domain": spec.domain,
+        "source_table": spec.table,
+        "key": key,
+        "deadline_at_ms": row.get("deadline_at_ms"),
+    }
+
+
+def _projection_retry_transition(
+    spec: FrontierSpec,
+) -> Callable[..., dict[str, Any]]:
+    def transition(
+        repos: Any,
+        event: dict[str, Any],
+        *,
+        now_ms: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        return _retry_projection_frontier(
+            repos,
+            event,
+            now_ms=now_ms,
+            reason=reason,
+            spec=spec,
+        )
+
+    return transition
+
+
 def _source_row(event: dict[str, Any]) -> dict[str, Any]:
     source_row = event.get("source_row_json")
     if not isinstance(source_row, dict):
         raise ValueError("terminal_source_row_required")
     return source_row
+
+
+def _required_source_text(source_row: dict[str, Any], column: str) -> str:
+    value = str(source_row.get(column) or "").strip()
+    if not value:
+        raise ValueError(f"terminal_source_row_required:{column}")
+    return value
 
 
 def _lookup_key(event: dict[str, Any], source_row: dict[str, Any]) -> str:
@@ -277,6 +341,7 @@ QUEUE_RETRY_TRANSITIONS = {
     ("resolution_refresh", "token_discovery_dirty_lookup_keys"): _retry_discovery_lookup_key,
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
+    **{(f"{spec.domain}_projection", spec.table): _projection_retry_transition(spec) for spec in FRONTIER_SPECS},
 }
 
 

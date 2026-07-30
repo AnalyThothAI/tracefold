@@ -122,8 +122,9 @@ def test_query_audit_search_paths_use_the_public_24h_window_and_bounded_routes()
 
     assert "received_at_ms >= %(search_cutoff_at_ms)s" in lexical["sql"]
     assert "received_at_ms >= %(search_cutoff_at_ms)s" in substring["sql"]
-    assert "ORDER BY e.received_at_ms DESC, e.event_id DESC" in lexical["sql"]
-    assert "ts_rank_cd" not in lexical["sql"]
+    assert "ORDER BY received_at_ms DESC, event_id DESC" in lexical["sql"]
+    assert "ts_rank_cd" in lexical["sql"]
+    assert "LIMIT 50" in lexical["sql"]
     assert lexical["params"]["search_cutoff_at_ms"] is None
     assert substring["params"]["search_cutoff_at_ms"] is None
     assert all(item["name"] != "search_v2_trigram" for item in HOT_QUERIES)

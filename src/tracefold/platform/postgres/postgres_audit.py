@@ -111,16 +111,29 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
               SELECT
                 websearch_to_tsquery('simple', %(query)s) AS simple_q,
                 websearch_to_tsquery('english', %(query)s) AS english_q
+            ),
+            ranked AS (
+              SELECT
+                e.*,
+                (
+                  ts_rank_cd(e.search_tsv, query.simple_q)
+                  + ts_rank_cd(e.search_tsv, query.english_q)
+                ) AS route_score
+              FROM events e, query
+              WHERE (
+                  e.search_tsv @@ query.simple_q
+                  OR e.search_tsv @@ query.english_q
+                )
+                AND e.received_at_ms >= %(search_cutoff_at_ms)s
             )
-            SELECT e.event_id
-            FROM events e, query
-            WHERE (
-                e.search_tsv @@ query.simple_q
-                OR e.search_tsv @@ query.english_q
-              )
-              AND e.received_at_ms >= %(search_cutoff_at_ms)s
-            ORDER BY e.received_at_ms DESC, e.event_id DESC
-            LIMIT 20
+            SELECT
+              *,
+              row_number() OVER (
+                ORDER BY received_at_ms DESC, event_id DESC
+              ) AS route_rank
+            FROM ranked
+            ORDER BY received_at_ms DESC, event_id DESC
+            LIMIT 50
         """,
         "params": {
             "query": "pepe",

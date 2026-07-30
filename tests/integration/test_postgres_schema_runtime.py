@@ -312,6 +312,16 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 """
             ).fetchall()
         }
+        event_reloptions = {
+            str(row["option"])
+            for row in conn.execute(
+                """
+                SELECT unnest(reloptions) AS option
+                FROM pg_class
+                WHERE oid = 'events'::regclass
+                """
+            ).fetchall()
+        }
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     finally:
         conn.close()
@@ -435,7 +445,11 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
     }
-    assert version == latest_migration_version() == "20260730_0227"
+    assert event_reloptions == {
+        "autovacuum_analyze_scale_factor=0.01",
+        "autovacuum_analyze_threshold=10000",
+    }
+    assert version == latest_migration_version() == "20260731_0228"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -460,7 +474,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260730_0227"
+    assert version == latest_migration_version() == "20260731_0228"
 
 
 def test_rates_curve_v6_migration_deletes_only_old_rates_projection_and_rejects_v5(
@@ -675,7 +689,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260730_0227"
+        assert version == "20260731_0228"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

@@ -12,6 +12,7 @@ from tracefold.market.radar.constants import (
     TOKEN_RADAR_DECISIONS,
 )
 from tracefold.market.radar.factor_snapshot_contract import require_token_factor_snapshot
+from tracefold.market.radar.output_envelope import split_bounded_rows
 from tracefold.market.radar.payload_hash import (
     canonical_token_radar_payload,
     stable_token_radar_payload_hash,
@@ -63,6 +64,7 @@ RADAR_ROW_INSERT_COLUMNS_SQL = """
   data_health_json, source_event_ids_json, payload_hash,
   listed_at_ms, created_at_ms
 """
+_PUBLICATION_BATCH_BYTE_CAP = 1 * 1024 * 1024
 
 
 class PublicationResult(TypedDict):
@@ -255,48 +257,58 @@ class TokenRadarRepository:
     ) -> int:
         if not rows:
             return 0
-        payloads = [_json_payload(row) for row in rows]
-        row_placeholders = f"({', '.join(['%s'] * len(RADAR_ROW_COLUMNS))})"
-        values_sql = ", ".join([row_placeholders] * len(payloads))
-        params = [payload[column] for payload in payloads for column in RADAR_ROW_COLUMNS]
-        cursor = self.conn.execute(
-            f"""
-            INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
-            VALUES {values_sql}
-            ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
-            DO UPDATE SET
-              row_id = excluded.row_id,
-              computed_at_ms = excluded.computed_at_ms,
-              source_max_received_at_ms = excluded.source_max_received_at_ms,
-              generation_id = excluded.generation_id,
-              published_at_ms = excluded.published_at_ms,
-              source_frontier_ms = excluded.source_frontier_ms,
-              rank = excluded.rank,
-              rank_score = excluded.rank_score,
-              intent_id = excluded.intent_id,
-              event_id = excluded.event_id,
-              target_type = excluded.target_type,
-              target_id = excluded.target_id,
-              pricefeed_id = excluded.pricefeed_id,
-              intent_json = excluded.intent_json,
-              resolution_json = excluded.resolution_json,
-              factor_snapshot_json = excluded.factor_snapshot_json,
-              factor_version = excluded.factor_version,
-              decision = excluded.decision,
-              quality_status = excluded.quality_status,
-              degraded_reasons_json = excluded.degraded_reasons_json,
-              data_health_json = excluded.data_health_json,
-              source_event_ids_json = excluded.source_event_ids_json,
-              payload_hash = excluded.payload_hash,
-              listed_at_ms = excluded.listed_at_ms
-            WHERE token_radar_current_rows.payload_hash IS DISTINCT FROM excluded.payload_hash
-               OR token_radar_current_rows.quality_status IS DISTINCT FROM excluded.quality_status
-               OR token_radar_current_rows.rank IS DISTINCT FROM excluded.rank
-               OR token_radar_current_rows.decision IS DISTINCT FROM excluded.decision
-            """,
-            params,
-        )
-        return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
+        rows_written = 0
+        for batch in split_bounded_rows(
+            rows,
+            context={"output_kind": "token_radar_current_rows"},
+            byte_cap=_PUBLICATION_BATCH_BYTE_CAP,
+        ):
+            payloads = [_json_payload(row) for row in batch]
+            row_placeholders = f"({', '.join(['%s'] * len(RADAR_ROW_COLUMNS))})"
+            values_sql = ", ".join([row_placeholders] * len(payloads))
+            params = [payload[column] for payload in payloads for column in RADAR_ROW_COLUMNS]
+            cursor = self.conn.execute(
+                f"""
+                INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
+                VALUES {values_sql}
+                ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
+                DO UPDATE SET
+                  row_id = excluded.row_id,
+                  computed_at_ms = excluded.computed_at_ms,
+                  source_max_received_at_ms = excluded.source_max_received_at_ms,
+                  generation_id = excluded.generation_id,
+                  published_at_ms = excluded.published_at_ms,
+                  source_frontier_ms = excluded.source_frontier_ms,
+                  rank = excluded.rank,
+                  rank_score = excluded.rank_score,
+                  intent_id = excluded.intent_id,
+                  event_id = excluded.event_id,
+                  target_type = excluded.target_type,
+                  target_id = excluded.target_id,
+                  pricefeed_id = excluded.pricefeed_id,
+                  intent_json = excluded.intent_json,
+                  resolution_json = excluded.resolution_json,
+                  factor_snapshot_json = excluded.factor_snapshot_json,
+                  factor_version = excluded.factor_version,
+                  decision = excluded.decision,
+                  quality_status = excluded.quality_status,
+                  degraded_reasons_json = excluded.degraded_reasons_json,
+                  data_health_json = excluded.data_health_json,
+                  source_event_ids_json = excluded.source_event_ids_json,
+                  payload_hash = excluded.payload_hash,
+                  listed_at_ms = excluded.listed_at_ms
+                WHERE token_radar_current_rows.payload_hash IS DISTINCT FROM excluded.payload_hash
+                   OR token_radar_current_rows.quality_status IS DISTINCT FROM excluded.quality_status
+                   OR token_radar_current_rows.rank IS DISTINCT FROM excluded.rank
+                   OR token_radar_current_rows.decision IS DISTINCT FROM excluded.decision
+                """,
+                params,
+            )
+            rows_written += mutation_count(
+                cursor,
+                error_code="token_radar_repository_rowcount_invalid",
+            )
+        return rows_written
 
     def _upsert_ready_publication_state(
         self,

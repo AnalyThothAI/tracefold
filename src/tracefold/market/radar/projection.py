@@ -13,6 +13,10 @@ from tracefold.market.radar.constants import (
     TOKEN_RADAR_VENUES,
     WINDOW_MS,
 )
+from tracefold.market.radar.output_envelope import (
+    OutputRowOversized,
+    split_bounded_rows,
+)
 from tracefold.market.radar.token_radar_projector import (
     build_token_radar_current_closure,
     compute_token_radar_target_projection,
@@ -1257,24 +1261,37 @@ def _require_bounded_input(payload: dict[str, Any]) -> None:
 
 
 def _require_bounded_output(payload: dict[str, Any]) -> None:
-    if _serialized_size({"rows": payload.get("rows", [])}) > _OUTPUT_BYTE_CAP:
-        raise RadarShardOversized("radar_output_byte_overflow")
+    _require_bounded_output_rows(
+        payload.get("rows", []),
+        context={"output_kind": "rows"},
+    )
     for venue, rows in dict(payload.get("rows_by_venue") or {}).items():
         rows_by_lane: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             lane = str(row.get("lane") or "")
             rows_by_lane.setdefault(lane, []).append(dict(row))
         for lane, lane_rows in rows_by_lane.items():
-            if (
-                _serialized_size(
-                    {
-                        "window_venue_lane": [str(venue), lane],
-                        "rows": lane_rows,
-                    }
-                )
-                > _OUTPUT_BYTE_CAP
-            ):
-                raise RadarShardOversized("radar_output_byte_overflow")
+            _require_bounded_output_rows(
+                lane_rows,
+                context={
+                    "window_venue_lane": [str(venue), lane],
+                },
+            )
+
+
+def _require_bounded_output_rows(
+    rows: Any,
+    *,
+    context: dict[str, Any],
+) -> None:
+    try:
+        split_bounded_rows(
+            [dict(row) for row in rows],
+            context=context,
+            byte_cap=_OUTPUT_BYTE_CAP,
+        )
+    except OutputRowOversized as exc:
+        raise RadarShardOversized("radar_output_byte_overflow") from exc
 
 
 __all__ = [
