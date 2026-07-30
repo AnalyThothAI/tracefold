@@ -25,6 +25,8 @@ from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 
 PROFILE_PROJECTION_VERSION = "token-profile-current-serving-v1"
 _CLAIM_LEASE_MS = 5_000
+_CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
+_PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
@@ -88,7 +90,9 @@ class ProfileProjectionService:
             "target_type": str(target_type),
             "target_id": str(target_id),
         }
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             row = repos.projection_frontiers.claim(
                 PROFILE_FRONTIER,
                 key=key,
@@ -132,7 +136,9 @@ class ProfileProjectionService:
         now_ms: int,
     ) -> dict[str, Any]:
         _require_bounded_output(output)
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             frontier = repos.conn.execute(
                 """
                 SELECT status, claimed_by, input_fingerprint, projection_version
@@ -234,7 +240,9 @@ class ProfileProjectionService:
         *,
         now_ms: int,
     ) -> None:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             repos.projection_frontiers.release_stale(
                 PROFILE_FRONTIER,
                 key=claim.key,
@@ -249,7 +257,9 @@ class ProfileProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -268,7 +278,9 @@ class ProfileProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.fail_transient(
                     PROFILE_FRONTIER,
@@ -279,10 +291,15 @@ class ProfileProjectionService:
                 )
             )
 
-    def _session(self) -> Any:
+    def _session(
+        self,
+        *,
+        transaction_timeout_seconds: float | None = None,
+    ) -> Any:
         return self.db.worker_session(
             self.worker_name,
             statement_timeout_seconds=3.0,
+            transaction_timeout_seconds=transaction_timeout_seconds,
         )
 
 

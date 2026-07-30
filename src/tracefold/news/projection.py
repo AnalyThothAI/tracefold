@@ -43,6 +43,8 @@ _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _ALIAS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 _SCORING_EPOCH_MS = 60 * 60 * 1000
 _CLAIM_LEASE_MS = 5_000
+_CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
+_PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
@@ -114,7 +116,9 @@ class NewsProjectionService:
         now_ms: int,
     ) -> NewsProjectionClaim | None:
         kind, entity_id = _parse_bucket(bucket_id)
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             row = repos.projection_frontiers.claim(
                 NEWS_FRONTIER,
                 key={"bucket_id": bucket_id},
@@ -611,7 +615,9 @@ class NewsProjectionService:
         now_ms: int,
     ) -> dict[str, Any]:
         _require_bounded_output(projection)
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             conn = repos.conn
             current_rows = [
                 dict(row)
@@ -979,7 +985,9 @@ class NewsProjectionService:
         }
 
     def release_stale(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.release_stale(
                     NEWS_FRONTIER,
@@ -990,7 +998,9 @@ class NewsProjectionService:
             )
 
     def complete_obsolete(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.complete(
                     NEWS_FRONTIER,
@@ -1009,7 +1019,9 @@ class NewsProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -1028,7 +1040,9 @@ class NewsProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.fail_transient(
                     NEWS_FRONTIER,
@@ -1039,10 +1053,15 @@ class NewsProjectionService:
                 )
             )
 
-    def _session(self) -> Any:
+    def _session(
+        self,
+        *,
+        transaction_timeout_seconds: float | None = None,
+    ) -> Any:
         return self.db.worker_session(
             self.worker_name,
             statement_timeout_seconds=3.0,
+            transaction_timeout_seconds=transaction_timeout_seconds,
         )
 
 

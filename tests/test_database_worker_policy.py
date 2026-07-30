@@ -41,6 +41,22 @@ def test_foreground_worker_session_keeps_postgres_defaults() -> None:
     assert "work_mem" not in configured_names
 
 
+def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
+    conn = _FakeConnection()
+    pool = _FakePool(conn)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+
+    with bundle.worker_session(
+        "steady_projection_coordinator",
+        transaction_timeout_seconds=0.5,
+    ):
+        pass
+
+    configured = [params for sql, params in conn.executed if sql.startswith("SELECT set_config")]
+    assert ("transaction_timeout", "500ms") in configured
+    assert ("transaction_timeout", "0ms") in configured
+
+
 def test_serve_admission_reserves_search_and_control_lanes() -> None:
     conn = _FakeConnection()
     database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)

@@ -27,6 +27,8 @@ _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
 _CLAIM_LEASE_MS = 5_000
+_CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
+_PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 
 
 class MacroShardOversized(RuntimeError):
@@ -136,7 +138,9 @@ class MacroProjectionService:
         now_ms: int,
     ) -> MacroModuleClaim | None:
         parsed_module_id = _module_id(module_id)
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_CLAIM_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             row = repos.projection_frontiers.claim(
                 MACRO_FRONTIER,
                 key={"module_id": parsed_module_id},
@@ -242,7 +246,9 @@ class MacroProjectionService:
             raise ValueError("macro_projection_output_module_mismatch")
         features = [dict(feature) for feature in output["features"]]
         module_payload = dict(output["module_payload"])
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             states = repos.macro.dataset_projection_states(
                 dataset_ids=MODULE_DATASET_DEPENDENCIES[claim.module_id],
             )
@@ -301,7 +307,9 @@ class MacroProjectionService:
         }
 
     def release_stale(self, claim: MacroModuleClaim, *, now_ms: int) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.release_stale(
                     MACRO_FRONTIER,
@@ -318,7 +326,9 @@ class MacroProjectionService:
         error_code: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return cast(
                 dict[str, Any] | None,
                 repos.projection_frontiers.fail_deterministic(
@@ -337,7 +347,9 @@ class MacroProjectionService:
         error_code: str,
         now_ms: int,
     ) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(
+            transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+        ) as repos, repos.transaction():
             return bool(
                 repos.projection_frontiers.fail_transient(
                     MACRO_FRONTIER,
@@ -348,10 +360,15 @@ class MacroProjectionService:
                 )
             )
 
-    def _session(self) -> Any:
+    def _session(
+        self,
+        *,
+        transaction_timeout_seconds: float | None = None,
+    ) -> Any:
         return self.db.worker_session(
             self.worker_name,
             statement_timeout_seconds=3.0,
+            transaction_timeout_seconds=transaction_timeout_seconds,
         )
 
 

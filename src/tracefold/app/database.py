@@ -165,6 +165,7 @@ class WorkerDatabase:
         self,
         name: str,
         statement_timeout_seconds: float | None = None,
+        transaction_timeout_seconds: float | None = None,
     ) -> Iterator[RepositorySession]:
         started = time.perf_counter()
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
@@ -177,6 +178,12 @@ class WorkerDatabase:
                 _set_worker_query_policy(conn)
             if statement_timeout_seconds is not None:
                 _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
+            if transaction_timeout_seconds is not None:
+                _set_config(
+                    conn,
+                    "transaction_timeout",
+                    _transaction_timeout_value(transaction_timeout_seconds),
+                )
             try:
                 yield repositories_for_connection(
                     conn,
@@ -194,6 +201,7 @@ class WorkerDatabase:
                     _reset_worker_connection(
                         conn,
                         statement_timeout_seconds=statement_timeout_seconds,
+                        transaction_timeout_seconds=transaction_timeout_seconds,
                         bounded_query_policy=bounded_query_policy,
                     )
                 except Exception:
@@ -206,6 +214,7 @@ class WorkerDatabase:
             _reset_worker_connection(
                 conn,
                 statement_timeout_seconds=statement_timeout_seconds,
+                transaction_timeout_seconds=transaction_timeout_seconds,
                 bounded_query_policy=bounded_query_policy,
             )
             self.worker_pool.putconn(conn)
@@ -328,6 +337,14 @@ def _statement_timeout_value(seconds: float) -> str:
     return f"{int(timeout_seconds * 1000)}ms"
 
 
+def _transaction_timeout_value(seconds: float) -> str:
+    timeout_seconds = require_nonnegative_float(
+        seconds,
+        error_code="db_transaction_timeout_seconds_required",
+    )
+    return f"{int(timeout_seconds * 1000)}ms"
+
+
 def _set_config(conn: Any, name: str, value: str) -> None:
     conn.execute("SELECT set_config(%s, %s, false)", (str(name), str(value)))
 
@@ -341,10 +358,13 @@ def _reset_worker_connection(
     conn: Any,
     *,
     statement_timeout_seconds: float | None,
+    transaction_timeout_seconds: float | None,
     bounded_query_policy: bool,
 ) -> None:
     if statement_timeout_seconds is not None:
         _set_config(conn, "statement_timeout", _statement_timeout_value(_WORKER_STATEMENT_TIMEOUT_SECONDS))
+    if transaction_timeout_seconds is not None:
+        _set_config(conn, "transaction_timeout", "0ms")
     if bounded_query_policy:
         for name in _BOUNDED_QUERY_CONFIG:
             _reset_config(conn, name)
