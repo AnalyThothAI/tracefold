@@ -203,7 +203,9 @@ docker compose --profile maintenance run --rm cutover \
 docker compose up -d
 ```
 
-The hard-cut command acquires the exclusive maintenance gate, refuses visible
+An operator who explicitly accepts that there is no automatic rollback point
+may use `--snapshot-waived` instead of `--snapshot-confirmed`; the result
+records that irreversible waiver. The hard-cut command acquires the exclusive maintenance gate, refuses visible
 Tracefold runtime sessions, migrates to head, provisions role passwords,
 rebuilds and audits Radar/News/Macro/current Profile, and only then changes
 `tracefold_app` to `NOLOGIN`. It never takes the snapshot itself. A failure

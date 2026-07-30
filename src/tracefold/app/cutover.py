@@ -34,6 +34,7 @@ def execute_hard_cut(
     bootstrap_dsn: str,
     bootstrap_password_file: Path,
     snapshot_confirmed: bool,
+    snapshot_waived: bool = False,
 ) -> dict[str, Any]:
     """Migrate, rebuild, audit, and revoke the legacy runtime login.
 
@@ -42,8 +43,10 @@ def execute_hard_cut(
     visible Tracefold runtime sessions.
     """
 
-    if not snapshot_confirmed:
+    if not snapshot_confirmed and not snapshot_waived:
         raise ValueError("hard_cut_snapshot_confirmation_required")
+    if snapshot_confirmed and snapshot_waived:
+        raise ValueError("hard_cut_snapshot_decision_conflict")
     bootstrap_url = with_password_from_file(
         str(bootstrap_dsn),
         Path(bootstrap_password_file),
@@ -102,7 +105,8 @@ def execute_hard_cut(
         return {
             "status": "cutover_ready",
             "migration_version": expected_version,
-            "snapshot_confirmed": True,
+            "snapshot_confirmed": bool(snapshot_confirmed),
+            "snapshot_waived": bool(snapshot_waived),
             "legacy_runtime_login_revoked": True,
             "roles": roles,
             "read_models": rebuilt,

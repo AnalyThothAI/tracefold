@@ -53,10 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="postgres_password",
         help="legacy maintenance password file",
     )
-    hard_cut.add_argument(
+    snapshot_decision = hard_cut.add_mutually_exclusive_group(required=True)
+    snapshot_decision.add_argument(
         "--snapshot-confirmed",
         action="store_true",
-        required=True,
+        help="confirm that a recoverable PostgreSQL snapshot was verified",
+    )
+    snapshot_decision.add_argument(
+        "--snapshot-waived",
+        action="store_true",
+        help="explicitly waive the rollback snapshot for this hard cut",
     )
     hard_cut.add_argument(
         "--execute",
