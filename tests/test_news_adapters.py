@@ -7,6 +7,7 @@ from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import (
     RssFeedReader,
     is_public_https_feed_url,
+    parse_rss_feed_wire,
 )
 from tracefold.news import NewsBriefStory, NewsSourceDefinition
 
@@ -51,8 +52,8 @@ def test_rss_reader_honors_conditionals_limits_first_five_and_cleans_description
 
     reader = RssFeedReader(transport=httpx.MockTransport(handler), max_attempts=1)
     try:
-        fetched = reader.fetch(source=source(), etag=None, last_modified=None)
-        not_modified = reader.fetch(source=source(), etag=fetched.etag, last_modified=None)
+        fetched = parse_rss_feed_wire(reader.fetch_wire(source=source(), etag=None, last_modified=None))
+        not_modified = parse_rss_feed_wire(reader.fetch_wire(source=source(), etag=fetched.etag, last_modified=None))
     finally:
         reader.close()
 
@@ -162,10 +163,12 @@ def test_rss_reader_preserves_wallstengine_quote_comment_as_title_only() -> None
         memberships=("finance",),
     )
     try:
-        fetched = reader.fetch(
-            source=wallstengine,
-            etag=None,
-            last_modified=None,
+        fetched = parse_rss_feed_wire(
+            reader.fetch_wire(
+                source=wallstengine,
+                etag=None,
+                last_modified=None,
+            )
         )
     finally:
         reader.close()
@@ -204,10 +207,12 @@ def test_rss_reader_falls_back_to_allowlisted_relay_after_direct_403() -> None:
         relay_allowed_urls={source().feed_url},
     )
     try:
-        fetched = reader.fetch(
-            source=source(),
-            etag=None,
-            last_modified=None,
+        fetched = parse_rss_feed_wire(
+            reader.fetch_wire(
+                source=source(),
+                etag=None,
+                last_modified=None,
+            )
         )
     finally:
         reader.close()
@@ -221,6 +226,38 @@ def test_rss_reader_falls_back_to_allowlisted_relay_after_direct_403() -> None:
     assert fetched.fetch_path == "relay"
     assert fetched.direct_error_code == "http_403"
     assert fetched.entries[0].guid == "relay-story"
+
+
+def test_rss_reader_applies_body_bound_to_each_attempt_not_cumulative_failures() -> None:
+    large_failed_body = b"blocked" + (b"x" * 2_600_000)
+    large_feed = (
+        b"<rss version='2.0'><channel><item>"
+        b"<guid>relay-large</guid>"
+        b"<link>https://feed.example.com/relay-large</link>"
+        b"<title>Central bank publishes a policy decision</title>"
+        b"<pubDate>Sun, 26 Jul 2026 09:00:00 GMT</pubDate>"
+        b"</item></channel>" + (b" " * 2_600_000) + b"</rss>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "feed.example.com":
+            return httpx.Response(403, content=large_failed_body)
+        return httpx.Response(200, content=large_feed)
+
+    reader = RssFeedReader(
+        transport=httpx.MockTransport(handler),
+        max_attempts=1,
+        relay_base_url="https://relay.example.com",
+        relay_auth_token="secret",
+        relay_allowed_urls={source().feed_url},
+    )
+    try:
+        fetched = parse_rss_feed_wire(reader.fetch_wire(source=source(), etag=None, last_modified=None))
+    finally:
+        reader.close()
+
+    assert fetched.fetch_path == "relay"
+    assert fetched.entries[0].guid == "relay-large"
 
 
 def test_rss_reader_never_sends_an_unconfigured_url_or_secret_to_relay() -> None:
@@ -239,7 +276,7 @@ def test_rss_reader_never_sends_an_unconfigured_url_or_secret_to_relay() -> None
     )
     try:
         try:
-            reader.fetch(source=source(), etag=None, last_modified=None)
+            reader.fetch_wire(source=source(), etag=None, last_modified=None)
         except RuntimeError as exc:
             assert str(exc) == "news_rss_relay_source_not_allowed"
             assert "do-not-log" not in str(exc)
@@ -266,7 +303,7 @@ def test_rss_reader_records_both_failed_when_relay_returns_html() -> None:
     )
     try:
         try:
-            reader.fetch(source=source(), etag=None, last_modified=None)
+            reader.fetch_wire(source=source(), etag=None, last_modified=None)
         except RuntimeError as exc:
             assert str(exc) == "news_rss_relay_non_feed_response"
             assert exc.fetch_path == "relay"
@@ -331,7 +368,7 @@ def test_rss_reader_never_relays_an_internal_rsshub_source() -> None:
             RuntimeError,
             match="news_rss_relay_source_not_allowed",
         ):
-            reader.fetch(
+            reader.fetch_wire(
                 source=rsshub_source,
                 etag=None,
                 last_modified=None,

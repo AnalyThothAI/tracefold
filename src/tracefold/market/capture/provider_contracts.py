@@ -6,6 +6,10 @@ from .ingest_contracts import IngestedEvent
 from .twitter_event import TwitterEvent
 
 
+class GmgnStreamExpectedError(RuntimeError):
+    """A declared upstream transport/protocol bound that should reconnect."""
+
+
 class IngestStoreProtocol(Protocol):
     def insert_raw_frame(self, **kwargs: Any) -> bool: ...
 
@@ -21,6 +25,7 @@ class UpstreamClientProtocol(Protocol):
 
 
 __all__ = [
+    "GmgnStreamExpectedError",
     "IngestStoreProtocol",
     "UpstreamClientProtocol",
 ]

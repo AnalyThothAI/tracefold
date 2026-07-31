@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -13,12 +14,11 @@ from tracefold.market.profiles.asset_profile_refresh import (
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.provider_contracts import (
     DexProfileSource,
-    DexProviderTemporarilyUnavailable,
     DexTokenProfile,
+    MarketProviderExpectedError,
 )
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _CLAIM_LEASE_MS = 120_000
 _PROVIDER_RETRY_MS = 300_000
@@ -28,107 +28,96 @@ _ERROR_RETRY_BASE_MS = 15 * 60_000
 _ERROR_RETRY_CAP_MS = 24 * 60 * 60_000
 _ERROR_MAX_ATTEMPTS = 5
 _STATEMENT_TIMEOUT_SECONDS = 3.0
-_PROVIDER_LANES = {
-    "gmgn_dex_profile": "profile_gmgn",
-    "binance_web3_profile": "profile_binance",
-}
+_PROFILE_PROVIDERS = frozenset({"gmgn_dex_profile", "binance_web3_profile"})
 
 
-class AssetProfileRefreshWorker(WorkerBase):
-    """One host for two durable provider lanes with no connection held over I/O."""
-
+class AssetProfileRefresh:
     def __init__(
         self,
         *,
-        name: str,
         db: Any,
-        telemetry: Any,
-        resources: Any,
-        provider_governor: Any,
+        finite_operations: Any,
         runtime_id: str,
         dex_profile_sources: tuple[DexProfileSource, ...] = (),
     ) -> None:
-        super().__init__(
-            name=name,
-            interval_seconds=60.0,
-            telemetry=telemetry,
-        )
         self.db = db
-        self.resources = resources
-        self.provider_governor = provider_governor
-        self.claim_owner = f"{name}:{runtime_id}"
+        self.finite_operations = finite_operations
+        self.name = "asset_profile_refresh"
+        self.claim_owner = f"asset_profile_refresh:{runtime_id}"
         self.dex_profile_sources = tuple(dex_profile_sources)
         unknown = sorted(
-            source.provider for source in self.dex_profile_sources if source.provider not in _PROVIDER_LANES
+            source.provider for source in self.dex_profile_sources if source.provider not in _PROFILE_PROVIDERS
         )
         if unknown:
             raise ValueError(f"asset_profile_provider_invalid:{','.join(unknown)}")
         self._source_cursor = 0
 
-    async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
+    async def turn(self, *, now_ms: int | None = None) -> str | bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         if not self.dex_profile_sources:
-            return WorkerResult(
-                skipped=1,
-                notes={"reason": "no_asset_profile_sources", "claimed": 0},
-            )
+            return False
 
         selected = await self._claim_next(observed_at_ms)
         if selected is None:
-            return WorkerResult(
-                skipped=1,
-                notes={"reason": "no_due_asset_profile_refresh_targets", "claimed": 0},
-            )
-        profile_source, claim, queue = selected
+            return False
+        profile_source, claim, _queue = selected
+
+        submitted = False
+
+        def mark_submitted() -> None:
+            nonlocal submitted
+            submitted = True
 
         try:
-            async with self.provider_governor.acquire(
-                host=profile_source.provider,
-                lane=_PROVIDER_LANES[profile_source.provider],
-            ):
-                profile = await self.resources.run_provider_io(
-                    fetch_asset_profile,
-                    profile_source=profile_source,
-                    row=claim,
-                )
-        except DexProviderTemporarilyUnavailable as exc:
-            publish = await self.resources.run_background_db(
+            profile = await self.finite_operations.run(
+                "asset_profile_fetch",
+                fetch_asset_profile,
+                profile_source=profile_source,
+                row=claim,
+                timeout_seconds=30.0,
+                on_submitted=mark_submitted,
+            )
+        except asyncio.CancelledError:
+            if not submitted:
+                await asyncio.shield(self._release_prework(claim))
+            raise
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return None
+        except MarketProviderExpectedError as exc:
+            await self.db.run_business(
+                "asset_profile_publish_unavailable",
                 self._publish_provider_failure,
                 claim,
                 exc,
                 observed_at_ms,
+                operation_timeout_seconds=3.0,
             )
-            return self._result(
-                status="provider_blocked",
-                queue=queue,
-                publish=publish,
-                error=str(exc),
-            )
-        except Exception as exc:
-            publish = await self.resources.run_background_db(
-                self._publish_target_error,
-                claim,
-                exc,
-                observed_at_ms,
-            )
-            return self._result(
-                status="error",
-                queue=queue,
-                publish=publish,
-                error=str(exc),
-            )
+            return "failed"
 
-        publish = await self.resources.run_background_db(
+        published = await self.db.run_business(
+            "asset_profile_publish",
             self._publish_profile,
             claim,
             profile,
             observed_at_ms,
+            operation_timeout_seconds=3.0,
         )
-        return self._result(
-            status="ready" if isinstance(profile, DexTokenProfile) else "missing",
-            queue=queue,
-            publish=publish,
+        return "terminal" if int(published["terminal"]) else "processed"
+
+    async def _release_prework(self, claim: dict[str, Any]) -> bool:
+        return bool(
+            await self.db.run_business(
+                "asset_profile_release_prework",
+                self._release_prework_sync,
+                claim,
+                operation_timeout_seconds=0.5,
+            )
         )
+
+    def _release_prework_sync(self, claim: dict[str, Any]) -> bool:
+        with self.db.worker_session(self.name, 0.5) as repos, repos.transaction():
+            return bool(repos.asset_profile_refresh_targets.release_prework(claim))
 
     async def _claim_next(
         self,
@@ -138,10 +127,12 @@ class AssetProfileRefreshWorker(WorkerBase):
         for offset in range(source_count):
             index = (self._source_cursor + offset) % source_count
             source = self.dex_profile_sources[index]
-            claim, queue = await self.resources.run_background_db(
+            claim, queue = await self.db.run_business(
+                "asset_profile_claim",
                 self._claim_source,
                 source.provider,
                 now_ms,
+                operation_timeout_seconds=3.0,
             )
             if claim is None:
                 continue
@@ -350,44 +341,6 @@ class AssetProfileRefreshWorker(WorkerBase):
             "target_attempt_consumed": True,
         }
 
-    def _result(
-        self,
-        *,
-        status: str,
-        queue: dict[str, int],
-        publish: dict[str, Any],
-        error: str | None = None,
-    ) -> WorkerResult:
-        if self.telemetry is not None:
-            self.telemetry.set_queue_depth(
-                self.name,
-                "primary",
-                "due",
-                int(queue.get("due") or 0),
-            )
-            self.telemetry.set_queue_oldest_delay_seconds(
-                self.name,
-                "primary",
-                int(queue.get("oldest_due_age_ms") or 0) / 1000,
-            )
-        failed = int(status in {"error", "provider_blocked"})
-        processed = int(status in {"ready", "missing"})
-        return WorkerResult(
-            processed=processed,
-            failed=failed,
-            notes={
-                "claimed": 1,
-                "status": status,
-                "queue_depth": int(queue.get("due") or 0),
-                "oldest_due_age_ms": int(queue.get("oldest_due_age_ms") or 0),
-                "rows_written": int(publish.get("rows_written") or 0),
-                "terminal": int(publish.get("terminal") or 0),
-                "target_attempt_consumed": bool(publish.get("target_attempt_consumed")),
-                "next_attempt_at_ms": publish.get("next_attempt_at_ms"),
-                **({"last_error": str(error)[:500]} if error else {}),
-            },
-        )
-
 
 def _enqueue_profile_current(*, repos: Any, row: dict[str, Any], now_ms: int) -> None:
     _required_source_watermark_ms(
@@ -444,4 +397,4 @@ def _terminal_error_reason(
     return None
 
 
-__all__ = ["AssetProfileRefreshWorker"]
+__all__ = ["AssetProfileRefresh"]

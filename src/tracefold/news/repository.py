@@ -17,6 +17,7 @@ from tracefold.platform.postgres.projection_frontier import (
     NEWS_FRONTIER,
     ProjectionFrontierRepository,
 )
+from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 from .brief import brief_fingerprint
 from .classification import SEVERITY_VALUES, classify_by_keyword
@@ -284,8 +285,14 @@ class NewsRepository:
                     now_ms=now_ms,
                 )
 
-    def claim_due_sources(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
+    def claim_due_source(
+        self,
+        *,
+        now_ms: int,
+        claim_token: str,
+        lease_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
             """
             SELECT s.*,
                    COALESCE(m.memberships, ARRAY[]::text[]) AS memberships
@@ -295,36 +302,52 @@ class NewsRepository:
                   FROM news_source_memberships
                  WHERE source_id = s.source_id
               ) m ON true
-             WHERE s.enabled AND s.next_fetch_at_ms <= %s
+             WHERE s.enabled
+               AND s.next_fetch_at_ms <= %s
+               AND (
+                 s.claim_token IS NULL
+                 OR s.claim_lease_expires_at_ms <= %s
+               )
              ORDER BY s.next_fetch_at_ms, s.source_id
              FOR UPDATE OF s SKIP LOCKED
-             LIMIT %s
+             LIMIT 1
             """,
-            (now_ms, limit),
-        ).fetchall()
-        claimed: list[dict[str, Any]] = []
-        for row in rows:
-            failures = int(row["consecutive_failures"])
-            backoff_ms = min(
-                3_600_000,
-                int(row["refresh_interval_seconds"]) * 1000 * (2**failures),
-            )
-            next_fetch_at_ms = now_ms + backoff_ms
-            self.conn.execute(
-                """
-                UPDATE news_sources
-                   SET last_fetch_started_at_ms = %s,
-                       next_fetch_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE source_id = %s
-                """,
-                (now_ms, next_fetch_at_ms, now_ms, row["source_id"]),
-            )
-            claimed_row = dict(row)
-            claimed_row["last_fetch_started_at_ms"] = now_ms
-            claimed_row["next_fetch_at_ms"] = next_fetch_at_ms
-            claimed.append(claimed_row)
-        return claimed
+            (now_ms, now_ms),
+        ).fetchone()
+        if row is None:
+            return None
+        token = str(claim_token).strip()
+        if not token:
+            raise ValueError("news_source_claim_token_required")
+        lease_expires_at_ms = int(now_ms) + int(lease_ms)
+        claimed = self.conn.execute(
+            """
+            UPDATE news_sources
+               SET claim_token = %s::uuid,
+                   claim_lease_expires_at_ms = %s,
+                   last_fetch_started_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE source_id = %s
+             RETURNING *
+            """,
+            (token, lease_expires_at_ms, now_ms, now_ms, row["source_id"]),
+        ).fetchone()
+        if claimed is None:
+            return None
+        return {**dict(claimed), "memberships": list(row["memberships"])}
+
+    def release_source_claim(self, *, source_id: str, claim_token: str) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_sources
+               SET claim_token = NULL,
+                   claim_lease_expires_at_ms = NULL
+             WHERE source_id = %s
+               AND claim_token = %s::uuid
+            """,
+            (source_id, claim_token),
+        )
+        return int(cursor.rowcount or 0) == 1
 
     def record_fetch_success(
         self,
@@ -341,7 +364,17 @@ class NewsRepository:
         not_modified: bool,
         entries_seen: int | None = None,
         gate_counts: Mapping[str, int] | None = None,
-    ) -> dict[str, int]:
+        claim_token: str,
+    ) -> dict[str, int] | None:
+        if (
+            self._lock_source_claim(
+                source_id=source.source_id,
+                claim_token=claim_token,
+                now_ms=finished_at_ms,
+            )
+            is None
+        ):
+            return None
         fetch_id = deterministic_id("news_fetch", source.source_id, started_at_ms)
         if not_modified:
             self._insert_fetch(
@@ -365,6 +398,7 @@ class NewsRepository:
                 status_code=status_code,
                 etag=etag,
                 last_modified=last_modified,
+                claim_token=claim_token,
             )
             return {
                 "entries_seen": 0,
@@ -597,6 +631,7 @@ class NewsRepository:
             status_code=status_code,
             etag=etag,
             last_modified=last_modified,
+            claim_token=claim_token,
         )
         return {
             "entries_seen": observed_entry_count,
@@ -643,7 +678,15 @@ class NewsRepository:
         status_code: int | None,
         fetch_path: str | None = None,
         direct_error_code: str | None = None,
-    ) -> None:
+        claim_token: str,
+    ) -> bool:
+        claimed = self._lock_source_claim(
+            source_id=source_id,
+            claim_token=claim_token,
+            now_ms=finished_at_ms,
+        )
+        if claimed is None:
+            return False
         fetch_id = deterministic_id("news_fetch", source_id, started_at_ms)
         error_code = f"{type(error).__name__}:{str(error)[:500]}"
         self._insert_fetch(
@@ -662,18 +705,35 @@ class NewsRepository:
             rejection_counts={},
             error_code=error_code,
         )
-        self.conn.execute(
+        failures = int(claimed["consecutive_failures"]) + 1
+        backoff_ms = min(
+            3_600_000,
+            int(claimed["refresh_interval_seconds"]) * 1_000 * (2**failures),
+        )
+        cursor = self.conn.execute(
             """
             UPDATE news_sources
                SET last_fetch_finished_at_ms = %s,
                    last_http_status = %s,
                    consecutive_failures = consecutive_failures + 1,
                    last_error = %s,
+                   next_fetch_at_ms = %s,
+                   claim_token = NULL,
+                   claim_lease_expires_at_ms = NULL,
                    updated_at_ms = %s
-             WHERE source_id = %s
+             WHERE source_id = %s AND claim_token = %s::uuid
             """,
-            (finished_at_ms, status_code, error_code, finished_at_ms, source_id),
+            (
+                finished_at_ms,
+                status_code,
+                error_code,
+                finished_at_ms + backoff_ms,
+                finished_at_ms,
+                source_id,
+                claim_token,
+            ),
         )
+        return int(cursor.rowcount or 0) == 1
 
     def _insert_fetch(self, **values: Any) -> None:
         self.conn.execute(
@@ -710,8 +770,9 @@ class NewsRepository:
         status_code: int,
         etag: str | None,
         last_modified: str | None,
+        claim_token: str,
     ) -> None:
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             UPDATE news_sources
                SET etag = %s,
@@ -722,8 +783,10 @@ class NewsRepository:
                    consecutive_failures = 0,
                    last_error = NULL,
                    next_fetch_at_ms = %s,
+                   claim_token = NULL,
+                   claim_lease_expires_at_ms = NULL,
                    updated_at_ms = %s
-             WHERE source_id = %s
+             WHERE source_id = %s AND claim_token = %s::uuid
             """,
             (
                 etag,
@@ -734,8 +797,31 @@ class NewsRepository:
                 finished_at_ms + source.refresh_interval_seconds * 1000,
                 finished_at_ms,
                 source.source_id,
+                claim_token,
             ),
         )
+        if int(cursor.rowcount or 0) != 1:
+            raise RuntimeError("news_source_claim_lost")
+
+    def _lock_source_claim(
+        self,
+        *,
+        source_id: str,
+        claim_token: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+              FROM news_sources
+             WHERE source_id = %s
+               AND claim_token = %s::uuid
+               AND claim_lease_expires_at_ms > %s
+             FOR UPDATE
+            """,
+            (source_id, claim_token, int(now_ms)),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     @staticmethod
     def _rejection_reason(
@@ -1622,23 +1708,99 @@ class NewsRepository:
                 """
             ).fetchall()
         ]
-        if desired == existing:
-            return 0
-        writes = int(self.conn.execute("DELETE FROM news_brief_selection_current").rowcount or 0)
-        for rank, story_id in enumerate(desired, start=1):
-            writes += int(
-                self.conn.execute(
-                    """
-                    INSERT INTO news_brief_selection_current (
-                      rank, story_id, updated_at_ms
-                    )
-                    VALUES (%s, %s, %s)
-                    """,
-                    (rank, story_id, int(now_ms)),
-                ).rowcount
-                or 0
-            )
+        writes = 0
+        if desired != existing:
+            writes = int(self.conn.execute("DELETE FROM news_brief_selection_current").rowcount or 0)
+            for rank, story_id in enumerate(desired, start=1):
+                writes += int(
+                    self.conn.execute(
+                        """
+                        INSERT INTO news_brief_selection_current (
+                          rank, story_id, updated_at_ms
+                        )
+                        VALUES (%s, %s, %s)
+                        """,
+                        (rank, story_id, int(now_ms)),
+                    ).rowcount
+                    or 0
+                )
+        candidates = self.brief_candidates()
+        fingerprint = brief_fingerprint(candidates)
+        writes += self._schedule_brief_target(
+            fingerprint=fingerprint,
+            now_ms=now_ms,
+        )
         return writes
+
+    def _schedule_brief_target(self, *, fingerprint: str, now_ms: int) -> int:
+        publication = self.conn.execute(
+            """
+            SELECT publication_id
+              FROM news_brief_publications
+             WHERE fingerprint = %s
+            """,
+            (fingerprint,),
+        ).fetchone()
+        run = self.conn.execute(
+            """
+            SELECT run_id, status
+              FROM news_brief_runs
+             WHERE fingerprint = %s
+            """,
+            (fingerprint,),
+        ).fetchone()
+        terminal_run = run is not None and str(run["status"]) in {
+            "ready",
+            "insufficient_material",
+            "failed",
+        }
+        if publication is not None or terminal_run:
+            cursor = self.conn.execute(
+                """
+                UPDATE news_brief_current
+                   SET target_fingerprint = %s,
+                       publication_id = COALESCE(%s, publication_id),
+                       latest_run_id = COALESCE(%s, latest_run_id),
+                       pending_first_dirty_at_ms = NULL,
+                       pending_due_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE singleton_key
+                   AND (
+                     target_fingerprint IS DISTINCT FROM %s
+                     OR publication_id IS DISTINCT FROM COALESCE(%s, publication_id)
+                     OR latest_run_id IS DISTINCT FROM COALESCE(%s, latest_run_id)
+                     OR pending_first_dirty_at_ms IS NOT NULL
+                     OR pending_due_at_ms IS NOT NULL
+                   )
+                """,
+                (
+                    fingerprint,
+                    publication["publication_id"] if publication is not None else None,
+                    run["run_id"] if run is not None else None,
+                    now_ms,
+                    fingerprint,
+                    publication["publication_id"] if publication is not None else None,
+                    run["run_id"] if run is not None else None,
+                ),
+            )
+            return int(cursor.rowcount or 0)
+        cursor = self.conn.execute(
+            """
+            UPDATE news_brief_current
+               SET target_fingerprint = %s,
+                   pending_first_dirty_at_ms = COALESCE(pending_first_dirty_at_ms, %s),
+                   pending_due_at_ms = COALESCE(pending_due_at_ms, %s),
+                   updated_at_ms = %s
+             WHERE singleton_key
+               AND (
+                 target_fingerprint IS DISTINCT FROM %s
+                 OR pending_first_dirty_at_ms IS NULL
+                 OR pending_due_at_ms IS NULL
+               )
+            """,
+            (fingerprint, now_ms, now_ms + 600_000, now_ms, fingerprint),
+        )
+        return int(cursor.rowcount or 0)
 
     def refresh_bounded_read_models_for_maintenance(self, *, now_ms: int) -> None:
         self.conn.execute("DELETE FROM news_story_facet_counts")
@@ -2182,6 +2344,40 @@ class NewsRepository:
         ).fetchall()
         return select_top_stories(rows, limit=8, max_per_source=3)
 
+    def peek_brief_candidate(self, *, now_ms: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT current.target_fingerprint,
+                   current.pending_first_dirty_at_ms,
+                   current.pending_due_at_ms,
+                   run.run_id,
+                   run.status AS run_status,
+                   run.next_due_at_ms,
+                   run.lease_expires_at_ms
+              FROM news_brief_current current
+              LEFT JOIN news_brief_runs run
+                ON run.fingerprint = current.target_fingerprint
+             WHERE current.singleton_key
+               AND (
+                 (
+                   run.status = 'retryable'
+                   AND run.next_due_at_ms <= %s
+                 )
+                 OR (
+                   run.status = 'running'
+                   AND run.lease_expires_at_ms <= %s
+                 )
+                 OR (
+                   current.pending_due_at_ms <= %s
+                   AND (run.run_id IS NULL OR run.status NOT IN ('ready', 'insufficient_material', 'failed'))
+                 )
+               )
+             LIMIT 1
+            """,
+            (now_ms, now_ms, now_ms),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def record_brief_insufficient(
         self,
         *,
@@ -2197,9 +2393,9 @@ class NewsRepository:
             INSERT INTO news_brief_runs (
               run_id, fingerprint, status, attempt_count,
               candidate_story_count, candidate_source_count,
-              created_at_ms, updated_at_ms, completed_at_ms
+              created_at_ms, updated_at_ms, completed_at_ms, next_due_at_ms
             )
-            VALUES (%s, %s, 'insufficient_material', 0, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'insufficient_material', 0, %s, %s, %s, %s, %s, NULL)
             ON CONFLICT (fingerprint) DO UPDATE SET
               status = 'insufficient_material',
               candidate_story_count = EXCLUDED.candidate_story_count,
@@ -2208,6 +2404,7 @@ class NewsRepository:
               lease_expires_at_ms = NULL,
               heartbeat_at_ms = NULL,
               last_error = NULL,
+              next_due_at_ms = NULL,
               updated_at_ms = EXCLUDED.updated_at_ms,
               completed_at_ms = EXCLUDED.completed_at_ms
             WHERE news_brief_runs.status <> 'ready'
@@ -2234,11 +2431,15 @@ class NewsRepository:
             UPDATE news_brief_current
                SET target_fingerprint = %s,
                    latest_run_id = %s,
+                   pending_first_dirty_at_ms = NULL,
+                   pending_due_at_ms = NULL,
                    updated_at_ms = %s
              WHERE singleton_key
+               AND target_fingerprint = %s
                AND (
-                 target_fingerprint IS DISTINCT FROM %s
-                 OR latest_run_id IS DISTINCT FROM %s
+                 latest_run_id IS DISTINCT FROM %s
+                 OR pending_first_dirty_at_ms IS NOT NULL
+                 OR pending_due_at_ms IS NOT NULL
                )
             """,
             (fingerprint, run_id, now_ms, fingerprint, run_id),
@@ -2253,8 +2454,17 @@ class NewsRepository:
         now_ms: int,
         max_attempts: int,
         lease_owner: str,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+        current = self.conn.execute(
+            """
+            SELECT pending_due_at_ms
+              FROM news_brief_current
+             WHERE singleton_key AND target_fingerprint = %s
+            """,
+            (fingerprint,),
+        ).fetchone()
+        release_due_at_ms = int((current or {}).get("pending_due_at_ms") or now_ms)
         row = self.conn.execute(
             """
             SELECT *
@@ -2283,6 +2493,7 @@ class NewsRepository:
                            lease_expires_at_ms = NULL,
                            heartbeat_at_ms = NULL,
                            last_error = 'brief_attempts_exhausted',
+                           next_due_at_ms = NULL,
                            updated_at_ms = %s,
                            completed_at_ms = %s
                      WHERE run_id = %s
@@ -2290,12 +2501,24 @@ class NewsRepository:
                     """,
                     (now_ms, now_ms, str(row["run_id"])),
                 )
+                self.conn.execute(
+                    """
+                    UPDATE news_brief_current
+                       SET pending_first_dirty_at_ms = NULL,
+                           pending_due_at_ms = NULL,
+                           latest_run_id = %s,
+                           updated_at_ms = %s
+                     WHERE singleton_key AND target_fingerprint = %s
+                    """,
+                    (str(row["run_id"]), now_ms, fingerprint),
+                )
                 return None
             run_id = str(row["run_id"])
-            attempt_count = int(row["attempt_count"]) + 1
+            attempt_count = int(row["attempt_count"])
+            release_due_at_ms = int(row.get("next_due_at_ms") or release_due_at_ms)
         else:
             run_id = deterministic_id("brief_run", fingerprint)
-            attempt_count = 1
+            attempt_count = 0
         owner = str(lease_owner).strip()
         if not owner:
             raise ValueError("news_brief_lease_owner_required")
@@ -2317,6 +2540,7 @@ class NewsRepository:
               lease_expires_at_ms = EXCLUDED.lease_expires_at_ms,
               heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
               last_error = NULL,
+              next_due_at_ms = NULL,
               updated_at_ms = EXCLUDED.updated_at_ms,
               completed_at_ms = NULL
             """,
@@ -2333,17 +2557,87 @@ class NewsRepository:
                 now_ms,
             ),
         )
-        self.conn.execute(
+        current = self.conn.execute(
             """
             UPDATE news_brief_current
-               SET target_fingerprint = %s,
-                   latest_run_id = %s,
+               SET latest_run_id = %s,
                    updated_at_ms = %s
              WHERE singleton_key
+               AND target_fingerprint = %s
             """,
-            (fingerprint, run_id, now_ms),
+            (run_id, now_ms, fingerprint),
         )
-        return {"run_id": run_id, "lease_owner": owner}
+        if int(current.rowcount or 0) != 1:
+            self.conn.execute(
+                """
+                UPDATE news_brief_runs
+                   SET status = 'retryable',
+                       next_due_at_ms = %s,
+                       lease_owner = NULL,
+                       lease_expires_at_ms = NULL,
+                       heartbeat_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE run_id = %s AND lease_owner = %s
+                """,
+                (now_ms, now_ms, run_id, owner),
+            )
+            return None
+        return {
+            "run_id": run_id,
+            "lease_owner": owner,
+            "fingerprint": fingerprint,
+            "attempt_count": attempt_count,
+            "release_due_at_ms": release_due_at_ms,
+        }
+
+    def start_brief_model(
+        self,
+        *,
+        run_id: str,
+        lease_owner: str,
+        now_ms: int,
+        max_attempts: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_brief_runs
+               SET attempt_count = attempt_count + 1,
+                   heartbeat_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE run_id = %s
+               AND status = 'running'
+               AND lease_owner = %s
+               AND lease_expires_at_ms > %s
+               AND attempt_count < %s
+            """,
+            (now_ms, now_ms, run_id, lease_owner, now_ms, max_attempts),
+        )
+        return int(cursor.rowcount or 0) == 1
+
+    def release_brief_claim(
+        self,
+        *,
+        run_id: str,
+        lease_owner: str,
+        due_at_ms: int,
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_brief_runs
+               SET status = 'retryable',
+                   next_due_at_ms = %s,
+                   lease_owner = NULL,
+                   lease_expires_at_ms = NULL,
+                   heartbeat_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE run_id = %s
+               AND status = 'running'
+               AND lease_owner = %s
+            """,
+            (due_at_ms, now_ms, run_id, lease_owner),
+        )
+        return int(cursor.rowcount or 0) == 1
 
     def publish_brief(
         self,
@@ -2355,7 +2649,7 @@ class NewsRepository:
         draft: NewsBriefDraft,
         validation: Mapping[str, Any],
         now_ms: int,
-    ) -> str:
+    ) -> str | None:
         publication_id = deterministic_id("brief", fingerprint)
         sources = [
             {
@@ -2371,21 +2665,21 @@ class NewsRepository:
         claimed = self.conn.execute(
             """
             SELECT 1
-              FROM news_brief_runs
-             WHERE run_id = %s
-               AND fingerprint = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_expires_at_ms > %s
-             FOR UPDATE
+              FROM news_brief_runs run
+              JOIN news_brief_current current
+                ON current.singleton_key
+               AND current.target_fingerprint = run.fingerprint
+             WHERE run.run_id = %s
+               AND run.fingerprint = %s
+               AND run.status = 'running'
+               AND run.lease_owner = %s
+               AND run.lease_expires_at_ms > %s
+             FOR UPDATE OF run, current
             """,
             (run_id, fingerprint, lease_owner, now_ms),
         ).fetchone()
         if claimed is None:
-            raise RuntimeError("news_brief_lease_lost")
-        current_candidates = self.brief_candidates()
-        if brief_fingerprint(current_candidates) != fingerprint:
-            raise RuntimeError("news_brief_source_fingerprint_changed")
+            return None
         self.conn.execute(
             """
             INSERT INTO news_brief_publications (
@@ -2427,6 +2721,7 @@ class NewsRepository:
                    lease_owner = NULL,
                    lease_expires_at_ms = NULL,
                    heartbeat_at_ms = %s,
+                   next_due_at_ms = NULL,
                    completed_at_ms = %s,
                    updated_at_ms = %s
              WHERE run_id = %s AND lease_owner = %s
@@ -2437,12 +2732,13 @@ class NewsRepository:
             """
             UPDATE news_brief_current
                SET publication_id = %s,
-                   target_fingerprint = %s,
                    latest_run_id = %s,
+                   pending_first_dirty_at_ms = NULL,
+                   pending_due_at_ms = NULL,
                    updated_at_ms = %s
-             WHERE singleton_key
+             WHERE singleton_key AND target_fingerprint = %s
             """,
-            (publication_id, fingerprint, run_id, now_ms),
+            (publication_id, run_id, now_ms, fingerprint),
         )
         return publication_id
 
@@ -2453,30 +2749,95 @@ class NewsRepository:
         lease_owner: str,
         error: Exception,
         now_ms: int,
-    ) -> None:
+        max_attempts: int = 3,
+        retry_delay_ms: int = 300_000,
+    ) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT fingerprint, attempt_count
+              FROM news_brief_runs
+             WHERE run_id = %s
+               AND status = 'running'
+               AND lease_owner = %s
+             FOR UPDATE
+            """,
+            (run_id, lease_owner),
+        ).fetchone()
+        if row is None:
+            return None
+        exhausted = int(row["attempt_count"]) >= int(max_attempts)
+        status = "failed" if exhausted else "retryable"
+        next_due_at_ms = None if exhausted else int(now_ms) + int(retry_delay_ms)
         self.conn.execute(
             """
             UPDATE news_brief_runs
-               SET status = 'failed',
+               SET status = %s,
                    lease_owner = NULL,
                    lease_expires_at_ms = NULL,
                    heartbeat_at_ms = %s,
                    last_error = %s,
-                   completed_at_ms = %s,
+                   next_due_at_ms = %s,
+                   completed_at_ms = CASE WHEN %s THEN %s ELSE NULL END,
                    updated_at_ms = %s
              WHERE run_id = %s
                AND status = 'running'
                AND lease_owner = %s
             """,
             (
+                status,
                 now_ms,
                 f"{type(error).__name__}:{str(error)[:1000]}",
+                next_due_at_ms,
+                exhausted,
                 now_ms,
                 now_ms,
                 run_id,
                 lease_owner,
             ),
         )
+        if exhausted:
+            self.conn.execute(
+                """
+                UPDATE news_brief_current
+                   SET latest_run_id = %s,
+                       pending_first_dirty_at_ms = NULL,
+                       pending_due_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE singleton_key AND target_fingerprint = %s
+                """,
+                (run_id, now_ms, str(row["fingerprint"])),
+            )
+            terminal_row = self.conn.execute(
+                "SELECT * FROM news_brief_runs WHERE run_id = %s",
+                (run_id,),
+            ).fetchone()
+            if terminal_row is None:
+                raise RuntimeError("news_brief_terminal_row_missing")
+            source_row = {**dict(terminal_row), "native_target_key": str(row["fingerprint"])}
+            terminalize_source_row(
+                self.conn,
+                owner_key="news_brief",
+                source_table="news_brief_runs",
+                target_key=str(row["fingerprint"]),
+                source_row=source_row,
+                final_status="failed",
+                final_reason=str(source_row.get("last_error") or "brief_attempts_exhausted"),
+                final_reason_bucket="model_attempts_exhausted",
+                now_ms=int(now_ms),
+                attempt_count=int(source_row.get("attempt_count") or 0),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE news_brief_current
+                   SET latest_run_id = %s,
+                       pending_due_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key AND target_fingerprint = %s
+                """,
+                (run_id, next_due_at_ms, now_ms, str(row["fingerprint"])),
+            )
+        return status
 
     def get_brief(self, *, now_ms: int, history_limit: int = 20) -> dict[str, Any]:
         candidates = self.brief_candidates()

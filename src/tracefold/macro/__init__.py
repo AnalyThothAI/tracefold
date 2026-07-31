@@ -1,7 +1,6 @@
 """Public Macro decision-system interface."""
 
-from .acquisition import MacroAcquisitionService
-from .acquisition_worker import MacroAcquisitionWorker
+from .acquisition import MacroAcquisitionService, acquisition_loop_policy
 from .backfill import MacroBackfillPolicy, professional_backfill_policies
 from .calculations import (
     CALCULATION_REGISTRY,
@@ -11,7 +10,6 @@ from .calculations import (
     natural_change_calculation,
 )
 from .coverage import COVERAGE_MANIFEST, CoverageSpec, coverage_for_module
-from .document_analysis_worker import MacroDocumentAnalysisWorker
 from .domain import (
     MACRO_MODULE_IDS,
     MACRO_MODULE_LABELS,
@@ -21,6 +19,7 @@ from .domain import (
     FetchBatch,
     MacroClockKind,
     MacroFactFamily,
+    MacroModelExpectedError,
     MacroModuleId,
     MacroSourceClientProtocol,
     MacroSourceError,
@@ -50,6 +49,9 @@ from .evaluation import (
     select_macro_eval_case_seeds,
 )
 from .fed_analysis import (
+    FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+    FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
+    FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
     FedAnalysisEvidence,
     FedDocumentAnalysisDraft,
     MacroDocumentAnalysisService,
@@ -94,6 +96,7 @@ from .read_models import (
 from .reasons import MacroReason, MacroReasonImpact, MacroReasonRecovery, macro_reason
 from .registry import DATASET_REGISTRY, datasets_for_clock, datasets_for_module, require_dataset
 from .repository import MacroRepository
+from .runtime import MacroAcquisition
 from .session_calendar import is_us_market_session
 from .thesis import (
     MACRO_EVIDENCE_PACK_SCHEMA_VERSION,
@@ -155,12 +158,14 @@ from .thesis_v2 import (
     parse_current_thesis_v2,
     project_current_recovery,
 )
-from .thesis_worker import MacroThesisWorker
 
 __all__ = [
     "CALCULATION_REGISTRY",
     "COVERAGE_MANIFEST",
     "DATASET_REGISTRY",
+    "FED_DOCUMENT_ANALYSIS_PROMPT_VERSION",
+    "FED_FOMC_ANALYSIS_LOOKBACK_DAYS",
+    "FED_SPEECH_ANALYSIS_LOOKBACK_DAYS",
     "MACRO_EVIDENCE_PACK_SCHEMA_VERSION",
     "MACRO_LIVE_DELTA_SCHEMA_VERSION",
     "MACRO_LIVE_DELTA_SCHEMA_VERSION_V2",
@@ -192,8 +197,8 @@ __all__ = [
     "FedOfficialRoleFact",
     "FetchBatch",
     "MacroAblationEvidenceV1",
+    "MacroAcquisition",
     "MacroAcquisitionService",
-    "MacroAcquisitionWorker",
     "MacroAlternative",
     "MacroAlternativePresentation",
     "MacroAssetHorizonPresentation",
@@ -211,7 +216,6 @@ __all__ = [
     "MacroCondition",
     "MacroConditionAnnotation",
     "MacroDocumentAnalysisService",
-    "MacroDocumentAnalysisWorker",
     "MacroDraftModuleAssessment",
     "MacroEvalCaseSeedV1",
     "MacroEvalCaseV1",
@@ -230,6 +234,7 @@ __all__ = [
     "MacroLiveDeltaV2",
     "MacroMainline",
     "MacroMainlinePresentation",
+    "MacroModelExpectedError",
     "MacroModuleId",
     "MacroModuleRole",
     "MacroNarrativeSection",
@@ -266,13 +271,13 @@ __all__ = [
     "MacroThesisService",
     "MacroThesisV1",
     "MacroThesisV2",
-    "MacroThesisWorker",
     "MarketObservationFact",
     "MarketSettlementFact",
     "NaturalChangeCalculationSpec",
     "PublicationGateFailure",
     "ReleaseFact",
     "SeriesFact",
+    "acquisition_loop_policy",
     "build_typed_module_payload",
     "canonical_json_bytes",
     "classify_current_thesis_state",

@@ -84,7 +84,10 @@ class BinanceUsdmFuturesClient:
         raise BinanceUsdmFuturesClientError("Binance ticker/24hr returned invalid payload")
 
     def _get_json(self, path: str, *, params: dict[str, str] | None = None) -> Any:
-        response = self._client.get(path, params=params)
+        try:
+            response = self._client.get(path, params=params)
+        except httpx.HTTPError as exc:
+            raise BinanceUsdmFuturesClientError(f"Binance {path} transport failed:{type(exc).__name__}") from exc
         if response.status_code >= 400:
             raise BinanceUsdmFuturesClientError(f"Binance {path} returned HTTP {response.status_code}")
         try:

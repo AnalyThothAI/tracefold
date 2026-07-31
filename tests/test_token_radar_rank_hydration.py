@@ -170,7 +170,7 @@ def test_radar_microbatch_removes_expired_target_from_same_publication() -> None
         "expected_transaction_timeout_seconds",
     ),
     [
-        ("steady_projection_coordinator", 3.0, 3.0),
+        ("radar_projection", 3.0, 3.0),
         ("radar_maintenance_rebuild", 120.0, 120.0),
     ],
 )

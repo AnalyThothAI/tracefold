@@ -26,7 +26,8 @@ FIXTURES = Path(__file__).resolve().parent / "provider_frames"
 
 
 class _InlineRuntimeResources:
-    async def run_realtime_db(self, function, /, *args, **kwargs):
+    async def run_business(self, _operation_name, function, /, *args, **kwargs):
+        kwargs.pop("operation_timeout_seconds", None)
         return function(*args, **kwargs)
 
 
@@ -70,12 +71,9 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
         raw_frames = _load_json("gmgn_public_tw_partial_then_complete.json")
         store = MemoryStore()
         service = CollectorService(
-            name="collector",
-            telemetry=object(),
             store=store,
             upstream_client=None,
-            resources=_InlineRuntimeResources(),
-            provider_governor=object(),
+            db=_InlineRuntimeResources(),
         )
         service.snapshot_timeout = 0.05
 

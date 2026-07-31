@@ -10,12 +10,8 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from tracefold.platform.postgres.projection_frontier import (
-    MODEL_FRONTIER,
-    NEWS_FRONTIER,
-)
+from tracefold.platform.postgres.projection_frontier import NEWS_FRONTIER
 
-from .brief import brief_fingerprint
 from .classification import SEVERITY_VALUES, classify_by_keyword
 from .identity import (
     MAX_CANDIDATE_BUCKET,
@@ -25,7 +21,6 @@ from .identity import (
     story_similarity,
 )
 from .models import (
-    BRIEF_WORKFLOW_VERSION,
     CLASSIFIER_VERSION,
     IMPORTANCE_VERSION,
     STORY_IDENTITY_VERSION,
@@ -97,7 +92,7 @@ class NewsProjectionService:
         self,
         *,
         db: Any,
-        worker_name: str = "steady_projection_coordinator",
+        worker_name: str = "news_projection",
     ) -> None:
         self.db = db
         self.worker_name = worker_name
@@ -990,19 +985,6 @@ class NewsProjectionService:
                 if summary_writes != 1:
                     raise RuntimeError("news_projection_summary_missing")
             serving_rows = base_serving_rows + summary_writes
-            if serving_rows:
-                brief_candidates = repos.news.brief_candidates()
-                repos.projection_frontiers.mark_dirty(
-                    MODEL_FRONTIER,
-                    key={
-                        "candidate_kind": "news_brief",
-                        "shard_key": "current",
-                    },
-                    dirty_at_ms=now_ms,
-                    deadline_at_ms=now_ms + 10 * 60 * 1000,
-                    input_fingerprint=brief_fingerprint(brief_candidates),
-                    version=BRIEF_WORKFLOW_VERSION,
-                )
             if not repos.projection_frontiers.complete(
                 NEWS_FRONTIER,
                 key={"bucket_id": claim.bucket_id},
@@ -1220,19 +1202,6 @@ class NewsProjectionService:
                 if summary_writes != 1:
                     raise RuntimeError("news_projection_summary_missing")
             serving_rows = base_serving_rows + summary_writes
-            if serving_rows:
-                brief_candidates = repos.news.brief_candidates()
-                repos.projection_frontiers.mark_dirty(
-                    MODEL_FRONTIER,
-                    key={
-                        "candidate_kind": "news_brief",
-                        "shard_key": "current",
-                    },
-                    dirty_at_ms=now_ms,
-                    deadline_at_ms=now_ms + 10 * 60 * 1000,
-                    input_fingerprint=brief_fingerprint(brief_candidates),
-                    version=BRIEF_WORKFLOW_VERSION,
-                )
             if not repos.projection_frontiers.complete(
                 NEWS_FRONTIER,
                 key={"bucket_id": claim.bucket_id},
@@ -1294,6 +1263,22 @@ class NewsProjectionService:
         ):
             return bool(
                 repos.projection_frontiers.release_stale(
+                    NEWS_FRONTIER,
+                    key={"bucket_id": claim.bucket_id},
+                    runtime_id=claim.runtime_id,
+                    now_ms=now_ms,
+                )
+            )
+
+    def release_prework(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            return bool(
+                repos.projection_frontiers.release_prework(
                     NEWS_FRONTIER,
                     key={"bucket_id": claim.bucket_id},
                     runtime_id=claim.runtime_id,

@@ -35,6 +35,7 @@ from tracefold.macro.thesis_v2 import (
     evaluate_live_delta_v2,
     evaluate_outcome_replay_v2,
 )
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 class _TestDb:
@@ -45,6 +46,24 @@ class _TestDb:
     def worker_session(self, *_args: Any, **_kwargs: Any) -> Iterator[Any]:
         with repository_session_for_connection(self.conn) as repos:
             yield repos
+
+
+class _FailOnBusinessCall:
+    def __init__(self, call_number: int) -> None:
+        self.call_number = call_number
+        self.calls = 0
+
+    async def run_business(self, _name: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("operation_timeout_seconds", None)
+        self.calls += 1
+        if self.calls == self.call_number:
+            raise ResourceAdmissionTimeout("test_business_admission_timeout")
+        return function(*args, **kwargs)
+
+
+class _UnusedThesisAgent:
+    async def draft(self, **_kwargs: Any) -> Any:
+        raise AssertionError("model must be replaced by the boundary test")
 
 
 def _prepare_claimed_run(repos, *, lease_owner: str = "integration-owner"):
@@ -359,7 +378,7 @@ def test_transient_provider_retry_reuses_input_and_runs_one_model_call_per_attem
         second = asyncio.run(service.run_due(now_ms=CUTOFF_MS + 902_100))
 
         assert first.status == "retryable"
-        assert first.error_code == "macro_thesis_timeouterror"
+        assert first.error_code == "macro_thesis_model_expected_error"
         assert second.status == "published"
         assert first.research_input_id == second.research_input_id == research_input.input_id
         assert model.invocation_count == 2
@@ -379,5 +398,73 @@ def test_transient_provider_retry_reuses_input_and_runs_one_model_call_per_attem
             assert state["reviewer_invocation_id"] is None
             assert conn.execute("SELECT count(*) AS count FROM macro_research_inputs").fetchone()["count"] == 1
             assert conn.execute("SELECT count(*) AS count FROM macro_thesis_publications").fetchone()["count"] == 1
+    finally:
+        conn.close()
+
+
+def test_thesis_pre_model_admission_releases_exact_claim(tmp_path, monkeypatch) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    pack = _pack()
+    try:
+        reset_postgres_schema(conn)
+        service = MacroThesisService(
+            db=_TestDb(conn),
+            agent=_UnusedThesisAgent(),  # type: ignore[arg-type]
+            lease_owner="pre-model-admission-owner",
+            clock_ms=lambda: CUTOFF_MS + 2_000,
+        )
+        monkeypatch.setattr(service, "_build_pack", lambda **_kwargs: pack)
+
+        async def fail_before_model(**_kwargs: Any) -> Any:
+            raise ResourceAdmissionTimeout("test_model_admission_timeout")
+
+        monkeypatch.setattr(service, "_run_with_heartbeat", fail_before_model)
+        view = asyncio.run(service.run_due(now_ms=CUTOFF_MS + 100))
+
+        assert view.status == "retry_soon"
+        with repository_session_for_connection(conn) as repos:
+            state = repos.macro_thesis.state(SESSION)
+        assert state is not None
+        assert state["status"] == "pending"
+        assert state["attempt_count"] == 0
+        assert state["lease_owner"] is None
+        assert state["leased_until_ms"] is None
+    finally:
+        conn.close()
+
+
+def test_thesis_post_model_publication_admission_is_fatal(tmp_path, monkeypatch) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    pack = _pack()
+    try:
+        reset_postgres_schema(conn)
+        service = MacroThesisService(
+            db=_TestDb(conn),
+            agent=_UnusedThesisAgent(),  # type: ignore[arg-type]
+            lease_owner="post-model-admission-owner",
+            clock_ms=lambda: CUTOFF_MS + 2_000,
+            database=_FailOnBusinessCall(3),
+        )
+        monkeypatch.setattr(service, "_build_pack", lambda **_kwargs: pack)
+        monkeypatch.setattr(
+            thesis_service_module,
+            "compile_candidate_publication_v2",
+            lambda **_kwargs: object(),
+        )
+
+        async def complete_model(*, model_started, **_kwargs: Any):
+            model_started.set()
+            return object()
+
+        monkeypatch.setattr(service, "_run_with_heartbeat", complete_model)
+        with pytest.raises(ResourceAdmissionTimeout, match="test_business_admission_timeout"):
+            asyncio.run(service.run_due(now_ms=CUTOFF_MS + 100))
+
+        with repository_session_for_connection(conn) as repos:
+            state = repos.macro_thesis.state(SESSION)
+        assert state is not None
+        assert state["status"] == "running"
+        assert state["attempt_count"] == 1
+        assert state["lease_owner"] == "post-model-admission-owner"
     finally:
         conn.close()

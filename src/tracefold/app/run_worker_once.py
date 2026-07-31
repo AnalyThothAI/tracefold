@@ -2,56 +2,38 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.market_providers import wire_asset_market
 from tracefold.app.provider_types import AssetMarketProviders
-from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
-from tracefold.market import (
-    AssetProfileRefreshWorker,
-    ResolutionRefreshWorker,
-    TokenImageMirrorWorker,
-)
+from tracefold.app.worker_capabilities import FiniteOperations
+from tracefold.market import AssetProfileRefresh, ResolutionRefresh, TokenImageMirror
 from tracefold.platform.config.settings import Settings
-from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+
+_OPERATIONS = frozenset(
+    {
+        "resolution_refresh",
+        "asset_profile_refresh",
+        "token_image_mirror",
+    }
+)
 
 
-@dataclass(frozen=True, slots=True)
-class WorkerExecution:
-    worker_name: str
-    processed: int
-    failed: int
-    dead: int
-    skipped: int
-    notes: dict[str, Any]
-    preparation: dict[str, Any] | None = None
-
-    def payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "worker_name": self.worker_name,
-            "processed": self.processed,
-            "failed": self.failed,
-            "dead": self.dead,
-            "skipped": self.skipped,
-            "notes": dict(self.notes),
-        }
-        if self.preparation is not None:
-            payload["preparation"] = dict(self.preparation)
-        return payload
-
-
-def mirror_token_images_once(settings: Settings, *, limit: int) -> WorkerExecution:
+def mirror_token_images_once(
+    settings: Settings,
+    *,
+    limit: int,
+    db: WorkerDatabase | None = None,
+) -> dict[str, Any]:
     return asyncio.run(
         _run_maintenance(
             settings=settings,
-            unit_name="token_image_mirror",
+            operation="token_image_mirror",
             limit=limit,
             reprocess_limit=500,
+            db=db,
         )
     )
 
@@ -61,24 +43,32 @@ def refresh_resolutions_once(
     *,
     limit: int,
     reprocess_limit: int,
-) -> WorkerExecution:
+    db: WorkerDatabase | None = None,
+) -> dict[str, Any]:
     return asyncio.run(
         _run_maintenance(
             settings=settings,
-            unit_name="resolution_refresh",
+            operation="resolution_refresh",
             limit=limit,
             reprocess_limit=reprocess_limit,
+            db=db,
         )
     )
 
 
-def refresh_asset_profiles_once(settings: Settings, *, limit: int) -> WorkerExecution:
+def refresh_asset_profiles_once(
+    settings: Settings,
+    *,
+    limit: int,
+    db: WorkerDatabase | None = None,
+) -> dict[str, Any]:
     return asyncio.run(
         _run_maintenance(
             settings=settings,
-            unit_name="asset_profile_refresh",
+            operation="asset_profile_refresh",
             limit=limit,
             reprocess_limit=500,
+            db=db,
         )
     )
 
@@ -86,64 +76,78 @@ def refresh_asset_profiles_once(settings: Settings, *, limit: int) -> WorkerExec
 async def _run_maintenance(
     *,
     settings: Settings,
-    unit_name: str,
+    operation: str,
     limit: int,
     reprocess_limit: int,
-) -> WorkerExecution:
-    if limit < 1:
+    db: WorkerDatabase | None,
+) -> dict[str, Any]:
+    if operation not in _OPERATIONS:
+        raise ValueError(f"maintenance_operation_unsupported:{operation}")
+    if int(limit) < 1 or int(reprocess_limit) < 1:
         raise ValueError("maintenance_limit_must_be_positive")
-    telemetry = TelemetryRegistry()
-    db = WorkerDatabase.create(settings, telemetry=telemetry)
-    resources = RuntimeResources()
-    governor = ProviderGovernor()
-    asset_market: AssetMarketProviders | None = None
-    worker: WorkerBase | None = None
+
+    owns_db = db is None
+    database = db or WorkerDatabase.create(settings)
+    lock_conn: Any | None = None
+    finite = FiniteOperations()
+    providers: AssetMarketProviders | None = None
     primary_error: BaseException | None = None
     try:
-        if unit_name in {"asset_profile_refresh", "resolution_refresh"}:
-            asset_market = wire_asset_market(settings)
-        worker = _construct_maintenance_worker(
-            unit_name=unit_name,
+        if owns_db:
+            lock_conn = database.acquire_maintenance_runtime_lock()
+        if operation in {"asset_profile_refresh", "resolution_refresh"}:
+            providers = wire_asset_market(settings)
+        turn = _maintenance_turn(
+            operation=operation,
             settings=settings,
-            db=db,
-            telemetry=telemetry,
-            resources=resources,
-            governor=governor,
-            asset_market=asset_market,
-            limit=limit,
+            db=database,
+            finite=finite,
+            providers=providers,
             reprocess_limit=reprocess_limit,
         )
         preparation = (
-            _enqueue_missing_asset_profile_targets(
-                db=db,
-                asset_market=asset_market,
+            await database.run_business(
+                "ops_refresh_asset_profiles_prepare",
+                _enqueue_missing_asset_profile_targets,
+                db=database,
+                asset_market=providers,
                 limit=limit,
                 now_ms=_now_ms(),
+                operation_timeout_seconds=120.0,
             )
-            if unit_name == "asset_profile_refresh"
+            if operation == "asset_profile_refresh"
             else None
         )
-        iterations = limit if unit_name != "resolution_refresh" else 1
-        results: list[WorkerResult] = []
-        for _ in range(iterations):
-            result = await worker.run_once()
-            results.append(result)
-            if result.skipped and not result.processed and not result.failed and not result.dead:
+        counters = {"processed": 0, "failed": 0, "terminal": 0, "skipped": 0}
+        for _ in range(int(limit)):
+            outcome = await turn()
+            if outcome is False:
+                counters["skipped"] += 1
                 break
-        return _execution(
-            worker_name=unit_name,
-            results=results,
-            preparation=preparation,
-        )
+            if outcome is None:
+                counters["skipped"] += 1
+                continue
+            if outcome is True:
+                counters["processed"] += 1
+                continue
+            if outcome not in {"processed", "failed", "terminal"}:
+                raise RuntimeError(f"maintenance_outcome_invalid:{outcome}")
+            counters[outcome] += 1
+        return {
+            "operation": operation,
+            **counters,
+            "preparation": preparation,
+        }
     except BaseException as exc:
         primary_error = exc
         raise
     finally:
         errors = await _close_maintenance(
-            worker=worker,
-            asset_market=asset_market,
-            db=db,
-            resources=resources,
+            providers=providers,
+            database=database,
+            finite=finite,
+            owns_db=owns_db,
+            lock_conn=lock_conn,
         )
         if errors:
             cleanup_error = ExceptionGroup("maintenance_cleanup_failed", errors)
@@ -152,58 +156,44 @@ async def _run_maintenance(
             primary_error.add_note(str(cleanup_error))
 
 
-def _construct_maintenance_worker(
+def _maintenance_turn(
     *,
-    unit_name: str,
+    operation: str,
     settings: Settings,
     db: WorkerDatabase,
-    telemetry: TelemetryRegistry,
-    resources: RuntimeResources,
-    governor: ProviderGovernor,
-    asset_market: AssetMarketProviders | None,
-    limit: int,
+    finite: FiniteOperations,
+    providers: AssetMarketProviders | None,
     reprocess_limit: int,
-) -> WorkerBase:
+) -> Any:
     runtime_id = str(uuid4())
-    if unit_name == "token_image_mirror":
-        return TokenImageMirrorWorker(
-            name=unit_name,
+    if operation == "token_image_mirror":
+        return TokenImageMirror(
             db=db,
-            telemetry=telemetry,
             app_home=settings.app_home,
-            resources=resources,
-            provider_governor=governor,
+            finite_operations=finite,
             runtime_id=runtime_id,
-        )
-    if asset_market is None:
-        raise RuntimeError(f"maintenance_provider_required:{unit_name}")
-    if unit_name == "asset_profile_refresh":
-        if not asset_market.dex_profile_sources:
+        ).turn
+    if providers is None:
+        raise RuntimeError(f"maintenance_provider_required:{operation}")
+    if operation == "asset_profile_refresh":
+        if not providers.dex_profile_sources:
             raise RuntimeError("maintenance_asset_profile_provider_unavailable")
-        return AssetProfileRefreshWorker(
-            name=unit_name,
+        return AssetProfileRefresh(
             db=db,
-            telemetry=telemetry,
-            resources=resources,
-            provider_governor=governor,
+            finite_operations=finite,
             runtime_id=runtime_id,
-            dex_profile_sources=asset_market.dex_profile_sources,
-        )
-    if unit_name == "resolution_refresh":
-        if asset_market.dex_discovery_market is None:
-            raise RuntimeError("maintenance_resolution_provider_unavailable")
-        return ResolutionRefreshWorker(
-            name=unit_name,
-            db=db,
-            telemetry=telemetry,
-            dex_discovery_market=asset_market.dex_discovery_market,
-            resources=resources,
-            provider_governor=governor,
-            runtime_id=runtime_id,
-            claim_limit=limit,
-            reprocess_limit=reprocess_limit,
-        )
-    raise ValueError(f"maintenance_unit_unsupported:{unit_name}")
+            dex_profile_sources=providers.dex_profile_sources,
+        ).turn
+    if providers.dex_discovery_market is None:
+        raise RuntimeError("maintenance_resolution_provider_unavailable")
+    return ResolutionRefresh(
+        db=db,
+        dex_discovery_market=providers.dex_discovery_market,
+        finite_operations=finite,
+        runtime_id=runtime_id,
+        claim_limit=1,
+        reprocess_limit=reprocess_limit,
+    ).turn
 
 
 def _enqueue_missing_asset_profile_targets(
@@ -241,54 +231,66 @@ def _enqueue_missing_asset_profile_targets(
     }
 
 
-def _execution(
-    *,
-    worker_name: str,
-    results: list[WorkerResult],
-    preparation: dict[str, Any] | None,
-) -> WorkerExecution:
-    return WorkerExecution(
-        worker_name=worker_name,
-        processed=sum(int(result.processed) for result in results),
-        failed=sum(int(result.failed) for result in results),
-        dead=sum(int(result.dead) for result in results),
-        skipped=sum(int(result.skipped) for result in results),
-        notes={
-            "iterations": len(results),
-            "results": [dict(result.notes) for result in results],
-        },
-        preparation=preparation,
-    )
-
-
 async def _close_maintenance(
     *,
-    worker: WorkerBase | None,
-    asset_market: AssetMarketProviders | None,
-    db: WorkerDatabase,
-    resources: RuntimeResources,
+    providers: AssetMarketProviders | None,
+    database: WorkerDatabase,
+    finite: FiniteOperations,
+    owns_db: bool,
+    lock_conn: Any | None,
 ) -> list[Exception]:
     errors: list[Exception] = []
-    for closeable in (worker, asset_market, db):
-        if closeable is None:
-            continue
-        try:
-            await closeable.aclose()
-        except Exception as exc:
-            errors.append(exc)
+    finite.close_admission()
+    if providers is not None:
+        seen: set[int] = set()
+        sync_providers = [
+            providers.cex_market,
+            providers.dex_discovery_market,
+            providers.dex_quote_market,
+            *(source.market for source in providers.dex_profile_sources),
+        ]
+        for provider in sync_providers:
+            if provider is None or id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            try:
+                await finite.run(
+                    "maintenance_provider_close",
+                    provider.close,
+                    timeout_seconds=5.0,
+                    allow_shutdown=True,
+                )
+            except Exception as exc:
+                errors.append(exc)
+        if providers.stream_dex_market is not None and id(providers.stream_dex_market) not in seen:
+            try:
+                await providers.stream_dex_market.aclose()
+            except Exception as exc:
+                errors.append(exc)
     try:
-        resources.close()
+        if not await database.drain_business(timeout_seconds=5.0):
+            raise RuntimeError("maintenance_database_drain_timeout")
+        if not await finite.drain(timeout_seconds=5.0):
+            raise RuntimeError("maintenance_finite_drain_timeout")
     except Exception as exc:
         errors.append(exc)
+    finite.close()
+    if owns_db:
+        try:
+            if lock_conn is not None:
+                database.release_maintenance_runtime_lock(lock_conn)
+            await database.aclose()
+            database.close_executors()
+        except Exception as exc:
+            errors.append(exc)
     return errors
 
 
 def _now_ms() -> int:
-    return int(time.time() * 1000)
+    return int(time.time() * 1_000)
 
 
 __all__ = [
-    "WorkerExecution",
     "mirror_token_images_once",
     "refresh_asset_profiles_once",
     "refresh_resolutions_once",

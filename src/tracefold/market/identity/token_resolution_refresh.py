@@ -17,24 +17,27 @@ def reprocess_recent_token_intents(
     window: str,
     limit: int,
     lookup_keys: list[str] | None = None,
+    after_intent_id: str | None = None,
 ) -> dict[str, Any]:
     with repos.transaction():
-        return _reprocess_recent_token_intents(
+        return reprocess_token_intent_page(
             repos=repos,
             now_ms=now_ms,
             window=window,
             limit=limit,
             lookup_keys=lookup_keys,
+            after_intent_id=after_intent_id,
         )
 
 
-def _reprocess_recent_token_intents(
+def reprocess_token_intent_page(
     *,
     repos: Any,
     now_ms: int,
     window: str,
     limit: int,
     lookup_keys: list[str] | None,
+    after_intent_id: str | None = None,
 ) -> dict[str, Any]:
     repos.require_transaction(operation="token_resolution_refresh")
     since_ms = int(now_ms) - WINDOW_MS[window]
@@ -42,10 +45,13 @@ def _reprocess_recent_token_intents(
         intents = repos.token_intent_lookup.recent_intents_for_lookup_keys(
             lookup_keys,
             since_ms=since_ms,
-            limit=limit,
+            limit=limit + 1,
+            after_intent_id=after_intent_id,
         )
     else:
         intents = repos.token_intents.recent_unresolved(since_ms=since_ms, limit=limit)
+    has_more = len(intents) > limit
+    intents = intents[:limit]
     resolver = TokenIntentResolver(
         registry=repos.registry,
         resolutions=repos.intent_resolutions,
@@ -98,4 +104,6 @@ def _reprocess_recent_token_intents(
         "resolved_intents": resolved,
         "radar_edge_mutations": radar_edge_mutations,
         "since_ms": since_ms,
+        "has_more": has_more,
+        "next_after_intent_id": str(intents[-1]["intent_id"]) if has_more and intents else None,
     }

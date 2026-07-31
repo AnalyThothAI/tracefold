@@ -147,7 +147,7 @@ def _yfinance_intraday(
                 if market_calendar == "continuous"
                 else "etf_intraday"
             ),
-            "contract": "unofficial_yahoo_finance_wrapper",
+            "contract": "unofficial_yahoo_chart_endpoint",
         },
     )
 
@@ -194,7 +194,7 @@ def _yfinance_daily(
             "prepost": False,
             "history_years": 5,
             "health_group": "futures_daily",
-            "contract": "unofficial_yahoo_finance_continuous_contract",
+            "contract": "unofficial_yahoo_chart_continuous_contract",
         },
     )
 

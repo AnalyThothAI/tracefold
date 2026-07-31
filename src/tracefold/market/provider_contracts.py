@@ -23,8 +23,16 @@ class ProviderHealth:
     last_error: str | None = None
 
 
-class DexProviderTemporarilyUnavailable(RuntimeError):
+class MarketProviderExpectedError(RuntimeError):
+    """A declared finite provider failure safe for domain persistence."""
+
+
+class DexProviderTemporarilyUnavailable(MarketProviderExpectedError):
     pass
+
+
+class MarketStreamExpectedError(RuntimeError):
+    """A declared reconnectable stream transport/protocol failure."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,5 +182,7 @@ __all__ = [
     "DexTokenQuoteProvider",
     "DexTokenQuoteRequest",
     "MarketCapability",
+    "MarketProviderExpectedError",
+    "MarketStreamExpectedError",
     "ProviderHealth",
 ]

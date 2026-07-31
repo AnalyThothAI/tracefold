@@ -4,7 +4,6 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import httpx
-import pandas as pd
 import pytest
 
 import tracefold.integrations.macro_sources.client as macro_source_client
@@ -17,6 +16,32 @@ from tracefold.macro import DocumentFact, ReleaseFact, SeriesFact, require_datas
 from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
+
+
+def _fetch_macro_continuations(
+    client: MacroSourceClient,
+    spec,
+    *,
+    cursor: dict[str, object],
+    stop_on_facts: bool = True,
+    max_turns: int = 20,
+):
+    batches = []
+    next_cursor = cursor
+    for _ in range(max_turns):
+        batch = client.fetch(
+            spec,
+            partition_key="latest",
+            cursor=next_cursor,
+            now_ms=NOW_MS,
+        )
+        batches.append(batch)
+        assert batch.diagnostics["request_count"] <= 4
+        assert batch.diagnostics["decoded_bytes"] <= 25_000_000
+        if (stop_on_facts and batch.facts) or batch.completion == "complete":
+            return batch, batches
+        next_cursor = batch.cursor
+    raise AssertionError("macro continuation did not converge")
 
 
 def test_fred_csv_uses_explicit_backfill_bounds_and_emits_typed_series_facts() -> None:
@@ -249,6 +274,53 @@ def test_federal_reserve_speech_adapter_fetches_official_full_text() -> None:
     assert document.source_url.startswith("https://www.federalreserve.gov/")
 
 
+def test_federal_reserve_speech_adapter_continues_at_three_documents() -> None:
+    requests: list[httpx.Request] = []
+    links = "".join(
+        f'<a href="/newsevents/speech/example2026072{index}a.htm">Policy {index}</a>' for index in range(1, 6)
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/newsevents/2026-speeches.htm"):
+            return httpx.Response(200, text=links, request=request)
+        return httpx.Response(
+            200,
+            text=(
+                "<html><title>Policy Outlook - Federal Reserve Board</title><main>"
+                "<p>Chair Example Q. Official. "
+                + "The policy outlook depends on inflation and employment evidence. " * 12
+                + "</p></main></html>"
+            ),
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        first = client.fetch(
+            require_dataset("federal_reserve.board.speeches"),
+            partition_key="latest",
+            cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
+            now_ms=NOW_MS,
+        )
+        second = client.fetch(
+            require_dataset("federal_reserve.board.speeches"),
+            partition_key="latest",
+            cursor=first.cursor,
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(first.facts) == 3
+    assert first.completion == "continuation"
+    assert first.diagnostics["request_count"] == 4
+    assert len(second.facts) == 2
+    assert second.completion == "complete"
+    assert second.diagnostics["request_count"] == 3
+    assert len(requests) == 7
+
+
 def test_treasury_curve_adapter_emits_one_series_fact_per_tenor() -> None:
     xml = """<?xml version="1.0" encoding="utf-8"?>
     <feed xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
@@ -311,22 +383,31 @@ def test_fomc_calendar_adapter_stores_distinct_full_text_document_types() -> Non
 
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
-        batch = client.fetch(
+        first = client.fetch(
             require_dataset("federal_reserve.fomc.documents"),
             partition_key="latest",
             cursor={},
             now_ms=NOW_MS,
         )
+        second = client.fetch(
+            require_dataset("federal_reserve.fomc.documents"),
+            partition_key="latest",
+            cursor=first.cursor,
+            now_ms=NOW_MS,
+        )
     finally:
         client.close()
 
-    assert {fact.document_type for fact in batch.facts} == {
+    assert first.completion == "continuation"
+    assert second.completion == "complete"
+    facts = first.facts + second.facts
+    assert {fact.document_type for fact in facts} == {
         "statement",
         "implementation",
         "minutes",
         "sep",
     }
-    assert all(len(fact.content_text) > 200 for fact in batch.facts)
+    assert all(len(fact.content_text) > 200 for fact in facts)
 
 
 def test_fomc_calendar_adapter_extracts_official_sep_pdf(
@@ -508,11 +589,10 @@ def test_reserve_bank_sitemap_adapter_accepts_only_official_full_speech_pages() 
 
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
-        batch = client.fetch(
+        batch, batches = _fetch_macro_continuations(
+            client,
             require_dataset("federal_reserve.reserve_bank.speeches"),
-            partition_key="latest",
             cursor={},
-            now_ms=NOW_MS,
         )
     finally:
         client.close()
@@ -524,6 +604,7 @@ def test_reserve_bank_sitemap_adapter_accepts_only_official_full_speech_pages() 
     assert document.metadata["body_source"] == "official_reserve_bank_page"
     assert document.source_url.startswith("https://www.bostonfed.org/")
     assert len(document.content_text) > 500
+    assert [item.diagnostics["request_count"] for item in batches] == [1, 2]
 
 
 def test_missing_cfe_daily_file_is_retryable_not_permanently_unavailable() -> None:
@@ -532,11 +613,18 @@ def test_missing_cfe_daily_file_is_retryable_not_permanently_unavailable() -> No
 
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
+        first = client.fetch(
+            require_dataset("cboe.cfe.vx.settlement"),
+            partition_key="2026-07-27",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+        assert first.completion == "continuation"
         with pytest.raises(MacroSourceError, match="file_not_published") as error:
             client.fetch(
                 require_dataset("cboe.cfe.vx.settlement"),
                 partition_key="2026-07-27",
-                cursor={},
+                cursor=first.cursor,
                 now_ms=NOW_MS,
             )
     finally:
@@ -742,25 +830,24 @@ def test_nasdaq_daily_history_requests_five_year_window_and_emits_daily_facts() 
 
 
 def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_period() -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[httpx.Request] = []
 
-    def load(symbol: str, **kwargs: object) -> pd.DataFrame:
-        calls.append({"symbol": symbol, **kwargs})
-        return pd.DataFrame(
-            {
-                "Open": [735.0, 738.0],
-                "High": [736.0, 739.0],
-                "Low": [734.0, 737.0],
-                "Close": [735.34, 738.93],
-                "Volume": [1_000.0, 2_000.0],
-            },
-            index=pd.to_datetime(
-                ["2026-07-27T19:50:00-04:00", "2026-07-27T19:55:00-04:00"],
-                utc=True,
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _yahoo_chart_response(
+            request,
+            timestamps=(
+                int(datetime(2026, 7, 27, 23, 50, tzinfo=UTC).timestamp()),
+                int(datetime(2026, 7, 27, 23, 55, tzinfo=UTC).timestamp()),
             ),
+            opens=(735.0, 738.0),
+            highs=(736.0, 739.0),
+            lows=(734.0, 737.0),
+            closes=(735.34, 738.93),
+            volumes=(1_000.0, 2_000.0),
         )
 
-    client = MacroSourceClient(yfinance_history_loader=load)
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
         initial = client.fetch(
             require_dataset("yfinance.spy.intraday"),
@@ -784,28 +871,29 @@ def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_p
     assert initial.diagnostics["latest_market_at_ms"] == initial.facts[-1].observed_at_ms
     assert initial.facts[-1].source_id == "yahoo_finance"
     assert initial.facts[-1].raw_data["interval"] == "5m"
-    assert calls[0]["period"] == "1mo"
-    assert calls[1]["period"] == "1d"
+    assert calls[0].url.params["range"] == "1mo"
+    assert calls[1].url.params["range"] == "1d"
+    assert all(batch.diagnostics["request_count"] == 1 for batch in (initial, incremental))
+    assert initial.diagnostics["decoded_bytes"] > 0
     assert incremental.response_hash == initial.response_hash
 
 
 def test_yfinance_daily_continuous_proxy_uses_five_year_then_monthly_period() -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[httpx.Request] = []
 
-    def load(symbol: str, **kwargs: object) -> pd.DataFrame:
-        calls.append({"symbol": symbol, **kwargs})
-        return pd.DataFrame(
-            {
-                "Open": [6_300.0],
-                "High": [6_350.0],
-                "Low": [6_290.0],
-                "Close": [6_340.5],
-                "Volume": [1_000.0],
-            },
-            index=pd.to_datetime(["2026-07-24T00:00:00Z"], utc=True),
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return _yahoo_chart_response(
+            request,
+            timestamps=(int(datetime(2026, 7, 24, tzinfo=UTC).timestamp()),),
+            opens=(6_300.0,),
+            highs=(6_350.0,),
+            lows=(6_290.0,),
+            closes=(6_340.5,),
+            volumes=(1_000.0,),
         )
 
-    client = MacroSourceClient(yfinance_history_loader=load)
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
         initial = client.fetch(
             require_dataset("yfinance.es_future.daily"),
@@ -828,11 +916,11 @@ def test_yfinance_daily_continuous_proxy_uses_five_year_then_monthly_period() ->
     finally:
         client.close()
 
-    assert calls[0]["period"] == "5y"
-    assert calls[0]["interval"] == "1d"
-    assert calls[0]["prepost"] is False
-    assert calls[1]["period"] == "1mo"
-    assert calls[2]["period"] == "5y"
+    assert calls[0].url.params["range"] == "5y"
+    assert calls[0].url.params["interval"] == "1d"
+    assert calls[0].url.params["includePrePost"] == "false"
+    assert calls[1].url.params["range"] == "1mo"
+    assert calls[2].url.params["range"] == "5y"
     assert initial.facts[0].dataset_id == "yfinance.es_future.daily"
     assert bounded.cursor["start_date"] == "2021-07-27"
     assert bounded.cursor["end_date"] == "2026-07-27"
@@ -854,6 +942,43 @@ def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
             )
     finally:
         client.close()
+
+
+def _yahoo_chart_response(
+    request: httpx.Request,
+    *,
+    timestamps: tuple[int, ...],
+    opens: tuple[float, ...],
+    highs: tuple[float, ...],
+    lows: tuple[float, ...],
+    closes: tuple[float, ...],
+    volumes: tuple[float, ...],
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": list(timestamps),
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": list(opens),
+                                    "high": list(highs),
+                                    "low": list(lows),
+                                    "close": list(closes),
+                                    "volume": list(volumes),
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "error": None,
+            }
+        },
+        request=request,
+    )
 
 
 def test_reserve_bank_speech_discovery_isolates_one_malformed_sitemap() -> None:
@@ -907,17 +1032,17 @@ def test_reserve_bank_speech_discovery_isolates_one_malformed_sitemap() -> None:
     )
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
-        batch = client.fetch(
+        batch, batches = _fetch_macro_continuations(
+            client,
             narrowed_spec,
-            partition_key="latest",
             cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
-            now_ms=NOW_MS,
         )
     finally:
         client.close()
 
     assert len(batch.facts) == 1
     assert batch.facts[0].metadata["speaker_name"] == "Jane Official"
+    assert [item.diagnostics["request_count"] for item in batches] == [1, 1, 3]
 
 
 def test_reserve_bank_backfill_finishes_after_last_empty_source() -> None:
@@ -949,11 +1074,11 @@ def test_reserve_bank_backfill_finishes_after_last_empty_source() -> None:
     )
     client = MacroSourceClient(transport=httpx.MockTransport(handler))
     try:
-        batch = client.fetch(
+        batch, batches = _fetch_macro_continuations(
+            client,
             narrowed_spec,
-            partition_key="backfill",
             cursor={"start_date": "2026-07-01", "end_date": "2026-07-27"},
-            now_ms=NOW_MS,
+            stop_on_facts=False,
         )
     finally:
         client.close()
@@ -961,3 +1086,4 @@ def test_reserve_bank_backfill_finishes_after_last_empty_source() -> None:
     assert batch.facts == ()
     assert batch.cursor["source_index"] == 0
     assert batch.cursor["backfill_complete"] is True
+    assert [item.diagnostics["request_count"] for item in batches] == [1, 1, 1, 1]

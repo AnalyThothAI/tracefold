@@ -22,7 +22,7 @@ results; never secret values.
 |---|---|---|
 | `/healthz` | process liveness | none |
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
-| Workers `/readyz` | supervisor alive and latest O(1) status heartbeat persisted within 15 s | no queue inspection |
+| Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
 | `/api/status` | serve snapshot plus persisted worker status | bounded control read |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
@@ -32,11 +32,11 @@ state remain visible through their own API and operator diagnostics.
 
 ## Worker ownership
 
-`src/tracefold/app/worker_manifest.py` is the sole executable inventory. Its
-entries are logical lifecycle/clock owners inside one workers process, not
-separate containers or OS processes. Factories, supervision, status, tests,
-acceptance, and sealing derive their complete set from the manifest;
-configuration and documents cannot invent names, owners, or a fixed count.
+`tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
+It wires one root `TaskGroup`; its due/periodic loops and dispositions are
+private implementation details. Configuration cannot invent workers, owners,
+resource lanes, or concurrency. A child exception is a process failure, not an
+individual-worker degraded state.
 
 ```text
 tracefold serve
@@ -44,11 +44,12 @@ tracefold serve
 
 tracefold workers
   -> one singleton advisory lock and runtime_id
-  -> realtime DB executor 1 / background DB executor 1
-  -> provider executor 3 / model executor 1
-  -> Pebble spawn ProcessPool 1
+  -> one DB pool min 1 / max 4 / max_waiting 3
+  -> one pinned singleton session / business DB executor 2 / control DB executor 1
+  -> finite external-operation executor 3 / synchronous model adapter 1
+  -> spawn-only Pebble ProcessPool 1
   -> acquisition clocks + one EDF projection coordinator
-  -> one model-generation coordinator
+  -> one serial native-state model arbiter
 ```
 
 Every acquisition/projection/model task uses a short claim transaction,
@@ -57,7 +58,7 @@ a short compare-and-set publication transaction. The stateless EDF
 coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
 After a productive or failed shard turn it repolls immediately; only an idle
-turn waits on the 50 ms polling cadence. This preserves single-shard resource
+turn waits on the 250 ms polling cadence. This preserves single-shard resource
 ownership without spending a fixed sleep budget while a typed frontier is
 backlogged.
 `deadline_at_ms` is not a not-before time. Material changes are eligible
@@ -69,21 +70,23 @@ or configurable concurrency.
 
 Serve owns a read-only pool of eight with ordinary/search/control admission
 `6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
-JIT off, parallel gather off, and 8 MiB work memory. Workers owns one pool of
-twelve, the four explicit executors above, one spawn-only Pebble CPU child,
-and a process-wide ProviderGovernor (`global=3`, `per-host=2`, GMGN Profile,
-Binance Profile, and image lanes each `1`). A provider-wide failure opens
-durable circuit state and consumes no target attempt.
+JIT off, parallel gather off, and 8 MiB work memory. Workers owns the exact
+pool/lane topology above. Finite provider/filesystem operations share the
+three-slot external capability; stream sockets remain long-lived async root
+children outside it. A provider-wide failure opens durable circuit state and
+consumes no target attempt. A caller timeout never releases a resource permit
+before the underlying future actually completes.
 
-One semantic shard is capped at 10,000 input rows/4 MiB and 1 MiB output.
-Claim, compute, publish, and full-turn hard timeouts are respectively 500 ms,
-2 s, 1 s, and 5 s. Overflow is split deterministically or quarantined as
+One Radar semantic shard claims at most four targets and is capped at 10,000
+input rows/4 MiB and 1 MiB output. Claim, each CPU call, publish, and full-turn
+hard timeouts are respectively 500 ms, 2 s, 3 s, and 5 s. Overflow is split
+deterministically or quarantined as
 `shard_oversized`; it is never sampled or truncated.
 The explicit maintenance rebuild keeps the existing 120-second maintenance
 transaction budget; it does not relax the one-second steady publish limit.
 
 Radar is one stable `window × venue` shard inside the EDF coordinator. One turn
-claims at most 32 due target frontiers for that shard, recomputes their compact
+claims at most four due target frontiers for that shard, recomputes their compact
 features, ranks the complete compact population once, hydrates only selected
 identities, and atomically publishes the serving closure. Each target frontier
 stores the latest input fingerprint/version and the snapshot claimed by the
@@ -116,7 +119,7 @@ root-cause claim.
   application-owned transaction.
 - Retry clears the lease and schedules a bounded future attempt.
 - Exhaustion preserves the source snapshot in
-  `worker_queue_terminal_events`.
+  `queue_terminal_events`.
 - Workers re-read durable work on bounded intervals; there is no wake plane.
 - Provider/network/subprocess/filesystem I/O occurs outside DB transactions.
 - Current rows use stable keys and skip unchanged payload writes.
@@ -151,7 +154,7 @@ Token Radar:
 
 ```text
 event -> intent -> resolution -> stable Radar source edges
-  -> claim up to 32 target frontiers for one window x venue
+  -> claim up to 4 target frontiers for one window x venue
   -> compact feature updates -> one atomic rank closure
   -> token_radar_current_rows
 ```
@@ -163,7 +166,8 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-source claim -> news_ingest -> one provider attempt -> receipt/observation/item
+source claim -> News acquisition turn -> one bounded provider conversation
+  -> receipt/observation/item
   -> typed identity frontiers + persisted features/similarity edges
   -> bounded affected component Story/member/alias closure
   -> at most 64 stable hourly score-bucket frontiers
@@ -171,14 +175,15 @@ source claim -> news_ingest -> one provider attempt -> receipt/observation/item
   -> /api/news/feed + /api/news/stories/{story_id}
 
 Top-8 changed Story fingerprint
-  -> model_generation_coordinator
-  -> one admitted model lane
+  -> native News Brief candidate
+  -> serial model arbiter
+  -> one serial model adapter
   -> validated Chinese immutable publication + current pointer
   -> /api/news/brief
 ```
 
-`news_ingest` claims one due source in a short transaction, performs provider
-I/O outside the database under the process-wide ProviderGovernor, and closes
+The News acquisition loop claims one due source in a short transaction, performs provider
+I/O outside the database through the three-slot finite-operation capability, and closes
 the source in a short transaction. One source failure records a
 failed receipt, increments its failure count, and cannot block another source.
 A successful response retains ETag and Last-Modified; a `304` still permits
@@ -189,7 +194,7 @@ without secrets. HTTP, localhost, Docker service names, link-local, loopback,
 private, and other non-public destinations never use the relay. The internal
 6551NEWS and WallStEngine RSSHub sources therefore record failures directly.
 
-`news_ingest` is the only NewsItem writer. The EDF projection domain is the
+The News acquisition publication is the only NewsItem writer. The EDF projection domain is the
 only Story, membership, alias, feature, and edge writer. Restart re-reads typed
 frontiers; it never performs a full-window steady rebuild. Unchanged
 component closures write zero serving rows. The one-hour scoring epoch is one
@@ -199,7 +204,7 @@ database, and publishes changed item/Story score fields with set-based writes
 inside one short transaction. This prevents an hourly Story-count fanout while
 preserving the 60-second public Story deadline.
 
-The model coordinator exits before any Brief model call when fewer than three
+The native Brief candidate exits before any model call when fewer than three
 Stories, fewer than two physical sources, or an unchanged ordered Story
 fingerprint is observed. On provider or validation failure it records the
 failed run and keeps the last-known-good current pointer.
@@ -271,7 +276,7 @@ clock-specific target claim -> provider I/O -> typed fact + source receipt + cur
   -> immutable macro_live_delta_v2 and macro_outcome_replay_v2 snapshots
 ```
 
-The five automatic acquisition workers claim only their own clock family from
+The five explicit Macro due loops claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`. `macro backfill` and
 `macro backfill-professional` enqueue and synchronously drain only their
 explicit bounded targets before returning. The professional command applies
@@ -282,9 +287,9 @@ continuous proxies use a trailing five-year backfill window. Yahoo intraday
 targets request one month initially and one rolling day thereafter. Credit and
 WTI may retain longer reliable public history because their bounded
 single-source histories are inexpensive and materially improve regime context.
-The daily-settlement worker defaults to a batch of 32 so one cold-start cycle
-covers the complete automatic daily registry instead of spreading it across
-multiple six-hour intervals.
+Every loop claims one target/page per bounded turn. Daily settlements catch up
+through immediate productive repoll and never expand the semantic turn into a
+legacy batch.
 Declared required windows remain observable in reader-facing History Depth but
 are non-blocking outside the feature or claim that needs them. Optional maximum
 public history and its execution state remain in the audit appendix and cannot
@@ -327,7 +332,7 @@ dataset/calculation/module dependency graph. One EDF turn loads only the
 affected module's declared bounded history, computes outside the database,
 rechecks the input fingerprint, and publishes that module plus its feature
 frontier in one transaction. Unchanged payloads write zero serving rows.
-The model coordinator schedules Thesis after 08:50 `America/New_York` on U.S.
+The native Thesis candidate becomes due after 08:50 `America/New_York` on U.S.
 trading days, creates
 or re-reads one stable session run, and claims at most one due run per
 iteration. Before model work it freezes the session, cutoff, pack identity,
@@ -508,7 +513,7 @@ For a migration or production cutover:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
-## Issue #32 acceptance and sealing
+## Issue #33 Workers Runtime V2 acceptance and sealing
 
 Controlled offline workload, isolated startup/recovery, and the real continuous
 30-minute run are independent gates. Tests or a healthy Compose stack cannot
@@ -516,20 +521,38 @@ substitute for the real run. Print the deliberately non-passing
 `evidence.json` template from the current code:
 
 ```bash
-uv run tracefold ops seal-worker-acceptance --template
+uv run tracefold ops seal-workers-runtime-acceptance --template
 ```
 
-After the operator-approved production cutover, fill a new external bundle
-with measured evidence and an independent reviewer disposition. Seal only a
-complete bundle:
+Before the cutover, migration `20260731_0233` must pass its terminal-owner
+preflight. Any owner outside the canonical V2 set or the two explicitly
+migrated historical owners aborts the whole migration; operators must resolve
+that provenance instead of guessing an alias. After the operator-approved
+production cutover, fill a new external bundle with measured evidence and an
+independent reviewer disposition. Seal only a complete bundle:
 
 ```bash
-uv run tracefold ops seal-worker-acceptance \
-  --bundle /absolute/path/to/issue-32-evidence
+uv run tracefold ops seal-workers-runtime-acceptance \
+  --bundle /absolute/path/to/issue-33-evidence
 ```
 
-The sealer requires the complete manifest-derived steady-path set, at least
+The sealer requires the complete V2 domain/capacity evidence set, at least
 1,800 seconds of real continuous evidence, production query analysis without
 route gaps or plan violations, resource/latency/shard/lane/queue/PostgreSQL
 evidence, semantic and permission passes, runtime/model-reservation evidence,
-and reviewer pass. It hashes every evidence file and refuses post-seal changes.
+and reviewer pass. The declared commit must equal the current checkout HEAD,
+the checkout must have no tracked or untracked changes,
+the absolute operator config path must exist, and every raw artifact must bind
+the same repository/session/cutoff, commit/migration, and redacted enablement.
+Every passing proof and the independent review must bind an `artifact_path`
+plus its actual SHA-256 to a regular JSON file inside the bundle. Raw proof
+files use `workers_runtime_raw_evidence_v1`; they contain typed per-proof
+records rather than bare `{ "ok": true }` assertions. The sealer independently
+checks all four semantic-domain hash pairs, zero serving writes, all five
+migration states, snapshot restore facts, and continuous runtime samples with
+no gap over 15 seconds or runtime/process identity change. The capacity proof
+owns the raw interval counters; declared duration, miss/quarantine counts,
+capacity rows, and computed arrival/completion rates must match it exactly.
+The `workers_runtime_independent_review_v1` artifact must identify the reviewer
+and bind the exact path/hash set of every raw proof artifact. The sealer hashes
+every bundle file and refuses post-seal changes.

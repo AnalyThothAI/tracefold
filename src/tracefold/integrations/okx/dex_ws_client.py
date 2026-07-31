@@ -12,6 +12,7 @@ from typing import Any
 
 import websockets
 from loguru import logger
+from websockets.exceptions import WebSocketException
 
 from tracefold.integrations.okx.dex_client import EVM_ADDRESS_RE
 from tracefold.platform.validation import require_positive_int
@@ -36,6 +37,9 @@ OKX_DEX_WS_IDLE_PING_SECONDS = 25.0
 OKX_DEX_WS_PONG_TIMEOUT_SECONDS = 5.0
 OKX_DEX_WS_CIRCUIT_FAILURES = 3
 OKX_DEX_WS_CIRCUIT_COOLDOWN_SECONDS = 60.0
+OKX_DEX_WS_MAX_FRAME_BYTES = 1 * 1024 * 1024
+OKX_DEX_WS_MAX_QUEUE = 16
+OKX_DEX_WS_MAX_ITEMS_PER_FRAME = 500
 
 WS_CONNECTION_STATES = frozenset(
     {
@@ -135,6 +139,8 @@ class OkxDexWebSocketMarketProvider:
                         ping_interval=None,
                         open_timeout=OKX_DEX_WS_CONNECT_TIMEOUT_SECONDS,
                         close_timeout=OKX_DEX_WS_CLOSE_TIMEOUT_SECONDS,
+                        max_size=OKX_DEX_WS_MAX_FRAME_BYTES,
+                        max_queue=OKX_DEX_WS_MAX_QUEUE,
                     ),
                     operation="connect",
                     timeout_seconds=OKX_DEX_WS_CONNECT_TIMEOUT_SECONDS,
@@ -160,7 +166,7 @@ class OkxDexWebSocketMarketProvider:
                 await _close_websocket(websocket)
                 await self._drop_connection(state="failed_terminal")
                 raise
-            except Exception as exc:
+            except (WebSocketException, OSError, TimeoutError) as exc:
                 await _close_websocket(websocket)
                 await self._drop_connection(state="degraded_recoverable")
                 self._record_recoverable_error(
@@ -185,7 +191,7 @@ class OkxDexWebSocketMarketProvider:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (WebSocketException, OSError, TimeoutError):
             await self._drop_connection(state="degraded_recoverable")
             self._record_recoverable_error(category="transport")
             raise
@@ -201,7 +207,7 @@ class OkxDexWebSocketMarketProvider:
                 raw_message = await self._recv_application_message(websocket)
                 if raw_message is None:
                     continue
-                message = json.loads(str(raw_message))
+                message = _decode_application_json(raw_message)
                 if isinstance(message, dict):
                     event = _text(message.get("event"))
                     if event == "notice":
@@ -229,10 +235,6 @@ class OkxDexWebSocketMarketProvider:
                         yield update
             except asyncio.CancelledError:
                 raise
-            except json.JSONDecodeError as exc:
-                self._record_error(category="malformed_json", code=None)
-                logger.warning("OKX DEX WS skipped malformed JSON frame | error={}", exc)
-                continue
             except OkxDexWsClientError:
                 raise
             except _OkxDexWsReconnectFailed as exc:
@@ -242,7 +244,7 @@ class OkxDexWebSocketMarketProvider:
                 raise
             except _OkxDexWsMissingPong:
                 await self._reconnect_after_recoverable_error("missing_pong")
-            except Exception as exc:
+            except (WebSocketException, OSError, TimeoutError) as exc:
                 await self._reconnect_after_recoverable_error(
                     "recv_timeout" if isinstance(exc, TimeoutError) else "transport"
                 )
@@ -268,7 +270,7 @@ class OkxDexWebSocketMarketProvider:
             if _is_plain_pong(raw_message):
                 self.last_pong_at_ms = self.last_message_at_ms
                 continue
-            message = json.loads(str(raw_message))
+            message = _decode_application_json(raw_message)
             if not isinstance(message, dict):
                 continue
             if message.get("event") == "error":
@@ -343,7 +345,7 @@ class OkxDexWebSocketMarketProvider:
             await self.ensure_connected()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except (WebSocketException, OSError, TimeoutError, OkxDexWsClientError) as exc:
             raise _OkxDexWsReconnectFailed("OKX DEX WS reconnect failed") from exc
 
     def _record_recoverable_error(self, *, category: str) -> None:
@@ -443,7 +445,7 @@ async def _close_websocket(websocket: Any | None) -> None:
     except TimeoutError:
         close_task.cancel()
         logger.warning("OKX DEX WS close timed out | timeout_seconds={}", OKX_DEX_WS_CLOSE_TIMEOUT_SECONDS)
-    except Exception as exc:
+    except (WebSocketException, OSError) as exc:
         close_task.cancel()
         logger.warning("OKX DEX WS close raised | error={}", exc)
 
@@ -501,10 +503,30 @@ def _rows_from_message(message: Any) -> list[dict[str, Any]]:
     context = arg if isinstance(arg, dict) else {}
     data = message.get("data")
     if isinstance(data, list):
+        if len(data) > OKX_DEX_WS_MAX_ITEMS_PER_FRAME:
+            raise OkxDexWsClientError("OKX DEX WS frame item limit exceeded")
         return [_with_message_context(row, context) for row in data if isinstance(row, dict)]
     if isinstance(data, dict):
         return [_with_message_context(data, context)]
     return [message]
+
+
+def _decode_application_json(raw_message: Any) -> Any:
+    if isinstance(raw_message, bytes):
+        raw_bytes = raw_message
+        try:
+            text = raw_message.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise OkxDexWsClientError("OKX DEX WS frame is not UTF-8 JSON") from exc
+    else:
+        text = str(raw_message)
+        raw_bytes = text.encode("utf-8")
+    if len(raw_bytes) > OKX_DEX_WS_MAX_FRAME_BYTES:
+        raise OkxDexWsClientError("OKX DEX WS frame byte limit exceeded")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise OkxDexWsClientError("OKX DEX WS malformed JSON frame") from exc
 
 
 def _with_message_context(row: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

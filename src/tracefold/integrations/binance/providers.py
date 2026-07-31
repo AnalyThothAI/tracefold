@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import httpx
+
 from tracefold.integrations.binance.usdm_futures_client import (
     BinanceUsdmFuturesClient,
+    BinanceUsdmFuturesClientError,
     BinanceUsdmTicker24hr,
 )
 from tracefold.integrations.binance.web3_token_client import BinanceWeb3TokenClient
@@ -9,6 +12,7 @@ from tracefold.market import (
     CexTicker,
     DexTokenProfile,
     MarketCapability,
+    MarketProviderExpectedError,
     ProviderHealth,
     canonical_chain_address,
 )
@@ -20,7 +24,10 @@ class BinanceWeb3DexProfileProvider:
         self._client = client
 
     def token_profile(self, *, chain_id: str, address: str) -> DexTokenProfile | None:
-        metadata = self._client.token_metadata(chain_id=chain_id, address=address)
+        try:
+            metadata = self._client.token_metadata(chain_id=chain_id, address=address)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise MarketProviderExpectedError(f"binance_web3_profile_expected:{type(exc).__name__}") from exc
         if metadata is None:
             return None
         return DexTokenProfile(
@@ -50,12 +57,18 @@ class BinanceUsdmFuturesMarketProvider:
     def tickers(self, *, inst_type: str) -> list[CexTicker]:
         if str(inst_type or "").strip().upper() not in {"SWAP", "PERP", "PERPETUAL"}:
             return []
-        tickers = self._client.ticker_24hr()
+        try:
+            tickers = self._client.ticker_24hr()
+        except BinanceUsdmFuturesClientError as exc:
+            raise MarketProviderExpectedError(str(exc)) from exc
         rows = tickers if isinstance(tickers, list) else [tickers]
         return [_cex_ticker(row) for row in rows]
 
     def ticker(self, *, inst_id: str) -> CexTicker | None:
-        ticker = self._client.ticker_24hr(symbol=inst_id)
+        try:
+            ticker = self._client.ticker_24hr(symbol=inst_id)
+        except BinanceUsdmFuturesClientError as exc:
+            raise MarketProviderExpectedError(str(exc)) from exc
         if isinstance(ticker, list):
             return _cex_ticker(ticker[0]) if ticker else None
         return _cex_ticker(ticker)
@@ -77,7 +90,7 @@ def binance_usdm_futures_market(settings: Settings) -> BinanceUsdmFuturesMarketP
     return BinanceUsdmFuturesMarketProvider(
         BinanceUsdmFuturesClient(
             base_url=settings.providers.binance.usdm_futures_base_url,
-            timeout_seconds=settings.providers.binance.timeout_seconds,
+            timeout_seconds=min(float(settings.providers.binance.timeout_seconds), 8.0),
         )
     )
 

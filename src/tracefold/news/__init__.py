@@ -5,7 +5,6 @@ from .classification import (
     classify_by_keyword,
     has_historical_marker,
 )
-from .health import attach_pipeline_runtime_health
 from .identity import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
@@ -26,10 +25,12 @@ from .models import (
     SOURCE_INVENTORY_VERSION,
     STORY_IDENTITY_VERSION,
     NewsBriefDraft,
+    NewsBriefExpectedError,
     NewsBriefPublisher,
     NewsBriefStory,
     NewsClassification,
     NewsFeedEntry,
+    NewsFeedExpectedError,
     NewsFeedFetch,
     NewsFeedReader,
     NewsSourceDefinition,
@@ -39,8 +40,8 @@ from .projection import rebuild_all_news_for_maintenance
 from .projection_worker import NewsProjectionCandidate
 from .ranking import importance_score, is_delayed_brief_excluded, select_top_stories
 from .repository import NewsRepository
+from .runtime import NewsAcquisition, NewsBriefCandidate
 from .sources import WORLDMONITOR_COMMIT, default_sources
-from .workers import NewsIngestWorker, NewsWorldBriefWorker
 
 __all__ = [
     "BRIEF_PROMPT_VERSION",
@@ -54,20 +55,21 @@ __all__ = [
     "STORY_IDENTITY_VERSION",
     "STORY_SIMILARITY_THRESHOLD",
     "WORLDMONITOR_COMMIT",
+    "NewsAcquisition",
+    "NewsBriefCandidate",
     "NewsBriefDraft",
+    "NewsBriefExpectedError",
     "NewsBriefPublisher",
     "NewsBriefStory",
     "NewsClassification",
     "NewsFeedEntry",
+    "NewsFeedExpectedError",
     "NewsFeedFetch",
     "NewsFeedReader",
-    "NewsIngestWorker",
     "NewsInterface",
     "NewsProjectionCandidate",
     "NewsRepository",
     "NewsSourceDefinition",
-    "NewsWorldBriefWorker",
-    "attach_pipeline_runtime_health",
     "candidate_tokens",
     "classify_by_keyword",
     "cluster_texts",

@@ -71,7 +71,7 @@ describe("CockpitTopbar", () => {
             lastSocketMessageAt: 1_700_000_000_000,
             status: appStatusFixture({
               ok: false,
-              reasons: ["news_ingest_unavailable"],
+              reasons: ["runtime_missing"],
             }),
             statusLoading: false,
             statusError: false,
@@ -82,7 +82,7 @@ describe("CockpitTopbar", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("status")).toHaveAttribute("title", "news_ingest_unavailable");
-    expect(screen.getByText("news_ingest_unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveAttribute("title", "runtime_missing");
+    expect(screen.getByText("runtime_missing")).toBeInTheDocument();
   });
 });

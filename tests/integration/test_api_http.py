@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -14,11 +15,10 @@ from tests.postgres_test_utils import (
     postgres_settings_storage,
     prepare_postgres_database,
 )
-from tracefold.app.bootstrap import _ingest_service_for_repos
 from tracefold.app.http.app import create_app
 from tracefold.app.http.responses import _json
 from tracefold.app.repositories import repositories_for_connection
-from tracefold.app.worker_manifest import all_worker_manifests
+from tracefold.app.workers import _ingest_service_for_repos
 from tracefold.market import (
     Author,
     Content,
@@ -36,6 +36,24 @@ from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 TOKEN_RADAR_TEST_REBUILD_OFFSET_MS = 60_000
+
+
+def _claim_news_source(repos, source_id: str, now_ms: int) -> str:
+    claim_token = str(uuid4())
+    row = repos.conn.execute(
+        """
+        UPDATE news_sources
+           SET claim_token = %s::uuid,
+               claim_lease_expires_at_ms = %s,
+               last_fetch_started_at_ms = %s,
+               updated_at_ms = %s
+         WHERE source_id = %s
+         RETURNING source_id
+        """,
+        (claim_token, now_ms + 45_000, now_ms, now_ms, source_id),
+    ).fetchone()
+    assert row is not None
+    return claim_token
 
 
 def test_api_json_response_encodes_decimal_payloads():
@@ -515,35 +533,6 @@ def test_api_search_rejects_malformed_cursor(tmp_path):
     assert response.json() == {"ok": False, "error": "invalid_cursor"}
 
 
-def test_api_status_exposes_flat_worker_status(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        response = client.get("/api/status", headers={"Authorization": "Bearer secret"})
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert "_".join(("anchor", "price")) not in data
-    assert "resolution_refresh" not in data["reasons"]
-    assert "token_radar_projection" not in data
-    assert "worker_lanes" not in data
-    workers = data["workers"]
-    for name in ("market_tick_stream", "market_tick_poll", "event_anchor_capture", "resolution_refresh"):
-        assert set(workers[name]) >= {
-            "enabled",
-            "running",
-            "last_started_at_ms",
-            "last_finished_at_ms",
-            "last_result",
-            "last_error",
-            "queue_depth",
-            "oldest_due_at_ms",
-            "quarantine_count",
-        }
-    assert "event_anchor_capture" in workers
-    assert workers["event_anchor_capture"]["effective_status"] == "unavailable"
-
-
 def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
@@ -591,6 +580,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                 etag="etag-1",
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_news_source(repos, source_definition.source_id, now_ms),
             )
             repos.news.record_fetch_success(
                 source=second_source,
@@ -611,6 +601,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                 etag=None,
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_news_source(repos, second_source.source_id, now_ms),
             )
             repos.news.rebuild_stories(now_ms=now_ms)
             candidates = repos.news.brief_candidates()
@@ -779,6 +770,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
                 etag=None,
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_news_source(repos, sources[0].source_id, now_ms),
             )
             repos.news.record_fetch_success(
                 source=sources[1],
@@ -799,6 +791,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
                 etag=None,
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_news_source(repos, sources[1].source_id, now_ms),
             )
             repos.news.rebuild_stories(now_ms=now_ms)
 
@@ -1496,22 +1489,25 @@ def test_api_status_exposes_operational_state(tmp_path):
     assert body["ok"] is True
     data = body["data"]
     assert "handles" not in data
-    manifest_names = {manifest.name for manifest in all_worker_manifests()}
-    assert manifest_names.issubset(data["workers"])
+    assert data["ok"] is False
+    assert data["reasons"] == ["runtime_missing"]
+    assert data["workers_runtime"] == {
+        "runtime_id": None,
+        "runtime_version": None,
+        "state": "unavailable",
+        "started_at_ms": None,
+        "heartbeat_at_ms": None,
+        "heartbeat_stale_after_ms": 15_000,
+        "fatal_code": None,
+        "unavailable_reason": "runtime_missing",
+    }
+    assert "workers" not in data
     assert "worker_lanes" not in data
     assert "collector" not in data
     assert "enrichment" not in data
     assert "notifications" not in data
 
-    collector = data["workers"]["collector"]
-    assert collector["enabled"] is True
-    assert collector["running"] is False
-    assert collector["effective_status"] == "unavailable"
-    assert collector["unavailable_reason"] == "worker_status_missing"
-    assert collector["queue_depth"] is None
-    assert collector["quarantine_count"] == 0
-    assert "details" not in collector
-    assert data["snapshot_gate"] == {}
+    assert "snapshot_gate" not in data
 
 
 def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
@@ -1525,16 +1521,17 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
 
     body = response.json()
     assert readiness.status_code == 503
-    assert readiness.json()["reasons"] == ["database_unhealthy"]
+    assert readiness.json()["reasons"] == ["database_unavailable"]
     assert response.status_code == 200
     assert body["ok"] is True
     assert body["data"]["ok"] is False
-    assert "database_unhealthy" not in body["data"]["reasons"]
-    assert "news:news_health_query_failed" in body["data"]["reasons"]
-    assert body["data"]["db"]["ok"] is True
-    assert body["data"]["news"]["status"] == "degraded"
-    assert set(body["data"]["news"]["layers"]) == {"ingest", "story", "brief"}
-    assert all(layer["status"] == "degraded" for layer in body["data"]["news"]["layers"].values())
+    assert body["data"]["reasons"] == [
+        "database_unavailable",
+        "runtime_status_query_failed",
+    ]
+    assert body["data"]["db"]["ok"] is False
+    assert body["data"]["workers_runtime"]["state"] == "unavailable"
+    assert "news" not in body["data"]
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

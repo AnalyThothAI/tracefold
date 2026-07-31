@@ -9,12 +9,13 @@ from tracefold.macro.projection import (
     MacroShardOversized,
     compute_macro_module_projection,
 )
-from tracefold.platform.workers.projection_candidate import ProjectionShard
-from tracefold.platform.workers.resource_errors import (
-    CpuTaskProcessExpired,
+from tracefold.platform.projection import ProjectionShard
+from tracefold.platform.resource import (
     CpuTaskTimeout,
+    ResourceAdmissionTimeout,
+    ResourceOperationOverrun,
+    ResourceSubmissionTracker,
 )
-from tracefold.platform.workers.worker_result import WorkerResult
 
 _CPU_TIMEOUT_SECONDS = 2.0
 _SHARD_TIMEOUT_SECONDS = 5.0
@@ -25,20 +26,23 @@ class MacroProjectionCandidate:
         self,
         *,
         db: Any,
-        resources: Any,
+        cpu: Any,
         runtime_id: str,
         stable_order: int = 30,
     ) -> None:
-        self.resources = resources
+        self.db = db
+        self.cpu = cpu
         self.runtime_id = runtime_id
         self.stable_order = int(stable_order)
         self.service = MacroProjectionService(
             db=db,
         )
 
-    async def next_due_shard(self, *, now_ms: int) -> ProjectionShard | None:
-        row = await self.resources.run_background_db(
+    async def peek(self, *, now_ms: int) -> ProjectionShard | None:
+        row = await self.db.run_business(
+            "macro_projection_peek",
             self.service.next_due_module,
+            operation_timeout_seconds=0.5,
             now_ms=now_ms,
         )
         if row is None:
@@ -50,102 +54,124 @@ class MacroProjectionCandidate:
             stable_order=self.stable_order,
         )
 
-    async def run_shard(self, shard: ProjectionShard) -> WorkerResult:
+    async def execute(self, shard: ProjectionShard) -> bool:
         now_ms = _now_ms()
-        claim = await self.resources.run_background_db(
+        claim = await self.db.run_business(
+            "macro_projection_claim",
             self.service.claim_module,
+            operation_timeout_seconds=0.5,
             module_id=shard.shard_key,
             runtime_id=self.runtime_id,
             now_ms=now_ms,
         )
         if claim is None:
-            return WorkerResult(skipped=1, notes={"reason": "macro_shard_claim_lost"})
+            return False
+        submission = ResourceSubmissionTracker()
+
         try:
             async with asyncio.timeout(_SHARD_TIMEOUT_SECONDS):
-                return await self._run_claimed_shard(claim, now_ms=now_ms)
-        except TimeoutError:
-            failed = await self.resources.run_background_db(
+                return await self._run_claimed_shard(
+                    claim,
+                    now_ms=now_ms,
+                    submission=submission,
+                )
+        except asyncio.CancelledError:
+            if not submission.submitted:
+                await asyncio.shield(self._release_prework(claim))
+            raise
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return False
+        except TimeoutError as exc:
+            if submission.submitted:
+                raise ResourceOperationOverrun("resource_operation_overrun:macro_projection_turn") from exc
+            await self.db.run_business(
+                "macro_projection_timeout",
                 self.service.fail_deterministic,
                 claim,
+                operation_timeout_seconds=3.0,
                 error_code="full_shard_timeout",
                 now_ms=_now_ms(),
             )
-            return WorkerResult(
-                failed=1,
-                notes={
-                    "domain": "macro",
-                    "module_id": shard.shard_key,
-                    "reason": "full_shard_timeout",
-                    "quarantined": bool(failed and failed["status"] == "quarantined"),
-                },
-            )
+            return True
 
-    async def _run_claimed_shard(self, claim: Any, *, now_ms: int) -> WorkerResult:
-        try:
-            loaded = await self.resources.run_background_db(
-                self.service.load_module,
+    async def _release_prework(self, claim: Any) -> bool:
+        return bool(
+            await self.db.run_business(
+                "macro_projection_release_prework",
+                self.service.release_prework,
                 claim,
-                now_ms=now_ms,
+                operation_timeout_seconds=3.0,
+                now_ms=_now_ms(),
+            )
+        )
+
+    async def _run_claimed_shard(
+        self,
+        claim: Any,
+        *,
+        now_ms: int,
+        submission: ResourceSubmissionTracker,
+    ) -> bool:
+        try:
+            loaded = await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "macro_projection_load",
+                    self.service.load_module,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    now_ms=now_ms,
+                )
             )
             if loaded["status"] == "stale_snapshot":
-                await self.resources.run_background_db(
-                    self.service.release_stale,
+                await submission.run(
+                    lambda on_submitted: self.db.run_business(
+                        "macro_projection_release_stale",
+                        self.service.release_stale,
+                        claim,
+                        operation_timeout_seconds=3.0,
+                        on_submitted=on_submitted,
+                        now_ms=_now_ms(),
+                    )
+                )
+                return True
+            output = await submission.run(
+                lambda on_submitted: self.cpu.run(
+                    "macro_projection_compute",
+                    compute_macro_module_projection,
+                    loaded,
+                    service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    on_submitted=on_submitted,
+                )
+            )
+            await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "macro_projection_publish",
+                    self.service.publish_module,
                     claim,
+                    output,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
                     now_ms=_now_ms(),
                 )
-                return WorkerResult(
-                    skipped=1,
-                    notes={
-                        "reason": "stale_snapshot",
-                        "module_id": claim.module_id,
-                    },
+            )
+        except (MacroShardOversized, CpuTaskTimeout) as exc:
+            error_code = _error_code(exc)
+            await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "macro_projection_fail_deterministic",
+                    self.service.fail_deterministic,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    error_code=error_code,
+                    now_ms=_now_ms(),
                 )
-            output = await self.resources.run_cpu(
-                compute_macro_module_projection,
-                loaded,
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
             )
-            result = await self.resources.run_background_db(
-                self.service.publish_module,
-                claim,
-                output,
-                now_ms=_now_ms(),
-            )
-        except (MacroShardOversized, CpuTaskTimeout, CpuTaskProcessExpired) as exc:
-            failed = await self.resources.run_background_db(
-                self.service.fail_deterministic,
-                claim,
-                error_code=_error_code(exc),
-                now_ms=_now_ms(),
-            )
-            return WorkerResult(
-                failed=1,
-                notes={
-                    "reason": _error_code(exc),
-                    "module_id": claim.module_id,
-                    "quarantined": bool(failed and failed["status"] == "quarantined"),
-                },
-            )
-        except Exception as exc:
-            await self.resources.run_background_db(
-                self.service.fail_transient,
-                claim,
-                error_code=_error_code(exc),
-                now_ms=_now_ms(),
-            )
-            return WorkerResult(
-                failed=1,
-                notes={
-                    "reason": _error_code(exc),
-                    "module_id": claim.module_id,
-                    "transient": True,
-                },
-            )
-        return WorkerResult(
-            processed=1,
-            skipped=1 if int(result["rows_written"]) == 0 else 0,
-            notes=result,
-        )
+            return True
+        return True
 
 
 def _error_code(exc: BaseException) -> str:
@@ -153,8 +179,6 @@ def _error_code(exc: BaseException) -> str:
         return "shard_oversized"
     if isinstance(exc, (CpuTaskTimeout, TimeoutError)):
         return "compute_timeout"
-    if isinstance(exc, CpuTaskProcessExpired):
-        return "compute_process_expired"
     return type(exc).__name__[:128]
 
 

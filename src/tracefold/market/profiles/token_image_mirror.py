@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -56,12 +58,6 @@ def mirror_token_image_source(
             "source_url": source_url,
             "error": error,
         }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "source_url": source_url,
-            "error": f"image_fetch_failed: {_error_text(exc)}",
-        }
     return {"status": "ready", "source_url": source_url, "asset": artifact}
 
 
@@ -72,22 +68,20 @@ def _fetch_and_store(
     http_client: Any,
 ) -> dict[str, Any]:
     parsed = validated_token_image_source_url(source_url)
-    response = _fetch(http_client, parsed.geturl())
-    final_url = str(getattr(response, "url", "") or parsed.geturl())
-    validated_token_image_source_url(final_url)
+    with _response_stream(http_client, parsed.geturl()) as response:
+        final_url = str(getattr(response, "url", "") or parsed.geturl())
+        validated_token_image_source_url(final_url)
 
-    status_code = int(getattr(response, "status_code", 0) or 0)
-    if status_code < 200 or status_code >= 300:
-        raise _TokenImageMirrorError(f"image_fetch_failed: upstream_status_{status_code}")
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code < 200 or status_code >= 300:
+            raise _TokenImageMirrorError(f"image_fetch_failed: upstream_status_{status_code}")
 
-    headers = _response_headers(response)
-    content_length = _int_header(headers.get("content-length"))
-    if content_length is not None and content_length > TOKEN_IMAGE_MIRROR_MAX_BYTES:
-        raise _TokenImageMirrorError("image_too_large: content_length_exceeded")
+        headers = _response_headers(response)
+        content_length = _int_header(headers.get("content-length"))
+        if content_length is not None and content_length > TOKEN_IMAGE_MIRROR_MAX_BYTES:
+            raise _TokenImageMirrorError("image_too_large: content_length_exceeded")
 
-    content = bytes(getattr(response, "content", b"") or b"")
-    if len(content) > TOKEN_IMAGE_MIRROR_MAX_BYTES:
-        raise _TokenImageMirrorError("image_too_large: byte_limit_exceeded")
+        content = _read_bounded_content(response)
 
     media = _verified_media(content=content)
     content_hash = sha256(content).hexdigest()
@@ -103,18 +97,40 @@ def _fetch_and_store(
     }
 
 
-def _fetch(http_client: Any, url: str) -> Any:
+@contextmanager
+def _response_stream(http_client: Any, url: str) -> Iterator[Any]:
     try:
-        return http_client.get(
+        stream = getattr(http_client, "stream", None)
+        if callable(stream):
+            with stream(
+                url,
+                allow_redirects=True,
+                headers=dict(TOKEN_IMAGE_MIRROR_HEADERS),
+                timeout=TOKEN_IMAGE_MIRROR_TIMEOUT_SECONDS,
+            ) as response:
+                yield response
+            return
+        response = http_client.get(
             url,
             allow_redirects=True,
             headers=dict(TOKEN_IMAGE_MIRROR_HEADERS),
             timeout=TOKEN_IMAGE_MIRROR_TIMEOUT_SECONDS,
         )
-    except _TokenImageMirrorError:
-        raise
-    except Exception as exc:
+        yield response
+    except (curl_requests.RequestsError, OSError) as exc:
         raise _TokenImageMirrorError(f"image_fetch_failed: {_error_text(exc)}") from exc
+
+
+def _read_bounded_content(response: Any) -> bytes:
+    iterator = getattr(response, "iter_content", None)
+    chunks = iterator() if callable(iterator) else (bytes(getattr(response, "content", b"") or b""),)
+    content = bytearray()
+    for chunk in chunks:
+        materialized = bytes(chunk or b"")
+        if len(content) + len(materialized) > TOKEN_IMAGE_MIRROR_MAX_BYTES:
+            raise _TokenImageMirrorError("image_too_large: byte_limit_exceeded")
+        content.extend(materialized)
+    return bytes(content)
 
 
 def _write_cache_file(*, app_home: Path, filename: str, content: bytes) -> None:
@@ -165,10 +181,15 @@ class _TokenImageMirrorError(Exception):
 
 
 class _CurlCffiTokenImageClient:
-    def get(self, url: str, **kwargs: Any) -> Any:
+    @contextmanager
+    def stream(self, url: str, **kwargs: Any) -> Iterator[Any]:
         session = curl_requests.Session(impersonate=cast(Any, TOKEN_IMAGE_MIRROR_CURL_IMPERSONATE))
         try:
-            return session.get(url, **kwargs)
+            response = session.get(url, stream=True, **kwargs)
+            try:
+                yield response
+            finally:
+                cast(Any, response).close()
         finally:
             session.close()
 

@@ -13,18 +13,16 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
-from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
+from tracefold.app.worker_capabilities import FiniteOperations
+from tracefold.market import AssetProfileRefresh, TokenImageMirror
 from tracefold.market.profiles.asset_profile_refresh_worker import (
-    AssetProfileRefreshWorker,
     _missing_retry_delay_ms,
     _retry_delay_ms,
 )
-from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirrorWorker
 from tracefold.market.provider_contracts import (
     DexProfileSource,
     DexProviderTemporarilyUnavailable,
 )
-from tracefold.platform.observability import TelemetryRegistry
 
 NOW_MS = 1_779_000_000_000
 PROVIDER = "gmgn_dex_profile"
@@ -40,6 +38,18 @@ class _SessionTrackingDB:
     def active_sessions(self) -> int:
         with self._lock:
             return self._active_sessions
+
+    async def run_business(
+        self,
+        _operation_name: str,
+        function: Any,
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        **kwargs: Any,
+    ) -> Any:
+        del operation_timeout_seconds
+        return function(*args, **kwargs)
 
     @contextmanager
     def worker_session(self, *_args: Any, **_kwargs: Any) -> Iterator[Any]:
@@ -125,24 +135,20 @@ def test_missing_profile_retry_schedule_is_code_owned_and_exact() -> None:
 
 def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> None:
     conn = connect_postgres_test()
-    resources = RuntimeResources()
+    finite = FiniteOperations()
     try:
         reset_postgres_schema(conn)
         _enqueue_profile_target(conn)
         db = _SessionTrackingDB(conn)
         market = _ProviderFailureMarket(db)
-        telemetry = TelemetryRegistry()
-        worker = AssetProfileRefreshWorker(
-            name="asset_profile_refresh",
+        worker = AssetProfileRefresh(
             db=db,
-            telemetry=telemetry,
             dex_profile_sources=(DexProfileSource(provider=PROVIDER, market=market),),
-            resources=resources,
-            provider_governor=ProviderGovernor(),
+            finite_operations=finite,
             runtime_id="integration-test",
         )
 
-        result = asyncio.run(worker.run_once(now_ms=NOW_MS))
+        result = asyncio.run(worker.turn(now_ms=NOW_MS))
 
         row = conn.execute(
             """
@@ -163,7 +169,7 @@ def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> 
         conn.commit()
 
         assert market.calls == 1
-        assert result.failed == 1
+        assert result == "failed"
         assert row == {
             "attempt_count": 0,
             "lease_owner": None,
@@ -174,23 +180,18 @@ def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> 
             "consecutive_failures": 1,
             "next_probe_at_ms": NOW_MS + 300_000,
         }
-        assert (
-            'tracefold_worker_queue_oldest_delay_seconds{queue="primary",worker="asset_profile_refresh"}'
-            in telemetry.render_prometheus_text()
-        )
     finally:
-        resources.close()
+        finite.close()
         conn.close()
 
 
 def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
     conn = connect_postgres_test()
-    resources = RuntimeResources()
+    finite = FiniteOperations()
     try:
         reset_postgres_schema(conn)
         db = _SessionTrackingDB(conn)
         http_client = _ImageHttpClient(db)
-        telemetry = TelemetryRegistry()
         with repository_session_for_connection(conn) as repos, repos.transaction():
             repos.token_image_source_dirty_targets.enqueue_targets(
                 [
@@ -208,18 +209,15 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
                 reason="profile_image_candidate",
                 now_ms=NOW_MS,
             )
-        worker = TokenImageMirrorWorker(
-            name="token_image_mirror",
+        worker = TokenImageMirror(
             db=db,
-            telemetry=telemetry,
             app_home=tmp_path,
             http_client=http_client,
-            resources=resources,
-            provider_governor=ProviderGovernor(),
+            finite_operations=finite,
             runtime_id="integration-test",
         )
 
-        result = asyncio.run(worker.run_once(now_ms=NOW_MS))
+        result = asyncio.run(worker.turn(now_ms=NOW_MS))
 
         asset = conn.execute(
             """
@@ -231,17 +229,12 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
         queue_depth = conn.execute("SELECT count(*) AS count FROM token_image_source_dirty_targets").fetchone()["count"]
         conn.commit()
         assert http_client.calls == 1
-        assert result.processed == 1
-        assert result.failed == 0
+        assert result == "processed"
         assert asset["status"] == "ready"
         assert (tmp_path / "cache" / "token-images" / asset["storage_path"]).is_file()
         assert queue_depth == 0
-        assert (
-            'tracefold_worker_queue_depth{queue="primary",status="due",worker="token_image_mirror"} 0.0'
-            in telemetry.render_prometheus_text()
-        )
     finally:
-        resources.close()
+        finite.close()
         conn.close()
 
 
@@ -330,8 +323,8 @@ def test_terminal_profile_target_only_reactivates_for_new_evidence() -> None:
             terminal = conn.execute(
                 """
                 SELECT final_reason, operator_action
-                FROM worker_queue_terminal_events
-                WHERE worker_name = 'asset_profile_refresh'
+                FROM queue_terminal_events
+                WHERE owner_key = 'asset_profile_refresh'
                   AND source_table = 'asset_profile_refresh_targets'
                 """
             ).fetchone()
@@ -380,8 +373,8 @@ def test_terminal_profile_target_only_reactivates_for_new_evidence() -> None:
             audit = conn.execute(
                 """
                 SELECT operator_action, operator_reason
-                FROM worker_queue_terminal_events
-                WHERE worker_name = 'asset_profile_refresh'
+                FROM queue_terminal_events
+                WHERE owner_key = 'asset_profile_refresh'
                   AND source_table = 'asset_profile_refresh_targets'
                 """
             ).fetchone()

@@ -19,9 +19,9 @@ from tracefold.app.run_worker_once import (
     refresh_asset_profiles_once,
     refresh_resolutions_once,
 )
-from tracefold.app.worker_acceptance import (
-    issue_32_evidence_template,
-    seal_issue_32_evidence,
+from tracefold.app.workers_runtime_acceptance_v2 import (
+    seal_workers_runtime_evidence,
+    workers_runtime_evidence_template,
 )
 from tracefold.market import (
     TOKEN_RADAR_DEFAULT_VENUE,
@@ -36,15 +36,15 @@ from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 
 
 def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
-    if args.ops_command == "seal-worker-acceptance":
+    if args.ops_command == "seal-workers-runtime-acceptance":
         if bool(args.template):
             return 0, {
                 "ok": True,
                 "data": {
-                    "template": issue_32_evidence_template(),
+                    "template": workers_runtime_evidence_template(),
                 },
             }
-        seal = seal_issue_32_evidence(Path(args.bundle))
+        seal = seal_workers_runtime_evidence(Path(args.bundle))
         return 0, {"ok": True, "data": seal}
     settings = load_settings(require_ws_token=False)
     lock_db = WorkerDatabase.create(settings)
@@ -73,11 +73,11 @@ def _handle_ops_locked(
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "refresh-asset-profiles":
-        data = refresh_asset_profiles_once(settings, limit=args.limit).payload()
+        data = refresh_asset_profiles_once(settings, limit=args.limit, db=lock_db)
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "mirror-token-images":
-        data = mirror_token_images_once(settings, limit=args.limit).payload()
+        data = mirror_token_images_once(settings, limit=args.limit, db=lock_db)
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "run-resolution-refresh":
@@ -85,7 +85,8 @@ def _handle_ops_locked(
             settings,
             limit=args.limit,
             reprocess_limit=args.reprocess_limit,
-        ).payload()
+            db=lock_db,
+        )
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "reprocess-token-intents":

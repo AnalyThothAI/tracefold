@@ -1,80 +1,1207 @@
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass
+from enum import Enum, auto
+from importlib.metadata import version
+from typing import Any
+from uuid import uuid4
+
+import uvicorn
+from loguru import logger
+
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.provider_types import WiredProviders
-from tracefold.app.worker_manifest import worker_names
+from tracefold.app.llm import configured_chat_model, litellm_proxy_model_name, llm_is_configured
+from tracefold.app.market_providers import wire_asset_market
+from tracefold.app.model_arbiter import run_model_arbiter
+from tracefold.app.projection_edf import run_projection_edf
+from tracefold.app.provider_types import AssetMarketProviders
+from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
+from tracefold.app.worker_http import _create_workers_probe_app
+from tracefold.app.workers_runtime import WorkersRuntimeRepository
+from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
+from tracefold.integrations.deepagents.macro_thesis_deepagent import (
+    MacroThesisDeepAgent,
+    require_supported_macro_thesis_model,
+)
+from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
+from tracefold.integrations.macro_sources import MacroSourceClient
+from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
+from tracefold.integrations.news_feeds import (
+    RssFeedReader,
+    is_public_https_feed_url,
+    parse_rss_feed_wire,
+)
+from tracefold.macro import (
+    FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+    FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
+    FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+    MacroAcquisition,
+    MacroAcquisitionService,
+    MacroDocumentAnalysisService,
+    MacroProjectionCandidate,
+    MacroThesisService,
+    acquisition_loop_policy,
+)
+from tracefold.market import (
+    AssetProfileRefresh,
+    CollectorService,
+    EventAnchorBackfill,
+    EventMarketCaptureService,
+    IngestService,
+    MarketTickPoll,
+    MarketTickStream,
+    ProfileProjectionCandidate,
+    RadarProjectionCandidate,
+    ResolutionRefresh,
+    TickLookup,
+    TokenImageMirror,
+)
+from tracefold.news import NewsAcquisition, NewsBriefCandidate, NewsProjectionCandidate, default_sources
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.workers.factory import WorkerFactory, WorkerFactoryContext
-from tracefold.platform.workers.worker_base import WorkerBase
+from tracefold.platform.postgres.postgres_client import postgres_health_check
+from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.resource import ResourceOperationOverrun
+
+GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
+FATAL_EXIT_TIMEOUT_SECONDS = 5.0
+_WORKER_INTERNAL_PORT = 8766
+_HEARTBEAT_SECONDS = 5.0
+_CONTROL_TIMEOUT_SECONDS = 1.0
+_EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
+_DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
+_THESIS_MODEL_TIMEOUT_SECONDS = 480.0
+_MODEL_MAX_TOKENS = 6_000
+_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
+_NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
+_NEWS_OLLAMA_MODEL = "deepseek-r1:8b"
+_NEWS_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_NEWS_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
+_NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
+_MACRO_CLOCKS = (
+    ("macro_intraday_market", "intraday_market"),
+    ("macro_settlements", "daily_settlement"),
+    ("macro_economic_releases", "scheduled_release"),
+    ("macro_official_state", "official_state"),
+    ("macro_official_documents", "official_document"),
+)
 
 
-def construct_workers(
+class _Disposition(Enum):
+    PROGRESSED = auto()
+    RETRY_SOON = auto()
+    IDLE = auto()
+
+
+class _FreshRuntimeRowExists(RuntimeError):
+    pass
+
+
+class _ControlFailure(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class _ProbeState:
+    runtime_id: str
+    runtime_version: str
+    started_at_ms: int
+    clock_ms: Callable[[], int]
+    lifecycle_state: str = "starting"
+    heartbeat_at_ms: int | None = None
+    ready: bool = False
+    unavailable_reason: str = "runtime_starting"
+
+    def payload(self) -> dict[str, Any]:
+        heartbeat_current = (
+            self.heartbeat_at_ms is not None and max(0, int(self.clock_ms()) - int(self.heartbeat_at_ms)) <= 15_000
+        )
+        ready = self.ready and self.lifecycle_state == "running" and heartbeat_current
+        unavailable_reason = self.unavailable_reason
+        if self.ready and not heartbeat_current:
+            unavailable_reason = "runtime_heartbeat_stale"
+        return {
+            "ok": ready,
+            "runtime_id": self.runtime_id,
+            "runtime_version": self.runtime_version,
+            "lifecycle_state": self.lifecycle_state,
+            "started_at_ms": self.started_at_ms,
+            "heartbeat_at_ms": self.heartbeat_at_ms,
+            "heartbeat_stale_after_ms": 15_000,
+            "unavailable_reason": None if ready else unavailable_reason,
+        }
+
+
+@dataclass(slots=True)
+class _Components:
+    providers: AssetMarketProviders
+    collector: CollectorService | None
+    news: NewsAcquisition | None
+    news_brief: NewsBriefCandidate | None
+    macro_source: MacroSourceClient | None
+    macro_turns: tuple[MacroAcquisition, ...]
+    due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
+    market_poll: MarketTickPoll | None
+    market_stream: MarketTickStream | None
+    projections: tuple[Any, ...]
+    models: tuple[Any, ...]
+    document_model: MacroDocumentAnalysisService | None
+
+
+async def run_workers(settings: Settings) -> None:
+    """Run the sole Workers process root until an ordered graceful stop."""
+
+    runtime_id = str(uuid4())
+    runtime_version = version("tracefold")
+    started_at_ms = _now_ms()
+    telemetry = TelemetryRegistry()
+    probe_state = _ProbeState(
+        runtime_id=runtime_id,
+        runtime_version=runtime_version,
+        started_at_ms=started_at_ms,
+        clock_ms=_now_ms,
+    )
+    work_stop_event = asyncio.Event()
+    control_stop_event = asyncio.Event()
+    probe_stop_event = asyncio.Event()
+    shutdown_requested = asyncio.Event()
+    db: WorkerDatabase | None = None
+    lock_conn: Any | None = None
+    finite = FiniteOperations(telemetry=telemetry)
+    model_adapter = ModelAdapter(telemetry=telemetry)
+    cpu = CpuProcess(telemetry=telemetry)
+    components: _Components | None = None
+    server: uvicorn.Server | None = None
+    graceful = False
+    phase = "startup"
+    signal_loop = asyncio.get_running_loop()
+    fatal_watchdog: asyncio.TimerHandle | None = None
+
+    def request_shutdown() -> None:
+        probe_state.ready = False
+        probe_state.lifecycle_state = "stopping"
+        probe_state.unavailable_reason = "runtime_stopping"
+        work_stop_event.set()
+        shutdown_requested.set()
+
+    def enter_fatal(_exc: BaseException) -> None:
+        nonlocal fatal_watchdog
+        if fatal_watchdog is not None:
+            return
+        probe_state.ready = False
+        probe_state.lifecycle_state = "failed"
+        probe_state.unavailable_reason = "runtime_failed"
+        work_stop_event.set()
+        control_stop_event.set()
+        probe_stop_event.set()
+        if server is not None:
+            server.should_exit = True
+        finite.close_admission()
+        model_adapter.close_admission()
+        cpu.close_admission()
+        if db is not None:
+            db.close_business_admission()
+        fatal_watchdog = signal_loop.call_later(
+            FATAL_EXIT_TIMEOUT_SECONDS,
+            os._exit,
+            1,
+        )
+
+    installed_signals = _install_signal_handlers(signal_loop, request_shutdown)
+    try:
+        db = WorkerDatabase.create(settings, telemetry=telemetry)
+        startup_status = _startup_database_status(db)
+        if not startup_status.get("ok"):
+            raise RuntimeError(f"workers_postgres_unavailable:{startup_status}")
+        lock_conn = db.acquire_steady_runtime_lock()
+        db.check_pinned_liveness(lock_conn)
+        db.prewarm_control_connection()
+        began: bool = await db.run_control(
+            "workers_runtime_begin",
+            _runtime_begin,
+            db,
+            runtime_id,
+            runtime_version,
+            started_at_ms,
+            operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+        )
+        if not began:
+            db.release_steady_runtime_lock(lock_conn)
+            lock_conn = None
+            finite.close()
+            model_adapter.close()
+            cpu.close()
+            await db.aclose()
+            db.close_executors()
+            raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
+
+        components = await _wire_components(
+            settings=settings,
+            db=db,
+            telemetry=telemetry,
+            finite=finite,
+            model_adapter=model_adapter,
+            cpu=cpu,
+            runtime_id=runtime_id,
+        )
+        await _reconcile_once(components)
+        server = _probe_server(probe_state=probe_state, telemetry=telemetry)
+
+        async with asyncio.TaskGroup() as group:
+            business_tasks: list[asyncio.Task[Any]] = []
+            probe_task = group.create_task(
+                _guard_child(
+                    _run_probe(server, stop_event=probe_stop_event),
+                    on_fatal=enter_fatal,
+                ),
+                name="workers-probe",
+            )
+            control_task = group.create_task(
+                _guard_child(
+                    _run_control(
+                        db=db,
+                        lock_conn=lock_conn,
+                        runtime_id=runtime_id,
+                        probe_state=probe_state,
+                        stop_event=control_stop_event,
+                    ),
+                    on_fatal=enter_fatal,
+                ),
+                name="workers-control",
+            )
+            control_watchdog_task = group.create_task(
+                _guard_child(
+                    _run_control_watchdog(
+                        probe_state=probe_state,
+                        stop_event=control_stop_event,
+                    ),
+                    on_fatal=enter_fatal,
+                ),
+                name="workers-control-watchdog",
+            )
+            if components.collector is not None:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            components.collector.run(stop_event=work_stop_event),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="gmgn-stream",
+                    )
+                )
+            if components.market_stream is not None:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            components.market_stream.run(stop_event=work_stop_event),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="okx-market-stream",
+                    )
+                )
+            for index, (turn, idle_seconds) in enumerate(components.due_turns):
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            _run_due(
+                                turn,
+                                idle_seconds=idle_seconds,
+                                stop_event=work_stop_event,
+                            ),
+                            on_fatal=enter_fatal,
+                        ),
+                        name=f"durable-due-{index}",
+                    )
+                )
+            if components.market_poll is not None:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            _run_periodic(
+                                components.market_poll.sample,
+                                period_seconds=15.0,
+                                stop_event=work_stop_event,
+                            ),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="market-tick-poll",
+                    )
+                )
+            business_tasks.append(
+                group.create_task(
+                    _guard_child(
+                        run_projection_edf(
+                            components.projections,
+                            stop_event=work_stop_event,
+                            telemetry=telemetry,
+                        ),
+                        on_fatal=enter_fatal,
+                    ),
+                    name="projection-edf",
+                )
+            )
+            business_tasks.append(
+                group.create_task(
+                    _guard_child(
+                        run_model_arbiter(components.models, stop_event=work_stop_event),
+                        on_fatal=enter_fatal,
+                    ),
+                    name="model-arbiter",
+                )
+            )
+
+            await _guard_child(
+                _wait_for_probe_start(server),
+                on_fatal=enter_fatal,
+            )
+            probe_state.heartbeat_at_ms = await _guard_child(
+                _control_liveness_and_heartbeat(
+                    db=db,
+                    lock_conn=lock_conn,
+                    runtime_id=runtime_id,
+                ),
+                on_fatal=enter_fatal,
+            )
+            await _guard_child(
+                db.run_control(
+                    "workers_runtime_running",
+                    _runtime_transition,
+                    db,
+                    runtime_id,
+                    "running",
+                    None,
+                    operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+                ),
+                on_fatal=enter_fatal,
+            )
+            probe_state.ready = True
+            probe_state.lifecycle_state = "running"
+            probe_state.unavailable_reason = ""
+            phase = "runtime"
+
+            await shutdown_requested.wait()
+            shutdown_started = signal_loop.time()
+            probe_state.ready = False
+            probe_state.lifecycle_state = "stopping"
+            probe_state.unavailable_reason = "runtime_stopping"
+            await _guard_child(
+                db.run_control(
+                    "workers_runtime_stopping",
+                    _runtime_transition,
+                    db,
+                    runtime_id,
+                    "stopping",
+                    None,
+                    operation_timeout_seconds=_remaining(shutdown_started),
+                ),
+                on_fatal=enter_fatal,
+            )
+            work_stop_event.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*business_tasks),
+                    timeout=_remaining(shutdown_started),
+                )
+            except TimeoutError as exc:
+                enter_fatal(exc)
+                raise RuntimeError("graceful_deadline_exceeded") from exc
+            phase = "cleanup"
+            await _guard_child(
+                _graceful_cleanup(
+                    started_at=shutdown_started,
+                    db=db,
+                    finite=finite,
+                    model_adapter=model_adapter,
+                    cpu=cpu,
+                    components=components,
+                ),
+                on_fatal=enter_fatal,
+            )
+            control_stop_event.set()
+            await _within(
+                asyncio.gather(control_task, control_watchdog_task),
+                shutdown_started,
+            )
+            await db.run_control(
+                "workers_runtime_stopped",
+                _runtime_transition,
+                db,
+                runtime_id,
+                "stopped",
+                None,
+                operation_timeout_seconds=_remaining(shutdown_started),
+                allow_shutdown=True,
+            )
+            db.close_control_admission()
+            if not await db.drain_control(timeout_seconds=_remaining(shutdown_started)):
+                raise RuntimeError("worker_database_control_drain_timeout")
+            db.release_steady_runtime_lock(lock_conn)
+            lock_conn = None
+            await _within(db.aclose(), shutdown_started)
+            db.close_executors()
+            probe_stop_event.set()
+            server.should_exit = True
+            await _within(probe_task, shutdown_started)
+        graceful = True
+    except _FreshRuntimeRowExists as exc:
+        probe_state.ready = False
+        probe_state.lifecycle_state = "failed"
+        probe_state.unavailable_reason = "runtime_fresh_row_exists"
+        raise RuntimeError("workers_runtime_fresh_row_exists") from exc
+    except asyncio.CancelledError:
+        probe_state.ready = False
+        probe_state.lifecycle_state = "failed"
+        probe_state.unavailable_reason = "runtime_failed"
+        work_stop_event.set()
+        control_stop_event.set()
+        probe_stop_event.set()
+        if server is not None:
+            server.should_exit = True
+        raise
+    except BaseException as exc:
+        enter_fatal(exc)
+        probe_state.ready = False
+        probe_state.lifecycle_state = "failed"
+        probe_state.unavailable_reason = "runtime_failed"
+        work_stop_event.set()
+        control_stop_event.set()
+        probe_stop_event.set()
+        if server is not None:
+            server.should_exit = True
+        await _fatal_exit(
+            exc=exc,
+            db=db,
+            runtime_id=runtime_id,
+            finite=finite,
+            model_adapter=model_adapter,
+            cpu=cpu,
+            phase=phase,
+        )
+    finally:
+        _remove_signal_handlers(signal_loop, installed_signals)
+        if not graceful:
+            # The fatal path deliberately leaves the singleton session open;
+            # os._exit is the release authority.
+            pass
+
+
+async def _guard_child(
+    awaitable: Awaitable[Any],
+    *,
+    on_fatal: Callable[[BaseException], None],
+) -> Any:
+    try:
+        return await awaitable
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        on_fatal(exc)
+        raise
+
+
+async def _run_due(
+    turn: Callable[[], Awaitable[bool | str | None]],
+    *,
+    idle_seconds: float,
+    stop_event: asyncio.Event,
+) -> None:
+    while not stop_event.is_set():
+        value = await turn()
+        disposition = (
+            _Disposition.PROGRESSED
+            if value is True or value in {"processed", "failed", "terminal"}
+            else _Disposition.IDLE
+            if value is False
+            else _Disposition.RETRY_SOON
+        )
+        if disposition is _Disposition.PROGRESSED:
+            await asyncio.sleep(0)
+        elif disposition is _Disposition.RETRY_SOON:
+            await _wait_or_stop(stop_event, min(float(idle_seconds), 0.250))
+        else:
+            await _wait_or_stop(stop_event, float(idle_seconds))
+
+
+async def _run_periodic(
+    sample: Callable[[], Awaitable[None]],
+    *,
+    period_seconds: float,
+    stop_event: asyncio.Event,
+) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time()
+    while not stop_event.is_set():
+        await sample()
+        deadline += float(period_seconds)
+        if deadline <= loop.time():
+            deadline = loop.time() + float(period_seconds)
+        await _wait_or_stop(stop_event, deadline - loop.time())
+
+
+async def _run_control(
+    *,
+    db: WorkerDatabase,
+    lock_conn: Any,
+    runtime_id: str,
+    probe_state: _ProbeState,
+    stop_event: asyncio.Event,
+) -> None:
+    try:
+        while not stop_event.is_set():
+            probe_state.heartbeat_at_ms = await _control_liveness_and_heartbeat(
+                db=db,
+                lock_conn=lock_conn,
+                runtime_id=runtime_id,
+            )
+            await _wait_or_stop(stop_event, _HEARTBEAT_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except RuntimeError as exc:
+        if "singleton_lost" in str(exc):
+            raise
+        raise _ControlFailure("workers_control_failed") from exc
+    except Exception as exc:
+        raise _ControlFailure("workers_control_failed") from exc
+
+
+async def _run_control_watchdog(
+    *,
+    probe_state: _ProbeState,
+    stop_event: asyncio.Event,
+) -> None:
+    loop = asyncio.get_running_loop()
+    last_heartbeat_at_ms = probe_state.heartbeat_at_ms
+    last_success_at = loop.time()
+    while not stop_event.is_set():
+        if probe_state.heartbeat_at_ms != last_heartbeat_at_ms:
+            last_heartbeat_at_ms = probe_state.heartbeat_at_ms
+            last_success_at = loop.time()
+        if loop.time() - last_success_at > 15.0:
+            raise _ControlFailure("workers_control_heartbeat_stale")
+        await _wait_or_stop(stop_event, 0.250)
+
+
+async def _control_liveness_and_heartbeat(
+    *,
+    db: WorkerDatabase,
+    lock_conn: Any,
+    runtime_id: str,
+) -> int:
+    try:
+        await db.run_control(
+            "singleton_liveness",
+            db.check_pinned_liveness,
+            lock_conn,
+            operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise RuntimeError("singleton_lost") from exc
+    heartbeat_at_ms = _now_ms()
+    await db.run_control(
+        "workers_runtime_heartbeat",
+        _runtime_heartbeat,
+        db,
+        runtime_id,
+        heartbeat_at_ms,
+        operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+    )
+    return heartbeat_at_ms
+
+
+async def _run_probe(server: uvicorn.Server, *, stop_event: asyncio.Event) -> None:
+    await server.serve()
+    if not stop_event.is_set():
+        raise RuntimeError("workers_probe_returned")
+
+
+def _probe_server(
+    *,
+    probe_state: _ProbeState,
+    telemetry: TelemetryRegistry,
+) -> uvicorn.Server:
+    config = uvicorn.Config(
+        _create_workers_probe_app(
+            readiness=probe_state.payload,
+            render_metrics=telemetry.render_prometheus_text,
+        ),
+        host="127.0.0.1",
+        port=_WORKER_INTERNAL_PORT,
+        log_config=None,
+        lifespan="off",
+    )
+    server = uvicorn.Server(config)
+    server.capture_signals = nullcontext
+    return server
+
+
+async def _wait_for_probe_start(server: uvicorn.Server) -> None:
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not server.started:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise RuntimeError("workers_probe_start_timeout")
+        await asyncio.sleep(0.010)
+
+
+async def _wire_components(
     *,
     settings: Settings,
     db: WorkerDatabase,
     telemetry: TelemetryRegistry,
-    providers: WiredProviders,
-    collector: WorkerBase,
-    collector_enabled: bool,
-    resources: object,
-    provider_governor: object,
+    finite: FiniteOperations,
+    model_adapter: ModelAdapter,
+    cpu: CpuProcess,
     runtime_id: str,
-) -> tuple[dict[str, WorkerBase], dict[str, dict[str, object]]]:
-    inactive_statuses: dict[str, dict[str, object]] = {}
-    ctx = WorkerFactoryContext(
-        settings=settings,
+) -> _Components:
+    providers = wire_asset_market(settings)
+    ingest = _PooledIngestStore(
+        db,
+        providers=providers,
+        event_anchor_active_window_ms=_EVENT_ANCHOR_ACTIVE_WINDOW_MS,
+    )
+    collector: CollectorService | None = None
+    upstream_factory = gmgn_upstream_factory(settings)
+    if upstream_factory is not None:
+        collector = CollectorService(store=ingest, upstream_client=None, db=db)
+        collector.upstream_client = upstream_factory(collector.handle_frame)
+
+    due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
+    news: NewsAcquisition | None = None
+    news_brief: NewsBriefCandidate | None = None
+    model_candidates: list[Any] = []
+    if settings.news.enabled:
+        sources = default_sources()
+        news = NewsAcquisition(
+            db=db,
+            finite_operations=finite,
+            cpu=cpu,
+            sources=sources,
+            feed_reader=RssFeedReader(
+                timeout_seconds=20.0,
+                max_attempts=2,
+                relay_base_url=settings.news.relay.base_url,
+                relay_auth_header=settings.news.relay.auth_header,
+                relay_auth_token=settings.news.relay.auth_token,
+                relay_allowed_urls={source.feed_url for source in sources if is_public_https_feed_url(source.feed_url)},
+            ),
+            feed_parser=parse_rss_feed_wire,
+        )
+        due_turns.append((news.turn, 1.0))
+        configured_base_url = settings.llm.base_url or ("https://api.deepseek.com/v1" if settings.llm.api_key else "")
+        news_brief = NewsBriefCandidate(
+            db=db,
+            model_adapter=model_adapter,
+            publisher=ProviderChainNewsBriefPublisher(
+                configured_base_url=configured_base_url,
+                configured_api_key=settings.llm.api_key,
+                configured_model=settings.llm.news_brief_model,
+                ollama_base_url=_NEWS_OLLAMA_BASE_URL,
+                ollama_model=_NEWS_OLLAMA_MODEL,
+                openrouter_base_url=_NEWS_OPENROUTER_BASE_URL,
+                openrouter_model=_NEWS_OPENROUTER_MODEL,
+                openrouter_api_key=settings.llm.openrouter_api_key,
+                groq_base_url=_NEWS_GROQ_BASE_URL,
+                groq_model=_NEWS_GROQ_MODEL,
+                groq_api_key=settings.llm.groq_api_key,
+                total_timeout_seconds=_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS,
+            ),
+            runtime_id=runtime_id,
+            stable_order=20,
+        )
+        model_candidates.append(news_brief)
+
+    document_model: MacroDocumentAnalysisService | None = None
+    document_analysis_model_name: str | None = None
+    if settings.llm.macro_document_analysis_enabled and llm_is_configured(settings):
+        model, effective_model = configured_chat_model(
+            settings,
+            model_name=settings.llm.macro_document_analysis_model,
+            request_timeout_seconds=_DOCUMENT_MODEL_TIMEOUT_SECONDS,
+            max_tokens=_MODEL_MAX_TOKENS,
+        )
+        document_model = MacroDocumentAnalysisService(
+            db=db,
+            database=db,
+            agent=FedDocumentAnalysisAgent(model=model, model_name=effective_model),
+            worker_name="macro_document_analysis",
+            lease_owner=f"macro_document_analysis:{runtime_id}",
+            stable_order=30,
+        )
+        document_analysis_model_name = effective_model
+        model_candidates.append(document_model)
+
+    macro_source: MacroSourceClient | None = None
+    macro_turns: list[MacroAcquisition] = []
+    source_config = settings.providers.macro_sources
+    if source_config.enabled:
+        macro_source = MacroSourceClient(
+            timeout_seconds=min(30.0, float(source_config.request_timeout_seconds)),
+            user_agent=str(source_config.user_agent),
+            fred_enabled=source_config.fred_enabled,
+            cboe_enabled=source_config.cboe_enabled,
+            cftc_enabled=source_config.cftc_enabled,
+            nasdaq_daily_enabled=source_config.nasdaq_daily_enabled,
+            yfinance_enabled=source_config.yfinance_enabled,
+        )
+        for worker_name, clock_kind in _MACRO_CLOCKS:
+            turn = MacroAcquisition(
+                db=db,
+                finite_operations=finite,
+                service=MacroAcquisitionService(
+                    db=db,
+                    worker_name=worker_name,
+                    clock_kind=clock_kind,
+                    source_client=macro_source,
+                    lease_owner=f"{worker_name}:{runtime_id}",
+                    document_analysis_model_name=document_analysis_model_name,
+                    document_analysis_prompt_version=(
+                        FED_DOCUMENT_ANALYSIS_PROMPT_VERSION if document_analysis_model_name is not None else None
+                    ),
+                    document_analysis_max_attempts=3,
+                    document_analysis_fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
+                    document_analysis_speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+                ),
+            )
+            macro_turns.append(turn)
+            idle_seconds, _old_batch = acquisition_loop_policy(clock_kind)
+            due_turns.append((turn.turn, idle_seconds))
+
+    if settings.llm.macro_thesis_enabled:
+        effective_model = litellm_proxy_model_name(
+            settings.llm.macro_thesis_model,
+            base_url=settings.llm.base_url,
+        )
+        configuration_error: str | None = None
+        if not llm_is_configured(settings):
+            configuration_error = "llm_not_configured"
+        else:
+            try:
+                require_supported_macro_thesis_model(effective_model)
+            except ValueError as exc:
+                configuration_error = str(exc)
+        thesis_agent = None
+        if configuration_error is None:
+            model, effective_model = configured_chat_model(
+                settings,
+                model_name=settings.llm.macro_thesis_model,
+                request_timeout_seconds=_THESIS_MODEL_TIMEOUT_SECONDS,
+                max_tokens=_MODEL_MAX_TOKENS,
+            )
+            thesis_agent = MacroThesisDeepAgent(model=model, model_name=effective_model)
+        model_candidates.append(
+            MacroThesisService(
+                db=db,
+                database=db,
+                agent=thesis_agent,
+                configuration_error=configuration_error,
+                worker_name="macro_thesis",
+                lease_owner=f"macro_thesis:{runtime_id}",
+                stable_order=10,
+            )
+        )
+
+    if providers.dex_discovery_market is not None:
+        resolution = ResolutionRefresh(
+            db=db,
+            dex_discovery_market=providers.dex_discovery_market,
+            finite_operations=finite,
+            runtime_id=runtime_id,
+            claim_limit=1,
+        )
+        due_turns.append((resolution.turn, 30.0))
+    if providers.dex_profile_sources:
+        profile = AssetProfileRefresh(
+            db=db,
+            finite_operations=finite,
+            runtime_id=runtime_id,
+            dex_profile_sources=providers.dex_profile_sources,
+        )
+        due_turns.append((profile.turn, 60.0))
+    image = TokenImageMirror(
         db=db,
-        telemetry=telemetry,
-        asset_market=providers.asset_market,
-        collector=collector,
-        collector_enabled=collector_enabled,
-        resources=resources,
-        provider_governor=provider_governor,
+        app_home=settings.app_home,
+        finite_operations=finite,
         runtime_id=runtime_id,
-        inactive_statuses=inactive_statuses,
     )
-    constructed: dict[str, WorkerBase] = {}
-    for factory in worker_factories():
-        for name, worker in factory(ctx).items():
-            if name in constructed:
-                raise ValueError(f"worker_composition_duplicate:{name}")
-            if not isinstance(worker, WorkerBase):
-                raise TypeError(f"worker_composition_invalid:{name}:{type(worker).__name__}")
-            constructed[name] = worker
+    due_turns.append((image.turn, 60.0))
+    event_anchor = EventAnchorBackfill(
+        db=db,
+        providers=providers,
+        finite_operations=finite,
+        runtime_id=runtime_id,
+    )
+    due_turns.append((event_anchor.turn, 1.0))
 
-    canonical_names = worker_names()
-    canonical = frozenset(canonical_names)
-    actual = frozenset(constructed) | frozenset(inactive_statuses)
-    if actual != canonical:
-        missing = sorted(canonical - actual)
-        unknown = sorted(actual - canonical)
-        raise RuntimeError(f"worker_composition_mismatch:missing={missing}:unknown={unknown}")
-    runnable = {name: constructed[name] for name in canonical_names if name in constructed}
-    inactive = {name: inactive_statuses[name] for name in canonical_names if name in inactive_statuses}
-    return runnable, inactive
-
-
-def worker_factories() -> tuple[WorkerFactory, ...]:
-    from tracefold.app.coordinator_workers import construct_coordinator_workers
-    from tracefold.app.macro_workers import construct_macro_workers
-    from tracefold.app.news_workers import construct_news_workers
-    from tracefold.market import (
-        construct_ingestion_workers,
-        construct_market_workers,
+    market_poll = (
+        MarketTickPoll(db=db, providers=providers, finite_operations=finite)
+        if providers.cex_market is not None or providers.dex_quote_market is not None
+        else None
+    )
+    market_stream = (
+        MarketTickStream(db=db, stream_dex_market=providers.stream_dex_market)
+        if providers.stream_dex_market is not None
+        else None
+    )
+    projections = (
+        RadarProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=10),
+        ProfileProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=20),
+        MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=30),
+        NewsProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=40),
+    )
+    return _Components(
+        providers=providers,
+        collector=collector,
+        news=news,
+        news_brief=news_brief,
+        macro_source=macro_source,
+        macro_turns=tuple(macro_turns),
+        due_turns=tuple(due_turns),
+        market_poll=market_poll,
+        market_stream=market_stream,
+        projections=projections,
+        models=tuple(model_candidates),
+        document_model=document_model,
     )
 
-    return (
-        construct_ingestion_workers,
-        construct_market_workers,
-        construct_macro_workers,
-        construct_news_workers,
-        construct_coordinator_workers,
+
+async def _reconcile_once(components: _Components) -> None:
+    if components.news is not None:
+        await components.news.reconcile()
+    for turn in components.macro_turns:
+        await turn.reconcile()
+    if components.document_model is not None:
+        await components.document_model.reconcile()
+
+
+async def _graceful_cleanup(
+    *,
+    started_at: float,
+    db: WorkerDatabase,
+    finite: FiniteOperations,
+    model_adapter: ModelAdapter,
+    cpu: CpuProcess,
+    components: _Components,
+) -> None:
+    try:
+        db.close_business_admission()
+        finite.close_admission()
+        model_adapter.close_admission()
+        cpu.close_admission()
+        if components.collector is not None:
+            await _within(components.collector.close(), started_at)
+        if components.news is not None:
+            await _within(components.news.close(), started_at)
+        if components.news_brief is not None:
+            await _within(components.news_brief.close(), started_at)
+        if components.macro_source is not None:
+            await _within(
+                finite.run(
+                    "macro_source_close",
+                    components.macro_source.close,
+                    timeout_seconds=min(5.0, _remaining(started_at)),
+                    allow_shutdown=True,
+                ),
+                started_at,
+            )
+        await _within(_close_market_providers(components.providers, finite), started_at)
+        if not await db.drain_business(timeout_seconds=_remaining(started_at)):
+            raise RuntimeError("worker_database_business_drain_timeout")
+        if not await finite.drain(timeout_seconds=_remaining(started_at)):
+            raise RuntimeError("finite_operation_drain_timeout")
+        if not await model_adapter.drain(timeout_seconds=_remaining(started_at)):
+            raise RuntimeError("model_adapter_drain_timeout")
+        if not await cpu.drain(timeout_seconds=_remaining(started_at)):
+            raise RuntimeError("cpu_process_drain_timeout")
+        finite.close()
+        model_adapter.close()
+        cpu.close()
+    except TimeoutError as exc:
+        raise RuntimeError("graceful_deadline_exceeded") from exc
+    except Exception as exc:
+        if _remaining(started_at) <= 0.001:
+            raise RuntimeError("graceful_deadline_exceeded") from exc
+        raise
+
+
+async def _close_market_providers(
+    providers: AssetMarketProviders,
+    finite: FiniteOperations,
+) -> None:
+    seen: set[int] = set()
+    synchronous = [
+        providers.cex_market,
+        providers.dex_discovery_market,
+        providers.dex_quote_market,
+        *(source.market for source in providers.dex_profile_sources),
+    ]
+    for provider in synchronous:
+        if provider is None or id(provider) in seen:
+            continue
+        seen.add(id(provider))
+        await finite.run(
+            "market_provider_close",
+            provider.close,
+            timeout_seconds=5.0,
+            allow_shutdown=True,
+        )
+    if providers.stream_dex_market is not None and id(providers.stream_dex_market) not in seen:
+        await providers.stream_dex_market.aclose()
+
+
+async def _fatal_exit(
+    *,
+    exc: BaseException,
+    db: WorkerDatabase | None,
+    runtime_id: str,
+    finite: FiniteOperations,
+    model_adapter: ModelAdapter,
+    cpu: CpuProcess,
+    phase: str,
+) -> None:
+    logger.opt(exception=exc).critical("Workers runtime fatal exit")
+    finite.close_admission()
+    model_adapter.close_admission()
+    cpu.close_admission()
+    fatal_code = _fatal_code(exc, phase=phase)
+    if db is not None:
+        db.close_business_admission()
+        try:
+            async with asyncio.timeout(max(0.001, FATAL_EXIT_TIMEOUT_SECONDS - 0.5)):
+                await db.run_control(
+                    "workers_runtime_failed",
+                    _runtime_transition,
+                    db,
+                    runtime_id,
+                    "failed",
+                    fatal_code,
+                    operation_timeout_seconds=1.0,
+                    allow_shutdown=True,
+                )
+        except BaseException:
+            os._exit(1)
+    os._exit(1)
+
+
+def _fatal_code(exc: BaseException, *, phase: str) -> str:
+    leaves = _leaf_exceptions(exc)
+    messages = ":".join(str(item) for item in _leaf_exceptions(exc)).lower()
+    if isinstance(exc, ResourceOperationOverrun) or "resource_operation_overrun" in messages:
+        return "resource_operation_overrun"
+    if "singleton_lost" in messages:
+        return "singleton_lost"
+    if "graceful_deadline_exceeded" in messages:
+        return "graceful_deadline_exceeded"
+    if phase == "startup":
+        return "startup_failed"
+    if phase == "cleanup":
+        return "cleanup_failed"
+    if any(isinstance(item, _ControlFailure) for item in leaves):
+        return "control_failed"
+    if any(
+        marker in messages
+        for marker in (
+            "_invariant_",
+            "_cas_failed",
+            "_mismatch",
+            "parallel_submission",
+        )
+    ):
+        return "runtime_invariant_failed"
+    return "child_failed"
+
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        for nested in exc.exceptions:
+            leaves.extend(_leaf_exceptions(nested))
+        return leaves
+    return [exc]
+
+
+def _startup_database_status(db: WorkerDatabase) -> dict[str, object]:
+    with db.worker_pool.connection(timeout=0.250) as conn:
+        return postgres_health_check(
+            conn,
+            expected_migration_version=latest_migration_version(),
+        )
+
+
+def _runtime_begin(
+    db: WorkerDatabase,
+    runtime_id: str,
+    runtime_version: str,
+    started_at_ms: int,
+) -> bool:
+    with db.worker_session("workers_runtime_begin", 1.0) as repos, repos.transaction():
+        return WorkersRuntimeRepository(repos.conn).begin(
+            runtime_id=runtime_id,
+            runtime_version=runtime_version,
+            now_ms=started_at_ms,
+        )
+
+
+def _runtime_transition(
+    db: WorkerDatabase,
+    runtime_id: str,
+    lifecycle_state: Any,
+    fatal_code: Any,
+) -> None:
+    with db.worker_session("workers_runtime_transition", 1.0) as repos, repos.transaction():
+        WorkersRuntimeRepository(repos.conn).transition(
+            runtime_id=runtime_id,
+            lifecycle_state=lifecycle_state,
+            fatal_code=fatal_code,
+            now_ms=_now_ms(),
+        )
+
+
+def _runtime_heartbeat(db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int) -> None:
+    with db.worker_session("workers_runtime_heartbeat", 1.0) as repos, repos.transaction():
+        WorkersRuntimeRepository(repos.conn).heartbeat(
+            runtime_id=runtime_id,
+            now_ms=heartbeat_at_ms,
+        )
+
+
+class _PooledIngestStore:
+    def __init__(
+        self,
+        db: WorkerDatabase,
+        *,
+        providers: AssetMarketProviders,
+        event_anchor_active_window_ms: int,
+    ) -> None:
+        self.db = db
+        self.event_anchor_active_window_ms = int(event_anchor_active_window_ms)
+        self._capture_service = EventMarketCaptureService(
+            providers=providers,
+            now_ms=_now_ms,
+        )
+
+    def insert_raw_frame(self, **kwargs: Any) -> bool:
+        with self.db.worker_session("gmgn_capture", 3.0) as repos, repos.transaction():
+            return repos.evidence.insert_raw_frame(**kwargs)
+
+    def ingest_event(self, event: Any) -> Any:
+        prepared = IngestService.prepare_event(event)
+        market_resolutions: list[dict[str, Any]] = []
+        prefetched_ticks: dict[tuple[str, str], Any] = {}
+        with self.db.worker_session("gmgn_capture", 3.0) as repos, repos.transaction():
+            ingest = _ingest_service_for_repos(
+                repos,
+                event_anchor_active_window_ms=self.event_anchor_active_window_ms,
+            )
+            if ingest.event_already_exists(prepared):
+                return ingest.duplicate_result(prepared)
+            ingest.prepare_registry_for_resolution(prepared)
+            resolutions = ingest.resolve_prepared(prepared, persist=False)
+            for decision in resolutions:
+                resolution = ingest.market_resolution_for_decision(decision)
+                if resolution is None:
+                    continue
+                market_resolutions.append(resolution)
+                prefetched_ticks[(resolution["target_type"], resolution["target_id"])] = (
+                    repos.market_ticks.latest_at_or_before(
+                        target_type=resolution["target_type"],
+                        target_id=resolution["target_id"],
+                        at_ms=prepared.event_ms,
+                        max_lag_ms=60_000,
+                    )
+                )
+            lookup = TickLookup(
+                latest_at_or_before=lambda target_type, target_id, _at_ms, _max_lag_ms: prefetched_ticks.get(
+                    (target_type, target_id)
+                )
+            )
+            captures = [
+                self._capture_service.capture_for_event(
+                    event_id=resolution["event_id"],
+                    intent_id=resolution["intent_id"],
+                    resolution_id=resolution["resolution_id"],
+                    resolution=resolution,
+                    event_ms=prepared.event_ms,
+                    tick_lookup=lookup,
+                )
+                for resolution in market_resolutions
+            ]
+            return ingest.commit_prepared_event(
+                prepared,
+                resolutions=resolutions,
+                captures=captures,
+            )
+
+
+def _ingest_service_for_repos(repos: Any, *, event_anchor_active_window_ms: int) -> IngestService:
+    return IngestService(
+        evidence=repos.evidence,
+        entities=repos.entities,
+        registry=repos.registry,
+        identity_evidence=repos.identity_evidence,
+        token_intent_lookup=repos.token_intent_lookup,
+        token_evidence=repos.token_evidence,
+        token_intents=repos.token_intents,
+        intent_resolutions=repos.intent_resolutions,
+        discovery=repos.discovery,
+        market_ticks=repos.market_ticks,
+        market_tick_current=repos.market_tick_current,
+        enriched_events=repos.enriched_events,
+        event_anchor_jobs=repos.event_anchor_jobs,
+        radar_source_edges=repos.radar_source_edges,
+        persisted_live=repos.persisted_live,
+        transaction=repos.transaction,
+        event_anchor_active_window_ms=event_anchor_active_window_ms,
     )
 
 
-__all__ = [
-    "WorkerFactoryContext",
-    "construct_workers",
-    "worker_factories",
-]
+async def _within(awaitable: Awaitable[Any], started_at: float) -> Any:
+    return await asyncio.wait_for(awaitable, timeout=_remaining(started_at))
+
+
+def _remaining(started_at: float) -> float:
+    return max(
+        0.001,
+        GRACEFUL_DRAIN_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - float(started_at)),
+    )
+
+
+async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=max(0.0, float(seconds)))
+    except TimeoutError:
+        return
+
+
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    callback: Callable[[], None],
+) -> tuple[signal.Signals, ...]:
+    installed: list[signal.Signals] = []
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, callback)
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(signum)
+    return tuple(installed)
+
+
+def _remove_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    installed: Sequence[signal.Signals],
+) -> None:
+    for signum in installed:
+        loop.remove_signal_handler(signum)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1_000)
+
+
+__all__ = ["run_workers"]

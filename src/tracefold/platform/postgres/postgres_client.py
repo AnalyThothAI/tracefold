@@ -47,6 +47,7 @@ def create_pool(
     *,
     min_size: int,
     max_size: int,
+    max_waiting: int | None = None,
     connect_timeout_seconds: float,
     application_name: str | None = None,
     statement_timeout_seconds: float | None = None,
@@ -82,13 +83,16 @@ def create_pool(
         kwargs["keepalives_interval"] = int(keepalives_interval)
     if keepalives_count is not None:
         kwargs["keepalives_count"] = int(keepalives_count)
-    return ConnectionPool(
-        conninfo=dsn,
-        min_size=min_size,
-        max_size=max_size,
-        kwargs=kwargs,
-        open=True,
-    )
+    pool_kwargs: dict[str, Any] = {
+        "conninfo": dsn,
+        "min_size": min_size,
+        "max_size": max_size,
+        "kwargs": kwargs,
+        "open": True,
+    }
+    if max_waiting is not None:
+        pool_kwargs["max_waiting"] = int(max_waiting)
+    return ConnectionPool(**pool_kwargs)
 
 
 def _postgres_runtime_options(

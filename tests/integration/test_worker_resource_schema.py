@@ -1,7 +1,7 @@
 from tests.postgres_test_utils import connect_postgres_test, prepare_postgres_database
 
 
-def test_worker_resource_hard_cut_schema_is_typed_and_domain_owned():
+def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime_row():
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=True)
     try:
@@ -26,6 +26,9 @@ def test_worker_resource_hard_cut_schema_is_typed_and_domain_owned():
                     "news_similarity_edges",
                     "token_profile_projection_frontiers",
                     "model_generation_frontiers",
+                    "queue_terminal_events",
+                    "worker_queue_terminal_events",
+                    "workers_runtime",
                 ],
             ),
         ).fetchall()
@@ -35,15 +38,15 @@ def test_worker_resource_hard_cut_schema_is_typed_and_domain_owned():
     assert [row["table_name"] for row in rows] == [
         "macro_dataset_projection_states",
         "macro_module_frontiers",
-        "model_generation_frontiers",
         "news_identity_features",
         "news_projection_frontiers",
         "news_similarity_edges",
         "persisted_live_events",
+        "queue_terminal_events",
         "radar_projection_frontiers",
         "radar_source_edges",
         "token_profile_projection_frontiers",
-        "worker_runtime_status",
+        "workers_runtime",
     ]
 
     conn = connect_postgres_test(read_only=True)

@@ -17,6 +17,7 @@ from tracefold.market.provider_contracts import (
     CexTicker,
     DexTokenQuote,
     DexTokenQuoteRequest,
+    MarketProviderExpectedError,
 )
 
 TargetType = Literal["chain_token", "cex_symbol"]
@@ -129,7 +130,7 @@ def _capture_chain_token(
 
     try:
         quotes = provider.token_quotes([DexTokenQuoteRequest(chain_id=chain_id, address=address)])
-    except Exception as exc:
+    except MarketProviderExpectedError as exc:
         return _unavailable(req, reason=_provider_error_reason(exc), created_at_ms=now_ms())
     if not quotes:
         return _unavailable(req, reason="provider_no_quote", created_at_ms=now_ms())
@@ -188,7 +189,7 @@ def _capture_cex_symbol(
 
     try:
         ticker = provider.ticker(inst_id=instrument)
-    except Exception as exc:
+    except MarketProviderExpectedError as exc:
         return _unavailable(req, reason=_provider_error_reason(exc), created_at_ms=now_ms())
     if ticker is None:
         return _unavailable(req, reason="provider_no_quote", created_at_ms=now_ms())

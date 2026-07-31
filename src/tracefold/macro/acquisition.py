@@ -27,10 +27,7 @@ from tracefold.macro.domain import (
 from tracefold.macro.fed_roles import derive_fomc_role_facts
 from tracefold.macro.registry import datasets_for_clock, require_dataset
 from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
-from tracefold.platform.postgres.projection_frontier import (
-    MACRO_FRONTIER,
-    MODEL_FRONTIER,
-)
+from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 _MACRO_DEADLINE_MS = 60_000
 _ACQUISITION_POLICY = {
@@ -41,7 +38,7 @@ _ACQUISITION_POLICY = {
     "official_document": (3_600.0, 2, 900_000),
     "backfill": (5.0, 1, 900_000),
 }
-_LEASE_MS = 300_000
+_LEASE_MS = 45_000
 _MAX_ATTEMPTS = 5
 _STATEMENT_TIMEOUT_SECONDS = 30.0
 
@@ -66,6 +63,11 @@ class MacroAcquisitionService:
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
         target_keys: tuple[str, ...] = (),
+        document_analysis_model_name: str | None = None,
+        document_analysis_prompt_version: str | None = None,
+        document_analysis_max_attempts: int = 3,
+        document_analysis_fomc_lookback_days: int = 550,
+        document_analysis_speech_lookback_days: int = 120,
     ) -> None:
         self.db = db
         self.worker_name = worker_name
@@ -77,6 +79,13 @@ class MacroAcquisitionService:
         self.source_client = source_client
         self.clock_ms = clock_ms or _now_ms
         self.target_keys = tuple(sorted(set(target_keys)))
+        self.document_analysis_model_name = str(document_analysis_model_name or "").strip() or None
+        self.document_analysis_prompt_version = str(document_analysis_prompt_version or "").strip() or None
+        self.document_analysis_max_attempts = int(document_analysis_max_attempts)
+        self.document_analysis_fomc_lookback_days = int(document_analysis_fomc_lookback_days)
+        self.document_analysis_speech_lookback_days = int(document_analysis_speech_lookback_days)
+        if (self.document_analysis_model_name is None) != (self.document_analysis_prompt_version is None):
+            raise ValueError("macro_document_analysis_job_identity_incomplete")
 
     def ensure_targets(self, *, now_ms: int | None = None) -> int:
         now = int(now_ms if now_ms is not None else self.clock_ms())
@@ -142,6 +151,17 @@ class MacroAcquisitionService:
             cursor=dict(claim.target["cursor_json"] or {}),
             now_ms=claim.started_at_ms,
         )
+
+    def release_claim(self, claim: MacroAcquisitionClaim) -> bool:
+        with self._session() as repos, repos.transaction():
+            return bool(
+                repos.macro.release_target_claim(
+                    target_key=str(claim.target["target_key"]),
+                    lease_owner=self.lease_owner,
+                    previous_status=str(claim.target["previous_status"]),
+                    claimed_attempt_count=int(claim.target["attempt_count"]),
+                )
+            )
 
     def publish_failure(
         self,
@@ -230,7 +250,7 @@ class MacroAcquisitionService:
                     if key in target_cursor:
                         completed_cursor[key] = target_cursor[key]
         inserted = 0
-        inserted_documents: list[DocumentFact] = []
+        inserted_document_ids: list[str] = []
         with self._session() as repos, repos.transaction():
             for fact in batch.facts:
                 if isinstance(fact, SeriesFact):
@@ -241,7 +261,7 @@ class MacroAcquisitionService:
                     document_inserted = repos.macro.insert_document(fact)
                     inserted += document_inserted
                     if document_inserted:
-                        inserted_documents.append(fact)
+                        inserted_document_ids.append(fact.document_id)
                     for role_fact in derive_fomc_role_facts(fact):
                         inserted += repos.macro.insert_fed_official_role_fact(role_fact)
                 elif isinstance(fact, MarketObservationFact):
@@ -252,31 +272,15 @@ class MacroAcquisitionService:
                     inserted += repos.macro_market.insert_settlement(fact)
                 else:
                     raise TypeError(f"unknown_macro_fact:{type(fact).__name__}")
-            if inserted_documents:
-                repos.projection_frontiers.mark_dirty(
-                    MODEL_FRONTIER,
-                    key={
-                        "candidate_kind": "macro_document_analysis",
-                        "shard_key": "ready",
-                    },
-                    dirty_at_ms=completed_at_ms,
-                    deadline_at_ms=min(int(fact.received_at_ms) + 60 * 60 * 1000 for fact in inserted_documents),
-                    input_fingerprint=_stable_hash(
-                        [
-                            {
-                                "document_id": fact.document_id,
-                                "dataset_id": fact.dataset_id,
-                                "published_at_ms": fact.published_at_ms,
-                                "received_at_ms": fact.received_at_ms,
-                                "content_text": fact.content_text,
-                            }
-                            for fact in sorted(
-                                inserted_documents,
-                                key=lambda value: value.document_id,
-                            )
-                        ]
-                    ),
-                    version="macro_document_analysis_v1",
+            if inserted_document_ids and self.document_analysis_model_name is not None:
+                inserted += repos.macro.ensure_document_analysis_jobs(
+                    model_name=self.document_analysis_model_name,
+                    prompt_version=str(self.document_analysis_prompt_version),
+                    max_attempts=self.document_analysis_max_attempts,
+                    now_ms=completed_at_ms,
+                    fomc_lookback_days=self.document_analysis_fomc_lookback_days,
+                    speech_lookback_days=self.document_analysis_speech_lookback_days,
+                    document_ids=tuple(sorted(set(inserted_document_ids))),
                 )
             receipt_status = "ok" if batch.facts else "empty"
             repos.macro.record_receipt(
@@ -293,12 +297,18 @@ class MacroAcquisitionService:
                 error_message=None,
                 diagnostics=batch.diagnostics,
             )
-            backfill_complete = self.clock_kind != "backfill" or _backfill_complete(
-                completed_cursor,
-                has_facts=bool(batch.facts),
+            unfinished = batch.completion == "continuation"
+            backfill_complete = not unfinished and (
+                self.clock_kind != "backfill"
+                or _backfill_complete(
+                    completed_cursor,
+                    has_facts=bool(batch.facts),
+                )
             )
             target_status = (
-                "current"
+                "backfilling"
+                if unfinished
+                else "current"
                 if backfill_complete and (bool(batch.facts) or self.clock_kind == "backfill")
                 else "delayed"
                 if not batch.facts and self.clock_kind != "backfill"
@@ -310,7 +320,9 @@ class MacroAcquisitionService:
                 receipt_id=receipt_id,
                 cursor=completed_cursor,
                 next_due_at_ms=(
-                    completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else self.retry_ms)
+                    completed_at_ms
+                    if unfinished
+                    else completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else self.retry_ms)
                     if self.clock_kind != "backfill"
                     else (253_402_300_799_000 if backfill_complete else completed_at_ms)
                 ),

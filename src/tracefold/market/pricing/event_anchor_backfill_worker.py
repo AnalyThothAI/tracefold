@@ -9,6 +9,7 @@ semantically valid event anchor.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
@@ -23,8 +24,7 @@ from tracefold.market.pricing.event_market_capture import (
 from tracefold.market.pricing.market_tick import EnrichedEventCapture, MarketTick
 from tracefold.market.pricing.market_tick_persistence import MarketTickPersistenceService
 from tracefold.market.provider_contracts import AssetMarketProviderBundle
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 TEMPORARY_RETRY_BACKOFF_MS = 10_000
 TEMPORARY_REASONS = frozenset({"provider_error", "provider_timeout", "rate_limited"})
@@ -63,7 +63,7 @@ class _TerminalSkipped(Exception):
     pass
 
 
-class EventAnchorBackfillWorker(WorkerBase):
+class EventAnchorBackfill:
     """Catch up unavailable/pending_backfill enriched events asynchronously."""
 
     worker_name = "event_anchor_backfill"
@@ -71,27 +71,19 @@ class EventAnchorBackfillWorker(WorkerBase):
     def __init__(
         self,
         *,
-        pool_bundle: Any | None = None,
+        db: Any | None = None,
         capture_service: Any | None = None,
         providers: Any | None = None,
-        resources: Any,
-        provider_governor: Any,
+        finite_operations: Any,
         runtime_id: str,
         clock: Any | None = None,
-        name: str = "event_anchor_backfill",
-        telemetry: Any | None = None,
     ) -> None:
-        if pool_bundle is None:
+        if db is None:
             raise RuntimeError("event_anchor_backfill_db_required")
-        super().__init__(
-            name=name,
-            interval_seconds=1.0,
-            telemetry=telemetry or object(),
-        )
-        self.db = pool_bundle
-        self.resources = resources
-        self.provider_governor = provider_governor
-        self.claim_owner = f"{name}:{runtime_id}"
+        self.db = db
+        self.finite_operations = finite_operations
+        self.name = "event_anchor_backfill"
+        self.claim_owner = f"event_anchor_backfill:{runtime_id}"
         self.clock = clock or _now_ms
         if capture_service is None:
             if providers is None:
@@ -101,41 +93,54 @@ class EventAnchorBackfillWorker(WorkerBase):
                 now_ms=lambda: int(self.clock()),
             )
         self._capture_service = capture_service
-        self.batch_size = 50
+        self.batch_size = 1
         self.max_attempts = 3
         self.min_age_ms = 250
         self.lease_ms = 120_000
         self.active_window_ms = 300_000
         self.max_anchor_lag_ms = 60_000
 
-    async def run_once(self) -> WorkerResult:
+    async def turn(self) -> bool | None:
         now_ms = int(self.clock())
-        stale_jobs = await self.resources.run_realtime_db(
+        stale_jobs = await self.db.run_business(
+            "event_anchor_expire",
             self._expire_stale_jobs,
             now_ms=now_ms,
+            operation_timeout_seconds=3.0,
         )
         stale_terminal = int(stale_jobs["expired"]) + int(stale_jobs["failed"])
         stale_rescheduled = int(stale_jobs["rescheduled"])
-        rows = await self.resources.run_realtime_db(
+        rows = await self.db.run_business(
+            "event_anchor_claim",
             self._claim_due_jobs,
             now_ms=now_ms,
+            operation_timeout_seconds=3.0,
         )
         if not rows:
-            return WorkerResult(
-                processed=0,
-                skipped=0,
-                notes={
-                    "pending_selected": 0,
-                    "claimed": 0,
-                    "expired_jobs": int(stale_jobs["expired"]),
-                    "ticks_inserted": 0,
-                    "captures_attached": 0,
-                    "terminal_failures": stale_terminal,
-                    "rescheduled_jobs": stale_rescheduled,
-                },
-            )
+            return bool(stale_terminal or stale_rescheduled)
 
-        outcomes = [await self._capture_one(row, now_ms=now_ms) for row in rows]
+        submitted = False
+
+        def mark_submitted() -> None:
+            nonlocal submitted
+            submitted = True
+
+        try:
+            outcomes = [
+                await self._capture_one(
+                    row,
+                    now_ms=now_ms,
+                    on_submitted=mark_submitted,
+                )
+                for row in rows
+            ]
+        except asyncio.CancelledError:
+            if not submitted:
+                await asyncio.shield(self._release_prework(rows[0]))
+            raise
+        except ResourceAdmissionTimeout:
+            await self._release_prework(rows[0])
+            return None
 
         attaches: list[_AttachOutcome] = []
         terminals: list[_TerminalOutcome] = []
@@ -152,40 +157,52 @@ class EventAnchorBackfillWorker(WorkerBase):
             terminals.append(outcome)
             skipped_reasons[outcome.reason] += 1
 
-        inserted, attached_ticks, terminal_count, rescheduled_count = await self.resources.run_realtime_db(
+        await self.db.run_business(
+            "event_anchor_publish",
             self._persist,
             attaches=attaches,
             terminals=terminals,
             reschedules=reschedules,
             now_ms=now_ms,
+            operation_timeout_seconds=3.0,
         )
-        attached = len(attached_ticks)
-        return WorkerResult(
-            processed=attached,
-            skipped=len(rows) - attached - rescheduled_count - terminal_count,
-            notes={
-                "pending_selected": len(rows),
-                "claimed": len(rows),
-                "expired_jobs": int(stale_jobs["expired"]),
-                "ticks_inserted": inserted,
-                "captures_attached": attached,
-                "terminal_failures": stale_terminal + terminal_count,
-                "rescheduled_jobs": stale_rescheduled + rescheduled_count,
-                "skipped_reasons": dict(sorted(skipped_reasons.items())),
-            },
+        return True
+
+    async def _release_prework(self, row: Mapping[str, Any]) -> bool:
+        return bool(
+            await self.db.run_business(
+                "event_anchor_release_prework",
+                self._release_prework_sync,
+                row,
+                operation_timeout_seconds=0.5,
+            )
         )
+
+    def _release_prework_sync(self, row: Mapping[str, Any]) -> bool:
+        with self._worker_session() as repos, repos.transaction():
+            return bool(
+                repos.event_anchor_jobs.release_prework(
+                    event_id=str(row["event_id"]),
+                    intent_id=str(row["intent_id"]),
+                    lease_owner=_lease_owner(row),
+                    attempt_count=_attempt_count(row),
+                )
+            )
 
     async def _capture_one(
         self,
         row: Mapping[str, Any],
         *,
         now_ms: int,
+        on_submitted: Any,
     ) -> _BackfillOutcome:
         resolution = _resolution_from_row(row)
-        existing = await self.resources.run_realtime_db(
+        existing = await self.db.run_business(
+            "event_anchor_existing_tick",
             self._capture_existing_tick,
             row=row,
             now_ms=now_ms,
+            operation_timeout_seconds=3.0,
         )
         if existing is not None:
             return cast(_BackfillOutcome, existing)
@@ -195,16 +212,18 @@ class EventAnchorBackfillWorker(WorkerBase):
                 reason="backfill_expired",
                 status="expired",
             )
-        async with self.provider_governor.acquire(host="asset_market"):
-            return cast(
-                _BackfillOutcome,
-                await self.resources.run_provider_io(
-                    self._capture_provider_quote,
-                    row,
-                    resolution,
-                    now_ms,
-                ),
-            )
+        return cast(
+            _BackfillOutcome,
+            await self.finite_operations.run(
+                "event_anchor_provider_quote",
+                self._capture_provider_quote,
+                row,
+                resolution,
+                now_ms,
+                timeout_seconds=30.0,
+                on_submitted=on_submitted,
+            ),
+        )
 
     def _capture_provider_quote(
         self,
@@ -485,4 +504,4 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-__all__ = ["EventAnchorBackfillWorker"]
+__all__ = ["EventAnchorBackfill"]

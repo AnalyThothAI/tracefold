@@ -95,7 +95,8 @@ requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
 exactly twelve News tables, 73 synchronized physical sources with 73
-memberships, exactly two News workers, real RSS observations and NewsItems,
+memberships, one acquisition due loop plus the shared EDF/native model seams,
+real RSS observations and NewsItems,
 deterministic Story membership, all five public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, measured acquisition/projection latency, and

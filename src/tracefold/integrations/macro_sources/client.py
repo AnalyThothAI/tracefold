@@ -8,15 +8,16 @@ import json
 import math
 import re
 import time
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
 import requests
-import yfinance as yf
 from defusedxml import ElementTree
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -36,6 +37,54 @@ from tracefold.market import (
     MarketSettlementFact,
 )
 
+_MAX_REQUESTS = 4
+_MAX_DECODED_BYTES = 25_000_000
+_MAX_FACTS = 5_000
+_MAX_BATCH_BYTES = 16_777_216
+_TOTAL_OPERATION_SECONDS = 28.0
+
+
+@dataclass(slots=True)
+class _FetchBudget:
+    deadline_at: float
+    request_count: int = 0
+    decoded_bytes: int = 0
+
+    def remaining(self) -> float:
+        remaining = self.deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise MacroSourceError("macro_fetch_total_timeout")
+        return remaining
+
+    def begin_request(self) -> float:
+        remaining = self.remaining()
+        if self.request_count >= _MAX_REQUESTS:
+            raise MacroSourceError("macro_fetch_request_limit_exceeded")
+        self.request_count += 1
+        return remaining
+
+    def observe_chunk(self, size: int) -> None:
+        self.remaining()
+        self.decoded_bytes += int(size)
+        if self.decoded_bytes > _MAX_DECODED_BYTES:
+            raise MacroSourceError("macro_fetch_byte_limit_exceeded")
+
+
+@dataclass(frozen=True, slots=True)
+class _ReserveSpeechDiscovery:
+    response: httpx.Response
+    candidates: tuple[str, ...] = ()
+    current_sitemap: str | None = None
+    remaining_sitemaps: tuple[str, ...] = ()
+    root_complete: bool = False
+    fallback_required: bool = False
+
+
+_FETCH_BUDGET: ContextVar[_FetchBudget | None] = ContextVar(
+    "tracefold_macro_fetch_budget",
+    default=None,
+)
+
 
 class MacroSourceClient:
     """Fetch one registry target without owning scheduling or persistence."""
@@ -50,7 +99,6 @@ class MacroSourceClient:
         cftc_enabled: bool = True,
         nasdaq_daily_enabled: bool = True,
         yfinance_enabled: bool = True,
-        yfinance_history_loader: Any | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         headers = {"User-Agent": user_agent, "Accept": "text/csv,application/json"}
@@ -70,7 +118,6 @@ class MacroSourceClient:
         self._cftc_enabled = bool(cftc_enabled)
         self._nasdaq_daily_enabled = bool(nasdaq_daily_enabled)
         self._yfinance_enabled = bool(yfinance_enabled)
-        self._yfinance_history_loader = yfinance_history_loader or _load_yfinance_history
 
     def close(self) -> None:
         self._client.close()
@@ -86,6 +133,41 @@ class MacroSourceClient:
         now_ms: int | None = None,
     ) -> FetchBatch:
         received_at_ms = int(now_ms if now_ms is not None else time.time() * 1_000)
+        budget = _FetchBudget(deadline_at=time.monotonic() + _TOTAL_OPERATION_SECONDS)
+        token = _FETCH_BUDGET.set(budget)
+        try:
+            batch = self._fetch_bounded(
+                spec,
+                partition_key=partition_key,
+                cursor=cursor,
+                received_at_ms=received_at_ms,
+            )
+            bounded = replace(
+                batch,
+                diagnostics={
+                    **batch.diagnostics,
+                    "request_count": budget.request_count,
+                    "decoded_bytes": budget.decoded_bytes,
+                },
+            )
+            result_bytes = _require_bounded_batch(bounded)
+            bounded = replace(
+                bounded,
+                diagnostics={**bounded.diagnostics, "result_bytes": result_bytes},
+            )
+            budget.remaining()
+            return bounded
+        finally:
+            _FETCH_BUDGET.reset(token)
+
+    def _fetch_bounded(
+        self,
+        spec: DatasetSpec,
+        *,
+        partition_key: str,
+        cursor: dict[str, Any],
+        received_at_ms: int,
+    ) -> FetchBatch:
         if spec.adapter_id == "fred_csv" and not self._fred_enabled:
             raise MacroSourceUnavailable("fred_disabled")
         if spec.adapter_id == "cfe_settlement" and not self._cboe_enabled:
@@ -96,31 +178,80 @@ class MacroSourceClient:
             raise MacroSourceUnavailable("nasdaq_daily_disabled")
         if spec.adapter_id == "yfinance_history" and not self._yfinance_enabled:
             raise MacroSourceUnavailable("yfinance_disabled")
-        if spec.adapter_id == "fred_csv":
-            return self._fetch_fred(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "treasury_curve_xml":
-            return self._fetch_treasury_curve(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "nasdaq_history":
-            return self._fetch_nasdaq_history(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "yfinance_history":
-            return self._fetch_yfinance_history(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "binance_spot":
-            return self._fetch_binance_spot(spec, partition_key, cursor, received_at_ms)
+        adapters = {
+            "fred_csv": self._fetch_fred,
+            "treasury_curve_xml": self._fetch_treasury_curve,
+            "nasdaq_history": self._fetch_nasdaq_history,
+            "yfinance_history": self._fetch_yfinance_history,
+            "binance_spot": self._fetch_binance_spot,
+            "cftc_tff": self._fetch_cftc_tff,
+            "bls_release": self._fetch_bls_release,
+            "fed_board_speech_archive": self._fetch_board_speech_archive,
+            "fed_fomc_calendar": self._fetch_fed_fomc_calendar,
+            "fed_reserve_bank_sitemaps": self._fetch_reserve_bank_speeches,
+        }
         if spec.adapter_id == "cfe_settlement":
-            return self._fetch_cfe_settlement(spec, partition_key, received_at_ms)
-        if spec.adapter_id == "cftc_tff":
-            return self._fetch_cftc_tff(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "bls_release":
-            return self._fetch_bls_release(spec, partition_key, cursor, received_at_ms)
+            return self._fetch_cfe_settlement(spec, partition_key, cursor, received_at_ms)
         if spec.adapter_id == "bea_release_page":
             return self._fetch_bea_release(spec, partition_key, received_at_ms)
-        if spec.adapter_id == "fed_board_speech_archive":
-            return self._fetch_board_speech_archive(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "fed_fomc_calendar":
-            return self._fetch_fed_fomc_calendar(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "fed_reserve_bank_sitemaps":
-            return self._fetch_reserve_bank_speeches(spec, partition_key, cursor, received_at_ms)
-        raise MacroSourceError(f"unsupported_macro_adapter:{spec.adapter_id}")
+        try:
+            adapter = adapters[spec.adapter_id]
+        except KeyError as exc:
+            raise MacroSourceError(f"unsupported_macro_adapter:{spec.adapter_id}") from exc
+        return adapter(spec, partition_key, cursor, received_at_ms)
+
+    def _get(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._httpx_request("GET", *args, **kwargs)
+
+    def _post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._httpx_request("POST", *args, **kwargs)
+
+    def _httpx_request(self, method: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        budget = _required_budget()
+        remaining = min(self._timeout_seconds, budget.begin_request())
+        kwargs["timeout"] = httpx.Timeout(
+            remaining,
+            connect=min(5.0, remaining),
+            read=min(10.0, remaining),
+            write=min(5.0, remaining),
+            pool=min(5.0, remaining),
+        )
+        try:
+            with self._client.stream(method, *args, **kwargs) as response:
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    budget.observe_chunk(len(chunk))
+                    body.extend(chunk)
+                budget.remaining()
+                return httpx.Response(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    content=bytes(body),
+                    request=response.request,
+                    extensions=response.extensions,
+                )
+        except httpx.HTTPError as exc:
+            raise MacroSourceError(f"macro_source_transport_failed:{type(exc).__name__}") from exc
+
+    def _fred_get(self, *args: Any, **kwargs: Any) -> requests.Response:
+        if self._fred_session is None:
+            raise RuntimeError("macro_fred_session_missing")
+        budget = _required_budget()
+        remaining = min(self._timeout_seconds, budget.begin_request())
+        kwargs["timeout"] = (min(5.0, remaining), min(10.0, remaining))
+        kwargs["stream"] = True
+        try:
+            response = self._fred_session.get(*args, **kwargs)
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                budget.observe_chunk(len(chunk))
+                body.extend(chunk)
+            budget.remaining()
+            response._content = bytes(body)
+            response._content_consumed = True
+        except requests.RequestException as exc:
+            raise MacroSourceError(f"macro_source_transport_failed:{type(exc).__name__}") from exc
+        return response
 
     def _fetch_fred(
         self,
@@ -139,12 +270,12 @@ class MacroSourceClient:
             params["coed"] = str(end_date)
         response: httpx.Response | requests.Response
         if self._fred_session is None:
-            response = self._client.get(
+            response = self._get(
                 "https://fred.stlouisfed.org/graph/fredgraph.csv",
                 params=params,
             )
         else:
-            response = self._fred_session.get(
+            response = self._fred_get(
                 "https://fred.stlouisfed.org/graph/fredgraph.csv",
                 params=params,
                 timeout=self._timeout_seconds,
@@ -206,7 +337,7 @@ class MacroSourceClient:
             cursor_date - timedelta(days=7) if cursor_date is not None else _years_before(received_date, 5)
         )
         upper_bound = end_date or received_date
-        response = self._client.get(
+        response = self._get(
             spec.source_url,
             params={
                 "assetclass": "etf",
@@ -288,28 +419,37 @@ class MacroSourceClient:
         end_date = _optional_date(cursor.get("end_date"))
         period = incremental_period if _optional_int(cursor.get("observed_at_ms")) is not None else initial_period
         prepost = bool(spec.metadata.get("prepost", True))
+        response = self._get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(spec.series_id, safe='')}",
+            params={
+                "range": period,
+                "interval": interval,
+                "includePrePost": "true" if prepost else "false",
+                "events": "div,splits",
+            },
+            headers={"Accept": "application/json"},
+        )
+        _require_success(response, source_id=spec.source_id)
         try:
-            frame = self._yfinance_history_loader(
-                spec.series_id,
-                period=period,
-                interval=interval,
-                prepost=prepost,
-                timeout=self._timeout_seconds,
-            )
-        except Exception as exc:
-            raise MacroSourceError(f"yfinance_history_failed:{type(exc).__name__}") from exc
-        if bool(getattr(frame, "empty", True)) or "Close" not in frame:
-            raise MacroSourceError("yfinance_history_empty")
+            chart = response.json()["chart"]
+            if chart.get("error") is not None:
+                raise MacroSourceError("yfinance_chart_error")
+            result = chart["result"][0]
+            timestamps = result["timestamp"]
+            quote_rows = result["indicators"]["quote"][0]
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise MacroSourceError("yfinance_history_payload_invalid") from exc
+        if not isinstance(timestamps, list) or not isinstance(quote_rows, dict):
+            raise MacroSourceError("yfinance_history_payload_invalid")
         facts: list[MarketObservationFact] = []
-        for timestamp, row in frame.iterrows():
-            close = _finite_float(row.get("Close"))
+        for index, timestamp in enumerate(timestamps):
+            close = _finite_float(_list_item(quote_rows.get("close"), index))
             if close is None:
                 continue
-            observed_at = timestamp.to_pydatetime() if hasattr(timestamp, "to_pydatetime") else timestamp
-            if not isinstance(observed_at, datetime):
+            observed_at_seconds = _optional_int(timestamp)
+            if observed_at_seconds is None:
                 continue
-            if observed_at.tzinfo is None:
-                observed_at = observed_at.replace(tzinfo=UTC)
+            observed_at = datetime.fromtimestamp(observed_at_seconds, tz=UTC)
             observed_date = observed_at.astimezone(UTC).date()
             if start_date is not None and observed_date < start_date:
                 continue
@@ -332,21 +472,17 @@ class MacroSourceClient:
                     raw_data={
                         "provider_symbol": spec.series_id,
                         "interval": interval,
-                        "open": _finite_float(row.get("Open")),
-                        "high": _finite_float(row.get("High")),
-                        "low": _finite_float(row.get("Low")),
+                        "open": _finite_float(_list_item(quote_rows.get("open"), index)),
+                        "high": _finite_float(_list_item(quote_rows.get("high"), index)),
+                        "low": _finite_float(_list_item(quote_rows.get("low"), index)),
                         "close": close,
-                        "volume": _finite_float(row.get("Volume")),
+                        "volume": _finite_float(_list_item(quote_rows.get("volume"), index)),
                     },
                 )
             )
         facts.sort(key=lambda fact: fact.observed_at_ms)
         if not facts:
             raise MacroSourceError("yfinance_history_no_valid_rows")
-        response_body = json.dumps(
-            [(fact.observed_at_ms, fact.value_numeric) for fact in facts],
-            separators=(",", ":"),
-        )
         return FetchBatch(
             dataset_id=spec.dataset_id,
             partition_key=partition_key,
@@ -357,7 +493,7 @@ class MacroSourceClient:
                 **({"end_date": end_date.isoformat()} if end_date is not None else {}),
                 **({"backfill_complete": True} if start_date is not None and end_date is not None else {}),
             },
-            response_hash="sha256:" + hashlib.sha256(response_body.encode()).hexdigest(),
+            response_hash="sha256:" + hashlib.sha256(response.content).hexdigest(),
             source_url=spec.source_url,
             diagnostics={
                 "provider": "yfinance",
@@ -368,6 +504,7 @@ class MacroSourceClient:
                 "latest_market_at_ms": facts[-1].observed_at_ms,
                 "provider_delay_seconds": max(0, (received_at_ms - facts[-1].observed_at_ms) // 1_000),
             },
+            http_status=response.status_code,
         )
 
     def _fetch_treasury_curve(
@@ -393,7 +530,7 @@ class MacroSourceClient:
         facts: list[SeriesFact] = []
         latest_date = _optional_date(cursor.get("reference_date"))
         vintage_date = received_date
-        response = self._client.get(
+        response = self._get(
             spec.source_url,
             params={"data": curve_type, "field_tdr_date_value": str(year)},
             headers={"Accept": "application/xml,text/xml"},
@@ -479,7 +616,7 @@ class MacroSourceClient:
             )
         if end_date is not None:
             params["endTime"] = _date_end_ms(end_date)
-        response = self._client.get(spec.source_url, params=params)
+        response = self._get(spec.source_url, params=params)
         _require_success(response, source_id=spec.source_id)
         payload = response.json()
         if not isinstance(payload, list):
@@ -531,17 +668,34 @@ class MacroSourceClient:
         self,
         spec: DatasetSpec,
         partition_key: str,
+        cursor: dict[str, Any],
         received_at_ms: int,
     ) -> FetchBatch:
         target_date = _optional_date(partition_key)
         if target_date is None:
             target_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
         saw_published_file = False
-        for offset in range(0, 8):
+        offset_after = _optional_int(cursor.get("cfe_offset_after"))
+        last_attempted_offset = offset_after if offset_after is not None else -1
+        attempted_response: httpx.Response | None = None
+        for offset in range(last_attempted_offset + 1, 8):
             candidate = target_date - timedelta(days=offset)
             if candidate.weekday() >= 5:
                 continue
-            attempted = self._client.get(spec.source_url, params={"dt": candidate.isoformat()})
+            if _required_budget().request_count >= _MAX_REQUESTS:
+                if attempted_response is None:
+                    raise RuntimeError("cfe_continuation_response_missing")
+                return _batch(
+                    spec,
+                    partition_key,
+                    (),
+                    attempted_response,
+                    cursor={"cfe_offset_after": last_attempted_offset},
+                    completion="continuation",
+                )
+            attempted = self._get(spec.source_url, params={"dt": candidate.isoformat()})
+            attempted_response = attempted
+            last_attempted_offset = offset
             if attempted.status_code != 200:
                 if attempted.status_code not in {403, 404}:
                     _require_success(attempted, source_id=spec.source_id)
@@ -616,9 +770,14 @@ class MacroSourceClient:
         start_date = _optional_date(cursor.get("start_date"))
         end_date = _optional_date(cursor.get("end_date"))
         cursor_date = _optional_date(cursor.get("reference_date"))
+        continuation_offset = _optional_int(cursor.get("cftc_offset")) or 0
+        continuation_lower_bound = _optional_date(cursor.get("cftc_lower_bound"))
+        continuation_latest_date = _optional_date(cursor.get("cftc_latest_date"))
         received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
-        lower_bound = start_date or (
-            cursor_date - timedelta(days=35) if cursor_date is not None else received_date - timedelta(days=730)
+        lower_bound = (
+            continuation_lower_bound
+            or start_date
+            or (cursor_date - timedelta(days=35) if cursor_date is not None else received_date - timedelta(days=730))
         )
         contract_clause = ",".join(f"'{code}'" for code in contract_labels)
         where = [f"cftc_contract_market_code in ({contract_clause})"]
@@ -626,12 +785,13 @@ class MacroSourceClient:
             where.append(f"report_date_as_yyyy_mm_dd >= '{lower_bound.isoformat()}T00:00:00'")
         if end_date is not None:
             where.append(f"report_date_as_yyyy_mm_dd <= '{end_date.isoformat()}T23:59:59'")
-        response = self._client.get(
+        response = self._get(
             spec.source_url,
             params={
                 "$where": " AND ".join(where),
                 "$order": "report_date_as_yyyy_mm_dd DESC",
-                "$limit": "50000",
+                "$limit": "5000",
+                "$offset": str(continuation_offset),
             },
         )
         _require_success(response, source_id=spec.source_id)
@@ -639,7 +799,7 @@ class MacroSourceClient:
         if not isinstance(payload, list):
             raise MacroSourceError("cftc_tff_payload_invalid")
         facts: list[MarketPositionFact] = []
-        latest_date = cursor_date
+        latest_date = continuation_latest_date or cursor_date
         for raw in payload:
             if not isinstance(raw, dict):
                 continue
@@ -698,17 +858,29 @@ class MacroSourceClient:
             )
             latest_date = max(latest_date or report_date, report_date)
         facts.sort(key=lambda fact: (fact.contract_code, fact.report_date))
+        has_more = len(payload) == 5_000
         return _batch(
             spec,
             partition_key,
             tuple(facts),
             response,
-            cursor=_series_cursor(
-                latest_date,
-                start_date=start_date,
-                end_date=end_date,
-                backfill_complete=True if start_date is not None and end_date is not None else None,
+            cursor=(
+                {
+                    "cftc_offset": continuation_offset + len(payload),
+                    "cftc_lower_bound": lower_bound.isoformat(),
+                    **({"cftc_latest_date": latest_date.isoformat()} if latest_date else {}),
+                    **({"start_date": start_date.isoformat()} if start_date else {}),
+                    **({"end_date": end_date.isoformat()} if end_date else {}),
+                }
+                if has_more
+                else _series_cursor(
+                    latest_date,
+                    start_date=start_date,
+                    end_date=end_date,
+                    backfill_complete=True if start_date is not None and end_date is not None else None,
+                )
             ),
+            completion=("continuation" if has_more else "complete"),
         )
 
     def _fetch_bls_release(
@@ -723,7 +895,7 @@ class MacroSourceClient:
         end_date = _optional_date(cursor.get("end_date"))
         start_year = (start_date or received_date.replace(year=received_date.year - 1)).year
         end_year = (end_date or received_date).year
-        response = self._client.post(
+        response = self._post(
             spec.source_url,
             json={
                 "seriesid": [spec.series_id],
@@ -794,7 +966,7 @@ class MacroSourceClient:
         partition_key: str,
         received_at_ms: int,
     ) -> FetchBatch:
-        listing_response = self._client.get(
+        listing_response = self._get(
             spec.source_url,
             headers={"Accept": "text/html,application/xhtml+xml"},
         )
@@ -807,7 +979,7 @@ class MacroSourceClient:
         )
         if release_url is None:
             raise MacroSourceError(f"bea_current_release_missing:{release_family}")
-        response = self._client.get(
+        response = self._get(
             release_url,
             headers={"Accept": "text/html,application/xhtml+xml"},
         )
@@ -878,13 +1050,14 @@ class MacroSourceClient:
             first_year,
             min(_optional_int(cursor.get("year")) or first_year, last_year),
         )
+        document_url_after = str(cursor.get("document_url_after") or "")
         calendar_url = (
             spec.source_url
             if year >= received_date.year - 5
             else f"https://www.federalreserve.gov/monetarypolicy/fomchistorical{year}.htm"
         )
         document_links: dict[str, str] = {}
-        response = self._client.get(
+        response = self._get(
             calendar_url,
             headers={"Accept": "text/html,application/xhtml+xml"},
         )
@@ -903,8 +1076,13 @@ class MacroSourceClient:
             document_links[absolute_url] = label
         documents: list[DocumentFact] = []
         latest_published_at_ms = _optional_int(cursor.get("published_at_ms")) or 0
-        document_items = sorted(document_links.items())
+        document_items = [
+            item for item in sorted(document_links.items()) if not document_url_after or item[0] > document_url_after
+        ]
+        selected_document_items = document_items[:3]
         for document_item in document_items:
+            if document_item not in selected_document_items:
+                break
             document = self._fetch_fomc_document(
                 spec,
                 document_item,
@@ -919,7 +1097,11 @@ class MacroSourceClient:
                 document.published_at_ms,
             )
         documents.sort(key=lambda item: (item.published_at_ms, item.document_id))
-        completed = year >= last_year
+        has_more_documents = len(document_items) > len(selected_document_items)
+        completed = not has_more_documents and year >= last_year
+        next_document_url_after = (
+            selected_document_items[-1][0] if has_more_documents and selected_document_items else None
+        )
         return _batch(
             spec,
             partition_key,
@@ -927,11 +1109,13 @@ class MacroSourceClient:
             response,
             cursor={
                 "published_at_ms": latest_published_at_ms,
-                "year": year if completed else year + 1,
+                "year": year if has_more_documents or completed else year + 1,
+                **({"document_url_after": next_document_url_after} if next_document_url_after is not None else {}),
                 **({"backfill_complete": completed} if start_date is not None and end_date is not None else {}),
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
             },
+            completion=("continuation" if has_more_documents or not completed else "complete"),
         )
 
     def _fetch_fomc_document(
@@ -944,7 +1128,7 @@ class MacroSourceClient:
     ) -> DocumentFact | None:
         url, link_label = document_item
         is_pdf = url.lower().endswith(".pdf")
-        document_response = self._client.get(
+        document_response = self._get(
             url,
             headers={"Accept": ("application/pdf" if is_pdf else "text/html,application/xhtml+xml")},
         )
@@ -1004,7 +1188,7 @@ class MacroSourceClient:
         year = max(year, lower_bound.year)
         url_after = str(cursor.get("url_after") or "")
         archive_url = f"https://www.federalreserve.gov/newsevents/{year}-speeches.htm"
-        archive_response = self._client.get(
+        archive_response = self._get(
             archive_url,
             headers={"Accept": "text/html,application/xhtml+xml"},
         )
@@ -1023,12 +1207,15 @@ class MacroSourceClient:
                 continue
             discovered.setdefault(source_url, (published_date, label))
         candidates = sorted(url for url in discovered if not url_after or url > url_after)
-        selected = candidates[:60]
+        # The archive page is the one discovery request for this turn.  Advance
+        # at most three durable document URLs so the exact four-request
+        # envelope is constructive instead of failing after partial work.
+        selected = candidates[:3]
         documents: list[DocumentFact] = []
         latest_published_at_ms = _optional_int(cursor.get("published_at_ms")) or 0
         for source_url in selected:
             published_date, link_label = discovered[source_url]
-            page_response = self._client.get(
+            page_response = self._get(
                 source_url,
                 headers={"Accept": "text/html,application/xhtml+xml"},
             )
@@ -1094,6 +1281,7 @@ class MacroSourceClient:
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
             },
+            completion=("complete" if completed else "continuation"),
         )
 
     def _fetch_reserve_bank_speeches(
@@ -1114,24 +1302,36 @@ class MacroSourceClient:
         upper_bound = end_date or received_date
         source_index = (_optional_int(cursor.get("source_index")) or 0) % len(roots)
         url_after = str(cursor.get("url_after") or "")
+        discovery_stage = str(cursor.get("discovery_stage") or "robots")
+        raw_sitemap_queue = cursor.get("sitemap_queue")
+        sitemap_queue = (
+            tuple(str(value) for value in raw_sitemap_queue if isinstance(value, str))
+            if isinstance(raw_sitemap_queue, list)
+            else ()
+        )
         latest_published_at_ms = _optional_int(cursor.get("published_at_ms")) or 0
         documents: list[DocumentFact] = []
-        response: httpx.Response | None = None
-        visited_sources = 0
+        root = roots[source_index]
+        discovery = self._reserve_bank_speech_candidates(
+            root,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            url_after=url_after,
+            stage=discovery_stage,
+            sitemap_queue=sitemap_queue,
+        )
         next_source_index = source_index
         next_url_after = url_after
+        next_stage = discovery_stage
+        next_sitemap_queue = sitemap_queue
         completed_cycle = False
-        while visited_sources < len(roots) and not documents:
-            root = roots[next_source_index]
-            candidates, discovery_response = self._reserve_bank_speech_candidates(
-                root,
-                lower_bound=lower_bound,
-                upper_bound=upper_bound,
-                url_after=next_url_after,
-            )
-            response = response or discovery_response
-            page_limit = 60
-            selected = candidates[:page_limit]
+
+        if discovery_stage == "robots":
+            next_stage = "sitemap"
+            next_sitemap_queue = discovery.remaining_sitemaps
+            next_url_after = ""
+        else:
+            selected = discovery.candidates[:3]
             for candidate in selected:
                 document = self._fetch_reserve_bank_document(
                     spec,
@@ -1148,32 +1348,47 @@ class MacroSourceClient:
                     latest_published_at_ms,
                     document.published_at_ms,
                 )
-            if len(candidates) > page_limit:
+
+            if len(discovery.candidates) > len(selected):
+                if not selected:
+                    raise RuntimeError("fed_reserve_bank_request_envelope_invalid")
+                next_stage = discovery_stage
+                next_sitemap_queue = (
+                    (discovery.current_sitemap,) if discovery.current_sitemap else ()
+                ) + discovery.remaining_sitemaps
                 next_url_after = selected[-1]
-            else:
-                completed_cycle = next_source_index == len(roots) - 1
-                next_source_index = (next_source_index + 1) % len(roots)
+            elif discovery.fallback_required:
+                next_stage = "fallback"
+                next_sitemap_queue = ()
                 next_url_after = ""
-                visited_sources += 1
-                if completed_cycle:
-                    break
-        if response is None:
-            raise MacroSourceError("fed_reserve_bank_discovery_failed")
+            elif discovery.remaining_sitemaps:
+                next_stage = "sitemap"
+                next_sitemap_queue = discovery.remaining_sitemaps
+                next_url_after = ""
+            elif discovery.root_complete or discovery_stage == "fallback" or discovery.current_sitemap is not None:
+                completed_cycle = source_index == len(roots) - 1
+                next_source_index = (source_index + 1) % len(roots)
+                next_stage = "robots"
+                next_sitemap_queue = ()
+                next_url_after = ""
         documents.sort(key=lambda item: (item.published_at_ms, item.document_id))
         return _batch(
             spec,
             partition_key,
             tuple(documents),
-            response,
+            discovery.response,
             cursor={
                 "source_index": next_source_index,
                 "url_after": next_url_after,
+                "discovery_stage": next_stage,
+                "sitemap_queue": list(next_sitemap_queue),
                 "published_at_ms": latest_published_at_ms,
                 "reference_date": (upper_bound.isoformat() if completed_cycle else lower_bound.isoformat()),
                 **({"backfill_complete": completed_cycle} if start_date is not None and end_date is not None else {}),
                 **({"start_date": start_date.isoformat()} if start_date else {}),
                 **({"end_date": end_date.isoformat()} if end_date else {}),
             },
+            completion=("complete" if completed_cycle else "continuation"),
         )
 
     def _fetch_reserve_bank_document(
@@ -1186,22 +1401,19 @@ class MacroSourceClient:
         upper_bound: date,
         received_at_ms: int,
     ) -> DocumentFact | None:
-        with self._client.stream(
-            "GET",
+        page_response = self._get(
             candidate_url,
             headers={"Accept": "text/html,application/xhtml+xml,application/pdf"},
-        ) as page_response:
-            if page_response.status_code in {404, 410}:
-                return None
-            _require_success(page_response, source_id=spec.source_id)
-            content_type = str(page_response.headers.get("content-type") or "").lower()
-            is_pdf = "application/pdf" in content_type or candidate_url.lower().endswith(".pdf")
-            content = _read_bounded_stream(
-                page_response,
-                max_bytes=25_000_000 if is_pdf else 5_000_000,
-                error_code="fed_reserve_bank_speech_body_too_large",
-            )
-            encoding = page_response.encoding or "utf-8"
+        )
+        if page_response.status_code in {404, 410}:
+            return None
+        _require_success(page_response, source_id=spec.source_id)
+        content_type = str(page_response.headers.get("content-type") or "").lower()
+        is_pdf = "application/pdf" in content_type or candidate_url.lower().endswith(".pdf")
+        content = page_response.content
+        if len(content) > (25_000_000 if is_pdf else 5_000_000):
+            raise MacroSourceError("fed_reserve_bank_speech_body_too_large")
+        encoding = page_response.encoding or "utf-8"
         page_text = content.decode(encoding, errors="replace") if not is_pdf else ""
         content_text = _extract_pdf_text(content) if is_pdf else _extract_official_body(page_text)
         if len(content_text) < 500:
@@ -1241,58 +1453,86 @@ class MacroSourceClient:
         lower_bound: date,
         upper_bound: date,
         url_after: str,
-    ) -> tuple[list[str], httpx.Response]:
-        robots_response = self._client.get(f"{root}/robots.txt", headers={"Accept": "text/plain"})
-        sitemap_urls = (
-            re.findall(r"(?im)^sitemap:\s*(\S+)", robots_response.text) if robots_response.status_code < 400 else []
-        )
-        if not sitemap_urls:
-            sitemap_urls = [f"{root}/sitemap.xml"]
-        discovered: dict[str, date | None] = {}
-        response: httpx.Response | None = None
-        queue = list(dict.fromkeys(sitemap_urls))
-        seen_sitemaps: set[str] = set()
-        while queue and len(seen_sitemaps) < 40:
-            sitemap_url = queue.pop(0)
-            if sitemap_url in seen_sitemaps:
-                continue
-            seen_sitemaps.add(sitemap_url)
-            sitemap_response = self._client.get(
-                sitemap_url,
-                headers={"Accept": "application/xml,text/xml,application/gzip"},
+        stage: str,
+        sitemap_queue: tuple[str, ...],
+    ) -> _ReserveSpeechDiscovery:
+        if stage == "robots":
+            robots_response = self._get(f"{root}/robots.txt", headers={"Accept": "text/plain"})
+            sitemap_urls = (
+                re.findall(r"(?im)^sitemap:\s*(\S+)", robots_response.text) if robots_response.status_code < 400 else []
             )
-            if sitemap_response.status_code >= 400:
-                continue
-            try:
-                nested, pages = _parse_sitemap(sitemap_response)
-            except MacroSourceError:
-                continue
-            response = response or sitemap_response
-            queue.extend(url for url in nested if _same_official_host(root, url))
-            for page_url, last_modified in pages:
-                if not _same_official_host(root, page_url) or not _looks_like_speech_url(page_url):
-                    continue
-                candidate_year = _year_from_url(page_url)
-                if candidate_year is not None and not (lower_bound.year <= candidate_year <= upper_bound.year):
-                    continue
-                candidate_date = _date_from_url_or_text(page_url) or last_modified
-                if candidate_date is not None and not (lower_bound <= candidate_date <= upper_bound):
-                    continue
-                discovered[page_url] = candidate_date
-        if response is None:
-            fallback = self._client.get(root, headers={"Accept": "text/html,application/xhtml+xml"})
+            if not sitemap_urls:
+                sitemap_urls = [f"{root}/sitemap.xml"]
+            return _ReserveSpeechDiscovery(
+                response=robots_response,
+                remaining_sitemaps=tuple(url for url in dict.fromkeys(sitemap_urls) if _same_official_host(root, url)),
+            )
+
+        if stage == "fallback":
+            fallback = self._get(root, headers={"Accept": "text/html,application/xhtml+xml"})
             _require_success(fallback, source_id="federal_reserve_banks")
-            response = fallback
-            for href, label in _html_links(fallback.text):
-                page_url = urljoin(str(fallback.url), href)
-                if (
-                    _same_official_host(root, page_url)
-                    and _looks_like_speech_url(page_url)
-                    and _looks_like_speech_label(label)
-                ):
-                    discovered[page_url] = _date_from_url_or_text(page_url)
+            fallback_candidates = {
+                page_url
+                for href, label in _html_links(fallback.text)
+                if _same_official_host(root, (page_url := urljoin(str(fallback.url), href)))
+                and _looks_like_speech_url(page_url)
+                and _looks_like_speech_label(label)
+                and (not url_after or page_url > url_after)
+            }
+            return _ReserveSpeechDiscovery(
+                response=fallback,
+                candidates=tuple(sorted(fallback_candidates)),
+                root_complete=True,
+            )
+
+        if stage != "sitemap" or not sitemap_queue:
+            raise MacroSourceError("fed_reserve_bank_discovery_cursor_invalid")
+        sitemap_url, *remaining = sitemap_queue
+        sitemap_response = self._get(
+            sitemap_url,
+            headers={"Accept": "application/xml,text/xml,application/gzip"},
+        )
+        if sitemap_response.status_code >= 400:
+            return _ReserveSpeechDiscovery(
+                response=sitemap_response,
+                remaining_sitemaps=tuple(remaining),
+                fallback_required=not remaining,
+            )
+        try:
+            nested, pages = _parse_sitemap(sitemap_response)
+        except MacroSourceError:
+            return _ReserveSpeechDiscovery(
+                response=sitemap_response,
+                remaining_sitemaps=tuple(remaining),
+                fallback_required=not remaining,
+            )
+        discovered: dict[str, date | None] = {}
+        for page_url, last_modified in pages:
+            if not _same_official_host(root, page_url) or not _looks_like_speech_url(page_url):
+                continue
+            candidate_year = _year_from_url(page_url)
+            if candidate_year is not None and not (lower_bound.year <= candidate_year <= upper_bound.year):
+                continue
+            candidate_date = _date_from_url_or_text(page_url) or last_modified
+            if candidate_date is not None and not (lower_bound <= candidate_date <= upper_bound):
+                continue
+            discovered[page_url] = candidate_date
         candidates = sorted(url for url in discovered if not url_after or url > url_after)
-        return candidates, response
+        next_sitemaps = tuple(
+            dict.fromkeys(
+                [
+                    *remaining,
+                    *(url for url in nested if _same_official_host(root, url)),
+                ]
+            )
+        )
+        return _ReserveSpeechDiscovery(
+            response=sitemap_response,
+            candidates=tuple(candidates),
+            current_sitemap=sitemap_url,
+            remaining_sitemaps=next_sitemaps,
+            root_complete=not candidates and not next_sitemaps,
+        )
 
 
 def _batch(
@@ -1305,6 +1545,7 @@ def _batch(
     response: httpx.Response | requests.Response,
     *,
     cursor: dict[str, Any],
+    completion: str = "complete",
 ) -> FetchBatch:
     return FetchBatch(
         dataset_id=spec.dataset_id,
@@ -1314,7 +1555,33 @@ def _batch(
         response_hash="sha256:" + hashlib.sha256(response.content).hexdigest(),
         source_url=str(response.url),
         http_status=response.status_code,
+        completion=completion,
     )
+
+
+def _require_bounded_batch(batch: FetchBatch) -> int:
+    if len(batch.facts) > _MAX_FACTS:
+        raise MacroSourceError("macro_fetch_fact_limit_exceeded")
+    encoded = json.dumps(
+        {
+            "dataset_id": batch.dataset_id,
+            "partition_key": batch.partition_key,
+            "facts": [asdict(fact) for fact in batch.facts],
+            "cursor": batch.cursor,
+            "response_hash": batch.response_hash,
+            "source_url": batch.source_url,
+            "http_status": batch.http_status,
+            "diagnostics": batch.diagnostics,
+            "completion": batch.completion,
+        },
+        default=str,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    if len(encoded) > _MAX_BATCH_BYTES:
+        raise MacroSourceError("macro_fetch_batch_byte_limit_exceeded")
+    return len(encoded)
 
 
 def _series_cursor(
@@ -1370,23 +1637,15 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _load_yfinance_history(
-    symbol: str,
-    *,
-    period: str,
-    interval: str,
-    prepost: bool,
-    timeout: float,
-) -> Any:
-    return yf.Ticker(symbol).history(
-        period=period,
-        interval=interval,
-        prepost=prepost,
-        auto_adjust=False,
-        actions=False,
-        repair=False,
-        timeout=timeout,
-    )
+def _required_budget() -> _FetchBudget:
+    budget = _FETCH_BUDGET.get()
+    if budget is None:
+        raise RuntimeError("macro_fetch_budget_missing")
+    return budget
+
+
+def _list_item(value: Any, index: int) -> Any:
+    return value[index] if isinstance(value, list) and index < len(value) else None
 
 
 def _optional_int(value: Any) -> int | None:

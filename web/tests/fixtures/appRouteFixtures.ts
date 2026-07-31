@@ -17,100 +17,24 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
   return {
     ok: true,
     reasons: [],
-    runtime_role: "serve",
-    store: "postgresql",
-    snapshot_gate: {},
-    db: { ok: true },
-    news: {
-      status: "ready",
-      reasons: [],
-      layers: {
-        ingest: {
-          status: "ready",
-          enabled_sources: 118,
-          recent_success_sources: 118,
-          failing_sources: 0,
-          last_success_at_ms: NOW,
-        },
-        story: {
-          status: "ready",
-          active_stories: 120,
-          last_projected_at_ms: NOW,
-          identity_version: "worldmonitor-story-identity-f73de5b7",
-          classifier_version: "worldmonitor-threat-classifier-f73de5b7",
-          importance_version: "worldmonitor-importance-f73de5b7",
-        },
-        brief: {
-          status: "ready",
-          public_state: "ready",
-          publication_id: "news_brief_fixture",
-          last_error: null,
-        },
-      },
-      measured_at_ms: NOW,
+    measured_at_ms: NOW,
+    db: {
+      ok: true,
+      schema_ok: true,
+      current_revision: "20260731_0233",
+      expected_revision: "20260731_0233",
+      error_code: null,
     },
-    provider_states: {},
-    workers: {
-      collector: workerStatusFixture({
-        enabled: true,
-        running: true,
-      }),
-      steady_projection_coordinator: workerStatusFixture({
-        enabled: true,
-        running: true,
-        last_started_at_ms: NOW,
-        last_finished_at_ms: NOW,
-        last_result: {
-          processed: 0,
-          failed: 0,
-          dead: 0,
-          skipped: 0,
-          notes: { rows_written: 0, source_rows: 0 },
-        },
-      }),
-      market_tick_stream: workerStatusFixture({ enabled: false, running: false }),
-      market_tick_poll: workerStatusFixture({
-        enabled: true,
-        running: true,
-        last_started_at_ms: NOW,
-      }),
-      event_anchor_capture: workerStatusFixture(),
-      macro_intraday_market: workerStatusFixture(),
-      macro_settlements: workerStatusFixture(),
-      macro_economic_releases: workerStatusFixture(),
-      macro_official_state: workerStatusFixture(),
-      macro_official_documents: workerStatusFixture(),
-      news_ingest: workerStatusFixture(),
-      asset_profile_refresh: workerStatusFixture(),
-      token_image_mirror: workerStatusFixture(),
-      resolution_refresh: workerStatusFixture(),
-      model_generation_coordinator: workerStatusFixture(),
+    workers_runtime: {
+      runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e10",
+      runtime_version: "a521557",
+      state: "running",
+      started_at_ms: NOW,
+      heartbeat_at_ms: NOW,
+      heartbeat_stale_after_ms: 15_000,
+      fatal_code: null,
+      unavailable_reason: null,
     },
-    ...overrides,
-  };
-}
-
-function workerStatusFixture(overrides: Partial<OpenApiStatusData["workers"][string]> = {}) {
-  const enabled = overrides.enabled ?? false;
-  const running = overrides.running ?? false;
-  return {
-    enabled,
-    running,
-    effective_status:
-      overrides.effective_status ?? (!enabled ? "disabled" : running ? "running" : "stopped"),
-    unavailable_reason: null,
-    runtime_id: null,
-    runtime_version: null,
-    heartbeat_at_ms: null,
-    last_started_at_ms: null,
-    last_finished_at_ms: null,
-    last_result: null,
-    last_error: null,
-    iteration_duration_p99_ms: null,
-    deadline_at_ms: null,
-    queue_depth: null,
-    oldest_due_at_ms: null,
-    quarantine_count: 0,
     ...overrides,
   };
 }

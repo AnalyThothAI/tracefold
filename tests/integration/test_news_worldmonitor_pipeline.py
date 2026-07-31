@@ -10,23 +10,23 @@ import pytest
 from psycopg import pq
 
 import tracefold.news.repository as news_repository_module
+import tracefold.news.runtime as news_runtime_module
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
 )
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
-from tracefold.integrations.news_feeds import RssFeedReader
+from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.news import (
+    NewsAcquisition,
+    NewsBriefCandidate,
     NewsBriefDraft,
+    NewsBriefExpectedError,
     NewsFeedEntry,
     NewsFeedFetch,
-    NewsIngestWorker,
     NewsInterface,
     NewsRepository,
     NewsSourceDefinition,
-    NewsWorldBriefWorker,
-    attach_pipeline_runtime_health,
     default_sources,
 )
 from tracefold.news.brief import brief_fingerprint
@@ -40,6 +40,7 @@ from tracefold.news.projection import (
     plan_news_edge_pairs,
     rebuild_all_news_for_maintenance,
 )
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_779_000_000_000
 
@@ -51,20 +52,69 @@ class SingleConnectionDB:
     def worker_session(self, *_args: Any, **_kwargs: Any):
         return repository_session_for_connection(self.conn)
 
-
-class _InlineResources:
-    async def run_background_db(self, function, /, *args, **kwargs):
+    async def run_business(
+        self,
+        _operation_name: str,
+        function: Any,
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        **kwargs: Any,
+    ) -> Any:
+        del operation_timeout_seconds
+        on_submitted = kwargs.pop("on_submitted", None)
+        if on_submitted is not None:
+            on_submitted()
         return function(*args, **kwargs)
 
-    async def run_model(self, function, /, *args, **kwargs):
+
+class _InlineCapability:
+    async def run(self, _operation_name, function, /, *args, **kwargs):
+        kwargs.pop("timeout_seconds", None)
+        kwargs.pop("service_timeout_seconds", None)
+        kwargs.pop("operation_timeout_seconds", None)
+        kwargs.pop("allow_shutdown", None)
+        on_submitted = kwargs.pop("on_submitted", None)
+        if on_submitted is not None:
+            on_submitted()
+        after_submit = kwargs.pop("after_submit", None)
+        if after_submit is not None:
+            await after_submit()
         return function(*args, **kwargs)
 
-    async def run_model_cleanup(self, function, /, *args, **kwargs):
-        return function(*args, **kwargs)
+
+class _PreSubmitAdmissionTimeout:
+    async def run(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise ResourceAdmissionTimeout("test_model_admission_timeout")
+
+
+class _FailingBusinessDB(SingleConnectionDB):
+    def __init__(self, conn: Any, operation_name: str) -> None:
+        super().__init__(conn)
+        self.operation_name = operation_name
+
+    async def run_business(
+        self,
+        operation_name: str,
+        function: Any,
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        **kwargs: Any,
+    ) -> Any:
+        if operation_name == self.operation_name:
+            raise ResourceAdmissionTimeout(f"test_business_admission_timeout:{operation_name}")
+        return await super().run_business(
+            operation_name,
+            function,
+            *args,
+            operation_timeout_seconds=operation_timeout_seconds,
+            **kwargs,
+        )
 
 
 class OneItemReader:
-    def fetch(
+    def fetch_wire(
         self,
         *,
         source: NewsSourceDefinition,
@@ -91,6 +141,10 @@ class OneItemReader:
         return None
 
 
+def _identity_news_fetch(value: NewsFeedFetch) -> NewsFeedFetch:
+    return value
+
+
 class FixedBriefPublisher:
     calls = 0
 
@@ -114,7 +168,7 @@ class RaisingBriefPublisher:
     def publish(self, stories: list[Any]) -> NewsBriefDraft:
         del stories
         self.calls += 1
-        raise RuntimeError("provider unavailable")
+        raise NewsBriefExpectedError("provider unavailable")
 
     def close(self) -> None:
         return None
@@ -149,6 +203,7 @@ def record(
     link: str | None = None,
     description: str = "Durable source description for this report.",
 ) -> dict[str, int]:
+    claim_token = _claim_source(repository, definition.source_id, started_at_ms)
     return repository.record_fetch_success(
         source=definition,
         entries=(
@@ -170,32 +225,160 @@ def record(
         etag=None,
         last_modified=None,
         not_modified=False,
+        claim_token=claim_token,
     )
+
+
+def _claim_source(repository: NewsRepository, source_id: str, now_ms: int) -> str:
+    claim_token = str(uuid4())
+    row = repository.conn.execute(
+        """
+        UPDATE news_sources
+           SET claim_token = %s::uuid,
+               claim_lease_expires_at_ms = %s,
+               last_fetch_started_at_ms = %s,
+               updated_at_ms = %s
+         WHERE source_id = %s
+         RETURNING source_id
+        """,
+        (claim_token, int(now_ms) + 45_000, int(now_ms), int(now_ms), source_id),
+    ).fetchone()
+    if row is None:
+        raise AssertionError(f"test source not found: {source_id}")
+    return claim_token
+
+
+def _run_due_brief(
+    candidate: NewsBriefCandidate,
+    *,
+    now_ms: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> bool:
+    monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: now_ms)
+    due = asyncio.run(candidate.peek(now_ms=now_ms))
+    if due is None:
+        return False
+    return asyncio.run(candidate.execute(due))
+
+
+def _seed_three_story_brief(repository: NewsRepository) -> None:
+    reuters = source("reuters", "Reuters")
+    ap = source("ap", "AP")
+    with repository.conn.transaction():
+        repository.sync_sources((reuters, ap), now_ms=NOW_MS)
+        for definition, guid, title, offset in (
+            (reuters, "rates", "Central bank raises interest rate after policy shock", 30_000),
+            (ap, "quake", "Major earthquake strikes coastal region", 20_000),
+            (reuters, "cyber", "Cyber attack disrupts regional infrastructure", 10_000),
+        ):
+            record(
+                repository,
+                definition,
+                guid=guid,
+                title=title,
+                published_at_ms=NOW_MS - offset,
+            )
+        repository.rebuild_stories(now_ms=NOW_MS)
+
+
+def test_news_brief_pre_model_admission_releases_without_attempt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        _seed_three_story_brief(NewsRepository(conn))
+        candidate = NewsBriefCandidate(
+            db=SingleConnectionDB(conn),
+            publisher=FixedBriefPublisher(),
+            model_adapter=_PreSubmitAdmissionTimeout(),
+            runtime_id="admission-test",
+        )
+
+        assert (
+            _run_due_brief(
+                candidate,
+                now_ms=NOW_MS + 600_001,
+                monkeypatch=monkeypatch,
+            )
+            is False
+        )
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner, lease_expires_at_ms
+              FROM news_brief_runs
+             ORDER BY created_at_ms DESC
+             LIMIT 1
+            """
+        ).fetchone()
+        assert row == {
+            "status": "retryable",
+            "attempt_count": 0,
+            "lease_owner": None,
+            "lease_expires_at_ms": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_news_brief_post_model_publication_admission_is_fatal(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        _seed_three_story_brief(NewsRepository(conn))
+        candidate = NewsBriefCandidate(
+            db=_FailingBusinessDB(conn, "news_brief_publish"),
+            publisher=FixedBriefPublisher(),
+            model_adapter=_InlineCapability(),
+            runtime_id="admission-test",
+        )
+        due_at_ms = NOW_MS + 600_001
+        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: due_at_ms)
+        due = asyncio.run(candidate.peek(now_ms=due_at_ms))
+        assert due is not None
+
+        with pytest.raises(ResourceAdmissionTimeout, match="news_brief_publish"):
+            asyncio.run(candidate.execute(due))
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner
+              FROM news_brief_runs
+             ORDER BY created_at_ms DESC
+             LIMIT 1
+            """
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["attempt_count"] == 1
+        assert row["lease_owner"] == "news_brief:admission-test"
+    finally:
+        conn.close()
 
 
 def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
     tmp_path,
+    monkeypatch,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
         clock = SimpleNamespace(now_ms=NOW_MS)
-        resources = RuntimeResources()
-        pipeline = NewsIngestWorker(
+        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: clock.now_ms)
+        pipeline = NewsAcquisition(
             db=SingleConnectionDB(conn),
-            telemetry=SimpleNamespace(),
             sources=(source("reuters", "Reuters"),),
             feed_reader=OneItemReader(),
-            resources=resources,
-            provider_governor=ProviderGovernor(),
-            clock_ms=lambda: clock.now_ms,
+            finite_operations=_InlineCapability(),
+            cpu=_InlineCapability(),
+            feed_parser=_identity_news_fetch,
         )
-        try:
-            assert asyncio.run(pipeline.run_once()).processed == 1
-            clock.now_ms = NOW_MS + 120_000
-            assert asyncio.run(pipeline.run_once()).processed == 1
-        finally:
-            resources.close()
+        asyncio.run(pipeline.reconcile())
+        assert asyncio.run(pipeline.turn()) is True
+        clock.now_ms = NOW_MS + 120_000
+        assert asyncio.run(pipeline.turn()) is True
         assert conn.execute(
             """
             SELECT started_at_ms
@@ -478,39 +661,21 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         migrate(conn)
         wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
         clock = SimpleNamespace(now_ms=NOW_MS)
-        resources = RuntimeResources()
-        pipeline = NewsIngestWorker(
+        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: clock.now_ms)
+        pipeline = NewsAcquisition(
             db=SingleConnectionDB(conn),
-            telemetry=SimpleNamespace(),
             sources=(wallstengine,),
             feed_reader=reader,
-            resources=resources,
-            provider_governor=ProviderGovernor(),
-            clock_ms=lambda: clock.now_ms,
+            finite_operations=_InlineCapability(),
+            cpu=_InlineCapability(),
+            feed_parser=parse_rss_feed_wire,
         )
-
-        try:
-            first = asyncio.run(pipeline.run_once())
-            clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-            not_modified = asyncio.run(pipeline.run_once())
-            clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-            duplicate = asyncio.run(pipeline.run_once())
-        finally:
-            resources.close()
-
-        assert first.notes["entries_seen"] == 6
-        assert first.notes["observations_inserted"] == 5
-        assert first.notes["items_inserted"] == 5
-        assert first.notes["projection_frontiers_written"] == 5
-        assert not_modified.notes["entries_seen"] == 0
-        assert not_modified.notes["observations_inserted"] == 0
-        assert not_modified.notes["items_inserted"] == 0
-        assert not_modified.notes["projection_frontiers_written"] == 0
-        assert duplicate.notes["entries_seen"] == 6
-        assert duplicate.notes["observations_inserted"] == 5
-        assert duplicate.notes["items_inserted"] == 0
-        assert duplicate.notes["items_updated"] == 0
-        assert duplicate.notes["projection_frontiers_written"] == 0
+        asyncio.run(pipeline.reconcile())
+        assert asyncio.run(pipeline.turn()) is True
+        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+        assert asyncio.run(pipeline.turn()) is True
+        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
+        assert asyncio.run(pipeline.turn()) is True
         assert cluster_transaction_states == []
         assert conn.execute("SELECT count(*) AS n FROM news_stories").fetchone()["n"] == 0
         assert (
@@ -572,7 +737,7 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         conn.close()
 
 
-def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
+def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path, monkeypatch) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -651,20 +816,19 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
         assert second_source_page["items"][0]["source_id"] != first_source_page["items"][0]["source_id"]
 
         publisher = FixedBriefPublisher()
-        worker = NewsWorldBriefWorker(
+        candidate = NewsBriefCandidate(
             db=SingleConnectionDB(conn),
-            telemetry=SimpleNamespace(),
             publisher=publisher,
-            resources=_InlineResources(),
+            model_adapter=_InlineCapability(),
             runtime_id="integration-test",
-            clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert asyncio.run(worker.run_once()).processed == 1
-        brief = interface.get_world_brief(now_ms=NOW_MS + 120_000)
+        due_at_ms = NOW_MS + 600_001
+        assert _run_due_brief(candidate, now_ms=due_at_ms, monkeypatch=monkeypatch) is True
+        brief = interface.get_world_brief(now_ms=due_at_ms)
         assert brief["state"] == "ready"
         assert len(brief["publication"]["selected_story_ids"]) == 3
         assert publisher.calls == 1
-        assert asyncio.run(worker.run_once()).skipped == 1
+        assert _run_due_brief(candidate, now_ms=due_at_ms + 1, monkeypatch=monkeypatch) is False
         assert publisher.calls == 1
     finally:
         conn.close()
@@ -1035,6 +1199,7 @@ def test_flat_feed_uses_keyset_order_and_filter_before_pagination(
 
 def test_brief_states_are_evidence_driven_and_keep_last_known_good(
     tmp_path,
+    monkeypatch,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -1053,22 +1218,18 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
             )
             repository.rebuild_stories(now_ms=NOW_MS)
         publisher = FixedBriefPublisher()
-        worker = NewsWorldBriefWorker(
+        candidate = NewsBriefCandidate(
             db=SingleConnectionDB(conn),
-            telemetry=SimpleNamespace(),
             publisher=publisher,
-            resources=_InlineResources(),
+            model_adapter=_InlineCapability(),
             runtime_id="integration-test",
-            clock_ms=lambda: NOW_MS + 60_000,
         )
-        insufficient = asyncio.run(worker.run_once())
-        assert insufficient.skipped == 1
-        assert insufficient.notes["model_calls"] == 0
+        insufficient_at_ms = NOW_MS + 600_001
+        assert _run_due_brief(candidate, now_ms=insufficient_at_ms, monkeypatch=monkeypatch) is True
         assert publisher.calls == 0
-        assert repository.get_brief(now_ms=NOW_MS + 60_000)["state"] == ("insufficient_material")
+        assert repository.get_brief(now_ms=insufficient_at_ms)["state"] == ("insufficient_material")
         first_updated_at_ms = conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"]
-        worker.clock_ms = lambda: NOW_MS + 90_000
-        assert asyncio.run(worker.run_once()).skipped == 1
+        assert _run_due_brief(candidate, now_ms=insufficient_at_ms + 1, monkeypatch=monkeypatch) is False
         assert publisher.calls == 0
         assert (
             conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"] == first_updated_at_ms
@@ -1091,9 +1252,10 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
                 published_at_ms=NOW_MS - 10_000,
                 started_at_ms=NOW_MS + 2,
             )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        assert asyncio.run(worker.run_once()).processed == 1
-        ready = repository.get_brief(now_ms=NOW_MS + 60_000)
+            repository.rebuild_stories(now_ms=NOW_MS + 700_000)
+        ready_at_ms = NOW_MS + 1_300_001
+        assert _run_due_brief(candidate, now_ms=ready_at_ms, monkeypatch=monkeypatch) is True
+        ready = repository.get_brief(now_ms=ready_at_ms)
         assert ready["state"] == "ready"
         publication_id = ready["publication"]["publication_id"]
 
@@ -1106,24 +1268,24 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
                 published_at_ms=NOW_MS + 70_000,
                 started_at_ms=NOW_MS + 120_000,
             )
-            repository.rebuild_stories(now_ms=NOW_MS + 120_000)
-        stale = repository.get_brief(now_ms=NOW_MS + 120_000)
+            repository.rebuild_stories(now_ms=NOW_MS + 1_400_000)
+        stale_at_ms = NOW_MS + 1_400_001
+        stale = repository.get_brief(now_ms=stale_at_ms)
         assert stale["state"] == "stale_fallback"
         assert stale["publication"]["publication_id"] == publication_id
 
-        failing = NewsWorldBriefWorker(
+        failing = NewsBriefCandidate(
             db=SingleConnectionDB(conn),
-            telemetry=SimpleNamespace(),
             publisher=RaisingBriefPublisher(),
-            resources=_InlineResources(),
+            model_adapter=_InlineCapability(),
             runtime_id="integration-test",
-            clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert asyncio.run(failing.run_once()).failed == 1
-        after_failure = repository.get_brief(now_ms=NOW_MS + 120_000)
+        failure_at_ms = NOW_MS + 2_000_001
+        assert _run_due_brief(failing, now_ms=failure_at_ms, monkeypatch=monkeypatch) is True
+        after_failure = repository.get_brief(now_ms=failure_at_ms)
         assert after_failure["state"] == "stale_fallback"
         assert after_failure["publication"]["publication_id"] == publication_id
-        assert after_failure["latest_run"]["status"] == "failed"
+        assert after_failure["latest_run"]["status"] == "retryable"
     finally:
         conn.close()
 
@@ -1156,6 +1318,7 @@ def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
                 etag=None,
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_source(repository, direct.source_id, NOW_MS),
             )
             repository.record_fetch_failure(
                 source_id=relayed.source_id,
@@ -1165,6 +1328,7 @@ def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
                 status_code=503,
                 fetch_path="relay",
                 direct_error_code="http_403",
+                claim_token=_claim_source(repository, relayed.source_id, NOW_MS),
             )
             repository.rebuild_stories(now_ms=NOW_MS)
         degraded = repository.health_snapshot(now_ms=NOW_MS)
@@ -1178,29 +1342,9 @@ def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
         assert ingest["both_failed_sources"] == 1
         assert degraded["layers"]["story"]["invariant_error_count"] == 0
 
-        attach_pipeline_runtime_health(
-            degraded,
-            worker_status={
-                "enabled": True,
-                "effective_status": "stopped",
-                "last_finished_at_ms": NOW_MS,
-                "last_error": None,
-                "last_result": {
-                    "failed": 0,
-                    "dead": 0,
-                    "notes": {
-                        "items": 0,
-                        "stories": 0,
-                        "story_writes": 0,
-                        "membership_writes": 0,
-                    },
-                },
-            },
-            now_ms=NOW_MS,
-        )
         story = degraded["layers"]["story"]
-        assert story["last_complete_rebuild_at_ms"] == NOW_MS
-        assert story["last_complete_rebuild_age_ms"] == 0
+        assert "last_complete_rebuild_at_ms" not in story
+        assert "runtime_status" not in story
     finally:
         conn.close()
 
@@ -1270,6 +1414,7 @@ def test_wallstengine_empty_success_and_failure_use_ordinary_ingest_health(
                 etag=None,
                 last_modified=None,
                 not_modified=False,
+                claim_token=_claim_source(repository, wallstengine.source_id, NOW_MS),
             )
             repository.rebuild_stories(now_ms=NOW_MS)
         empty = repository.health_snapshot(now_ms=NOW_MS)
@@ -1285,6 +1430,7 @@ def test_wallstengine_empty_success_and_failure_use_ordinary_ingest_health(
                 status_code=503,
                 fetch_path="direct",
                 direct_error_code=None,
+                claim_token=_claim_source(repository, wallstengine.source_id, NOW_MS + 120_000),
             )
         failed = repository.health_snapshot(now_ms=NOW_MS + 120_000)
         ingest = failed["layers"]["ingest"]
@@ -1436,14 +1582,8 @@ def test_brief_publication_rejects_changed_source_fingerprint(tmp_path) -> None:
                 started_at_ms=NOW_MS + 30_000,
             )
             repository.rebuild_stories(now_ms=NOW_MS + 30_000)
-        with (
-            pytest.raises(
-                RuntimeError,
-                match="news_brief_source_fingerprint_changed",
-            ),
-            conn.transaction(),
-        ):
-            repository.publish_brief(
+        with conn.transaction():
+            publication = repository.publish_brief(
                 run_id=claim["run_id"],
                 lease_owner=claim["lease_owner"],
                 fingerprint=fingerprint,
@@ -1461,6 +1601,7 @@ def test_brief_publication_rejects_changed_source_fingerprint(tmp_path) -> None:
                 validation={"citation_index_lock": True},
                 now_ms=NOW_MS + 31_000,
             )
+        assert publication is None
         assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 0
     finally:
         conn.close()

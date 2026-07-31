@@ -36,12 +36,12 @@ consumed only by enabled AI workers. Model execution policy, timeouts, token
 budgets, cadence, leases, retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
-`src/tracefold/app/worker_manifest.py` is the sole worker inventory and owns
-writer/queue declarations. Factories, supervision, runtime status, acceptance,
-and tests derive their complete key set from it; no document or second list may
-declare a fixed count or duplicate inventory. Configuration cannot add another
-worker or derived product lane. Explicit Macro backfill is a synchronous CLI
-maintenance action and is absent from the manifest.
+`tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
+Worker topology, private due/periodic loops, the projection EDF, the serial
+native-state model arbiter, and all resource capacities are code-owned.
+Configuration cannot add another worker or derived product lane. Explicit
+Macro backfill is a synchronous CLI maintenance action and is absent from the
+steady Workers root.
 
 ## HTTP
 
@@ -50,7 +50,7 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
 - `/api/status` combines the serve startup/schema snapshot with persisted
-  `worker_runtime_status`; stale worker heartbeats fail closed as unavailable.
+  singleton `workers_runtime`; stale worker heartbeats fail closed as unavailable.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no model configuration, model policy, capacity counters,
@@ -135,7 +135,7 @@ memberships, parsed publisher names, or same-source revisions. Keyword
 classification and importance are deterministic and fully sufficient without
 AI.
 
-The Brief worker calls no model when fewer than three Stories or fewer than two
+The native Brief candidate calls no model when fewer than three Stories or fewer than two
 physical sources are available, or when its ordered Top-8 Story fingerprint is
 unchanged. A new fingerprint permits one attempt per configured provider,
 bounded by 60 seconds total. Publications are Chinese and citation-index
@@ -281,7 +281,7 @@ guessed contract-code expiry. Cross-Asset does not duplicate this curve.
 FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
 Bank speeches retain official full body text and source hashes. SEP PDF text is
 extracted from the official PDF with bounded page/content limits. The
-`macro_document_analysis` worker writes one immutable, model/prompt-versioned,
+The `macro_document_analysis` native candidate writes one immutable, model/prompt-versioned,
 exact-evidence-bound analysis per source body after effective-dated role facts
 are available. Institutional FOMC stance and the 90-day officials
 communication distribution remain separate. Non-policy material is
@@ -412,11 +412,13 @@ contract and distribution checks use `projection-status`,
 second copy of the factor contract.
 
 One-shot maintenance commands construct only the dependencies required by the
-named domain worker and invoke its `run_once` operation directly. The common
-`WorkerBase` has no maintenance lifecycle or settings override path. The
-application adapter owns provider/database cleanup and returns `worker_name`,
-`processed`, `failed`, `dead`, `skipped`, and `notes`; commands that enqueue
-repair targets first also include `preparation`.
+named domain operation and invoke that bounded operation directly. The
+application adapter owns provider/database cleanup and returns exactly
+`operation`, `processed`, `failed`, `terminal`, `skipped`, and `preparation`.
+`operation` is `resolution_refresh`, `asset_profile_refresh`, or
+`token_image_mirror`; counters are non-negative integers and `preparation` is
+an object or null. There is no generic result object, free-form notes, or
+retired `dead`/`worker_name` field.
 
 Queue resolution is auditable: retry mutates the source queue and resolves terminal evidence in one transaction; quarantine/archive resolves the terminal row without pretending the source work succeeded.
 

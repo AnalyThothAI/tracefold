@@ -162,12 +162,12 @@ class AssetProfileRefreshTargetRepository:
                 %(payload_hashes)s::text[]
               ) AS incoming(target_key, payload_hash)
             )
-            UPDATE worker_queue_terminal_events terminal
+            UPDATE queue_terminal_events terminal
             SET operator_action = 'retry',
                 operator_reason = 'reactivated_by_new_evidence',
                 operator_action_at_ms = %(now_ms)s
             FROM incoming
-            WHERE terminal.worker_name = 'asset_profile_refresh'
+            WHERE terminal.owner_key = 'asset_profile_refresh'
               AND terminal.source_table = 'asset_profile_refresh_targets'
               AND terminal.target_key = incoming.target_key
               AND terminal.operator_action IS NULL
@@ -321,7 +321,8 @@ class AssetProfileRefreshTargetRepository:
         cursor = self.conn.execute(
             """
             WITH due AS (
-              SELECT provider, target_type, target_id
+              SELECT provider, target_type, target_id,
+                     last_error AS previous_last_error
               FROM asset_profile_refresh_targets
               WHERE provider = %(provider)s
                 AND terminal_reason IS NULL
@@ -345,7 +346,7 @@ class AssetProfileRefreshTargetRepository:
             WHERE asset_profile_refresh_targets.provider = due.provider
               AND asset_profile_refresh_targets.target_type = due.target_type
               AND asset_profile_refresh_targets.target_id = due.target_id
-            RETURNING asset_profile_refresh_targets.*
+            RETURNING asset_profile_refresh_targets.*, due.previous_last_error
             """,
             {
                 "provider": str(provider),
@@ -358,6 +359,35 @@ class AssetProfileRefreshTargetRepository:
         rows = cursor.fetchall()
         expect_mutation_count(cursor, expected=len(rows), error_code="asset_profile_refresh_target_rowcount_invalid")
         return [dict(row) for row in rows]
+
+    def release_prework(self, claim: Mapping[str, Any]) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE asset_profile_refresh_targets
+               SET leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   attempt_count = attempt_count - 1,
+                   last_error = %s
+             WHERE provider = %s
+               AND target_type = %s
+               AND target_id = %s
+               AND payload_hash = %s
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING target_id
+            """,
+            (
+                claim.get("previous_last_error"),
+                str(claim["provider"]),
+                str(claim["target_type"]),
+                str(claim["target_id"]),
+                str(claim["payload_hash"]),
+                str(claim["lease_owner"]),
+                int(claim["attempt_count"]),
+            ),
+        ).fetchone()
+        return row is not None
 
     def reschedule(
         self,
@@ -472,7 +502,7 @@ class AssetProfileRefreshTargetRepository:
         for row in rows:
             terminalize_source_row(
                 self.conn,
-                worker_name="asset_profile_refresh",
+                owner_key="asset_profile_refresh",
                 source_table="asset_profile_refresh_targets",
                 target_key=_terminal_target_key(row),
                 source_row=row,

@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from tracefold.platform.workers.worker_result import WorkerResult
-
 
 @dataclass(frozen=True, slots=True)
 class ProjectionShard:
@@ -15,13 +13,9 @@ class ProjectionShard:
 
 
 class ProjectionCandidate(Protocol):
-    async def next_due_shard(
-        self,
-        *,
-        now_ms: int,
-    ) -> ProjectionShard | None: ...
+    async def peek(self, *, now_ms: int) -> ProjectionShard | None: ...
 
-    async def run_shard(self, shard: ProjectionShard) -> WorkerResult: ...
+    async def execute(self, shard: ProjectionShard) -> bool: ...
 
 
 __all__ = ["ProjectionCandidate", "ProjectionShard"]

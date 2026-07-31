@@ -6,8 +6,11 @@ from typing import Any, Protocol, cast
 from tracefold.app.provider_types import OkxProviderBundle
 from tracefold.integrations.okx.chains import OKX_CHAIN_INDEX_TO_CHAIN, OKX_CHAIN_TO_CHAIN_INDEX
 from tracefold.integrations.okx.dex_client import OkxDexClient
-from tracefold.integrations.okx.dex_ws_client import OkxDexWebSocketMarketProvider
-from tracefold.integrations.okx.http_utils import OkxPaymentRequiredError
+from tracefold.integrations.okx.dex_ws_client import (
+    OkxDexWebSocketMarketProvider,
+    OkxDexWsClientError,
+)
+from tracefold.integrations.okx.http_utils import OkxClientError
 from tracefold.market import (
     DexMarketFactUpdate,
     DexMarketStreamProvider,
@@ -18,6 +21,7 @@ from tracefold.market import (
     DexTokenQuoteProvider,
     DexTokenQuoteRequest,
     MarketCapability,
+    MarketStreamExpectedError,
     ProviderHealth,
     canonical_chain_address,
     canonical_chain_id,
@@ -41,7 +45,7 @@ class OkxDexDiscoveryProvider:
             return []
         try:
             candidates = self._client.search_tokens(query=query, chain_indexes=chain_indexes)
-        except OkxPaymentRequiredError as exc:
+        except OkxClientError as exc:
             raise DexProviderTemporarilyUnavailable(str(exc)) from exc
         return [_dex_token_candidate(candidate) for candidate in candidates]
 
@@ -69,7 +73,7 @@ class OkxDexQuoteProvider:
             return []
         try:
             prices = self._client.token_prices(request_items)
-        except OkxPaymentRequiredError as exc:
+        except OkxClientError as exc:
             raise DexProviderTemporarilyUnavailable(str(exc)) from exc
         return [_dex_token_quote(price) for price in prices]
 
@@ -111,11 +115,17 @@ class OkxDexWebSocketMarketProviderAdapter:
                     "tokenContractAddress": canonical_chain_address(target.chain_id, target.address),
                 }
             )
-        await self._provider.replace_subscriptions(mapped_targets)
+        try:
+            await self._provider.replace_subscriptions(mapped_targets)
+        except OkxDexWsClientError as exc:
+            raise MarketStreamExpectedError(str(exc)) from exc
 
     async def iter_price_info(self):
-        async for update in self._provider.iter_price_info():
-            yield _domain_dex_market_fact_update(update)
+        try:
+            async for update in self._provider.iter_price_info():
+                yield _domain_dex_market_fact_update(update)
+        except OkxDexWsClientError as exc:
+            raise MarketStreamExpectedError(str(exc)) from exc
 
     async def aclose(self) -> None:
         await self._provider.aclose()
@@ -165,7 +175,7 @@ def okx_dex_discovery_market(settings: Settings) -> OkxDexDiscoveryProvider:
             api_key=settings.providers.okx.dex_api_key,
             secret_key=settings.providers.okx.dex_secret_key,
             passphrase=settings.providers.okx.dex_passphrase,
-            timeout_seconds=settings.providers.okx.timeout_seconds,
+            timeout_seconds=min(float(settings.providers.okx.timeout_seconds), 8.0),
         )
     )
 
@@ -177,7 +187,7 @@ def okx_dex_quote_market(settings: Settings) -> OkxDexQuoteProvider:
             api_key=settings.providers.okx.dex_api_key,
             secret_key=settings.providers.okx.dex_secret_key,
             passphrase=settings.providers.okx.dex_passphrase,
-            timeout_seconds=settings.providers.okx.timeout_seconds,
+            timeout_seconds=min(float(settings.providers.okx.timeout_seconds), 8.0),
         )
     )
 

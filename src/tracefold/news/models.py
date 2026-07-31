@@ -33,6 +33,14 @@ EventCategory = Literal[
 ]
 
 
+class NewsFeedExpectedError(RuntimeError):
+    """A typed external feed failure safe for durable source retry."""
+
+
+class NewsBriefExpectedError(RuntimeError):
+    """A typed provider/response failure safe for native Brief retry."""
+
+
 class ExactNewsModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -122,13 +130,13 @@ class NewsBriefDraft(ExactNewsModel):
 
 
 class NewsFeedReader(Protocol):
-    def fetch(
+    def fetch_wire(
         self,
         *,
         source: NewsSourceDefinition,
         etag: str | None,
         last_modified: str | None,
-    ) -> NewsFeedFetch: ...
+    ) -> object: ...
 
     def close(self) -> None: ...
 

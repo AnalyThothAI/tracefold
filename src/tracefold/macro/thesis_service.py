@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from tracefold.macro.assets import MACRO_THESIS_OUTCOME_DATASETS
 from tracefold.macro.calculations import calculate_features
-from tracefold.macro.domain import MACRO_MODULE_IDS
+from tracefold.macro.domain import MACRO_MODULE_IDS, MacroModelExpectedError
 from tracefold.macro.history_policy import (
     market_history_limits,
     series_history_limits,
@@ -36,6 +36,8 @@ from tracefold.macro.thesis_v2 import (
     evaluate_live_delta_v2,
     evaluate_outcome_replay_v2,
 )
+from tracefold.platform.model_candidate import ModelCandidate
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _NEW_YORK = ZoneInfo("America/New_York")
 _PUBLICATION_TIME = clock_time(8, 50)
@@ -76,7 +78,8 @@ class MacroThesisService:
         worker_name: str = "macro_thesis",
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
-        resources: Any | None = None,
+        database: Any | None = None,
+        stable_order: int = 10,
     ) -> None:
         if db is None:
             raise RuntimeError("macro_thesis_db_required")
@@ -86,7 +89,38 @@ class MacroThesisService:
         self._worker_name = worker_name
         self._lease_owner = lease_owner or f"{worker_name}:{uuid4().hex}"
         self._clock_ms = clock_ms or _now_ms
-        self._resources = resources
+        self._database = database
+        self.stable_order = int(stable_order)
+
+    async def peek(self, *, now_ms: int) -> ModelCandidate | None:
+        session_date = resolve_thesis_session(now_ms=int(now_ms))
+        cutoff_ms = thesis_cutoff_ms(session_date)
+        if int(now_ms) < cutoff_ms:
+            return None
+        state = await self._run_db(self._state, session_date)
+        if state is not None:
+            status = str(state.get("status") or "")
+            if status in {"published", "not_published", "failed", "config_error"}:
+                return None
+            due_at_ms = int(state.get("due_at_ms") or cutoff_ms)
+            if status == "running":
+                due_at_ms = int(state.get("leased_until_ms") or due_at_ms)
+            if due_at_ms > int(now_ms):
+                return None
+        else:
+            due_at_ms = cutoff_ms
+        return ModelCandidate(
+            kind="macro_thesis",
+            target_key=session_date.isoformat(),
+            due_at_ms=due_at_ms,
+            stable_order=self.stable_order,
+        )
+
+    async def execute(self, candidate: ModelCandidate) -> bool:
+        view = await self.run_due()
+        if view.session_date.isoformat() != candidate.target_key:
+            return False
+        return view.status not in {"missing", "not_due", "retry_soon"}
 
     async def run_due(self, *, now_ms: int | None = None) -> MacroThesisRunView:
         now = int(now_ms if now_ms is not None else self._clock_ms())
@@ -155,11 +189,13 @@ class MacroThesisService:
         attempt_count = int(prepared["attempt_count"])
         attempt_id = f"macro-thesis:{session_date.isoformat()}:attempt:{attempt_count}"
         envelope: CandidateDraftEnvelope | None = None
+        model_started = asyncio.Event()
 
         try:
             envelope = await self._run_with_heartbeat(
                 research_input=research_input,
                 attempt_id=attempt_id,
+                model_started=model_started,
             )
             publication = compile_candidate_publication_v2(
                 envelope=envelope,
@@ -169,7 +205,7 @@ class MacroThesisService:
             )
             try:
                 written = await self._run_db(self._publish, publication)
-            except Exception as exc:
+            except MacroPublicationWriteConflict as exc:
                 raise _write_gate_failure(
                     exc,
                     envelope=envelope,
@@ -197,6 +233,29 @@ class MacroThesisService:
                 live_delta_rows_written=live,
                 outcome_rows_written=outcome,
             )
+        except asyncio.CancelledError:
+            if not model_started.is_set():
+                await asyncio.shield(
+                    self._release_prework(
+                        session_date=session_date,
+                        claimed_attempt_count=attempt_count,
+                    )
+                )
+            raise
+        except ResourceAdmissionTimeout:
+            if model_started.is_set():
+                raise
+            await self._release_prework(
+                session_date=session_date,
+                claimed_attempt_count=attempt_count,
+            )
+            return MacroThesisRunView(
+                session_date=session_date,
+                status="retry_soon",
+                evidence_pack_id=evidence_pack.evidence_pack_id,
+                research_input_id=research_input.input_id,
+                publication_id=None,
+            )
         except PublicationGateFailure as exc:
             error_at_ms = max(now, int(self._clock_ms()))
             status = await self._run_db(
@@ -220,8 +279,12 @@ class MacroThesisService:
                 error_code=exc.code,
                 error_message=_gate_error_message(exc),
             )
-        except Exception as exc:
-            error_code, retryable, terminal_status = _classify_error(exc)
+        except MacroModelExpectedError as exc:
+            error_code, retryable, terminal_status = (
+                "macro_thesis_model_expected_error",
+                True,
+                "failed",
+            )
             error_message = str(exc or "macro thesis failed").replace("\n", " ")[:2_000]
             status = await self._run_db(
                 self._mark_error,
@@ -436,15 +499,20 @@ class MacroThesisService:
         *,
         research_input: MacroResearchInputV1,
         attempt_id: str,
+        model_started: asyncio.Event,
     ) -> CandidateDraftEnvelope:
-        if self._agent is None:
+        agent = self._agent
+        if agent is None:
             raise RuntimeError("macro_thesis_configuration_error")
-        analysis = asyncio.create_task(
-            self._agent.draft(
+
+        async def run_model() -> CandidateDraftEnvelope:
+            return await agent.draft(
                 research_input=research_input,
                 attempt_id=attempt_id,
+                on_model_submitted=model_started.set,
             )
-        )
+
+        analysis = asyncio.create_task(run_model())
         heartbeat = asyncio.create_task(self._heartbeat(research_input.session_date))
         try:
             done, _ = await asyncio.wait((analysis, heartbeat), return_when=asyncio.FIRST_COMPLETED)
@@ -458,6 +526,35 @@ class MacroThesisService:
                     task.cancel()
             await asyncio.gather(analysis, heartbeat, return_exceptions=True)
 
+    async def _release_prework(
+        self,
+        *,
+        session_date: date,
+        claimed_attempt_count: int,
+    ) -> bool:
+        return bool(
+            await self._run_db(
+                self._release_prework_sync,
+                session_date=session_date,
+                claimed_attempt_count=claimed_attempt_count,
+            )
+        )
+
+    def _release_prework_sync(
+        self,
+        *,
+        session_date: date,
+        claimed_attempt_count: int,
+    ) -> bool:
+        with self._session() as repos, repos.transaction():
+            return bool(
+                repos.macro_thesis.release_run_claim(
+                    session_date=session_date,
+                    lease_owner=self._lease_owner,
+                    claimed_attempt_count=claimed_attempt_count,
+                )
+            )
+
     async def _heartbeat(self, session_date: date) -> None:
         while True:
             await asyncio.sleep(max(1.0, self._lease_ms() / 3_000))
@@ -470,9 +567,15 @@ class MacroThesisService:
                 raise RuntimeError("macro_thesis_lease_lost")
 
     async def _run_db(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-        if self._resources is None:
+        if self._database is None:
             return function(*args, **kwargs)
-        return await self._resources.run_background_db(function, *args, **kwargs)
+        return await self._database.run_business(
+            "macro_thesis_db",
+            function,
+            *args,
+            operation_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            **kwargs,
+        )
 
     def _publish(self, publication: MacroThesisV2) -> bool:
         with self._session() as repos, repos.transaction():

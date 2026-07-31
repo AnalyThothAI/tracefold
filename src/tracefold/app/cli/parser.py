@@ -113,8 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     seal_acceptance = ops_subcommands.add_parser(
-        "seal-worker-acceptance",
-        help="validate and seal a complete Issue #32 acceptance bundle",
+        "seal-workers-runtime-acceptance",
+        help="validate and seal a complete Workers Runtime V2 acceptance bundle",
     )
     seal_acceptance_mode = seal_acceptance.add_mutually_exclusive_group(
         required=True,
@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_market_current.add_argument("--execute", action="store_true", required=True)
     ops_subcommands.add_parser("projection-status", help="print Token Radar publication state")
     queue_inspect = ops_subcommands.add_parser("queue-inspect", help="inspect worker queue terminal evidence")
-    queue_inspect.add_argument("--worker", default="")
+    queue_inspect.add_argument("--owner", default="")
     queue_inspect.add_argument("--source-table", default="")
     queue_inspect.add_argument("--status", choices=("terminal", "active"), default="terminal")
     queue_inspect.add_argument("--reason-bucket", default="")
@@ -152,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         "queue-resolve-bucket",
         help="resolve a bounded worker queue terminal evidence bucket",
     )
-    queue_resolve_bucket.add_argument("--worker", required=True)
+    queue_resolve_bucket.add_argument("--owner", required=True)
     queue_resolve_bucket.add_argument("--source-table", required=True)
     queue_resolve_bucket.add_argument("--reason-bucket", required=True)
     queue_resolve_bucket.add_argument("--action", choices=("retry", "quarantine", "archive"), required=True)

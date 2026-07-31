@@ -32,20 +32,13 @@ from tests.support.hot_path_runtime import (
     backend_hot_path_settings,
 )
 from tests.support.provider_fixtures import load_provider_fixture
-from tracefold.app.bootstrap import _PooledIngestStore
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
 from tracefold.app.provider_types import AssetMarketProviders
-from tracefold.app.runtime_resources import (
-    ProviderGovernor,
-    RuntimeResources,
-)
-from tracefold.app.worker_manifest import worker_names
-from tracefold.app.worker_runtime_status import (
-    WorkerRuntimeStatusRepository,
-)
-from tracefold.market import CollectorService, EventAnchorBackfillWorker
-from tracefold.platform.observability import TelemetryRegistry
+from tracefold.app.worker_capabilities import FiniteOperations
+from tracefold.app.workers import _PooledIngestStore
+from tracefold.app.workers_runtime import WorkersRuntimeRepository
+from tracefold.market import CollectorService, EventAnchorBackfill
 
 
 @pytest.mark.e2e
@@ -60,24 +53,19 @@ def test_complete_backend_hot_path_to_token_radar(
     app = create_app(settings=settings)
     frame = load_provider_fixture("gmgn_public_tw_complete.json")
     worker_db = WorkerDatabase.create(settings)
-    resources = RuntimeResources()
-    governor = ProviderGovernor()
-    telemetry = TelemetryRegistry()
+    finite = FiniteOperations()
     providers = AssetMarketProviders(
         dex_quote_market=FakeDexQuoteProvider(observed_at_ms=FIXED_NOW_MS + 500),
         cex_market=None,
     )
     collector = CollectorService(
-        name="collector",
-        telemetry=telemetry,
         store=_PooledIngestStore(
             worker_db,
             providers=providers,
             event_anchor_active_window_ms=300_000,
         ),
         upstream_client=None,
-        resources=resources,
-        provider_governor=governor,
+        db=worker_db,
     )
     upstream = FakeGmgnUpstreamClient(
         [frame],
@@ -102,20 +90,17 @@ def test_complete_backend_hot_path_to_token_radar(
             30 * 24 * 60 * 60 * 1000,
             abs(backfill_now_ms - FIXED_NOW_MS) + 60_000,
         )
-        backfill = EventAnchorBackfillWorker(
-            name="event_anchor_capture",
-            pool_bundle=worker_db,
+        backfill = EventAnchorBackfill(
+            db=worker_db,
             providers=providers,
-            resources=resources,
-            provider_governor=governor,
+            finite_operations=finite,
             runtime_id=str(uuid4()),
             clock=lambda: backfill_now_ms,
         )
         backfill.batch_size = 10
         backfill.min_age_ms = 0
         backfill.max_anchor_lag_ms = backfill_window_ms
-        backfill_result = asyncio.run(backfill.run_once())
-        assert backfill_result.processed == 1
+        assert asyncio.run(backfill.turn()) is True
         _assert_counts({"market_ticks": 1, "ready_enriched_events": 1})
 
         conn = connect_postgres_test(read_only=False)
@@ -130,12 +115,12 @@ def test_complete_backend_hot_path_to_token_radar(
         assert radar_result["rows_written"] >= 1
         _assert_counts({"token_radar_current_rows": 1})
 
-        _publish_healthy_worker_status(worker_db)
+        _publish_healthy_workers_runtime(worker_db)
         with TestClient(app) as client:
             _assert_http_surfaces(client)
             _assert_websocket_surfaces(client, worker_db)
     finally:
-        resources.close()
+        finite.close()
         asyncio.run(worker_db.aclose())
 
 
@@ -222,25 +207,14 @@ def _wall_now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _publish_healthy_worker_status(worker_db: WorkerDatabase) -> None:
+def _publish_healthy_workers_runtime(worker_db: WorkerDatabase) -> None:
     now_ms = _wall_now_ms()
     with worker_db.worker_session("e2e_runtime_status") as repos, repos.transaction():
-        WorkerRuntimeStatusRepository(repos.conn).publish(
-            runtime_id=str(uuid4()),
+        repository = WorkersRuntimeRepository(repos.conn)
+        runtime_id = str(uuid4())
+        assert repository.begin(
+            runtime_id=runtime_id,
             runtime_version="e2e",
-            statuses={
-                name: {
-                    "effective_status": "running",
-                    "last_started_at_ms": now_ms,
-                    "last_finished_at_ms": now_ms,
-                    "last_result": None,
-                    "last_error": None,
-                    "deadline_at_ms": None,
-                    "queue_depth": 0,
-                    "oldest_due_at_ms": None,
-                    "quarantine_count": 0,
-                }
-                for name in worker_names()
-            },
             now_ms=now_ms,
         )
+        repository.transition(runtime_id=runtime_id, lifecycle_state="running", now_ms=now_ms)

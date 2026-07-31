@@ -30,20 +30,20 @@ instead of adding repository-local `.env` files or editing generated examples.
 `config.yaml` must point at the live PostgreSQL store and contain the provider
 credentials/endpoints needed by the enabled data lanes, including GMGN OpenAPI
 for exact token profiles and OKX provider settings for discovery, market data,
-or DEX WebSocket lanes when those workers are enabled. Keep secrets out of
+or DEX WebSocket lanes when those paths are enabled. Keep secrets out of
 terminal output, docs, tests, and commits.
 The `llm` block owns operator credentials: `api_key` plus `base_url` for the
 current OpenAI-compatible provider, and optional `openrouter_api_key` and
 `groq_api_key` for News provider fallback. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
 credential path.
-An enabled AI worker with no configured provider reports an explicit
+An enabled model candidate with no configured provider reports an explicit
 unavailable state and makes no model call.
 
-News correctness does not depend on the model. `news_ingest` owns source
-claim/fetch/persist, the EDF coordinator owns deterministic Story projection,
-and the single-capacity model coordinator owns World Brief. There is no
-item-level AI worker.
+News correctness does not depend on the model. The News acquisition due loop
+owns source claim/fetch/persist, the EDF coordinator owns deterministic Story
+projection, and the single-capacity native-state model arbiter owns World
+Brief. There is no item-level AI path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -56,20 +56,18 @@ Useful live-data smoke checks:
 ```bash
 uv run tracefold config
 uv run tracefold ops refresh-asset-profiles --limit 5
-uv run tracefold ops rebuild-token-profiles --limit 500
-uv run tracefold ops repair-token-profile-images --limit 500
 uv run tracefold ops mirror-token-images --limit 50
-uv run tracefold ops rebuild-token-profiles --limit 500
 uv run tracefold asset-flow --window 1h --limit 20
 ```
 
 The first command confirms the real config paths. The profile refresh command
-exercises the GMGN exact-token profile lane that feeds `asset_profiles.logo_url`
-for DEX token icon source URLs. `rebuild-token-profiles` admits exact profile
-and evidence logo sources into `token_image_source_dirty_targets`; the repair
-command re-enqueues already-current rows whose icons were stuck before source
-admission existed. The mirror command copies eligible provider images into
-`~/.tracefold/cache/token-images`, and the final rebuild projects
+exercises the GMGN exact-token profile path that feeds `asset_profiles.logo_url`
+for DEX token icon source URLs. Profile publication admits exact profile and
+evidence logo sources into `token_image_source_dirty_targets`; the mirror
+command processes the durable image target without a retired rebuild/repair
+alias. Refreshing a profile can re-admit an image target whose prior source is
+stale. The mirror command copies eligible provider images into
+`~/.tracefold/cache/token-images`; fenced Profile publication projects
 `token_profile_current.logo_url` to local `/api/token-images/{image_id}` paths
 or `NULL`. Provider blocks, rate limits, unsupported image types, and missing
 mirror rows should surface as explicit diagnostic results or fallback marks,
@@ -87,24 +85,24 @@ Data API and BEA public current-release pages for scheduled release facts;
 Federal Reserve official pages for policy documents; CFTC TFF Futures Only for
 rates/credit/cross-asset positioning; Cboe CFE settlement files for VIX
 futures; Binance public spot klines for the completed UTC BTC settlement; and
-the pinned `yfinance` wrapper over Yahoo Finance for best-effort five-minute
+the bounded Yahoo Chart JSON endpoint for best-effort five-minute
 ETFs, BTC, VIX, and major futures plus five-year daily continuous-futures
 proxies. Nasdaq public ETF history supplies the separate five-year daily ETF
 lane.
 `providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-Nasdaq daily, and yfinance independently and owns only request timeout/user-agent transport
+Nasdaq daily, and Yahoo Chart independently and owns only request timeout/user-agent transport
 settings. It does not own dataset membership, formulas, freshness, or
 scheduling. Capabilities that require unavailable paid data are not part of the
 current product contract and are not filled with a fake proxy.
 
-Five automatic acquisition workers own distinct clocks:
+Five explicit acquisition due loops own distinct clocks:
 `macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
 `macro_official_state`, and `macro_official_documents`. The two backfill
 commands synchronously process their explicit bounded targets and then exit;
-backfill is not a steady worker or automatic clock.
+backfill is not a steady loop or automatic clock.
 The EDF projection coordinator rebuilds only affected module-local current
-rows from the static dataset/calculation/module dependency graph. The model
-coordinator writes immutable evidence-bound FOMC/speech analyses and seals the
+rows from the static dataset/calculation/module dependency graph. The serial
+native-state model arbiter writes immutable evidence-bound FOMC/speech analyses and seals the
 08:50 New York Evidence Pack, compiles one bounded
 `MacroResearchInputV1`, performs exactly one native structured model invocation
 per durable attempt through the Thin DeepAgent profile, and publishes at most

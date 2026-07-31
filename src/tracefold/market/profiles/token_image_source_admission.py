@@ -189,7 +189,7 @@ def _resolve_token_image_sources(
     dirty_rows = repos.token_image_source_dirty_targets.existing_by_source_targets(dirty_identities)
     terminal_rows = repos.token_image_source_dirty_targets.unresolved_terminal_by_source_targets(
         dirty_identities,
-        worker_name=TOKEN_IMAGE_MIRROR_WORKER,
+        owner_key=TOKEN_IMAGE_MIRROR_WORKER,
     )
 
     enqueues: list[dict[str, Any]] = []

@@ -13,6 +13,7 @@ from tracefold.macro.thesis_v2 import (
     MacroResearchInputV1,
     MacroThesisV2,
 )
+from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 
 class MacroPublicationWriteConflict(RuntimeError):
@@ -215,10 +216,6 @@ class MacroThesisRepository:
                 attempt_count = runs.attempt_count + 1,
                 leased_until_ms = %s,
                 lease_owner = %s,
-                last_error_code = NULL,
-                last_error_message = NULL,
-                last_gate_category = NULL,
-                last_candidate_hash = NULL,
                 updated_at_ms = %s
             FROM candidate
             WHERE runs.session_date = candidate.session_date
@@ -234,6 +231,38 @@ class MacroThesisRepository:
             ),
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def release_run_claim(
+        self,
+        *,
+        session_date: date,
+        lease_owner: str,
+        claimed_attempt_count: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE macro_thesis_runs
+               SET status = CASE
+                     WHEN attempt_count = 1 THEN 'pending'
+                     ELSE 'retryable'
+                   END,
+                   attempt_count = attempt_count - 1,
+                   leased_until_ms = NULL,
+                   lease_owner = NULL
+             WHERE session_date = %s
+               AND status = 'running'
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING session_date
+            """,
+            (
+                session_date,
+                _required_text(lease_owner, "lease_owner"),
+                int(claimed_attempt_count),
+            ),
+        ).fetchone()
+        return row is not None
 
     def renew_lease(
         self,
@@ -377,7 +406,7 @@ class MacroThesisRepository:
             WHERE session_date = %s
               AND status = 'running'
               AND lease_owner = %s
-            RETURNING status
+            RETURNING *
             """,
             (
                 bool(retryable),
@@ -395,7 +424,10 @@ class MacroThesisRepository:
         ).fetchone()
         if row is None:
             raise RuntimeError("macro_thesis_run_error_owner_mismatch")
-        return str(row["status"])
+        status = str(row["status"])
+        if status != "retryable":
+            self._terminalize_run(row, now_ms=now_ms)
+        return status
 
     def mark_preflight_error(
         self,
@@ -418,7 +450,7 @@ class MacroThesisRepository:
             WHERE session_date = %s
               AND status = 'pending'
               AND attempt_count = 0
-            RETURNING session_date
+            RETURNING *
             """,
             (
                 status,
@@ -428,7 +460,26 @@ class MacroThesisRepository:
                 session_date,
             ),
         ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+        self._terminalize_run(row, now_ms=now_ms)
+        return True
+
+    def _terminalize_run(self, row: Mapping[str, Any], *, now_ms: int) -> None:
+        target_key = str(row["session_date"])
+        source_row = {**dict(row), "native_target_key": target_key}
+        terminalize_source_row(
+            self.conn,
+            owner_key="macro_thesis",
+            source_table="macro_thesis_runs",
+            target_key=target_key,
+            source_row=source_row,
+            final_status=str(row["status"]),
+            final_reason=str(row.get("last_error_code") or row["status"]),
+            final_reason_bucket="model_terminal",
+            now_ms=int(now_ms),
+            attempt_count=int(row.get("attempt_count") or 0),
+        )
 
     def archive_publication(self, session_date: date) -> dict[str, Any] | None:
         row = self.conn.execute(

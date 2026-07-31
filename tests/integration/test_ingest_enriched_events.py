@@ -7,9 +7,9 @@ from decimal import Decimal
 from tests.factories import make_event
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.bootstrap import _PooledIngestStore
 from tracefold.app.provider_types import AssetMarketProviders
 from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.workers import _PooledIngestStore
 from tracefold.market import (
     DexTokenQuote,
     MarketTick,
@@ -44,7 +44,6 @@ def test_ingest_chain_event_writes_pending_backfill_without_inline_provider_call
         _SingleConnectionDB(conn),
         providers=AssetMarketProviders(dex_quote_market=provider),
         event_anchor_active_window_ms=300_000,
-        now_ms=lambda: event.received_at_ms + 500,
     )
     try:
         result = store.ingest_event(event)
@@ -99,7 +98,6 @@ def test_ingest_chain_event_with_provider_no_quote_still_writes_pending_backfill
         _SingleConnectionDB(conn),
         providers=AssetMarketProviders(dex_quote_market=provider),
         event_anchor_active_window_ms=300_000,
-        now_ms=lambda: event.received_at_ms + 500,
     )
     try:
         result = store.ingest_event(event)
@@ -163,7 +161,6 @@ def test_ingest_chain_event_with_existing_tick_writes_composite_tick_capture(tmp
         _SingleConnectionDB(conn),
         providers=AssetMarketProviders(dex_quote_market=_DexQuoteProvider([])),
         event_anchor_active_window_ms=300_000,
-        now_ms=lambda: event.received_at_ms + 500,
     )
     try:
         result = store.ingest_event(event)
@@ -199,7 +196,7 @@ class _SingleConnectionDB:
         self.conn = conn
 
     @contextmanager
-    def worker_session(self, name: str) -> Iterator:
+    def worker_session(self, *_args, **_kwargs) -> Iterator:
         yield repositories_for_connection(
             self.conn,
         )

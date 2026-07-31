@@ -376,12 +376,11 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "params": (),
     },
     {
-        "name": "worker_runtime_status",
+        "name": "workers_runtime",
         "sql": """
-            SELECT unit_name, heartbeat_at_ms
-            FROM worker_runtime_status
-            ORDER BY unit_name
-            LIMIT 15
+            SELECT runtime_id, lifecycle_state, heartbeat_at_ms
+            FROM workers_runtime
+            WHERE singleton_key
         """,
         "params": (),
     },
@@ -402,7 +401,7 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
 PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/readyz": ("readiness_schema",),
     "/ws": ("persisted_live_after_cursor",),
-    "/api/status": ("worker_runtime_status",),
+    "/api/status": ("workers_runtime",),
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
     "/api/token-radar": ("token_radar_latest", "token_profile_target"),

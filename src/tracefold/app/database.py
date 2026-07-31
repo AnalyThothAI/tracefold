@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from threading import BoundedSemaphore
 from typing import Any, Protocol, cast
 
@@ -12,6 +15,10 @@ from psycopg_pool import PoolClosed, PoolTimeout
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceOperationOverrun,
+)
 from tracefold.platform.validation import require_nonnegative_float
 
 _WORKER_STATEMENT_TIMEOUT_SECONDS = 30.0
@@ -36,6 +43,10 @@ _SERVE_LANE_CAPACITIES = {
 }
 _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 _WORKER_CHECKOUT_TIMEOUT_SECONDS = 0.250
+_WORKER_ADMISSION_TIMEOUT_SECONDS = 1.0
+_WORKER_POOL_MIN_SIZE = 1
+_WORKER_POOL_MAX_SIZE = 4
+_WORKER_POOL_MAX_WAITING = 3
 _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS = (0x54524644, 0)
 _STEADY_WORKERS_SINGLETON_LOCK_KEYS = (0x54524644, 1)
 
@@ -124,10 +135,29 @@ class ServeDatabase:
 
 @dataclass(slots=True)
 class WorkerDatabase:
-    """The write-side database boundary owned by the steady worker runtime."""
+    """One Workers pool with two business slots and one control slot."""
 
     worker_pool: Any
     telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
+    _business_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="tracefold-business-db",
+        )
+    )
+    _control_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="tracefold-control-db",
+        )
+    )
+    _business_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(2))
+    _control_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
+    _pending_business: set[asyncio.Future[Any]] = field(default_factory=set)
+    _pending_control: set[asyncio.Future[Any]] = field(default_factory=set)
+    _accepting_business: bool = True
+    _accepting_control: bool = True
+    _executors_closed: bool = False
 
     @classmethod
     def create(cls, settings: Any, *, telemetry: TelemetryRegistry | None = None) -> WorkerDatabase:
@@ -136,12 +166,12 @@ class WorkerDatabase:
             settings.postgres_dsn("workers"),
             settings.postgres_password_file("workers"),
         )
-        worker_pool_max = 12
         try:
             worker_pool = create_pool(
                 dsn,
-                min_size=1,
-                max_size=worker_pool_max,
+                min_size=_WORKER_POOL_MIN_SIZE,
+                max_size=_WORKER_POOL_MAX_SIZE,
+                max_waiting=_WORKER_POOL_MAX_WAITING,
                 connect_timeout_seconds=postgres.connect_timeout_seconds,
                 application_name="tracefold_workers",
                 statement_timeout_seconds=_WORKER_STATEMENT_TIMEOUT_SECONDS,
@@ -160,6 +190,173 @@ class WorkerDatabase:
             telemetry=telemetry if telemetry is not None else TelemetryRegistry(),
         )
 
+    async def run_business[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        on_submitted: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> T:
+        if not self._accepting_business or self._executors_closed:
+            raise RuntimeError("worker_database_business_closed")
+        return await self._run_executor(
+            operation_name,
+            function,
+            args,
+            kwargs,
+            executor=self._business_executor,
+            gate=self._business_gate,
+            pending=self._pending_business,
+            capability="database_business",
+            operation_timeout_seconds=operation_timeout_seconds,
+            on_submitted=on_submitted,
+        )
+
+    async def run_control[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        /,
+        *args: Any,
+        operation_timeout_seconds: float = 1.0,
+        allow_shutdown: bool = False,
+        on_submitted: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> T:
+        if (not self._accepting_control and not allow_shutdown) or self._executors_closed:
+            raise RuntimeError("worker_database_control_closed")
+        return await self._run_executor(
+            operation_name,
+            function,
+            args,
+            kwargs,
+            executor=self._control_executor,
+            gate=self._control_gate,
+            pending=self._pending_control,
+            capability="database_control",
+            operation_timeout_seconds=operation_timeout_seconds,
+            on_submitted=on_submitted,
+        )
+
+    async def _run_executor[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        executor: ThreadPoolExecutor,
+        gate: asyncio.BoundedSemaphore,
+        pending: set[asyncio.Future[Any]],
+        capability: str,
+        operation_timeout_seconds: float,
+        on_submitted: Callable[[], None] | None,
+    ) -> T:
+        started = time.perf_counter()
+        try:
+            await asyncio.wait_for(
+                gate.acquire(),
+                timeout=_WORKER_ADMISSION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            self._record_pool_wait(
+                "worker_db_admission",
+                (time.perf_counter() - started) * 1000,
+            )
+            self._record_resource_admission(
+                capability,
+                operation_name,
+                "timeout",
+                time.perf_counter() - started,
+            )
+            raise ResourceAdmissionTimeout(
+                f"worker_database_admission_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
+        self._record_pool_wait(
+            "worker_db_admission",
+            (time.perf_counter() - started) * 1000,
+        )
+        self._record_resource_admission(
+            capability,
+            operation_name,
+            "accepted",
+            time.perf_counter() - started,
+        )
+        loop = asyncio.get_running_loop()
+        submitted_at = time.perf_counter()
+        try:
+            underlying = executor.submit(partial(function, *args, **kwargs))
+        except BaseException:
+            gate.release()
+            raise
+        wrapped = asyncio.wrap_future(underlying)
+        pending.add(wrapped)
+        self._change_resource_active(capability, 1)
+        _release_db_permit_on_completion(
+            underlying,
+            loop=loop,
+            wrapped=wrapped,
+            pending=pending,
+            gate=gate,
+            completed=lambda future: self._record_resource_completion(
+                capability,
+                operation_name,
+                submitted_at,
+                future,
+            ),
+        )
+        if on_submitted is not None:
+            on_submitted()
+        done, _ = await asyncio.wait(
+            {wrapped},
+            timeout=max(0.001, float(operation_timeout_seconds)),
+        )
+        if not done:
+            raise ResourceOperationOverrun(f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}")
+        return await wrapped
+
+    def close_business_admission(self) -> None:
+        self._accepting_business = False
+
+    def close_control_admission(self) -> None:
+        self._accepting_control = False
+
+    async def drain_business(self, *, timeout_seconds: float) -> bool:
+        return await _drain_db_futures(
+            self._pending_business,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def drain_control(self, *, timeout_seconds: float) -> bool:
+        return await _drain_db_futures(
+            self._pending_control,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def close_executors(self) -> None:
+        if self._executors_closed:
+            return
+        self._executors_closed = True
+        self._accepting_business = False
+        self._accepting_control = False
+        self._business_executor.shutdown(wait=False, cancel_futures=False)
+        self._control_executor.shutdown(wait=False, cancel_futures=False)
+
+    def prewarm_control_connection(self) -> None:
+        with self.worker_pool.connection(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS) as conn:
+            row = conn.execute("SELECT 1 AS ok").fetchone()
+            if row is None or int(row["ok"]) != 1:
+                raise RuntimeError("worker_control_connection_prewarm_failed")
+
+    @staticmethod
+    def check_pinned_liveness(conn: Any) -> None:
+        row = conn.execute("SELECT 1 AS ok").fetchone()
+        if row is None or int(row["ok"]) != 1:
+            raise RuntimeError("singleton_lost")
+
     @contextmanager
     def worker_session(
         self,
@@ -171,11 +368,14 @@ class WorkerDatabase:
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
         returned = False
-        bounded_query_policy = name == "steady_projection_coordinator"
+        bounded_query_policy = True
         try:
-            _set_config(conn, "application_name", f"worker:{_normalize_worker_name(name)}")
-            if bounded_query_policy:
-                _set_worker_query_policy(conn)
+            _set_config(
+                conn,
+                "application_name",
+                f"tracefold_workers:{_normalize_operation_name(name)}",
+            )
+            _set_worker_query_policy(conn)
             if statement_timeout_seconds is not None:
                 _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
             if transaction_timeout_seconds is not None:
@@ -306,9 +506,46 @@ class WorkerDatabase:
         if self.telemetry is not None:
             self.telemetry.record_pool_wait(pool_name, wait_ms)
 
+    def _record_resource_admission(
+        self,
+        capability: str,
+        operation_name: str,
+        outcome: str,
+        seconds: float,
+    ) -> None:
+        if self.telemetry is not None:
+            self.telemetry.record_resource_admission(
+                capability,
+                _normalize_operation_name(operation_name),
+                outcome,
+                seconds,
+            )
 
-def _normalize_worker_name(name: str) -> str:
-    return str(name).strip().replace(" ", "_") or "unknown"
+    def _record_resource_completion(
+        self,
+        capability: str,
+        operation_name: str,
+        submitted_at: float,
+        future: Future[Any],
+    ) -> None:
+        if self.telemetry is None:
+            return
+        outcome = "cancelled" if future.cancelled() else "error" if future.exception() is not None else "success"
+        self.telemetry.record_resource_service(
+            capability,
+            _normalize_operation_name(operation_name),
+            outcome,
+            max(0.0, time.perf_counter() - submitted_at),
+        )
+        self.telemetry.change_resource_active(capability, -1)
+
+    def _change_resource_active(self, capability: str, delta: int) -> None:
+        if self.telemetry is not None:
+            self.telemetry.change_resource_active(capability, delta)
+
+
+def _normalize_operation_name(name: str) -> str:
+    return (str(name).strip().replace(" ", "_") or "unknown")[:96]
 
 
 def acquire_maintenance_advisory_lock(conn: Any) -> None:
@@ -368,7 +605,7 @@ def _reset_worker_connection(
     if bounded_query_policy:
         for name in _BOUNDED_QUERY_CONFIG:
             _reset_config(conn, name)
-    _set_config(conn, "application_name", "tracefold_worker")
+    _set_config(conn, "application_name", "tracefold_workers")
 
 
 def _reset_config(conn: Any, name: str) -> None:
@@ -398,3 +635,39 @@ async def _close_pool(pool: Any) -> None:
     result = pool.close()
     if result is not None:
         raise RuntimeError("db_pool_close_must_be_sync")
+
+
+def _release_db_permit_on_completion(
+    underlying: Future[Any],
+    *,
+    loop: asyncio.AbstractEventLoop,
+    wrapped: asyncio.Future[Any],
+    pending: set[asyncio.Future[Any]],
+    gate: asyncio.BoundedSemaphore,
+    completed: Callable[[Future[Any]], None] | None = None,
+) -> None:
+    def on_done(future: Future[Any]) -> None:
+        def finalize() -> None:
+            pending.discard(wrapped)
+            gate.release()
+            if completed is not None:
+                completed(future)
+
+        loop.call_soon_threadsafe(finalize)
+
+    underlying.add_done_callback(on_done)
+
+
+async def _drain_db_futures(
+    pending: set[asyncio.Future[Any]],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    active = {future for future in pending if not future.done()}
+    if not active:
+        return True
+    _, unfinished = await asyncio.wait(
+        active,
+        timeout=max(0.0, float(timeout_seconds)),
+    )
+    return not unfinished

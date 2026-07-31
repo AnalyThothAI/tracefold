@@ -92,23 +92,14 @@ class RadarMicroBatchService:
         self,
         *,
         db: Any,
-        worker_name: str = "steady_projection_coordinator",
+        worker_name: str = "radar_projection",
     ) -> None:
         self.db = db
         self.worker_name = worker_name
 
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
-        with (
-            self._session(
-                transaction_timeout_seconds=_CONTROL_TRANSACTION_TIMEOUT_SECONDS,
-            ) as repos,
-            repos.transaction(),
-        ):
-            repos.radar_source_edges.expire_due(
-                now_ms=int(now_ms),
-                limit=100,
-            )
-            row = repos.conn.execute(
+        with self._session() as repos:
+            frontier = repos.conn.execute(
                 """
                 SELECT window_key, venue, min(deadline_at_ms) AS deadline_at_ms
                 FROM radar_projection_frontiers
@@ -141,7 +132,28 @@ class RadarMicroBatchService:
                 """,
                 {"now_ms": int(now_ms)},
             ).fetchone()
-        return dict(row) if row is not None else None
+            expiry = repos.conn.execute(
+                """
+                SELECT window_key, venue, expires_at_ms AS deadline_at_ms
+                  FROM radar_source_edges
+                 WHERE expires_at_ms <= %(now_ms)s
+                 ORDER BY expires_at_ms, target_type, target_id,
+                          window_key, venue, source_kind, source_id
+                 LIMIT 1
+                """,
+                {"now_ms": int(now_ms)},
+            ).fetchone()
+        candidates = [dict(row) for row in (frontier, expiry) if row is not None]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda row: (
+                int(row["deadline_at_ms"]),
+                str(row["window_key"]),
+                str(row["venue"]),
+            ),
+        )
 
     def claim_batch(
         self,
@@ -158,6 +170,10 @@ class RadarMicroBatchService:
             ) as repos,
             repos.transaction(),
         ):
+            repos.radar_source_edges.expire_due(
+                now_ms=int(now_ms),
+                limit=100,
+            )
             rows = repos.conn.execute(
                 """
                 WITH candidates AS (
@@ -633,6 +649,25 @@ class RadarMicroBatchService:
             now_ms=now_ms,
             deterministic=False,
         )["failed_targets"]
+
+    def release_prework(self, claim: RadarMicroBatchClaim, *, now_ms: int) -> int:
+        released = 0
+        with (
+            self._session(
+                transaction_timeout_seconds=_CONTROL_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            for target in claim.targets:
+                released += int(
+                    repos.projection_frontiers.release_prework(
+                        RADAR_FRONTIER,
+                        key=target.key(window=claim.window, venue=claim.venue),
+                        runtime_id=claim.runtime_id,
+                        now_ms=int(now_ms),
+                    )
+                )
+        return released
 
     def fail_deterministic(
         self,

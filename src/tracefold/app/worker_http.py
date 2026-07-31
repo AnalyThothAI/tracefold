@@ -1,35 +1,24 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from tracefold.app.bootstrap import WorkerRuntime, bootstrap_workers
-from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
 
 
-def create_workers_app(settings: Settings | None = None) -> FastAPI:
-    resolved_settings = settings or load_settings(require_ws_token=False)
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        runtime = bootstrap_workers(resolved_settings)
-        try:
-            await runtime.supervisor.start()
-            app.state.service = runtime
-            yield
-        finally:
-            await runtime.aclose()
-
+def _create_workers_probe_app(
+    *,
+    readiness: Callable[[], dict[str, Any]],
+    render_metrics: Callable[[], str],
+) -> FastAPI:
     app = FastAPI(
-        title="Tracefold Workers",
+        title="Tracefold Workers Probe",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
-        lifespan=lifespan,
     )
 
     @app.get("/healthz", response_class=PlainTextResponse)
@@ -38,23 +27,17 @@ def create_workers_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
-        runtime: WorkerRuntime = app.state.service
-        readiness = runtime.supervisor.readiness()
-        return JSONResponse(
-            {
-                **readiness,
-                "runtime_role": runtime.role,
-                "runtime_id": runtime.runtime_id,
-            },
-            status_code=200 if readiness["ok"] else 503,
-        )
+        payload = readiness()
+        return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
     @app.get("/metrics")
     async def metrics() -> Response:
-        runtime: WorkerRuntime = app.state.service
         return Response(
-            runtime.telemetry.render_prometheus_text(),
+            render_metrics(),
             media_type=PROMETHEUS_CONTENT_TYPE,
         )
 
     return app
+
+
+__all__: list[str] = []

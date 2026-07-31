@@ -58,6 +58,10 @@ class MacroSourceUnavailable(MacroSourceError):
     pass
 
 
+class MacroModelExpectedError(RuntimeError):
+    """A declared provider/response failure safe for a native model retry."""
+
+
 class MacroSourceClientProtocol(Protocol):
     def fetch(
         self,
@@ -210,6 +214,7 @@ class FetchBatch:
     source_url: str
     http_status: int | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    completion: Literal["complete", "continuation"] = "complete"
 
 
 __all__ = [
@@ -221,6 +226,7 @@ __all__ = [
     "FetchBatch",
     "MacroClockKind",
     "MacroFactFamily",
+    "MacroModelExpectedError",
     "MacroModuleId",
     "MacroSourceClientProtocol",
     "MacroSourceError",

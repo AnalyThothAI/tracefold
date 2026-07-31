@@ -72,6 +72,7 @@ class TokenIntentLookupRepository:
         *,
         since_ms: int,
         limit: int,
+        after_intent_id: str | None = None,
     ) -> list[dict[str, Any]]:
         parsed_limit = require_positive_int(limit, error_code="token_intent_lookup_limit_required")
         if not keys:
@@ -86,6 +87,7 @@ class TokenIntentLookupRepository:
               JOIN events ON events.event_id = token_intents.event_id
               WHERE token_intent_lookup_keys.lookup_key IN ({placeholders})
                 AND events.received_at_ms >= %s
+                AND (%s::text IS NULL OR token_intents.intent_id > %s::text)
               ORDER BY token_intents.intent_id
               LIMIT %s
             )
@@ -94,7 +96,7 @@ class TokenIntentLookupRepository:
             JOIN token_intents ON token_intents.intent_id = picked.intent_id
             ORDER BY token_intents.created_at_ms DESC, token_intents.intent_id
             """,
-            (*keys, int(since_ms), parsed_limit),
+            (*keys, int(since_ms), after_intent_id, after_intent_id, parsed_limit),
         ).fetchall()
         return [dict(row) for row in rows]
 

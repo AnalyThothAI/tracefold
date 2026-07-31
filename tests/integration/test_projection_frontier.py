@@ -108,8 +108,8 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
         terminal = conn.execute(
             """
             SELECT final_status, attempt_count, payload_hash
-            FROM worker_queue_terminal_events
-            WHERE worker_name = 'profile_projection'
+            FROM queue_terminal_events
+            WHERE owner_key = 'profile_projection'
               AND source_table = 'token_profile_projection_frontiers'
               AND operator_action IS NULL
             """
@@ -125,8 +125,8 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
             conn.execute(
                 """
                 SELECT terminal_id
-                FROM worker_queue_terminal_events
-                WHERE worker_name = 'profile_projection'
+                FROM queue_terminal_events
+                WHERE owner_key = 'profile_projection'
                   AND source_table = 'token_profile_projection_frontiers'
                   AND operator_action IS NULL
                 """
@@ -196,8 +196,8 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
     finally:
         conn.execute(
             """
-            DELETE FROM worker_queue_terminal_events
-            WHERE worker_name = 'profile_projection'
+            DELETE FROM queue_terminal_events
+            WHERE owner_key = 'profile_projection'
               AND source_table = 'token_profile_projection_frontiers'
             """
         )

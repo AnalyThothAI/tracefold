@@ -32,8 +32,8 @@ def main() -> int:
     if not dsn:
         print("FATAL: TRACEFOLD_POSTGRES_DSN not set", file=sys.stderr)
         return 1
-    from tracefold.app.bootstrap import _ingest_service_for_repos
     from tracefold.app.database import WorkerDatabase
+    from tracefold.app.workers import _ingest_service_for_repos
     from tracefold.market import (
         Author,
         Content,

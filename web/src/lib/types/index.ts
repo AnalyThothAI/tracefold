@@ -43,8 +43,6 @@ export type {
   ScoreContribution,
   SourceEventDetail,
   SourceEventsByIdsData,
-  StatusData,
-  WorkerStatusData,
   StockRadarRow,
   StocksRadarData,
   TimelineBucket,

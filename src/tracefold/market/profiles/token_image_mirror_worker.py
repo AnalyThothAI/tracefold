@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -7,8 +8,7 @@ from typing import Any
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.profiles.token_image_mirror import mirror_token_image_source
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _CLAIM_LEASE_MS = 120_000
 _RETRY_MS = 300_000
@@ -16,86 +16,110 @@ _MAX_ATTEMPTS = 3
 _STATEMENT_TIMEOUT_SECONDS = 3.0
 
 
-class TokenImageMirrorWorker(WorkerBase):
+class TokenImageMirror:
     """Mirror one durable image shard with no DB connection over provider I/O."""
 
     def __init__(
         self,
         *,
-        name: str,
         db: Any,
-        telemetry: Any,
         app_home: str | Path,
-        resources: Any,
-        provider_governor: Any,
+        finite_operations: Any,
         runtime_id: str,
         http_client: Any | None = None,
     ) -> None:
-        super().__init__(
-            name=name,
-            interval_seconds=60.0,
-            telemetry=telemetry,
-        )
         self.db = db
-        self.resources = resources
-        self.provider_governor = provider_governor
-        self.claim_owner = f"{name}:{runtime_id}"
+        self.finite_operations = finite_operations
+        self.name = "token_image_mirror"
+        self.claim_owner = f"token_image_mirror:{runtime_id}"
         self.app_home = Path(app_home)
         self.http_client = http_client
 
-    async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
+    async def turn(self, *, now_ms: int | None = None) -> str | bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-        claimed = await self.resources.run_background_db(
+        claimed = await self.db.run_business(
+            "token_image_claim",
             self._claim_one,
             observed_at_ms,
+            operation_timeout_seconds=3.0,
         )
         if claimed is None:
-            return WorkerResult(
-                skipped=1,
-                notes={
-                    "reason": "no_due_token_image_source_targets",
-                    "claimed": 0,
-                },
-            )
-        claim, terminal_asset, queue_depth = claimed
+            return False
+        claim, terminal_asset, _queue_depth = claimed
         if terminal_asset is not None:
-            published = await self.resources.run_background_db(
-                self._publish_existing,
-                claim,
-                observed_at_ms,
-            )
-            return self._result(
-                claim=claim,
-                status=str(terminal_asset["status"]),
-                queue_depth=queue_depth,
-                published=published,
-                existing=True,
-            )
+            submitted = False
 
-        async with self.provider_governor.acquire(
-            host=_provider_host(str(claim["source_url"])),
-            lane="image",
-        ):
-            mirror_result = await self.resources.run_provider_io(
+            def mark_existing_submitted() -> None:
+                nonlocal submitted
+                submitted = True
+
+            try:
+                await self.db.run_business(
+                    "token_image_publish_existing",
+                    self._publish_existing,
+                    claim,
+                    observed_at_ms,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=mark_existing_submitted,
+                )
+            except asyncio.CancelledError:
+                if not submitted:
+                    await asyncio.shield(self._release_prework(claim))
+                raise
+            except ResourceAdmissionTimeout:
+                await self._release_prework(claim)
+                return None
+            return "processed"
+
+        submitted = False
+
+        def mark_submitted() -> None:
+            nonlocal submitted
+            submitted = True
+
+        try:
+            mirror_result = await self.finite_operations.run(
+                "token_image_fetch",
                 mirror_token_image_source,
                 _source_row_from_claim(claim),
                 app_home=self.app_home,
                 http_client=self.http_client,
+                timeout_seconds=30.0,
+                on_submitted=mark_submitted,
             )
-        published = await self.resources.run_background_db(
+        except asyncio.CancelledError:
+            if not submitted:
+                await asyncio.shield(self._release_prework(claim))
+            raise
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return None
+        await self.db.run_business(
+            "token_image_publish",
             self._publish_result,
             claim,
             mirror_result,
             observed_at_ms,
+            operation_timeout_seconds=3.0,
         )
-        return self._result(
-            claim=claim,
-            status=str(mirror_result["status"]),
-            queue_depth=queue_depth,
-            published=published,
-            existing=False,
-            error=str(mirror_result.get("error") or "") or None,
+        status = str(mirror_result.get("status") or "")
+        if status == "error":
+            return "terminal" if int(claim["attempt_count"]) >= _MAX_ATTEMPTS else "failed"
+        return "processed"
+
+    async def _release_prework(self, claim: dict[str, Any]) -> bool:
+        return bool(
+            await self.db.run_business(
+                "token_image_release_prework",
+                self._release_prework_sync,
+                claim,
+                operation_timeout_seconds=0.5,
+            )
         )
+
+    def _release_prework_sync(self, claim: dict[str, Any]) -> bool:
+        with self.db.worker_session(self.name, 0.5) as repos, repos.transaction():
+            return bool(repos.token_image_source_dirty_targets.release_prework(claim))
 
     def _claim_one(
         self,
@@ -208,7 +232,7 @@ class TokenImageMirrorWorker(WorkerBase):
                     error=error,
                     retry_ms=_RETRY_MS,
                     max_attempts=_MAX_ATTEMPTS,
-                    worker_name=self.name,
+                    owner_key=self.name,
                     now_ms=now_ms,
                 )
             if changed != 1:
@@ -220,38 +244,6 @@ class TokenImageMirrorWorker(WorkerBase):
                     now_ms=now_ms,
                 )
         return {"queue_rows_changed": changed, "asset_rows_changed": 1}
-
-    def _result(
-        self,
-        *,
-        claim: dict[str, Any],
-        status: str,
-        queue_depth: int,
-        published: dict[str, int],
-        existing: bool,
-        error: str | None = None,
-    ) -> WorkerResult:
-        if self.telemetry is not None:
-            self.telemetry.set_queue_depth(
-                self.name,
-                "primary",
-                "due",
-                int(queue_depth),
-            )
-        failed = int(status == "error")
-        return WorkerResult(
-            processed=int(not failed),
-            failed=failed,
-            notes={
-                "claimed": 1,
-                "status": status,
-                "source_url_hash": str(claim["source_url_hash"]),
-                "queue_depth": int(queue_depth),
-                "rows_written": sum(published.values()),
-                "existing": bool(existing),
-                **({"last_error": str(error)[:500]} if error else {}),
-            },
-        )
 
 
 def _source_row_from_claim(claim: dict[str, Any]) -> dict[str, Any]:
@@ -307,4 +299,4 @@ def _required_claim_source_watermark_ms(claim: dict[str, Any]) -> int:
     return int(value)
 
 
-__all__ = ["TokenImageMirrorWorker"]
+__all__ = ["TokenImageMirror"]

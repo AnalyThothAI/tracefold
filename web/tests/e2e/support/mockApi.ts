@@ -130,56 +130,24 @@ function statusData() {
   return {
     ok: true,
     reasons: [],
-    runtime_role: "serve",
-    store: "postgresql",
-    snapshot_gate: {},
-    db: { ok: true },
-    provider_states: {},
-    workers: {
-      collector: workerStatus({
-        enabled: true,
-        running: true,
-      }),
-      steady_projection_coordinator: workerStatus({ enabled: true, running: true }),
-      market_tick_stream: workerStatus({ enabled: false, running: false }),
-      market_tick_poll: workerStatus({ enabled: true, running: true }),
-      event_anchor_capture: workerStatus({ enabled: true, running: true }),
-      macro_intraday_market: workerStatus(),
-      macro_settlements: workerStatus(),
-      macro_economic_releases: workerStatus(),
-      macro_official_state: workerStatus(),
-      macro_official_documents: workerStatus(),
-      news_ingest: workerStatus(),
-      asset_profile_refresh: workerStatus(),
-      token_image_mirror: workerStatus(),
-      resolution_refresh: workerStatus(),
-      model_generation_coordinator: workerStatus(),
+    measured_at_ms: NOW,
+    db: {
+      ok: true,
+      schema_ok: true,
+      current_revision: "20260731_0233",
+      expected_revision: "20260731_0233",
+      error_code: null,
     },
-  };
-}
-
-function workerStatus(overrides: Record<string, unknown> = {}) {
-  const enabled = overrides.enabled === true;
-  const running = overrides.running === true;
-  return {
-    enabled,
-    running,
-    effective_status:
-      overrides.effective_status ?? (!enabled ? "disabled" : running ? "running" : "stopped"),
-    unavailable_reason: null,
-    runtime_id: null,
-    runtime_version: null,
-    heartbeat_at_ms: null,
-    last_started_at_ms: null,
-    last_finished_at_ms: null,
-    last_result: null,
-    last_error: null,
-    iteration_duration_p99_ms: null,
-    deadline_at_ms: null,
-    queue_depth: null,
-    oldest_due_at_ms: null,
-    quarantine_count: 0,
-    ...overrides,
+    workers_runtime: {
+      runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e10",
+      runtime_version: "a521557",
+      state: "running",
+      started_at_ms: NOW,
+      heartbeat_at_ms: NOW,
+      heartbeat_stale_after_ms: 15_000,
+      fatal_code: null,
+      unavailable_reason: null,
+    },
   };
 }
 

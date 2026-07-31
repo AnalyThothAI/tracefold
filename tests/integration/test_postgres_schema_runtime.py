@@ -389,7 +389,10 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "checkpoints",
         "checkpoint_blobs",
         "checkpoint_writes",
+        "workers_runtime",
+        "queue_terminal_events",
     } <= tables
+    assert {"worker_runtime_status", "model_generation_frontiers", "worker_queue_terminal_events"}.isdisjoint(tables)
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert tables >= PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
@@ -442,6 +445,8 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "consecutive_failures",
         "last_error",
         "next_fetch_at_ms",
+        "claim_token",
+        "claim_lease_expires_at_ms",
         "created_at_ms",
         "updated_at_ms",
     }
@@ -494,7 +499,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0232"
+    assert version == latest_migration_version() == "20260731_0233"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -519,7 +524,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0232"
+    assert version == latest_migration_version() == "20260731_0233"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -898,7 +903,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0232"
+        assert version == "20260731_0233"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

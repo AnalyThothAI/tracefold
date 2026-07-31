@@ -3605,35 +3605,6 @@ export interface components {
             /** Spread History */
             spread_history: components["schemas"]["MacroHistoryPointData"][];
         };
-        /** NewsHealthData */
-        NewsHealthData: {
-            layers: components["schemas"]["NewsHealthLayersData"];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Reasons */
-            reasons: string[];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "warming" | "ready" | "degraded";
-        };
-        /** NewsHealthLayerData */
-        NewsHealthLayerData: {
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "warming" | "ready" | "degraded";
-        } & {
-            [key: string]: unknown;
-        };
-        /** NewsHealthLayersData */
-        NewsHealthLayersData: {
-            brief: components["schemas"]["NewsHealthLayerData"];
-            ingest: components["schemas"]["NewsHealthLayerData"];
-            story: components["schemas"]["NewsHealthLayerData"];
-        };
         /** ReadinessData */
         ReadinessData: {
             /** Composition */
@@ -3785,39 +3756,27 @@ export interface components {
         };
         /** StatusData */
         StatusData: {
-            /** Db */
-            db: {
-                [key: string]: unknown;
-            };
-            news: components["schemas"]["NewsHealthData"];
+            db: components["schemas"]["StatusDatabaseData"];
+            /** Measured At Ms */
+            measured_at_ms: number;
             /** Ok */
             ok: boolean;
-            /** Provider States */
-            provider_states: {
-                [key: string]: {
-                    [key: string]: unknown;
-                };
-            };
             /** Reasons */
-            reasons: string[];
-            /**
-             * Runtime Role
-             * @constant
-             */
-            runtime_role: "serve";
-            /** Snapshot Gate */
-            snapshot_gate: {
-                [key: string]: unknown;
-            };
-            /**
-             * Store
-             * @constant
-             */
-            store: "postgresql";
-            /** Workers */
-            workers: {
-                [key: string]: components["schemas"]["WorkerStatusData"];
-            };
+            reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
+            workers_runtime: components["schemas"]["WorkersRuntimeData"];
+        };
+        /** StatusDatabaseData */
+        StatusDatabaseData: {
+            /** Current Revision */
+            current_revision: string | null;
+            /** Error Code */
+            error_code: ("database_unavailable" | "schema_mismatch") | null;
+            /** Expected Revision */
+            expected_revision: string;
+            /** Ok */
+            ok: boolean;
+            /** Schema Ok */
+            schema_ok: boolean;
         };
         /** StocksRadarAttentionData */
         StocksRadarAttentionData: {
@@ -4355,45 +4314,30 @@ export interface components {
             /** Error Type */
             type: string;
         };
-        /** WorkerStatusData */
-        WorkerStatusData: {
-            /** Deadline At Ms */
-            deadline_at_ms: number | null;
-            /**
-             * Effective Status
-             * @enum {string}
-             */
-            effective_status: "disabled" | "unavailable" | "degraded" | "running" | "stopped" | "failed";
-            /** Enabled */
-            enabled: boolean;
+        /** WorkersRuntimeData */
+        WorkersRuntimeData: {
+            /** Fatal Code */
+            fatal_code: ("startup_failed" | "child_failed" | "control_failed" | "singleton_lost" | "runtime_invariant_failed" | "resource_operation_overrun" | "graceful_deadline_exceeded" | "cleanup_failed") | null;
             /** Heartbeat At Ms */
             heartbeat_at_ms: number | null;
-            /** Iteration Duration P99 Ms */
-            iteration_duration_p99_ms: number | null;
-            /** Last Error */
-            last_error: string | null;
-            /** Last Finished At Ms */
-            last_finished_at_ms: number | null;
-            /** Last Result */
-            last_result: {
-                [key: string]: unknown;
-            } | null;
-            /** Last Started At Ms */
-            last_started_at_ms: number | null;
-            /** Oldest Due At Ms */
-            oldest_due_at_ms: number | null;
-            /** Quarantine Count */
-            quarantine_count: number;
-            /** Queue Depth */
-            queue_depth: number | null;
-            /** Running */
-            running: boolean;
+            /**
+             * Heartbeat Stale After Ms
+             * @constant
+             */
+            heartbeat_stale_after_ms: 15000;
             /** Runtime Id */
             runtime_id: string | null;
             /** Runtime Version */
             runtime_version: string | null;
+            /** Started At Ms */
+            started_at_ms: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "starting" | "running" | "stopping" | "stopped" | "failed" | "stale" | "unavailable";
             /** Unavailable Reason */
-            unavailable_reason: string | null;
+            unavailable_reason: ("runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed") | null;
         };
     };
     responses: never;

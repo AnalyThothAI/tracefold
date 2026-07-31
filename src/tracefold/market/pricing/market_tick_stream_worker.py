@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
@@ -22,89 +23,69 @@ from tracefold.market.provider_contracts import (
     DexMarketFactUpdate,
     DexMarketStreamProvider,
     DexMarketStreamTarget,
+    MarketStreamExpectedError,
 )
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 SOURCE_TIER: MarketTickSourceTier = "tier1_ws"
 SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_ws"
+_STREAM_FLUSH_COUNT = 500
+_STREAM_FLUSH_BYTES = 1 * 1024 * 1024
+_STREAM_FLUSH_SECONDS = 1.0
+_STREAM_RECONNECT_BACKOFF_SECONDS = 3.0
 
 
 class _AsyncCloseIterator(Protocol):
     async def aclose(self) -> None: ...
 
 
-class MarketTickStreamWorker(WorkerBase):
-    worker_name = "market_tick_stream"
-
+class MarketTickStream:
     def __init__(
         self,
         *,
-        pool_bundle: Any,
+        db: Any,
         stream_dex_market: DexMarketStreamProvider,
-        resources: Any,
-        provider_governor: Any,
         clock: Any | None = None,
-        name: str = "market_tick_stream",
-        telemetry: Any,
     ) -> None:
-        if pool_bundle is None:
+        if db is None:
             raise RuntimeError("market_tick_stream_db_required")
         if stream_dex_market is None:
             raise RuntimeError("market_tick_stream_provider_required")
-        super().__init__(
-            name=name,
-            interval_seconds=5.0,
-            telemetry=telemetry,
-        )
-        self.db = pool_bundle
-        self.resources = resources
-        self.provider_governor = provider_governor
+        self.db = db
         self.stream_dex_market = stream_dex_market
         self.subscription_limit = 100
         self.stream_cycle_seconds = 30.0
         self.clock = clock or _now_ms
 
-    async def run_once(self) -> WorkerResult:
-        rows = await self.resources.run_realtime_db(self._list_stream_rows)
-        targets, skipped_targets = _stream_targets(rows, limit=self.subscription_limit)
+    async def run(self, *, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            result = await self._cycle(stop_event=stop_event)
+            if result is not None and result.degraded:
+                await _wait_or_stop(stop_event, _STREAM_RECONNECT_BACKOFF_SECONDS)
+            await asyncio.sleep(0)
+
+    async def _cycle(self, *, stop_event: asyncio.Event) -> _StreamPersistResult | None:
+        rows = await self.db.run_business(
+            "market_tick_stream_load",
+            self._list_stream_rows,
+            operation_timeout_seconds=3.0,
+        )
+        targets, _skipped_targets = _stream_targets(rows, limit=self.subscription_limit)
         if not targets:
-            return WorkerResult(
-                skipped=skipped_targets,
-                notes={"targets_selected": len(rows), "stream_targets": 0},
-            )
+            await _wait_or_stop(stop_event, 5.0)
+            return None
 
         stream_dex_market = self.stream_dex_market
-        async with self.provider_governor.acquire(host="dex_stream"):
-            stream_result = await self._stream_and_persist_ticks(targets, stream_dex_market=stream_dex_market)
-        notes: dict[str, Any] = {
-            "targets_selected": len(rows),
-            "stream_targets": len(targets),
-            "ticks_attempted": stream_result.attempted,
-            "ticks_inserted": stream_result.inserted,
-            "invalid_frames": stream_result.skipped,
-        }
-        if stream_result.degraded:
-            provider_state = stream_result.provider_state or {}
-            notes.update(
-                {
-                    "degraded": True,
-                    "provider_state": provider_state.get("state"),
-                    "provider_state_payload": provider_state,
-                    "failure_category": stream_result.failure_category,
-                }
-            )
-
-        return WorkerResult(
-            processed=stream_result.inserted,
-            skipped=skipped_targets + stream_result.skipped,
-            notes=notes,
+        return await self._stream_and_persist_ticks(
+            targets,
+            stream_dex_market=stream_dex_market,
+            stop_event=stop_event,
         )
 
     def _list_stream_rows(self) -> list[dict[str, Any]]:
         now_ms = int(self.clock())
-        with self.db.worker_session(self.name) as repos:
+        with self.db.worker_session("market_tick_stream") as repos:
             rows = repos.registry.ranked_market_targets(
                 projection_version=TOKEN_RADAR_PROJECTION_VERSION,
                 since_ms=now_ms - WINDOW_MS["24h"],
@@ -118,28 +99,61 @@ class MarketTickStreamWorker(WorkerBase):
         targets: list[DexMarketStreamTarget],
         *,
         stream_dex_market: DexMarketStreamProvider,
+        stop_event: asyncio.Event,
     ) -> _StreamPersistResult:
         target_by_key = {_target_key(target.chain_id, target.address): target for target in targets}
         ticks: list[MarketTick] = []
+        tick_bytes = 0
+        attempted = 0
         skipped = 0
-        inserted: int | None = None
+        inserted = 0
         degraded_result: _StreamPersistResult | None = None
         try:
-            await asyncio.wait_for(
-                stream_dex_market.replace_subscriptions(targets),
-                timeout=max(0.001, self.stream_cycle_seconds),
-            )
+            try:
+                await _await_stream_operation_or_stop(
+                    stream_dex_market.replace_subscriptions(targets),
+                    stop_event=stop_event,
+                    timeout_seconds=self.stream_cycle_seconds,
+                )
+            except TimeoutError as exc:
+                raise MarketStreamExpectedError("market_stream_subscription_timeout") from exc
             iterator = stream_dex_market.iter_price_info().__aiter__()
             deadline = time.monotonic() + self.stream_cycle_seconds
+            flush_deadline = time.monotonic() + _STREAM_FLUSH_SECONDS
+            stop_task = asyncio.create_task(stop_event.wait(), name="market-stream-stop-wait")
+            next_task: asyncio.Future[Any] | None = None
             try:
-                while True:
+                while not stop_event.is_set():
                     remaining_seconds = deadline - time.monotonic()
                     if remaining_seconds <= 0:
                         break
-                    try:
-                        update = await asyncio.wait_for(iterator.__anext__(), timeout=remaining_seconds)
-                    except (TimeoutError, StopAsyncIteration):
+                    if next_task is None:
+                        next_task = asyncio.ensure_future(
+                            iterator.__anext__(),
+                        )
+                    done, _ = await asyncio.wait(
+                        {next_task, stop_task},
+                        timeout=max(
+                            0.001,
+                            min(remaining_seconds, flush_deadline - time.monotonic()),
+                        ),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_task in done:
                         break
+                    if next_task not in done:
+                        pending = tuple(ticks)
+                        ticks.clear()
+                        tick_bytes = 0
+                        inserted += await self._flush_ticks(pending)
+                        flush_deadline = time.monotonic() + _STREAM_FLUSH_SECONDS
+                        continue
+                    try:
+                        update = next_task.result()
+                    except StopAsyncIteration:
+                        break
+                    finally:
+                        next_task = None
                     target = target_by_key.get(_target_key(update.chain_id, update.address))
                     if target is None:
                         skipped += 1
@@ -148,32 +162,65 @@ class MarketTickStreamWorker(WorkerBase):
                     if tick is None:
                         skipped += 1
                         continue
+                    encoded_bytes = _tick_encoded_bytes(tick)
+                    if encoded_bytes > _STREAM_FLUSH_BYTES:
+                        raise MarketStreamExpectedError("market_stream_tick_byte_limit_exceeded")
+                    if ticks and tick_bytes + encoded_bytes > _STREAM_FLUSH_BYTES:
+                        pending = tuple(ticks)
+                        ticks.clear()
+                        tick_bytes = 0
+                        inserted += await self._flush_ticks(pending)
+                        flush_deadline = time.monotonic() + _STREAM_FLUSH_SECONDS
                     ticks.append(tick)
-            except Exception as exc:
-                inserted = await self._persist_ticks(ticks)
+                    tick_bytes += encoded_bytes
+                    attempted += 1
+                    if len(ticks) >= _STREAM_FLUSH_COUNT or tick_bytes >= _STREAM_FLUSH_BYTES:
+                        pending = tuple(ticks)
+                        ticks.clear()
+                        tick_bytes = 0
+                        inserted += await self._flush_ticks(pending)
+                        flush_deadline = time.monotonic() + _STREAM_FLUSH_SECONDS
+            except MarketStreamExpectedError as exc:
+                pending = tuple(ticks)
+                ticks.clear()
+                inserted += await self._flush_ticks(pending)
                 degraded_result = _degraded_stream_result(
                     inserted=inserted,
-                    attempted=len(ticks),
+                    attempted=attempted,
                     skipped=skipped,
                     stream_dex_market=stream_dex_market,
                     exc=exc,
                 )
             finally:
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+                if next_task is not None:
+                    next_task.cancel()
+                    await asyncio.gather(next_task, return_exceptions=True)
                 await cast(_AsyncCloseIterator, iterator).aclose()
             if degraded_result is not None:
                 return degraded_result
-        except Exception as exc:
-            if inserted is None:
-                inserted = await self._persist_ticks(ticks)
+        except MarketStreamExpectedError as exc:
+            pending = tuple(ticks)
+            ticks.clear()
+            inserted += await self._flush_ticks(pending)
             return _degraded_stream_result(
                 inserted=inserted,
-                attempted=len(ticks),
+                attempted=attempted,
                 skipped=skipped,
                 stream_dex_market=stream_dex_market,
                 exc=exc,
             )
-        inserted = await self._persist_ticks(ticks)
-        return _StreamPersistResult(inserted=inserted, attempted=len(ticks), skipped=skipped)
+        pending = tuple(ticks)
+        ticks.clear()
+        inserted += await self._flush_ticks(pending)
+        return _StreamPersistResult(inserted=inserted, attempted=attempted, skipped=skipped)
+
+    async def _flush_ticks(self, ticks: Iterable[MarketTick]) -> int:
+        try:
+            return await self._persist_ticks(ticks)
+        except ResourceAdmissionTimeout as exc:
+            raise MarketStreamExpectedError("market_stream_database_admission_timeout") from exc
 
     async def _persist_ticks(self, ticks: Iterable[MarketTick]) -> int:
         materialized = list(ticks)
@@ -181,15 +228,17 @@ class MarketTickStreamWorker(WorkerBase):
             return 0
         result = cast(
             MarketTickPersistenceResult,
-            await self.resources.run_realtime_db(
+            await self.db.run_business(
+                "market_tick_stream_publish",
                 self._persist_ticks_sync,
                 materialized,
+                operation_timeout_seconds=3.0,
             ),
         )
         return result.inserted
 
     def _persist_ticks_sync(self, ticks: list[MarketTick]) -> MarketTickPersistenceResult:
-        with self.db.worker_session(self.name) as repos, repos.transaction():
+        with self.db.worker_session("market_tick_stream") as repos, repos.transaction():
             return MarketTickPersistenceService(repos).persist_ticks(
                 ticks,
                 now_ms=int(self.clock()),
@@ -212,6 +261,52 @@ class _StreamPersistResult:
     failure_category: str | None = None
 
 
+def _tick_encoded_bytes(tick: MarketTick) -> int:
+    return len(
+        json.dumps(
+            asdict(tick),
+            default=str,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+
+
+async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=max(0.001, float(seconds)))
+    except TimeoutError:
+        return
+
+
+async def _await_stream_operation_or_stop(
+    awaitable: Any,
+    *,
+    stop_event: asyncio.Event,
+    timeout_seconds: float,
+) -> None:
+    operation = asyncio.create_task(awaitable, name="market-stream-operation")
+    stop_task = asyncio.create_task(stop_event.wait(), name="market-stream-operation-stop")
+    try:
+        done, _ = await asyncio.wait(
+            {operation, stop_task},
+            timeout=max(0.001, float(timeout_seconds)),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation in done:
+            await operation
+            return
+        operation.cancel()
+        await asyncio.gather(operation, return_exceptions=True)
+        if stop_task in done:
+            return
+        raise TimeoutError
+    finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+
+
 def _degraded_stream_result(
     *,
     inserted: int,
@@ -232,15 +327,7 @@ def _degraded_stream_result(
 
 
 def _provider_connection_state_payload(provider: DexMarketStreamProvider) -> dict[str, Any]:
-    try:
-        value = provider.connection_state_payload()
-    except AttributeError:
-        return {
-            "state": "failed",
-            "last_error_category": "provider_connection_state_contract_missing",
-        }
-    except Exception as exc:
-        return {"state": "unknown", "last_error_category": type(exc).__name__}
+    value = provider.connection_state_payload()
     if not isinstance(value, dict):
         return {
             "state": "failed",

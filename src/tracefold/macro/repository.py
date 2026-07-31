@@ -14,6 +14,7 @@ from tracefold.macro.domain import (
     SeriesFact,
 )
 from tracefold.macro.fed_roles import match_effective_role
+from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 
 class MacroRepository:
@@ -215,7 +216,7 @@ class MacroRepository:
                 AND leased_until_ms <= %(now_ms)s
               RETURNING target_key
             ), candidate AS (
-              SELECT target_key
+              SELECT target_key, status AS previous_status
               FROM macro_acquisition_targets
               WHERE clock_kind = %(clock_kind)s
                 {target_scope}
@@ -236,7 +237,7 @@ class MacroRepository:
                 updated_at_ms = %(now_ms)s
             FROM candidate
             WHERE target.target_key = candidate.target_key
-            RETURNING target.*
+            RETURNING target.*, candidate.previous_status
             """,
             {
                 "now_ms": int(now_ms),
@@ -247,6 +248,44 @@ class MacroRepository:
             },
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def release_target_claim(
+        self,
+        *,
+        target_key: str,
+        lease_owner: str,
+        previous_status: str,
+        claimed_attempt_count: int,
+    ) -> bool:
+        if previous_status not in {
+            "pending",
+            "current",
+            "delayed",
+            "backfilling",
+        }:
+            raise ValueError("macro_acquisition_previous_status_invalid")
+        row = self.conn.execute(
+            """
+            UPDATE macro_acquisition_targets
+               SET status = %s,
+                   leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   attempt_count = attempt_count - 1
+             WHERE target_key = %s
+               AND status = 'claimed'
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING target_key
+            """,
+            (
+                previous_status,
+                target_key,
+                lease_owner,
+                int(claimed_attempt_count),
+            ),
+        ).fetchone()
+        return row is not None
 
     def insert_series_fact(self, fact: SeriesFact) -> int:
         payload = {
@@ -1332,6 +1371,7 @@ class MacroRepository:
         fomc_lookback_days: int,
         speech_lookback_days: int,
         limit: int = 2_000,
+        document_ids: tuple[str, ...] | None = None,
     ) -> int:
         rows = self.conn.execute(
             """
@@ -1340,7 +1380,8 @@ class MacroRepository:
               documents.document_type,
               documents.effective_date,
               documents.fact_hash,
-              documents.metadata_json
+              documents.metadata_json,
+              documents.received_at_ms
             FROM macro_documents AS documents
             WHERE documents.document_type IN (
               'statement', 'implementation', 'minutes', 'sep', 'speech'
@@ -1350,6 +1391,7 @@ class MacroRepository:
                 'federal_reserve.board.speeches',
                 'federal_reserve.reserve_bank.speeches'
               )
+              AND (%s::text[] IS NULL OR documents.document_id = ANY(%s::text[]))
               AND (
                 (
                   documents.dataset_id = 'federal_reserve.fomc.documents'
@@ -1393,6 +1435,8 @@ class MacroRepository:
             LIMIT %s
             """,
             (
+                list(document_ids) if document_ids is not None else None,
+                list(document_ids) if document_ids is not None else None,
                 int(now_ms),
                 int(fomc_lookback_days),
                 int(now_ms),
@@ -1453,7 +1497,7 @@ class MacroRepository:
                     document_hash,
                     model_name,
                     prompt_version,
-                    int(now_ms),
+                    int(row["received_at_ms"]) + 60 * 60 * 1_000,
                     int(max_attempts),
                     int(now_ms),
                     int(now_ms),
@@ -1470,57 +1514,110 @@ class MacroRepository:
         lease_owner: str,
         lease_ms: int,
         now_ms: int,
+        analysis_job_id: str | None = None,
     ) -> dict[str, Any] | None:
+        target_scope = "AND analysis_job_id = %(analysis_job_id)s" if analysis_job_id else ""
         row = self.conn.execute(
-            """
+            f"""
             WITH expired AS (
               UPDATE macro_document_analysis_jobs
               SET status = CASE
                     WHEN attempt_count >= max_attempts THEN 'failed'
                     ELSE 'retryable'
                   END,
-                  next_due_at_ms = %s,
+                  next_due_at_ms = %(now_ms)s,
                   leased_until_ms = NULL,
                   lease_owner = NULL,
                   last_error_code = 'document_analysis_lease_expired',
-                  updated_at_ms = %s
+                  updated_at_ms = %(now_ms)s
               WHERE status = 'claimed'
-                AND leased_until_ms <= %s
+                AND leased_until_ms <= %(now_ms)s
               RETURNING analysis_job_id
             ), candidate AS (
               SELECT analysis_job_id
               FROM macro_document_analysis_jobs
               WHERE status IN ('pending', 'retryable')
-                AND next_due_at_ms <= %s
-                AND model_name = %s
-                AND prompt_version = %s
+                AND next_due_at_ms <= %(now_ms)s
+                AND model_name = %(model_name)s
+                AND prompt_version = %(prompt_version)s
+                {target_scope}
               ORDER BY next_due_at_ms, analysis_job_id
               FOR UPDATE SKIP LOCKED
               LIMIT 1
             )
             UPDATE macro_document_analysis_jobs AS jobs
             SET status = 'claimed',
-                leased_until_ms = %s,
-                lease_owner = %s,
+                leased_until_ms = %(leased_until_ms)s,
+                lease_owner = %(lease_owner)s,
                 attempt_count = jobs.attempt_count + 1,
-                updated_at_ms = %s
+                updated_at_ms = %(now_ms)s
             FROM candidate
             WHERE jobs.analysis_job_id = candidate.analysis_job_id
             RETURNING jobs.*
             """,
-            (
-                int(now_ms),
-                int(now_ms),
-                int(now_ms),
-                int(now_ms),
-                model_name,
-                prompt_version,
-                int(now_ms + lease_ms),
-                lease_owner,
-                int(now_ms),
-            ),
+            {
+                "now_ms": int(now_ms),
+                "model_name": model_name,
+                "prompt_version": prompt_version,
+                "analysis_job_id": analysis_job_id,
+                "leased_until_ms": int(now_ms + lease_ms),
+                "lease_owner": lease_owner,
+            },
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def peek_document_analysis_job(
+        self,
+        *,
+        model_name: str,
+        prompt_version: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT analysis_job_id, next_due_at_ms
+              FROM macro_document_analysis_jobs
+             WHERE model_name = %s
+               AND prompt_version = %s
+               AND (
+                 (status IN ('pending', 'retryable') AND next_due_at_ms <= %s)
+                 OR (status = 'claimed' AND leased_until_ms <= %s)
+               )
+               AND attempt_count < max_attempts
+             ORDER BY next_due_at_ms, analysis_job_id
+             LIMIT 1
+            """,
+            (model_name, prompt_version, int(now_ms), int(now_ms)),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def release_document_analysis_claim(
+        self,
+        *,
+        analysis_job_id: str,
+        lease_owner: str,
+        claimed_attempt_count: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE macro_document_analysis_jobs
+               SET status = CASE
+                     WHEN attempt_count = 1 THEN 'pending'
+                     ELSE 'retryable'
+                   END,
+                   leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   attempt_count = attempt_count - 1
+             WHERE analysis_job_id = %s
+               AND status = 'claimed'
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING *
+            """,
+            (analysis_job_id, lease_owner, int(claimed_attempt_count)),
+        ).fetchone()
+        return row is not None
 
     def document_analysis_job_document(self, analysis_job_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -1659,7 +1756,7 @@ class MacroRepository:
             WHERE analysis_job_id = %s
               AND status = 'claimed'
               AND lease_owner = %s
-            RETURNING analysis_job_id
+            RETURNING *
             """,
             (
                 status,
@@ -1670,7 +1767,23 @@ class MacroRepository:
                 lease_owner,
             ),
         ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+        if status == "failed":
+            source_row = {**dict(row), "native_target_key": str(row["analysis_job_id"])}
+            terminalize_source_row(
+                self.conn,
+                owner_key="macro_document_analysis",
+                source_table="macro_document_analysis_jobs",
+                target_key=str(row["analysis_job_id"]),
+                source_row=source_row,
+                final_status="failed",
+                final_reason=str(error_code),
+                final_reason_bucket="model_attempts_exhausted",
+                now_ms=int(completed_at_ms),
+                attempt_count=int(row["attempt_count"]),
+            )
+        return True
 
     def upsert_feature(
         self,

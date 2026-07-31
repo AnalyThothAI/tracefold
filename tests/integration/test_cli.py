@@ -173,7 +173,7 @@ class CliTests(unittest.TestCase):
             ["ops", "audit-token-intent", "--event-id", "event-1"],
             ["ops", "factor-diagnostics", "--window", "1h", "--limit", "200"],
             ["ops", "sync-us-equity-symbols"],
-            ["ops", "seal-worker-acceptance", "--template"],
+            ["ops", "seal-workers-runtime-acceptance", "--template"],
         ]
 
         parsed = [parser.parse_args(command) for command in commands]
@@ -206,14 +206,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parsed[15].ops_command, "factor-diagnostics")
         self.assertEqual(parsed[15].limit, 200)
         self.assertEqual(parsed[16].ops_command, "sync-us-equity-symbols")
-        self.assertEqual(parsed[17].ops_command, "seal-worker-acceptance")
+        self.assertEqual(parsed[17].ops_command, "seal-workers-runtime-acceptance")
         self.assertTrue(parsed[17].template)
 
-    def test_issue_32_acceptance_template_does_not_require_runtime_config(self):
+    def test_workers_runtime_v2_acceptance_template_does_not_require_runtime_config(self):
         stdout = io.StringIO()
 
         exit_code = main(
-            ["ops", "seal-worker-acceptance", "--template"],
+            ["ops", "seal-workers-runtime-acceptance", "--template"],
             stdout=stdout,
         )
 
@@ -221,7 +221,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         assert payload["ok"] is True
         template = payload["data"]["template"]
-        assert template["issue"] == 32
+        assert template["schema_version"] == "workers_runtime_acceptance_v2"
         assert template["gates"]["real_continuous_30m"]["status"] == "pending"
 
     def test_cli_ops_mirror_token_images_has_no_source_limit_option(self):
@@ -286,7 +286,7 @@ class CliTests(unittest.TestCase):
             {"serve", "workers", "migrate"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 8)
-        self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 12)
+        self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 4)
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
         self.assertNotIn("workers", payload["data"])
 

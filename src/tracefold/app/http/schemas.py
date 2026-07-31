@@ -39,34 +39,74 @@ class BootstrapData(ExactApiSchema):
     replay_limit: int
 
 
-class NewsHealthLayerData(ExactApiSchema):
-    status: Literal["warming", "ready", "degraded"]
-    model_config = ConfigDict(extra="allow")
+class StatusDatabaseData(ExactApiSchema):
+    ok: bool
+    schema_ok: bool
+    current_revision: str | None
+    expected_revision: str
+    error_code: Literal["database_unavailable", "schema_mismatch"] | None
 
 
-class NewsHealthLayersData(ExactApiSchema):
-    ingest: NewsHealthLayerData
-    story: NewsHealthLayerData
-    brief: NewsHealthLayerData
-
-
-class NewsHealthData(ExactApiSchema):
-    status: Literal["warming", "ready", "degraded"]
-    reasons: list[str]
-    layers: NewsHealthLayersData
-    measured_at_ms: int
+class WorkersRuntimeData(ExactApiSchema):
+    runtime_id: str | None
+    runtime_version: str | None
+    state: Literal[
+        "starting",
+        "running",
+        "stopping",
+        "stopped",
+        "failed",
+        "stale",
+        "unavailable",
+    ]
+    started_at_ms: int | None
+    heartbeat_at_ms: int | None
+    heartbeat_stale_after_ms: Literal[15000]
+    fatal_code: (
+        Literal[
+            "startup_failed",
+            "child_failed",
+            "control_failed",
+            "singleton_lost",
+            "runtime_invariant_failed",
+            "resource_operation_overrun",
+            "graceful_deadline_exceeded",
+            "cleanup_failed",
+        ]
+        | None
+    )
+    unavailable_reason: (
+        Literal[
+            "runtime_status_query_failed",
+            "runtime_missing",
+            "runtime_heartbeat_stale",
+            "runtime_starting",
+            "runtime_stopping",
+            "runtime_stopped",
+            "runtime_failed",
+        ]
+        | None
+    )
 
 
 class StatusData(ExactApiSchema):
     ok: bool
-    reasons: list[str]
-    runtime_role: Literal["serve"]
-    store: Literal["postgresql"]
-    snapshot_gate: JsonObject
-    db: JsonObject
-    provider_states: dict[str, JsonObject]
-    workers: dict[str, WorkerStatusData]
-    news: NewsHealthData
+    reasons: list[
+        Literal[
+            "database_unavailable",
+            "database_schema_mismatch",
+            "runtime_status_query_failed",
+            "runtime_missing",
+            "runtime_heartbeat_stale",
+            "runtime_starting",
+            "runtime_stopping",
+            "runtime_stopped",
+            "runtime_failed",
+        ]
+    ]
+    measured_at_ms: int
+    db: StatusDatabaseData
+    workers_runtime: WorkersRuntimeData
 
 
 class ReadinessData(ExactApiSchema):
@@ -75,32 +115,6 @@ class ReadinessData(ExactApiSchema):
     store: Literal["postgresql"]
     db: JsonObject
     composition: JsonObject
-
-
-class WorkerStatusData(ExactApiSchema):
-    enabled: bool
-    running: bool
-    effective_status: Literal[
-        "disabled",
-        "unavailable",
-        "degraded",
-        "running",
-        "stopped",
-        "failed",
-    ]
-    unavailable_reason: str | None
-    runtime_id: str | None
-    runtime_version: str | None
-    heartbeat_at_ms: int | None
-    last_started_at_ms: int | None
-    last_finished_at_ms: int | None
-    last_result: JsonObject | None
-    last_error: str | None
-    iteration_duration_p99_ms: float | None
-    deadline_at_ms: int | None
-    queue_depth: int | None
-    oldest_due_at_ms: int | None
-    quarantine_count: int
 
 
 class MacroCoverageCapabilityData(ExactApiSchema):

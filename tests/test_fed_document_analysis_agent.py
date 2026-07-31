@@ -6,11 +6,11 @@ from datetime import date
 
 import pytest
 from langchain_core.messages import AIMessage
-from pydantic import ValidationError
 
 from tracefold.integrations.deepagents.fed_document_analysis import (
     FedDocumentAnalysisAgent,
 )
+from tracefold.macro import MacroModelExpectedError
 
 
 class _Model:
@@ -58,18 +58,21 @@ def test_agent_parses_json_text_block_without_native_response_format() -> None:
     )
     model = _Model(response)
     agent = FedDocumentAnalysisAgent(model=model, model_name="openai/deepseek-v4-pro")
+    submissions: list[bool] = []
 
     draft = asyncio.run(
         agent.analyze(
             document=_document(),
             roster_context=None,
             prior_analysis=None,
+            on_model_submitted=lambda: submissions.append(True),
         )
     )
 
     assert draft.stance == "hawkish"
     assert draft.evidence[0].excerpt == "Inflation remains somewhat elevated."
     assert model.messages is not None
+    assert submissions == [True]
 
 
 def test_agent_rejects_non_json_response() -> None:
@@ -78,11 +81,12 @@ def test_agent_rejects_non_json_response() -> None:
         model_name="test-model",
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(MacroModelExpectedError, match="macro_document_model_expected"):
         asyncio.run(
             agent.analyze(
                 document=_document(),
                 roster_context=None,
                 prior_analysis=None,
+                on_model_submitted=lambda: None,
             )
         )

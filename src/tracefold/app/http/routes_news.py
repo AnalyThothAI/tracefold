@@ -12,7 +12,7 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.news import NewsInterface, attach_pipeline_runtime_health
+from tracefold.news import NewsInterface
 
 router = APIRouter()
 _Envelope = api_schemas.ApiEnvelope[api_schemas.JsonObject]
@@ -120,12 +120,6 @@ def get_news_status(request: Request) -> JSONResponse:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = _news_interface(repos).health(now_ms=int(time.time() * 1000))
-    measured_at_ms = int(data["measured_at_ms"])
-    attach_pipeline_runtime_health(
-        data,
-        worker_status=runtime.current_snapshot().workers.get("news_ingest"),
-        now_ms=measured_at_ms,
-    )
     return _validated_json(_Envelope, {"ok": True, "data": data})
 
 

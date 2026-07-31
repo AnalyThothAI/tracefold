@@ -24,6 +24,7 @@ from tracefold.macro.fed_analysis import (
     FedDocumentAnalysisDraft,
     MacroDocumentAnalysisService,
 )
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 class _TestDb:
@@ -45,9 +46,11 @@ class _Agent:
         document: Any,
         roster_context: Any,
         prior_analysis: Any,
+        on_model_submitted: Any,
     ) -> FedDocumentAnalysisDraft:
         assert roster_context is None
         assert prior_analysis is None
+        on_model_submitted()
         return FedDocumentAnalysisDraft(
             policy_relevance="policy_signal",
             stance="hawkish",
@@ -70,6 +73,100 @@ class _Clock:
     def __call__(self) -> int:
         self.value += 1_000
         return self.value
+
+
+class _FailOnBusinessCall:
+    def __init__(self, call_number: int) -> None:
+        self.call_number = call_number
+        self.calls = 0
+
+    async def run_business(self, _name: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("operation_timeout_seconds", None)
+        self.calls += 1
+        if self.calls == self.call_number:
+            raise ResourceAdmissionTimeout("test_business_admission_timeout")
+        return function(*args, **kwargs)
+
+
+def _insert_analysis_document(conn: Any) -> None:
+    content = "Inflation remains too high and policy must stay restrictive. " * 12
+    content_hash = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+    with repository_session_for_connection(conn) as repos, repos.transaction():
+        repos.macro.insert_document(
+            DocumentFact(
+                document_id="macrodoc_admission_boundary",
+                dataset_id="federal_reserve.fomc.documents",
+                document_type="statement",
+                title="Federal Reserve issues FOMC statement",
+                effective_date=date(2026, 7, 29),
+                published_at_ms=2_000,
+                received_at_ms=2_500,
+                source_url="https://www.federalreserve.gov/admission-boundary.htm",
+                content_text=content,
+                metadata={"content_hash": content_hash},
+            )
+        )
+
+
+def test_document_analysis_pre_model_admission_releases_exact_claim(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        _insert_analysis_document(conn)
+        service = MacroDocumentAnalysisService(
+            db=_TestDb(conn),
+            agent=_Agent(),
+            clock_ms=lambda: 3_603_000,
+            database=_FailOnBusinessCall(2),
+        )
+
+        assert asyncio.run(service.run_once(now_ms=3_603_000)) == {
+            "status": "idle",
+            "jobs_written": 1,
+        }
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner, leased_until_ms
+              FROM macro_document_analysis_jobs
+             WHERE document_id = 'macrodoc_admission_boundary'
+            """
+        ).fetchone()
+        assert row == {
+            "status": "pending",
+            "attempt_count": 0,
+            "lease_owner": None,
+            "leased_until_ms": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_document_analysis_post_model_publication_admission_is_fatal(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        _insert_analysis_document(conn)
+        service = MacroDocumentAnalysisService(
+            db=_TestDb(conn),
+            agent=_Agent(),
+            clock_ms=lambda: 3_603_000,
+            database=_FailOnBusinessCall(3),
+        )
+
+        with pytest.raises(ResourceAdmissionTimeout, match="test_business_admission_timeout"):
+            asyncio.run(service.run_once(now_ms=3_603_000))
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner
+              FROM macro_document_analysis_jobs
+             WHERE document_id = 'macrodoc_admission_boundary'
+            """
+        ).fetchone()
+        assert row["status"] == "claimed"
+        assert row["attempt_count"] == 1
+        assert row["lease_owner"] == "macro_document_analysis"
+    finally:
+        conn.close()
 
 
 def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_path) -> None:
@@ -121,14 +218,14 @@ def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_p
         service = MacroDocumentAnalysisService(
             db=_TestDb(conn),
             agent=_Agent(),
-            clock_ms=_Clock(3_000),
+            clock_ms=_Clock(3_603_000),
         )
-        first = asyncio.run(service.run_once(now_ms=3_000))
-        second = asyncio.run(service.run_once(now_ms=5_000))
+        first = asyncio.run(service.run_once(now_ms=3_603_000))
+        second = asyncio.run(service.run_once(now_ms=3_605_000))
 
         with repository_session_for_connection(conn) as repos:
-            analyses_before_creation = repos.macro.document_analysis_history(received_before_ms=2_500)
-            analyses = repos.macro.document_analysis_history(received_before_ms=5_000)
+            analyses_before_creation = repos.macro.document_analysis_history(received_before_ms=3_603_500)
+            analyses = repos.macro.document_analysis_history(received_before_ms=3_605_000)
             projection_documents = repos.macro.document_projection_history(
                 dataset_ids=("federal_reserve.fomc.documents",),
             )
@@ -267,11 +364,11 @@ def test_identical_source_bodies_produce_distinct_document_bound_analyses(tmp_pa
         service = MacroDocumentAnalysisService(
             db=_TestDb(conn),
             agent=_Agent(),
-            clock_ms=_Clock(3_000),
+            clock_ms=_Clock(3_603_000),
         )
 
-        first = asyncio.run(service.run_once(now_ms=3_000))
-        second = asyncio.run(service.run_once(now_ms=4_000))
+        first = asyncio.run(service.run_once(now_ms=3_603_000))
+        second = asyncio.run(service.run_once(now_ms=3_604_000))
 
         rows = conn.execute(
             """

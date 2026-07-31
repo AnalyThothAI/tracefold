@@ -4,7 +4,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from tracefold.app.queue_health import fetch_queue_table_health
-from tracefold.app.worker_manifest import worker_queue_tables
 from tracefold.market import DISCOVERY_PROVIDER
 from tracefold.platform.postgres.projection_frontier import (
     FRONTIER_SPECS,
@@ -18,20 +17,34 @@ from tracefold.platform.postgres.queue_terminal import (
 
 QUEUE_RETRY_TRANSITIONS: Mapping[tuple[str, str], Callable[..., dict[str, Any]]]
 
+_QUEUE_TABLES_BY_OWNER: dict[str, tuple[str, ...]] = {
+    "event_anchor_backfill": ("event_anchor_backfill_jobs",),
+    "resolution_refresh": ("token_discovery_dirty_lookup_keys",),
+    "asset_profile_refresh": ("asset_profile_refresh_targets",),
+    "token_image_mirror": ("token_image_source_dirty_targets",),
+    "radar_projection": ("radar_projection_frontiers",),
+    "profile_projection": ("token_profile_projection_frontiers",),
+    "macro_projection": ("macro_module_frontiers",),
+    "news_projection": ("news_projection_frontiers",),
+    "news_brief": ("news_brief_runs",),
+    "macro_thesis": ("macro_thesis_runs",),
+    "macro_document_analysis": ("macro_document_analysis_jobs",),
+}
+
 
 def handle_queue_inspect(args: Any, repos: Any) -> tuple[int, dict[str, Any]]:
     limit = min(500, int(args.limit))
     if args.status == "active":
         data = _inspect_active_queues(
             _conn(repos),
-            worker_name=args.worker or None,
+            owner_key=args.owner or None,
             source_table=args.source_table or None,
             limit=limit,
         )
         return 0, {"ok": True, "data": data}
     data = inspect_terminal_events(
         _conn(repos),
-        worker_name=args.worker or None,
+        owner_key=args.owner or None,
         source_table=args.source_table or None,
         reason_bucket=args.reason_bucket or None,
         limit=limit,
@@ -60,17 +73,17 @@ def handle_queue_resolve(args: Any, repos: Any, *, now_ms: int) -> tuple[int, di
 
 def handle_queue_resolve_bucket(args: Any, repos: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
     reason = args.reason.strip()
-    worker_name = args.worker.strip()
+    owner_key = args.owner.strip()
     source_table = args.source_table.strip()
     reason_bucket = args.reason_bucket.strip()
     if not reason:
         return 1, {"ok": False, "error": "reason_required"}
-    if not worker_name or not source_table or not reason_bucket:
+    if not owner_key or not source_table or not reason_bucket:
         return 1, {"ok": False, "error": "queue_resolve_bucket_filters_required"}
     limit = min(500, int(args.limit))
     terminal_ids = list_terminal_event_ids(
         _conn(repos),
-        worker_name=worker_name,
+        owner_key=owner_key,
         source_table=source_table,
         reason_bucket=reason_bucket,
         limit=limit,
@@ -79,7 +92,7 @@ def handle_queue_resolve_bucket(args: Any, repos: Any, *, now_ms: int) -> tuple[
         "mode": "execute" if args.execute else "dry_run",
         "execute": args.execute,
         "dry_run": args.dry_run,
-        "worker": worker_name,
+        "owner": owner_key,
         "source_table": source_table,
         "reason_bucket": reason_bucket,
         "action": args.action,
@@ -138,15 +151,14 @@ def _conn(repos: Any) -> Any:
 def _inspect_active_queues(
     conn: object,
     *,
-    worker_name: str | None,
+    owner_key: str | None,
     source_table: str | None,
     limit: int,
 ) -> dict[str, Any]:
-    tables_by_worker = worker_queue_tables()
-    if worker_name is not None:
-        selected_tables = list(tables_by_worker.get(worker_name, ()))
+    if owner_key is not None:
+        selected_tables = list(_QUEUE_TABLES_BY_OWNER.get(owner_key, ()))
     else:
-        selected_tables = sorted({table for tables in tables_by_worker.values() for table in tables})
+        selected_tables = sorted({table for tables in _QUEUE_TABLES_BY_OWNER.values() for table in tables})
     if source_table is not None:
         selected_tables = [table for table in selected_tables if table == source_table]
     limit = max(1, min(500, int(limit)))
@@ -155,13 +167,13 @@ def _inspect_active_queues(
     items = [
         {
             "source_table": table,
-            "queue_health": fetch_queue_table_health(conn, table, now_ms=now_ms, worker_name=worker_name),
+            "queue_health": fetch_queue_table_health(conn, table, now_ms=now_ms, owner_key=owner_key),
         }
         for table in selected_tables
     ]
     return {
         "status": "active",
-        "worker": worker_name,
+        "owner": owner_key,
         "source_table": source_table,
         "limit": limit,
         "count": len(items),
@@ -299,11 +311,111 @@ def _projection_retry_transition(
     return transition
 
 
+def _retry_news_brief(
+    repos: Any,
+    event: dict[str, Any],
+    *,
+    now_ms: int,
+    reason: str,
+) -> dict[str, Any]:
+    del reason
+    target_key = _native_target_key(event)
+    row = repos.conn.execute(
+        """
+        UPDATE news_brief_runs
+           SET status = 'retryable',
+               attempt_count = 0,
+               lease_owner = NULL,
+               lease_expires_at_ms = NULL,
+               heartbeat_at_ms = NULL,
+               last_error = NULL,
+               next_due_at_ms = %s,
+               completed_at_ms = NULL,
+               updated_at_ms = %s
+         WHERE fingerprint = %s
+           AND status = 'failed'
+        RETURNING run_id, fingerprint, next_due_at_ms
+        """,
+        (int(now_ms), int(now_ms), target_key),
+    ).fetchone()
+    _require_requeued(row, "news_brief_retry_not_requeued")
+    return {"requeued": 1, "run": dict(row)}
+
+
+def _retry_macro_thesis(
+    repos: Any,
+    event: dict[str, Any],
+    *,
+    now_ms: int,
+    reason: str,
+) -> dict[str, Any]:
+    del reason
+    target_key = _native_target_key(event)
+    row = repos.conn.execute(
+        """
+        UPDATE macro_thesis_runs
+           SET status = 'retryable',
+               attempt_count = 0,
+               due_at_ms = %s,
+               leased_until_ms = NULL,
+               lease_owner = NULL,
+               last_error_code = NULL,
+               last_error_message = NULL,
+               last_gate_category = NULL,
+               last_candidate_hash = NULL,
+               updated_at_ms = %s
+         WHERE session_date = %s::date
+           AND status IN ('failed', 'not_published', 'config_error')
+        RETURNING session_date, due_at_ms
+        """,
+        (int(now_ms), int(now_ms), target_key),
+    ).fetchone()
+    _require_requeued(row, "macro_thesis_retry_not_requeued")
+    return {"requeued": 1, "run": dict(row)}
+
+
+def _retry_macro_document_analysis(
+    repos: Any,
+    event: dict[str, Any],
+    *,
+    now_ms: int,
+    reason: str,
+) -> dict[str, Any]:
+    del reason
+    target_key = _native_target_key(event)
+    row = repos.conn.execute(
+        """
+        UPDATE macro_document_analysis_jobs
+           SET status = 'retryable',
+               attempt_count = 0,
+               next_due_at_ms = %s,
+               leased_until_ms = NULL,
+               lease_owner = NULL,
+               last_error_code = NULL,
+               updated_at_ms = %s
+         WHERE analysis_job_id = %s
+           AND status = 'failed'
+        RETURNING analysis_job_id, next_due_at_ms
+        """,
+        (int(now_ms), int(now_ms), target_key),
+    ).fetchone()
+    _require_requeued(row, "macro_document_analysis_retry_not_requeued")
+    return {"requeued": 1, "job": dict(row)}
+
+
 def _source_row(event: dict[str, Any]) -> dict[str, Any]:
     source_row = event.get("source_row_json")
     if not isinstance(source_row, dict):
         raise ValueError("terminal_source_row_required")
     return source_row
+
+
+def _native_target_key(event: dict[str, Any]) -> str:
+    source_row = _source_row(event)
+    value = str(source_row.get("native_target_key") or event.get("target_key") or "").strip()
+    if not value:
+        raise ValueError("terminal_native_target_key_required")
+    return value
 
 
 def _required_source_text(source_row: dict[str, Any], column: str) -> str:
@@ -341,6 +453,12 @@ QUEUE_RETRY_TRANSITIONS = {
     ("resolution_refresh", "token_discovery_dirty_lookup_keys"): _retry_discovery_lookup_key,
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
+    ("news_brief", "news_brief_runs"): _retry_news_brief,
+    ("macro_thesis", "macro_thesis_runs"): _retry_macro_thesis,
+    (
+        "macro_document_analysis",
+        "macro_document_analysis_jobs",
+    ): _retry_macro_document_analysis,
     **{(f"{spec.domain}_projection", spec.table): _projection_retry_transition(spec) for spec in FRONTIER_SPECS},
 }
 

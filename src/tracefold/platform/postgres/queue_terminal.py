@@ -20,7 +20,7 @@ RetryTransitionMap = Mapping[tuple[str, str], Callable[..., dict[str, Any]]]
 def terminalize_source_row(
     conn: Any,
     *,
-    worker_name: str,
+    owner_key: str,
     source_table: str,
     target_key: str,
     source_row: Mapping[str, Any],
@@ -42,13 +42,13 @@ def terminalize_source_row(
     )
     terminal_generation = _next_terminal_generation(
         conn,
-        worker_name=worker_name,
+        owner_key=owner_key,
         source_table=source_table,
         target_key=target_key,
         source_row_hash=source_row_hash,
     )
     terminal_id = _terminal_id(
-        worker_name=worker_name,
+        owner_key=owner_key,
         source_table=source_table,
         target_key=target_key,
         source_row_hash=source_row_hash,
@@ -66,7 +66,7 @@ def terminalize_source_row(
     )
     params = {
         "terminal_id": terminal_id,
-        "worker_name": _required_text(worker_name, "worker_name"),
+        "owner_key": _required_text(owner_key, "owner_key"),
         "source_table": _required_text(source_table, "source_table"),
         "target_key": _required_text(target_key, "target_key"),
         "source_row_json": _jsonb(normalized_row),
@@ -86,9 +86,9 @@ def terminalize_source_row(
     }
     cursor = conn.execute(
         """
-        INSERT INTO worker_queue_terminal_events(
+        INSERT INTO queue_terminal_events(
           terminal_id,
-          worker_name,
+          owner_key,
           source_table,
           target_key,
           source_row_json,
@@ -105,7 +105,7 @@ def terminalize_source_row(
         )
         VALUES (
           %(terminal_id)s,
-          %(worker_name)s,
+          %(owner_key)s,
           %(source_table)s,
           %(target_key)s,
           %(source_row_json)s,
@@ -120,7 +120,7 @@ def terminalize_source_row(
           %(terminalized_at_ms)s,
           %(terminal_generation)s
         )
-        ON CONFLICT(worker_name, source_table, target_key)
+        ON CONFLICT(owner_key, source_table, target_key)
           WHERE operator_action IS NULL
         DO UPDATE SET
           terminal_id = EXCLUDED.terminal_id,
@@ -129,16 +129,16 @@ def terminalize_source_row(
           final_status = EXCLUDED.final_status,
           final_reason = EXCLUDED.final_reason,
           final_reason_bucket = CASE
-            WHEN worker_queue_terminal_events.final_reason IS DISTINCT FROM EXCLUDED.final_reason
+            WHEN queue_terminal_events.final_reason IS DISTINCT FROM EXCLUDED.final_reason
             THEN EXCLUDED.final_reason_bucket
-            ELSE worker_queue_terminal_events.final_reason_bucket
+            ELSE queue_terminal_events.final_reason_bucket
           END,
-          attempt_count = GREATEST(worker_queue_terminal_events.attempt_count, EXCLUDED.attempt_count),
+          attempt_count = GREATEST(queue_terminal_events.attempt_count, EXCLUDED.attempt_count),
           payload_hash = EXCLUDED.payload_hash,
           terminalized_at_ms = EXCLUDED.terminalized_at_ms,
           last_attempted_at_ms = COALESCE(
             EXCLUDED.last_attempted_at_ms,
-            worker_queue_terminal_events.last_attempted_at_ms
+            queue_terminal_events.last_attempted_at_ms
           )
         RETURNING *
         """,
@@ -152,7 +152,7 @@ def terminalize_source_row(
 def inspect_terminal_events(
     conn: Any,
     *,
-    worker_name: str | None = None,
+    owner_key: str | None = None,
     source_table: str | None = None,
     reason_bucket: str | None = None,
     limit: int = 50,
@@ -160,9 +160,9 @@ def inspect_terminal_events(
     parsed_limit = max(1, min(500, int(limit)))
     where = ["operator_action IS NULL"]
     params: dict[str, Any] = {"limit": parsed_limit}
-    if worker_name:
-        where.append("worker_name = %(worker_name)s")
-        params["worker_name"] = str(worker_name)
+    if owner_key:
+        where.append("owner_key = %(owner_key)s")
+        params["owner_key"] = str(owner_key)
     if source_table:
         where.append("source_table = %(source_table)s")
         params["source_table"] = str(source_table)
@@ -172,7 +172,7 @@ def inspect_terminal_events(
     rows = conn.execute(
         f"""
         SELECT *
-        FROM worker_queue_terminal_events
+        FROM queue_terminal_events
         WHERE {" AND ".join(where)}
         ORDER BY terminalized_at_ms DESC, terminal_id ASC
         LIMIT %(limit)s
@@ -182,7 +182,7 @@ def inspect_terminal_events(
     items = [_row_dict(row) for row in rows]
     return {
         "status": "terminal",
-        "worker": worker_name or None,
+        "owner": owner_key or None,
         "source_table": source_table or None,
         "reason_bucket": reason_bucket or None,
         "limit": parsed_limit,
@@ -194,7 +194,7 @@ def inspect_terminal_events(
 def list_terminal_event_ids(
     conn: Any,
     *,
-    worker_name: str,
+    owner_key: str,
     source_table: str,
     reason_bucket: str,
     limit: int = 100,
@@ -203,16 +203,16 @@ def list_terminal_event_ids(
     rows = conn.execute(
         """
         SELECT terminal_id
-        FROM worker_queue_terminal_events
+        FROM queue_terminal_events
         WHERE operator_action IS NULL
-          AND worker_name = %(worker_name)s
+          AND owner_key = %(owner_key)s
           AND source_table = %(source_table)s
           AND final_reason_bucket = %(reason_bucket)s
         ORDER BY terminalized_at_ms ASC, terminal_id ASC
         LIMIT %(limit)s
         """,
         {
-            "worker_name": _required_text(worker_name, "worker_name"),
+            "owner_key": _required_text(owner_key, "owner_key"),
             "source_table": _required_text(source_table, "source_table"),
             "reason_bucket": _required_text(reason_bucket, "reason_bucket"),
             "limit": parsed_limit,
@@ -262,7 +262,7 @@ def resolve_terminal_event(
         transition = _retry_transition_for(current, retry_transitions)
     cursor = conn.execute(
         """
-        UPDATE worker_queue_terminal_events
+        UPDATE queue_terminal_events
         SET operator_action = %(operator_action)s,
             operator_reason = %(operator_reason)s,
             operator_action_at_ms = %(operator_action_at_ms)s
@@ -290,14 +290,14 @@ def _prune_resolved_terminal_events(conn: Any, *, now_ms: int) -> None:
         """
         WITH resolved_to_prune AS (
           SELECT terminal_id
-          FROM worker_queue_terminal_events
+          FROM queue_terminal_events
           WHERE operator_action IS NOT NULL
             AND COALESCE(operator_action_at_ms, terminalized_at_ms) < %(cutoff_ms)s
           ORDER BY COALESCE(operator_action_at_ms, terminalized_at_ms) ASC, terminal_id ASC
           LIMIT %(limit)s
           FOR UPDATE SKIP LOCKED
         )
-        DELETE FROM worker_queue_terminal_events AS terminal
+        DELETE FROM queue_terminal_events AS terminal
         USING resolved_to_prune AS expired
         WHERE terminal.terminal_id = expired.terminal_id
         """,
@@ -316,7 +316,7 @@ def _fetch_terminal_event(conn: Any, *, terminal_id: str, for_update: bool = Fal
     row = conn.execute(
         f"""
         SELECT *
-        FROM worker_queue_terminal_events
+        FROM queue_terminal_events
         WHERE terminal_id = %(terminal_id)s
         {suffix}
         """,
@@ -329,7 +329,7 @@ def _retry_transition_for(
     event: Mapping[str, Any],
     retry_transitions: RetryTransitionMap | None,
 ) -> Callable[..., dict[str, Any]]:
-    key = (str(event.get("worker_name") or ""), str(event.get("source_table") or ""))
+    key = (str(event.get("owner_key") or ""), str(event.get("source_table") or ""))
     transition = (retry_transitions or {}).get(key)
     if transition is None:
         raise ValueError(f"retry_transition_unregistered:{key[0]}:{key[1]}")
@@ -354,7 +354,7 @@ def _stable_json_hash(value: Mapping[str, Any]) -> str:
 
 def _terminal_id(
     *,
-    worker_name: str,
+    owner_key: str,
     source_table: str,
     target_key: str,
     source_row_hash: str,
@@ -362,7 +362,7 @@ def _terminal_id(
 ) -> str:
     encoded = "|".join(
         (
-            _required_text(worker_name, "worker_name"),
+            _required_text(owner_key, "owner_key"),
             _required_text(source_table, "source_table"),
             _required_text(target_key, "target_key"),
             source_row_hash,
@@ -375,7 +375,7 @@ def _terminal_id(
 def _next_terminal_generation(
     conn: Any,
     *,
-    worker_name: str,
+    owner_key: str,
     source_table: str,
     target_key: str,
     source_row_hash: str,
@@ -383,15 +383,15 @@ def _next_terminal_generation(
     unresolved = conn.execute(
         """
         SELECT terminal_generation
-        FROM worker_queue_terminal_events
-        WHERE worker_name = %(worker_name)s
+        FROM queue_terminal_events
+        WHERE owner_key = %(owner_key)s
           AND source_table = %(source_table)s
           AND target_key = %(target_key)s
           AND operator_action IS NULL
         LIMIT 1
         """,
         {
-            "worker_name": _required_text(worker_name, "worker_name"),
+            "owner_key": _required_text(owner_key, "owner_key"),
             "source_table": _required_text(source_table, "source_table"),
             "target_key": _required_text(target_key, "target_key"),
         },
@@ -401,14 +401,14 @@ def _next_terminal_generation(
     row = conn.execute(
         """
         SELECT COALESCE(MAX(terminal_generation), 0) + 1 AS terminal_generation
-        FROM worker_queue_terminal_events
-        WHERE worker_name = %(worker_name)s
+        FROM queue_terminal_events
+        WHERE owner_key = %(owner_key)s
           AND source_table = %(source_table)s
           AND target_key = %(target_key)s
           AND source_row_hash = %(source_row_hash)s
         """,
         {
-            "worker_name": _required_text(worker_name, "worker_name"),
+            "owner_key": _required_text(owner_key, "owner_key"),
             "source_table": _required_text(source_table, "source_table"),
             "target_key": _required_text(target_key, "target_key"),
             "source_row_hash": source_row_hash,

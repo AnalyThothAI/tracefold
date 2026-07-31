@@ -4,8 +4,6 @@ import ast
 import re
 from pathlib import Path
 
-from tracefold.app.worker_manifest import all_worker_manifests
-
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
 BUSINESS_PACKAGES = ("market", "news", "macro")
@@ -169,27 +167,21 @@ def test_business_sql_uses_only_owned_tables() -> None:
     assert violations == []
 
 
-def test_worker_manifest_has_one_writer_per_current_read_model() -> None:
-    manifests = all_worker_manifests()
-    names = [manifest.name for manifest in manifests]
-    tables = [table for manifest in manifests for table, _identity in manifest.current_read_model_identities]
-    assert len(names) == len(set(names))
-    assert len(tables) == len(set(tables))
-
-
-def test_news_runtime_has_only_the_source_ingest_unit() -> None:
-    news_workers = {manifest.name for manifest in all_worker_manifests() if manifest.name.startswith("news_")}
-    assert news_workers == {"news_ingest"}
-
-
-def test_current_read_models_use_stable_product_keys() -> None:
-    violations = {
-        f"{manifest.name}:{table}": sorted(set(identity) & FORBIDDEN_CURRENT_IDENTITY_PARTS)
-        for manifest in all_worker_manifests()
-        for table, identity in manifest.current_read_model_identities
-        if set(identity) & FORBIDDEN_CURRENT_IDENTITY_PARTS
-    }
-    assert violations == {}
+def test_worker_runtime_v2_has_one_public_root_and_no_retired_framework() -> None:
+    workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
+    assert '__all__ = ["run_workers"]' in workers_source
+    assert "async def run_workers(" in workers_source
+    retired = (
+        SRC / "app" / "worker_manifest.py",
+        SRC / "app" / "worker_runtime_supervisor.py",
+        SRC / "app" / "worker_status.py",
+        SRC / "app" / "runtime_claim_recovery.py",
+        SRC / "app" / "model_generation_coordinator.py",
+        SRC / "platform" / "workers" / "worker_base.py",
+        SRC / "platform" / "workers" / "worker_result.py",
+        SRC / "platform" / "workers" / "factory.py",
+    )
+    assert [path.relative_to(ROOT).as_posix() for path in retired if path.exists()] == []
 
 
 def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> None:

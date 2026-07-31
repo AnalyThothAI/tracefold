@@ -115,6 +115,33 @@ class EventAnchorBackfillJobRepository:
         )
         return _returning_rows(cursor)
 
+    def release_prework(
+        self,
+        *,
+        event_id: str,
+        intent_id: str,
+        lease_owner: str,
+        attempt_count: int,
+    ) -> bool:
+        row = self._conn.execute(
+            """
+            UPDATE event_anchor_backfill_jobs
+               SET status = 'pending',
+                   lease_owner = NULL,
+                   leased_until_ms = NULL,
+                   attempt_count = attempt_count - 1
+             WHERE event_id = %s
+               AND intent_id = %s
+               AND status = 'running'
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING event_id
+            """,
+            (event_id, intent_id, lease_owner, int(attempt_count)),
+        ).fetchone()
+        return row is not None
+
     def expire_stale(
         self,
         *,
@@ -583,7 +610,7 @@ def _terminalize_event_anchor_row(
 ) -> None:
     terminalize_source_row(
         conn,
-        worker_name="event_anchor_backfill",
+        owner_key="event_anchor_backfill",
         source_table="event_anchor_backfill_jobs",
         target_key=f"{row.get('event_id')}:{row.get('intent_id')}",
         source_row=row,

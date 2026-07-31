@@ -960,27 +960,3 @@ export type EnrichmentJobsData = {
   items: Array<Record<string, unknown>>;
   counts: Record<string, number>;
 };
-
-export type WorkerStatusData = {
-  enabled: boolean;
-  running: boolean;
-  effective_status: string;
-  unavailable_reason: string | null;
-  last_started_at_ms: number | null;
-  last_finished_at_ms: number | null;
-  last_result: Record<string, unknown> | null;
-  last_error: string | null;
-  iteration_duration_p99_ms: number | null;
-};
-
-export type StatusData = {
-  ok: boolean;
-  reasons: string[];
-  store: string;
-  snapshot_gate: Record<string, unknown>;
-  db: Record<string, unknown>;
-  provider_states: Record<string, unknown>;
-  workers: Record<string, WorkerStatusData> & {
-    collector: WorkerStatusData;
-  };
-};

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -8,16 +9,15 @@ from typing import Any
 
 from tracefold.market.identity.token_resolution_refresh import (
     TOKEN_REPROCESS_WINDOW,
-    reprocess_recent_token_intents,
+    reprocess_token_intent_page,
 )
 from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     DexTokenCandidate,
 )
 from tracefold.market.radar.constants import WINDOW_MS
+from tracefold.platform.resource import ResourceAdmissionTimeout
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
 
 from .discovery_repository import DISCOVERY_PROVIDER
 from .identity_evidence_policy import (
@@ -38,18 +38,15 @@ ERROR_REFRESH_BACKOFF_MS = (30_000, 60_000, 300_000, 1_800_000, 3_600_000)
 MAX_DEX_SYMBOL_CANDIDATES_PER_CHAIN = 3
 
 
-class ResolutionRefreshWorker(WorkerBase):
+class ResolutionRefresh:
     def __init__(
         self,
         *,
-        name: str,
         db: Any,
-        telemetry: Any,
         dex_discovery_market: Any,
-        resources: Any,
-        provider_governor: Any,
+        finite_operations: Any,
         runtime_id: str,
-        claim_limit: int = 50,
+        claim_limit: int = 1,
         reprocess_limit: int = 500,
         chain_ids: tuple[str, ...] = (
             "solana",
@@ -61,15 +58,10 @@ class ResolutionRefreshWorker(WorkerBase):
     ) -> None:
         if dex_discovery_market is None:
             raise RuntimeError("resolution_refresh_provider_required")
-        super().__init__(
-            name=name,
-            interval_seconds=30.0,
-            telemetry=telemetry,
-        )
         self.db = db
-        self.resources = resources
-        self.provider_governor = provider_governor
-        self.claim_owner = f"{name}:{runtime_id}"
+        self.finite_operations = finite_operations
+        self.name = "resolution_refresh"
+        self.claim_owner = f"resolution_refresh:{runtime_id}"
         self.dex_discovery_market = dex_discovery_market
         self.chain_ids = tuple(chain_ids)
         if not self.chain_ids:
@@ -82,123 +74,109 @@ class ResolutionRefreshWorker(WorkerBase):
         if self.claim_limit < 1 or self.reprocess_limit < 1:
             raise ValueError("resolution_refresh_limits_must_be_positive")
 
-    async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
+    async def turn(self, *, now_ms: int | None = None) -> bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else _now_ms())
-        result = _empty_result(observed_at_ms)
-        lookups, circuit_open = await self.resources.run_background_db(
+        lookups, _circuit_open = await self.db.run_business(
+            "resolution_claim",
             self._claim_due_lookups,
             observed_at_ms,
+            operation_timeout_seconds=3.0,
         )
-        result["lookups_selected"] = len(lookups)
-        if circuit_open:
-            result["provider_unavailable"] = 1
-            result["errors"].append(
-                {
-                    "lookup_key": "",
-                    "error": "provider_circuit_open",
-                }
-            )
-        affected_lookup_keys: set[str] = set()
-        processed_claims: list[dict[str, Any]] = []
-        queue_due_by_lookup_key: dict[str, int] = {}
+        if not lookups:
+            return False
         for index, lookup in enumerate(lookups):
+            continuation_keys = _continuation_lookup_keys(lookup)
+            if continuation_keys:
+                submitted = False
+
+                def mark_continuation_submitted() -> None:
+                    nonlocal submitted
+                    submitted = True
+
+                try:
+                    continued = await self.db.run_business(
+                        "resolution_reprocess_continue",
+                        self._continue_reprocess,
+                        lookup,
+                        continuation_keys,
+                        observed_at_ms,
+                        operation_timeout_seconds=5.0,
+                        on_submitted=mark_continuation_submitted,
+                    )
+                except asyncio.CancelledError:
+                    if not submitted:
+                        await asyncio.shield(self._release_prework(lookups[index:]))
+                    raise
+                except ResourceAdmissionTimeout:
+                    await self._release_prework(lookups[index:])
+                    return None if index == 0 else True
+                if not continued:
+                    return None if index == 0 else True
+                continue
             lookup_key = str(lookup.get("lookup_key") or "")
             lookup_type = str(lookup.get("lookup_type") or "")
-            await self.resources.run_background_db(
-                self._start_lookup,
-                lookup_key,
-                lookup_type,
-                observed_at_ms,
-            )
+            submitted = False
+
+            def mark_submitted() -> None:
+                nonlocal submitted
+                submitted = True
+
             try:
-                async with self.provider_governor.acquire(host="asset_discovery"):
-                    lookup_result = await self.resources.run_provider_io(
-                        _fetch_lookup_provider_result,
-                        lookup_key=lookup_key,
-                        lookup_type=lookup_type,
-                        dex_discovery_market=self.dex_discovery_market,
-                        chain_ids=self.chain_ids,
-                    )
+                lookup_result = await self.finite_operations.run(
+                    "resolution_provider_lookup",
+                    _fetch_lookup_provider_result,
+                    lookup_key=lookup_key,
+                    lookup_type=lookup_type,
+                    dex_discovery_market=self.dex_discovery_market,
+                    chain_ids=self.chain_ids,
+                    timeout_seconds=30.0,
+                    on_submitted=mark_submitted,
+                )
+            except asyncio.CancelledError:
+                if not submitted:
+                    await asyncio.shield(self._release_prework(lookups[index:]))
+                raise
+            except ResourceAdmissionTimeout:
+                await self._release_prework(lookups[index:])
+                return None if index == 0 else True
             except DexProviderTemporarilyUnavailable as exc:
-                unavailable = await self.resources.run_background_db(
+                await self.db.run_business(
+                    "resolution_publish_unavailable",
                     self._publish_provider_unavailable,
                     lookups[index:],
                     lookup_key,
                     lookup_type,
                     observed_at_ms,
                     exc,
-                )
-                result["provider_unavailable"] += int(unavailable["claims"])
-                result["errors"].append(
-                    {
-                        "lookup_key": lookup_key,
-                        "error": unavailable["last_error"],
-                    }
+                    operation_timeout_seconds=3.0,
                 )
                 break
-            except Exception as exc:
-                failed = await self.resources.run_background_db(
-                    self._publish_lookup_error,
-                    lookup,
-                    lookup_key,
-                    lookup_type,
-                    observed_at_ms,
-                    exc,
-                )
-                result["lookups_failed"] += 1
-                result["provider_errors"] += 1
-                result["lookups_terminalized"] += int(failed["terminalized"])
-                result["errors"].append(
-                    {
-                        "lookup_key": lookup_key,
-                        "error": str(exc),
-                    }
-                )
-                continue
 
-            published = await self.resources.run_background_db(
-                self._publish_lookup_success,
+            published = await self.db.run_business(
+                "resolution_publish_success",
+                self._publish_lookup_success_and_reprocess,
                 lookup,
                 lookup_result,
                 observed_at_ms,
+                operation_timeout_seconds=5.0,
             )
-            processed_claims.append(dict(lookup))
-            queue_due_by_lookup_key[lookup_key] = int(published["queue_due_at_ms"])
-            _merge_lookup_result(result, published["lookup_result"])
-            result["lookups_done"] += 1
-            affected_lookup_keys.update(str(key) for key in published["affected_lookup_keys"])
+            if not published:
+                return None if index == 0 else True
+        return True
 
-        resolved_lookup_keys: set[str] = set()
-        if affected_lookup_keys:
-            sorted_lookup_keys = sorted(affected_lookup_keys)
-            result["affected_lookup_keys"] = sorted_lookup_keys
-            reprocess_result = await self.resources.run_background_db(
-                self._reprocess_lookup_keys,
-                sorted_lookup_keys,
-                observed_at_ms,
+    async def _release_prework(self, claims: list[dict[str, Any]]) -> bool:
+        return bool(
+            await self.db.run_business(
+                "resolution_release_prework",
+                self._release_prework_sync,
+                claims,
+                operation_timeout_seconds=0.5,
             )
-            result["reprocess"] = reprocess_result
-            result["reprocessed_intents"] = int(reprocess_result["reprocessed_intents"])
-            if reprocess_result["resolved_intents"]:
-                resolved_lookup_keys.update(sorted_lookup_keys)
-        if processed_claims:
-            result["lookups_terminalized"] += await self.resources.run_background_db(
-                self._complete_processed_claims,
-                processed_claims,
-                resolved_lookup_keys,
-                queue_due_by_lookup_key,
-                observed_at_ms,
-            )
-        result["discovery_result_counts"] = await self.resources.run_background_db(self._discovery_counts)
-        notes: dict[str, Any] = {"result": result}
-        if int(result.get("provider_unavailable") or 0) > 0:
-            notes["status"] = "degraded"
-            notes["degraded"] = True
-        return WorkerResult(
-            processed=int(result.get("lookups_done") or 0) + int(result.get("reprocessed_intents") or 0),
-            failed=int(result.get("lookups_failed") or 0),
-            notes=notes,
         )
+
+    def _release_prework_sync(self, claims: list[dict[str, Any]]) -> bool:
+        with self.db.worker_session(self.name, 0.5) as repos, repos.transaction():
+            return bool(repos.discovery.release_lookup_claims(claims) == len(claims))
 
     def _claim_due_lookups(
         self,
@@ -236,51 +214,126 @@ class ResolutionRefreshWorker(WorkerBase):
                 running_timeout_ms=self.lease_ms,
             )
 
-    def _publish_lookup_success(
+    def _publish_lookup_success_and_reprocess(
         self,
         lookup: dict[str, Any],
         lookup_result: dict[str, Any],
         now_ms: int,
-    ) -> dict[str, Any]:
+    ) -> bool:
         lookup_key = str(lookup["lookup_key"])
         lookup_type = str(lookup["lookup_type"])
-        with self.db.worker_session(self.name) as repos, repos.transaction():
-            _persist_lookup_provider_result(
-                repos=repos,
-                lookup_result=lookup_result,
-                now_ms=now_ms,
-            )
-            candidate_ids = sorted(set(lookup_result["candidate_ids"]))
-            status = "found" if candidate_ids else "not_found"
-            next_refresh_at_ms = now_ms + _refresh_ms(
-                lookup_key=lookup_key,
-                status=status,
-            )
-            repos.discovery.finish_lookup(
-                provider=DISCOVERY_PROVIDER,
-                lookup_key=lookup_key,
-                lookup_type=lookup_type,
-                status=status,
-                candidate_ids=candidate_ids,
-                result_hash=_result_hash(candidate_ids),
-                next_refresh_at_ms=next_refresh_at_ms,
-                now_ms=now_ms,
-            )
-            repos.provider_circuits.close(
-                provider=DISCOVERY_PROVIDER,
-                now_ms=now_ms,
-            )
-        return {
-            "lookup_result": lookup_result,
-            "affected_lookup_keys": list(lookup_result["affected_lookup_keys"]),
-            "queue_due_at_ms": _next_queue_due_at_ms(
-                lookup=lookup,
-                status=status,
-                next_refresh_at_ms=next_refresh_at_ms,
-                now_ms=now_ms,
-                hot_not_found_retry_ms=self.hot_not_found_retry_ms,
-            ),
-        }
+        try:
+            with self.db.worker_session(self.name) as repos, repos.transaction():
+                _persist_lookup_provider_result(
+                    repos=repos,
+                    lookup_result=lookup_result,
+                    now_ms=now_ms,
+                )
+                candidate_ids = sorted(set(lookup_result["candidate_ids"]))
+                status = "found" if candidate_ids else "not_found"
+                next_refresh_at_ms = now_ms + _refresh_ms(
+                    lookup_key=lookup_key,
+                    status=status,
+                )
+                repos.discovery.finish_lookup(
+                    provider=DISCOVERY_PROVIDER,
+                    lookup_key=lookup_key,
+                    lookup_type=lookup_type,
+                    status=status,
+                    candidate_ids=candidate_ids,
+                    result_hash=_result_hash(candidate_ids),
+                    next_refresh_at_ms=next_refresh_at_ms,
+                    now_ms=now_ms,
+                )
+                repos.provider_circuits.close(
+                    provider=DISCOVERY_PROVIDER,
+                    now_ms=now_ms,
+                )
+                affected_lookup_keys = sorted({str(key) for key in lookup_result["affected_lookup_keys"] if str(key)})
+                queue_due_at_ms = _next_queue_due_at_ms(
+                    lookup=lookup,
+                    status=status,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                    now_ms=now_ms,
+                    hot_not_found_retry_ms=self.hot_not_found_retry_ms,
+                )
+                page = _empty_reprocess_page()
+                if affected_lookup_keys:
+                    page = reprocess_token_intent_page(
+                        repos=repos,
+                        lookup_keys=affected_lookup_keys,
+                        after_intent_id=None,
+                        now_ms=now_ms,
+                        window=TOKEN_REPROCESS_WINDOW,
+                        limit=self.reprocess_limit,
+                    )
+                if page["has_more"]:
+                    saved = repos.discovery.save_reprocess_continuation(
+                        lookup,
+                        lookup_keys=affected_lookup_keys,
+                        after_intent_id=str(page["next_after_intent_id"]),
+                        resolved=bool(page["resolved_intents"]),
+                        queue_due_at_ms=queue_due_at_ms,
+                        now_ms=now_ms,
+                    )
+                else:
+                    saved = _finish_one_lookup_claim(
+                        repos=repos,
+                        claim=lookup,
+                        resolved=bool(page["resolved_intents"]),
+                        queue_due_at_ms=queue_due_at_ms,
+                        now_ms=now_ms,
+                        owner_key=self.name,
+                        max_attempts=self.max_attempts,
+                    )
+                if not saved:
+                    raise _LookupClaimLost
+        except _LookupClaimLost:
+            return False
+        return True
+
+    def _continue_reprocess(
+        self,
+        lookup: dict[str, Any],
+        lookup_keys: list[str],
+        now_ms: int,
+    ) -> bool:
+        try:
+            with self.db.worker_session(self.name) as repos, repos.transaction():
+                page = reprocess_token_intent_page(
+                    repos=repos,
+                    lookup_keys=lookup_keys,
+                    after_intent_id=str(lookup["reprocess_after_intent_id"]),
+                    now_ms=now_ms,
+                    window=TOKEN_REPROCESS_WINDOW,
+                    limit=self.reprocess_limit,
+                )
+                resolved = bool(lookup.get("reprocess_resolved")) or bool(page["resolved_intents"])
+                queue_due_at_ms = int(lookup["reprocess_queue_due_at_ms"])
+                if page["has_more"]:
+                    saved = repos.discovery.save_reprocess_continuation(
+                        lookup,
+                        lookup_keys=lookup_keys,
+                        after_intent_id=str(page["next_after_intent_id"]),
+                        resolved=resolved,
+                        queue_due_at_ms=queue_due_at_ms,
+                        now_ms=now_ms,
+                    )
+                else:
+                    saved = _finish_one_lookup_claim(
+                        repos=repos,
+                        claim=lookup,
+                        resolved=resolved,
+                        queue_due_at_ms=queue_due_at_ms,
+                        now_ms=now_ms,
+                        owner_key=self.name,
+                        max_attempts=self.max_attempts,
+                    )
+                if not saved:
+                    raise _LookupClaimLost
+        except _LookupClaimLost:
+            return False
+        return True
 
     def _publish_provider_unavailable(
         self,
@@ -323,89 +376,6 @@ class ResolutionRefreshWorker(WorkerBase):
             "claims": len(claims),
             "last_error": last_error,
         }
-
-    def _publish_lookup_error(
-        self,
-        lookup: dict[str, Any],
-        lookup_key: str,
-        lookup_type: str,
-        now_ms: int,
-        error: Exception,
-    ) -> dict[str, int]:
-        retry_due_at_ms = now_ms + _refresh_ms(
-            lookup_key=lookup_key,
-            status="error",
-            error_count=_claim_error_count(lookup),
-        )
-        terminalized = 0
-        with self.db.worker_session(self.name) as repos, repos.transaction():
-            repos.discovery.fail_lookup(
-                provider=DISCOVERY_PROVIDER,
-                lookup_key=lookup_key,
-                lookup_type=lookup_type or _lookup_type(lookup_key),
-                last_error=str(error),
-                next_refresh_at_ms=retry_due_at_ms,
-                now_ms=now_ms,
-            )
-            if _claim_retry_budget_exhausted(
-                lookup,
-                max_attempts=self.max_attempts,
-            ):
-                terminal = repos.discovery.terminalize_lookup_claims(
-                    [lookup],
-                    worker_name=self.name,
-                    final_status="error",
-                    final_reason="provider_error_retry_budget_exhausted",
-                    now_ms=now_ms,
-                )
-                terminalized = int(terminal.get("terminalized") or 0)
-            else:
-                repos.discovery.reschedule_lookup_claims(
-                    [lookup],
-                    due_at_ms=retry_due_at_ms,
-                    now_ms=now_ms,
-                    last_error=str(error),
-                )
-        return {"terminalized": terminalized}
-
-    def _reprocess_lookup_keys(
-        self,
-        lookup_keys: list[str],
-        now_ms: int,
-    ) -> dict[str, Any]:
-        with self.db.worker_session(self.name) as repos:
-            return reprocess_recent_token_intents(
-                repos=repos,
-                lookup_keys=lookup_keys,
-                now_ms=now_ms,
-                window=TOKEN_REPROCESS_WINDOW,
-                limit=self.reprocess_limit,
-            )
-
-    def _complete_processed_claims(
-        self,
-        claims: list[dict[str, Any]],
-        resolved_lookup_keys: set[str],
-        due_by_lookup_key: dict[str, int],
-        now_ms: int,
-    ) -> int:
-        summary = {"lookups_terminalized": 0}
-        _complete_lookup_claims(
-            db=self.db,
-            worker_name=self.name,
-            claims=claims,
-            resolved_lookup_keys=resolved_lookup_keys,
-            due_by_lookup_key=due_by_lookup_key,
-            now_ms=now_ms,
-            max_attempts=self.max_attempts,
-            hot_not_found_retry_ms=self.hot_not_found_retry_ms,
-            result=summary,
-        )
-        return int(summary["lookups_terminalized"])
-
-    def _discovery_counts(self) -> dict[str, int]:
-        with self.db.worker_session(self.name) as repos:
-            return {str(key): int(value) for key, value in dict(repos.discovery.counts()).items()}
 
 
 def _fetch_lookup_provider_result(
@@ -573,36 +543,11 @@ def _write_dex_candidate(
     return str(asset["asset_id"])
 
 
-def _merge_lookup_result(result: dict[str, Any], lookup_result: dict[str, Any]) -> None:
-    for key in (
-        "search_requests",
-        "search_hits",
-        "search_candidates_seen",
-        "search_candidates_rejected",
-        "assets_written",
-    ):
-        result[key] += int(lookup_result.get(key) or 0)
-
-
-def _empty_result(now_ms: int) -> dict[str, Any]:
+def _empty_reprocess_page() -> dict[str, Any]:
     return {
-        "now_ms": int(now_ms),
-        "lookups_selected": 0,
-        "lookups_done": 0,
-        "lookups_failed": 0,
-        "lookups_terminalized": 0,
-        "provider_errors": 0,
-        "provider_unavailable": 0,
-        "search_requests": 0,
-        "search_hits": 0,
-        "search_candidates_seen": 0,
-        "search_candidates_rejected": 0,
-        "assets_written": 0,
-        "reprocessed_intents": 0,
-        "reprocess": None,
-        "affected_lookup_keys": [],
-        "discovery_result_counts": {},
-        "errors": [],
+        "resolved_intents": 0,
+        "has_more": False,
+        "next_after_intent_id": None,
     }
 
 
@@ -613,70 +558,51 @@ def _provider_unavailable_error(exc: Exception) -> str:
     return f"provider_unavailable: {message}"
 
 
-def _complete_lookup_claims(
-    *,
-    db: Any,
-    worker_name: str,
-    claims: list[dict[str, Any]],
-    resolved_lookup_keys: set[str],
-    due_by_lookup_key: dict[str, int],
-    now_ms: int,
-    max_attempts: int,
-    hot_not_found_retry_ms: int,
-    result: dict[str, Any],
-) -> None:
-    with db.worker_session(worker_name) as repos:
-        _finish_lookup_claims(
-            repos=repos,
-            claims=claims,
-            resolved_lookup_keys=resolved_lookup_keys,
-            due_by_lookup_key=due_by_lookup_key,
-            now_ms=now_ms,
-            worker_name=worker_name,
-            max_attempts=max_attempts,
-            hot_not_found_retry_ms=hot_not_found_retry_ms,
-            result=result,
-        )
-
-
-def _finish_lookup_claims(
+def _finish_one_lookup_claim(
     *,
     repos: Any,
-    claims: list[dict[str, Any]],
-    resolved_lookup_keys: set[str],
-    due_by_lookup_key: dict[str, int],
+    claim: dict[str, Any],
+    resolved: bool,
+    queue_due_at_ms: int,
     now_ms: int,
-    worker_name: str,
+    owner_key: str,
     max_attempts: int,
-    hot_not_found_retry_ms: int,
-    result: dict[str, Any],
-) -> None:
-    with repos.transaction():
-        done = [claim for claim in claims if str(claim.get("lookup_key") or "") in resolved_lookup_keys]
-        if done:
-            repos.discovery.mark_lookup_done(done, now_ms=now_ms)
-        for claim in claims:
-            lookup_key = str(claim.get("lookup_key") or "")
-            if lookup_key in resolved_lookup_keys:
-                continue
-            if _claim_retry_budget_exhausted(claim, max_attempts=max_attempts):
-                terminal = repos.discovery.terminalize_lookup_claims(
-                    [claim],
-                    worker_name=worker_name,
-                    final_status="not_found",
-                    final_reason="not_found_retry_budget_exhausted",
-                    now_ms=now_ms,
-                )
-                result["lookups_terminalized"] += int(terminal.get("terminalized") or 0)
-                continue
-            repos.discovery.reschedule_lookup_claims(
-                [claim],
-                due_at_ms=due_by_lookup_key.get(
-                    lookup_key,
-                    now_ms + hot_not_found_retry_ms,
-                ),
-                now_ms=now_ms,
-            )
+) -> bool:
+    if resolved:
+        return bool(repos.discovery.mark_lookup_done([claim], now_ms=now_ms) == 1)
+    if _claim_retry_budget_exhausted(claim, max_attempts=max_attempts):
+        terminal = repos.discovery.terminalize_lookup_claims(
+            [claim],
+            owner_key=owner_key,
+            final_status="not_found",
+            final_reason="not_found_retry_budget_exhausted",
+            now_ms=now_ms,
+        )
+        return int(terminal.get("deleted") or 0) == 1
+    return bool(
+        repos.discovery.reschedule_lookup_claims(
+            [claim],
+            due_at_ms=queue_due_at_ms,
+            now_ms=now_ms,
+        )
+        == 1
+    )
+
+
+def _continuation_lookup_keys(lookup: dict[str, Any]) -> list[str]:
+    value = lookup.get("reprocess_lookup_keys")
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError("resolution_reprocess_lookup_keys_invalid")
+    keys = sorted({str(key).strip() for key in value if str(key).strip()})
+    if not keys or not str(lookup.get("reprocess_after_intent_id") or "").strip():
+        raise RuntimeError("resolution_reprocess_continuation_invalid")
+    return keys
+
+
+class _LookupClaimLost(Exception):
+    pass
 
 
 def _claim_retry_budget_exhausted(claim: dict[str, Any], *, max_attempts: int) -> bool:

@@ -9,7 +9,12 @@ from urllib.parse import urlencode
 from curl_cffi import requests as curl_requests
 from loguru import logger
 
+from tracefold.market import GmgnStreamExpectedError
+
 GMGN_WS_ENDPOINT = "wss://gmgn.ai/ws"
+GMGN_WS_MAX_MESSAGE_BYTES = 1 * 1024 * 1024
+GMGN_WS_RECV_QUEUE_SIZE = 8
+GMGN_WS_SEND_QUEUE_SIZE = 4
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -132,7 +137,12 @@ class DirectGmgnWebSocketClient:
             except asyncio.CancelledError:
                 self._set_connection_state("disconnected")
                 raise
-            except Exception as exc:
+            except (
+                GmgnStreamExpectedError,
+                UpstreamIdleTimeoutError,
+                curl_requests.RequestsError,
+                OSError,
+            ) as exc:
                 reconnect_count += 1
                 self._set_connection_state("failed")
                 logger.error(f"❌ GMGN 直连 WS 断开: {exc}")
@@ -154,6 +164,10 @@ class DirectGmgnWebSocketClient:
             "timeout": 15,
             "impersonate": "chrome",
             "proxy": self.proxy,
+            "max_message_size": GMGN_WS_MAX_MESSAGE_BYTES,
+            "recv_queue_size": GMGN_WS_RECV_QUEUE_SIZE,
+            "send_queue_size": GMGN_WS_SEND_QUEUE_SIZE,
+            "block_on_recv_queue_full": True,
         }
 
         self._set_connection_state("connecting")
@@ -181,6 +195,8 @@ class DirectGmgnWebSocketClient:
                 frame = await asyncio.wait_for(websocket.recv_str(), timeout=self.idle_timeout)
             except TimeoutError as exc:
                 raise UpstreamIdleTimeoutError(f"no upstream frame received for {self.idle_timeout:g}s") from exc
+            if len(frame.encode("utf-8")) > GMGN_WS_MAX_MESSAGE_BYTES:
+                raise GmgnStreamExpectedError("gmgn_frame_byte_limit_exceeded")
             self._set_connection_state("streaming")
             await self.on_frame(frame)
             await asyncio.sleep(0)

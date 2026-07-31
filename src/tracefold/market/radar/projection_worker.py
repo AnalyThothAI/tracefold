@@ -13,12 +13,13 @@ from tracefold.market.radar.microbatch import (
     hydrate_radar_microbatch,
     rank_radar_microbatch,
 )
-from tracefold.platform.workers.projection_candidate import ProjectionShard
-from tracefold.platform.workers.resource_errors import (
-    CpuTaskProcessExpired,
+from tracefold.platform.projection import ProjectionShard
+from tracefold.platform.resource import (
     CpuTaskTimeout,
+    ResourceAdmissionTimeout,
+    ResourceOperationOverrun,
+    ResourceSubmissionTracker,
 )
-from tracefold.platform.workers.worker_result import WorkerResult
 
 _CPU_TIMEOUT_SECONDS = 2.0
 _SHARD_TIMEOUT_SECONDS = 5.0
@@ -29,22 +30,25 @@ class RadarProjectionCandidate:
         self,
         *,
         db: Any,
-        resources: Any,
+        cpu: Any,
         runtime_id: str,
         stable_order: int = 10,
     ) -> None:
-        self.resources = resources
+        self.db = db
+        self.cpu = cpu
         self.runtime_id = runtime_id
         self.stable_order = int(stable_order)
         self.service = RadarMicroBatchService(db=db)
 
-    async def next_due_shard(
+    async def peek(
         self,
         *,
         now_ms: int,
     ) -> ProjectionShard | None:
-        row = await self.resources.run_background_db(
+        row = await self.db.run_business(
+            "radar_projection_peek",
             self.service.next_due,
+            operation_timeout_seconds=0.5,
             now_ms=now_ms,
         )
         if row is None:
@@ -59,132 +63,162 @@ class RadarProjectionCandidate:
             stable_order=self.stable_order,
         )
 
-    async def run_shard(self, shard: ProjectionShard) -> WorkerResult:
+    async def execute(self, shard: ProjectionShard) -> bool:
         now_ms = _now_ms()
         key = _parse_shard_key(shard.shard_key)
-        claim = await self.resources.run_background_db(
+        claim = await self.db.run_business(
+            "radar_projection_claim",
             self.service.claim_batch,
+            operation_timeout_seconds=0.5,
             window=key["window"],
             venue=key["venue"],
             runtime_id=self.runtime_id,
             now_ms=now_ms,
         )
         if claim is None:
-            return WorkerResult(
-                skipped=1,
-                notes={"reason": "radar_microbatch_claim_lost"},
-            )
+            return False
+        submission = ResourceSubmissionTracker()
+
         try:
             async with asyncio.timeout(_SHARD_TIMEOUT_SECONDS):
-                return await self._run_claimed(claim, now_ms=now_ms)
-        except TimeoutError:
-            failed = await self.resources.run_background_db(
+                return await self._run_claimed(
+                    claim,
+                    now_ms=now_ms,
+                    submission=submission,
+                )
+        except asyncio.CancelledError:
+            if not submission.submitted:
+                await asyncio.shield(self._release_prework(claim))
+            raise
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return False
+        except TimeoutError as exc:
+            if submission.submitted:
+                raise ResourceOperationOverrun("resource_operation_overrun:radar_projection_turn") from exc
+            await self.db.run_business(
+                "radar_projection_timeout",
                 self.service.fail_deterministic,
                 claim,
+                operation_timeout_seconds=3.0,
                 error_code="full_shard_timeout",
                 now_ms=_now_ms(),
             )
-            return WorkerResult(
-                failed=int(failed["failed_targets"]),
-                notes={
-                    "domain": "radar",
-                    "shard_key": shard.shard_key,
-                    "reason": "full_shard_timeout",
-                    **failed,
-                },
-            )
+            return True
+
+    async def _release_prework(self, claim: RadarMicroBatchClaim) -> bool:
+        released = await self.db.run_business(
+            "radar_projection_release_prework",
+            self.service.release_prework,
+            claim,
+            operation_timeout_seconds=3.0,
+            now_ms=_now_ms(),
+        )
+        return int(released) == len(claim.targets)
 
     async def _run_claimed(
         self,
         claim: RadarMicroBatchClaim,
         *,
         now_ms: int,
-    ) -> WorkerResult:
+        submission: ResourceSubmissionTracker,
+    ) -> bool:
         try:
-            loaded = await self.resources.run_background_db(
-                self.service.load_targets,
-                claim,
-                now_ms=now_ms,
+            loaded = await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "radar_projection_load",
+                    self.service.load_targets,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    now_ms=now_ms,
+                )
             )
-            projections = await self.resources.run_cpu(
-                compute_radar_target_batch,
-                loaded,
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            projections = await submission.run(
+                lambda on_submitted: self.cpu.run(
+                    "radar_projection_features",
+                    compute_radar_target_batch,
+                    loaded,
+                    service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    on_submitted=on_submitted,
+                )
             )
-            rank_inputs = await self.resources.run_background_db(
-                self.service.load_rank_inputs,
-                claim,
-                projections=projections,
-                now_ms=now_ms,
+            rank_inputs = await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "radar_projection_rank_input",
+                    self.service.load_rank_inputs,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    projections=projections,
+                    now_ms=now_ms,
+                )
             )
-            ranked = await self.resources.run_cpu(
-                rank_radar_microbatch,
-                rank_inputs,
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            ranked = await submission.run(
+                lambda on_submitted: self.cpu.run(
+                    "radar_projection_rank",
+                    rank_radar_microbatch,
+                    rank_inputs,
+                    service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    on_submitted=on_submitted,
+                )
             )
-            hydrated = await self.resources.run_background_db(
-                self.service.load_hydration,
-                claim,
-                ranked=ranked,
+            hydrated = await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "radar_projection_hydration_input",
+                    self.service.load_hydration,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    ranked=ranked,
+                )
             )
-            closure = await self.resources.run_cpu(
-                _hydrate,
-                {
-                    "ranked": ranked,
-                    "hydrated_inputs": hydrated,
-                },
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            closure = await submission.run(
+                lambda on_submitted: self.cpu.run(
+                    "radar_projection_hydration",
+                    _hydrate,
+                    {
+                        "ranked": ranked,
+                        "hydrated_inputs": hydrated,
+                    },
+                    service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
+                    on_submitted=on_submitted,
+                )
             )
-            result = await self.resources.run_background_db(
-                self.service.publish,
-                claim,
-                projections=projections,
-                ranked=ranked,
-                closure=closure,
-                now_ms=_now_ms(),
+            await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "radar_projection_publish",
+                    self.service.publish,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    projections=projections,
+                    ranked=ranked,
+                    closure=closure,
+                    now_ms=_now_ms(),
+                )
             )
         except (
             RadarShardOversized,
             CpuTaskTimeout,
-            CpuTaskProcessExpired,
         ) as exc:
-            failed = await self.resources.run_background_db(
-                self.service.fail_deterministic,
-                claim,
-                error_code=_error_code(exc),
-                now_ms=_now_ms(),
+            error_code = _error_code(exc)
+            await submission.run(
+                lambda on_submitted: self.db.run_business(
+                    "radar_projection_fail_deterministic",
+                    self.service.fail_deterministic,
+                    claim,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=on_submitted,
+                    error_code=error_code,
+                    now_ms=_now_ms(),
+                )
             )
-            return WorkerResult(
-                failed=int(failed["failed_targets"]),
-                notes={
-                    "reason": _error_code(exc),
-                    "window": claim.window,
-                    "venue": claim.venue,
-                    **failed,
-                },
-            )
-        except Exception as exc:
-            failed_targets = await self.resources.run_background_db(
-                self.service.fail_transient,
-                claim,
-                error_code=_error_code(exc),
-                now_ms=_now_ms(),
-            )
-            return WorkerResult(
-                failed=max(1, int(failed_targets)),
-                notes={
-                    "reason": _error_code(exc),
-                    "window": claim.window,
-                    "venue": claim.venue,
-                    "transient": True,
-                    "failed_targets": int(failed_targets),
-                },
-            )
-        return WorkerResult(
-            processed=len(claim.targets),
-            skipped=1 if int(result["rows_written"]) == 0 else 0,
-            notes=result,
-        )
+            return True
+        return True
 
 
 def _hydrate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -217,8 +251,6 @@ def _error_code(exc: BaseException) -> str:
         return "shard_oversized"
     if isinstance(exc, CpuTaskTimeout | TimeoutError):
         return "compute_timeout"
-    if isinstance(exc, CpuTaskProcessExpired):
-        return "compute_process_expired"
     return type(exc).__name__[:128]
 
 

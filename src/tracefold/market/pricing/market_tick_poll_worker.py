@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
+from loguru import logger
+
 from tracefold.market.identity.chain_identity import chain_address_key
 from tracefold.market.pricing.market_tick import (
     DEX_QUOTE_SOURCE_PROVIDERS,
@@ -19,42 +21,34 @@ from tracefold.market.pricing.market_tick_persistence import (
     MarketTickPersistenceResult,
     MarketTickPersistenceService,
 )
-from tracefold.market.provider_contracts import CexTicker, DexTokenQuote, DexTokenQuoteRequest
+from tracefold.market.provider_contracts import (
+    CexTicker,
+    DexTokenQuote,
+    DexTokenQuoteRequest,
+    MarketProviderExpectedError,
+)
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
 
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
 DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_rest"
 CEX_SOURCE_PROVIDER: MarketTickSourceProvider = "binance_cex_rest"
 
 
-class MarketTickPollWorker(WorkerBase):
-    worker_name = "market_tick_poll"
-
+class MarketTickPoll:
     def __init__(
         self,
         *,
-        pool_bundle: Any,
+        db: Any,
         providers: Any,
-        resources: Any,
-        provider_governor: Any,
+        finite_operations: Any,
         clock: Any | None = None,
-        name: str = "market_tick_poll",
-        telemetry: Any | None = None,
     ) -> None:
         if providers is None:
             raise RuntimeError("market_tick_poll_providers_required")
-        if pool_bundle is None:
+        if db is None:
             raise RuntimeError("market_tick_poll_db_required")
-        super().__init__(
-            name=name,
-            interval_seconds=15.0,
-            telemetry=telemetry or object(),
-        )
-        self.db = pool_bundle
-        self.resources = resources
-        self.provider_governor = provider_governor
+        self.db = db
+        self.finite_operations = finite_operations
         self.providers = providers
         self.dex_quote_market = providers.dex_quote_market
         self.cex_market = providers.cex_market
@@ -62,10 +56,14 @@ class MarketTickPollWorker(WorkerBase):
         self.clock = clock or _now_ms
         self._recent_attempts: set[tuple[str, str]] = set()
 
-    async def run_once(self) -> WorkerResult:
+    async def sample(self) -> None:
         # DB read happens off the event loop; provider IO must not run while a
         # DB session is held, so we materialize rows first, then drop the session.
-        rows = await self.resources.run_realtime_db(self._list_poll_rows)
+        rows = await self.db.run_business(
+            "market_tick_poll_load",
+            self._list_poll_rows,
+            operation_timeout_seconds=3.0,
+        )
         targets = _poll_targets(rows)
 
         chain_result = await self._poll_chain_targets_async(targets.chain_targets)
@@ -76,28 +74,17 @@ class MarketTickPollWorker(WorkerBase):
         skipped_reasons.update(cex_result.skipped_reasons)
         ticks = [*chain_result.ticks, *cex_result.ticks]
 
-        persistence = await self.resources.run_realtime_db(
+        await self.db.run_business(
+            "market_tick_poll_publish",
             self._persist_ticks,
             ticks,
-        )
-        inserted = persistence.inserted
-        return WorkerResult(
-            processed=inserted,
-            skipped=sum(skipped_reasons.values()),
-            notes={
-                "targets_selected": len(rows),
-                "chain_targets": len(targets.chain_targets),
-                "cex_targets": len(targets.cex_targets),
-                "ticks_attempted": len(ticks),
-                "ticks_inserted": inserted,
-                "skipped_reasons": dict(sorted(skipped_reasons.items())),
-            },
+            operation_timeout_seconds=3.0,
         )
 
     def _list_poll_rows(self) -> list[dict[str, Any]]:
         now_ms = int(self.clock())
         exclude_keys = tuple(sorted(self._recent_attempts))
-        with self.db.worker_session(self.name) as repos:
+        with self.db.worker_session("market_tick_poll") as repos:
             rows = repos.registry.ranked_market_targets(
                 projection_version=TOKEN_RADAR_PROJECTION_VERSION,
                 since_ms=now_ms - WINDOW_MS["24h"],
@@ -140,14 +127,15 @@ class MarketTickPollWorker(WorkerBase):
 
         requests = [DexTokenQuoteRequest(chain_id=target.chain_id, address=target.address) for target in targets]
         try:
-            async with self.provider_governor.acquire(host="dex_quote"):
-                quotes = await self.resources.run_provider_io(
-                    provider.token_quotes,
-                    requests,
-                )
-        except Exception as exc:
+            quotes = await self.finite_operations.run(
+                "market_tick_poll_dex",
+                provider.token_quotes,
+                requests,
+                timeout_seconds=10.0,
+            )
+        except MarketProviderExpectedError as exc:
             reason = _provider_error_reason(exc)
-            self.logger.bind(
+            logger.bind(
                 reason=reason,
                 target_count=len(targets),
             ).warning("market tick poll batch quote failed")
@@ -163,7 +151,7 @@ class MarketTickPollWorker(WorkerBase):
             quote = quotes_by_key.get(_target_key(target.chain_id, target.address))
             if quote is None:
                 skipped_reasons["dex_quote_unavailable"] += 1
-                self.logger.bind(
+                logger.bind(
                     target_type="chain_token",
                     target_id=target.target_id,
                     reason="dex_quote_unavailable",
@@ -172,7 +160,7 @@ class MarketTickPollWorker(WorkerBase):
             tick = _tick_from_dex_quote(quote, target=target, received_at_ms=int(self.clock()))
             if tick is None:
                 skipped_reasons["invalid_price"] += 1
-                self.logger.bind(
+                logger.bind(
                     target_type="chain_token",
                     target_id=target.target_id,
                     reason="invalid_price",
@@ -193,22 +181,23 @@ class MarketTickPollWorker(WorkerBase):
         if not targets:
             return _PollProviderResult(ticks=[], skipped_reasons=Counter())
 
+        try:
+            fetched = await self.finite_operations.run(
+                "market_tick_poll_cex",
+                provider.tickers,
+                inst_type="SWAP",
+                timeout_seconds=10.0,
+            )
+        except MarketProviderExpectedError as exc:
+            reason = _provider_error_reason(exc)
+            return _PollProviderResult(
+                ticks=[],
+                skipped_reasons=Counter({reason: len(targets)}),
+            )
+        by_instrument = {ticker.inst_id.upper(): ticker for ticker in fetched}
         outcomes: list[_SingleTargetOutcome] = []
         for target in targets:
-            try:
-                async with self.provider_governor.acquire(host="cex_market"):
-                    ticker = await self.resources.run_provider_io(
-                        provider.ticker,
-                        inst_id=target.instrument,
-                    )
-            except Exception as exc:
-                outcomes.append(
-                    _SingleTargetOutcome(
-                        tick=None,
-                        skip_reason=_provider_error_reason(exc),
-                    )
-                )
-                continue
+            ticker = by_instrument.get(target.instrument.upper())
             if ticker is None:
                 outcomes.append(
                     _SingleTargetOutcome(
@@ -245,7 +234,7 @@ class MarketTickPollWorker(WorkerBase):
                 continue
             reason = outcome.skip_reason or "provider_error"
             skipped_reasons[reason] += 1
-            self.logger.bind(
+            logger.bind(
                 target_type=targets_kind,
                 target_id=target.target_id,
                 reason=reason,
@@ -260,7 +249,7 @@ class MarketTickPollWorker(WorkerBase):
                 current_rows=[],
                 live_market_rows=[],
             )
-        with self.db.worker_session(self.name) as repos, repos.transaction():
+        with self.db.worker_session("market_tick_poll") as repos, repos.transaction():
             return MarketTickPersistenceService(repos).persist_ticks(
                 materialized,
                 now_ms=int(self.clock()),
@@ -505,4 +494,4 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-__all__ = ["MarketTickPollWorker"]
+__all__ = ["MarketTickPoll"]

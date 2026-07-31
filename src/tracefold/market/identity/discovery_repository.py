@@ -167,7 +167,8 @@ class DiscoveryRepository:
                 AND queue.due_at_ms <= %(now_ms)s
                 AND (queue.leased_until_ms IS NULL OR queue.leased_until_ms <= %(now_ms)s)
                 AND (
-                  results.lookup_key IS NULL
+                  queue.reprocess_lookup_keys IS NOT NULL
+                  OR results.lookup_key IS NULL
                   OR results.next_refresh_at_ms <= %(now_ms)s
                   OR (
                     results.status = 'running'
@@ -182,6 +183,7 @@ class DiscoveryRepository:
                   )
                 )
               ORDER BY
+                CASE WHEN queue.reprocess_lookup_keys IS NOT NULL THEN 0 ELSE 1 END ASC,
                 CASE
                   WHEN %(hot_since_ms)s::bigint IS NOT NULL AND queue.latest_seen_ms >= %(hot_since_ms)s::bigint
                     THEN 0
@@ -202,7 +204,10 @@ class DiscoveryRepository:
             UPDATE token_discovery_dirty_lookup_keys queue
             SET leased_until_ms = %(leased_until_ms)s,
                 lease_owner = %(lease_owner)s,
-                attempt_count = queue.attempt_count + 1,
+                attempt_count = queue.attempt_count + CASE
+                  WHEN queue.reprocess_lookup_keys IS NULL THEN 1
+                  ELSE 0
+                END,
                 last_error = NULL,
                 updated_at_ms = %(now_ms)s
             FROM due
@@ -295,6 +300,10 @@ class DiscoveryRepository:
                 leased_until_ms = NULL,
                 lease_owner = NULL,
                 last_error = %(last_error)s,
+                reprocess_lookup_keys = NULL,
+                reprocess_after_intent_id = NULL,
+                reprocess_resolved = false,
+                reprocess_queue_due_at_ms = NULL,
                 updated_at_ms = %(now_ms)s
             FROM rescheduled
             WHERE queue.provider = rescheduled.provider
@@ -364,11 +373,107 @@ class DiscoveryRepository:
             error_code="discovery_repository_rowcount_invalid",
         )
 
+    def release_lookup_claims(self, claims: Iterable[Mapping[str, Any]]) -> int:
+        """Release exact pre-work claims without changing due/error state."""
+
+        records = _claim_records(claims)
+        if not records:
+            return 0
+        cursor = self.conn.execute(
+            """
+            WITH released AS (
+              SELECT *
+              FROM unnest(
+                %(providers)s::text[],
+                %(lookup_keys)s::text[],
+                %(payload_hashes)s::text[],
+                %(lease_owners)s::text[],
+                %(attempt_counts)s::bigint[]
+              ) AS released(
+                provider, lookup_key, payload_hash, lease_owner, attempt_count
+              )
+            )
+            UPDATE token_discovery_dirty_lookup_keys queue
+               SET leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   attempt_count = queue.attempt_count - CASE
+                     WHEN queue.reprocess_lookup_keys IS NULL THEN 1
+                     ELSE 0
+                   END
+              FROM released
+             WHERE queue.provider = released.provider
+               AND queue.lookup_key = released.lookup_key
+               AND queue.payload_hash = released.payload_hash
+               AND queue.lease_owner = released.lease_owner
+               AND queue.attempt_count = released.attempt_count
+            """,
+            _claim_params(records),
+        )
+        return mutation_count(cursor, error_code="discovery_repository_rowcount_invalid")
+
+    def save_reprocess_continuation(
+        self,
+        claim: Mapping[str, Any],
+        *,
+        lookup_keys: list[str],
+        after_intent_id: str,
+        resolved: bool,
+        queue_due_at_ms: int,
+        now_ms: int,
+    ) -> bool:
+        records = _claim_records([claim])
+        keys = sorted({str(key).strip() for key in lookup_keys if str(key).strip()})
+        cursor_id = str(after_intent_id).strip()
+        if not keys or not cursor_id:
+            raise ValueError("resolution_reprocess_continuation_required")
+        params = _claim_params(records)
+        params.update(
+            {
+                "reprocess_lookup_keys": keys,
+                "reprocess_after_intent_id": cursor_id,
+                "reprocess_resolved": bool(resolved),
+                "reprocess_queue_due_at_ms": int(queue_due_at_ms),
+                "now_ms": int(now_ms),
+            }
+        )
+        cursor = self.conn.execute(
+            """
+            WITH claimed AS (
+              SELECT *
+              FROM unnest(
+                %(providers)s::text[],
+                %(lookup_keys)s::text[],
+                %(payload_hashes)s::text[],
+                %(lease_owners)s::text[],
+                %(attempt_counts)s::bigint[]
+              ) AS claimed(provider, lookup_key, payload_hash, lease_owner, attempt_count)
+            )
+            UPDATE token_discovery_dirty_lookup_keys queue
+               SET due_at_ms = %(now_ms)s,
+                   leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   last_error = NULL,
+                   reprocess_lookup_keys = %(reprocess_lookup_keys)s::text[],
+                   reprocess_after_intent_id = %(reprocess_after_intent_id)s,
+                   reprocess_resolved = %(reprocess_resolved)s,
+                   reprocess_queue_due_at_ms = %(reprocess_queue_due_at_ms)s,
+                   updated_at_ms = %(now_ms)s
+              FROM claimed
+             WHERE queue.provider = claimed.provider
+               AND queue.lookup_key = claimed.lookup_key
+               AND queue.payload_hash = claimed.payload_hash
+               AND queue.lease_owner = claimed.lease_owner
+               AND queue.attempt_count = claimed.attempt_count
+            """,
+            params,
+        )
+        return mutation_count(cursor, error_code="discovery_repository_rowcount_invalid") == 1
+
     def terminalize_lookup_claims(
         self,
         claims: Iterable[Mapping[str, Any]],
         *,
-        worker_name: str,
+        owner_key: str,
         final_status: str,
         final_reason: str,
         now_ms: int,
@@ -379,6 +484,8 @@ class DiscoveryRepository:
             return {"terminalized": 0, "deleted": 0}
         deleted_rows, deleted_count = self._delete_lookup_claims_returning(records)
         if deleted_count != len(records):
+            if deleted_count == 0:
+                return {"terminalized": 0, "deleted": 0}
             raise ValueError("terminalize_lookup_delete_mismatch")
         terminalized = 0
         for row in deleted_rows:
@@ -388,7 +495,7 @@ class DiscoveryRepository:
                 continue
             terminalize_source_row(
                 self.conn,
-                worker_name=worker_name,
+                owner_key=owner_key,
                 source_table=DISCOVERY_LOOKUP_QUEUE_TABLE,
                 target_key=f"{provider}:{lookup_key}",
                 source_row=row,

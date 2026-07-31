@@ -19,6 +19,7 @@ from tracefold.macro import (
     MACRO_THESIS_PROFILE_VERSION,
     MACRO_THESIS_PROMPT_VERSION,
     CandidateDraftEnvelope,
+    MacroModelExpectedError,
     MacroResearchInputV1,
     MacroThesisDraftV2,
     canonical_json_bytes,
@@ -77,8 +78,9 @@ class DeepAgentGraph(Protocol):
 class _SingleModelInvocationBoundary(AgentMiddleware[Any, Any, Any]):
     """Fail closed if the framework attempts a second model call in one durable attempt."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, on_model_submitted: Callable[[], None]) -> None:
         self.calls = 0
+        self._on_model_submitted = on_model_submitted
 
     def wrap_model_call(
         self,
@@ -100,6 +102,7 @@ class _SingleModelInvocationBoundary(AgentMiddleware[Any, Any, Any]):
         self.calls += 1
         if self.calls != 1:
             raise RuntimeError("macro_thesis_attempt_multiple_model_calls")
+        self._on_model_submitted()
 
 
 def register_macro_thesis_harness_profile(
@@ -152,11 +155,12 @@ class MacroThesisDeepAgent:
         *,
         research_input: MacroResearchInputV1,
         attempt_id: str,
+        on_model_submitted: Callable[[], None],
     ) -> CandidateDraftEnvelope:
         normalized_attempt_id = str(attempt_id or "").strip()
         if not normalized_attempt_id:
             raise ValueError("macro_thesis_attempt_id_required")
-        boundary = _SingleModelInvocationBoundary()
+        boundary = _SingleModelInvocationBoundary(on_model_submitted=on_model_submitted)
         graph = self._agent_factory(
             model=self._model,
             tools=(),
@@ -167,23 +171,28 @@ class MacroThesisDeepAgent:
             checkpointer=None,
             name="macro-thesis-thin",
         )
-        result = await graph.ainvoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": canonical_json_bytes(research_input.model_dump(mode="json")).decode("utf-8"),
-                    }
-                ]
-            },
-            config={
-                "metadata": {
-                    "macro_attempt_id": normalized_attempt_id,
-                    "macro_research_input_id": research_input.input_id,
+        try:
+            result = await graph.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": canonical_json_bytes(research_input.model_dump(mode="json")).decode("utf-8"),
+                        }
+                    ]
                 },
-                "recursion_limit": 8,
-            },
-        )
+                config={
+                    "metadata": {
+                        "macro_attempt_id": normalized_attempt_id,
+                        "macro_research_input_id": research_input.input_id,
+                    },
+                    "recursion_limit": 8,
+                },
+            )
+        except Exception as exc:
+            if _is_expected_model_failure(exc):
+                raise MacroModelExpectedError(f"macro_thesis_model_expected:{type(exc).__name__}") from exc
+            raise
         if boundary.calls != 1:
             raise RuntimeError("macro_thesis_attempt_model_call_count_invalid")
         structured = result.get("structured_response")
@@ -219,6 +228,28 @@ def require_supported_macro_thesis_model(model_name: str) -> str:
     if leaf.endswith(("-terra", "-sol")) or "codex" in leaf:
         raise ValueError("macro_thesis_unsupported_model:" + normalized)
     return normalized
+
+
+def _is_expected_model_failure(exc: Exception) -> bool:
+    message = str(exc).lower()
+    module = type(exc).__module__.split(".", maxsplit=1)[0]
+    name = type(exc).__name__.lower()
+    if any(
+        marker in message
+        for marker in (
+            "macro_thesis_attempt_multiple_model_calls",
+            "macro_thesis_attempt_model_call_count_invalid",
+            "macro_thesis_provider_structured_mapping_missing",
+        )
+    ):
+        return True
+    return module in {
+        "httpx",
+        "openai",
+        "litellm",
+        "pydantic",
+        "pydantic_core",
+    } or any(token in name for token in ("timeout", "ratelimit", "apierror", "connection"))
 
 
 def _provider_name(model: BaseChatModel) -> str:

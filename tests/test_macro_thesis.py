@@ -737,7 +737,14 @@ def test_thin_deepagent_uses_one_graph_one_model_call_and_native_mapping() -> No
         agent_factory=factory,
         clock_ms=lambda: CUTOFF_MS + 2_000,
     )
-    envelope = asyncio.run(adapter.draft(research_input=research_input, attempt_id="attempt-thin-1"))
+    submissions: list[bool] = []
+    envelope = asyncio.run(
+        adapter.draft(
+            research_input=research_input,
+            attempt_id="attempt-thin-1",
+            on_model_submitted=lambda: submissions.append(True),
+        )
+    )
     kwargs = captured["kwargs"]
     graph = captured["graph"]
 
@@ -752,6 +759,7 @@ def test_thin_deepagent_uses_one_graph_one_model_call_and_native_mapping() -> No
     assert envelope.model_calls == 1
     assert envelope.raw_structured_mapping["schema_version"] == "macro_thesis_draft_v2"
     assert envelope.provider_response_id == "provider-response-1"
+    assert submissions == [True]
 
 
 def test_thin_deepagent_fails_before_envelope_without_exactly_one_model_call() -> None:
@@ -770,7 +778,13 @@ def test_thin_deepagent_fails_before_envelope_without_exactly_one_model_call() -
         agent_factory=lambda **_kwargs: _NoCallGraph(),
     )
     with pytest.raises(RuntimeError, match="model_call_count_invalid"):
-        asyncio.run(adapter.draft(research_input=research_input, attempt_id="attempt-1"))
+        asyncio.run(
+            adapter.draft(
+                research_input=research_input,
+                attempt_id="attempt-1",
+                on_model_submitted=lambda: None,
+            )
+        )
 
 
 def test_pre_draft_failures_are_run_states_not_publication_gates() -> None:

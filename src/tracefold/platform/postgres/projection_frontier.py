@@ -49,20 +49,11 @@ NEWS_FRONTIER = FrontierSpec(
     version_column="projection_version",
     stable_order=40,
 )
-MODEL_FRONTIER = FrontierSpec(
-    domain="model",
-    table="model_generation_frontiers",
-    key_columns=("candidate_kind", "shard_key"),
-    version_column="workflow_version",
-    stable_order=10,
-)
-
 FRONTIER_SPECS = (
     RADAR_FRONTIER,
     PROFILE_FRONTIER,
     MACRO_FRONTIER,
     NEWS_FRONTIER,
-    MODEL_FRONTIER,
 )
 
 
@@ -510,6 +501,38 @@ class ProjectionFrontierRepository:
             increment_attempt=False,
         )
 
+    def release_prework(
+        self,
+        spec: FrontierSpec,
+        *,
+        key: dict[str, str],
+        runtime_id: str,
+        now_ms: int,
+    ) -> bool:
+        """Release only the exact claim without changing attempts, clocks, or errors."""
+
+        require_transaction(self.conn, operation=f"{spec.domain}_frontier_release_prework")
+        clear_claim_snapshot = _clear_claim_snapshot_sql(spec)
+        cursor = self.conn.execute(
+            f"""
+            UPDATE {spec.table}
+            SET status = 'dirty',
+                claimed_by = NULL,
+                claimed_until_ms = NULL,
+                updated_at_ms = %(now_ms)s
+                {clear_claim_snapshot}
+            WHERE {_key_predicate(spec)}
+              AND status = 'running'
+              AND claimed_by = %(runtime_id)s
+            """,
+            {
+                **_validated_key(spec, key),
+                "runtime_id": UUID(str(runtime_id)),
+                "now_ms": int(now_ms),
+            },
+        )
+        return int(cursor.rowcount or 0) == 1
+
     def fail_transient(
         self,
         spec: FrontierSpec,
@@ -620,7 +643,7 @@ class ProjectionFrontierRepository:
         if quarantined:
             terminalize_source_row(
                 self.conn,
-                worker_name=f"{spec.domain}_projection",
+                owner_key=f"{spec.domain}_projection",
                 source_table=spec.table,
                 target_key=_target_key(spec, key),
                 source_row=result,
@@ -752,7 +775,6 @@ def _required_text(value: object, field: str) -> str:
 __all__ = [
     "FRONTIER_SPECS",
     "MACRO_FRONTIER",
-    "MODEL_FRONTIER",
     "NEWS_FRONTIER",
     "PROFILE_FRONTIER",
     "RADAR_FRONTIER",

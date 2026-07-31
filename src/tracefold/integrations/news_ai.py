@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from tracefold.news import NewsBriefDraft, NewsBriefStory
+from tracefold.news import NewsBriefDraft, NewsBriefExpectedError, NewsBriefStory
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,9 +98,9 @@ class ProviderChainNewsBriefPublisher:
                     model=provider.model,
                     raw_response=raw,
                 )
-            except Exception as exc:
+            except (httpx.HTTPError, ValueError) as exc:
                 failures.append(f"{provider.name}:{type(exc).__name__}")
-        raise RuntimeError(
+        raise NewsBriefExpectedError(
             "news_brief_provider_chain_exhausted:" + (",".join(failures) if failures else "no_configured_provider")
         )
 

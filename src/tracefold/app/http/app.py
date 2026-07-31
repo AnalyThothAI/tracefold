@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,10 +23,8 @@ from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.schemas import ReadinessData
 from tracefold.app.http.ws import PersistedLiveBroadcaster
 from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
-from tracefold.news import NewsInterface, attach_pipeline_runtime_health
 from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
-from tracefold.platform.postgres.postgres_client import postgres_liveness_check
 
 FRONTEND_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"
 
@@ -164,70 +161,18 @@ def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:
 
 
 def _readiness_payload(runtime: ServeRuntime) -> tuple[dict[str, Any], int]:
-    db_status = _db_status(runtime)
-    composition = dict(runtime.snapshot.composition)
-    reasons: list[str] = []
-    if not db_status.get("ok"):
-        reasons.append("database_unhealthy")
-    if not composition.get("ok"):
-        reasons.append("core_composition_incomplete")
+    status = runtime.status_payload()
+    db_status = status["db"]
+    reasons = [reason for reason in status["reasons"] if reason in {"database_unavailable", "database_schema_mismatch"}]
     payload = {
-        "ok": not reasons,
+        "ok": bool(db_status["ok"]),
         "reasons": reasons,
         "store": "postgresql",
         "db": db_status,
-        "composition": composition,
+        "composition": {"workers_runtime": status["workers_runtime"]},
     }
-    return payload, 503 if reasons else 200
+    return payload, 200 if payload["ok"] else 503
 
 
 def _status_payload(runtime: ServeRuntime) -> dict[str, Any]:
-    snapshot = runtime.current_snapshot()
-    measured_at_ms = int(time.time() * 1000)
-    reasons = list(snapshot.degradation_reasons)
-    try:
-        with runtime.repositories(lane="control") as repos:
-            news_health = NewsInterface(repos.news).health(now_ms=measured_at_ms)
-        attach_pipeline_runtime_health(
-            news_health,
-            worker_status=snapshot.workers.get("news_ingest"),
-            now_ms=measured_at_ms,
-        )
-    except Exception as exc:
-        measured_at_ms = int(time.time() * 1000)
-        query_failure = {"status": "degraded", "error": type(exc).__name__}
-        news_health = {
-            "status": "degraded",
-            "reasons": ["news_health_query_failed"],
-            "layers": {layer: query_failure for layer in ("ingest", "story", "brief")},
-            "measured_at_ms": measured_at_ms,
-        }
-    if str(news_health["status"]) != "ready":
-        reasons.extend(f"news:{reason}" for reason in news_health["reasons"])
-    payload = {
-        "ok": not reasons,
-        "reasons": reasons,
-        "runtime_role": runtime.role,
-        "snapshot_gate": snapshot.collector.get("snapshot_gate_outcomes", {}),
-        "store": "postgresql",
-        "db": dict(snapshot.startup_db_status),
-        "provider_states": snapshot.provider_states,
-        "workers": snapshot.workers,
-        "news": news_health,
-    }
-    return payload
-
-
-def _db_status(runtime: ServeRuntime) -> dict[str, object]:
-    try:
-        with runtime.repositories(lane="control") as repos:
-            liveness = postgres_liveness_check(repos.conn)
-        startup_schema = dict(runtime.snapshot.startup_db_status)
-        schema_ok = bool(startup_schema.get("ok"))
-        return {
-            **liveness,
-            "ok": bool(liveness.get("ok")) and schema_ok,
-            "schema": startup_schema,
-        }
-    except Exception as exc:
-        return {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
+    return runtime.status_payload()

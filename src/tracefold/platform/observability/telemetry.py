@@ -77,6 +77,24 @@ class TelemetryRegistry:
             ("worker", "queue"),
             registry=self.registry,
         )
+        self.resource_admission_seconds = Histogram(
+            "tracefold_worker_resource_admission_seconds",
+            "Time spent waiting for a bounded Workers capability before submission.",
+            ("capability", "operation", "outcome"),
+            registry=self.registry,
+        )
+        self.resource_service_seconds = Histogram(
+            "tracefold_worker_resource_service_seconds",
+            "Underlying future service time for a bounded Workers capability.",
+            ("capability", "operation", "outcome"),
+            registry=self.registry,
+        )
+        self.resource_active = Gauge(
+            "tracefold_worker_resource_active",
+            "Underlying futures currently occupying a bounded Workers capability.",
+            ("capability",),
+            registry=self.registry,
+        )
 
     def record_processing_seconds(self, worker: str, seconds: float) -> None:
         self.processing_seconds.labels(worker=_label(worker)).observe(max(0.0, float(seconds)))
@@ -133,6 +151,35 @@ class TelemetryRegistry:
             worker=_label(worker),
             queue=_label(queue),
         ).set(max(0.0, float(seconds)))
+
+    def record_resource_admission(
+        self,
+        capability: str,
+        operation: str,
+        outcome: str,
+        seconds: float,
+    ) -> None:
+        self.resource_admission_seconds.labels(
+            capability=_label(capability),
+            operation=_label(operation),
+            outcome=_label(outcome),
+        ).observe(max(0.0, float(seconds)))
+
+    def record_resource_service(
+        self,
+        capability: str,
+        operation: str,
+        outcome: str,
+        seconds: float,
+    ) -> None:
+        self.resource_service_seconds.labels(
+            capability=_label(capability),
+            operation=_label(operation),
+            outcome=_label(outcome),
+        ).observe(max(0.0, float(seconds)))
+
+    def change_resource_active(self, capability: str, delta: int) -> None:
+        self.resource_active.labels(capability=_label(capability)).inc(int(delta))
 
     def render_prometheus_text(self) -> str:
         return generate_latest(self.registry).decode("utf-8")

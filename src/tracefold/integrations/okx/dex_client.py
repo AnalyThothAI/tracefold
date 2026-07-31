@@ -71,7 +71,10 @@ class OkxDexClient:
     def _get_items(self, path: str, *, params: dict[str, str]) -> list[Any]:
         request = self._client.build_request("GET", path, params={key: value for key, value in params.items() if value})
         self._sign_request(request, body="")
-        response = self._client.send(request)
+        try:
+            response = self._client.send(request)
+        except httpx.HTTPError as exc:
+            raise OkxClientError(f"OKX {path} transport failed:{type(exc).__name__}") from exc
         return items_from_response(response, endpoint=path)
 
     def _post(self, path: str, *, body: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -83,7 +86,10 @@ class OkxDexClient:
             headers={"Content-Type": "application/json"},
         )
         self._sign_request(request, body=raw_body)
-        response = self._client.send(request)
+        try:
+            response = self._client.send(request)
+        except httpx.HTTPError as exc:
+            raise OkxClientError(f"OKX {path} transport failed:{type(exc).__name__}") from exc
         return rows_from_response(response, endpoint=path)
 
     def _sign_request(self, request: httpx.Request, *, body: str) -> None:

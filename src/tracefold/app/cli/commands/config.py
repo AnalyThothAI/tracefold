@@ -59,7 +59,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         for role in ("serve", "workers", "migrate")
                     },
                     "serve_pool_max_size": 8,
-                    "workers_pool_max_size": 12,
+                    "workers_pool_max_size": 4,
                     "log_file": str(settings.log_file),
                 },
                 "upstream": {

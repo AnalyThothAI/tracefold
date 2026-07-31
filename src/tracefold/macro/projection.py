@@ -53,7 +53,7 @@ class MacroProjectionService:
         self,
         *,
         db: Any,
-        worker_name: str = "steady_projection_coordinator",
+        worker_name: str = "macro_projection",
     ) -> None:
         self.db = db
         self.worker_name = worker_name
@@ -339,6 +339,22 @@ class MacroProjectionService:
         ):
             return bool(
                 repos.projection_frontiers.release_stale(
+                    MACRO_FRONTIER,
+                    key={"module_id": claim.module_id},
+                    runtime_id=claim.runtime_id,
+                    now_ms=now_ms,
+                )
+            )
+
+    def release_prework(self, claim: MacroModuleClaim, *, now_ms: int) -> bool:
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            return bool(
+                repos.projection_frontiers.release_prework(
                     MACRO_FRONTIER,
                     key={"module_id": claim.module_id},
                     runtime_id=claim.runtime_id,

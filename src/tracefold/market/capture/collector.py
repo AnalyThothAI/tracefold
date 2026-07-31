@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -9,11 +10,15 @@ from loguru import logger
 
 from tracefold.market.capture.normalizer import normalize_gmgn_payload, parse_gmgn_frame
 from tracefold.market.capture.provider_contracts import (
+    GmgnStreamExpectedError,
     IngestStoreProtocol,
     UpstreamClientProtocol,
 )
-from tracefold.platform.workers.worker_base import WorkerBase
-from tracefold.platform.workers.worker_result import WorkerResult
+from tracefold.platform.resource import ResourceAdmissionTimeout
+
+_GMGN_FRAME_MAX_BYTES = 1 * 1024 * 1024
+_GMGN_FRAME_MAX_ITEMS = 500
+_GMGN_PENDING_SNAPSHOT_LIMIT = 256
 
 
 @dataclass(slots=True)
@@ -38,65 +43,54 @@ class CollectorStatus:
         return asdict(self)
 
 
-class CollectorService(WorkerBase):
+class CollectorService:
     def __init__(
         self,
         *,
-        name: str,
-        telemetry: Any,
         store: IngestStoreProtocol,
         upstream_client: UpstreamClientProtocol | None,
-        resources: Any,
-        provider_governor: Any,
+        db: Any,
     ):
-        super().__init__(
-            name=name,
-            interval_seconds=3.0,
-            telemetry=telemetry,
-        )
         self.store = store
         self.upstream_client = upstream_client
-        self.resources = resources
-        self.provider_governor = provider_governor
+        self.db = db
         self.snapshot_timeout = 0.5
         self._pending_snapshots: dict[str, asyncio.Task[None]] = {}
         self._upstream_task: asyncio.Task[None] | None = None
         self.status = CollectorStatus(started_at_ms=_now_ms())
 
-    async def run_once(self) -> WorkerResult:
+    async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.upstream_client is None:
             raise RuntimeError("upstream_client is required")
-        async with self.provider_governor.acquire(host="gmgn_stream"):
-            self._upstream_task = asyncio.create_task(self.upstream_client.run(), name="collector:upstream")
-            stop_task = asyncio.create_task(self._stop_event.wait(), name="collector:stop_wait")
-            try:
-                done, _ = await asyncio.wait(
-                    {self._upstream_task, stop_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if self._upstream_task in done:
-                    if self._upstream_task.cancelled() and self._stop_event.is_set():
-                        return WorkerResult(processed=1, notes={"upstream_cancelled": True})
-                    await self._upstream_task
-                    return WorkerResult(processed=1, notes={"upstream_cancelled": False})
+        self._upstream_task = asyncio.create_task(
+            self.upstream_client.run(),
+            name="gmgn-stream",
+        )
+        stop_task = asyncio.create_task(stop_event.wait(), name="gmgn-stop-wait")
+        graceful_stop = False
+        try:
+            done, _ = await asyncio.wait(
+                {self._upstream_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self._upstream_task in done:
+                await self._upstream_task
+                if not stop_event.is_set():
+                    raise RuntimeError("gmgn_stream_returned")
+            else:
+                graceful_stop = True
                 self._upstream_task.cancel()
                 await asyncio.gather(self._upstream_task, return_exceptions=True)
-                return WorkerResult(processed=1, notes={"upstream_cancelled": True})
-            finally:
-                stop_task.cancel()
-                await asyncio.gather(stop_task, return_exceptions=True)
-                self._upstream_task = None
+        finally:
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+            self._upstream_task = None
+            if graceful_stop:
+                await self._flush_pending_snapshots()
+            else:
+                await self._clear_pending_snapshots()
 
-    async def stop(self) -> None:
-        await super().stop()
-        if self._upstream_task is not None and not self._upstream_task.done():
-            self._upstream_task.cancel()
-        await self._clear_pending_snapshots()
-
-    async def on_stop(self) -> None:
-        await self._clear_pending_snapshots()
-
-    async def on_close(self) -> None:
+    async def close(self) -> None:
         if self.upstream_client is None:
             return
         try:
@@ -115,30 +109,51 @@ class CollectorService(WorkerBase):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _flush_pending_snapshots(self) -> None:
+        tasks = list(self._pending_snapshots.values())
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self._pending_snapshots.clear()
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
     async def handle_frame(self, frame_data: Any, *, received_at_ms: int | None = None) -> None:
         received_at_ms = received_at_ms or _now_ms()
+        raw_frame = frame_data if isinstance(frame_data, str) else str(frame_data)
+        if len(raw_frame.encode("utf-8")) > _GMGN_FRAME_MAX_BYTES:
+            raise GmgnStreamExpectedError("gmgn_frame_byte_limit_exceeded")
         self.status.frames_received += 1
         self.status.last_frame_at_ms = received_at_ms
 
         try:
             parsed = parse_gmgn_frame(frame_data)
-        except Exception as exc:
+        except json.JSONDecodeError as exc:
             self.status.parse_errors += 1
             logger.warning(f"Failed to parse GMGN frame: {exc}")
             return
 
         if not parsed:
             return
+        items = parsed["data"]
+        if not isinstance(items, list) or len(items) > _GMGN_FRAME_MAX_ITEMS:
+            raise GmgnStreamExpectedError("gmgn_frame_item_limit_exceeded")
 
         channel = parsed["channel"]
-        await self.resources.run_realtime_db(
-            self.store.insert_raw_frame,
-            source="gmgn",
-            channel=channel,
-            received_at_ms=received_at_ms,
-            raw_payload_json=frame_data if isinstance(frame_data, str) else str(frame_data),
-        )
-        for item in parsed["data"]:
+        try:
+            await self.db.run_business(
+                "gmgn_raw_frame_publish",
+                self.store.insert_raw_frame,
+                operation_timeout_seconds=3.0,
+                source="gmgn",
+                channel=channel,
+                received_at_ms=received_at_ms,
+                raw_payload_json=raw_frame,
+            )
+        except ResourceAdmissionTimeout as exc:
+            raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
+        for item in items:
             if not isinstance(item, dict):
                 continue
             await self._handle_item(channel, item, received_at_ms)
@@ -166,6 +181,8 @@ class CollectorService(WorkerBase):
             return
 
         if str(internal_id) not in self._pending_snapshots:
+            if len(self._pending_snapshots) >= _GMGN_PENDING_SNAPSHOT_LIMIT:
+                raise GmgnStreamExpectedError("gmgn_pending_snapshot_limit_exceeded")
             self._pending_snapshots[str(internal_id)] = asyncio.create_task(
                 self._dispatch_snapshot_after_timeout(channel, item, received_at_ms, str(internal_id))
             )
@@ -188,10 +205,15 @@ class CollectorService(WorkerBase):
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
         payload = {"channel": channel, "data": [item]}
         for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
-            ingested = await self.resources.run_realtime_db(
-                self.store.ingest_event,
-                event,
-            )
+            try:
+                ingested = await self.db.run_business(
+                    "gmgn_event_publish",
+                    self.store.ingest_event,
+                    event,
+                    operation_timeout_seconds=3.0,
+                )
+            except ResourceAdmissionTimeout as exc:
+                raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
             if ingested.inserted:
                 self.status.twitter_events += 1
                 self.status.last_event_at_ms = received_at_ms

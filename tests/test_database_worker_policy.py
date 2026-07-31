@@ -14,12 +14,30 @@ from tracefold.market.radar.microbatch import RadarMicroBatchService
 from tracefold.news.projection import NewsProjectionService
 
 
+@pytest.mark.parametrize(
+    ("service_type", "worker_name"),
+    [
+        (RadarMicroBatchService, "radar_projection"),
+        (MacroProjectionService, "macro_projection"),
+        (NewsProjectionService, "news_projection"),
+        (ProfileProjectionService, "profile_projection"),
+    ],
+)
+def test_projection_services_default_to_canonical_terminal_owner(
+    service_type: Any,
+    worker_name: str,
+) -> None:
+    service = service_type(db=_RecordingSessionDatabase())
+
+    assert service.worker_name == worker_name
+
+
 def test_background_projection_session_bounds_postgres_parallelism() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
-    with bundle.worker_session("steady_projection_coordinator"):
+    with bundle.worker_session("profile_projection"):
         pass
 
     configured = [params for sql, params in conn.executed if sql.startswith("SELECT set_config")]
@@ -31,7 +49,7 @@ def test_background_projection_session_bounds_postgres_parallelism() -> None:
     assert "RESET work_mem" in [sql for sql, _params in conn.executed]
 
 
-def test_foreground_worker_session_keeps_postgres_defaults() -> None:
+def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
@@ -40,9 +58,7 @@ def test_foreground_worker_session_keeps_postgres_defaults() -> None:
         pass
 
     configured_names = {str(params[0]) for sql, params in conn.executed if sql.startswith("SELECT set_config")}
-    assert "max_parallel_workers_per_gather" not in configured_names
-    assert "jit" not in configured_names
-    assert "work_mem" not in configured_names
+    assert configured_names >= {"max_parallel_workers_per_gather", "jit", "work_mem"}
 
 
 def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
@@ -51,7 +67,7 @@ def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
     with bundle.worker_session(
-        "steady_projection_coordinator",
+        "profile_projection",
         transaction_timeout_seconds=0.5,
     ):
         pass

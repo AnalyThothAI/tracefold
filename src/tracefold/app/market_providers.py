@@ -16,6 +16,7 @@ from tracefold.market import (
     DexTokenQuote,
     DexTokenQuoteProvider,
     DexTokenQuoteRequest,
+    MarketProviderExpectedError,
     chain_address_key,
 )
 from tracefold.platform.config.settings import Settings
@@ -34,7 +35,7 @@ class FallbackDexQuoteProvider:
         requests = list(tokens)
         try:
             primary_quotes = self._primary.token_quotes(requests)
-        except Exception:
+        except MarketProviderExpectedError:
             if self._fallback is None:
                 raise
             primary_quotes = []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -9,7 +10,10 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tracefold.macro.domain import MacroModelExpectedError
 from tracefold.macro.fed_roles import match_effective_role
+from tracefold.platform.model_candidate import ModelCandidate
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 FED_DOCUMENT_ANALYSIS_PROMPT_VERSION = "fed_document_analysis_v2_evidence_ids"
 FED_DOCUMENT_ANALYSIS_SCHEMA_VERSION = "macro_document_analysis_v1"
@@ -68,6 +72,7 @@ class FedDocumentAnalysisAgentProtocol(Protocol):
         document: Mapping[str, Any],
         roster_context: Mapping[str, Any] | None,
         prior_analysis: Mapping[str, Any] | None,
+        on_model_submitted: Callable[[], None],
     ) -> FedDocumentAnalysisDraft: ...
 
 
@@ -80,22 +85,54 @@ class MacroDocumentAnalysisService:
         worker_name: str = "macro_document_analysis",
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
-        resources: Any | None = None,
+        database: Any | None = None,
+        stable_order: int = 30,
     ) -> None:
         self.db = db
         self.agent = agent
         self.worker_name = worker_name
         self.lease_owner = str(lease_owner or worker_name)
         self.clock_ms = clock_ms or _now_ms
-        self.resources = resources
+        self.database = database
+        self.stable_order = int(stable_order)
 
-    async def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
+    async def reconcile(self, *, now_ms: int | None = None) -> int:
         now = int(now_ms if now_ms is not None else self.clock_ms())
-        prepared = await self._run_db(self._prepare_job, now)
+        return int(await self._run_db(self._ensure_jobs, now))
+
+    async def peek(self, *, now_ms: int) -> ModelCandidate | None:
+        row = await self._run_db(self._peek_job, int(now_ms))
+        if row is None:
+            return None
+        return ModelCandidate(
+            kind="macro_document_analysis",
+            target_key=str(row["analysis_job_id"]),
+            due_at_ms=int(row["next_due_at_ms"]),
+            stable_order=self.stable_order,
+        )
+
+    async def execute(self, candidate: ModelCandidate) -> bool:
+        result = await self.run_once(analysis_job_id=candidate.target_key)
+        return str(result["status"]) != "idle"
+
+    async def run_once(
+        self,
+        *,
+        now_ms: int | None = None,
+        analysis_job_id: str | None = None,
+    ) -> dict[str, Any]:
+        now = int(now_ms if now_ms is not None else self.clock_ms())
+        prepared = await self._run_db(self._prepare_job, now, analysis_job_id)
         jobs_written = int(prepared["jobs_written"])
         job = prepared["job"]
         if job is None:
             return {"status": "idle", "jobs_written": jobs_written}
+
+        model_started = False
+
+        def mark_model_submitted() -> None:
+            nonlocal model_started
+            model_started = True
 
         try:
             loaded = await self._run_db(self._load_job, job)
@@ -110,13 +147,17 @@ class MacroDocumentAnalysisService:
                     document=document,
                     roster_context=roster_context,
                     prior_analysis=prior,
+                    on_model_submitted=mark_model_submitted,
                 )
-            analysis = canonicalize_document_analysis(
-                draft,
-                document=document,
-                roster_context=roster_context,
-                prior_analysis=prior,
-            )
+            try:
+                analysis = canonicalize_document_analysis(
+                    draft,
+                    document=document,
+                    roster_context=roster_context,
+                    prior_analysis=prior,
+                )
+            except ValueError as exc:
+                raise MacroModelExpectedError(f"macro_document_model_output_invalid:{exc}") from exc
             return cast(
                 dict[str, Any],
                 await self._run_db(
@@ -128,7 +169,16 @@ class MacroDocumentAnalysisService:
                     jobs_written=jobs_written,
                 ),
             )
-        except Exception as exc:
+        except asyncio.CancelledError:
+            if not model_started:
+                await asyncio.shield(self._release_prework(job))
+            raise
+        except ResourceAdmissionTimeout:
+            if model_started:
+                raise
+            await self._release_prework(job)
+            return {"status": "idle", "jobs_written": jobs_written}
+        except MacroModelExpectedError as exc:
             return cast(
                 dict[str, Any],
                 await self._run_db(
@@ -139,7 +189,48 @@ class MacroDocumentAnalysisService:
                 ),
             )
 
-    def _prepare_job(self, now: int) -> dict[str, Any]:
+    async def _release_prework(self, job: Mapping[str, Any]) -> bool:
+        return bool(await self._run_db(self._release_prework_sync, job))
+
+    def _release_prework_sync(self, job: Mapping[str, Any]) -> bool:
+        with self._session() as repos, repos.transaction():
+            return bool(
+                repos.macro.release_document_analysis_claim(
+                    analysis_job_id=str(job["analysis_job_id"]),
+                    lease_owner=self.lease_owner,
+                    claimed_attempt_count=int(job["attempt_count"]),
+                )
+            )
+
+    def _ensure_jobs(self, now: int) -> int:
+        with self._session() as repos, repos.transaction():
+            return int(
+                repos.macro.ensure_document_analysis_jobs(
+                    model_name=self.agent.model_name,
+                    prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+                    max_attempts=_MAX_ATTEMPTS,
+                    now_ms=now,
+                    fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
+                    speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+                )
+            )
+
+    def _peek_job(self, now: int) -> dict[str, Any] | None:
+        with self._session() as repos:
+            return cast(
+                dict[str, Any] | None,
+                repos.macro.peek_document_analysis_job(
+                    model_name=self.agent.model_name,
+                    prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
+                    now_ms=now,
+                ),
+            )
+
+    def _prepare_job(
+        self,
+        now: int,
+        analysis_job_id: str | None = None,
+    ) -> dict[str, Any]:
         with self._session() as repos, repos.transaction():
             jobs_written = repos.macro.ensure_document_analysis_jobs(
                 model_name=self.agent.model_name,
@@ -155,6 +246,7 @@ class MacroDocumentAnalysisService:
                 lease_owner=self.lease_owner,
                 lease_ms=_LEASE_MS,
                 now_ms=now,
+                analysis_job_id=analysis_job_id,
             )
         return {"jobs_written": jobs_written, "job": dict(job) if job is not None else None}
 
@@ -265,11 +357,13 @@ class MacroDocumentAnalysisService:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        if self.resources is None:
+        if self.database is None:
             return function(*args, **kwargs)
-        return await self.resources.run_background_db(
+        return await self.database.run_business(
+            "macro_document_analysis_db",
             function,
             *args,
+            operation_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
             **kwargs,
         )
 

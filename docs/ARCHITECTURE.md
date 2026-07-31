@@ -11,7 +11,7 @@ publications are derived state.
 ```text
 providers / public streams
   -> tracefold workers
-  -> PostgreSQL material facts + typed frontiers
+  -> PostgreSQL material facts + typed projection frontiers + native model state
   -> single-writer read models or immutable publications
   -> tracefold serve
   -> HTTP / persisted-live WebSocket / React
@@ -19,9 +19,11 @@ providers / public streams
 
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
-acquisition, provider/model lanes, persisted status, and one EDF projection
+acquisition, the bounded external/model/CPU capabilities, singleton runtime
+status, and one EDF projection
 coordinator. Workers recover exclusively by re-reading PostgreSQL typed
-frontiers and queues on bounded code-owned clocks. Startup performs no full
+projection frontiers, native News/Thesis/Document model state, and queues on
+bounded code-owned clocks. Startup performs no full
 rebuild, backlog-clear loop, backfill, or phased load shifting. There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -87,7 +89,7 @@ tracefold.news
   brief.py          Chinese Brief fingerprint and citation index lock
   repository.py     PostgreSQL observation, item, Story, and Brief state
   interface.py      sole external News read interface
-  workers.py        source-only ingest and model candidates
+  runtime.py        bounded source acquisition and native Brief candidate
   projection.py     incremental identity/scoring reducer
 
 tracefold.macro
@@ -102,10 +104,10 @@ tracefold.integrations
   provider and external-system adapters, including DeepAgents
 
 tracefold.platform
-  config, PostgreSQL/Alembic, telemetry, paths, and generic worker mechanics
+  config, PostgreSQL/Alembic, telemetry, paths, and bounded resource primitives
 
 tracefold.app
-  composition, repositories/providers, worker registry, HTTP/WS, and CLI
+  composition, repositories/providers, the sole worker root, HTTP/WS, and CLI
 ```
 
 The three business package roots are their public Python interfaces:
@@ -125,9 +127,10 @@ platform -> Python / third-party libraries only
 ```
 
 Business packages never import `tracefold.app` or provider integrations.
-Transport adapters do not own business rules. Generic worker mechanics live in
-`tracefold.platform.workers`; queue state machines and read-model behavior stay
-with their business owner. These rules are executable in
+Transport adapters do not own business rules. The Workers root and its private
+TaskGroup loops live in `tracefold.app.workers`; platform exposes only bounded
+resource/projection/model candidate contracts. Queue state machines and
+read-model behavior stay with their business owner. These rules are executable in
 `tests/architecture/test_backend_boundaries.py`.
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
@@ -173,7 +176,7 @@ fact replay rebuilds it.
 ```text
 events + intents + resolutions + market facts
   -> stable Radar source edges
-  -> claim up to 32 target frontiers for one window x venue
+  -> claim up to 4 target frontiers for one window x venue
   -> compact scalar feature updates
   -> one complete Top-N rank
   -> hydrate wide JSON only for selected identities
@@ -183,7 +186,9 @@ events + intents + resolutions + market facts
 
 The public Radar row is a transparent `factor_snapshot` built only from
 persisted identity, social, and market facts. One bounded `window × venue`
-micro-batch claims at most 32 target frontiers, computes their feature updates
+micro-batch claims at most four target frontiers, within 10,000 source rows,
+4 MiB materialized input, 1 MiB compact output, and a five-second whole turn.
+It computes feature updates
 and the complete compact-population rank outside write transactions, then
 atomically publishes the closure and completes the exact claimed snapshots.
 Each frontier retains its latest input fingerprint/version and earliest
@@ -228,9 +233,9 @@ explicit regional exceptions. General local/regional news feeds are retired
 from serving. Trump Truth Social is a tier-1 first-party source and enters the
 ordinary Story/Brief lane without a separate corroboration gate.
 
-`news_ingest` is the only NewsItem writer. It synchronizes the code-owned
+The News acquisition due loop is the only NewsItem writer. Startup synchronizes the code-owned
 source catalog, claims one due source, performs provider I/O outside
-transactions under the global governor, records one FetchReceipt per attempt,
+transactions under the global three-slot finite-operation capability, records one FetchReceipt per attempt,
 and commits each source independently. Every parsed entry first becomes an immutable
 `news_feed_observations` row. Missing title, non-HTTP URL, missing date, and
 future time beyond one hour remain auditable rejected observations and never
@@ -291,7 +296,7 @@ unchanged input within an epoch writes zero serving rows. The API exposes the
 scoring item and factor breakdown. Global clustering precedes filtering,
 sorting, and keyset pagination; category is a facet, never a bucket or cap.
 
-`news_world_brief` selects at most eight Stories, caps one representative
+The native News Brief candidate selects at most eight Stories, caps one representative
 physical source at three, and excludes opinion, feel-good, and ephemeral live
 coverage. It requires at least three Stories from at least two physical
 sources before making a model call.
@@ -306,9 +311,10 @@ Publication history is immutable; failed runs cannot replace last-known-good.
 exposes `unavailable`, `insufficient_material`, `running`, `ready`,
 `stale_fallback`, or `failed` honestly. `running` requires a current database
 run with an unexpired lease and heartbeat.
-The deterministic pipeline runs every 120 seconds and the Brief worker every
-300 seconds by default, giving a two-minute Story target and a five-minute
-Chinese Brief target when providers respond within budget.
+Typed Story frontiers are polled by the single EDF and productive work repolls
+immediately. News Brief preserves the first-dirty 600-second debounce in native
+domain state; once due, the serial model arbiter repolls after every completed
+candidate. No per-Story or Brief worker timer is a correctness authority.
 
 The complete live News storage boundary is exactly twelve tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,
@@ -351,8 +357,8 @@ official FOMC / speech body + effective-dated role fact
 
 The acquisition clock families are `intraday_market`, `daily_settlement`,
 `scheduled_release`, `official_state`, `official_document`, and explicit
-`backfill`. They are
-separate workers over one target table, not a uniform
+`backfill`. The five steady families are explicit private due loops over one
+target table, not Worker objects or a uniform
 bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
 transactions; completion atomically writes facts, receipt, cursor, and target
 state. Unchanged source content writes zero fact rows while every attempt
@@ -369,8 +375,8 @@ official-history or proxy source. Source identities are reconciled with a
 persisted receipt and are never blended. The Coverage Manifest contains only
 capabilities that the supported free-data system can truthfully provide;
 missing paid or unimplementable capabilities are deleted rather than displayed
-as permanent product gaps. Operator config only enables source families and
-sets runtime cadence/lease/timeout knobs.
+as permanent product gaps. Operator config only enables source families;
+cadence, lease, timeout, batch, and resource limits are code-owned.
 
 The current nominal and real curves come from Treasury, with FRED as labelled
 history. CPI and labor release facts come from BLS, while GDP, PCE, and core PCE

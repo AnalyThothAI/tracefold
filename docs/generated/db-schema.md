@@ -759,25 +759,6 @@
 | `payload_hash` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
-## `model_generation_frontiers`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `candidate_kind` | `TEXT` | False | `None` |
-| `shard_key` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `deadline_at_ms` | `BIGINT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `transient_failure_count` | `INTEGER` | False | `0` |
-| `input_fingerprint` | `TEXT` | True | `None` |
-| `workflow_version` | `TEXT` | False | `None` |
-| `claimed_by` | `UUID` | True | `None` |
-| `claimed_until_ms` | `BIGINT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_brief_current`
 
 | Column | Type | Nullable | Default |
@@ -787,6 +768,8 @@
 | `target_fingerprint` | `TEXT` | True | `None` |
 | `latest_run_id` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `pending_first_dirty_at_ms` | `BIGINT` | True | `None` |
+| `pending_due_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_brief_publications`
 
@@ -827,6 +810,7 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `completed_at_ms` | `BIGINT` | True | `None` |
+| `next_due_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_brief_selection_current`
 
@@ -996,6 +980,8 @@
 | `next_fetch_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `claim_token` | `UUID` | True | `None` |
+| `claim_lease_expires_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_stories`
 
@@ -1108,6 +1094,29 @@
 | `next_probe_at_ms` | `BIGINT` | True | `None` |
 | `last_error` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `queue_terminal_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `terminal_id` | `TEXT` | False | `None` |
+| `owner_key` | `TEXT` | False | `None` |
+| `source_table` | `TEXT` | False | `None` |
+| `target_key` | `TEXT` | False | `None` |
+| `source_row_json` | `JSONB` | False | `None` |
+| `source_row_hash` | `TEXT` | False | `None` |
+| `final_status` | `TEXT` | False | `None` |
+| `final_reason` | `TEXT` | False | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `payload_hash` | `TEXT` | False | `''::text` |
+| `first_seen_at_ms` | `BIGINT` | True | `None` |
+| `last_attempted_at_ms` | `BIGINT` | True | `None` |
+| `terminalized_at_ms` | `BIGINT` | False | `None` |
+| `terminal_generation` | `INTEGER` | False | `1` |
+| `operator_action` | `TEXT` | True | `None` |
+| `operator_reason` | `TEXT` | True | `None` |
+| `operator_action_at_ms` | `BIGINT` | True | `None` |
+| `final_reason_bucket` | `TEXT` | False | `'other'::text` |
 
 ## `radar_projection_frontiers`
 
@@ -1241,6 +1250,10 @@
 | `last_error` | `TEXT` | True | `None` |
 | `first_dirty_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `reprocess_lookup_keys` | `ARRAY` | True | `None` |
+| `reprocess_after_intent_id` | `TEXT` | True | `None` |
+| `reprocess_resolved` | `BOOLEAN` | False | `false` |
+| `reprocess_queue_due_at_ms` | `BIGINT` | True | `None` |
 
 ## `token_discovery_results`
 
@@ -1576,44 +1589,14 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `worker_queue_terminal_events`
+## `workers_runtime`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `terminal_id` | `TEXT` | False | `None` |
-| `worker_name` | `TEXT` | False | `None` |
-| `source_table` | `TEXT` | False | `None` |
-| `target_key` | `TEXT` | False | `None` |
-| `source_row_json` | `JSONB` | False | `None` |
-| `source_row_hash` | `TEXT` | False | `None` |
-| `final_status` | `TEXT` | False | `None` |
-| `final_reason` | `TEXT` | False | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `payload_hash` | `TEXT` | False | `''::text` |
-| `first_seen_at_ms` | `BIGINT` | True | `None` |
-| `last_attempted_at_ms` | `BIGINT` | True | `None` |
-| `terminalized_at_ms` | `BIGINT` | False | `None` |
-| `terminal_generation` | `INTEGER` | False | `1` |
-| `operator_action` | `TEXT` | True | `None` |
-| `operator_reason` | `TEXT` | True | `None` |
-| `operator_action_at_ms` | `BIGINT` | True | `None` |
-| `final_reason_bucket` | `TEXT` | False | `'other'::text` |
-
-## `worker_runtime_status`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `unit_name` | `TEXT` | False | `None` |
+| `singleton_key` | `BOOLEAN` | False | `true` |
 | `runtime_id` | `UUID` | False | `None` |
 | `runtime_version` | `TEXT` | False | `None` |
-| `effective_status` | `TEXT` | False | `None` |
+| `lifecycle_state` | `TEXT` | False | `None` |
+| `started_at_ms` | `BIGINT` | False | `None` |
 | `heartbeat_at_ms` | `BIGINT` | False | `None` |
-| `last_started_at_ms` | `BIGINT` | True | `None` |
-| `last_finished_at_ms` | `BIGINT` | True | `None` |
-| `last_result_json` | `JSONB` | True | `None` |
-| `last_error` | `TEXT` | True | `None` |
-| `deadline_at_ms` | `BIGINT` | True | `None` |
-| `queue_depth` | `BIGINT` | True | `None` |
-| `oldest_due_at_ms` | `BIGINT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `quarantine_count` | `BIGINT` | False | `0` |
+| `fatal_code` | `TEXT` | True | `None` |

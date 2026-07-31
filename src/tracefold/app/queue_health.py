@@ -45,15 +45,15 @@ def fetch_queue_table_health(
     table: str,
     *,
     now_ms: int,
-    worker_name: str | None = None,
+    owner_key: str | None = None,
 ) -> dict[str, Any]:
     """Read one queue on demand for the authenticated ops CLI."""
     _validate_identifier(table)
     spec = STATUS_QUEUE_SPECS.get(table)
     if spec is not None:
-        return _status_queue_health(conn, spec, now_ms=now_ms, worker_name=worker_name)
+        return _status_queue_health(conn, spec, now_ms=now_ms, owner_key=owner_key)
     if table in DIRTY_TARGET_TABLES:
-        return _dirty_target_queue_health(conn, table, now_ms=now_ms, worker_name=worker_name)
+        return _dirty_target_queue_health(conn, table, now_ms=now_ms, owner_key=owner_key)
     return _unavailable_health(table, "unknown", "unknown_queue_table", None)
 
 
@@ -62,7 +62,7 @@ def _status_queue_health(
     spec: StatusQueueSpec,
     *,
     now_ms: int,
-    worker_name: str | None,
+    owner_key: str | None,
 ) -> dict[str, Any]:
     table = _validate_identifier(spec.table)
     try:
@@ -98,7 +98,7 @@ def _status_queue_health(
             kind="status_queue",
             counts_by_status=counts,
             metrics=_row_dict(row),
-            terminal_metrics=_terminal_metrics(conn, table, worker_name=worker_name),
+            terminal_metrics=_terminal_metrics(conn, table, owner_key=owner_key),
             now_ms=now_ms,
         )
     except Exception as exc:
@@ -110,11 +110,11 @@ def _dirty_target_queue_health(
     table: str,
     *,
     now_ms: int,
-    worker_name: str | None,
+    owner_key: str | None,
 ) -> dict[str, Any]:
     table = _validate_identifier(table)
     try:
-        worker_filter, worker_params = _worker_filter(table, worker_name)
+        owner_filter, owner_params = _owner_filter(table, owner_key)
         row = conn.execute(
             f"""
             SELECT
@@ -139,16 +139,16 @@ def _dirty_target_queue_health(
               OR leased_until_ms > %(now_ms)s
               OR (last_error IS NOT NULL AND last_error <> '')
             )
-            {worker_filter}
+            {owner_filter}
             """,
-            {"now_ms": int(now_ms), **worker_params},
+            {"now_ms": int(now_ms), **owner_params},
         ).fetchone()
         return _table_health(
             table=table,
             kind="dirty_target",
             counts_by_status={},
             metrics=_row_dict(row),
-            terminal_metrics=_terminal_metrics(conn, table, worker_name=worker_name),
+            terminal_metrics=_terminal_metrics(conn, table, owner_key=owner_key),
             now_ms=now_ms,
         )
     except Exception as exc:
@@ -167,21 +167,21 @@ def _status_counts(conn: Any, spec: StatusQueueSpec) -> dict[str, int]:
     return {str(_row_dict(row)["status"]): int(_row_dict(row)["count"]) for row in rows}
 
 
-def _terminal_metrics(conn: Any, source_table: str, *, worker_name: str | None) -> dict[str, Any]:
+def _terminal_metrics(conn: Any, source_table: str, *, owner_key: str | None) -> dict[str, Any]:
     params: dict[str, Any] = {"source_table": source_table}
-    worker_filter = ""
-    if worker_name is not None:
-        params["worker_name"] = worker_name
-        worker_filter = "AND worker_name = %(worker_name)s"
+    owner_filter = ""
+    if owner_key is not None:
+        params["owner_key"] = owner_key
+        owner_filter = "AND owner_key = %(owner_key)s"
     metrics = _row_dict(
         conn.execute(
             f"""
             SELECT
               COUNT(*) AS terminal_count,
               COUNT(*) FILTER (WHERE operator_action IS NULL) AS unresolved_terminal_count
-            FROM worker_queue_terminal_events
+            FROM queue_terminal_events
             WHERE source_table = %(source_table)s
-              {worker_filter}
+              {owner_filter}
             """,
             params,
         ).fetchone()
@@ -189,10 +189,10 @@ def _terminal_metrics(conn: Any, source_table: str, *, worker_name: str | None) 
     rows = conn.execute(
         f"""
         SELECT final_reason_bucket, COUNT(*) AS count
-        FROM worker_queue_terminal_events
+        FROM queue_terminal_events
         WHERE source_table = %(source_table)s
           AND operator_action IS NULL
-          {worker_filter}
+          {owner_filter}
         GROUP BY final_reason_bucket
         ORDER BY count DESC, final_reason_bucket ASC
         """,
@@ -278,8 +278,8 @@ def _all_statuses(spec: StatusQueueSpec) -> tuple[str, ...]:
     )
 
 
-def _worker_filter(table: str, worker_name: str | None) -> tuple[str, dict[str, str]]:
-    spec = DIRTY_TARGET_WORKER_FILTERS.get((table, worker_name or ""))
+def _owner_filter(table: str, owner_key: str | None) -> tuple[str, dict[str, str]]:
+    spec = DIRTY_TARGET_WORKER_FILTERS.get((table, owner_key or ""))
     if spec is None:
         return "", {}
     column, value = spec

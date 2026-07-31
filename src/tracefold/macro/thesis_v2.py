@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 
@@ -721,6 +721,7 @@ class MacroThesisAgent(Protocol):
         *,
         research_input: MacroResearchInputV1,
         attempt_id: str,
+        on_model_submitted: Callable[[], None],
     ) -> CandidateDraftEnvelope: ...
 
 

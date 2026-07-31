@@ -66,7 +66,7 @@ class ProfileProjectionService:
         self,
         *,
         db: Any,
-        worker_name: str = "steady_projection_coordinator",
+        worker_name: str = "profile_projection",
     ) -> None:
         self.db = db
         self.worker_name = worker_name
@@ -260,6 +260,27 @@ class ProfileProjectionService:
                 key=claim.key,
                 runtime_id=claim.runtime_id,
                 now_ms=now_ms,
+            )
+
+    def release_prework(
+        self,
+        claim: ProfileProjectionClaim,
+        *,
+        now_ms: int,
+    ) -> bool:
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            return bool(
+                repos.projection_frontiers.release_prework(
+                    PROFILE_FRONTIER,
+                    key=claim.key,
+                    runtime_id=claim.runtime_id,
+                    now_ms=now_ms,
+                )
             )
 
     def fail_deterministic(

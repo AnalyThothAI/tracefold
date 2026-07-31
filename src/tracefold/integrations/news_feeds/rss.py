@@ -3,10 +3,12 @@ from __future__ import annotations
 import calendar
 import html
 import ipaddress
+import json
 import re
 import time
 from collections.abc import Collection, Mapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import feedparser
@@ -14,6 +16,7 @@ import httpx
 
 from tracefold.news import (
     NewsFeedEntry,
+    NewsFeedExpectedError,
     NewsFeedFetch,
     NewsFeedReader,
     NewsSourceDefinition,
@@ -32,6 +35,51 @@ _NON_PUBLIC_HOST_SUFFIXES = (
     ".test",
 )
 _PUBLIC_HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_MAX_DECODED_BODY_BYTES = 5_000_000
+_MAX_ENTRIES_EXAMINED = 250
+_MAX_ENTRIES_RETURNED = 5
+_MAX_RESULT_BYTES = 1_048_576
+_MAX_REQUESTS = 3
+_HTTP_TOTAL_SECONDS = 27.0
+
+
+@dataclass(frozen=True, slots=True)
+class NewsFeedWire:
+    status_code: int
+    fetch_path: Literal["direct", "relay"]
+    direct_error_code: str | None
+    body: bytes
+    etag: str | None
+    last_modified: str | None
+    not_modified: bool
+
+
+@dataclass(slots=True)
+class _FetchBudget:
+    deadline_at: float
+    request_count: int = 0
+
+    def remaining(self) -> float:
+        remaining = self.deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise NewsFeedAcquisitionError(
+                "news_rss_total_timeout",
+                status_code=None,
+                fetch_path="wire",
+                direct_error_code=None,
+            )
+        return remaining
+
+    def begin_request(self) -> None:
+        self.remaining()
+        if self.request_count >= _MAX_REQUESTS:
+            raise NewsFeedAcquisitionError(
+                "news_rss_request_limit_exceeded",
+                status_code=None,
+                fetch_path="wire",
+                direct_error_code=None,
+            )
+        self.request_count += 1
 
 
 class RssFeedReader(NewsFeedReader):
@@ -61,11 +109,12 @@ class RssFeedReader(NewsFeedReader):
         self._relay_allowed_urls = frozenset(str(url).strip() for url in relay_allowed_urls if str(url).strip())
         if self._relay_auth_token and not self._relay_auth_header:
             raise ValueError("news_rss_relay_auth_header_required")
+        self._timeout_seconds = require_positive_float(
+            timeout_seconds,
+            error_code="news_rss_timeout_seconds_required",
+        )
         self._client = httpx.Client(
-            timeout=require_positive_float(
-                timeout_seconds,
-                error_code="news_rss_timeout_seconds_required",
-            ),
+            timeout=self._timeout_seconds,
             headers={
                 "User-Agent": user_agent,
                 "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
@@ -74,13 +123,14 @@ class RssFeedReader(NewsFeedReader):
             transport=transport,
         )
 
-    def fetch(
+    def fetch_wire(
         self,
         *,
         source: NewsSourceDefinition,
         etag: str | None,
         last_modified: str | None,
-    ) -> NewsFeedFetch:
+    ) -> NewsFeedWire:
+        budget = _FetchBudget(deadline_at=time.monotonic() + _HTTP_TOTAL_SECONDS)
         headers: dict[str, str] = {}
         if etag:
             headers["If-None-Match"] = etag
@@ -89,14 +139,16 @@ class RssFeedReader(NewsFeedReader):
         response, fetch_path, direct_error_code = self._fetch_response(
             source=source,
             headers=headers,
+            budget=budget,
         )
         response_etag = response.headers.get("etag") or etag
         response_last_modified = response.headers.get("last-modified") or last_modified
         if response.status_code == 304:
-            return NewsFeedFetch(
+            return NewsFeedWire(
                 status_code=304,
                 fetch_path=fetch_path,
                 direct_error_code=direct_error_code,
+                body=b"",
                 etag=response_etag,
                 last_modified=response_last_modified,
                 not_modified=True,
@@ -104,26 +156,12 @@ class RssFeedReader(NewsFeedReader):
         response.raise_for_status()
         if not _looks_like_rss(response.text):
             raise ValueError("news_rss_non_feed_response")
-        parsed = feedparser.parse(response.content)
-        if bool(getattr(parsed, "bozo", False)) and not getattr(parsed, "entries", None):
-            exception = getattr(parsed, "bozo_exception", None)
-            raise NewsFeedAcquisitionError(
-                f"news_rss_parse_failed:{type(exception).__name__}:{exception}",
-                status_code=int(response.status_code),
-                fetch_path=fetch_path,
-                direct_error_code=direct_error_code,
-            )
-        feed_language = _optional_text(_mapping_get(getattr(parsed, "feed", {}), "language"))
-        raw_entries = tuple(getattr(parsed, "entries", ()))
-        capped_entries = raw_entries[:5]
-        entries = tuple(_entry(entry, feed_language=feed_language) for entry in capped_entries)
-        return NewsFeedFetch(
+        budget.remaining()
+        return NewsFeedWire(
             status_code=int(response.status_code),
             fetch_path=fetch_path,
             direct_error_code=direct_error_code,
-            entries=entries,
-            entries_seen=len(raw_entries),
-            gate_counts={"per_feed_cap": max(0, len(raw_entries) - len(capped_entries))},
+            body=bytes(response.content),
             etag=response_etag,
             last_modified=response_last_modified,
             not_modified=False,
@@ -132,10 +170,16 @@ class RssFeedReader(NewsFeedReader):
     def close(self) -> None:
         self._client.close()
 
-    def _get_with_retry(self, url: str, *, headers: Mapping[str, str]) -> httpx.Response:
+    def _get_with_retry(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        budget: _FetchBudget,
+    ) -> httpx.Response:
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = self._client.get(url, headers=dict(headers))
+                response = self._bounded_get(url, headers=headers, budget=budget)
             except httpx.TransportError:
                 if attempt >= self._max_attempts:
                     raise
@@ -150,10 +194,11 @@ class RssFeedReader(NewsFeedReader):
         *,
         source: NewsSourceDefinition,
         headers: Mapping[str, str],
+        budget: _FetchBudget,
     ) -> tuple[httpx.Response, str, str | None]:
         direct_error_code: str | None = None
         try:
-            direct = self._get_with_retry(source.feed_url, headers=headers)
+            direct = self._get_with_retry(source.feed_url, headers=headers, budget=budget)
             if direct.status_code == 304:
                 return direct, "direct", None
             if direct.status_code in {403, 429} or direct.status_code >= 500:
@@ -195,10 +240,11 @@ class RssFeedReader(NewsFeedReader):
             else f"{self._relay_base_url}/rss"
         )
         try:
-            relay = self._client.get(
+            relay = self._bounded_get(
                 relay_endpoint,
                 params={"url": source.feed_url},
                 headers=relay_headers,
+                budget=budget,
             )
             if relay.status_code == 304:
                 return relay, "relay", direct_error_code
@@ -220,6 +266,104 @@ class RssFeedReader(NewsFeedReader):
                 fetch_path="relay",
                 direct_error_code=direct_error_code,
             ) from exc
+
+    def _bounded_get(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        budget: _FetchBudget,
+        params: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        budget.begin_request()
+        timeout_seconds = min(self._timeout_seconds, budget.remaining())
+        timeout = httpx.Timeout(
+            timeout_seconds,
+            connect=min(5.0, timeout_seconds),
+            read=min(10.0, timeout_seconds),
+            write=min(5.0, timeout_seconds),
+            pool=min(5.0, timeout_seconds),
+        )
+        with self._client.stream(
+            "GET",
+            url,
+            headers=dict(headers),
+            params=dict(params or {}),
+            timeout=timeout,
+        ) as response:
+            body = bytearray()
+            decoded_body_bytes = 0
+            for chunk in response.iter_bytes():
+                budget.remaining()
+                decoded_body_bytes += len(chunk)
+                if decoded_body_bytes > _MAX_DECODED_BODY_BYTES:
+                    raise NewsFeedAcquisitionError(
+                        "news_rss_body_oversized",
+                        status_code=int(response.status_code),
+                        fetch_path="wire",
+                        direct_error_code=None,
+                    )
+                body.extend(chunk)
+            budget.remaining()
+            return httpx.Response(
+                status_code=response.status_code,
+                headers=response.headers,
+                content=bytes(body),
+                request=response.request,
+            )
+
+
+def parse_rss_feed_wire(wire: NewsFeedWire) -> NewsFeedFetch:
+    if wire.not_modified:
+        return NewsFeedFetch(
+            status_code=wire.status_code,
+            fetch_path=wire.fetch_path,
+            direct_error_code=wire.direct_error_code,
+            etag=wire.etag,
+            last_modified=wire.last_modified,
+            not_modified=True,
+        )
+    parsed = feedparser.parse(wire.body)
+    if bool(getattr(parsed, "bozo", False)) and not getattr(parsed, "entries", None):
+        exception = getattr(parsed, "bozo_exception", None)
+        raise NewsFeedAcquisitionError(
+            f"news_rss_parse_failed:{type(exception).__name__}:{exception}",
+            status_code=wire.status_code,
+            fetch_path=wire.fetch_path,
+            direct_error_code=wire.direct_error_code,
+        )
+    feed_language = _optional_text(_mapping_get(getattr(parsed, "feed", {}), "language"))
+    raw_entries = tuple(getattr(parsed, "entries", ()))
+    examined_entries = raw_entries[:_MAX_ENTRIES_EXAMINED]
+    capped_entries = examined_entries[:_MAX_ENTRIES_RETURNED]
+    entries = tuple(_entry(entry, feed_language=feed_language) for entry in capped_entries)
+    result = NewsFeedFetch(
+        status_code=wire.status_code,
+        fetch_path=wire.fetch_path,
+        direct_error_code=wire.direct_error_code,
+        entries=entries,
+        entries_seen=len(raw_entries),
+        gate_counts={"per_feed_cap": max(0, len(raw_entries) - len(capped_entries))},
+        etag=wire.etag,
+        last_modified=wire.last_modified,
+        not_modified=False,
+    )
+    result_bytes = len(
+        json.dumps(
+            result.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    if result_bytes > _MAX_RESULT_BYTES:
+        raise NewsFeedAcquisitionError(
+            "news_rss_result_oversized",
+            status_code=wire.status_code,
+            fetch_path=wire.fetch_path,
+            direct_error_code=wire.direct_error_code,
+        )
+    return result
 
 
 def is_public_https_feed_url(value: object) -> bool:
@@ -257,7 +401,7 @@ def is_public_https_feed_url(value: object) -> bool:
     return address.is_global
 
 
-class NewsFeedAcquisitionError(RuntimeError):
+class NewsFeedAcquisitionError(NewsFeedExpectedError):
     def __init__(
         self,
         message: str,

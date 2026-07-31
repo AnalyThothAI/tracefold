@@ -10,7 +10,8 @@ def test_runtime_code_has_no_default_or_nested_thread_pools():
         source = path.read_text(encoding="utf-8")
         relative = str(path.relative_to(ROOT))
         owns_explicit_executor = relative in {
-            "src/tracefold/app/runtime_resources.py",
+            "src/tracefold/app/database.py",
+            "src/tracefold/app/worker_capabilities.py",
             "src/tracefold/app/http/ws.py",
         }
         if "asyncio.to_thread" in source or ("ThreadPoolExecutor" in source and not owns_explicit_executor):
@@ -30,7 +31,6 @@ def test_worker_side_has_no_in_process_live_publisher() -> None:
         *sorted((SRC / "market").rglob("*.py")),
         *sorted((SRC / "news").rglob("*.py")),
         *sorted((SRC / "macro").rglob("*.py")),
-        SRC / "app" / "bootstrap.py",
         SRC / "app" / "workers.py",
     ):
         source = path.read_text(encoding="utf-8")

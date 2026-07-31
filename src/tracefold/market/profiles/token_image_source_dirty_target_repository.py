@@ -167,7 +167,8 @@ class TokenImageSourceDirtyTargetRepository:
         cursor = self.conn.execute(
             """
             WITH due AS (
-              SELECT source_url_hash, target_type, target_id
+              SELECT source_url_hash, target_type, target_id,
+                     last_error AS previous_last_error
               FROM token_image_source_dirty_targets
               WHERE due_at_ms <= %(now_ms)s
                 AND (leased_until_ms IS NULL OR leased_until_ms <= %(now_ms)s)
@@ -190,7 +191,7 @@ class TokenImageSourceDirtyTargetRepository:
             WHERE token_image_source_dirty_targets.source_url_hash = due.source_url_hash
               AND token_image_source_dirty_targets.target_type = due.target_type
               AND token_image_source_dirty_targets.target_id = due.target_id
-            RETURNING token_image_source_dirty_targets.*
+            RETURNING token_image_source_dirty_targets.*, due.previous_last_error
             """,
             {
                 "now_ms": int(now_ms),
@@ -202,6 +203,35 @@ class TokenImageSourceDirtyTargetRepository:
         rows = cursor.fetchall()
         expect_mutation_count(cursor, expected=len(rows), error_code="token_image_source_dirty_target_rowcount_invalid")
         return [dict(row) for row in rows]
+
+    def release_prework(self, claim: Mapping[str, Any]) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE token_image_source_dirty_targets
+               SET leased_until_ms = NULL,
+                   lease_owner = NULL,
+                   attempt_count = attempt_count - 1,
+                   last_error = %s
+             WHERE source_url_hash = %s
+               AND target_type = %s
+               AND target_id = %s
+               AND payload_hash = %s
+               AND lease_owner = %s
+               AND attempt_count = %s
+               AND attempt_count > 0
+            RETURNING target_id
+            """,
+            (
+                claim.get("previous_last_error"),
+                str(claim["source_url_hash"]),
+                str(claim["target_type"]),
+                str(claim["target_id"]),
+                str(claim["payload_hash"]),
+                str(claim["lease_owner"]),
+                int(claim["attempt_count"]),
+            ),
+        ).fetchone()
+        return row is not None
 
     def existing_by_source_targets(
         self,
@@ -241,7 +271,7 @@ class TokenImageSourceDirtyTargetRepository:
         self,
         targets: Iterable[Mapping[str, Any]],
         *,
-        worker_name: str,
+        owner_key: str,
     ) -> dict[tuple[str, str, str], dict[str, Any]]:
         records = _target_identity_records(targets)
         if not records:
@@ -259,8 +289,8 @@ class TokenImageSourceDirtyTargetRepository:
             )
             SELECT incoming.source_url_hash, incoming.target_type, incoming.target_id, terminal.*
             FROM incoming
-            JOIN worker_queue_terminal_events terminal
-              ON terminal.worker_name = %(worker_name)s
+            JOIN queue_terminal_events terminal
+              ON terminal.owner_key = %(owner_key)s
              AND terminal.source_table = 'token_image_source_dirty_targets'
              AND terminal.target_key = incoming.target_key
              AND terminal.operator_action IS NULL
@@ -270,7 +300,7 @@ class TokenImageSourceDirtyTargetRepository:
                 "target_types": [record["target_type"] for record in records],
                 "target_ids": [record["target_id"] for record in records],
                 "target_keys": [_terminal_target_key(record) for record in records],
-                "worker_name": _required_text(worker_name, field_name="worker_name"),
+                "owner_key": _required_text(owner_key, field_name="owner_key"),
             },
         ).fetchall()
         return {
@@ -316,7 +346,7 @@ class TokenImageSourceDirtyTargetRepository:
         now_ms: int,
         retry_ms: int,
         max_attempts: int,
-        worker_name: str,
+        owner_key: str,
     ) -> int:
         records = _claim_records(claims)
         if not records:
@@ -326,7 +356,7 @@ class TokenImageSourceDirtyTargetRepository:
             retry_ms,
             error_code="token_image_source_dirty_target_retry_ms_required",
         )
-        parsed_worker_name = _required_text(worker_name, field_name="worker_name")
+        parsed_owner_key = _required_text(owner_key, field_name="owner_key")
         retry_records = [record for record in records if int(record["attempt_count"]) < parsed_max_attempts]
         exhausted_records = [record for record in records if int(record["attempt_count"]) >= parsed_max_attempts]
         params = {
@@ -374,7 +404,7 @@ class TokenImageSourceDirtyTargetRepository:
             for row in deleted_rows:
                 terminalize_source_row(
                     self.conn,
-                    worker_name=parsed_worker_name,
+                    owner_key=parsed_owner_key,
                     source_table="token_image_source_dirty_targets",
                     target_key=_terminal_target_key(row),
                     source_row=row,

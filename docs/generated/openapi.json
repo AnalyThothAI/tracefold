@@ -9954,82 +9954,6 @@
         "title": "MacroVolatilityTermStructureData",
         "type": "object"
       },
-      "NewsHealthData": {
-        "additionalProperties": false,
-        "properties": {
-          "layers": {
-            "$ref": "#/components/schemas/NewsHealthLayersData"
-          },
-          "measured_at_ms": {
-            "title": "Measured At Ms",
-            "type": "integer"
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Reasons",
-            "type": "array"
-          },
-          "status": {
-            "enum": [
-              "warming",
-              "ready",
-              "degraded"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "reasons",
-          "layers",
-          "measured_at_ms"
-        ],
-        "title": "NewsHealthData",
-        "type": "object"
-      },
-      "NewsHealthLayerData": {
-        "additionalProperties": true,
-        "properties": {
-          "status": {
-            "enum": [
-              "warming",
-              "ready",
-              "degraded"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "NewsHealthLayerData",
-        "type": "object"
-      },
-      "NewsHealthLayersData": {
-        "additionalProperties": false,
-        "properties": {
-          "brief": {
-            "$ref": "#/components/schemas/NewsHealthLayerData"
-          },
-          "ingest": {
-            "$ref": "#/components/schemas/NewsHealthLayerData"
-          },
-          "story": {
-            "$ref": "#/components/schemas/NewsHealthLayerData"
-          }
-        },
-        "required": [
-          "ingest",
-          "story",
-          "brief"
-        ],
-        "title": "NewsHealthLayersData",
-        "type": "object"
-      },
       "ReadinessData": {
         "additionalProperties": false,
         "properties": {
@@ -10488,67 +10412,98 @@
         "additionalProperties": false,
         "properties": {
           "db": {
-            "additionalProperties": true,
-            "title": "Db",
-            "type": "object"
+            "$ref": "#/components/schemas/StatusDatabaseData"
           },
-          "news": {
-            "$ref": "#/components/schemas/NewsHealthData"
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
           },
           "ok": {
             "title": "Ok",
             "type": "boolean"
           },
-          "provider_states": {
-            "additionalProperties": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Provider States",
-            "type": "object"
-          },
           "reasons": {
             "items": {
+              "enum": [
+                "database_unavailable",
+                "database_schema_mismatch",
+                "runtime_status_query_failed",
+                "runtime_missing",
+                "runtime_heartbeat_stale",
+                "runtime_starting",
+                "runtime_stopping",
+                "runtime_stopped",
+                "runtime_failed"
+              ],
               "type": "string"
             },
             "title": "Reasons",
             "type": "array"
           },
-          "runtime_role": {
-            "const": "serve",
-            "title": "Runtime Role",
-            "type": "string"
-          },
-          "snapshot_gate": {
-            "additionalProperties": true,
-            "title": "Snapshot Gate",
-            "type": "object"
-          },
-          "store": {
-            "const": "postgresql",
-            "title": "Store",
-            "type": "string"
-          },
-          "workers": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/WorkerStatusData"
-            },
-            "title": "Workers",
-            "type": "object"
+          "workers_runtime": {
+            "$ref": "#/components/schemas/WorkersRuntimeData"
           }
         },
         "required": [
           "ok",
           "reasons",
-          "runtime_role",
-          "store",
-          "snapshot_gate",
+          "measured_at_ms",
           "db",
-          "provider_states",
-          "workers",
-          "news"
+          "workers_runtime"
         ],
         "title": "StatusData",
+        "type": "object"
+      },
+      "StatusDatabaseData": {
+        "additionalProperties": false,
+        "properties": {
+          "current_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Revision"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "database_unavailable",
+                  "schema_mismatch"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "schema_ok": {
+            "title": "Schema Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "schema_ok",
+          "current_revision",
+          "expected_revision",
+          "error_code"
+        ],
+        "title": "StatusDatabaseData",
         "type": "object"
       },
       "StocksRadarAttentionData": {
@@ -12404,35 +12359,29 @@
         "title": "ValidationError",
         "type": "object"
       },
-      "WorkerStatusData": {
+      "WorkersRuntimeData": {
         "additionalProperties": false,
         "properties": {
-          "deadline_at_ms": {
+          "fatal_code": {
             "anyOf": [
               {
-                "type": "integer"
+                "enum": [
+                  "startup_failed",
+                  "child_failed",
+                  "control_failed",
+                  "singleton_lost",
+                  "runtime_invariant_failed",
+                  "resource_operation_overrun",
+                  "graceful_deadline_exceeded",
+                  "cleanup_failed"
+                ],
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Deadline At Ms"
-          },
-          "effective_status": {
-            "enum": [
-              "disabled",
-              "unavailable",
-              "degraded",
-              "running",
-              "stopped",
-              "failed"
-            ],
-            "title": "Effective Status",
-            "type": "string"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
+            "title": "Fatal Code"
           },
           "heartbeat_at_ms": {
             "anyOf": [
@@ -12445,91 +12394,10 @@
             ],
             "title": "Heartbeat At Ms"
           },
-          "iteration_duration_p99_ms": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Iteration Duration P99 Ms"
-          },
-          "last_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Error"
-          },
-          "last_finished_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Finished At Ms"
-          },
-          "last_result": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Result"
-          },
-          "last_started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Started At Ms"
-          },
-          "oldest_due_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest Due At Ms"
-          },
-          "quarantine_count": {
-            "title": "Quarantine Count",
+          "heartbeat_stale_after_ms": {
+            "const": 15000,
+            "title": "Heartbeat Stale After Ms",
             "type": "integer"
-          },
-          "queue_depth": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Queue Depth"
-          },
-          "running": {
-            "title": "Running",
-            "type": "boolean"
           },
           "runtime_id": {
             "anyOf": [
@@ -12553,9 +12421,42 @@
             ],
             "title": "Runtime Version"
           },
+          "started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At Ms"
+          },
+          "state": {
+            "enum": [
+              "starting",
+              "running",
+              "stopping",
+              "stopped",
+              "failed",
+              "stale",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
           "unavailable_reason": {
             "anyOf": [
               {
+                "enum": [
+                  "runtime_status_query_failed",
+                  "runtime_missing",
+                  "runtime_heartbeat_stale",
+                  "runtime_starting",
+                  "runtime_stopping",
+                  "runtime_stopped",
+                  "runtime_failed"
+                ],
                 "type": "string"
               },
               {
@@ -12566,24 +12467,16 @@
           }
         },
         "required": [
-          "enabled",
-          "running",
-          "effective_status",
-          "unavailable_reason",
           "runtime_id",
           "runtime_version",
+          "state",
+          "started_at_ms",
           "heartbeat_at_ms",
-          "last_started_at_ms",
-          "last_finished_at_ms",
-          "last_result",
-          "last_error",
-          "iteration_duration_p99_ms",
-          "deadline_at_ms",
-          "queue_depth",
-          "oldest_due_at_ms",
-          "quarantine_count"
+          "heartbeat_stale_after_ms",
+          "fatal_code",
+          "unavailable_reason"
         ],
-        "title": "WorkerStatusData",
+        "title": "WorkersRuntimeData",
         "type": "object"
       }
     }

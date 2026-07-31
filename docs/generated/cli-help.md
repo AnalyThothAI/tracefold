@@ -52,14 +52,14 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {hard-cut-rebuild,seal-worker-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
+                     {hard-cut-rebuild,seal-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
 
 positional arguments:
-  {hard-cut-rebuild,seal-worker-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
+  {hard-cut-rebuild,seal-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
     hard-cut-rebuild    rebuild and audit all hard-cut current read models
-    seal-worker-acceptance
-                        validate and seal a complete Issue #32 acceptance
-                        bundle
+    seal-workers-runtime-acceptance
+                        validate and seal a complete Workers Runtime V2
+                        acceptance bundle
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
