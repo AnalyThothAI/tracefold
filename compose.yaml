@@ -132,7 +132,7 @@ services:
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "serve"]
-    stop_grace_period: 35s
+    stop_grace_period: 40s
     deploy:
       resources:
         limits:
@@ -171,7 +171,7 @@ services:
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]
-    stop_grace_period: 35s
+    stop_grace_period: 40s
     deploy:
       resources:
         limits:

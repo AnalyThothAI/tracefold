@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
 
@@ -38,3 +40,10 @@ def test_worker_side_has_no_in_process_live_publisher() -> None:
             violations.append(str(path.relative_to(ROOT)))
 
     assert violations == []
+
+
+def test_deployment_grace_covers_the_full_workers_shutdown_budget() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+
+    assert compose["services"]["serve"]["stop_grace_period"] == "40s"
+    assert compose["services"]["workers"]["stop_grace_period"] == "40s"
