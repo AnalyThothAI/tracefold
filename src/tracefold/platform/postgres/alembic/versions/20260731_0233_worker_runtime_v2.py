@@ -46,6 +46,11 @@ _MODEL_OWNER_BY_KIND = {
     "macro_thesis": "macro_thesis",
     "macro_document_analysis": "macro_document_analysis",
 }
+_LEGACY_TERMINAL_OWNER_MAPPINGS = {
+    "news_page_projection": "news_projection",
+    "news_source_quality_projection": "news_projection",
+    "token_radar_projection": "radar_projection",
+}
 
 
 def upgrade() -> None:
@@ -200,7 +205,12 @@ def _validate_terminal_owners(conn: Any) -> None:
         str(row[0])
         for row in conn.exec_driver_sql("SELECT DISTINCT worker_name FROM worker_queue_terminal_events").fetchall()
     }
-    unknown = sorted(owners - _CANONICAL_OWNERS - {"steady_projection_coordinator", "model_projection"})
+    unknown = sorted(
+        owners
+        - _CANONICAL_OWNERS
+        - {"steady_projection_coordinator", "model_projection"}
+        - set(_LEGACY_TERMINAL_OWNER_MAPPINGS)
+    )
     if unknown:
         raise RuntimeError("worker_runtime_v2_unknown_terminal_owners:" + ",".join(unknown))
     bad_projection_sources = conn.exec_driver_sql(
@@ -1123,6 +1133,15 @@ def _matching_valid_lease(
 
 def _migrate_terminal_evidence(conn: Any, *, now_ms: int) -> None:
     preservation_snapshot = _terminal_preservation_snapshot(conn)
+    for legacy_owner, owner in _LEGACY_TERMINAL_OWNER_MAPPINGS.items():
+        conn.exec_driver_sql(
+            """
+            UPDATE worker_queue_terminal_events
+               SET worker_name = %s
+             WHERE worker_name = %s
+            """,
+            (owner, legacy_owner),
+        )
     for source_table, owner in _PROJECTION_OWNER_BY_SOURCE.items():
         conn.exec_driver_sql(
             """

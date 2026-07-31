@@ -525,11 +525,14 @@ uv run tracefold ops seal-workers-runtime-acceptance --template
 ```
 
 Before the cutover, migration `20260731_0233` must pass its terminal-owner
-preflight. Any owner outside the canonical V2 set or the two explicitly
-migrated historical owners aborts the whole migration; operators must resolve
-that provenance instead of guessing an alias. After the operator-approved
-production cutover, fill a new external bundle with measured evidence and an
-independent reviewer disposition. Seal only a complete bundle:
+preflight. It performs these one-time, operator-authorized production evidence
+mappings encoded in that irreversible migration; the specification-defined
+historical coordinator and model owners retain their source- and
+candidate-specific migration rules. No runtime alias or dual read remains after
+the migration. Any other non-canonical owner aborts the whole migration;
+operators must resolve that provenance instead of guessing an alias. After the
+operator-approved production cutover, fill a new external bundle with measured
+evidence and an independent reviewer disposition. Seal only a complete bundle:
 
 ```bash
 uv run tracefold ops seal-workers-runtime-acceptance \

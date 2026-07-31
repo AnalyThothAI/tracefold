@@ -228,7 +228,7 @@ def test_migration_refuses_unknown_terminal_owner_without_partial_schema_changes
         _insert_terminal(
             conn,
             terminal_id="terminal-unknown",
-            worker_name="news_page_projection",
+            worker_name="unclassified_projection",
             source_table="news_projection_frontiers",
             target_key="unknown",
             source={"target_key": "unknown"},
@@ -237,7 +237,7 @@ def test_migration_refuses_unknown_terminal_owner_without_partial_schema_changes
     finally:
         conn.close()
 
-    with pytest.raises(RuntimeError, match="worker_runtime_v2_unknown_terminal_owners:news_page_projection"):
+    with pytest.raises(RuntimeError, match="worker_runtime_v2_unknown_terminal_owners:unclassified_projection"):
         _upgrade_head()
 
     conn = connect_postgres_test(read_only=False)
@@ -249,6 +249,84 @@ def test_migration_refuses_unknown_terminal_owner_without_partial_schema_changes
         )
         assert conn.execute("SELECT to_regclass('queue_terminal_events') AS name").fetchone()["name"] is None
         assert conn.execute("SELECT to_regclass('workers_runtime') AS name").fetchone()["name"] is None
+    finally:
+        conn.close()
+
+
+def test_migration_maps_only_authorized_legacy_terminal_owners_and_preserves_evidence() -> None:
+    _prepare_0232()
+    legacy_rows = (
+        (
+            "terminal-news-page",
+            "news_page_projection",
+            "news_projection_dirty_targets",
+            "news:page:42",
+            "news_projection",
+        ),
+        (
+            "terminal-news-source-quality",
+            "news_source_quality_projection",
+            "news_projection_dirty_targets",
+            "news:source:quality:7",
+            "news_projection",
+        ),
+        (
+            "terminal-radar-dirty",
+            "token_radar_projection",
+            "token_radar_dirty_targets",
+            "radar:dirty:btc",
+            "radar_projection",
+        ),
+        (
+            "terminal-radar-source",
+            "token_radar_projection",
+            "token_radar_source_dirty_events",
+            "radar:event:eth",
+            "radar_projection",
+        ),
+    )
+    conn = connect_postgres_test(read_only=False)
+    try:
+        for terminal_id, legacy_owner, source_table, target_key, _ in legacy_rows:
+            _insert_terminal(
+                conn,
+                terminal_id=terminal_id,
+                worker_name=legacy_owner,
+                source_table=source_table,
+                target_key=target_key,
+                source={"target_key": target_key, "legacy_owner": legacy_owner},
+            )
+        conn.execute(
+            """
+            UPDATE worker_queue_terminal_events
+               SET operator_action = 'archive',
+                   operator_reason = 'operator-reviewed',
+                   operator_action_at_ms = 350
+             WHERE terminal_id = 'terminal-news-source-quality'
+            """
+        )
+        before = {
+            row["terminal_id"]: {
+                key: value for key, value in dict(row).items() if key not in {"terminal_id", "worker_name"}
+            }
+            for row in conn.execute("SELECT * FROM worker_queue_terminal_events ORDER BY terminal_id").fetchall()
+        }
+        conn.commit()
+    finally:
+        conn.close()
+
+    _upgrade_head()
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        rows = conn.execute("SELECT * FROM queue_terminal_events ORDER BY terminal_id").fetchall()
+        by_id = {row["terminal_id"]: row for row in rows}
+        assert set(by_id) == {row[0] for row in legacy_rows}
+        for terminal_id, _, _, _, expected_owner in legacy_rows:
+            actual = dict(by_id[terminal_id])
+            assert actual.pop("owner_key") == expected_owner
+            actual.pop("terminal_id")
+            assert actual == before[terminal_id]
     finally:
         conn.close()
 
