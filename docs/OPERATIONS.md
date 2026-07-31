@@ -511,6 +511,148 @@ For a migration or production cutover:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
+## Issue #32 production status at 2026-07-31
+
+**Disposition: not accepted; keep Issue #32 open.**
+
+This is a production status snapshot, not a replacement specification. GitHub
+Issue #32 remains authoritative. The evidence cutoff is 2026-07-31
+Asia/Shanghai, using the operator-owned Compose runtime, PostgreSQL, and
+`~/.tracefold/` configuration. The deployed implementation was local `main` at
+`816ff672` and Alembic `20260731_0231`. At the cutoff the local branch was 24
+commits ahead of `origin/main`; no remote push had been performed.
+
+The two role-specific composition roots, exact 15-unit logical Workers
+topology, PostgreSQL singleton lock, role permissions, typed domain frontiers,
+one stateless EDF coordinator, and code-owned resource contracts are deployed.
+Serve, Workers, PostgreSQL, and RSSHub were healthy with zero restarts, and
+`/readyz` reported the expected migration. A second Workers runtime failed fast
+with exit code 3. These facts prove runtime readiness, not business freshness.
+
+The latest quick hard cut began at 09:03 Asia/Shanghai. Serve and Workers were
+stopped and replaced without overlapping writers; PostgreSQL and RSSHub
+remained running. Conservative external readiness returned by approximately
+09:05:15. The operator explicitly waived a database backup for this cut. That
+waiver is not restore evidence and does not satisfy the snapshot step in the
+Issue #32 cutover recipe.
+
+### Closed findings
+
+Migration `20260731_0231` removed the hourly per-Story score-frontier fan-out
+and replaced it with exactly 64 stable `score-bucket:00` through
+`score-bucket:63` frontiers. Production contained zero legacy
+`score:<story_id>` rows. A controlled reconcile of all buckets completed in
+12.111 seconds with no unresolved miss or quarantine. The semantic audit
+covered 3,053 desired item rows and 2,396 active Stories with zero item and
+Story mismatches.
+
+The production-scale News benchmark covered approximately 2,397 active Stories
+and 3,053 items, with at most 51 Stories and 301 items in one bucket:
+
+| News score stage | p50 | p95 | max |
+|---|---:|---:|---:|
+| bounded load | 13.42 ms | 24.78 ms | 146.79 ms |
+| pure compute | 4.17 ms | 7.70 ms | 28.14 ms |
+
+A real publish path for 39 Stories and 41 items was also rehearsed inside a
+rolled-back transaction; the rollback left serving state unchanged. The prior
+2,236 independent hourly Story clocks are therefore closed at their cause,
+without Redis, Kafka, Celery, or a general scheduler.
+
+The production query audit covered every declared public query family with no
+route gap, plan violation, or temporary-block violation. Lexical search
+executed in 23.324 ms with 2.48:1 base-relation read amplification; substring
+search executed in 54.325 ms with 9.20:1 amplification. Both are below the
+20:1 gate. Role, schema, foreign-key, current-model, and publication-state
+audits passed, with zero missing foreign keys.
+
+Automated verification passed:
+
+- full backend suite: 495 passed, 1 skipped, 17 warnings, and 7 subtests in
+  251.13 seconds;
+- targeted coordinator, cadence, telemetry, and Radar suite: 13 passed;
+- `make check`: Ruff, mypy, frontend typecheck/lint/architecture, backend
+  architecture/contracts, and Python compilation.
+
+A full operational database audit is itself maintenance load. One production
+audit scanned millions of rows and incremented Radar deadline misses by 83 and
+Profile misses by 2 before recovery. Run it outside the formal steady interval;
+do not hide it inside acceptance.
+
+### Failed acceptance attempts
+
+Raw evidence is retained at
+`/Users/qinghuan/.tracefold/acceptance/issue-32-20260731T055500`:
+
+| Attempt | Evidence | Disposition |
+|---|---|---|
+| 1 | `failed-attempt-1.ndjson`, 13 samples | Historical pre-closure run; not a passing 30-minute interval. |
+| 2 | `failed-attempt-2.ndjson`, 7 samples | Failed when News exposed 2,236 hourly score frontiers and 1,181 unresolved misses; this produced the 64-bucket fix. |
+| 3 | `failed-attempt-3.ndjson`, 7 samples | Formal run stopped fail-closed at 90 seconds after Radar misses increased from 304 to 307. |
+
+Attempt 3 began with 50 eligible Radar shards. In 90 seconds the coordinator
+completed 635 iterations, including 329 successful shards, with 68.52 seconds
+of aggregate processing time and approximately 108 ms mean processing time.
+Containers and sampled endpoints remained healthy and 15-second snapshots
+showed no unresolved miss at their exact sampling instants. The cumulative
+counter still increased by three, which independently fails the zero-miss
+gate.
+
+There is no `samples.ndjson`, complete `evidence.json`, independent reviewer
+pass, or sealed hash manifest. The continuous 1,800-second gate is not met, the
+bundle must not be sealed, and the issue must not close.
+
+### Remaining root cause
+
+The remaining failure is Radar invalidation fan-out and queueing, not a slow
+individual feature calculation. A production benchmark over 50 recent
+5-minute targets measured:
+
+| Radar stage | p50 | p95 | max |
+|---|---:|---:|---:|
+| bounded data load | 11.229 ms | 20.581 ms | 32.943 ms |
+| pure feature compute | 0.009 ms | 0.918 ms | 1.189 ms |
+
+The targets loaded 1 row p50, 3 rows p95, and 8 rows max. High-frequency
+read-only diagnosis instead caught one concrete late `5m/all` frontier for
+`asset:solana:token:a8ETZcRb9MMJ3UAQMczyHYCMKvdSiL1XHyirGYupump`.
+It was dirty and unclaimed, had no `market_tick_current` row, and was observed
+11,436 ms past its deadline. Its exact-resolution source was GMGN event
+`gmgn:twitter_monitor_basic:5df7594c-d179-4ef4-881e-232e48458f65`.
+
+One material event creates four target-window frontiers and can subsequently
+dirty global RankSets. Ten-second source buckets usually contained only 1–8
+affected targets, but the multiplication across windows, rank publication, and
+the other domain frontiers exceeded what the single-shard EDF path could always
+close inside the 5-minute product's 10-second deadline.
+
+Commit `816ff672` removed avoidable cadence sleep: productive and failed turns
+now repoll immediately, and only an idle turn waits 50 ms. After deployment, a
+preflight starting from zero misses still recorded three new Radar misses by
+16 seconds and six by 30 seconds. The current Issue #32 assumption that one
+Radar compute shard is exactly one `target × window` is therefore disproved at
+production load.
+
+Redis, Kafka, Celery, APScheduler, or a general PostgreSQL task library would
+move or wake the same queue without reducing invalidation count or service
+time. Splitting the 15 logical units into separate worker processes preserves
+the fan-out while making shared PostgreSQL and CPU conservation harder.
+
+The smallest evidence-supported next design is a bounded Radar
+`window × venue` micro-batch reducer: keep a durable stable dirty-target set in
+PostgreSQL; claim a fixed code-owned target batch for one window and venue;
+recompute only those features; atomically rank and publish the complete
+affected closure; and retain the earliest dirty deadline while work remains or
+arrives. This keeps one PostgreSQL truth, one writer, stable keys, typed state,
+bounded work, and the two-runtime topology.
+
+That proposal changes an explicit Issue #32 shard clause. It is not yet an
+authorized implementation and must be recorded as an issue amendment or a
+focused blocker/successor rather than silently changing the acceptance target.
+After that decision and implementation, start from zero unresolved misses, run
+a new continuous 30-minute acceptance, obtain an independent reviewer pass,
+seal the complete bundle, and only then close Issue #32.
+
 ## Issue #32 acceptance and sealing
 
 Controlled offline workload, isolated startup/recovery, and the real continuous
