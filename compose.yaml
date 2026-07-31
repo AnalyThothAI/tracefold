@@ -183,7 +183,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8766/healthz', timeout=1).read()",
+          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8766/readyz', timeout=1).read()",
         ]
       interval: 10s
       timeout: 2s

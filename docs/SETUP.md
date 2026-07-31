@@ -21,8 +21,8 @@ uv run tracefold workers   # ingestion/projection/provider/model runtime
 
 `init` writes `~/.tracefold/config.yaml` plus separate bootstrap, serve,
 workers, and migrate PostgreSQL password files with mode `0600`.
-`workers.yaml` no longer exists. Worker topology and all safety/resource
-budgets are code-owned. Rerun `uv run tracefold init --force` only when you
+Worker topology and all safety/resource budgets are code-owned. Rerun
+`uv run tracefold init --force` only when you
 intentionally want to replace these operator-owned files.
 
 For real data, edit the operator-owned files in `~/.tracefold/`
@@ -99,9 +99,9 @@ current product contract and are not filled with a fake proxy.
 
 Five automatic acquisition workers own distinct clocks:
 `macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
-`macro_official_state`, and
-`macro_official_documents`. `macro_backfill` exists only in the maintenance
-runtime and processes operator-created bounded targets.
+`macro_official_state`, and `macro_official_documents`. The two backfill
+commands synchronously process their explicit bounded targets and then exit;
+backfill is not a steady worker or automatic clock.
 The EDF projection coordinator rebuilds only affected module-local current
 rows from the static dataset/calculation/module dependency graph. The model
 coordinator writes immutable evidence-bound FOMC/speech analyses and seals the
@@ -134,11 +134,10 @@ conclusions can become `no_call`. Credit and WTI retain longer reliable public h
 bounded source response makes that history cheap and material to percentile
 context.
 
-Enable `macro_backfill` until the desired five-year targets are `current`;
-incomplete targets remain visible without blocking the workbench. Then
-enable `macro_document_analysis` until its durable queue has no open or failed
-jobs. Open or failed analyses remain explicit gaps and do not suppress a daily
-publication.
+Rerun the explicit backfill command after a retry deadline until the desired
+targets are `current`; incomplete targets remain visible without blocking the
+workbench. Open or failed document analyses remain explicit gaps and do not
+suppress a daily publication.
 
 A good macro status reports the generated Alembic head, bounded acquisition target
 states, recent source and reconciliation receipts, all six module rows, and the
@@ -203,9 +202,7 @@ docker compose --profile maintenance run --rm cutover \
 docker compose up -d
 ```
 
-An operator who explicitly accepts that there is no automatic rollback point
-may use `--snapshot-waived` instead of `--snapshot-confirmed`; the result
-records that irreversible waiver. The hard-cut command acquires the exclusive maintenance gate, refuses visible
+The hard-cut command acquires the exclusive maintenance gate, refuses visible
 Tracefold runtime sessions, migrates to head, provisions role passwords,
 rebuilds and audits Radar/News/Macro/current Profile, and only then changes
 `tracefold_app` to `NOLOGIN`. It never takes the snapshot itself. A failure

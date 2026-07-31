@@ -22,15 +22,11 @@ from tracefold.market import (
     EvidenceRepository,
     RegistryRepository,
 )
-from tracefold.market.radar.projection import (
-    RadarProjectionService,
-    compute_stocks_radar_rank_set,
-    compute_stocks_radar_target_feature,
-)
-from tracefold.market.radar.token_radar_projector import (
-    build_token_radar_current_closure,
-    compute_token_radar_target_projection,
-    rank_token_radar_closure,
+from tracefold.market.radar.microbatch import (
+    RadarMicroBatchService,
+    compute_radar_target_batch,
+    hydrate_radar_microbatch,
+    rank_radar_microbatch,
 )
 
 FIXED_NOW_MS = 1_800_000_000_000
@@ -105,126 +101,34 @@ def _run_radar_projection(
     *,
     window: str,
     now_ms: int,
-    target_id: str | None = None,
-    target_type: str = "Asset",
     venue: str = "all",
 ) -> dict[str, Any]:
-    if target_id is None:
-        row = conn.execute(
-            """
-            SELECT target_type, target_id
-            FROM radar_projection_frontiers
-            WHERE window_key = %s
-              AND venue = %s
-              AND target_type <> 'RankSet'
-              AND status IN ('dirty', 'retry_wait', 'running')
-            ORDER BY first_dirty_at_ms, target_type, target_id
-            LIMIT 1
-            """,
-            (window, venue),
-        ).fetchone()
-        if row is None:
-            return {"projection_status": "idle", "rows_written": 0}
-        target_type = str(row["target_type"])
-        target_id = str(row["target_id"])
     conn.commit()
-    service = RadarProjectionService(db=_SingleConnectionDB(conn))
-    claim = service.claim(
-        key={
-            "target_type": target_type,
-            "target_id": target_id,
-            "window_key": window,
-            "venue": venue,
-        },
+    service = RadarMicroBatchService(db=_SingleConnectionDB(conn))
+    claim = service.claim_batch(
+        window=window,
+        venue=venue,
         runtime_id=str(uuid4()),
         now_ms=now_ms,
     )
     if claim is None:
         return {"projection_status": "idle", "rows_written": 0}
-    if claim.target_type == "RankSet":
-        return _publish_claimed_rank_set(
-            service,
-            claim=claim,
-            now_ms=now_ms,
-        )
-    loaded = service.load_target_feature(claim, now_ms=now_ms)
-    if claim.target_type == "MarketInstrument":
-        target_projection = compute_stocks_radar_target_feature(loaded)
-        feature_result = service.publish_stock_target_feature(
-            claim,
-            target_projection=target_projection,
-            now_ms=now_ms,
-        )
-        rank_target_id = "stocks"
-        rank_venue = "all"
-    else:
-        target_projection = compute_token_radar_target_projection(loaded)
-        feature_result = service.publish_target_feature(
-            claim,
-            target_projection=target_projection,
-            now_ms=now_ms,
-        )
-        rank_target_id = "token"
-        rank_venue = venue
-
-    rank_claim = service.claim(
-        key={
-            "target_type": "RankSet",
-            "target_id": rank_target_id,
-            "window_key": window,
-            "venue": rank_venue,
-        },
-        runtime_id=str(uuid4()),
-        now_ms=now_ms,
-    )
-    assert rank_claim is not None
-    rank_result = _publish_claimed_rank_set(
-        service,
-        claim=rank_claim,
-        now_ms=now_ms,
-    )
-    return {
-        **rank_result,
-        "rows_written": (int(feature_result["rows_written"]) + int(rank_result["rows_written"])),
-    }
-
-
-def _publish_claimed_rank_set(
-    service: RadarProjectionService,
-    *,
-    claim: Any,
-    now_ms: int,
-) -> dict[str, Any]:
-    rank_loaded = service.load_rank_set(claim, now_ms=now_ms)
-    if claim.target_id == "stocks":
-        return service.publish_stock_rank_set(
-            claim,
-            projection=compute_stocks_radar_rank_set(rank_loaded),
-            now_ms=now_ms,
-        )
-    assert claim.target_id == "token"
-    ranked = rank_token_radar_closure(
-        {
-            **rank_loaded,
-            "feature": None,
-            "venues": [claim.venue],
-            "rank_limit": 100,
-        }
-    )
-    hydrated = service.load_hydration(
+    loaded = service.load_targets(claim, now_ms=now_ms)
+    projections = compute_radar_target_batch(loaded)
+    rank_inputs = service.load_rank_inputs(
         claim,
-        target_projection={},
+        projections=projections,
+        now_ms=now_ms,
+    )
+    ranked = rank_radar_microbatch(rank_inputs)
+    hydrated = service.load_hydration(claim, ranked=ranked)
+    closure = hydrate_radar_microbatch(
         ranked=ranked,
+        hydrated_inputs=hydrated,
     )
-    closure = build_token_radar_current_closure(
-        {
-            "feature": None,
-            "selected_by_venue": ranked["selected_by_venue"],
-            "hydrated_inputs": hydrated,
-        }
-    )
-    return service.publish_token_rank_set(
+    return service.publish(
         claim,
+        projections=projections,
         ranked=ranked,
         closure=closure,
         now_ms=now_ms,

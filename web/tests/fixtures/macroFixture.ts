@@ -840,7 +840,6 @@ function statusFixture(): Schemas["MacroModuleStatusData"] {
     },
     backfill_execution: {
       state: "not_required",
-      worker_enabled: true,
       total_targets: 0,
       complete_targets: 0,
       pending_targets: 0,

@@ -3,16 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, cast
+from typing import Any
 
-from tracefold.market.radar.projection import (
-    RadarProjectionService,
+from tracefold.market.radar.microbatch import (
+    RadarMicroBatchClaim,
+    RadarMicroBatchService,
     RadarShardOversized,
-    build_token_radar_current_closure,
-    compute_stocks_radar_rank_set,
-    compute_stocks_radar_target_feature,
-    compute_token_radar_target_projection,
-    rank_token_radar_closure,
+    compute_radar_target_batch,
+    hydrate_radar_microbatch,
+    rank_radar_microbatch,
 )
 from tracefold.platform.workers.projection_candidate import ProjectionShard
 from tracefold.platform.workers.resource_errors import (
@@ -23,7 +22,6 @@ from tracefold.platform.workers.worker_result import WorkerResult
 
 _CPU_TIMEOUT_SECONDS = 2.0
 _SHARD_TIMEOUT_SECONDS = 5.0
-_RANK_LIMIT = 100
 
 
 class RadarProjectionCandidate:
@@ -38,7 +36,7 @@ class RadarProjectionCandidate:
         self.resources = resources
         self.runtime_id = runtime_id
         self.stable_order = int(stable_order)
-        self.service = RadarProjectionService(db=db)
+        self.service = RadarMicroBatchService(db=db)
 
     async def next_due_shard(
         self,
@@ -51,15 +49,12 @@ class RadarProjectionCandidate:
         )
         if row is None:
             return None
-        key = {
-            "target_type": str(row["target_type"]),
-            "target_id": str(row["target_id"]),
-            "window_key": str(row["window_key"]),
-            "venue": str(row["venue"]),
-        }
         return ProjectionShard(
             domain="radar",
-            shard_key=_shard_key(key),
+            shard_key=_shard_key(
+                window=str(row["window_key"]),
+                venue=str(row["venue"]),
+            ),
             deadline_at_ms=int(row["deadline_at_ms"]),
             stable_order=self.stable_order,
         )
@@ -68,15 +63,16 @@ class RadarProjectionCandidate:
         now_ms = _now_ms()
         key = _parse_shard_key(shard.shard_key)
         claim = await self.resources.run_background_db(
-            self.service.claim,
-            key=key,
+            self.service.claim_batch,
+            window=key["window"],
+            venue=key["venue"],
             runtime_id=self.runtime_id,
             now_ms=now_ms,
         )
         if claim is None:
             return WorkerResult(
                 skipped=1,
-                notes={"reason": "radar_shard_claim_lost"},
+                notes={"reason": "radar_microbatch_claim_lost"},
             )
         try:
             async with asyncio.timeout(_SHARD_TIMEOUT_SECONDS):
@@ -89,60 +85,62 @@ class RadarProjectionCandidate:
                 now_ms=_now_ms(),
             )
             return WorkerResult(
-                failed=1,
+                failed=int(failed["failed_targets"]),
                 notes={
                     "domain": "radar",
                     "shard_key": shard.shard_key,
                     "reason": "full_shard_timeout",
-                    "quarantined": bool(failed and failed["status"] == "quarantined"),
+                    **failed,
                 },
             )
 
     async def _run_claimed(
         self,
-        claim: Any,
+        claim: RadarMicroBatchClaim,
         *,
         now_ms: int,
     ) -> WorkerResult:
         try:
-            if claim.target_type == "RankSet":
-                result = await self._run_rank_set(claim, now_ms=now_ms)
-                return WorkerResult(
-                    processed=1,
-                    skipped=1 if int(result["rows_written"]) == 0 else 0,
-                    notes=result,
-                )
             loaded = await self.resources.run_background_db(
-                self.service.load_target_feature,
+                self.service.load_targets,
                 claim,
                 now_ms=now_ms,
             )
-            if claim.target_type == "MarketInstrument":
-                target_projection = await self.resources.run_cpu(
-                    compute_stocks_radar_target_feature,
-                    loaded,
-                    timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                )
-                result = await self.resources.run_background_db(
-                    self.service.publish_stock_target_feature,
-                    claim,
-                    target_projection=target_projection,
-                    now_ms=_now_ms(),
-                )
-                return WorkerResult(
-                    processed=1,
-                    skipped=1 if int(result["rows_written"]) == 0 else 0,
-                    notes=result,
-                )
-            target_projection = await self.resources.run_cpu(
-                compute_token_radar_target_projection,
+            projections = await self.resources.run_cpu(
+                compute_radar_target_batch,
                 loaded,
                 timeout_seconds=_CPU_TIMEOUT_SECONDS,
             )
-            result = await self.resources.run_background_db(
-                self.service.publish_target_feature,
+            rank_inputs = await self.resources.run_background_db(
+                self.service.load_rank_inputs,
                 claim,
-                target_projection=target_projection,
+                projections=projections,
+                now_ms=now_ms,
+            )
+            ranked = await self.resources.run_cpu(
+                rank_radar_microbatch,
+                rank_inputs,
+                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            )
+            hydrated = await self.resources.run_background_db(
+                self.service.load_hydration,
+                claim,
+                ranked=ranked,
+            )
+            closure = await self.resources.run_cpu(
+                _hydrate,
+                {
+                    "ranked": ranked,
+                    "hydrated_inputs": hydrated,
+                },
+                timeout_seconds=_CPU_TIMEOUT_SECONDS,
+            )
+            result = await self.resources.run_background_db(
+                self.service.publish,
+                claim,
+                projections=projections,
+                ranked=ranked,
+                closure=closure,
                 now_ms=_now_ms(),
             )
         except (
@@ -157,106 +155,48 @@ class RadarProjectionCandidate:
                 now_ms=_now_ms(),
             )
             return WorkerResult(
-                failed=1,
+                failed=int(failed["failed_targets"]),
                 notes={
                     "reason": _error_code(exc),
-                    "target_type": claim.target_type,
-                    "target_id": claim.target_id,
                     "window": claim.window,
-                    "quarantined": bool(failed and failed["status"] == "quarantined"),
+                    "venue": claim.venue,
+                    **failed,
                 },
             )
         except Exception as exc:
-            await self.resources.run_background_db(
+            failed_targets = await self.resources.run_background_db(
                 self.service.fail_transient,
                 claim,
                 error_code=_error_code(exc),
                 now_ms=_now_ms(),
             )
             return WorkerResult(
-                failed=1,
+                failed=max(1, int(failed_targets)),
                 notes={
                     "reason": _error_code(exc),
-                    "target_type": claim.target_type,
-                    "target_id": claim.target_id,
                     "window": claim.window,
+                    "venue": claim.venue,
                     "transient": True,
+                    "failed_targets": int(failed_targets),
                 },
             )
         return WorkerResult(
-            processed=1,
+            processed=len(claim.targets),
             skipped=1 if int(result["rows_written"]) == 0 else 0,
             notes=result,
         )
 
-    async def _run_rank_set(
-        self,
-        claim: Any,
-        *,
-        now_ms: int,
-    ) -> dict[str, Any]:
-        loaded = await self.resources.run_background_db(
-            self.service.load_rank_set,
-            claim,
-            now_ms=now_ms,
-        )
-        if claim.target_id == "stocks":
-            projection = await self.resources.run_cpu(
-                compute_stocks_radar_rank_set,
-                loaded,
-                timeout_seconds=_CPU_TIMEOUT_SECONDS,
-            )
-            return cast(
-                dict[str, Any],
-                await self.resources.run_background_db(
-                    self.service.publish_stock_rank_set,
-                    claim,
-                    projection=projection,
-                    now_ms=_now_ms(),
-                ),
-            )
-        if claim.target_id != "token":
-            raise ValueError("radar_rank_set_target_invalid")
-        ranked = await self.resources.run_cpu(
-            rank_token_radar_closure,
-            {
-                **loaded,
-                "feature": None,
-                "venues": [claim.venue],
-                "rank_limit": _RANK_LIMIT,
-            },
-            timeout_seconds=_CPU_TIMEOUT_SECONDS,
-        )
-        hydrated = await self.resources.run_background_db(
-            self.service.load_hydration,
-            claim,
-            target_projection={},
-            ranked=ranked,
-        )
-        closure = await self.resources.run_cpu(
-            build_token_radar_current_closure,
-            {
-                "feature": None,
-                "selected_by_venue": ranked["selected_by_venue"],
-                "hydrated_inputs": hydrated,
-            },
-            timeout_seconds=_CPU_TIMEOUT_SECONDS,
-        )
-        return cast(
-            dict[str, Any],
-            await self.resources.run_background_db(
-                self.service.publish_token_rank_set,
-                claim,
-                ranked=ranked,
-                closure=closure,
-                now_ms=_now_ms(),
-            ),
-        )
+
+def _hydrate(payload: dict[str, Any]) -> dict[str, Any]:
+    return hydrate_radar_microbatch(
+        ranked=payload["ranked"],
+        hydrated_inputs=payload["hydrated_inputs"],
+    )
 
 
-def _shard_key(key: dict[str, str]) -> str:
+def _shard_key(*, window: str, venue: str) -> str:
     return json.dumps(
-        key,
+        {"window": window, "venue": venue},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -264,18 +204,18 @@ def _shard_key(key: dict[str, str]) -> str:
 
 def _parse_shard_key(value: str) -> dict[str, str]:
     payload = json.loads(value)
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or set(payload) != {"window", "venue"}:
         raise ValueError("radar_projection_shard_key_invalid")
-    expected = {"target_type", "target_id", "window_key", "venue"}
-    if set(payload) != expected:
-        raise ValueError("radar_projection_shard_key_invalid")
-    return {key: str(payload[key]) for key in sorted(expected)}
+    return {
+        "window": str(payload["window"]),
+        "venue": str(payload["venue"]),
+    }
 
 
 def _error_code(exc: BaseException) -> str:
     if isinstance(exc, RadarShardOversized):
         return "shard_oversized"
-    if isinstance(exc, (CpuTaskTimeout, TimeoutError)):
+    if isinstance(exc, CpuTaskTimeout | TimeoutError):
         return "compute_timeout"
     if isinstance(exc, CpuTaskProcessExpired):
         return "compute_process_expired"

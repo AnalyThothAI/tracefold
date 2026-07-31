@@ -14,7 +14,6 @@ from tracefold.app.providers import wire_providers
 from tracefold.app.runtime_claim_recovery import recover_old_runtime_claims
 from tracefold.app.runtime_resources import ProviderGovernor, RuntimeResources
 from tracefold.app.runtime_state import RuntimeSnapshot, capture_runtime_snapshot
-from tracefold.app.worker_manifest import worker_names
 from tracefold.app.worker_runtime_status import WorkerRuntimeStatusRepository
 from tracefold.app.worker_runtime_supervisor import WorkerRuntimeSupervisor
 from tracefold.app.workers import construct_workers
@@ -29,6 +28,8 @@ from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+
+_EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
 
 
 @dataclass(slots=True)
@@ -161,31 +162,28 @@ def _assemble_runtime(
     lock_conn: Any,
     resources: RuntimeResources,
 ) -> WorkerRuntime:
-    workers = settings.workers
-    worker_collector_enabled = bool(
-        workers.collector.enabled and providers.ingestion.upstream_client_factory is not None
-    )
+    provider_governor = ProviderGovernor()
+    worker_collector_enabled = providers.ingestion.upstream_client_factory is not None
     ingest = _PooledIngestStore(
         db,
         providers=providers.asset_market,
-        event_anchor_active_window_ms=workers.event_anchor_capture.active_window_ms,
+        event_anchor_active_window_ms=_EVENT_ANCHOR_ACTIVE_WINDOW_MS,
     )
     collector = CollectorService(
         name="collector",
-        settings=workers.collector,
-        db=db,
         telemetry=telemetry,
         store=ingest,
         upstream_client=None,
+        resources=resources,
+        provider_governor=provider_governor,
     )
-    provider_governor = ProviderGovernor()
     runtime_id = str(uuid4())
     recovered_claims = recover_old_runtime_claims(
         db,
         runtime_id=runtime_id,
         now_ms=_now_ms(),
     )
-    runtime_workers = construct_workers(
+    runtime_workers, inactive_statuses = construct_workers(
         settings=settings,
         db=db,
         telemetry=telemetry,
@@ -210,6 +208,7 @@ def _assemble_runtime(
 
     supervisor = WorkerRuntimeSupervisor(
         workers=runtime_workers,
+        inactive_statuses=inactive_statuses,
         status_sink=publish_status,
     )
     snapshot = RuntimeSnapshot.startup(
@@ -354,145 +353,12 @@ def _publish_runtime_status(
     now_ms: int,
 ) -> None:
     with db.worker_session("worker_runtime_status", statement_timeout_seconds=3) as repos, repos.transaction():
-        queue_summaries = _runtime_queue_summaries(repos.conn)
-        enriched_statuses = {}
-        for unit_name, status in statuses.items():
-            queue_summary = queue_summaries[unit_name]
-            quarantine_count = int(queue_summary.get("quarantine_count") or 0)
-            enriched_statuses[unit_name] = {
-                **status,
-                **queue_summary,
-                "effective_status": (
-                    "degraded"
-                    if quarantine_count and str(status["effective_status"]) not in {"disabled", "unavailable", "failed"}
-                    else status["effective_status"]
-                ),
-                "last_error": (
-                    "unresolved_projection_quarantine"
-                    if quarantine_count and not status.get("last_error")
-                    else status.get("last_error")
-                ),
-            }
         WorkerRuntimeStatusRepository(repos.conn).publish(
             runtime_id=runtime_id,
             runtime_version=runtime_version,
-            statuses=enriched_statuses,
+            statuses=statuses,
             now_ms=now_ms,
         )
-
-
-def _runtime_queue_summaries(conn: Any) -> dict[str, dict[str, int | None]]:
-    rows = conn.execute(
-        """
-        SELECT unit_name, queue_depth, oldest_due_at_ms, quarantine_count
-        FROM (
-          SELECT
-            'event_anchor_capture'::text AS unit_name,
-            count(*)::bigint AS queue_depth,
-            min(next_run_at_ms)::bigint AS oldest_due_at_ms,
-            0::bigint AS quarantine_count
-          FROM event_anchor_backfill_jobs
-          WHERE status IN ('pending', 'running')
-          UNION ALL
-          SELECT
-            'resolution_refresh',
-            count(*)::bigint,
-            min(due_at_ms)::bigint,
-            0::bigint
-          FROM token_discovery_dirty_lookup_keys
-          UNION ALL
-          SELECT
-            CASE clock_kind
-              WHEN 'intraday_market' THEN 'macro_intraday_market'
-              WHEN 'daily_settlement' THEN 'macro_settlements'
-              WHEN 'scheduled_release' THEN 'macro_economic_releases'
-              WHEN 'official_state' THEN 'macro_official_state'
-              WHEN 'official_document' THEN 'macro_official_documents'
-            END,
-            count(*)::bigint,
-            min(next_due_at_ms)::bigint,
-            0::bigint
-          FROM macro_acquisition_targets
-          WHERE clock_kind <> 'backfill'
-            AND status NOT IN ('invalid', 'unavailable')
-          GROUP BY clock_kind
-          UNION ALL
-          SELECT
-            'news_ingest',
-            count(*)::bigint,
-            min(next_fetch_at_ms)::bigint,
-            0::bigint
-          FROM news_sources
-          WHERE enabled
-          UNION ALL
-          SELECT
-            'asset_profile_refresh',
-            count(*)::bigint,
-            min(due_at_ms)::bigint,
-            0::bigint
-          FROM asset_profile_refresh_targets
-          WHERE terminal_reason IS NULL
-          UNION ALL
-          SELECT
-            'token_image_mirror',
-            count(*)::bigint,
-            min(due_at_ms)::bigint,
-            0::bigint
-          FROM token_image_source_dirty_targets
-          UNION ALL
-          SELECT
-            'steady_projection_coordinator',
-            count(*) FILTER (
-              WHERE status IN ('dirty', 'retry_wait', 'running')
-            )::bigint,
-            min(deadline_at_ms) FILTER (
-              WHERE status IN ('dirty', 'retry_wait', 'running')
-            )::bigint,
-            count(*) FILTER (WHERE status = 'quarantined')::bigint
-          FROM (
-            SELECT status, deadline_at_ms FROM radar_projection_frontiers
-            UNION ALL
-            SELECT status, deadline_at_ms FROM token_profile_projection_frontiers
-            UNION ALL
-            SELECT status, deadline_at_ms FROM macro_module_frontiers
-            UNION ALL
-            SELECT status, deadline_at_ms FROM news_projection_frontiers
-          ) AS projection_frontiers
-          UNION ALL
-          SELECT
-            'model_generation_coordinator',
-            count(*) FILTER (
-              WHERE status IN ('dirty', 'retry_wait', 'running')
-            )::bigint,
-            min(deadline_at_ms) FILTER (
-              WHERE status IN ('dirty', 'retry_wait', 'running')
-            )::bigint,
-            count(*) FILTER (WHERE status = 'quarantined')::bigint
-          FROM model_generation_frontiers
-        ) AS summaries
-        WHERE unit_name IS NOT NULL
-        """
-    ).fetchall()
-    summaries: dict[str, dict[str, int | None]] = {
-        name: {
-            "deadline_at_ms": None,
-            "queue_depth": 0,
-            "oldest_due_at_ms": None,
-        }
-        for name in worker_names()
-    }
-    for row in rows:
-        unit_name = str(row["unit_name"])
-        if unit_name not in summaries:
-            continue
-        quarantine_count = int(row["quarantine_count"] or 0)
-        summaries[unit_name] = {
-            "deadline_at_ms": (int(row["oldest_due_at_ms"]) if row["oldest_due_at_ms"] is not None else None),
-            "queue_depth": int(row["queue_depth"] or 0),
-            "oldest_due_at_ms": (int(row["oldest_due_at_ms"]) if row["oldest_due_at_ms"] is not None else None),
-            "quarantine_count": quarantine_count,
-        }
-    return summaries
 
 
 async def _cleanup_runtime_providers(runtime: WorkerRuntime) -> list[Exception]:

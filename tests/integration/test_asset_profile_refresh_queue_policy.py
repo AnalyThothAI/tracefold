@@ -24,10 +24,7 @@ from tracefold.market.provider_contracts import (
     DexProfileSource,
     DexProviderTemporarilyUnavailable,
 )
-from tracefold.platform.config.settings import (
-    AssetProfileRefreshWorkerSettings,
-    TokenImageMirrorWorkerSettings,
-)
+from tracefold.platform.observability import TelemetryRegistry
 
 NOW_MS = 1_779_000_000_000
 PROVIDER = "gmgn_dex_profile"
@@ -134,15 +131,16 @@ def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> 
         _enqueue_profile_target(conn)
         db = _SessionTrackingDB(conn)
         market = _ProviderFailureMarket(db)
+        telemetry = TelemetryRegistry()
         worker = AssetProfileRefreshWorker(
             name="asset_profile_refresh",
-            settings=AssetProfileRefreshWorkerSettings(),
             db=db,
-            telemetry=None,
+            telemetry=telemetry,
             dex_profile_sources=(DexProfileSource(provider=PROVIDER, market=market),),
+            resources=resources,
+            provider_governor=ProviderGovernor(),
+            runtime_id="integration-test",
         )
-        worker.bind_runtime_resources(resources)
-        worker.bind_provider_governor(ProviderGovernor())
 
         result = asyncio.run(worker.run_once(now_ms=NOW_MS))
 
@@ -176,6 +174,10 @@ def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> 
             "consecutive_failures": 1,
             "next_probe_at_ms": NOW_MS + 300_000,
         }
+        assert (
+            'tracefold_worker_queue_oldest_delay_seconds{queue="primary",worker="asset_profile_refresh"}'
+            in telemetry.render_prometheus_text()
+        )
     finally:
         resources.close()
         conn.close()
@@ -188,6 +190,7 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
         reset_postgres_schema(conn)
         db = _SessionTrackingDB(conn)
         http_client = _ImageHttpClient(db)
+        telemetry = TelemetryRegistry()
         with repository_session_for_connection(conn) as repos, repos.transaction():
             repos.token_image_source_dirty_targets.enqueue_targets(
                 [
@@ -207,14 +210,14 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
             )
         worker = TokenImageMirrorWorker(
             name="token_image_mirror",
-            settings=TokenImageMirrorWorkerSettings(),
             db=db,
-            telemetry=None,
+            telemetry=telemetry,
             app_home=tmp_path,
             http_client=http_client,
+            resources=resources,
+            provider_governor=ProviderGovernor(),
+            runtime_id="integration-test",
         )
-        worker.bind_runtime_resources(resources)
-        worker.bind_provider_governor(ProviderGovernor())
 
         result = asyncio.run(worker.run_once(now_ms=NOW_MS))
 
@@ -233,6 +236,10 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
         assert asset["status"] == "ready"
         assert (tmp_path / "cache" / "token-images" / asset["storage_path"]).is_file()
         assert queue_depth == 0
+        assert (
+            'tracefold_worker_queue_depth{queue="primary",status="due",worker="token_image_mirror"} 0.0'
+            in telemetry.render_prometheus_text()
+        )
     finally:
         resources.close()
         conn.close()

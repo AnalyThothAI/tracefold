@@ -53,16 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="postgres_password",
         help="legacy maintenance password file",
     )
-    snapshot_decision = hard_cut.add_mutually_exclusive_group(required=True)
-    snapshot_decision.add_argument(
+    hard_cut.add_argument(
         "--snapshot-confirmed",
         action="store_true",
+        required=True,
         help="confirm that a recoverable PostgreSQL snapshot was verified",
-    )
-    snapshot_decision.add_argument(
-        "--snapshot-waived",
-        action="store_true",
-        help="explicitly waive the rollback snapshot for this hard cut",
     )
     hard_cut.add_argument(
         "--execute",
@@ -76,13 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     macro = subcommands.add_parser("macro", help="daily Macro decision-system commands")
     macro_subcommands = macro.add_subparsers(dest="macro_command", required=True)
-    macro_backfill = macro_subcommands.add_parser("backfill", help="enqueue an explicit dataset backfill")
+    macro_backfill = macro_subcommands.add_parser("backfill", help="execute an explicit dataset backfill")
     macro_backfill.add_argument("--dataset", required=True, help="Dataset Registry id")
     macro_backfill.add_argument("--start", required=True, help="history start date (YYYY-MM-DD)")
     macro_backfill.add_argument("--end", required=True, help="history end date (YYYY-MM-DD)")
     macro_subcommands.add_parser(
         "backfill-professional",
-        help="enqueue the code-owned professional Macro history policy",
+        help="execute the code-owned professional Macro history policy",
     )
     macro_subcommands.add_parser(
         "status",

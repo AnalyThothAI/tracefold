@@ -190,9 +190,11 @@ class MacroRepository:
         lease_owner: str,
         lease_ms: int,
         now_ms: int,
+        target_keys: tuple[str, ...] = (),
     ) -> dict[str, Any] | None:
+        target_scope = "AND target_key = ANY(%(target_keys)s)" if target_keys else ""
         row = self.conn.execute(
-            """
+            f"""
             WITH expired AS (
               UPDATE macro_acquisition_targets
               SET status = CASE
@@ -203,22 +205,24 @@ class MacroRepository:
                   lease_owner = NULL,
                   next_due_at_ms = CASE
                     WHEN attempt_count >= max_attempts THEN next_due_at_ms
-                    ELSE %s
+                    ELSE %(now_ms)s
                   END,
                   last_error_code = 'acquisition_lease_expired',
-                  updated_at_ms = %s
-              WHERE clock_kind = %s
+                  updated_at_ms = %(now_ms)s
+              WHERE clock_kind = %(clock_kind)s
+                {target_scope}
                 AND status = 'claimed'
-                AND leased_until_ms <= %s
+                AND leased_until_ms <= %(now_ms)s
               RETURNING target_key
             ), candidate AS (
               SELECT target_key
               FROM macro_acquisition_targets
-              WHERE clock_kind = %s
+              WHERE clock_kind = %(clock_kind)s
+                {target_scope}
                 AND status IN (
                   'pending', 'current', 'delayed', 'backfilling'
                 )
-                AND next_due_at_ms <= %s
+                AND next_due_at_ms <= %(now_ms)s
                 AND status <> 'unavailable'
               ORDER BY priority, next_due_at_ms, target_key
               FOR UPDATE SKIP LOCKED
@@ -226,25 +230,21 @@ class MacroRepository:
             )
             UPDATE macro_acquisition_targets AS target
             SET status = 'claimed',
-                leased_until_ms = %s,
-                lease_owner = %s,
+                leased_until_ms = %(claimed_until_ms)s,
+                lease_owner = %(lease_owner)s,
                 attempt_count = target.attempt_count + 1,
-                updated_at_ms = %s
+                updated_at_ms = %(now_ms)s
             FROM candidate
             WHERE target.target_key = candidate.target_key
             RETURNING target.*
             """,
-            (
-                int(now_ms),
-                int(now_ms),
-                clock_kind,
-                int(now_ms),
-                clock_kind,
-                int(now_ms),
-                int(now_ms + lease_ms),
-                lease_owner,
-                int(now_ms),
-            ),
+            {
+                "now_ms": int(now_ms),
+                "clock_kind": clock_kind,
+                "claimed_until_ms": int(now_ms + lease_ms),
+                "lease_owner": lease_owner,
+                "target_keys": list(target_keys),
+            },
         ).fetchone()
         return dict(row) if row is not None else None
 

@@ -173,23 +173,23 @@ fact replay rebuilds it.
 ```text
 events + intents + resolutions + market facts
   -> stable Radar source edges
-  -> target x window feature frontiers
-  -> compact scalar target features
-  -> coalesced RankSet x window x venue frontiers
-  -> Top-N identity selection
+  -> claim up to 32 target frontiers for one window x venue
+  -> compact scalar feature updates
+  -> one complete Top-N rank
   -> hydrate wide JSON only for selected identities
   -> token_radar_current_rows + publication state
   -> Radar, Search, Token Case
 ```
 
 The public Radar row is a transparent `factor_snapshot` built only from
-persisted identity, social, and market facts. Feature calculation and ranking
-run outside write transactions; publication and exact dirty-claim completion
-use bounded short transactions. Target-feature updates never recompute the
-global closure directly. A running RankSet preserves its claimed snapshot and
-coalesces newer target inputs into pending frontier fields; completion
-atomically publishes that snapshot and promotes the pending input for the next
-turn. Unchanged rank sets write zero serving rows.
+persisted identity, social, and market facts. One bounded `window × venue`
+micro-batch claims at most 32 target frontiers, computes their feature updates
+and the complete compact-population rank outside write transactions, then
+atomically publishes the closure and completes the exact claimed snapshots.
+Each frontier retains its latest input fingerprint/version and earliest
+deadline while a claimed snapshot runs; a changed latest input returns that
+target to dirty after publication. There is no rank frontier or intermediate
+publication state. Unchanged closures write zero serving rows.
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a
 new evidence fingerprint reactivates that target. Radar rank, window,

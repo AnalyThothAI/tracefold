@@ -288,7 +288,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 8)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 12)
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
-        self.assertNotIn("workers_config_path", payload["data"])
         self.assertNotIn("workers", payload["data"])
 
     def test_config_example_matches_the_current_hard_cut_schema(self):
@@ -412,8 +411,6 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert exit_code == 0
     assert payload["data"]["created"] is True
     assert (tmp_path / ".tracefold" / "config.yaml").is_file()
-    assert not (tmp_path / ".tracefold" / "workers.yaml").exists()
-    assert "workers_config_path" not in payload["data"]
     for name in (
         "postgres_password",
         "postgres_serve_password",

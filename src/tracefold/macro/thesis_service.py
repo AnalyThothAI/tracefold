@@ -39,6 +39,10 @@ from tracefold.macro.thesis_v2 import (
 
 _NEW_YORK = ZoneInfo("America/New_York")
 _PUBLICATION_TIME = clock_time(8, 50)
+_LEASE_MS = 900_000
+_RETRY_MS = 900_000
+_MAX_ATTEMPTS = 3
+_STATEMENT_TIMEOUT_SECONDS = 120.0
 
 
 class _ResearchInputCompilationPersisted(RuntimeError):
@@ -67,10 +71,8 @@ class MacroThesisService:
         self,
         *,
         db: Any,
-        settings: Any,
         agent: MacroThesisAgent | None,
         configuration_error: str | None = None,
-        backfill_worker_enabled: bool = False,
         worker_name: str = "macro_thesis",
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
@@ -79,10 +81,8 @@ class MacroThesisService:
         if db is None:
             raise RuntimeError("macro_thesis_db_required")
         self._db = db
-        self._settings = settings
         self._agent = agent
         self._configuration_error = str(configuration_error or "").strip() or None
-        self._backfill_worker_enabled = backfill_worker_enabled
         self._worker_name = worker_name
         self._lease_owner = lease_owner or f"{worker_name}:{uuid4().hex}"
         self._clock_ms = clock_ms or _now_ms
@@ -426,7 +426,6 @@ class MacroThesisService:
                 role_rows=role_rows,
                 analysis_rows=analysis_rows,
                 analysis_job_state=None,
-                backfill_worker_enabled=self._backfill_worker_enabled,
             )
             module["features"] = [feature for feature in features if feature.get("module_id") == module_id]
             modules.append(module)
@@ -570,17 +569,17 @@ class MacroThesisService:
     def _session(self) -> Any:
         return self._db.worker_session(
             self._worker_name,
-            statement_timeout_seconds=float(self._settings.statement_timeout_seconds),
+            statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
         )
 
     def _lease_ms(self) -> int:
-        return int(self._settings.lease_ms)
+        return _LEASE_MS
 
     def _retry_ms(self) -> int:
-        return int(self._settings.retry_ms)
+        return _RETRY_MS
 
     def _max_attempts(self) -> int:
-        return int(self._settings.max_attempts)
+        return _MAX_ATTEMPTS
 
 
 def resolve_thesis_session(*, now_ms: int) -> date:

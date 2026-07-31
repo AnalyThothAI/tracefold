@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 
 from tracefold.platform.workers.worker_base import (
@@ -35,12 +34,7 @@ class _GatedWorker(WorkerBase):
     def __init__(self, *, name: str, iteration: Any) -> None:
         super().__init__(
             name=name,
-            settings=SimpleNamespace(
-                enabled=True,
-                interval_seconds=1.0,
-                backoff=SimpleNamespace(base_ms=1, max_ms=1),
-            ),
-            db=None,
+            interval_seconds=1.0,
             telemetry=None,
         )
         self.iteration = iteration

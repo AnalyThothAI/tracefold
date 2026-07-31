@@ -798,11 +798,9 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "not_required" | "complete" | "queued" | "running" | "paused" | "retry_wait" | "failed";
+            state: "not_required" | "complete" | "queued" | "running" | "retry_wait" | "failed";
             /** Total Targets */
             total_targets: number;
-            /** Worker Enabled */
-            worker_enabled: boolean;
         };
         /** MacroCausalEdge */
         MacroCausalEdge: {
@@ -4365,7 +4363,7 @@ export interface components {
              * Effective Status
              * @enum {string}
              */
-            effective_status: "disabled" | "intentionally_not_started" | "unavailable" | "degraded" | "running" | "stopped" | "failed";
+            effective_status: "disabled" | "unavailable" | "degraded" | "running" | "stopped" | "failed";
             /** Enabled */
             enabled: boolean;
             /** Heartbeat At Ms */

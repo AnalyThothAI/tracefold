@@ -38,7 +38,6 @@ def rebuild_hard_cut_read_models(
     )
     macro = rebuild_all_macro_modules_for_maintenance(
         db=db,
-        settings=settings,
         now_ms=int(now_ms),
     )
     profile = rebuild_all_profiles_for_maintenance(

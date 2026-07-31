@@ -15,6 +15,10 @@ FED_DOCUMENT_ANALYSIS_PROMPT_VERSION = "fed_document_analysis_v2_evidence_ids"
 FED_DOCUMENT_ANALYSIS_SCHEMA_VERSION = "macro_document_analysis_v1"
 FED_FOMC_ANALYSIS_LOOKBACK_DAYS = 550
 FED_SPEECH_ANALYSIS_LOOKBACK_DAYS = 120
+_MAX_ATTEMPTS = 3
+_LEASE_MS = 600_000
+_RETRY_MS = 300_000
+_STATEMENT_TIMEOUT_SECONDS = 120.0
 
 PolicyRelevance = Literal["policy_signal", "not_policy_signal", "uncertain"]
 FedStance = Literal["hawkish", "neutral", "dovish", "mixed", "no_call"]
@@ -72,7 +76,6 @@ class MacroDocumentAnalysisService:
         self,
         *,
         db: Any,
-        settings: Any,
         agent: FedDocumentAnalysisAgentProtocol,
         worker_name: str = "macro_document_analysis",
         lease_owner: str | None = None,
@@ -80,7 +83,6 @@ class MacroDocumentAnalysisService:
         resources: Any | None = None,
     ) -> None:
         self.db = db
-        self.settings = settings
         self.agent = agent
         self.worker_name = worker_name
         self.lease_owner = str(lease_owner or worker_name)
@@ -142,7 +144,7 @@ class MacroDocumentAnalysisService:
             jobs_written = repos.macro.ensure_document_analysis_jobs(
                 model_name=self.agent.model_name,
                 prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
-                max_attempts=int(self.settings.max_attempts),
+                max_attempts=_MAX_ATTEMPTS,
                 now_ms=now,
                 fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
                 speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
@@ -151,7 +153,7 @@ class MacroDocumentAnalysisService:
                 model_name=self.agent.model_name,
                 prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
                 lease_owner=self.lease_owner,
-                lease_ms=int(self.settings.lease_ms),
+                lease_ms=_LEASE_MS,
                 now_ms=now,
             )
         return {"jobs_written": jobs_written, "job": dict(job) if job is not None else None}
@@ -244,7 +246,7 @@ class MacroDocumentAnalysisService:
                 job=job,
                 lease_owner=self.lease_owner,
                 error_code=error_code,
-                next_due_at_ms=completed_at_ms + int(self.settings.retry_ms),
+                next_due_at_ms=completed_at_ms + _RETRY_MS,
                 completed_at_ms=completed_at_ms,
             )
             if not failed:
@@ -274,7 +276,7 @@ class MacroDocumentAnalysisService:
     def _session(self) -> Any:
         return self.db.worker_session(
             self.worker_name,
-            statement_timeout_seconds=float(self.settings.statement_timeout_seconds),
+            statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
         )
 
 

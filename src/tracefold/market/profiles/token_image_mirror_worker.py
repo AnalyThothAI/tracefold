@@ -6,7 +6,6 @@ from typing import Any
 
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.profiles.token_image_mirror import mirror_token_image_source
-from tracefold.platform.config.settings import TokenImageMirrorWorkerSettings
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
@@ -24,19 +23,29 @@ class TokenImageMirrorWorker(WorkerBase):
         self,
         *,
         name: str,
-        settings: TokenImageMirrorWorkerSettings,
         db: Any,
         telemetry: Any,
         app_home: str | Path,
+        resources: Any,
+        provider_governor: Any,
+        runtime_id: str,
         http_client: Any | None = None,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=60.0,
+            telemetry=telemetry,
+        )
+        self.db = db
+        self.resources = resources
+        self.provider_governor = provider_governor
+        self.claim_owner = f"{name}:{runtime_id}"
         self.app_home = Path(app_home)
         self.http_client = http_client
 
     async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-        claimed = await self.require_runtime_resources().run_background_db(
+        claimed = await self.resources.run_background_db(
             self._claim_one,
             observed_at_ms,
         )
@@ -50,7 +59,7 @@ class TokenImageMirrorWorker(WorkerBase):
             )
         claim, terminal_asset, queue_depth = claimed
         if terminal_asset is not None:
-            published = await self.require_runtime_resources().run_background_db(
+            published = await self.resources.run_background_db(
                 self._publish_existing,
                 claim,
                 observed_at_ms,
@@ -63,17 +72,17 @@ class TokenImageMirrorWorker(WorkerBase):
                 existing=True,
             )
 
-        async with self.require_provider_governor().acquire(
+        async with self.provider_governor.acquire(
             host=_provider_host(str(claim["source_url"])),
             lane="image",
         ):
-            mirror_result = await self.require_runtime_resources().run_provider_io(
+            mirror_result = await self.resources.run_provider_io(
                 mirror_token_image_source,
                 _source_row_from_claim(claim),
                 app_home=self.app_home,
                 http_client=self.http_client,
             )
-        published = await self.require_runtime_resources().run_background_db(
+        published = await self.resources.run_background_db(
             self._publish_result,
             claim,
             mirror_result,
@@ -212,8 +221,8 @@ class TokenImageMirrorWorker(WorkerBase):
                 )
         return {"queue_rows_changed": changed, "asset_rows_changed": 1}
 
-    @staticmethod
     def _result(
+        self,
         *,
         claim: dict[str, Any],
         status: str,
@@ -222,6 +231,13 @@ class TokenImageMirrorWorker(WorkerBase):
         existing: bool,
         error: str | None = None,
     ) -> WorkerResult:
+        if self.telemetry is not None:
+            self.telemetry.set_queue_depth(
+                self.name,
+                "primary",
+                "due",
+                int(queue_depth),
+            )
         failed = int(status == "error")
         return WorkerResult(
             processed=int(not failed),

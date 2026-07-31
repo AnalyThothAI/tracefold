@@ -5,9 +5,15 @@ from typing import Any
 from langchain_litellm import ChatLiteLLM
 
 
-def configured_chat_model(settings: Any, worker_settings: Any) -> tuple[ChatLiteLLM, str]:
+def configured_chat_model(
+    settings: Any,
+    *,
+    model_name: str,
+    request_timeout_seconds: float,
+    max_tokens: int,
+) -> tuple[ChatLiteLLM, str]:
     effective_model = litellm_proxy_model_name(
-        worker_settings.model,
+        model_name,
         base_url=settings.llm.base_url,
     )
     model_kwargs = _provider_model_kwargs(effective_model)
@@ -17,9 +23,9 @@ def configured_chat_model(settings: Any, worker_settings: Any) -> tuple[ChatLite
             api_key=settings.llm.api_key,
             api_base=settings.llm.base_url,
             temperature=0,
-            max_tokens=worker_settings.max_tokens,
+            max_tokens=max_tokens,
             max_retries=0,
-            request_timeout=worker_settings.model_request_timeout_seconds,
+            request_timeout=request_timeout_seconds,
             model_kwargs=model_kwargs,
         ),
         effective_model,

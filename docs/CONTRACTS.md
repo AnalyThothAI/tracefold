@@ -25,8 +25,8 @@ The configuration schema uses typed nested models directly
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
-`workers.yaml`, top-level `handles`, top-level `notifications`, and
-`news.sources` are retired inputs. Any equivalent retired key fails
+Top-level `handles`, top-level `notifications`, and `news.sources` are retired
+inputs. Any equivalent retired key fails
 validation; there is no alias, merge, or generated-source fallback.
 
 `llm` contains operator-owned provider credentials: `api_key` and `base_url`
@@ -36,30 +36,12 @@ consumed only by enabled AI workers. Model execution policy, timeouts, token
 budgets, cadence, leases, retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
-`src/tracefold/app/worker_manifest.py` owns the worker inventory and
-writer/queue declarations. The current keys are:
-
-```text
-collector
-market_tick_stream
-market_tick_poll
-event_anchor_capture
-resolution_refresh
-macro_intraday_market
-macro_settlements
-macro_economic_releases
-macro_official_state
-macro_official_documents
-news_ingest
-asset_profile_refresh
-token_image_mirror
-steady_projection_coordinator
-model_generation_coordinator
-```
-
-Factories, runtime status, and this manifest use these exact names.
-Configuration cannot add another worker or derived product lane. Macro
-backfill is maintenance-only and is absent from the steady manifest.
+`src/tracefold/app/worker_manifest.py` is the sole worker inventory and owns
+writer/queue declarations. Factories, supervision, runtime status, acceptance,
+and tests derive their complete key set from it; no document or second list may
+declare a fixed count or duplicate inventory. Configuration cannot add another
+worker or derived product lane. Explicit Macro backfill is a synchronous CLI
+maintenance action and is absent from the manifest.
 
 ## HTTP
 
@@ -429,7 +411,12 @@ contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.
 
-One-shot worker commands call the same application composition and `WorkerBase` lifecycle as the service. Their `data` object reports `worker_name`, `processed`, `failed`, `dead`, `skipped`, and `notes`; commands that enqueue repair targets first also include `preparation`. The CLI does not construct workers or own provider/database cleanup.
+One-shot maintenance commands construct only the dependencies required by the
+named domain worker and invoke its `run_once` operation directly. The common
+`WorkerBase` has no maintenance lifecycle or settings override path. The
+application adapter owns provider/database cleanup and returns `worker_name`,
+`processed`, `failed`, `dead`, `skipped`, and `notes`; commands that enqueue
+repair targets first also include `preparation`.
 
 Queue resolution is auditable: retry mutates the source queue and resolves terminal evidence in one transaction; quarantine/archive resolves the terminal row without pretending the source work succeeded.
 

@@ -210,34 +210,24 @@ class ModelGenerationCoordinator(WorkerBase):
     def __init__(
         self,
         *,
-        settings: Any,
         db: Any,
         telemetry: Any,
         runtime_id: str,
+        resources: Any,
         runners: Mapping[str, WorkerBase],
         name: str = "model_generation_coordinator",
         clock_ms: Any | None = None,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=0.25,
+            telemetry=telemetry,
+        )
+        self.resources = resources
         self.runtime_id = runtime_id
         self.runners = dict(runners)
         self.controller = ModelFrontierController(db=db, worker_name=name)
         self.clock_ms = clock_ms or _now_ms
-
-    def bind_runtime_resources(self, resources: object) -> None:
-        super().bind_runtime_resources(resources)
-        for runner in self.runners.values():
-            runner.bind_runtime_resources(resources)
-
-    def bind_provider_governor(self, governor: object) -> None:
-        super().bind_provider_governor(governor)
-        for runner in self.runners.values():
-            runner.bind_provider_governor(governor)
-
-    def bind_runtime_id(self, runtime_id: str) -> None:
-        super().bind_runtime_id(runtime_id)
-        for runner in self.runners.values():
-            runner.bind_runtime_id(runtime_id)
 
     async def on_close(self) -> None:
         for runner in self.runners.values():
@@ -245,20 +235,19 @@ class ModelGenerationCoordinator(WorkerBase):
 
     async def run_once(self) -> WorkerResult:
         now_ms = int(self.clock_ms())
-        resources = self.require_runtime_resources()
         if "macro_thesis" in self.runners:
-            await resources.run_background_db(
+            await self.resources.run_background_db(
                 self.controller.ensure_thesis_frontier,
                 now_ms=now_ms,
             )
-        rows = await resources.run_background_db(
+        rows = await self.resources.run_background_db(
             self.controller.candidates,
             allowed_kinds=tuple(sorted(self.runners)),
         )
         selected, reason = select_model_frontier(rows, now_ms=now_ms)
         if selected is None:
             return WorkerResult(skipped=1, notes={"reason": reason})
-        claim = await resources.run_background_db(
+        claim = await self.resources.run_background_db(
             self.controller.claim,
             candidate_kind=str(selected["candidate_kind"]),
             shard_key=str(selected["shard_key"]),
@@ -271,7 +260,7 @@ class ModelGenerationCoordinator(WorkerBase):
         try:
             result = await self.runners[kind].run_once()
         except Exception as exc:
-            await resources.run_background_db(
+            await self.resources.run_background_db(
                 self.controller.fail_transient,
                 claim=claim,
                 runtime_id=self.runtime_id,
@@ -287,7 +276,7 @@ class ModelGenerationCoordinator(WorkerBase):
                 },
             )
         if result.failed:
-            await resources.run_background_db(
+            await self.resources.run_background_db(
                 self.controller.fail_transient,
                 claim=claim,
                 runtime_id=self.runtime_id,
@@ -295,7 +284,7 @@ class ModelGenerationCoordinator(WorkerBase):
                 now_ms=int(self.clock_ms()),
             )
             return result
-        completed = await resources.run_background_db(
+        completed = await self.resources.run_background_db(
             self.controller.complete,
             claim=claim,
             runtime_id=self.runtime_id,
@@ -310,7 +299,7 @@ class ModelGenerationCoordinator(WorkerBase):
                 },
             )
         if kind == "macro_document_analysis":
-            await resources.run_background_db(
+            await self.resources.run_background_db(
                 self.controller.refresh_document_frontier,
                 now_ms=int(self.clock_ms()),
             )

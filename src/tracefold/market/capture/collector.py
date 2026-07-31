@@ -43,16 +43,22 @@ class CollectorService(WorkerBase):
         self,
         *,
         name: str,
-        settings: Any,
-        db: Any,
         telemetry: Any,
         store: IngestStoreProtocol,
         upstream_client: UpstreamClientProtocol | None,
+        resources: Any,
+        provider_governor: Any,
     ):
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=3.0,
+            telemetry=telemetry,
+        )
         self.store = store
         self.upstream_client = upstream_client
-        self.snapshot_timeout = float(settings.snapshot_timeout_seconds)
+        self.resources = resources
+        self.provider_governor = provider_governor
+        self.snapshot_timeout = 0.5
         self._pending_snapshots: dict[str, asyncio.Task[None]] = {}
         self._upstream_task: asyncio.Task[None] | None = None
         self.status = CollectorStatus(started_at_ms=_now_ms())
@@ -60,7 +66,7 @@ class CollectorService(WorkerBase):
     async def run_once(self) -> WorkerResult:
         if self.upstream_client is None:
             raise RuntimeError("upstream_client is required")
-        async with self.require_provider_governor().acquire(host="gmgn_stream"):
+        async with self.provider_governor.acquire(host="gmgn_stream"):
             self._upstream_task = asyncio.create_task(self.upstream_client.run(), name="collector:upstream")
             stop_task = asyncio.create_task(self._stop_event.wait(), name="collector:stop_wait")
             try:
@@ -125,7 +131,7 @@ class CollectorService(WorkerBase):
             return
 
         channel = parsed["channel"]
-        await self.require_runtime_resources().run_realtime_db(
+        await self.resources.run_realtime_db(
             self.store.insert_raw_frame,
             source="gmgn",
             channel=channel,
@@ -182,7 +188,10 @@ class CollectorService(WorkerBase):
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
         payload = {"channel": channel, "data": [item]}
         for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
-            ingested = await self.require_runtime_resources().run_realtime_db(self.store.ingest_event, event)
+            ingested = await self.resources.run_realtime_db(
+                self.store.ingest_event,
+                event,
+            )
             if ingested.inserted:
                 self.status.twitter_events += 1
                 self.status.last_event_at_ms = received_at_ms

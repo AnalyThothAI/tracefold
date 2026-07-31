@@ -15,7 +15,6 @@ from tracefold.market.provider_contracts import (
     DexTokenCandidate,
 )
 from tracefold.market.radar.constants import WINDOW_MS
-from tracefold.platform.config.settings import ResolutionRefreshWorkerSettings
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
@@ -44,25 +43,49 @@ class ResolutionRefreshWorker(WorkerBase):
         self,
         *,
         name: str,
-        settings: ResolutionRefreshWorkerSettings,
         db: Any,
         telemetry: Any,
         dex_discovery_market: Any,
+        resources: Any,
+        provider_governor: Any,
+        runtime_id: str,
+        claim_limit: int = 50,
+        reprocess_limit: int = 500,
+        chain_ids: tuple[str, ...] = (
+            "solana",
+            "eip155:1",
+            "eip155:56",
+            "eip155:8453",
+            "ton",
+        ),
     ) -> None:
         if dex_discovery_market is None:
             raise RuntimeError("resolution_refresh_provider_required")
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=30.0,
+            telemetry=telemetry,
+        )
+        self.db = db
+        self.resources = resources
+        self.provider_governor = provider_governor
+        self.claim_owner = f"{name}:{runtime_id}"
         self.dex_discovery_market = dex_discovery_market
-        self.chain_ids = tuple(str(item).strip() for item in settings.chain_ids if str(item).strip())
-        self.max_attempts = settings.max_attempts
-        self.lease_ms = settings.lease_ms
-        self.hot_not_found_retry_ms = settings.hot_not_found_retry_ms
+        self.chain_ids = tuple(chain_ids)
+        if not self.chain_ids:
+            raise ValueError("resolution_refresh_chain_ids_required")
+        self.max_attempts = 3
+        self.lease_ms = 300_000
+        self.hot_not_found_retry_ms = 60_000
+        self.claim_limit = int(claim_limit)
+        self.reprocess_limit = int(reprocess_limit)
+        if self.claim_limit < 1 or self.reprocess_limit < 1:
+            raise ValueError("resolution_refresh_limits_must_be_positive")
 
     async def run_once(self, *, now_ms: int | None = None) -> WorkerResult:
         observed_at_ms = int(now_ms if now_ms is not None else _now_ms())
-        resources = self.require_runtime_resources()
         result = _empty_result(observed_at_ms)
-        lookups, circuit_open = await resources.run_background_db(
+        lookups, circuit_open = await self.resources.run_background_db(
             self._claim_due_lookups,
             observed_at_ms,
         )
@@ -81,15 +104,15 @@ class ResolutionRefreshWorker(WorkerBase):
         for index, lookup in enumerate(lookups):
             lookup_key = str(lookup.get("lookup_key") or "")
             lookup_type = str(lookup.get("lookup_type") or "")
-            await resources.run_background_db(
+            await self.resources.run_background_db(
                 self._start_lookup,
                 lookup_key,
                 lookup_type,
                 observed_at_ms,
             )
             try:
-                async with self.require_provider_governor().acquire(host="asset_discovery"):
-                    lookup_result = await resources.run_provider_io(
+                async with self.provider_governor.acquire(host="asset_discovery"):
+                    lookup_result = await self.resources.run_provider_io(
                         _fetch_lookup_provider_result,
                         lookup_key=lookup_key,
                         lookup_type=lookup_type,
@@ -97,7 +120,7 @@ class ResolutionRefreshWorker(WorkerBase):
                         chain_ids=self.chain_ids,
                     )
             except DexProviderTemporarilyUnavailable as exc:
-                unavailable = await resources.run_background_db(
+                unavailable = await self.resources.run_background_db(
                     self._publish_provider_unavailable,
                     lookups[index:],
                     lookup_key,
@@ -114,7 +137,7 @@ class ResolutionRefreshWorker(WorkerBase):
                 )
                 break
             except Exception as exc:
-                failed = await resources.run_background_db(
+                failed = await self.resources.run_background_db(
                     self._publish_lookup_error,
                     lookup,
                     lookup_key,
@@ -133,7 +156,7 @@ class ResolutionRefreshWorker(WorkerBase):
                 )
                 continue
 
-            published = await resources.run_background_db(
+            published = await self.resources.run_background_db(
                 self._publish_lookup_success,
                 lookup,
                 lookup_result,
@@ -149,7 +172,7 @@ class ResolutionRefreshWorker(WorkerBase):
         if affected_lookup_keys:
             sorted_lookup_keys = sorted(affected_lookup_keys)
             result["affected_lookup_keys"] = sorted_lookup_keys
-            reprocess_result = await resources.run_background_db(
+            reprocess_result = await self.resources.run_background_db(
                 self._reprocess_lookup_keys,
                 sorted_lookup_keys,
                 observed_at_ms,
@@ -159,14 +182,14 @@ class ResolutionRefreshWorker(WorkerBase):
             if reprocess_result["resolved_intents"]:
                 resolved_lookup_keys.update(sorted_lookup_keys)
         if processed_claims:
-            result["lookups_terminalized"] += await resources.run_background_db(
+            result["lookups_terminalized"] += await self.resources.run_background_db(
                 self._complete_processed_claims,
                 processed_claims,
                 resolved_lookup_keys,
                 queue_due_by_lookup_key,
                 observed_at_ms,
             )
-        result["discovery_result_counts"] = await resources.run_background_db(self._discovery_counts)
+        result["discovery_result_counts"] = await self.resources.run_background_db(self._discovery_counts)
         notes: dict[str, Any] = {"result": result}
         if int(result.get("provider_unavailable") or 0) > 0:
             notes["status"] = "degraded"
@@ -189,7 +212,7 @@ class ResolutionRefreshWorker(WorkerBase):
                 return [], True
             lookups = repos.discovery.claim_due_lookup_keys(
                 now_ms=now_ms,
-                limit=self.settings.batch_size,
+                limit=self.claim_limit,
                 lease_ms=self.lease_ms,
                 running_timeout_ms=self.lease_ms,
                 lease_owner=self.claim_owner,
@@ -356,7 +379,7 @@ class ResolutionRefreshWorker(WorkerBase):
                 lookup_keys=lookup_keys,
                 now_ms=now_ms,
                 window=TOKEN_REPROCESS_WINDOW,
-                limit=self.settings.reprocess_limit,
+                limit=self.reprocess_limit,
             )
 
     def _complete_processed_claims(

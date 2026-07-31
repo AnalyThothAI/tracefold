@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.macro.acquisition import MacroAcquisitionService
+from tracefold.macro.acquisition import (
+    MacroAcquisitionService,
+    acquisition_loop_policy,
+)
 from tracefold.macro.domain import MacroSourceClientProtocol
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
@@ -14,45 +17,53 @@ class MacroAcquisitionWorker(WorkerBase):
         *,
         name: str,
         clock_kind: str,
-        settings: Any,
         db: Any,
         telemetry: Any,
         source_client: MacroSourceClientProtocol,
+        resources: Any,
+        provider_governor: Any,
+        runtime_id: str,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        interval_seconds, batch_size = acquisition_loop_policy(clock_kind)
+        super().__init__(
+            name=name,
+            interval_seconds=interval_seconds,
+            telemetry=telemetry,
+        )
         self.clock_kind = clock_kind
+        self.batch_size = batch_size
+        self.resources = resources
+        self.provider_governor = provider_governor
         self.source_client = source_client
         self.service = MacroAcquisitionService(
             db=db,
             worker_name=name,
             clock_kind=clock_kind,
-            settings=settings,
             source_client=self.source_client,
+            lease_owner=f"{name}:{runtime_id}",
         )
 
     async def run_once(self) -> WorkerResult:
-        self.service.lease_owner = self.claim_owner
-        resources = self.require_runtime_resources()
-        target_rows_written = await resources.run_background_db(self.service.ensure_targets)
+        target_rows_written = await self.resources.run_background_db(self.service.ensure_targets)
         results: list[dict[str, Any]] = []
-        for _ in range(int(self.settings.batch_size)):
-            claim = await resources.run_background_db(self.service.claim_next)
+        for _ in range(self.batch_size):
+            claim = await self.resources.run_background_db(self.service.claim_next)
             if claim is None:
                 break
             try:
-                async with self.require_provider_governor().acquire(host=claim.spec.source_id):
-                    batch = await resources.run_provider_io(
+                async with self.provider_governor.acquire(host=claim.spec.source_id):
+                    batch = await self.resources.run_provider_io(
                         self.service.fetch_claim,
                         claim,
                     )
             except Exception as exc:
-                result = await resources.run_background_db(
+                result = await self.resources.run_background_db(
                     self.service.publish_failure,
                     claim,
                     exc,
                 )
             else:
-                result = await resources.run_background_db(
+                result = await self.resources.run_background_db(
                     self.service.publish_success,
                     claim,
                     batch,
@@ -65,7 +76,7 @@ class MacroAcquisitionWorker(WorkerBase):
         )
 
     async def on_close(self) -> None:
-        await self.require_runtime_resources().run_provider_cleanup(self.source_client.close)
+        await self.resources.run_provider_cleanup(self.source_client.close)
 
 
 def _worker_result(

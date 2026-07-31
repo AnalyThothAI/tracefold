@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, timedelta
-from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -269,8 +268,4 @@ def _seed_rates_frontier(conn: Any) -> None:
 
 
 def _service(conn: Any) -> MacroProjectionService:
-    return MacroProjectionService(
-        db=_SingleConnectionDB(conn),
-        settings=SimpleNamespace(),
-        backfill_worker_enabled=False,
-    )
+    return MacroProjectionService(db=_SingleConnectionDB(conn))

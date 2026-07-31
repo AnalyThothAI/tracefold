@@ -5,7 +5,6 @@ import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -121,12 +120,6 @@ def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_p
 
         service = MacroDocumentAnalysisService(
             db=_TestDb(conn),
-            settings=SimpleNamespace(
-                max_attempts=3,
-                lease_ms=60_000,
-                retry_ms=60_000,
-                statement_timeout_seconds=30,
-            ),
             agent=_Agent(),
             clock_ms=_Clock(3_000),
         )
@@ -273,12 +266,6 @@ def test_identical_source_bodies_produce_distinct_document_bound_analyses(tmp_pa
                 )
         service = MacroDocumentAnalysisService(
             db=_TestDb(conn),
-            settings=SimpleNamespace(
-                max_attempts=3,
-                lease_ms=60_000,
-                retry_ms=60_000,
-                statement_timeout_seconds=30,
-            ),
             agent=_Agent(),
             clock_ms=_Clock(3_000),
         )

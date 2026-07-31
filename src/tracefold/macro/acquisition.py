@@ -33,6 +33,17 @@ from tracefold.platform.postgres.projection_frontier import (
 )
 
 _MACRO_DEADLINE_MS = 60_000
+_ACQUISITION_POLICY = {
+    "intraday_market": (300.0, 32, 300_000),
+    "daily_settlement": (21_600.0, 32, 900_000),
+    "scheduled_release": (3_600.0, 4, 900_000),
+    "official_state": (10_800.0, 4, 900_000),
+    "official_document": (3_600.0, 2, 900_000),
+    "backfill": (5.0, 1, 900_000),
+}
+_LEASE_MS = 300_000
+_MAX_ATTEMPTS = 5
+_STATEMENT_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,18 +62,21 @@ class MacroAcquisitionService:
         db: Any,
         worker_name: str,
         clock_kind: str,
-        settings: Any,
         source_client: MacroSourceClientProtocol,
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
+        target_keys: tuple[str, ...] = (),
     ) -> None:
         self.db = db
         self.worker_name = worker_name
         self.lease_owner = str(lease_owner or worker_name)
         self.clock_kind = clock_kind
-        self.settings = settings
+        if clock_kind not in _ACQUISITION_POLICY:
+            raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}")
+        self.retry_ms = _ACQUISITION_POLICY[clock_kind][2]
         self.source_client = source_client
         self.clock_ms = clock_ms or _now_ms
+        self.target_keys = tuple(sorted(set(target_keys)))
 
     def ensure_targets(self, *, now_ms: int | None = None) -> int:
         now = int(now_ms if now_ms is not None else self.clock_ms())
@@ -72,7 +86,7 @@ class MacroAcquisitionService:
                 written += repos.macro.ensure_target(
                     spec,
                     now_ms=now,
-                    max_attempts=int(self.settings.max_attempts),
+                    max_attempts=_MAX_ATTEMPTS,
                 )
                 if spec.instrument_id is not None:
                     written += repos.macro_market.ensure_instrument(spec, now_ms=now)
@@ -107,8 +121,9 @@ class MacroAcquisitionService:
             target = repos.macro.claim_target(
                 clock_kind=self.clock_kind,
                 lease_owner=self.lease_owner,
-                lease_ms=int(self.settings.lease_ms),
+                lease_ms=_LEASE_MS,
                 now_ms=started_at_ms,
+                target_keys=self.target_keys,
             )
         if target is None:
             return None
@@ -162,7 +177,7 @@ class MacroAcquisitionService:
                 lease_owner=self.lease_owner,
                 receipt_id=receipt_id,
                 error_code=error_code,
-                next_due_at_ms=completed_at_ms + int(self.settings.retry_ms),
+                next_due_at_ms=completed_at_ms + self.retry_ms,
                 completed_at_ms=completed_at_ms,
                 unavailable=unavailable,
             )
@@ -295,7 +310,7 @@ class MacroAcquisitionService:
                 receipt_id=receipt_id,
                 cursor=completed_cursor,
                 next_due_at_ms=(
-                    completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else int(self.settings.retry_ms))
+                    completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else self.retry_ms)
                     if self.clock_kind != "backfill"
                     else (253_402_300_799_000 if backfill_complete else completed_at_ms)
                 ),
@@ -336,8 +351,16 @@ class MacroAcquisitionService:
     def _session(self) -> Any:
         return self.db.worker_session(
             self.worker_name,
-            statement_timeout_seconds=float(self.settings.statement_timeout_seconds),
+            statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
         )
+
+
+def acquisition_loop_policy(clock_kind: str) -> tuple[float, int]:
+    try:
+        interval_seconds, batch_size, _retry_ms = _ACQUISITION_POLICY[str(clock_kind)]
+    except KeyError as exc:
+        raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}") from exc
+    return interval_seconds, batch_size
 
 
 def _receipt_id(
@@ -449,4 +472,8 @@ def _now_ms() -> int:
     return int(time.time() * 1_000)
 
 
-__all__ = ["MacroAcquisitionClaim", "MacroAcquisitionService"]
+__all__ = [
+    "MacroAcquisitionClaim",
+    "MacroAcquisitionService",
+    "acquisition_loop_policy",
+]

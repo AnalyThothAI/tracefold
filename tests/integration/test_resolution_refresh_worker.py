@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
 from tests.factories import make_event
 from tests.postgres_test_utils import connect_postgres_test, repository_session_for_connection
@@ -38,9 +37,10 @@ class ResolutionRefreshWorker(ProductionResolutionRefreshWorker):
     """Production worker with deterministic inline resources for integration tests."""
 
     def __init__(self, **kwargs):
+        kwargs.setdefault("resources", _InlineResources())
+        kwargs.setdefault("provider_governor", _InlineProviderGovernor())
+        kwargs.setdefault("runtime_id", "integration-test")
         super().__init__(**kwargs)
-        self.bind_runtime_resources(_InlineResources())
-        self.bind_provider_governor(_InlineProviderGovernor())
 
 
 def _evm_address(index: int) -> str:
@@ -116,7 +116,7 @@ def test_resolution_refresh_worker_resolves_recent_symbol_and_defers_projection(
 
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(interval_seconds=60, chain_ids=("eip155:1",)),
+            chain_ids=("eip155:1",),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=FakeDexMarket(
@@ -205,7 +205,7 @@ def test_resolution_refresh_worker_skips_symbol_lookup_after_retained_candidate_
         ingest = _ingest_service_for_connection(conn)
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(interval_seconds=60, chain_ids=("eip155:1",)),
+            chain_ids=("eip155:1",),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=FakeDexMarket(
@@ -268,7 +268,7 @@ def test_resolution_refresh_worker_retries_hot_not_found_before_default_ttl(tmp_
         ingest = _ingest_service_for_connection(conn)
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(interval_seconds=60, chain_ids=("eip155:1",)),
+            chain_ids=("eip155:1",),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=dex_market,
@@ -334,10 +334,7 @@ def test_provider_outage_opens_circuit_without_spending_target_attempt(tmp_path)
         )
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(
-                interval_seconds=60,
-                chain_ids=("eip155:1",),
-            ),
+            chain_ids=("eip155:1",),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=market,
@@ -452,7 +449,7 @@ def test_dex_symbol_discovery_retains_top_three_per_chain(tmp_path):
         )
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(interval_seconds=60, chain_ids=("solana", "eip155:56")),
+            chain_ids=("solana", "eip155:56"),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=FakeDexMarket(
@@ -624,7 +621,7 @@ def test_dex_symbol_discovery_excludes_stale_unretained_search_assets_from_resul
         conn.commit()
         worker = ResolutionRefreshWorker(
             name="resolution_refresh",
-            settings=resolution_worker_settings(interval_seconds=60, chain_ids=("eip155:56",)),
+            chain_ids=("eip155:56",),
             db=FakeWorkerDB(conn),
             telemetry=object(),
             dex_discovery_market=FakeDexMarket(
@@ -679,22 +676,6 @@ def test_dex_symbol_discovery_excludes_stale_unretained_search_assets_from_resul
     assert discovery["candidate_count"] == 3
     assert discovery["candidate_ids_json"] == expected_ids
     assert old["asset_id"] not in discovery["candidate_ids_json"]
-
-
-def resolution_worker_settings(**overrides):
-    values = {
-        "enabled": True,
-        "interval_seconds": 30.0,
-        "timeout_seconds": 120.0,
-        "batch_size": 50,
-        "lease_ms": 300_000,
-        "hot_not_found_retry_ms": 60_000,
-        "reprocess_limit": 500,
-        "max_attempts": 3,
-        "chain_ids": ("solana", "eip155:1", "eip155:56", "eip155:8453", "ton"),
-    }
-    values.update(overrides)
-    return SimpleNamespace(**values)
 
 
 class FakeWorkerDB:

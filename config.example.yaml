@@ -22,6 +22,11 @@ llm:
   base_url: ""
   openrouter_api_key:
   groq_api_key:
+  news_brief_model: "deepseek-chat"
+  macro_document_analysis_enabled: false
+  macro_document_analysis_model: "gpt-5.4-mini"
+  macro_thesis_enabled: false
+  macro_thesis_model: "gpt-5.4-mini"
 
 gmgn:
   api_key:

@@ -106,7 +106,6 @@ def _complete_evidence() -> dict:
         },
         "configuration": {
             "config_path": "/operator/tracefold/config.yaml",
-            "workers_config_path": None,
             "redacted_enablement": {
                 "collector_enabled": True,
                 "news_enabled": True,

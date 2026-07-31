@@ -1129,10 +1129,8 @@
 | `claimed_until_ms` | `BIGINT` | True | `None` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `pending_first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `pending_deadline_at_ms` | `BIGINT` | True | `None` |
-| `pending_input_fingerprint` | `TEXT` | True | `None` |
-| `pending_projection_version` | `TEXT` | True | `None` |
+| `claimed_input_fingerprint` | `TEXT` | True | `None` |
+| `claimed_projection_version` | `TEXT` | True | `None` |
 
 ## `radar_source_edges`
 

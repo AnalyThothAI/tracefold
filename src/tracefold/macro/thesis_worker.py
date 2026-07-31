@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.macro.thesis_service import MacroThesisRunView, MacroThesisService
-from tracefold.platform.config.settings import MacroThesisWorkerSettings
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -12,13 +11,15 @@ class MacroThesisWorker(WorkerBase):
     def __init__(
         self,
         *,
-        settings: MacroThesisWorkerSettings,
-        db: Any,
         telemetry: Any,
         service: MacroThesisService,
         name: str = "macro_thesis",
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=300.0,
+            telemetry=telemetry,
+        )
         self._service = service
 
     async def run_once(self) -> WorkerResult:

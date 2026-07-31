@@ -23,12 +23,11 @@ def test_hard_cut_refuses_to_touch_postgres_without_snapshot_confirmation(
             bootstrap_dsn="postgresql://tracefold_app@postgres/tracefold",
             bootstrap_password_file=tmp_path / "postgres_password",
             snapshot_confirmed=False,
-            snapshot_waived=False,
         )
     connect.assert_not_called()
 
 
-def test_hard_cut_accepts_explicit_snapshot_waiver(
+def test_hard_cut_proceeds_only_after_snapshot_confirmation(
     tmp_path: Path,
 ) -> None:
     settings = SimpleNamespace()
@@ -47,7 +46,6 @@ def test_hard_cut_accepts_explicit_snapshot_waiver(
             settings=settings,
             bootstrap_dsn="postgresql://tracefold_app@postgres/tracefold",
             bootstrap_password_file=tmp_path / "postgres_password",
-            snapshot_confirmed=False,
-            snapshot_waived=True,
+            snapshot_confirmed=True,
         )
     connect.assert_called_once()

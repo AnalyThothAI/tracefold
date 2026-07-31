@@ -5,10 +5,15 @@ from typing import Any
 import pytest
 
 import tracefold.market.radar.token_radar_projector as projector_module
-from tracefold.market.radar.output_envelope import split_bounded_rows
-from tracefold.market.radar.projection import (
+from tracefold.market.radar.microbatch import (
     RadarShardOversized,
+    _require_bounded_input,
     _require_bounded_output,
+    rank_radar_microbatch,
+)
+from tracefold.market.radar.output_envelope import (
+    OutputRowOversized,
+    split_bounded_rows,
 )
 from tracefold.market.radar.token_radar_projector import (
     build_token_radar_current_closure,
@@ -26,7 +31,7 @@ def test_rank_closure_selects_top_n_before_wide_hydration(
             "target_id": "not-in-cohort",
             "window": "5m",
             "now_ms": 1_800_000_000_000,
-            "feature": None,
+            "features": [],
             "compact_inputs": rows,
             "venues": ["all"],
             "rank_limit": 2,
@@ -66,7 +71,7 @@ def test_rank_closure_selects_top_n_before_wide_hydration(
     ]
     closure = build_token_radar_current_closure(
         {
-            "feature": None,
+            "features": [],
             "selected_by_venue": ranked["selected_by_venue"],
             "hydrated_inputs": hydrated,
         }
@@ -83,13 +88,6 @@ def test_radar_output_cap_splits_one_stable_venue_lane_deterministically() -> No
         {"lane": "resolved", "payload": "r" * 600_000},
         {"lane": "resolved", "payload": "a" * 600_000},
     ]
-    _require_bounded_output(
-        {
-            "rows_by_venue": {
-                "all": rows,
-            }
-        }
-    )
     batches = split_bounded_rows(
         rows,
         context={"window_venue_lane": ["all", "resolved"]},
@@ -99,6 +97,23 @@ def test_radar_output_cap_splits_one_stable_venue_lane_deterministically() -> No
         ["r"],
         ["a"],
     ]
+
+    with pytest.raises(OutputRowOversized, match="output_envelope_single_row_oversized"):
+        split_bounded_rows(
+            [
+                {
+                    "lane": "resolved",
+                    "payload": "x" * (1024 * 1024),
+                }
+            ],
+            context={"window_venue_lane": ["all", "resolved"]},
+            byte_cap=1024 * 1024,
+        )
+
+
+def test_radar_microbatch_retains_input_and_output_byte_envelopes() -> None:
+    with pytest.raises(RadarShardOversized, match="radar_input_byte_overflow"):
+        _require_bounded_input({"rows": [{"payload": "x" * (4 * 1024 * 1024)}]})
 
     with pytest.raises(RadarShardOversized, match="radar_output_byte_overflow"):
         _require_bounded_output(
@@ -113,6 +128,34 @@ def test_radar_output_cap_splits_one_stable_venue_lane_deterministically() -> No
                 }
             }
         )
+
+
+def test_radar_microbatch_removes_expired_target_from_same_publication() -> None:
+    expired = _compact_row(identity_id="expired", rank_score=100)
+    retained = _compact_row(identity_id="retained", rank_score=90)
+
+    ranked = rank_radar_microbatch(
+        {
+            "window": "5m",
+            "now_ms": 1_800_000_000_000,
+            "venues": ["all"],
+            "compact_inputs": [expired, retained],
+            "current_stock_features": [],
+            "target_projections": [
+                {
+                    "kind": "token",
+                    "target_type": "Asset",
+                    "target_id": "expired",
+                    "projection": {"feature": None},
+                }
+            ],
+        }
+    )
+
+    assert ranked["source_rows_by_venue"] == {"all": 1}
+    assert ranked["selected_identities"] == [
+        ["resolved", "Asset", "retained"],
+    ]
 
 
 def _compact_row(*, identity_id: str, rank_score: int) -> dict[str, Any]:

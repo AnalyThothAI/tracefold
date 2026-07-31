@@ -69,19 +69,16 @@ def test_complete_backend_hot_path_to_token_radar(
     )
     collector = CollectorService(
         name="collector",
-        settings=settings.workers.collector,
-        db=worker_db,
         telemetry=telemetry,
         store=_PooledIngestStore(
             worker_db,
             providers=providers,
-            event_anchor_active_window_ms=(settings.workers.event_anchor_capture.active_window_ms),
+            event_anchor_active_window_ms=300_000,
         ),
         upstream_client=None,
+        resources=resources,
+        provider_governor=governor,
     )
-    collector.bind_runtime_id(str(uuid4()))
-    collector.bind_runtime_resources(resources)
-    collector.bind_provider_governor(governor)
     upstream = FakeGmgnUpstreamClient(
         [frame],
         collector.handle_frame,
@@ -105,23 +102,18 @@ def test_complete_backend_hot_path_to_token_radar(
             30 * 24 * 60 * 60 * 1000,
             abs(backfill_now_ms - FIXED_NOW_MS) + 60_000,
         )
-        backfill_settings = settings.workers.event_anchor_capture.model_copy(
-            update={
-                "batch_size": 10,
-                "min_age_ms": 0,
-                "max_anchor_lag_ms": backfill_window_ms,
-            }
-        )
         backfill = EventAnchorBackfillWorker(
             name="event_anchor_capture",
             pool_bundle=worker_db,
             providers=providers,
-            settings=backfill_settings,
+            resources=resources,
+            provider_governor=governor,
+            runtime_id=str(uuid4()),
             clock=lambda: backfill_now_ms,
         )
-        backfill.bind_runtime_id(str(uuid4()))
-        backfill.bind_runtime_resources(resources)
-        backfill.bind_provider_governor(governor)
+        backfill.batch_size = 10
+        backfill.min_age_ms = 0
+        backfill.max_anchor_lag_ms = backfill_window_ms
         backfill_result = asyncio.run(backfill.run_once())
         assert backfill_result.processed == 1
         _assert_counts({"market_ticks": 1, "ready_enriched_events": 1})

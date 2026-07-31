@@ -12,12 +12,14 @@ class MacroDocumentAnalysisWorker(WorkerBase):
         self,
         *,
         name: str,
-        settings: Any,
-        db: Any,
         telemetry: Any,
         service: MacroDocumentAnalysisService,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=30.0,
+            telemetry=telemetry,
+        )
         self.service = service
 
     async def run_once(self) -> WorkerResult:

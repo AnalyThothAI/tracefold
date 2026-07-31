@@ -24,6 +24,8 @@ from tracefold.market import (
 )
 from tracefold.platform.config.settings import Settings
 
+_DEX_WS_SUBSCRIPTION_LIMIT = 100
+
 
 class _SyncCloseProvider(Protocol):
     def close(self) -> None: ...
@@ -187,7 +189,7 @@ def okx_dex_ws_market(settings: Settings) -> OkxDexWebSocketMarketProviderAdapte
             api_key=settings.providers.okx.dex_api_key or "",
             secret_key=settings.providers.okx.dex_secret_key or "",
             passphrase=settings.providers.okx.dex_passphrase or "",
-            subscription_limit=settings.workers.market_tick_stream.subscription_limit,
+            subscription_limit=_DEX_WS_SUBSCRIPTION_LIMIT,
         )
     )
 

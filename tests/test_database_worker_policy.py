@@ -10,7 +10,7 @@ from psycopg_pool import PoolTimeout
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
 from tracefold.macro.projection import MacroProjectionService
 from tracefold.market.profiles.profile_projection import ProfileProjectionService
-from tracefold.market.radar.projection import RadarProjectionService
+from tracefold.market.radar.microbatch import RadarMicroBatchService
 from tracefold.news.projection import NewsProjectionService
 
 
@@ -64,13 +64,13 @@ def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
 def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() -> None:
     cases = (
         (
-            RadarProjectionService,
+            RadarMicroBatchService,
             {},
             "radar_maintenance_rebuild",
         ),
         (
             MacroProjectionService,
-            {"settings": object(), "backfill_worker_enabled": False},
+            {},
             "macro_maintenance_rebuild",
         ),
         (

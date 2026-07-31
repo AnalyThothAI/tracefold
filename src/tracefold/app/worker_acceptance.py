@@ -89,7 +89,6 @@ def issue_32_evidence_template() -> dict[str, Any]:
         },
         "configuration": {
             "config_path": "",
-            "workers_config_path": None,
             "redacted_enablement": {},
         },
         "gates": {
@@ -144,8 +143,6 @@ def _validate_evidence(payload: Any) -> None:
     config_path = Path(_required_text(configuration, "config_path"))
     if not config_path.is_absolute():
         raise ValueError("issue_32_evidence_config_path_must_be_absolute")
-    if configuration.get("workers_config_path") is not None:
-        raise ValueError("issue_32_evidence_workers_config_forbidden")
     enablement = _mapping(configuration, "redacted_enablement")
     if not enablement or any(not isinstance(value, (bool, type(None))) for value in enablement.values()):
         raise ValueError("issue_32_evidence_redacted_enablement_invalid")

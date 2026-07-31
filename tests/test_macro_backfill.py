@@ -117,7 +117,6 @@ def test_history_backfill_is_visible_but_never_becomes_a_judgment_gate() -> None
         [fact],
         now_ms,
         analysis_job_state=None,
-        backfill_worker_enabled=True,
     )[0]
 
     assert state["current_health"] == "current"
@@ -146,7 +145,6 @@ def test_terminal_best_effort_proxy_stays_local_and_does_not_degrade_current_hea
         [],
         now_ms,
         analysis_job_state=None,
-        backfill_worker_enabled=False,
     )[0]
 
     assert state["current_health"] == "unavailable"
@@ -192,7 +190,6 @@ def test_optional_maximum_public_history_is_audit_only() -> None:
         [fact],
         now_ms,
         analysis_job_state=None,
-        backfill_worker_enabled=True,
     )
     state = states[0]
 

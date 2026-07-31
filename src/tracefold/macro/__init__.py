@@ -1,5 +1,6 @@
 """Public Macro decision-system interface."""
 
+from .acquisition import MacroAcquisitionService
 from .acquisition_worker import MacroAcquisitionWorker
 from .backfill import MacroBackfillPolicy, professional_backfill_policies
 from .calculations import (
@@ -191,6 +192,7 @@ __all__ = [
     "FedOfficialRoleFact",
     "FetchBatch",
     "MacroAblationEvidenceV1",
+    "MacroAcquisitionService",
     "MacroAcquisitionWorker",
     "MacroAlternative",
     "MacroAlternativePresentation",

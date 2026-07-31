@@ -20,8 +20,7 @@ domain/source-family enablement, model provider/name, and logging.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model
-reservations are code-owned. `workers.yaml` was deleted by the Issue #32 hard
-cut and is rejected rather than read as a fallback.
+reservations are code-owned.
 
 Do not introduce a second application config path, shadow config in
 environment variables, or move code-owned safety budgets into

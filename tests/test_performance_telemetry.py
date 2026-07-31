@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any
 
+from tracefold.app.projection_coordinator import SteadyProjectionCoordinator
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.workers.worker_base import WorkerBase
+from tracefold.platform.workers.projection_candidate import ProjectionShard
 from tracefold.platform.workers.worker_result import WorkerResult
 
 
@@ -17,8 +17,16 @@ class _FakeConnection:
         yield
 
 
-class _ProjectionWorker(WorkerBase):
-    async def run_once(self) -> WorkerResult:
+class _ProjectionCandidate:
+    async def next_due_shard(self, *, now_ms: int) -> ProjectionShard:
+        return ProjectionShard(
+            domain="profile",
+            shard_key="Asset:asset:test",
+            deadline_at_ms=now_ms,
+            stable_order=1,
+        )
+
+    async def run_shard(self, _shard: ProjectionShard) -> WorkerResult:
         return WorkerResult(
             processed=1,
             notes={
@@ -27,11 +35,6 @@ class _ProjectionWorker(WorkerBase):
                 "hydrated_rows": 5,
                 "rows_written": 2,
                 "projection_status": "unchanged_input",
-                "merged_rank_set_triggers": 3,
-                "queue_depth": 7,
-                "oldest_due_age_ms": 2_500,
-                "projection_domain": "profile",
-                "projection_deadline_lag_ms": 125,
             },
         )
 
@@ -48,23 +51,18 @@ def test_worker_metrics_cover_transactions_amplification_cache_and_queue_age() -
     with repos.transaction():
         pass
 
-    worker = _ProjectionWorker(
+    clock = iter((100, 225))
+    worker = SteadyProjectionCoordinator(
         name="projection",
-        settings=SimpleNamespace(
-            enabled=True,
-            interval_seconds=10,
-            backoff=SimpleNamespace(base_ms=100, max_ms=1_000),
-        ),
-        db=None,
+        candidates=(_ProjectionCandidate(),),
         telemetry=telemetry,
+        now_ms=lambda: next(clock),
     )
-    asyncio.run(worker.run_one_iteration())
+    asyncio.run(worker._run_iteration())
 
     metrics = telemetry.render_prometheus_text()
     assert 'tracefold_worker_transaction_seconds_count{worker="projection"} 1.0' in metrics
     assert 'tracefold_worker_projection_rows{stage="source",worker="projection"} 100.0' in metrics
     assert 'tracefold_worker_projection_rows{stage="hydrated",worker="projection"} 5.0' in metrics
     assert 'tracefold_worker_projection_cache_total{outcome="hit",worker="projection"} 1.0' in metrics
-    assert 'tracefold_worker_projection_merged_total{worker="projection"} 3.0' in metrics
     assert 'tracefold_worker_projection_deadline_misses_total{domain="profile",worker="projection"} 1.0' in metrics
-    assert 'tracefold_worker_queue_oldest_delay_seconds{queue="primary",worker="projection"} 2.5' in metrics

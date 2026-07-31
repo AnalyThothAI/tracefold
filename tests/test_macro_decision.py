@@ -60,7 +60,6 @@ def _module(
     module_id: str,
     *,
     now_ms: int = NOW_MS,
-    backfill_worker_enabled: bool = False,
     **overrides: list[dict],
 ) -> dict:
     groups = {
@@ -76,7 +75,6 @@ def _module(
     return build_typed_module_payload(
         module_id=module_id,  # type: ignore[arg-type]
         now_ms=now_ms,
-        backfill_worker_enabled=backfill_worker_enabled,
         **groups,
     )
 
@@ -833,7 +831,6 @@ def test_next_checkpoints_never_emit_reasonless_critical_placeholders() -> None:
 def test_running_backfill_without_durable_schedule_has_no_next_check() -> None:
     module = _module(
         "rates_fed",
-        backfill_worker_enabled=True,
         target_states=[
             {
                 "dataset_id": "fred.dgs2",

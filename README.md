@@ -51,7 +51,6 @@ Live configuration is operator-owned:
 
 ```text
 ~/.tracefold/config.yaml
-~/.tracefold/workers.yaml
 ~/.tracefold/postgres_password
 ~/.tracefold/rsshub.env       # optional; Compose RSSHub credentials only
 ~/.tracefold/logs/

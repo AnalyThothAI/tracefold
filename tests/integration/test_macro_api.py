@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
@@ -99,7 +98,6 @@ def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
         try:
             result = rebuild_all_macro_modules_for_maintenance(
                 db=worker_db,
-                settings=SimpleNamespace(statement_timeout_seconds=30),
                 now_ms=now_ms,
             )
         finally:

@@ -116,6 +116,15 @@ class ProjectionFrontierRepository:
         extra_insert: dict[str, object] | None = None,
     ) -> int:
         require_transaction(self.conn, operation=f"{spec.domain}_frontier_mark_dirty")
+        if spec == RADAR_FRONTIER:
+            return self._mark_radar_dirty(
+                key=key,
+                dirty_at_ms=dirty_at_ms,
+                deadline_at_ms=deadline_at_ms,
+                eligible_at_ms=eligible_at_ms,
+                input_fingerprint=input_fingerprint,
+                version=version,
+            )
         values: dict[str, object] = {
             **_validated_key(spec, key),
             "status": "dirty",
@@ -208,6 +217,117 @@ class ProjectionFrontierRepository:
         )
         return int(cursor.rowcount or 0)
 
+    def _mark_radar_dirty(
+        self,
+        *,
+        key: dict[str, str],
+        dirty_at_ms: int,
+        deadline_at_ms: int,
+        eligible_at_ms: int | None,
+        input_fingerprint: str,
+        version: str,
+    ) -> int:
+        values: dict[str, object] = {
+            **_validated_key(RADAR_FRONTIER, key),
+            "dirty_at_ms": int(dirty_at_ms),
+            "deadline_at_ms": int(deadline_at_ms),
+            "eligible_at_ms": (int(eligible_at_ms) if eligible_at_ms is not None else None),
+            "input_fingerprint": _required_text(input_fingerprint, "input_fingerprint"),
+            "projection_version": _required_text(version, "projection_version"),
+        }
+        cursor = self.conn.execute(
+            """
+            INSERT INTO radar_projection_frontiers(
+              target_type, target_id, window_key, venue, status,
+              first_dirty_at_ms, deadline_at_ms, next_attempt_at_ms,
+              attempt_count, transient_failure_count, input_fingerprint,
+              projection_version, claimed_by, claimed_until_ms,
+              claimed_input_fingerprint, claimed_projection_version,
+              last_error_code, updated_at_ms
+            )
+            VALUES (
+              %(target_type)s, %(target_id)s, %(window_key)s, %(venue)s,
+              'dirty', %(dirty_at_ms)s, %(deadline_at_ms)s,
+              %(eligible_at_ms)s, 0, 0, %(input_fingerprint)s,
+              %(projection_version)s, NULL, NULL, NULL, NULL, NULL,
+              %(dirty_at_ms)s
+            )
+            ON CONFLICT(target_type, target_id, window_key, venue)
+            DO UPDATE SET
+              status = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN 'running'
+                ELSE 'dirty'
+              END,
+              first_dirty_at_ms = LEAST(
+                COALESCE(
+                  radar_projection_frontiers.first_dirty_at_ms,
+                  EXCLUDED.first_dirty_at_ms
+                ),
+                EXCLUDED.first_dirty_at_ms
+              ),
+              deadline_at_ms = LEAST(
+                COALESCE(
+                  radar_projection_frontiers.deadline_at_ms,
+                  EXCLUDED.deadline_at_ms
+                ),
+                EXCLUDED.deadline_at_ms
+              ),
+              next_attempt_at_ms = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.next_attempt_at_ms
+                ELSE EXCLUDED.next_attempt_at_ms
+              END,
+              attempt_count = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.attempt_count
+                ELSE 0
+              END,
+              transient_failure_count = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.transient_failure_count
+                ELSE 0
+              END,
+              input_fingerprint = EXCLUDED.input_fingerprint,
+              projection_version = EXCLUDED.projection_version,
+              claimed_by = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.claimed_by
+                ELSE NULL
+              END,
+              claimed_until_ms = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.claimed_until_ms
+                ELSE NULL
+              END,
+              claimed_input_fingerprint = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.claimed_input_fingerprint
+                ELSE NULL
+              END,
+              claimed_projection_version = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.claimed_projection_version
+                ELSE NULL
+              END,
+              last_error_code = CASE
+                WHEN radar_projection_frontiers.status = 'running'
+                  THEN radar_projection_frontiers.last_error_code
+                ELSE NULL
+              END,
+              updated_at_ms = EXCLUDED.updated_at_ms
+            WHERE (
+              radar_projection_frontiers.input_fingerprint,
+              radar_projection_frontiers.projection_version
+            ) IS DISTINCT FROM (
+              EXCLUDED.input_fingerprint,
+              EXCLUDED.projection_version
+            )
+            """,
+            values,
+        )
+        return int(cursor.rowcount or 0)
+
     def claim(
         self,
         spec: FrontierSpec,
@@ -224,6 +344,13 @@ class ProjectionFrontierRepository:
             "now_ms": int(now_ms),
             "claimed_until_ms": int(now_ms) + int(lease_ms),
         }
+        claim_snapshot = (
+            """,
+                claimed_input_fingerprint = input_fingerprint,
+                claimed_projection_version = projection_version"""
+            if spec == RADAR_FRONTIER
+            else ""
+        )
         row = self.conn.execute(
             f"""
             UPDATE {spec.table}
@@ -231,6 +358,7 @@ class ProjectionFrontierRepository:
                 claimed_by = %(runtime_id)s,
                 claimed_until_ms = %(claimed_until_ms)s,
                 updated_at_ms = %(now_ms)s
+                {claim_snapshot}
             WHERE {_key_predicate(spec)}
               AND (
                 (
@@ -267,6 +395,73 @@ class ProjectionFrontierRepository:
         now_ms: int,
     ) -> bool:
         require_transaction(self.conn, operation=f"{spec.domain}_frontier_complete")
+        if spec == RADAR_FRONTIER:
+            cursor = self.conn.execute(
+                """
+                UPDATE radar_projection_frontiers
+                SET status = CASE
+                      WHEN (
+                        input_fingerprint,
+                        projection_version
+                      ) = (
+                        claimed_input_fingerprint,
+                        claimed_projection_version
+                      )
+                        THEN 'clean'
+                      ELSE 'dirty'
+                    END,
+                    first_dirty_at_ms = CASE
+                      WHEN (
+                        input_fingerprint,
+                        projection_version
+                      ) = (
+                        claimed_input_fingerprint,
+                        claimed_projection_version
+                      )
+                        THEN NULL
+                      ELSE first_dirty_at_ms
+                    END,
+                    deadline_at_ms = CASE
+                      WHEN (
+                        input_fingerprint,
+                        projection_version
+                      ) = (
+                        claimed_input_fingerprint,
+                        claimed_projection_version
+                      )
+                        THEN NULL
+                      ELSE deadline_at_ms
+                    END,
+                    next_attempt_at_ms = NULL,
+                    attempt_count = 0,
+                    transient_failure_count = 0,
+                    claimed_by = NULL,
+                    claimed_until_ms = NULL,
+                    claimed_input_fingerprint = NULL,
+                    claimed_projection_version = NULL,
+                    last_error_code = NULL,
+                    updated_at_ms = %(now_ms)s
+                WHERE target_type = %(target_type)s
+                  AND target_id = %(target_id)s
+                  AND window_key = %(window_key)s
+                  AND venue = %(venue)s
+                  AND status = 'running'
+                  AND claimed_by = %(runtime_id)s
+                  AND claimed_input_fingerprint = %(input_fingerprint)s
+                  AND claimed_projection_version = %(version)s
+                """,
+                {
+                    **_validated_key(spec, key),
+                    "runtime_id": UUID(str(runtime_id)),
+                    "input_fingerprint": _required_text(
+                        input_fingerprint,
+                        "input_fingerprint",
+                    ),
+                    "version": _required_text(version, spec.version_column),
+                    "now_ms": int(now_ms),
+                },
+            )
+            return int(cursor.rowcount or 0) == 1
         cursor = self.conn.execute(
             f"""
             UPDATE {spec.table}
@@ -325,6 +520,7 @@ class ProjectionFrontierRepository:
         now_ms: int,
     ) -> bool:
         require_transaction(self.conn, operation=f"{spec.domain}_frontier_fail_transient")
+        clear_claim_snapshot = _clear_claim_snapshot_sql(spec)
         cursor = self.conn.execute(
             f"""
             UPDATE {spec.table}
@@ -340,6 +536,7 @@ class ProjectionFrontierRepository:
                 claimed_until_ms = NULL,
                 last_error_code = %(last_error_code)s,
                 updated_at_ms = %(now_ms)s
+                {clear_claim_snapshot}
             WHERE {_key_predicate(spec)}
               AND status = 'running'
               AND claimed_by = %(runtime_id)s
@@ -363,6 +560,7 @@ class ProjectionFrontierRepository:
         now_ms: int,
     ) -> dict[str, Any] | None:
         require_transaction(self.conn, operation=f"{spec.domain}_frontier_fail_deterministic")
+        clear_claim_snapshot = _clear_claim_snapshot_sql(spec)
         current = self.conn.execute(
             f"""
             SELECT *
@@ -394,6 +592,7 @@ class ProjectionFrontierRepository:
                 claimed_until_ms = NULL,
                 last_error_code = %(error_code)s,
                 updated_at_ms = %(now_ms)s
+                {clear_claim_snapshot}
             WHERE {_key_predicate(spec)}
               AND status = 'running'
               AND claimed_by = %(runtime_id)s
@@ -488,6 +687,7 @@ class ProjectionFrontierRepository:
         increment_attempt: bool,
     ) -> bool:
         require_transaction(self.conn, operation=f"{spec.domain}_frontier_release")
+        clear_claim_snapshot = _clear_claim_snapshot_sql(spec)
         cursor = self.conn.execute(
             f"""
             UPDATE {spec.table}
@@ -498,6 +698,7 @@ class ProjectionFrontierRepository:
                 claimed_until_ms = NULL,
                 last_error_code = %(last_error_code)s,
                 updated_at_ms = %(now_ms)s
+                {clear_claim_snapshot}
             WHERE {_key_predicate(spec)}
               AND status = 'running'
               AND claimed_by = %(runtime_id)s
@@ -517,6 +718,14 @@ class ProjectionFrontierRepository:
 
 def _key_predicate(spec: FrontierSpec) -> str:
     return " AND ".join(f"{column} = %({column})s" for column in spec.key_columns)
+
+
+def _clear_claim_snapshot_sql(spec: FrontierSpec) -> str:
+    if spec != RADAR_FRONTIER:
+        return ""
+    return """,
+                claimed_input_fingerprint = NULL,
+                claimed_projection_version = NULL"""
 
 
 def _validated_key(spec: FrontierSpec, key: dict[str, str]) -> dict[str, str]:

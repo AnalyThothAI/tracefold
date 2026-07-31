@@ -52,6 +52,17 @@ class SingleConnectionDB:
         return repository_session_for_connection(self.conn)
 
 
+class _InlineResources:
+    async def run_background_db(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def run_model(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    async def run_model_cleanup(self, function, /, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
 class OneItemReader:
     def fetch(
         self,
@@ -162,13 +173,6 @@ def record(
     )
 
 
-def brief_settings() -> SimpleNamespace:
-    return SimpleNamespace(
-        statement_timeout_seconds=30.0,
-        max_attempts=3,
-    )
-
-
 def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
     tmp_path,
 ) -> None:
@@ -176,21 +180,16 @@ def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
     try:
         migrate(conn)
         clock = SimpleNamespace(now_ms=NOW_MS)
+        resources = RuntimeResources()
         pipeline = NewsIngestWorker(
-            settings=SimpleNamespace(
-                batch_size=20,
-                fetch_concurrency=1,
-                statement_timeout_seconds=30.0,
-            ),
             db=SingleConnectionDB(conn),
             telemetry=SimpleNamespace(),
             sources=(source("reuters", "Reuters"),),
             feed_reader=OneItemReader(),
+            resources=resources,
+            provider_governor=ProviderGovernor(),
             clock_ms=lambda: clock.now_ms,
         )
-        resources = RuntimeResources()
-        pipeline.bind_runtime_resources(resources)
-        pipeline.bind_provider_governor(ProviderGovernor())
         try:
             assert asyncio.run(pipeline.run_once()).processed == 1
             clock.now_ms = NOW_MS + 120_000
@@ -479,21 +478,16 @@ def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
         migrate(conn)
         wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
         clock = SimpleNamespace(now_ms=NOW_MS)
+        resources = RuntimeResources()
         pipeline = NewsIngestWorker(
-            settings=SimpleNamespace(
-                batch_size=1,
-                fetch_concurrency=1,
-                statement_timeout_seconds=30.0,
-            ),
             db=SingleConnectionDB(conn),
             telemetry=SimpleNamespace(),
             sources=(wallstengine,),
             feed_reader=reader,
+            resources=resources,
+            provider_governor=ProviderGovernor(),
             clock_ms=lambda: clock.now_ms,
         )
-        resources = RuntimeResources()
-        pipeline.bind_runtime_resources(resources)
-        pipeline.bind_provider_governor(ProviderGovernor())
 
         try:
             first = asyncio.run(pipeline.run_once())
@@ -658,18 +652,19 @@ def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path) -> None:
 
         publisher = FixedBriefPublisher()
         worker = NewsWorldBriefWorker(
-            settings=brief_settings(),
             db=SingleConnectionDB(conn),
             telemetry=SimpleNamespace(),
             publisher=publisher,
+            resources=_InlineResources(),
+            runtime_id="integration-test",
             clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert worker.run_once_sync().processed == 1
+        assert asyncio.run(worker.run_once()).processed == 1
         brief = interface.get_world_brief(now_ms=NOW_MS + 120_000)
         assert brief["state"] == "ready"
         assert len(brief["publication"]["selected_story_ids"]) == 3
         assert publisher.calls == 1
-        assert worker.run_once_sync().skipped == 1
+        assert asyncio.run(worker.run_once()).skipped == 1
         assert publisher.calls == 1
     finally:
         conn.close()
@@ -1059,20 +1054,21 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
             repository.rebuild_stories(now_ms=NOW_MS)
         publisher = FixedBriefPublisher()
         worker = NewsWorldBriefWorker(
-            settings=brief_settings(),
             db=SingleConnectionDB(conn),
             telemetry=SimpleNamespace(),
             publisher=publisher,
+            resources=_InlineResources(),
+            runtime_id="integration-test",
             clock_ms=lambda: NOW_MS + 60_000,
         )
-        insufficient = worker.run_once_sync()
+        insufficient = asyncio.run(worker.run_once())
         assert insufficient.skipped == 1
         assert insufficient.notes["model_calls"] == 0
         assert publisher.calls == 0
         assert repository.get_brief(now_ms=NOW_MS + 60_000)["state"] == ("insufficient_material")
         first_updated_at_ms = conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"]
         worker.clock_ms = lambda: NOW_MS + 90_000
-        assert worker.run_once_sync().skipped == 1
+        assert asyncio.run(worker.run_once()).skipped == 1
         assert publisher.calls == 0
         assert (
             conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"] == first_updated_at_ms
@@ -1096,7 +1092,7 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
                 started_at_ms=NOW_MS + 2,
             )
             repository.rebuild_stories(now_ms=NOW_MS)
-        assert worker.run_once_sync().processed == 1
+        assert asyncio.run(worker.run_once()).processed == 1
         ready = repository.get_brief(now_ms=NOW_MS + 60_000)
         assert ready["state"] == "ready"
         publication_id = ready["publication"]["publication_id"]
@@ -1116,13 +1112,14 @@ def test_brief_states_are_evidence_driven_and_keep_last_known_good(
         assert stale["publication"]["publication_id"] == publication_id
 
         failing = NewsWorldBriefWorker(
-            settings=brief_settings(),
             db=SingleConnectionDB(conn),
             telemetry=SimpleNamespace(),
             publisher=RaisingBriefPublisher(),
+            resources=_InlineResources(),
+            runtime_id="integration-test",
             clock_ms=lambda: NOW_MS + 120_000,
         )
-        assert failing.run_once_sync().failed == 1
+        assert asyncio.run(failing.run_once()).failed == 1
         after_failure = repository.get_brief(now_ms=NOW_MS + 120_000)
         assert after_failure["state"] == "stale_fallback"
         assert after_failure["publication"]["publication_id"] == publication_id

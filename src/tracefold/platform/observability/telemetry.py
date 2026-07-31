@@ -65,12 +65,6 @@ class TelemetryRegistry:
             ("worker", "outcome"),
             registry=self.registry,
         )
-        self.projection_merged_total = Counter(
-            "tracefold_worker_projection_merged_total",
-            "Redundant projection triggers coalesced before publication.",
-            ("worker",),
-            registry=self.registry,
-        )
         self.projection_deadline_misses_total = Counter(
             "tracefold_worker_projection_deadline_misses_total",
             "Projection shards completed after their freshness deadline.",
@@ -123,9 +117,6 @@ class TelemetryRegistry:
             worker=_label(worker),
             outcome=_label(outcome),
         ).inc()
-
-    def record_projection_merged(self, worker: str, count: int) -> None:
-        self.projection_merged_total.labels(worker=_label(worker)).inc(max(0, int(count)))
 
     def record_projection_deadline_miss(
         self,

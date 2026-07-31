@@ -137,7 +137,7 @@ def _worker_degradation_reasons(
     reasons: list[str] = []
     for name, status in workers.items():
         effective_status = str(status["effective_status"])
-        if effective_status in {"disabled", "intentionally_not_started"}:
+        if effective_status == "disabled":
             continue
         if effective_status == "unavailable":
             reasons.append(f"worker:{name}:unavailable:{status.get('unavailable_reason') or 'unavailable'}")

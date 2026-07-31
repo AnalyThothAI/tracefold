@@ -345,8 +345,6 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
                 return
             result = _run_radar_projection(
                 conn,
-                target_type=str(frontier["target_type"]),
-                target_id=str(frontier["target_id"]),
                 window=str(frontier["window_key"]),
                 now_ms=base_now_ms + attempt,
                 venue=str(frontier["venue"]),

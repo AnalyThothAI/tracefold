@@ -30,8 +30,6 @@ class WorkerRuntimeStatusRepository:
         for unit_name in canonical_names:
             status = statuses[unit_name]
             effective_status = str(status["effective_status"])
-            if effective_status == "intentionally_not_started":
-                effective_status = "disabled"
             self.conn.execute(
                 """
                 INSERT INTO worker_runtime_status(

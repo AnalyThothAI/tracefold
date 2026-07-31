@@ -1342,7 +1342,6 @@
               "complete",
               "queued",
               "running",
-              "paused",
               "retry_wait",
               "failed"
             ],
@@ -1352,15 +1351,10 @@
           "total_targets": {
             "title": "Total Targets",
             "type": "integer"
-          },
-          "worker_enabled": {
-            "title": "Worker Enabled",
-            "type": "boolean"
           }
         },
         "required": [
           "state",
-          "worker_enabled",
           "total_targets",
           "complete_targets",
           "pending_targets",
@@ -12427,7 +12421,6 @@
           "effective_status": {
             "enum": [
               "disabled",
-              "intentionally_not_started",
               "unavailable",
               "degraded",
               "running",

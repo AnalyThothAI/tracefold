@@ -549,26 +549,20 @@ def _available_module_reason(payload: dict[str, Any]) -> dict[str, object] | Non
         )
     if history["state"] in {"partial", "insufficient"}:
         backfill = dict(status["backfill_execution"])
-        automatic = bool(backfill["worker_enabled"]) and backfill["state"] in {
-            "queued",
-            "running",
-            "retry_wait",
-        }
+        running = backfill["state"] == "running"
         return macro_reason(
             code=f"macro_module_history_{history['state']}",
             message="当前事实可用，但 required 历史深度仍不足。",
             impact="limited",
-            retryable=automatic,
-            recovery="automatic" if automatic else "operator_action",
+            retryable=True,
+            recovery="automatic" if running else "operator_action",
             next_action=(
-                "等待已启用的 required 历史回填；optional 最大历史不阻断当前判断。"
-                if automatic
-                else "检查缺失数据集的 history target 与 backfill worker 配置；当前事实仍可读取。"
+                "等待正在执行的显式历史回填；optional 最大历史不阻断当前判断。"
+                if running
+                else "检查缺失数据集的 history target，并执行 tracefold macro backfill；当前事实仍可读取。"
             ),
             next_check_at_ms=(
-                int(backfill["next_check_at_ms"])
-                if automatic and backfill.get("next_check_at_ms") is not None
-                else None
+                int(backfill["next_check_at_ms"]) if backfill.get("next_check_at_ms") is not None else None
             ),
         )
     return None

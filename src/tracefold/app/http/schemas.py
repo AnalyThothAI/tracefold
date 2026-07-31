@@ -82,7 +82,6 @@ class WorkerStatusData(ExactApiSchema):
     running: bool
     effective_status: Literal[
         "disabled",
-        "intentionally_not_started",
         "unavailable",
         "degraded",
         "running",
@@ -145,8 +144,7 @@ class MacroHistoryDepthData(ExactApiSchema):
 
 
 class MacroBackfillExecutionData(ExactApiSchema):
-    state: Literal["not_required", "complete", "queued", "running", "paused", "retry_wait", "failed"]
-    worker_enabled: bool
+    state: Literal["not_required", "complete", "queued", "running", "retry_wait", "failed"]
     total_targets: int
     complete_targets: int
     pending_targets: int

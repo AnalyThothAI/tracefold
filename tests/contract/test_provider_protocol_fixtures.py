@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -72,18 +71,13 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
         store = MemoryStore()
         service = CollectorService(
             name="collector",
-            settings=SimpleNamespace(
-                enabled=True,
-                interval_seconds=3.0,
-                timeout_seconds=0.0,
-                snapshot_timeout_seconds=0.05,
-            ),
-            db=object(),
             telemetry=object(),
             store=store,
             upstream_client=None,
+            resources=_InlineRuntimeResources(),
+            provider_governor=object(),
         )
-        service.bind_runtime_resources(_InlineRuntimeResources())
+        service.snapshot_timeout = 0.05
 
         await service.handle_frame(raw_frames[0], received_at_ms=1_777_729_877_000)
         await service.handle_frame(raw_frames[1], received_at_ms=1_777_729_877_010)

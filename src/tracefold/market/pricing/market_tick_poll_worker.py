@@ -21,7 +21,6 @@ from tracefold.market.pricing.market_tick_persistence import (
 )
 from tracefold.market.provider_contracts import CexTicker, DexTokenQuote, DexTokenQuoteRequest
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
-from tracefold.platform.config.settings import MarketTickPollWorkerSettings
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -38,7 +37,8 @@ class MarketTickPollWorker(WorkerBase):
         *,
         pool_bundle: Any,
         providers: Any,
-        settings: MarketTickPollWorkerSettings,
+        resources: Any,
+        provider_governor: Any,
         clock: Any | None = None,
         name: str = "market_tick_poll",
         telemetry: Any | None = None,
@@ -49,22 +49,23 @@ class MarketTickPollWorker(WorkerBase):
             raise RuntimeError("market_tick_poll_db_required")
         super().__init__(
             name=name,
-            settings=settings,
-            db=pool_bundle,
+            interval_seconds=15.0,
             telemetry=telemetry or object(),
         )
+        self.db = pool_bundle
+        self.resources = resources
+        self.provider_governor = provider_governor
         self.providers = providers
         self.dex_quote_market = providers.dex_quote_market
         self.cex_market = providers.cex_market
-        self.batch_size = settings.batch_size
+        self.batch_size = 100
         self.clock = clock or _now_ms
         self._recent_attempts: set[tuple[str, str]] = set()
 
     async def run_once(self) -> WorkerResult:
         # DB read happens off the event loop; provider IO must not run while a
         # DB session is held, so we materialize rows first, then drop the session.
-        resources = self.require_runtime_resources()
-        rows = await resources.run_realtime_db(self._list_poll_rows)
+        rows = await self.resources.run_realtime_db(self._list_poll_rows)
         targets = _poll_targets(rows)
 
         chain_result = await self._poll_chain_targets_async(targets.chain_targets)
@@ -75,7 +76,10 @@ class MarketTickPollWorker(WorkerBase):
         skipped_reasons.update(cex_result.skipped_reasons)
         ticks = [*chain_result.ticks, *cex_result.ticks]
 
-        persistence = await resources.run_realtime_db(self._persist_ticks, ticks)
+        persistence = await self.resources.run_realtime_db(
+            self._persist_ticks,
+            ticks,
+        )
         inserted = persistence.inserted
         return WorkerResult(
             processed=inserted,
@@ -136,8 +140,11 @@ class MarketTickPollWorker(WorkerBase):
 
         requests = [DexTokenQuoteRequest(chain_id=target.chain_id, address=target.address) for target in targets]
         try:
-            async with self.require_provider_governor().acquire(host="dex_quote"):
-                quotes = await self.require_runtime_resources().run_provider_io(provider.token_quotes, requests)
+            async with self.provider_governor.acquire(host="dex_quote"):
+                quotes = await self.resources.run_provider_io(
+                    provider.token_quotes,
+                    requests,
+                )
         except Exception as exc:
             reason = _provider_error_reason(exc)
             self.logger.bind(
@@ -189,8 +196,8 @@ class MarketTickPollWorker(WorkerBase):
         outcomes: list[_SingleTargetOutcome] = []
         for target in targets:
             try:
-                async with self.require_provider_governor().acquire(host="cex_market"):
-                    ticker = await self.require_runtime_resources().run_provider_io(
+                async with self.provider_governor.acquire(host="cex_market"):
+                    ticker = await self.resources.run_provider_io(
                         provider.ticker,
                         inst_id=target.instrument,
                     )

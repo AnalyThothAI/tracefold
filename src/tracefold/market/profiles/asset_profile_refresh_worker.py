@@ -16,7 +16,6 @@ from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     DexTokenProfile,
 )
-from tracefold.platform.config.settings import AssetProfileRefreshWorkerSettings
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
@@ -42,12 +41,22 @@ class AssetProfileRefreshWorker(WorkerBase):
         self,
         *,
         name: str,
-        settings: AssetProfileRefreshWorkerSettings,
         db: Any,
         telemetry: Any,
+        resources: Any,
+        provider_governor: Any,
+        runtime_id: str,
         dex_profile_sources: tuple[DexProfileSource, ...] = (),
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=60.0,
+            telemetry=telemetry,
+        )
+        self.db = db
+        self.resources = resources
+        self.provider_governor = provider_governor
+        self.claim_owner = f"{name}:{runtime_id}"
         self.dex_profile_sources = tuple(dex_profile_sources)
         unknown = sorted(
             source.provider for source in self.dex_profile_sources if source.provider not in _PROVIDER_LANES
@@ -73,17 +82,17 @@ class AssetProfileRefreshWorker(WorkerBase):
         profile_source, claim, queue = selected
 
         try:
-            async with self.require_provider_governor().acquire(
+            async with self.provider_governor.acquire(
                 host=profile_source.provider,
                 lane=_PROVIDER_LANES[profile_source.provider],
             ):
-                profile = await self.require_runtime_resources().run_provider_io(
+                profile = await self.resources.run_provider_io(
                     fetch_asset_profile,
                     profile_source=profile_source,
                     row=claim,
                 )
         except DexProviderTemporarilyUnavailable as exc:
-            publish = await self.require_runtime_resources().run_background_db(
+            publish = await self.resources.run_background_db(
                 self._publish_provider_failure,
                 claim,
                 exc,
@@ -96,7 +105,7 @@ class AssetProfileRefreshWorker(WorkerBase):
                 error=str(exc),
             )
         except Exception as exc:
-            publish = await self.require_runtime_resources().run_background_db(
+            publish = await self.resources.run_background_db(
                 self._publish_target_error,
                 claim,
                 exc,
@@ -109,7 +118,7 @@ class AssetProfileRefreshWorker(WorkerBase):
                 error=str(exc),
             )
 
-        publish = await self.require_runtime_resources().run_background_db(
+        publish = await self.resources.run_background_db(
             self._publish_profile,
             claim,
             profile,
@@ -126,11 +135,10 @@ class AssetProfileRefreshWorker(WorkerBase):
         now_ms: int,
     ) -> tuple[DexProfileSource, dict[str, Any], dict[str, int]] | None:
         source_count = len(self.dex_profile_sources)
-        resources = self.require_runtime_resources()
         for offset in range(source_count):
             index = (self._source_cursor + offset) % source_count
             source = self.dex_profile_sources[index]
-            claim, queue = await resources.run_background_db(
+            claim, queue = await self.resources.run_background_db(
                 self._claim_source,
                 source.provider,
                 now_ms,
@@ -342,14 +350,26 @@ class AssetProfileRefreshWorker(WorkerBase):
             "target_attempt_consumed": True,
         }
 
-    @staticmethod
     def _result(
+        self,
         *,
         status: str,
         queue: dict[str, int],
         publish: dict[str, Any],
         error: str | None = None,
     ) -> WorkerResult:
+        if self.telemetry is not None:
+            self.telemetry.set_queue_depth(
+                self.name,
+                "primary",
+                "due",
+                int(queue.get("due") or 0),
+            )
+            self.telemetry.set_queue_oldest_delay_seconds(
+                self.name,
+                "primary",
+                int(queue.get("oldest_due_age_ms") or 0) / 1000,
+            )
         failed = int(status in {"error", "provider_blocked"})
         processed = int(status in {"ready", "missing"})
         return WorkerResult(

@@ -26,23 +26,30 @@ class NewsIngestWorker(WorkerBase):
     def __init__(
         self,
         *,
-        settings: Any,
         db: Any,
         telemetry: Any,
         sources: Sequence[NewsSourceDefinition | Any],
         feed_reader: NewsFeedReader,
+        resources: Any,
+        provider_governor: Any,
         name: str = "news_ingest",
         clock_ms: Any | None = None,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=120.0,
+            telemetry=telemetry,
+        )
+        self.db = db
+        self.resources = resources
+        self.provider_governor = provider_governor
         self.sources = tuple(source_definition(source) for source in sources)
         self.feed_reader = feed_reader
         self.clock_ms = clock_ms or _now_ms
 
     async def run_once(self) -> WorkerResult:
-        resources = self.require_runtime_resources()
         now_ms = int(self.clock_ms())
-        claimed = await resources.run_background_db(
+        claimed = await self.resources.run_background_db(
             self._claim_sources,
             now_ms,
         )
@@ -53,8 +60,8 @@ class NewsIngestWorker(WorkerBase):
             source = source_definition(raw_source)
             started_at_ms = int(raw_source["last_fetch_started_at_ms"] or now_ms)
             try:
-                async with self.require_provider_governor().acquire(host=_source_provider_host(source)):
-                    result = await resources.run_provider_io(
+                async with self.provider_governor.acquire(host=_source_provider_host(source)):
+                    result = await self.resources.run_provider_io(
                         self.feed_reader.fetch,
                         source=source,
                         etag=_optional_text(raw_source.get("etag")),
@@ -62,7 +69,7 @@ class NewsIngestWorker(WorkerBase):
                     )
             except Exception as exc:
                 failures += 1
-                await resources.run_background_db(
+                await self.resources.run_background_db(
                     self._record_fetch_failure,
                     source,
                     started_at_ms,
@@ -71,7 +78,7 @@ class NewsIngestWorker(WorkerBase):
                 )
                 continue
             fetched += 1
-            summary = await resources.run_background_db(
+            summary = await self.resources.run_background_db(
                 self._record_fetch_success,
                 source,
                 started_at_ms,
@@ -91,20 +98,20 @@ class NewsIngestWorker(WorkerBase):
         )
 
     async def on_close(self) -> None:
-        await self.require_runtime_resources().run_provider_cleanup(self.feed_reader.close)
+        await self.resources.run_provider_cleanup(self.feed_reader.close)
 
     def _claim_sources(self, now_ms: int) -> list[dict[str, Any]]:
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=180.0,
             ) as repos,
             repos.transaction(),
         ):
             repos.news.sync_sources(self.sources, now_ms=now_ms)
             claimed = repos.news.claim_due_sources(
                 now_ms=now_ms,
-                limit=int(self.settings.batch_size),
+                limit=200,
             )
         return [dict(row) for row in claimed]
 
@@ -118,7 +125,7 @@ class NewsIngestWorker(WorkerBase):
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=180.0,
             ) as repos,
             repos.transaction(),
         ):
@@ -154,7 +161,7 @@ class NewsIngestWorker(WorkerBase):
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=180.0,
             ) as repos,
             repos.transaction(),
         ):
@@ -180,30 +187,37 @@ class NewsWorldBriefWorker(WorkerBase):
     def __init__(
         self,
         *,
-        settings: Any,
         db: Any,
         telemetry: Any,
         publisher: NewsBriefPublisher,
+        resources: Any,
+        runtime_id: str,
         name: str = "news_world_brief",
         clock_ms: Any | None = None,
     ) -> None:
-        super().__init__(name=name, settings=settings, db=db, telemetry=telemetry)
+        super().__init__(
+            name=name,
+            interval_seconds=300.0,
+            telemetry=telemetry,
+        )
+        self.db = db
+        self.resources = resources
+        self.claim_owner = f"{name}:{runtime_id}"
         self.publisher = publisher
         self.clock_ms = clock_ms or _now_ms
 
     async def run_once(self) -> WorkerResult:
-        resources = self.require_runtime_resources()
-        prepared = await resources.run_background_db(self.prepare_run_sync)
+        prepared = await self.resources.run_background_db(self.prepare_run_sync)
         if "result" in prepared:
             return cast(WorkerResult, prepared["result"])
         try:
-            generated = await resources.run_model(
+            generated = await self.resources.run_model(
                 self.generate_sync,
                 prepared["stories"],
             )
             return cast(
                 WorkerResult,
-                await resources.run_background_db(
+                await self.resources.run_background_db(
                     self.publish_prepared_sync,
                     prepared,
                     generated,
@@ -212,7 +226,7 @@ class NewsWorldBriefWorker(WorkerBase):
         except Exception as exc:
             return cast(
                 WorkerResult,
-                await resources.run_background_db(
+                await self.resources.run_background_db(
                     self.fail_prepared_sync,
                     prepared,
                     exc,
@@ -220,22 +234,12 @@ class NewsWorldBriefWorker(WorkerBase):
             )
 
     async def on_close(self) -> None:
-        await self.require_runtime_resources().run_model_cleanup(self.publisher.close)
-
-    def run_once_sync(self) -> WorkerResult:
-        prepared = self.prepare_run_sync()
-        if "result" in prepared:
-            return cast(WorkerResult, prepared["result"])
-        try:
-            generated = self.generate_sync(prepared["stories"])
-            return self.publish_prepared_sync(prepared, generated)
-        except Exception as exc:
-            return self.fail_prepared_sync(prepared, exc)
+        await self.resources.run_model_cleanup(self.publisher.close)
 
     def prepare_run_sync(self) -> dict[str, Any]:
         with self.db.worker_session(
             self.name,
-            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+            statement_timeout_seconds=120.0,
         ) as repos:
             candidates = repos.news.brief_candidates()
         fingerprint = brief_fingerprint(candidates)
@@ -245,7 +249,7 @@ class NewsWorldBriefWorker(WorkerBase):
             with (
                 self.db.worker_session(
                     self.name,
-                    statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                    statement_timeout_seconds=120.0,
                 ) as repos,
                 repos.transaction(),
             ):
@@ -270,7 +274,7 @@ class NewsWorldBriefWorker(WorkerBase):
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=120.0,
             ) as repos,
             repos.transaction(),
         ):
@@ -279,7 +283,7 @@ class NewsWorldBriefWorker(WorkerBase):
                 story_count=len(candidates),
                 source_count=source_count,
                 now_ms=now_ms,
-                max_attempts=int(self.settings.max_attempts),
+                max_attempts=3,
                 lease_owner=self.claim_owner,
             )
         if claim is None:
@@ -329,7 +333,7 @@ class NewsWorldBriefWorker(WorkerBase):
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=120.0,
             ) as repos,
             repos.transaction(),
         ):
@@ -360,7 +364,7 @@ class NewsWorldBriefWorker(WorkerBase):
         with (
             self.db.worker_session(
                 self.name,
-                statement_timeout_seconds=self.settings.statement_timeout_seconds,
+                statement_timeout_seconds=120.0,
             ) as repos,
             repos.transaction(),
         ):

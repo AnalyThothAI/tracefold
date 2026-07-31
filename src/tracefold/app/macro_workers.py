@@ -4,7 +4,7 @@ from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import (
     MacroAcquisitionWorker,
 )
-from tracefold.platform.workers.factory import WorkerFactoryContext, disabled_worker
+from tracefold.platform.workers.factory import WorkerFactoryContext, mark_inactive
 from tracefold.platform.workers.worker_base import WorkerBase
 
 _ACQUISITION_WORKERS = {
@@ -17,17 +17,22 @@ _ACQUISITION_WORKERS = {
 
 
 def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
-    constructed: dict[str, WorkerBase] = {}
     source_config = ctx.settings.providers.macro_sources
+    if not source_config.enabled:
+        for worker_name in _ACQUISITION_WORKERS:
+            mark_inactive(
+                ctx,
+                worker_name,
+                effective_status="disabled",
+                reason="macro_sources_disabled",
+            )
+        return {}
+
+    constructed: dict[str, WorkerBase] = {}
     for worker_name, clock_kind in _ACQUISITION_WORKERS.items():
-        worker_settings = getattr(ctx.settings.workers, worker_name)
-        if not worker_settings.enabled or not source_config.enabled:
-            constructed[worker_name] = disabled_worker(ctx, worker_name)
-            continue
         constructed[worker_name] = MacroAcquisitionWorker(
             name=worker_name,
             clock_kind=clock_kind,
-            settings=worker_settings,
             db=ctx.db,
             telemetry=ctx.telemetry,
             source_client=MacroSourceClient(
@@ -39,6 +44,9 @@ def construct_macro_workers(ctx: WorkerFactoryContext) -> dict[str, WorkerBase]:
                 nasdaq_daily_enabled=source_config.nasdaq_daily_enabled,
                 yfinance_enabled=source_config.yfinance_enabled,
             ),
+            resources=ctx.resources,
+            provider_governor=ctx.provider_governor,
+            runtime_id=ctx.runtime_id,
         )
 
     return constructed

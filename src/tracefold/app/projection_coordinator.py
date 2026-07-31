@@ -18,35 +18,18 @@ class SteadyProjectionCoordinator(WorkerBase):
     def __init__(
         self,
         *,
-        settings: object,
         candidates: Sequence[ProjectionCandidate],
         telemetry: object,
-        db: object | None = None,
         now_ms: Callable[[], int] | None = None,
         name: str = "steady_projection_coordinator",
     ) -> None:
         super().__init__(
             name=name,
-            settings=settings,
-            db=db,
+            interval_seconds=0.05,
             telemetry=telemetry,
         )
         self.candidates = tuple(candidates)
         self._now_ms = now_ms or _now_ms
-
-    def bind_runtime_resources(self, resources: object) -> None:
-        super().bind_runtime_resources(resources)
-        for candidate in self.candidates:
-            worker = getattr(candidate, "worker", None)
-            if isinstance(worker, WorkerBase):
-                worker.bind_runtime_resources(resources)
-
-    def bind_provider_governor(self, governor: object) -> None:
-        super().bind_provider_governor(governor)
-        for candidate in self.candidates:
-            worker = getattr(candidate, "worker", None)
-            if isinstance(worker, WorkerBase):
-                worker.bind_provider_governor(governor)
 
     async def on_start(self) -> None:
         for candidate in self.candidates:
@@ -86,7 +69,7 @@ class SteadyProjectionCoordinator(WorkerBase):
         )
         result = await candidate.run_shard(shard)
         completed_at_ms = self._now_ms()
-        return replace(
+        completed = replace(
             result,
             notes={
                 **result.notes,
@@ -99,6 +82,8 @@ class SteadyProjectionCoordinator(WorkerBase):
                 ),
             },
         )
+        self._record_projection_metrics(completed.notes)
+        return completed
 
     def next_iteration_delay_seconds(
         self,
@@ -113,6 +98,65 @@ class SteadyProjectionCoordinator(WorkerBase):
             duration_seconds=duration_seconds,
         )
 
+    def _record_projection_metrics(self, notes: dict[str, object]) -> None:
+        if self.telemetry is None:
+            return
+        stages = {
+            "source": _first_metric(
+                notes,
+                "source_rows",
+                "source_rows_scanned",
+            ),
+            "candidate": _first_metric(
+                notes,
+                "candidate_rows",
+                "items",
+                "targets_loaded",
+            ),
+            "hydrated": _first_metric(notes, "hydrated_rows"),
+            "written": _first_metric(notes, "rows_written"),
+        }
+        for stage, value in stages.items():
+            if value is not None:
+                self.telemetry.set_projection_rows(
+                    self.name,
+                    stage,
+                    value,
+                )
+        projection_status = str(notes.get("projection_status") or "").strip().lower()
+        if projection_status:
+            outcome = {
+                "unchanged_input": "hit",
+                "rebuilt": "miss",
+                "stale_snapshot": "stale",
+            }.get(projection_status, projection_status)
+            self.telemetry.record_projection_cache(
+                self.name,
+                outcome,
+            )
+        deadline_lag_ms = _first_metric(
+            notes,
+            "projection_deadline_lag_ms",
+        )
+        if deadline_lag_ms is not None and deadline_lag_ms > 0:
+            self.telemetry.record_projection_deadline_miss(
+                self.name,
+                str(notes.get("projection_domain") or "unknown"),
+            )
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _first_metric(
+    notes: dict[str, object],
+    *keys: str,
+) -> int | None:
+    for key in keys:
+        value = notes.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int | float):
+            return max(0, int(value))
+    return None

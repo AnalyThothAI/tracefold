@@ -39,12 +39,14 @@ def create_workers_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
         runtime: WorkerRuntime = app.state.service
+        readiness = runtime.supervisor.readiness()
         return JSONResponse(
             {
-                "ok": True,
+                **readiness,
                 "runtime_role": runtime.role,
                 "runtime_id": runtime.runtime_id,
-            }
+            },
+            status_code=200 if readiness["ok"] else 503,
         )
 
     @app.get("/metrics")

@@ -24,7 +24,6 @@ class MacroProjectionCandidate:
     def __init__(
         self,
         *,
-        settings: Any,
         db: Any,
         resources: Any,
         runtime_id: str,
@@ -35,8 +34,6 @@ class MacroProjectionCandidate:
         self.stable_order = int(stable_order)
         self.service = MacroProjectionService(
             db=db,
-            settings=settings,
-            backfill_worker_enabled=False,
         )
 
     async def next_due_shard(self, *, now_ms: int) -> ProjectionShard | None:

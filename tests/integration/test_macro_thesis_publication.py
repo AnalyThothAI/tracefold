@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -279,12 +278,6 @@ def test_research_input_compilation_failure_is_durable_and_pre_model(
         reset_postgres_schema(conn)
         service = MacroThesisService(
             db=_TestDb(conn),
-            settings=SimpleNamespace(
-                statement_timeout_seconds=30,
-                lease_ms=60_000,
-                retry_ms=5_000,
-                max_attempts=2,
-            ),
             agent=None,
             clock_ms=lambda: CUTOFF_MS + 100,
         )
@@ -356,12 +349,6 @@ def test_transient_provider_retry_reuses_input_and_runs_one_model_call_per_attem
         reset_postgres_schema(conn)
         service = MacroThesisService(
             db=_TestDb(conn),
-            settings=SimpleNamespace(
-                statement_timeout_seconds=30,
-                lease_ms=60_000,
-                retry_ms=5_000,
-                max_attempts=2,
-            ),
             agent=agent,
             lease_owner="transient-provider-owner",
             clock_ms=lambda: CUTOFF_MS + 2_000,
@@ -369,7 +356,7 @@ def test_transient_provider_retry_reuses_input_and_runs_one_model_call_per_attem
         monkeypatch.setattr(service, "_build_pack", lambda **_kwargs: pack)
 
         first = asyncio.run(service.run_due(now_ms=CUTOFF_MS + 100))
-        second = asyncio.run(service.run_due(now_ms=CUTOFF_MS + 7_100))
+        second = asyncio.run(service.run_due(now_ms=CUTOFF_MS + 902_100))
 
         assert first.status == "retryable"
         assert first.error_code == "macro_thesis_timeouterror"

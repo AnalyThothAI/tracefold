@@ -18,6 +18,7 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/coverage/
+web/test-results/
 .worktrees/
 .codex/
 .superpowers/

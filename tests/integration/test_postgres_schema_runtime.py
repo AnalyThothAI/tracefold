@@ -327,10 +327,16 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
             row["indexname"]
             for row in conn.execute(
                 """
-                SELECT indexname
-                FROM pg_indexes
-                WHERE schemaname = 'public'
-                  AND indexname LIKE '%frontiers_eligible'
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND (
+                        indexname LIKE '%frontiers_eligible'
+                        OR indexname IN (
+                          'idx_radar_projection_frontiers_microbatch_eligible',
+                          'idx_radar_projection_frontiers_expired_claim'
+                        )
+                      )
                 """
             ).fetchall()
         }
@@ -462,11 +468,15 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     assert "scope" not in radar_publication_columns
     assert "scope" not in radar_first_seen_columns
     assert {
+        "claimed_input_fingerprint",
+        "claimed_projection_version",
+    } <= radar_frontier_columns
+    assert {
         "pending_first_dirty_at_ms",
         "pending_deadline_at_ms",
         "pending_input_fingerprint",
         "pending_projection_version",
-    } <= radar_frontier_columns
+    }.isdisjoint(radar_frontier_columns)
     assert retired_projection_tables == set()
     assert performance_indexes == {
         "ix_news_source_fetches_source_time",
@@ -474,7 +484,8 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "idx_asset_identity_evidence_asset_provider_lookup",
     }
     assert projection_eligibility_indexes == {
-        "idx_radar_projection_frontiers_eligible",
+        "idx_radar_projection_frontiers_microbatch_eligible",
+        "idx_radar_projection_frontiers_expired_claim",
         "idx_macro_module_frontiers_eligible",
         "idx_news_projection_frontiers_eligible",
         "idx_token_profile_projection_frontiers_eligible",
@@ -483,7 +494,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0231"
+    assert version == latest_migration_version() == "20260731_0232"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -508,7 +519,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0231"
+    assert version == latest_migration_version() == "20260731_0232"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -887,7 +898,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0231"
+        assert version == "20260731_0232"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

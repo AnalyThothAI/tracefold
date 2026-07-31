@@ -218,13 +218,11 @@ class MacroPublicationModuleQualityRead(ExactMacroModel):
             "complete",
             "queued",
             "running",
-            "paused",
             "retry_wait",
             "failed",
         ]
         | None
     )
-    backfill_worker_enabled: bool | None
     reasons: tuple[MacroReason, ...] = ()
 
 
@@ -373,7 +371,6 @@ def _publication_module_quality(module: Mapping[str, Any]) -> MacroPublicationMo
 
     backfill = status.get("backfill_execution")
     backfill_state: str | None = None
-    backfill_worker_enabled: bool | None = None
     if isinstance(backfill, Mapping):
         backfill_state = str(backfill.get("state") or "")
         if backfill_state not in {
@@ -381,13 +378,10 @@ def _publication_module_quality(module: Mapping[str, Any]) -> MacroPublicationMo
             "complete",
             "queued",
             "running",
-            "paused",
             "retry_wait",
             "failed",
         }:
             raise ValueError("macro_publication_appendix_backfill_state_invalid")
-        worker_enabled = backfill.get("worker_enabled")
-        backfill_worker_enabled = bool(worker_enabled) if isinstance(worker_enabled, bool) else None
 
     reasons = _publication_module_reasons(
         coverage=coverage,
@@ -443,14 +437,12 @@ def _publication_module_quality(module: Mapping[str, Any]) -> MacroPublicationMo
                 "complete",
                 "queued",
                 "running",
-                "paused",
                 "retry_wait",
                 "failed",
             ]
             | None,
             backfill_state,
         ),
-        backfill_worker_enabled=backfill_worker_enabled,
         reasons=reasons,
     )
 

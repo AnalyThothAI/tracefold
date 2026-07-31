@@ -7,8 +7,10 @@ from datetime import date
 from typing import Any
 
 from tracefold.app.repositories import repositories
+from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import (
     MACRO_THIN_EVAL_TARGET_REAL_SESSIONS,
+    MacroAcquisitionService,
     MacroEvalReadinessV1,
     MacroEvidencePackV3,
     classify_current_thesis_state,
@@ -47,11 +49,21 @@ def _handle_backfill(args: Namespace) -> tuple[int, dict[str, Any]]:
                 start_date=start_date,
                 end_date=end_date,
                 now_ms=now_ms,
-                max_attempts=int(settings.workers.macro_backfill.max_attempts),
+                max_attempts=5,
             )
+        execution = _drain_backfills(
+            settings,
+            target_keys=(str(target["target_key"]),),
+        )
     except Exception as exc:
         return 1, _error("macro_backfill_failed", exc)
-    return 0, {"ok": True, "data": _json_ready(target)}
+    return 0, {
+        "ok": True,
+        "data": {
+            "target": _json_ready(target),
+            "execution": execution,
+        },
+    }
 
 
 def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
@@ -61,6 +73,7 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
         settings = load_settings(require_ws_token=False)
         now_ms = _now_ms()
         targets = []
+        target_keys = []
         with repositories(settings) as repos, repos.transaction():
             for policy in policies:
                 spec = require_dataset(policy.dataset_id)
@@ -80,7 +93,7 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                         start_date=policy.start_date,
                         end_date=through_date,
                         now_ms=now_ms,
-                        max_attempts=int(settings.workers.macro_backfill.max_attempts),
+                        max_attempts=5,
                         history_class=policy.history_class,
                         priority=policy.priority,
                     )
@@ -93,6 +106,11 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
                         "status": target["status"],
                     }
                 )
+                target_keys.append(str(target["target_key"]))
+        execution = _drain_backfills(
+            settings,
+            target_keys=tuple(target_keys),
+        )
     except Exception as exc:
         return 1, _error("macro_professional_backfill_failed", exc)
     return 0, {
@@ -101,8 +119,66 @@ def _handle_professional_backfill() -> tuple[int, dict[str, Any]]:
             "through_date": through_date.isoformat(),
             "target_count": len(targets),
             "targets": targets,
+            "execution": execution,
         },
     }
+
+
+def _drain_backfills(
+    settings: Any,
+    *,
+    target_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    if not target_keys:
+        return {
+            "attempts": 0,
+            "current": 0,
+            "failed": 0,
+            "results": [],
+        }
+    source_config = settings.providers.macro_sources
+    client = MacroSourceClient(
+        timeout_seconds=float(source_config.request_timeout_seconds),
+        user_agent=str(source_config.user_agent),
+        fred_enabled=source_config.fred_enabled,
+        cboe_enabled=source_config.cboe_enabled,
+        cftc_enabled=source_config.cftc_enabled,
+        nasdaq_daily_enabled=source_config.nasdaq_daily_enabled,
+        yfinance_enabled=source_config.yfinance_enabled,
+    )
+    service = MacroAcquisitionService(
+        db=_CliWorkerDatabase(settings),
+        worker_name="macro_backfill",
+        clock_kind="backfill",
+        source_client=client,
+        lease_owner="macro_backfill:cli",
+        target_keys=target_keys,
+    )
+    results: list[dict[str, Any]] = []
+    try:
+        for _ in range(10_000):
+            result = service.run_once()
+            if result is None:
+                break
+            results.append(result)
+        else:
+            raise RuntimeError("macro_backfill_execution_cap_exceeded")
+    finally:
+        client.close()
+    return {
+        "attempts": len(results),
+        "current": sum(1 for result in results if result["status"] == "current"),
+        "failed": sum(1 for result in results if result["status"] in {"failed", "unavailable"}),
+        "results": results,
+    }
+
+
+class _CliWorkerDatabase:
+    def __init__(self, settings: Any) -> None:
+        self.settings = settings
+
+    def worker_session(self, *_args: Any, **_kwargs: Any) -> Any:
+        return repositories(self.settings)
 
 
 def _handle_status() -> tuple[int, dict[str, Any]]:

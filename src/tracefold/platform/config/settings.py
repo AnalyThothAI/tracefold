@@ -70,6 +70,11 @@ class LlmConfig(BaseModel):
     base_url: str = ""
     openrouter_api_key: str | None = None
     groq_api_key: str | None = None
+    news_brief_model: str = "deepseek-chat"
+    macro_document_analysis_enabled: bool = False
+    macro_document_analysis_model: str = "gpt-5.4-mini"
+    macro_thesis_enabled: bool = False
+    macro_thesis_model: str = "gpt-5.4-mini"
 
     @field_validator("api_key", "openrouter_api_key", "groq_api_key", mode="before")
     @classmethod
@@ -83,6 +88,19 @@ class LlmConfig(BaseModel):
     @classmethod
     def parse_base_url(cls, value: Any) -> str:
         return str(value or "").strip().rstrip("/")
+
+    @field_validator(
+        "news_brief_model",
+        "macro_document_analysis_model",
+        "macro_thesis_model",
+        mode="before",
+    )
+    @classmethod
+    def parse_model(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("llm model is required")
+        return normalized
 
 
 class GmgnConfig(BaseModel):
@@ -240,213 +258,10 @@ class NewsSettings(BaseModel):
     relay: NewsRelaySettings = Field(default_factory=NewsRelaySettings)
 
 
-class BackoffPolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    base_ms: int = Field(default=1000, ge=0)
-    max_ms: int = Field(default=60_000, ge=0)
-
-
-class PerWorkerSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    interval_seconds: float = Field(default=5.0, ge=0)
-    backoff: BackoffPolicy = Field(default_factory=BackoffPolicy)
-
-
-class CollectorWorkerSettings(PerWorkerSettings):
-    mode: Literal["continuous"] = "continuous"
-    interval_seconds: float = Field(default=3.0, ge=0)
-    snapshot_timeout_seconds: float = Field(default=0.5, ge=0)
-    watchdog_interval_seconds: float = Field(default=30.0, ge=0)
-    stale_timeout_seconds: float = Field(default=180.0, ge=0)
-
-
-class MarketTickStreamWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=5.0, ge=0)
-    subscription_limit: int = Field(default=100, ge=1)
-    stream_cycle_seconds: float = Field(default=30.0, ge=0.001)
-
-
-class MarketTickPollWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=15.0, ge=0)
-    batch_size: int = Field(default=100, ge=1)
-
-
-class EventAnchorBackfillWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=1.0, ge=0)
-    batch_size: int = Field(default=50, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-    min_age_ms: int = Field(default=250, ge=0)
-    active_window_ms: int = Field(default=300_000, ge=1)
-    max_anchor_lag_ms: int = Field(default=60_000, ge=1)
-
-
-class ResolutionRefreshWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=30.0, ge=0)
-    batch_size: int = Field(default=50, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    lease_ms: int = Field(default=300_000, ge=1)
-    hot_not_found_retry_ms: int = Field(default=60_000, ge=1)
-    reprocess_limit: int = Field(default=500, ge=1)
-    chain_ids: tuple[str, ...] = ("solana", "eip155:1", "eip155:56", "eip155:8453", "ton")
-
-    @field_validator("chain_ids", mode="before")
-    @classmethod
-    def parse_chain_ids(cls, value: Any) -> tuple[str, ...]:
-        return tuple(_split_values(value))
-
-
-class AssetProfileRefreshWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=50, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    provider_retry_ms: int = Field(default=300_000, ge=1)
-    ready_refresh_ms: int = Field(default=21_600_000, ge=1)
-    missing_refresh_ms: int = Field(default=900_000, ge=1)
-    error_refresh_ms: int = Field(default=900_000, ge=1)
-    retry_backoff_cap_ms: int = Field(default=86_400_000, ge=1)
-    missing_max_attempts: int = Field(default=4, ge=1)
-    error_max_attempts: int = Field(default=5, ge=1)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class TokenImageMirrorWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=60.0, ge=0)
-    batch_size: int = Field(default=100, ge=1)
-    lease_ms: int = Field(default=120_000, ge=1)
-    source_limit: int = Field(default=5000, ge=0)
-    retry_ms: int = Field(default=300_000, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class MacroThesisWorkerSettings(PerWorkerSettings):
-    enabled: bool = False
-    interval_seconds: float = Field(default=300.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    lease_ms: int = Field(default=900_000, ge=1)
-    retry_ms: int = Field(default=900_000, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    model: str = "gpt-5.4-mini"
-    model_request_timeout_seconds: float = Field(default=480.0, ge=1)
-    max_tokens: int = Field(default=6_000, ge=1)
-
-    @field_validator("model", mode="before")
-    @classmethod
-    def parse_model(cls, value: Any) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("macro_thesis model is required")
-        return normalized
-
-
-class MacroDocumentAnalysisWorkerSettings(PerWorkerSettings):
-    enabled: bool = False
-    interval_seconds: float = Field(default=30.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    lease_ms: int = Field(default=600_000, ge=1)
-    retry_ms: int = Field(default=300_000, ge=1)
-    max_attempts: int = Field(default=3, ge=1)
-    model: str = "gpt-5.4-mini"
-    model_request_timeout_seconds: float = Field(default=180.0, ge=1)
-    max_tokens: int = Field(default=6_000, ge=1)
-
-    @field_validator("model", mode="before")
-    @classmethod
-    def parse_model(cls, value: Any) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("macro_document_analysis.model is required")
-        return normalized
-
-
-class MacroAcquisitionWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=300.0, ge=0)
-    batch_size: int = Field(default=2, ge=1)
-    statement_timeout_seconds: float = Field(default=30.0, ge=0)
-    lease_ms: int = Field(default=300_000, ge=1)
-    retry_ms: int = Field(default=900_000, ge=1)
-    max_attempts: int = Field(default=5, ge=1)
-
-
-class MacroProjectionWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=300.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-
-
-class NewsIngestWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=120.0, ge=0)
-    batch_size: int = Field(default=200, ge=1)
-    statement_timeout_seconds: float = Field(default=180.0, ge=0)
-    fetch_timeout_seconds: float = Field(default=20.0, ge=1)
-
-
-class NewsWorldBriefWorkerSettings(PerWorkerSettings):
-    interval_seconds: float = Field(default=300.0, ge=0)
-    statement_timeout_seconds: float = Field(default=120.0, ge=0)
-    max_attempts: int = Field(default=3, ge=1, le=10)
-    model: str = "deepseek-chat"
-    total_timeout_seconds: float = Field(default=60.0, ge=1, le=60)
-    ollama_base_url: str = "http://host.docker.internal:11434/v1"
-    ollama_model: str = "deepseek-r1:8b"
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "deepseek/deepseek-v4-flash"
-    groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_model: str = "llama-3.3-70b-versatile"
-
-
-class WorkersSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    collector: CollectorWorkerSettings = Field(default_factory=CollectorWorkerSettings)
-    market_tick_stream: MarketTickStreamWorkerSettings = Field(default_factory=MarketTickStreamWorkerSettings)
-    market_tick_poll: MarketTickPollWorkerSettings = Field(default_factory=MarketTickPollWorkerSettings)
-    event_anchor_capture: EventAnchorBackfillWorkerSettings = Field(default_factory=EventAnchorBackfillWorkerSettings)
-    resolution_refresh: ResolutionRefreshWorkerSettings = Field(default_factory=ResolutionRefreshWorkerSettings)
-    asset_profile_refresh: AssetProfileRefreshWorkerSettings = Field(default_factory=AssetProfileRefreshWorkerSettings)
-    token_image_mirror: TokenImageMirrorWorkerSettings = Field(default_factory=TokenImageMirrorWorkerSettings)
-    macro_intraday_market: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=300.0, batch_size=32, retry_ms=300_000)
-    )
-    macro_settlements: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=21_600.0, batch_size=32)
-    )
-    macro_economic_releases: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=4)
-    )
-    macro_official_state: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=10_800.0, batch_size=4)
-    )
-    macro_official_documents: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(interval_seconds=3_600.0, batch_size=2)
-    )
-    macro_backfill: MacroAcquisitionWorkerSettings = Field(
-        default_factory=lambda: MacroAcquisitionWorkerSettings(enabled=False, interval_seconds=5.0, batch_size=1)
-    )
-    macro_projection: MacroProjectionWorkerSettings = Field(default_factory=MacroProjectionWorkerSettings)
-    macro_document_analysis: MacroDocumentAnalysisWorkerSettings = Field(
-        default_factory=MacroDocumentAnalysisWorkerSettings
-    )
-    macro_thesis: MacroThesisWorkerSettings = Field(default_factory=MacroThesisWorkerSettings)
-    news_ingest: NewsIngestWorkerSettings = Field(default_factory=NewsIngestWorkerSettings)
-    news_world_brief: NewsWorldBriefWorkerSettings = Field(default_factory=NewsWorldBriefWorkerSettings)
-    steady_projection_coordinator: PerWorkerSettings = Field(
-        default_factory=lambda: PerWorkerSettings(interval_seconds=0.05)
-    )
-    model_generation_coordinator: PerWorkerSettings = Field(
-        default_factory=lambda: PerWorkerSettings(interval_seconds=0.25)
-    )
-
-
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     _config_dir: Path = PrivateAttr(default_factory=app_home)
-    _workers: WorkersSettings = PrivateAttr(default_factory=WorkersSettings)
 
     ws_token: str | None = None
     api: ApiConfig = Field(default_factory=ApiConfig)
@@ -456,16 +271,6 @@ class Settings(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
-
-    @property
-    def workers(self) -> WorkersSettings:
-        """Return the code-owned steady worker policy.
-
-        Worker resource and cadence policy is deliberately not a deployment
-        configuration surface.
-        """
-
-        return self._workers
 
     def set_config_dir(self, value: Path) -> None:
         self._config_dir = value
@@ -567,6 +372,11 @@ llm:
   base_url: ""
   openrouter_api_key:
   groq_api_key:
+  news_brief_model: "deepseek-chat"
+  macro_document_analysis_enabled: false
+  macro_document_analysis_model: "gpt-5.4-mini"
+  macro_thesis_enabled: false
+  macro_thesis_model: "gpt-5.4-mini"
 
 gmgn:
   api_key:

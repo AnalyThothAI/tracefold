@@ -1,21 +1,11 @@
 from __future__ import annotations
 
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.provider_types import (
-    AssetMarketProviders,
-    WiredProviders,
-)
+from tracefold.app.provider_types import WiredProviders
 from tracefold.app.worker_manifest import worker_names
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.workers.factory import (
-    InactiveWorker,
-    WorkerFactory,
-    WorkerFactoryContext,
-    disabled_worker,
-    intentionally_not_started_worker,
-    unavailable_worker,
-)
+from tracefold.platform.workers.factory import WorkerFactory, WorkerFactoryContext
 from tracefold.platform.workers.worker_base import WorkerBase
 
 
@@ -30,7 +20,8 @@ def construct_workers(
     resources: object,
     provider_governor: object,
     runtime_id: str,
-) -> dict[str, WorkerBase]:
+) -> tuple[dict[str, WorkerBase], dict[str, dict[str, object]]]:
+    inactive_statuses: dict[str, dict[str, object]] = {}
     ctx = WorkerFactoryContext(
         settings=settings,
         db=db,
@@ -41,6 +32,7 @@ def construct_workers(
         resources=resources,
         provider_governor=provider_governor,
         runtime_id=runtime_id,
+        inactive_statuses=inactive_statuses,
     )
     constructed: dict[str, WorkerBase] = {}
     for factory in worker_factories():
@@ -49,52 +41,18 @@ def construct_workers(
                 raise ValueError(f"worker_composition_duplicate:{name}")
             if not isinstance(worker, WorkerBase):
                 raise TypeError(f"worker_composition_invalid:{name}:{type(worker).__name__}")
-            worker.bind_runtime_id(runtime_id)
-            worker.bind_runtime_resources(resources)
-            worker.bind_provider_governor(provider_governor)
             constructed[name] = worker
 
     canonical_names = worker_names()
     canonical = frozenset(canonical_names)
-    actual = frozenset(constructed)
+    actual = frozenset(constructed) | frozenset(inactive_statuses)
     if actual != canonical:
         missing = sorted(canonical - actual)
         unknown = sorted(actual - canonical)
         raise RuntimeError(f"worker_composition_mismatch:missing={missing}:unknown={unknown}")
-    return {name: constructed[name] for name in canonical_names}
-
-
-def construct_worker(
-    *,
-    worker_name: str,
-    settings: Settings,
-    db: WorkerDatabase,
-    telemetry: TelemetryRegistry,
-    asset_market: AssetMarketProviders | None,
-    collector: WorkerBase | None,
-    collector_enabled: bool,
-    resources: object,
-    provider_governor: object,
-    runtime_id: str,
-) -> WorkerBase:
-    """Construct one worker from the same domain factories used by bootstrap."""
-    ctx = WorkerFactoryContext(
-        settings=settings,
-        db=db,
-        telemetry=telemetry,
-        asset_market=asset_market,
-        collector=collector,
-        collector_enabled=collector_enabled,
-        resources=resources,
-        provider_governor=provider_governor,
-        runtime_id=runtime_id,
-    )
-    candidates = [worker for factory in worker_factories() if (worker := factory(ctx).get(worker_name)) is not None]
-    if len(candidates) != 1:
-        raise RuntimeError(f"worker_composition_expected_one:{worker_name}:{len(candidates)}")
-    worker = candidates[0]
-    worker.bind_runtime_id(runtime_id)
-    return worker
+    runnable = {name: constructed[name] for name in canonical_names if name in constructed}
+    inactive = {name: inactive_statuses[name] for name in canonical_names if name in inactive_statuses}
+    return runnable, inactive
 
 
 def worker_factories() -> tuple[WorkerFactory, ...]:
@@ -116,12 +74,7 @@ def worker_factories() -> tuple[WorkerFactory, ...]:
 
 
 __all__ = [
-    "InactiveWorker",
     "WorkerFactoryContext",
-    "construct_worker",
     "construct_workers",
-    "disabled_worker",
-    "intentionally_not_started_worker",
-    "unavailable_worker",
     "worker_factories",
 ]

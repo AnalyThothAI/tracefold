@@ -87,11 +87,13 @@ from .pricing.market_tick_persistence import MarketTickPersistenceService
 from .pricing.market_tick_repository import MarketTickRepository
 from .pricing.message_price_payload import message_price_payload
 from .profiles.asset_profile_refresh_target_repository import AssetProfileRefreshTargetRepository
+from .profiles.asset_profile_refresh_worker import AssetProfileRefreshWorker
 from .profiles.asset_profile_repository import AssetProfileRepository
 from .profiles.cex_token_profile_repository import CexTokenProfileRepository
 from .profiles.cex_token_profile_sync import sync_cex_token_profiles
 from .profiles.profile_projection import rebuild_all_profiles_for_maintenance
 from .profiles.token_image_asset_repository import TokenImageAssetRepository
+from .profiles.token_image_mirror_worker import TokenImageMirrorWorker
 from .profiles.token_image_source_dirty_target_repository import TokenImageSourceDirtyTargetRepository
 from .profiles.token_profile_current_repository import TokenProfileCurrentRepository
 from .profiles.token_profile_current_worker import ProfileProjectionCandidate
@@ -128,8 +130,8 @@ from .radar.constants import (
 )
 from .radar.factor_diagnostics import factor_distribution_report
 from .radar.factor_snapshot_contract import is_token_factor_snapshot, require_token_factor_snapshot
+from .radar.maintenance import rebuild_all_token_radar_for_maintenance
 from .radar.operations import token_profile_image_repair_targets, token_radar_publication_status
-from .radar.projection import rebuild_all_token_radar_for_maintenance
 from .radar.projection_worker import RadarProjectionCandidate
 from .radar.radar_projection_source_repository import RadarProjectionSourceRepository
 from .radar.radar_source_edge_repository import RadarSourceEdgeRepository
@@ -184,6 +186,7 @@ __all__ = [
     "AssetFlowService",
     "AssetMarketProviderBundle",
     "AssetProfileRefreshTargetRepository",
+    "AssetProfileRefreshWorker",
     "AssetProfileRepository",
     "Author",
     "AvatarChange",
@@ -263,6 +266,7 @@ __all__ = [
     "TokenIdentityLookup",
     "TokenIdentityLookupResult",
     "TokenImageAssetRepository",
+    "TokenImageMirrorWorker",
     "TokenImageSourceDirtyTargetRepository",
     "TokenIntentInput",
     "TokenIntentLookupRepository",

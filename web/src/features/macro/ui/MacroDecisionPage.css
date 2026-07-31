@@ -413,7 +413,6 @@
 
   [data-state="degraded"] .macro-decision__status-label svg,
   [data-state="mixed"] .macro-decision__status-label svg,
-  [data-state="paused"] .macro-decision__status-label svg,
   [data-state="queued"] .macro-decision__status-label svg,
   [data-state="running"] .macro-decision__status-label svg,
   [data-state="retry_wait"] .macro-decision__status-label svg {

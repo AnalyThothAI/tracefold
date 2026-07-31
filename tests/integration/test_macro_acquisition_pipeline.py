@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
-from types import SimpleNamespace
 from typing import Any
 
 from tests.postgres_test_utils import (
@@ -138,6 +137,54 @@ class _FailingClient:
         raise RuntimeError("official_source_failed")
 
 
+def test_explicit_backfill_claims_only_requested_target_keys(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            requested = repos.macro.enqueue_backfill_target(
+                require_dataset("fred.dgs10"),
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 2),
+                now_ms=1_000,
+                max_attempts=5,
+            )
+            unrequested = repos.macro.enqueue_backfill_target(
+                require_dataset("fred.dgs2"),
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 2),
+                now_ms=1_000,
+                max_attempts=5,
+            )
+        service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_backfill",
+            clock_kind="backfill",
+            source_client=_EmptyCompletedBackfillClient(),
+            clock_ms=lambda: 2_000,
+            target_keys=(str(requested["target_key"]),),
+        )
+
+        result = service.run_once()
+        states = {
+            str(row["target_key"]): str(row["status"])
+            for row in conn.execute(
+                """
+                SELECT target_key, status
+                FROM macro_acquisition_targets
+                WHERE clock_kind = 'backfill'
+                """
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert result is not None
+    assert result["dataset_id"] == "fred.dgs10"
+    assert states[str(requested["target_key"])] == "current"
+    assert states[str(unrequested["target_key"])] == "backfilling"
+
+
 def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_storage(
     tmp_path,
 ) -> None:
@@ -149,12 +196,6 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
             db=_TestDb(conn),
             worker_name="macro_official_state",
             clock_kind="official_state",
-            settings=SimpleNamespace(
-                max_attempts=3,
-                lease_ms=60_000,
-                retry_ms=60_000,
-                statement_timeout_seconds=30,
-            ),
             source_client=_FixedFredClient(),
             clock_ms=clock,
         )
@@ -250,12 +291,6 @@ def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(
             db=_TestDb(conn),
             worker_name="macro_intraday_market",
             clock_kind="intraday_market",
-            settings=SimpleNamespace(
-                max_attempts=3,
-                lease_ms=60_000,
-                retry_ms=300_000,
-                statement_timeout_seconds=30,
-            ),
             source_client=_FixedYFinanceClient(),
             clock_ms=clock,
         )
@@ -410,12 +445,6 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
             db=_TestDb(conn),
             worker_name="macro_backfill",
             clock_kind="backfill",
-            settings=SimpleNamespace(
-                max_attempts=3,
-                lease_ms=60_000,
-                retry_ms=60_000,
-                statement_timeout_seconds=30,
-            ),
             source_client=_EmptyCompletedBackfillClient(),
             clock_ms=clock,
         )
@@ -545,17 +574,12 @@ def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:
             db=_TestDb(conn),
             worker_name="macro_backfill",
             clock_kind="backfill",
-            settings=SimpleNamespace(
-                max_attempts=2,
-                lease_ms=60_000,
-                retry_ms=0,
-                statement_timeout_seconds=30,
-            ),
             source_client=_FailingClient(),
             clock_ms=clock,
         )
 
         first = service.run_once()
+        clock.now = 1_000_000
         second = service.run_once()
         third = service.run_once()
         stored = conn.execute(

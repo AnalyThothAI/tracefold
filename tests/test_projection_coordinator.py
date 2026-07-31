@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import pytest
 
 from tracefold.app.projection_coordinator import SteadyProjectionCoordinator
-from tracefold.platform.config.settings import PerWorkerSettings
 from tracefold.platform.workers.projection_candidate import ProjectionShard
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -32,7 +31,6 @@ def test_projection_coordinator_runs_one_earliest_deadline_shard_with_stable_tie
             _Candidate(ProjectionShard("radar", "5m:all", 100, 1), ran),
         )
         coordinator = SteadyProjectionCoordinator(
-            settings=PerWorkerSettings(interval_seconds=0),
             candidates=candidates,
             telemetry=None,
             now_ms=lambda: 500,
@@ -55,7 +53,6 @@ def test_projection_coordinator_runs_an_already_eligible_shard_before_its_deadli
             ran,
         )
         coordinator = SteadyProjectionCoordinator(
-            settings=PerWorkerSettings(interval_seconds=0),
             candidates=(candidate,),
             telemetry=None,
             now_ms=lambda: 1_000,
@@ -72,7 +69,6 @@ def test_projection_coordinator_runs_an_already_eligible_shard_before_its_deadli
 
 def test_projection_coordinator_drains_completed_work_without_cadence_sleep() -> None:
     coordinator = SteadyProjectionCoordinator(
-        settings=PerWorkerSettings(interval_seconds=0.05),
         candidates=(),
         telemetry=None,
     )
@@ -95,7 +91,6 @@ def test_projection_coordinator_drains_completed_work_without_cadence_sleep() ->
 
 def test_projection_coordinator_keeps_bounded_idle_poll_cadence() -> None:
     coordinator = SteadyProjectionCoordinator(
-        settings=PerWorkerSettings(interval_seconds=0.05),
         candidates=(),
         telemetry=None,
     )

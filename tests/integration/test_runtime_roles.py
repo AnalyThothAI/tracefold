@@ -204,11 +204,14 @@ def test_workers_startup_immediately_recovers_old_runtime_claims(tmp_path):
               target_type, target_id, window_key, venue, status,
               first_dirty_at_ms, deadline_at_ms, attempt_count,
               transient_failure_count, input_fingerprint,
-              projection_version, claimed_by, claimed_until_ms, updated_at_ms
+              projection_version, claimed_by, claimed_until_ms,
+              claimed_input_fingerprint, claimed_projection_version,
+              updated_at_ms
             )
             VALUES (
               'Asset', 'asset:solana:test', '1h', 'all', 'running',
-              %s, %s, 0, 0, 'input-v1', 'radar-v1', %s, %s, %s
+              %s, %s, 0, 0, 'input-v1', 'radar-v1', %s, %s,
+              'input-v1', 'radar-v1', %s
             )
             """,
             (now_ms - 1_000, now_ms, old_runtime_id, now_ms + 60_000, now_ms),

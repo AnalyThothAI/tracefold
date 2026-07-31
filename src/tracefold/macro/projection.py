@@ -53,14 +53,9 @@ class MacroProjectionService:
         self,
         *,
         db: Any,
-        settings: Any,
-        backfill_worker_enabled: bool,
         worker_name: str = "steady_projection_coordinator",
     ) -> None:
-        if backfill_worker_enabled:
-            raise ValueError("macro_steady_projection_backfill_forbidden")
         self.db = db
-        self.settings = settings
         self.worker_name = worker_name
 
     def next_due_module(self, *, now_ms: int) -> dict[str, Any] | None:
@@ -434,7 +429,6 @@ def compute_macro_module_projection(payload: dict[str, Any]) -> dict[str, Any]:
         role_rows=[dict(row) for row in payload["role_rows"]],
         analysis_rows=[dict(row) for row in payload["analysis_rows"]],
         analysis_job_state=dict(payload["analysis_job_state"]),
-        backfill_worker_enabled=False,
     )
     output = {
         "module_id": module_id,
@@ -449,15 +443,12 @@ def compute_macro_module_projection(payload: dict[str, Any]) -> dict[str, Any]:
 def rebuild_all_macro_modules_for_maintenance(
     *,
     db: Any,
-    settings: Any,
     now_ms: int,
 ) -> dict[str, Any]:
     """Explicit cutover/backfill operation; absent from steady worker topology."""
 
     service = MacroProjectionService(
         db=db,
-        settings=settings,
-        backfill_worker_enabled=False,
         worker_name="macro_maintenance_rebuild",
     )
     state_writes = service.prepare_maintenance_frontiers(now_ms=now_ms)

@@ -26,7 +26,7 @@ This is a single-context repository. Follow `docs/agents/domain.md` before domai
 
 ## Runtime config for real data
 
-Live-data runs use the operator-owned files in `~/.tracefold/`: `config.yaml` for application/provider/credential/storage settings and `workers.yaml` for worker runtime knobs. Do not assume repository fixtures, example YAML, or `.env` files are the active runtime config. Before debugging provider data, Token Radar rows, asset profiles, or missing icons against real data, run `uv run tracefold config` and confirm the reported `config_path` / `workers_config_path` point at `~/.tracefold/`. Never print or copy secret values; report only redacted booleans, paths, and diagnostic command results.
+Live-data runs use the operator-owned `~/.tracefold/config.yaml` for application/provider/credential/storage settings. Worker topology and safety/resource budgets are code-owned. Do not assume repository fixtures, example YAML, or `.env` files are the active runtime config. Before debugging provider data, Token Radar rows, asset profiles, or missing icons against real data, run `uv run tracefold config` and confirm the reported `config_path` points at `~/.tracefold/config.yaml`. Never print or copy secret values; report only redacted booleans, paths, and diagnostic command results.
 
 ## Frontend guardrails
 

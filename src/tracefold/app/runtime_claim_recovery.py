@@ -24,6 +24,14 @@ def recover_old_runtime_claims(
         repos.transaction(),
     ):
         for spec in FRONTIER_SPECS:
+            clear_claim_snapshot = (
+                """,
+                       claimed_input_fingerprint = NULL,
+                       claimed_projection_version = NULL
+                """
+                if spec.table == "radar_projection_frontiers"
+                else ""
+            )
             cursor = repos.conn.execute(
                 f"""
                 UPDATE {spec.table}
@@ -33,6 +41,7 @@ def recover_old_runtime_claims(
                        claimed_until_ms = NULL,
                        last_error_code = NULL,
                        updated_at_ms = %(now_ms)s
+                       {clear_claim_snapshot}
                  WHERE status = 'running'
                    AND claimed_by IS DISTINCT FROM %(runtime_id)s
                 """,

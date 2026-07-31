@@ -9,7 +9,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -75,7 +74,6 @@ def test_macro_real_vertical_seam_with_fake_outer_provider_only(
             _seed_material_macro_facts(repos)
         projection_result = rebuild_all_macro_modules_for_maintenance(
             db=_E2EDatabase(conn),
-            settings=SimpleNamespace(statement_timeout_seconds=30),
             now_ms=CUTOFF_MS,
         )
         assert projection_result["modules_computed"] == 6
@@ -84,14 +82,7 @@ def test_macro_real_vertical_seam_with_fake_outer_provider_only(
 
         preview_service = MacroThesisService(
             db=_E2EDatabase(conn),
-            settings=SimpleNamespace(
-                statement_timeout_seconds=30,
-                lease_ms=60_000,
-                retry_ms=5_000,
-                max_attempts=2,
-            ),
             agent=None,
-            backfill_worker_enabled=True,
             lease_owner="macro-full-stack-preview",
             clock_ms=lambda: CUTOFF_MS + 2_000,
         )
@@ -110,14 +101,7 @@ def test_macro_real_vertical_seam_with_fake_outer_provider_only(
         )
         service = MacroThesisService(
             db=_E2EDatabase(conn),
-            settings=SimpleNamespace(
-                statement_timeout_seconds=30,
-                lease_ms=60_000,
-                retry_ms=5_000,
-                max_attempts=2,
-            ),
             agent=agent,
-            backfill_worker_enabled=True,
             lease_owner="macro-full-stack-owner",
             clock_ms=lambda: CUTOFF_MS + 2_000,
         )

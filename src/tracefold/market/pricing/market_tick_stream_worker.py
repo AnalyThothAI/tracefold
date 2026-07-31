@@ -24,7 +24,6 @@ from tracefold.market.provider_contracts import (
     DexMarketStreamTarget,
 )
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
-from tracefold.platform.config.settings import MarketTickStreamWorkerSettings
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -44,9 +43,10 @@ class MarketTickStreamWorker(WorkerBase):
         *,
         pool_bundle: Any,
         stream_dex_market: DexMarketStreamProvider,
+        resources: Any,
+        provider_governor: Any,
         clock: Any | None = None,
         name: str = "market_tick_stream",
-        settings: MarketTickStreamWorkerSettings,
         telemetry: Any,
     ) -> None:
         if pool_bundle is None:
@@ -55,17 +55,19 @@ class MarketTickStreamWorker(WorkerBase):
             raise RuntimeError("market_tick_stream_provider_required")
         super().__init__(
             name=name,
-            settings=settings,
-            db=pool_bundle,
+            interval_seconds=5.0,
             telemetry=telemetry,
         )
+        self.db = pool_bundle
+        self.resources = resources
+        self.provider_governor = provider_governor
         self.stream_dex_market = stream_dex_market
-        self.subscription_limit = settings.subscription_limit
-        self.stream_cycle_seconds = settings.stream_cycle_seconds
+        self.subscription_limit = 100
+        self.stream_cycle_seconds = 30.0
         self.clock = clock or _now_ms
 
     async def run_once(self) -> WorkerResult:
-        rows = await self.require_runtime_resources().run_realtime_db(self._list_stream_rows)
+        rows = await self.resources.run_realtime_db(self._list_stream_rows)
         targets, skipped_targets = _stream_targets(rows, limit=self.subscription_limit)
         if not targets:
             return WorkerResult(
@@ -74,7 +76,7 @@ class MarketTickStreamWorker(WorkerBase):
             )
 
         stream_dex_market = self.stream_dex_market
-        async with self.require_provider_governor().acquire(host="dex_stream"):
+        async with self.provider_governor.acquire(host="dex_stream"):
             stream_result = await self._stream_and_persist_ticks(targets, stream_dex_market=stream_dex_market)
         notes: dict[str, Any] = {
             "targets_selected": len(rows),
@@ -179,7 +181,7 @@ class MarketTickStreamWorker(WorkerBase):
             return 0
         result = cast(
             MarketTickPersistenceResult,
-            await self.require_runtime_resources().run_realtime_db(
+            await self.resources.run_realtime_db(
                 self._persist_ticks_sync,
                 materialized,
             ),

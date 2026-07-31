@@ -5,9 +5,7 @@ from typing import Any
 
 from tracefold.app.worker_manifest import manifest_by_name
 
-_EFFECTIVE_STATUSES = frozenset(
-    {"disabled", "intentionally_not_started", "unavailable", "degraded", "running", "stopped", "failed"}
-)
+_EFFECTIVE_STATUSES = frozenset({"disabled", "unavailable", "degraded", "running", "stopped", "failed"})
 _WORKER_STATUS_FIELDS = frozenset(
     {
         "enabled",

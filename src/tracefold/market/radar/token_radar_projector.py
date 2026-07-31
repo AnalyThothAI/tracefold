@@ -1410,13 +1410,18 @@ def compute_token_radar_target_projection(
 
 
 def rank_token_radar_closure(payload: dict[str, Any]) -> dict[str, Any]:
-    """Pure cross-sectional ranking after replacing one target feature in memory."""
+    """Pure cross-sectional ranking after replacing one target micro-batch."""
 
-    target_type = str(payload["target_type"])
-    target_id = str(payload["target_id"])
     window = str(payload["window"])
     now_ms = int(payload["now_ms"])
-    feature = payload.get("feature")
+    features = [dict(row) for row in payload["features"] if isinstance(row, dict)]
+    replaced = {
+        (
+            str(row["target_type_key"]),
+            str(row["identity_id"]),
+        )
+        for row in features
+    }
     compact_inputs = [
         dict(row)
         for row in payload["compact_inputs"]
@@ -1424,10 +1429,9 @@ def rank_token_radar_closure(payload: dict[str, Any]) -> dict[str, Any]:
             str(row.get("target_type_key") or ""),
             str(row.get("identity_id") or ""),
         )
-        != (target_type, target_id)
+        not in replaced
     ]
-    if isinstance(feature, dict):
-        compact_inputs.append(dict(feature))
+    compact_inputs.extend(features)
     cutoff_ms = now_ms - _window_ms(window)
     current_inputs = [row for row in compact_inputs if _rank_input_latest_event_received_at_ms(row) >= cutoff_ms]
     selected_by_venue: dict[str, list[dict[str, Any]]] = {}
@@ -1460,9 +1464,7 @@ def build_token_radar_current_closure(
     """Pure hydration of selected rank inputs into stable current rows."""
 
     hydrated = [dict(row) for row in payload["hydrated_inputs"]]
-    feature = payload.get("feature")
-    if isinstance(feature, dict):
-        hydrated.append(dict(feature))
+    hydrated.extend(dict(row) for row in payload["features"] if isinstance(row, dict))
     hydrated_by_identity = {_rank_input_identity(row): row for row in hydrated}
     rows_by_venue: dict[str, list[dict[str, Any]]] = {}
     for venue, selected in dict(payload["selected_by_venue"]).items():

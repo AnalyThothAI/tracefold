@@ -23,7 +23,6 @@ from tracefold.market.pricing.event_market_capture import (
 from tracefold.market.pricing.market_tick import EnrichedEventCapture, MarketTick
 from tracefold.market.pricing.market_tick_persistence import MarketTickPersistenceService
 from tracefold.market.provider_contracts import AssetMarketProviderBundle
-from tracefold.platform.config.settings import EventAnchorBackfillWorkerSettings
 from tracefold.platform.workers.worker_base import WorkerBase
 from tracefold.platform.workers.worker_result import WorkerResult
 
@@ -75,19 +74,24 @@ class EventAnchorBackfillWorker(WorkerBase):
         pool_bundle: Any | None = None,
         capture_service: Any | None = None,
         providers: Any | None = None,
+        resources: Any,
+        provider_governor: Any,
+        runtime_id: str,
         clock: Any | None = None,
         name: str = "event_anchor_backfill",
-        settings: EventAnchorBackfillWorkerSettings,
         telemetry: Any | None = None,
     ) -> None:
         if pool_bundle is None:
             raise RuntimeError("event_anchor_backfill_db_required")
         super().__init__(
             name=name,
-            settings=settings,
-            db=pool_bundle,
+            interval_seconds=1.0,
             telemetry=telemetry or object(),
         )
+        self.db = pool_bundle
+        self.resources = resources
+        self.provider_governor = provider_governor
+        self.claim_owner = f"{name}:{runtime_id}"
         self.clock = clock or _now_ms
         if capture_service is None:
             if providers is None:
@@ -97,20 +101,25 @@ class EventAnchorBackfillWorker(WorkerBase):
                 now_ms=lambda: int(self.clock()),
             )
         self._capture_service = capture_service
-        self.batch_size = settings.batch_size
-        self.max_attempts = settings.max_attempts
-        self.min_age_ms = settings.min_age_ms
-        self.lease_ms = settings.lease_ms
-        self.active_window_ms = settings.active_window_ms
-        self.max_anchor_lag_ms = settings.max_anchor_lag_ms
+        self.batch_size = 50
+        self.max_attempts = 3
+        self.min_age_ms = 250
+        self.lease_ms = 120_000
+        self.active_window_ms = 300_000
+        self.max_anchor_lag_ms = 60_000
 
     async def run_once(self) -> WorkerResult:
         now_ms = int(self.clock())
-        resources = self.require_runtime_resources()
-        stale_jobs = await resources.run_realtime_db(self._expire_stale_jobs, now_ms=now_ms)
+        stale_jobs = await self.resources.run_realtime_db(
+            self._expire_stale_jobs,
+            now_ms=now_ms,
+        )
         stale_terminal = int(stale_jobs["expired"]) + int(stale_jobs["failed"])
         stale_rescheduled = int(stale_jobs["rescheduled"])
-        rows = await resources.run_realtime_db(self._claim_due_jobs, now_ms=now_ms)
+        rows = await self.resources.run_realtime_db(
+            self._claim_due_jobs,
+            now_ms=now_ms,
+        )
         if not rows:
             return WorkerResult(
                 processed=0,
@@ -143,7 +152,7 @@ class EventAnchorBackfillWorker(WorkerBase):
             terminals.append(outcome)
             skipped_reasons[outcome.reason] += 1
 
-        inserted, attached_ticks, terminal_count, rescheduled_count = await resources.run_realtime_db(
+        inserted, attached_ticks, terminal_count, rescheduled_count = await self.resources.run_realtime_db(
             self._persist,
             attaches=attaches,
             terminals=terminals,
@@ -173,7 +182,7 @@ class EventAnchorBackfillWorker(WorkerBase):
         now_ms: int,
     ) -> _BackfillOutcome:
         resolution = _resolution_from_row(row)
-        existing = await self.require_runtime_resources().run_realtime_db(
+        existing = await self.resources.run_realtime_db(
             self._capture_existing_tick,
             row=row,
             now_ms=now_ms,
@@ -186,10 +195,10 @@ class EventAnchorBackfillWorker(WorkerBase):
                 reason="backfill_expired",
                 status="expired",
             )
-        async with self.require_provider_governor().acquire(host="asset_market"):
+        async with self.provider_governor.acquire(host="asset_market"):
             return cast(
                 _BackfillOutcome,
-                await self.require_runtime_resources().run_provider_io(
+                await self.resources.run_provider_io(
                     self._capture_provider_quote,
                     row,
                     resolution,
@@ -383,7 +392,7 @@ class EventAnchorBackfillWorker(WorkerBase):
     def _worker_session(self) -> Iterator[Any]:
         with self.db.worker_session(
             self.name,
-            statement_timeout_seconds=self.settings.statement_timeout_seconds,
+            statement_timeout_seconds=30.0,
         ) as repos:
             yield repos
 

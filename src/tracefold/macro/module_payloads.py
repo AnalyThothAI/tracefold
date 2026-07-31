@@ -89,7 +89,6 @@ def build_typed_module_payload(
     role_rows: list[dict[str, Any]] | None = None,
     analysis_rows: list[dict[str, Any]] | None = None,
     analysis_job_state: dict[str, int] | None = None,
-    backfill_worker_enabled: bool = False,
 ) -> dict[str, Any]:
     role_rows = role_rows or []
     analysis_rows = analysis_rows or []
@@ -117,16 +116,11 @@ def build_typed_module_payload(
         module_facts,
         now_ms,
         analysis_job_state=analysis_job_state,
-        backfill_worker_enabled=backfill_worker_enabled,
     )
     coverage = _coverage(module_id)
     current_health = _current_health(dataset_states)
     history_depth = _history_depth(dataset_states)
-    backfill_execution = _backfill_execution(
-        specs,
-        target_states,
-        worker_enabled=backfill_worker_enabled,
-    )
+    backfill_execution = _backfill_execution(specs, target_states)
     payload: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSIONS[module_id],
         "module_id": module_id,
@@ -236,7 +230,6 @@ def _dataset_states(
     now_ms: int,
     *,
     analysis_job_state: dict[str, int] | None,
-    backfill_worker_enabled: bool,
 ) -> list[dict[str, Any]]:
     required_dataset_ids = {
         dataset_id
@@ -381,7 +374,6 @@ def _dataset_states(
                     dataset_id=spec.dataset_id,
                     history_depth=history_state,
                     required_for_history=required_for_history,
-                    worker_enabled=backfill_worker_enabled,
                     next_check_at_ms=history_next_check_at_ms,
                 ),
                 "critical": spec.critical,
@@ -477,7 +469,6 @@ def _dataset_history_reason(
     dataset_id: str,
     history_depth: str,
     required_for_history: bool,
-    worker_enabled: bool,
     next_check_at_ms: int | None,
 ) -> dict[str, object]:
     if not required_for_history and history_depth != "not_required":
@@ -495,26 +486,22 @@ def _dataset_history_reason(
             next_check_at_ms=next_check_at_ms,
         )
     complete = history_depth in {"complete", "not_required"}
-    requires_backfill = code in {"history_backfill_incomplete", "history_backfill_has_no_valid_fact"}
     terminal = code == "history_backfill_terminal"
-    paused = requires_backfill and not worker_enabled
     return macro_reason(
-        code=("history_backfill_paused" if paused else code),
-        message=("历史回填 worker 已停用；当前历史深度不会自动推进。" if paused else _HISTORY_REASON_MESSAGES[code]),
+        code=code,
+        message=_HISTORY_REASON_MESSAGES[code],
         impact="none" if complete else "blocked" if history_depth == "insufficient" else "limited",
         affected_dataset_ids=() if complete else (dataset_id,),
         retryable=not complete and not terminal,
-        recovery=("none" if complete else "operator_action" if paused or terminal else "automatic"),
+        recovery="none" if complete else "operator_action",
         next_action=(
             None
             if complete
             else "检查 required 历史目标最后错误，修复来源后显式重新入队。"
             if terminal
-            else "启用 macro_backfill worker 或由操作员执行回填。"
-            if paused
-            else "等待历史回填或补充满足该 feature 最小窗口的事实。"
+            else "执行 tracefold macro backfill，补充满足该 feature 最小窗口的事实。"
         ),
-        next_check_at_ms=None if paused else next_check_at_ms,
+        next_check_at_ms=next_check_at_ms,
     )
 
 
@@ -598,8 +585,6 @@ def _history_depth(dataset_states: list[dict[str, Any]]) -> dict[str, Any]:
 def _backfill_execution(
     specs: tuple[DatasetSpec, ...],
     targets: list[dict[str, Any]],
-    *,
-    worker_enabled: bool,
 ) -> dict[str, Any]:
     dataset_ids = {spec.dataset_id for spec in specs if _history_required(spec)}
     backfills = [
@@ -621,24 +606,11 @@ def _backfill_execution(
     elif pending_targets == 0:
         state = "complete"
         reason = None
-    elif not worker_enabled:
-        state = "paused"
-        reason = macro_reason(
-            code="history_backfill_worker_disabled",
-            message="历史回填目标仍未完成，但 macro_backfill worker 已停用。",
-            impact="limited",
-            affected_dataset_ids=tuple(
-                sorted({str(row["dataset_id"]) for row in backfills if str(row.get("status") or "") != "current"})
-            ),
-            retryable=True,
-            recovery="operator_action",
-            next_action="启用 macro_backfill worker 或由操作员执行明确的回填任务。",
-        )
     elif "claimed" in statuses:
         state = "running"
         reason = macro_reason(
             code="history_backfill_running",
-            message="历史回填 worker 正在处理至少一个目标。",
+            message="显式历史回填任务正在处理至少一个目标。",
             impact="limited",
             affected_dataset_ids=tuple(
                 sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
@@ -671,38 +643,37 @@ def _backfill_execution(
         state = "retry_wait"
         reason = macro_reason(
             code="history_backfill_retry_wait",
-            message="历史回填目标正在等待下一次自动重试。",
+            message="历史回填目标正在等待下一次显式重试。",
             impact="limited",
             affected_dataset_ids=tuple(
                 sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
             ),
             retryable=True,
-            recovery="automatic",
-            next_action="等待 next_check_at_ms 后重新读取目标状态。",
+            recovery="operator_action",
+            next_action="到达 next_check_at_ms 后重新执行 tracefold macro backfill。",
             next_check_at_ms=next_check_at_ms,
         )
     else:
         state = "queued"
         reason = macro_reason(
             code="history_backfill_queued",
-            message="历史回填目标已排队，尚未被 worker 领取。",
+            message="历史回填目标已入队，尚未执行显式维护任务。",
             impact="limited",
             affected_dataset_ids=tuple(
                 sorted({str(row["dataset_id"]) for row in backfills if row["status"] != "current"})
             ),
             retryable=True,
-            recovery="automatic",
-            next_action="等待 macro_backfill worker 领取目标。",
+            recovery="operator_action",
+            next_action="执行 tracefold macro backfill。",
             next_check_at_ms=next_check_at_ms,
         )
     return {
         "state": state,
-        "worker_enabled": worker_enabled,
         "total_targets": len(backfills),
         "complete_targets": complete_targets,
         "pending_targets": pending_targets,
         "failed_targets": failed_targets,
-        "next_check_at_ms": next_check_at_ms if state not in {"not_required", "complete", "paused", "failed"} else None,
+        "next_check_at_ms": next_check_at_ms if state not in {"not_required", "complete", "failed"} else None,
         "reason": reason,
     }
 

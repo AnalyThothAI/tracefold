@@ -615,7 +615,7 @@ class TokenRadarRepository:
         )
         return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
-    def list_compact_rank_inputs_for_rank_set(
+    def list_compact_rank_inputs(
         self,
         *,
         projection_version: str,
@@ -683,7 +683,7 @@ class TokenRadarRepository:
             raise RuntimeError("token_radar_compact_rank_input_shard_oversized")
         return [dict(row) for row in rows]
 
-    def hydrate_rank_inputs_for_rank_set(
+    def hydrate_rank_inputs(
         self,
         *,
         projection_version: str,

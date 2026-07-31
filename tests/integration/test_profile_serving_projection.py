@@ -10,6 +10,7 @@ from psycopg import pq
 from tests.integration.test_token_radar_idempotency import (
     EVENT_MS,
     FIXED_NOW_MS,
+    _run_radar_projection,
     _seed_resolved_radar_source,
 )
 from tests.postgres_test_utils import (
@@ -28,12 +29,7 @@ from tracefold.market.profiles.token_profile_current_projection import (
     project_token_profile_current,
 )
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION
-from tracefold.market.radar.projection import RadarProjectionService
-from tracefold.market.radar.token_radar_projector import (
-    build_token_radar_current_closure,
-    compute_token_radar_target_projection,
-    rank_token_radar_closure,
-)
+from tracefold.market.radar.microbatch import profile_frontier_callback
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 
 NOW_MS = 1_800_000_000_000
@@ -363,7 +359,7 @@ def test_rank_only_publication_does_not_redirty_a_clean_profile() -> None:
                 """,
                 (current["payload_hash"], previous["row_id"]),
             )
-            RadarProjectionService._profile_frontier_callback(repos)(
+            profile_frontier_callback(repos)(
                 window=str(current["window"]),
                 venue=str(current["venue"]),
                 rows=[current],
@@ -451,65 +447,9 @@ def _seed_radar_current(conn: Any) -> str:
             event_id="event-radar-idempotent",
             now_ms=EVENT_MS,
         )
-    radar = RadarProjectionService(db=_SingleConnectionDB(conn))
-    claim = radar.claim(
-        key={
-            "target_type": "Asset",
-            "target_id": target_id,
-            "window_key": "1h",
-            "venue": "all",
-        },
-        runtime_id=str(uuid4()),
-        now_ms=FIXED_NOW_MS,
-    )
-    assert claim is not None
-    loaded = radar.load_target_feature(claim, now_ms=FIXED_NOW_MS)
-    target_projection = compute_token_radar_target_projection(loaded)
-    feature_result = radar.publish_target_feature(
-        claim,
-        target_projection=target_projection,
-        now_ms=FIXED_NOW_MS,
-    )
-    assert feature_result["projection_status"] == "published"
-    rank_claim = radar.claim(
-        key={
-            "target_type": "RankSet",
-            "target_id": "token",
-            "window_key": "1h",
-            "venue": "all",
-        },
-        runtime_id=str(uuid4()),
-        now_ms=FIXED_NOW_MS,
-    )
-    assert rank_claim is not None
-    rank_loaded = radar.load_rank_set(
-        rank_claim,
-        now_ms=FIXED_NOW_MS,
-    )
-    ranked = rank_token_radar_closure(
-        {
-            **rank_loaded,
-            "feature": None,
-            "venues": [rank_claim.venue],
-            "rank_limit": 100,
-        }
-    )
-    hydrated = radar.load_hydration(
-        rank_claim,
-        target_projection={},
-        ranked=ranked,
-    )
-    closure = build_token_radar_current_closure(
-        {
-            "feature": None,
-            "selected_by_venue": ranked["selected_by_venue"],
-            "hydrated_inputs": hydrated,
-        }
-    )
-    result = radar.publish_token_rank_set(
-        rank_claim,
-        ranked=ranked,
-        closure=closure,
+    result = _run_radar_projection(
+        conn,
+        window="1h",
         now_ms=FIXED_NOW_MS,
     )
     assert result["projection_status"] == "published"
