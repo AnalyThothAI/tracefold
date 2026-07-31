@@ -421,9 +421,10 @@ or becomes a daily publication or schema-migration gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
-News steady recovery re-reads typed identity/scoring frontiers and recomputes
-only affected components. The system-wide maintenance hard cut rebuilds News
-from persisted items through the same incremental reducer. Token Radar
+News steady recovery re-reads typed identity and stable hourly score-bucket
+frontiers and recomputes only affected components or score partitions. The
+system-wide maintenance hard cut rebuilds News from persisted items through
+the same incremental reducer. Token Radar
 contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.

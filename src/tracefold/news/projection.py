@@ -53,6 +53,7 @@ _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
 _PAIR_BLOCK_CAP = 4_096
 _ENTITY_PREFIX = "__entity__:"
 _PUBLIC_STORY_DEADLINE_MS = 60_000
+_SCORE_BUCKET_COUNT = 64
 NEWS_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:incremental-v1"
 
 _CATEGORY_ORDER: tuple[EventCategory, ...] = (
@@ -82,7 +83,7 @@ class NewsProjectionClaim:
     bucket_id: str
     kind: str
     item_id: str
-    story_id: str
+    score_bucket: int | None
     runtime_id: str
     input_fingerprint: str
     projection_version: str
@@ -138,7 +139,7 @@ class NewsProjectionService:
             bucket_id=bucket_id,
             kind=kind,
             item_id=entity_id if kind == "identity" else "",
-            story_id=entity_id if kind == "score" else "",
+            score_bucket=(_require_score_bucket(entity_id) if kind == "score-bucket" else None),
             runtime_id=str(UUID(str(runtime_id))),
             input_fingerprint=str(row["input_fingerprint"]),
             projection_version=str(row["projection_version"]),
@@ -183,77 +184,79 @@ class NewsProjectionService:
         _require_bounded_input(payload)
         return payload
 
-    def load_score(
+    def load_score_bucket(
         self,
         claim: NewsProjectionClaim,
         *,
         now_ms: int,
     ) -> dict[str, Any]:
-        if claim.kind != "score":
-            raise ValueError("news_score_claim_required")
+        if claim.kind != "score-bucket" or claim.score_bucket is None:
+            raise ValueError("news_score_bucket_claim_required")
         with self._session() as repos:
             conn = repos.conn
+            stories = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT story_id, canonical_key, representative_item_id
+                      FROM news_stories
+                     WHERE active
+                       AND (
+                         get_byte(decode(md5(story_id), 'hex'), 0)
+                         %% %(bucket_count)s
+                       ) = %(score_bucket)s
+                     ORDER BY story_id
+                     LIMIT %(limit)s
+                    """,
+                    {
+                        "bucket_count": _SCORE_BUCKET_COUNT,
+                        "score_bucket": claim.score_bucket,
+                        "limit": _INPUT_ROW_CAP + 1,
+                    },
+                ).fetchall()
+            ]
+            if len(stories) > _INPUT_ROW_CAP:
+                raise NewsShardOversized("news_score_bucket_stories_overflow")
+            if not stories:
+                return {
+                    "status": "empty",
+                    "now_ms": int(now_ms),
+                    "score_bucket": claim.score_bucket,
+                    "stories": [],
+                    "rows": [],
+                    "entity_rows": [],
+                }
+            story_ids = [str(row["story_id"]) for row in stories]
             rows = [
                 dict(row)
                 for row in conn.execute(
                     """
-                    SELECT item.*, source.name AS source_name, source.tier,
-                           source.enabled AS source_enabled,
-                           feature.normalized_title,
-                           feature.candidate_tokens,
-                           feature.feature_fingerprint,
-                           feature.published_at_ms AS feature_published_at_ms,
-                           feature.expires_at_ms,
-                           feature.active AS feature_active
+                    SELECT membership.story_id, item.item_id, item.title,
+                           item.published_at_ms, item.source_id,
+                           source.tier, feature.normalized_title,
+                           feature.candidate_tokens
                       FROM news_story_members membership
                       JOIN news_items item ON item.item_id = membership.item_id
                       JOIN news_sources source ON source.source_id = item.source_id
                       JOIN news_identity_features feature
                         ON feature.item_id = item.item_id
-                     WHERE membership.story_id = %(story_id)s
+                     WHERE membership.story_id = ANY(%(story_ids)s)
                        AND membership.current
                        AND feature.active
                        AND feature.expires_at_ms > %(now_ms)s
                        AND source.enabled
-                     ORDER BY item.item_id
+                     ORDER BY membership.story_id, item.item_id
                      LIMIT %(limit)s
                     """,
                     {
-                        "story_id": claim.story_id,
+                        "story_ids": story_ids,
                         "now_ms": int(now_ms),
                         "limit": _INPUT_ROW_CAP + 1,
                     },
                 ).fetchall()
             ]
             if len(rows) > _INPUT_ROW_CAP:
-                raise NewsShardOversized("news_score_component_rows_overflow")
-            if not rows:
-                return {"status": "obsolete"}
-            item_ids = [str(row["item_id"]) for row in rows]
-            previous_memberships = [{"item_id": item_id, "story_id": claim.story_id} for item_id in item_ids]
-            alias_keys = sorted(
-                {_alias_key(str(row["normalized_title"])) for row in rows if str(row["normalized_title"])}
-            )
-            aliases = (
-                [
-                    dict(row)
-                    for row in conn.execute(
-                        """
-                    SELECT alias_key, story_id
-                      FROM news_story_aliases
-                     WHERE expires_at_ms > %(now_ms)s
-                       AND alias_key = ANY(%(alias_keys)s)
-                     ORDER BY alias_key
-                    """,
-                        {
-                            "now_ms": int(now_ms),
-                            "alias_keys": alias_keys,
-                        },
-                    ).fetchall()
-                ]
-                if alias_keys
-                else []
-            )
+                raise NewsShardOversized("news_score_bucket_rows_overflow")
             entity_tokens = sorted(
                 {
                     str(token)
@@ -292,43 +295,17 @@ class NewsProjectionService:
                 else []
             )
             if len(entity_rows) > _INPUT_ROW_CAP:
-                raise NewsShardOversized("news_score_entity_rows_overflow")
-        first = rows[0]
-        feature = {
-            "item_id": str(first["item_id"]),
-            "normalized_title": str(first["normalized_title"]),
-            "lexical_tokens": [
-                str(token) for token in first["candidate_tokens"] if not str(token).startswith(_ENTITY_PREFIX)
-            ],
-            "candidate_tokens": [str(token) for token in first["candidate_tokens"]],
-            "feature_fingerprint": str(first["feature_fingerprint"]),
-            "published_at_ms": int(first["feature_published_at_ms"]),
-            "expires_at_ms": int(first["expires_at_ms"]),
-            "active": True,
-        }
-        context = {
+                raise NewsShardOversized("news_score_bucket_entity_rows_overflow")
+        payload = {
             "status": "loaded",
             "now_ms": int(now_ms),
-            "target_item_id": feature["item_id"],
-            "target_feature": feature,
-            "target_old_feature_fingerprint": feature["feature_fingerprint"],
-            "target_old_tokens": feature["lexical_tokens"],
-            "target_old_active": True,
-            "crossing_tokens": [],
-            "token_counts": {},
+            "score_bucket": claim.score_bucket,
+            "stories": stories,
             "rows": rows,
-            "existing_edges": [],
-            "previous_memberships": previous_memberships,
-            "aliases": aliases,
             "entity_rows": entity_rows,
-            "snapshot_fingerprint": _context_fingerprint(rows),
         }
-        _require_bounded_input(context)
-        return {
-            "status": "loaded",
-            "feature": feature,
-            "context": context,
-        }
+        _require_bounded_input(payload)
+        return payload
 
     def load_context(
         self,
@@ -1053,35 +1030,29 @@ class NewsProjectionService:
                     version=claim.projection_version,
                     extra_insert={"active_item_count": 1},
                 )
-            published_story_id_set = {str(story["story_id"]) for story in projection["stories"]}
-            retired_story_ids = {str(value) for value in projection["old_story_ids"]} - published_story_id_set
-            if retired_story_ids:
-                conn.execute(
-                    """
-                    DELETE FROM news_projection_frontiers
-                     WHERE bucket_id = ANY(%s)
-                    """,
-                    ([f"score:{story_id}" for story_id in sorted(retired_story_ids)],),
-                )
             next_score_at_ms = _scoring_epoch(now_ms) + _SCORING_EPOCH_MS
+            score_bucket_counts: dict[str, int] = {}
             for story in projection["stories"]:
-                story_id = str(story["story_id"])
+                score_bucket_id = _score_bucket_id(str(story["story_id"]))
+                score_bucket_counts[score_bucket_id] = score_bucket_counts.get(score_bucket_id, 0) + int(
+                    story["item_count"]
+                )
+            for score_bucket_id, active_item_count in sorted(score_bucket_counts.items()):
                 repos.projection_frontiers.mark_dirty(
                     NEWS_FRONTIER,
-                    key={"bucket_id": f"score:{story_id}"},
+                    key={"bucket_id": score_bucket_id},
                     dirty_at_ms=now_ms,
                     deadline_at_ms=(next_score_at_ms + _PUBLIC_STORY_DEADLINE_MS),
                     eligible_at_ms=next_score_at_ms,
                     input_fingerprint=_stable_hash(
                         {
-                            "kind": "score",
-                            "story_id": story_id,
-                            "story_fingerprint": story["state_fingerprint"],
+                            "kind": "score-bucket",
+                            "bucket_id": score_bucket_id,
                             "scoring_epoch_ms": next_score_at_ms,
                         }
                     ),
                     version=claim.projection_version,
-                    extra_insert={"active_item_count": int(story["item_count"])},
+                    extra_insert={"active_item_count": active_item_count},
                 )
 
         return {
@@ -1101,6 +1072,219 @@ class NewsProjectionService:
             "closure_items": len(projection["closure_item_ids"]),
         }
 
+    def publish_score_bucket(
+        self,
+        claim: NewsProjectionClaim,
+        *,
+        projection: dict[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if claim.kind != "score-bucket" or claim.score_bucket is None:
+            raise ValueError("news_score_bucket_claim_required")
+        story_ids = [str(row["story_id"]) for row in projection["story_updates"]]
+        with (
+            self._session(
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            conn = repos.conn
+            facet_snapshot_before = repos.news.projection_facet_snapshot(
+                story_ids=story_ids,
+            )
+            item_writes = 0
+            if projection["item_updates"]:
+                item_writes = int(
+                    conn.execute(
+                        """
+                        WITH desired AS (
+                          SELECT *
+                            FROM jsonb_to_recordset(%s::jsonb) AS row(
+                              item_id text,
+                              level text,
+                              category text,
+                              classification_source text,
+                              classification_confidence double precision,
+                              importance_score integer,
+                              importance_factors jsonb
+                            )
+                        )
+                        UPDATE news_items item
+                           SET importance_score = desired.importance_score,
+                               importance_factors = desired.importance_factors,
+                               level = desired.level,
+                               category = desired.category,
+                               classification_source =
+                                 desired.classification_source,
+                               classification_confidence =
+                                 desired.classification_confidence,
+                               updated_at_ms = %s
+                          FROM desired
+                         WHERE item.item_id = desired.item_id
+                           AND (
+                             item.importance_score,
+                             item.importance_factors,
+                             item.level,
+                             item.category,
+                             item.classification_source,
+                             item.classification_confidence
+                           ) IS DISTINCT FROM (
+                             desired.importance_score,
+                             desired.importance_factors,
+                             desired.level,
+                             desired.category,
+                             desired.classification_source,
+                             desired.classification_confidence
+                           )
+                        """,
+                        (Jsonb(projection["item_updates"]), int(now_ms)),
+                    ).rowcount
+                    or 0
+                )
+            story_writes = 0
+            if projection["story_updates"]:
+                story_writes = int(
+                    conn.execute(
+                        """
+                        WITH desired AS (
+                          SELECT *
+                            FROM jsonb_to_recordset(%s::jsonb) AS row(
+                              story_id text,
+                              scoring_item_id text,
+                              level text,
+                              category text,
+                              importance_score integer,
+                              importance_factors jsonb,
+                              state_fingerprint text
+                            )
+                        )
+                        UPDATE news_stories story
+                           SET scoring_item_id = desired.scoring_item_id,
+                               level = desired.level,
+                               category = desired.category,
+                               importance_score = desired.importance_score,
+                               importance_factors =
+                                 desired.importance_factors,
+                               state_fingerprint =
+                                 desired.state_fingerprint,
+                               updated_at_ms = %s
+                          FROM desired
+                         WHERE story.story_id = desired.story_id
+                           AND story.active
+                           AND (
+                             story.scoring_item_id,
+                             story.level,
+                             story.category,
+                             story.importance_score,
+                             story.importance_factors,
+                             story.state_fingerprint
+                           ) IS DISTINCT FROM (
+                             desired.scoring_item_id,
+                             desired.level,
+                             desired.category,
+                             desired.importance_score,
+                             desired.importance_factors,
+                             desired.state_fingerprint
+                           )
+                        """,
+                        (Jsonb(projection["story_updates"]), int(now_ms)),
+                    ).rowcount
+                    or 0
+                )
+            facet_writes = 0
+            if story_writes:
+                facet_snapshot_after = repos.news.projection_facet_snapshot(
+                    story_ids=story_ids,
+                )
+                facet_writes = repos.news.apply_projection_facet_delta(
+                    before=facet_snapshot_before,
+                    after=facet_snapshot_after,
+                    now_ms=now_ms,
+                )
+            brief_selection_writes = repos.news.refresh_brief_selection(now_ms=now_ms) if story_writes else 0
+            base_serving_rows = item_writes + story_writes + facet_writes + brief_selection_writes
+            summary_writes = 0
+            if base_serving_rows:
+                summary_writes = int(
+                    conn.execute(
+                        """
+                        UPDATE news_projection_summary
+                           SET last_material_change_at_ms = %s,
+                               updated_at_ms = %s
+                         WHERE singleton_key = 'current'
+                        """,
+                        (int(now_ms), int(now_ms)),
+                    ).rowcount
+                    or 0
+                )
+                if summary_writes != 1:
+                    raise RuntimeError("news_projection_summary_missing")
+            serving_rows = base_serving_rows + summary_writes
+            if serving_rows:
+                brief_candidates = repos.news.brief_candidates()
+                repos.projection_frontiers.mark_dirty(
+                    MODEL_FRONTIER,
+                    key={
+                        "candidate_kind": "news_brief",
+                        "shard_key": "current",
+                    },
+                    dirty_at_ms=now_ms,
+                    deadline_at_ms=now_ms + 10 * 60 * 1000,
+                    input_fingerprint=brief_fingerprint(brief_candidates),
+                    version=BRIEF_WORKFLOW_VERSION,
+                )
+            if not repos.projection_frontiers.complete(
+                NEWS_FRONTIER,
+                key={"bucket_id": claim.bucket_id},
+                runtime_id=claim.runtime_id,
+                input_fingerprint=claim.input_fingerprint,
+                version=claim.projection_version,
+                now_ms=now_ms,
+            ):
+                raise RuntimeError("news_score_bucket_publish_frontier_cas_failed")
+            if int(projection["story_count"]):
+                next_score_at_ms = _scoring_epoch(now_ms) + _SCORING_EPOCH_MS
+                repos.projection_frontiers.mark_dirty(
+                    NEWS_FRONTIER,
+                    key={"bucket_id": claim.bucket_id},
+                    dirty_at_ms=now_ms,
+                    deadline_at_ms=(next_score_at_ms + _PUBLIC_STORY_DEADLINE_MS),
+                    eligible_at_ms=next_score_at_ms,
+                    input_fingerprint=_stable_hash(
+                        {
+                            "kind": "score-bucket",
+                            "bucket_id": claim.bucket_id,
+                            "scoring_epoch_ms": next_score_at_ms,
+                        }
+                    ),
+                    version=claim.projection_version,
+                    extra_insert={"active_item_count": int(projection["item_count"])},
+                )
+                conn.execute(
+                    """
+                    UPDATE news_projection_frontiers
+                       SET active_item_count = %s
+                     WHERE bucket_id = %s
+                    """,
+                    (
+                        int(projection["item_count"]),
+                        claim.bucket_id,
+                    ),
+                )
+
+        return {
+            "projection_status": "published",
+            "rows_written": serving_rows,
+            "serving_rows_written": serving_rows,
+            "item_score_rows_written": item_writes,
+            "story_rows_written": story_writes,
+            "summary_rows_written": summary_writes,
+            "facet_rows_written": facet_writes,
+            "brief_selection_rows_written": brief_selection_writes,
+            "source_rows": int(projection["item_count"]),
+            "candidate_rows": int(projection["story_count"]),
+        }
+
     def release_stale(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
         with (
             self._session(
@@ -1113,24 +1297,6 @@ class NewsProjectionService:
                     NEWS_FRONTIER,
                     key={"bucket_id": claim.bucket_id},
                     runtime_id=claim.runtime_id,
-                    now_ms=now_ms,
-                )
-            )
-
-    def complete_obsolete(self, claim: NewsProjectionClaim, *, now_ms: int) -> bool:
-        with (
-            self._session(
-                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
-            ) as repos,
-            repos.transaction(),
-        ):
-            return bool(
-                repos.projection_frontiers.complete(
-                    NEWS_FRONTIER,
-                    key={"bucket_id": claim.bucket_id},
-                    runtime_id=claim.runtime_id,
-                    input_fingerprint=claim.input_fingerprint,
-                    version=claim.projection_version,
                     now_ms=now_ms,
                 )
             )
@@ -1364,6 +1530,107 @@ def compute_news_identity_feature(payload: dict[str, Any]) -> dict[str, Any]:
     return feature
 
 
+def compute_news_score_bucket(payload: dict[str, Any]) -> dict[str, Any]:
+    """Re-score one stable partition of current Stories for one hourly epoch."""
+
+    now_ms = int(payload["now_ms"])
+    scoring_now_ms = _scoring_epoch(now_ms)
+    stories = {str(row["story_id"]): dict(row) for row in payload["stories"]}
+    rows_by_story: dict[str, list[dict[str, Any]]] = {}
+    for row in payload["rows"]:
+        rows_by_story.setdefault(str(row["story_id"]), []).append(dict(row))
+
+    entity_members: dict[str, dict[str, int]] = {}
+    for row in payload["entity_rows"]:
+        entity_members.setdefault(str(row["token"]), {})[str(row["source_id"])] = int(row["tier"])
+    entity_sources = {
+        token: {
+            "source_count": len(sources),
+            "tier12_source_count": sum(tier <= 2 for tier in sources.values()),
+        }
+        for token, sources in entity_members.items()
+    }
+
+    item_updates: list[dict[str, Any]] = []
+    story_updates: list[dict[str, Any]] = []
+    for story_id in sorted(stories):
+        members = rows_by_story.get(story_id, [])
+        if not members:
+            continue
+        scored, source_count = _score_story_members(
+            members,
+            entity_sources=entity_sources,
+            scoring_now_ms=scoring_now_ms,
+        )
+        item_updates.extend(_item_score_updates(scored))
+        scoring_item = min(
+            scored,
+            key=lambda member: (
+                -int(member["importance_score"]),
+                int(member["tier"]),
+                -int(member["published_at_ms"]),
+                str(member["source_id"]),
+                str(member["item_id"]),
+            ),
+        )
+        level = cast(
+            ThreatLevel,
+            max(
+                (str(member["level"]) for member in scored),
+                key=lambda value: (
+                    SEVERITY_VALUES[cast(ThreatLevel, value)],
+                    value,
+                ),
+            ),
+        )
+        category = cast(
+            EventCategory,
+            _mode(
+                [str(member["category"]) for member in scored],
+                _CATEGORY_ORDER,
+            ),
+        )
+        current = stories[story_id]
+        first_published_at_ms = min(int(member["published_at_ms"]) for member in scored)
+        last_published_at_ms = max(int(member["published_at_ms"]) for member in scored)
+        importance_factors_value = dict(scoring_item["importance_factors"])
+        fingerprint_payload = {
+            "identity_version": STORY_IDENTITY_VERSION,
+            "canonical_key": str(current["canonical_key"]),
+            "representative_item_id": str(current["representative_item_id"]),
+            "scoring_item_id": str(scoring_item["item_id"]),
+            "members": sorted(str(member["item_id"]) for member in scored),
+            "level": level,
+            "category": category,
+            "importance_score": int(scoring_item["importance_score"]),
+            "importance_factors": importance_factors_value,
+            "source_count": source_count,
+            "first": first_published_at_ms,
+            "last": last_published_at_ms,
+        }
+        story_updates.append(
+            {
+                "story_id": story_id,
+                "scoring_item_id": str(scoring_item["item_id"]),
+                "level": level,
+                "category": category,
+                "importance_score": int(scoring_item["importance_score"]),
+                "importance_factors": importance_factors_value,
+                "state_fingerprint": _stable_hash(fingerprint_payload),
+            }
+        )
+
+    output = {
+        "scoring_epoch_ms": scoring_now_ms,
+        "story_count": len(story_updates),
+        "item_count": len(item_updates),
+        "item_updates": item_updates,
+        "story_updates": story_updates,
+    }
+    _require_bounded_output(output)
+    return output
+
+
 def plan_news_edge_pairs(context: dict[str, Any]) -> dict[str, Any]:
     """Pure deterministic candidate planning; no pair block exceeds 4,096."""
 
@@ -1582,65 +1849,19 @@ def compute_news_component_projection(payload: dict[str, Any]) -> dict[str, Any]
     for root, member_ids in sorted(merged.items(), key=lambda pair: min(pair[1])):
         if root not in affected_roots:
             continue
-        component_rows = [rows_by_id[item_id] for item_id in sorted(member_ids)]
-        source_count = len({str(member["source_id"]) for member in component_rows})
-        entity_source_count = 0
-        tier12_entity_source_count = 0
-        for item_id in member_ids:
-            for token in features[item_id]["candidate_tokens"]:
-                signal = entity_sources.get(str(token))
-                if signal is not None:
-                    entity_source_count = max(entity_source_count, signal["source_count"])
-                    tier12_entity_source_count = max(
-                        tier12_entity_source_count,
-                        signal["tier12_source_count"],
-                    )
-        scored: list[dict[str, Any]] = []
-        for raw_member in component_rows:
-            member = dict(raw_member)
-            classified = classify_by_keyword(
-                str(member["title"]),
-                now_ms=scoring_now_ms,
-            )
-            level = promote_diplomacy_severity(
-                classified.level,
-                title=str(member["title"]),
-                tier12_origin_count=tier12_entity_source_count,
-            )
-            factors = importance_factors(
-                level=level,
-                tier=int(member["tier"]),
-                corroboration_count=source_count,
-                published_at_ms=int(member["published_at_ms"]),
-                now_ms=scoring_now_ms,
-                title=str(member["title"]),
-                entity_corroboration_count=entity_source_count,
-            )
-            member.update(
-                {
-                    "level": level,
-                    "category": classified.category,
-                    "classification_source": classified.source,
-                    "classification_confidence": classified.confidence,
-                    "importance_score": int(factors["total"]),
-                    "importance_factors": factors,
-                }
-            )
-            scored.append(member)
-            item_updates.append(
-                {
-                    key: member[key]
-                    for key in (
-                        "item_id",
-                        "level",
-                        "category",
-                        "classification_source",
-                        "classification_confidence",
-                        "importance_score",
-                        "importance_factors",
-                    )
-                }
-            )
+        component_rows = [
+            {
+                **rows_by_id[item_id],
+                "candidate_tokens": features[item_id]["candidate_tokens"],
+            }
+            for item_id in sorted(member_ids)
+        ]
+        scored, source_count = _score_story_members(
+            component_rows,
+            entity_sources=entity_sources,
+            scoring_now_ms=scoring_now_ms,
+        )
+        item_updates.extend(_item_score_updates(scored))
 
         earliest = min(
             scored,
@@ -1975,11 +2196,31 @@ def _upsert_story(conn: Any, *, story: dict[str, Any], now_ms: int) -> int:
 
 def _parse_bucket(bucket_id: str) -> tuple[str, str]:
     value = str(bucket_id)
-    for kind in ("identity", "score"):
+    for kind in ("identity", "score-bucket"):
         prefix = f"{kind}:"
         if value.startswith(prefix) and len(value) > len(prefix):
             return kind, value[len(prefix) :]
     raise ValueError("news_projection_bucket_kind_invalid")
+
+
+def _require_score_bucket(value: str) -> int:
+    bucket = int(value)
+    if not 0 <= bucket < _SCORE_BUCKET_COUNT:
+        raise ValueError("news_score_bucket_invalid")
+    if value != f"{bucket:02d}":
+        raise ValueError("news_score_bucket_format_invalid")
+    return bucket
+
+
+def _score_bucket_id(story_id: str) -> str:
+    bucket = (
+        hashlib.md5(
+            str(story_id).encode(),
+            usedforsecurity=False,
+        ).digest()[0]
+        % _SCORE_BUCKET_COUNT
+    )
+    return f"score-bucket:{bucket:02d}"
 
 
 def _ordered_pair(left: str, right: str) -> tuple[str, str]:
@@ -2000,6 +2241,83 @@ def _mode(values: list[str], order: tuple[str, ...]) -> str:
         (value for value, count in counts.items() if count == highest),
         key=lambda value: (index.get(value, len(index)), value),
     )
+
+
+def _score_story_members(
+    rows: list[dict[str, Any]],
+    *,
+    entity_sources: dict[str, dict[str, int]],
+    scoring_now_ms: int,
+) -> tuple[list[dict[str, Any]], int]:
+    source_count = len({str(member["source_id"]) for member in rows})
+    entity_source_count = 0
+    tier12_entity_source_count = 0
+    for member in rows:
+        for token in member["candidate_tokens"]:
+            signal = entity_sources.get(str(token))
+            if signal is not None:
+                entity_source_count = max(
+                    entity_source_count,
+                    signal["source_count"],
+                )
+                tier12_entity_source_count = max(
+                    tier12_entity_source_count,
+                    signal["tier12_source_count"],
+                )
+
+    scored: list[dict[str, Any]] = []
+    for raw_member in rows:
+        member = dict(raw_member)
+        classified = classify_by_keyword(
+            str(member["title"]),
+            now_ms=scoring_now_ms,
+        )
+        level = promote_diplomacy_severity(
+            classified.level,
+            title=str(member["title"]),
+            tier12_origin_count=tier12_entity_source_count,
+        )
+        factors = importance_factors(
+            level=level,
+            tier=int(member["tier"]),
+            corroboration_count=source_count,
+            published_at_ms=int(member["published_at_ms"]),
+            now_ms=scoring_now_ms,
+            title=str(member["title"]),
+            entity_corroboration_count=entity_source_count,
+        )
+        member.update(
+            {
+                "level": level,
+                "category": classified.category,
+                "classification_source": classified.source,
+                "classification_confidence": classified.confidence,
+                "importance_score": int(factors["total"]),
+                "importance_factors": factors,
+            }
+        )
+        scored.append(member)
+    return scored, source_count
+
+
+def _item_score_updates(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            key: member[key]
+            for key in (
+                "item_id",
+                "level",
+                "category",
+                "classification_source",
+                "classification_confidence",
+                "importance_score",
+                "importance_factors",
+            )
+        }
+        for member in rows
+    ]
 
 
 def _stable_hash(value: object) -> str:
@@ -2037,6 +2355,7 @@ __all__ = [
     "compute_news_component_projection",
     "compute_news_edge_block",
     "compute_news_identity_feature",
+    "compute_news_score_bucket",
     "merge_final_edges",
     "plan_news_edge_pairs",
     "rebuild_all_news_for_maintenance",

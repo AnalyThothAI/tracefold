@@ -17,6 +17,7 @@ from .projection import (
     compute_news_component_projection,
     compute_news_edge_block,
     compute_news_identity_feature,
+    compute_news_score_bucket,
     merge_final_edges,
     plan_news_edge_pairs,
 )
@@ -86,44 +87,20 @@ class NewsProjectionCandidate:
 
     async def _run_claimed(self, claim: Any, *, now_ms: int) -> WorkerResult:
         try:
-            if claim.kind == "score":
-                loaded_score = await self.resources.run_background_db(
-                    self.service.load_score,
+            if claim.kind == "score-bucket":
+                loaded_score_bucket = await self.resources.run_background_db(
+                    self.service.load_score_bucket,
                     claim,
                     now_ms=now_ms,
                 )
-                if loaded_score["status"] == "obsolete":
-                    await self.resources.run_background_db(
-                        self.service.complete_obsolete,
-                        claim,
-                        now_ms=_now_ms(),
-                    )
-                    return WorkerResult(
-                        skipped=1,
-                        notes={"reason": "news_score_story_obsolete"},
-                    )
-                feature = loaded_score["feature"]
-                context = loaded_score["context"]
-                edge_plan = {
-                    "affected_pairs": [],
-                    "recompute_pairs": [],
-                    "pair_blocks": 0,
-                    "new_edges": [],
-                }
                 projection = await self.resources.run_cpu(
-                    compute_news_component_projection,
-                    {
-                        **context,
-                        "final_edges": [],
-                    },
+                    compute_news_score_bucket,
+                    loaded_score_bucket,
                     timeout_seconds=_CPU_TIMEOUT_SECONDS,
                 )
                 result = await self.resources.run_background_db(
-                    self.service.publish,
+                    self.service.publish_score_bucket,
                     claim,
-                    feature=feature,
-                    context=context,
-                    edge_plan=edge_plan,
                     projection=projection,
                     now_ms=_now_ms(),
                 )

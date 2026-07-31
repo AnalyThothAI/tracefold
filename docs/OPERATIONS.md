@@ -164,8 +164,10 @@ News:
 
 ```text
 source claim -> news_ingest -> one provider attempt -> receipt/observation/item
-  -> typed identity/scoring frontiers + persisted features/similarity edges
+  -> typed identity frontiers + persisted features/similarity edges
   -> bounded affected component Story/member/alias closure
+  -> at most 64 stable hourly score-bucket frontiers
+  -> set-based item/Story score publication
   -> /api/news/feed + /api/news/stories/{story_id}
 
 Top-8 changed Story fingerprint
@@ -190,7 +192,12 @@ private, and other non-public destinations never use the relay. The internal
 `news_ingest` is the only NewsItem writer. The EDF projection domain is the
 only Story, membership, alias, feature, and edge writer. Restart re-reads typed
 frontiers; it never performs a full-window steady rebuild. Unchanged
-component closures write zero serving rows.
+component closures write zero serving rows. The one-hour scoring epoch is one
+global clock partitioned into at most 64 stable score buckets, not one timer
+per Story. A bucket loads only its current members, computes outside the
+database, and publishes changed item/Story score fields with set-based writes
+inside one short transaction. This prevents an hourly Story-count fanout while
+preserving the 60-second public Story deadline.
 
 The model coordinator exits before any Brief model call when fewer than three
 Stories, fewer than two physical sources, or an unchanged ordered Story

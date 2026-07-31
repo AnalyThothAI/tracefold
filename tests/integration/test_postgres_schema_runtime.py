@@ -483,7 +483,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0230"
+    assert version == latest_migration_version() == "20260731_0231"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -508,7 +508,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0230"
+    assert version == latest_migration_version() == "20260731_0231"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -569,6 +569,109 @@ def test_projection_eligibility_migration_preserves_material_deadlines_and_sched
             "deadline_at_ms": 1_060_000,
             "next_attempt_at_ms": 1_000_000,
         },
+    ]
+
+
+def test_news_score_bucket_migration_collapses_story_timer_fanout(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(
+        tmp_path / "postgres_test_db",
+        read_only=False,
+    )
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+        command.upgrade(config, "20260731_0230")
+        conn.execute(
+            """
+            INSERT INTO news_sources(
+              source_id, name, feed_url, tier, lang,
+              refresh_interval_seconds, next_fetch_at_ms,
+              created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'source-1', 'Source 1', 'https://example.com/feed',
+              1, 'en', 60, 1, 1, 1
+            );
+
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, canonical_url,
+              reporting_origin, title, normalized_title, lang,
+              published_at_ms, first_observed_at_ms,
+              last_observed_at_ms, content_fingerprint,
+              level, category, classification_source,
+              classification_confidence, importance_score,
+              importance_factors, created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'item-1', 'source-1', 'item-1',
+              'https://example.com/item-1', 'source-1',
+              'Test story', 'test story', 'en',
+              1, 1, 1, 'fingerprint-1',
+              'info', 'general', 'keyword', 1.0, 1,
+              '{"total":1}'::jsonb, 1, 1
+            );
+
+            INSERT INTO news_stories(
+              story_id, canonical_key, canonical_title,
+              representative_item_id, representative_source_id,
+              representative_title, representative_url,
+              scoring_item_id, level, category, importance_score,
+              importance_factors, item_count, source_count,
+              first_published_at_ms, last_published_at_ms,
+              state_fingerprint, created_at_ms, updated_at_ms
+            )
+            VALUES (
+              'story-1', 'story-key-1', 'Test story',
+              'item-1', 'source-1', 'Test story',
+              'https://example.com/item-1', 'item-1',
+              'info', 'general', 1, '{"total":1}'::jsonb,
+              1, 1, 1, 1, 'story-fingerprint-1', 1, 1
+            );
+
+            INSERT INTO news_projection_frontiers(
+              bucket_id, status, first_dirty_at_ms, deadline_at_ms,
+              next_attempt_at_ms, attempt_count,
+              transient_failure_count, active_item_count,
+              input_fingerprint, projection_version,
+              claimed_by, claimed_until_ms, last_error_code,
+              updated_at_ms
+            )
+            VALUES (
+              'score:story-1', 'dirty', 1, 61001,
+              NULL, 0, 0, 1, 'old-score',
+              'news-v1', NULL, NULL, NULL, 1
+            )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        rows = conn.execute(
+            """
+            SELECT bucket_id, status, active_item_count,
+                   deadline_at_ms - first_dirty_at_ms AS deadline_ms
+            FROM news_projection_frontiers
+            WHERE bucket_id LIKE 'score%'
+            ORDER BY bucket_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [
+        {
+            "bucket_id": "score-bucket:07",
+            "status": "dirty",
+            "active_item_count": 1,
+            "deadline_ms": 60_000,
+        }
     ]
 
 
@@ -784,7 +887,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0230"
+        assert version == "20260731_0231"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

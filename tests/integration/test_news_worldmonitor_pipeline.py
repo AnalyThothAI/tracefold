@@ -35,6 +35,7 @@ from tracefold.news.projection import (
     compute_news_component_projection,
     compute_news_edge_block,
     compute_news_identity_feature,
+    compute_news_score_bucket,
     merge_final_edges,
     plan_news_edge_pairs,
     rebuild_all_news_for_maintenance,
@@ -353,7 +354,7 @@ def test_incremental_news_projection_persists_edges_and_publishes_only_affected_
             """
             SELECT bucket_id, deadline_at_ms
               FROM news_projection_frontiers
-             WHERE bucket_id LIKE 'score:%'
+             WHERE bucket_id LIKE 'score-bucket:%'
              ORDER BY bucket_id
             """
         ).fetchone()
@@ -365,25 +366,13 @@ def test_incremental_news_projection_persists_edges_and_publishes_only_affected_
             now_ms=score_now_ms,
         )
         assert score_claim is not None
-        loaded_score = service.load_score(score_claim, now_ms=score_now_ms)
-        score_context = loaded_score["context"]
-        score_feature = loaded_score["feature"]
-        score_projection = compute_news_component_projection(
-            {
-                **score_context,
-                "final_edges": [],
-            }
-        )
-        score_result = service.publish(
+        loaded_score = service.load_score_bucket(
             score_claim,
-            feature=score_feature,
-            context=score_context,
-            edge_plan={
-                "affected_pairs": [],
-                "recompute_pairs": [],
-                "new_edges": [],
-                "pair_blocks": 0,
-            },
+            now_ms=score_now_ms,
+        )
+        score_projection = compute_news_score_bucket(loaded_score)
+        score_result = service.publish_score_bucket(
+            score_claim,
             projection=score_projection,
             now_ms=score_now_ms,
         )

@@ -241,6 +241,13 @@ write transaction. The CAS publication compares the input fingerprint again
 and writes the complete affected component closure; unchanged input performs
 zero serving writes.
 
+The persisted one-hour scoring epoch is a single global clock expressed as at
+most 64 stable `score-bucket` frontiers. Story IDs deterministically select a
+bucket; timestamps never become serving or frontier identity. Each bucket
+loads only current members, computes the same WorldMonitor factors outside the
+database, and publishes changed item/Story score fields in set-based writes.
+There is no per-Story timer fanout, scoring worker, or second scheduler.
+
 WallStEngine is one ordinary tier-4 English source in the Finance membership.
 Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
 keeps original and quote posts, and leaves quoted text in the RSS description
