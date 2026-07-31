@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
 
 import tracefold.market.radar.token_radar_projector as projector_module
 from tracefold.market.radar.microbatch import (
+    RadarMicroBatchClaim,
     RadarMicroBatchService,
     RadarShardOversized,
+    RadarTargetClaim,
     _require_bounded_input,
     _require_bounded_output,
     rank_radar_microbatch,
@@ -23,7 +27,7 @@ from tracefold.market.radar.token_radar_projector import (
 
 
 def test_rank_closure_selects_top_n_before_wide_hydration(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rows = [_compact_row(identity_id=f"asset-{index}", rank_score=100 - index) for index in range(6)]
     ranked = rank_token_radar_closure(
@@ -159,15 +163,81 @@ def test_radar_microbatch_removes_expired_target_from_same_publication() -> None
     ]
 
 
-def test_radar_maintenance_publish_keeps_steady_timeout_strict() -> None:
-    steady = RadarMicroBatchService(db=object())
-    maintenance = RadarMicroBatchService(
-        db=object(),
-        worker_name="radar_maintenance_rebuild",
+@pytest.mark.parametrize(
+    (
+        "worker_name",
+        "expected_statement_timeout_seconds",
+        "expected_transaction_timeout_seconds",
+    ),
+    [
+        ("steady_projection_coordinator", 3.0, 1.0),
+        ("radar_maintenance_rebuild", 120.0, 120.0),
+    ],
+)
+def test_radar_publish_applies_its_role_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_name: str,
+    expected_statement_timeout_seconds: float,
+    expected_transaction_timeout_seconds: float,
+) -> None:
+    class RecordingRepositories:
+        @contextmanager
+        def transaction(self) -> Iterator[None]:
+            yield
+
+    class RecordingDatabase:
+        calls: list[dict[str, Any]]
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        @contextmanager
+        def worker_session(
+            self,
+            _worker_name: str,
+            **kwargs: Any,
+        ) -> Iterator[RecordingRepositories]:
+            self.calls.append(kwargs)
+            yield RecordingRepositories()
+
+    database = RecordingDatabase()
+    service = RadarMicroBatchService(db=database, worker_name=worker_name)
+    claim = RadarMicroBatchClaim(
+        window="5m",
+        venue="all",
+        runtime_id="runtime",
+        targets=(
+            RadarTargetClaim(
+                target_type="Asset",
+                target_id="asset",
+                input_fingerprint="fingerprint",
+                projection_version="token-radar-v1",
+                first_dirty_at_ms=1,
+                deadline_at_ms=2,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        RadarMicroBatchService,
+        "_lock_claims",
+        staticmethod(lambda _repos, _claim: False),
     )
 
-    assert steady._publish_transaction_timeout_seconds() == 1.0
-    assert maintenance._publish_transaction_timeout_seconds() == 120.0
+    result = service.publish(
+        claim,
+        projections={"targets": []},
+        ranked={"source_rows_by_venue": {}},
+        closure={"rows_by_venue": {}},
+        now_ms=2,
+    )
+
+    assert result["projection_status"] == "stale_snapshot"
+    assert database.calls == [
+        {
+            "statement_timeout_seconds": expected_statement_timeout_seconds,
+            "transaction_timeout_seconds": expected_transaction_timeout_seconds,
+        }
+    ]
 
 
 def _compact_row(*, identity_id: str, rank_score: int) -> dict[str, Any]:

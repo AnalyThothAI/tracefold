@@ -99,7 +99,7 @@ class RadarMicroBatchService:
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
         with (
             self._session(
-                transaction_timeout_seconds=self._publish_transaction_timeout_seconds(),
+                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
             ) as repos,
             repos.transaction(),
         ):
@@ -509,7 +509,7 @@ class RadarMicroBatchService:
             _require_bounded_output(stock_projection)
         with (
             self._session(
-                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+                transaction_timeout_seconds=self._publish_transaction_timeout_seconds(),
             ) as repos,
             repos.transaction(),
         ):
