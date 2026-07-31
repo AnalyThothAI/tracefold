@@ -98,7 +98,7 @@ def test_event_sync_writes_only_stable_target_frontiers() -> None:
         conn.close()
 
 
-def test_claim_batch_is_one_window_venue_and_capped_at_32() -> None:
+def test_claim_batch_is_one_window_venue_and_capped_at_4() -> None:
     conn = connect_postgres_test()
     try:
         reset_postgres_schema(conn)
@@ -128,15 +128,15 @@ def test_claim_batch_is_one_window_venue_and_capped_at_32() -> None:
         )
 
         assert claim is not None
-        assert len(claim.targets) == 32
-        assert [target.target_id for target in claim.targets] == [f"asset:{index:02d}" for index in range(32)]
+        assert len(claim.targets) == 4
+        assert [target.target_id for target in claim.targets] == [f"asset:{index:02d}" for index in range(4)]
         assert conn.execute(
             """
             SELECT count(*) AS count
             FROM radar_projection_frontiers
             WHERE status = 'dirty'
             """
-        ).fetchone() == {"count": 8}
+        ).fetchone() == {"count": 36}
     finally:
         conn.close()
 
