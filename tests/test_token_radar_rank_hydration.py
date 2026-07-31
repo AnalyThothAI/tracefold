@@ -6,6 +6,7 @@ import pytest
 
 import tracefold.market.radar.token_radar_projector as projector_module
 from tracefold.market.radar.microbatch import (
+    RadarMicroBatchService,
     RadarShardOversized,
     _require_bounded_input,
     _require_bounded_output,
@@ -156,6 +157,17 @@ def test_radar_microbatch_removes_expired_target_from_same_publication() -> None
     assert ranked["selected_identities"] == [
         ["resolved", "Asset", "retained"],
     ]
+
+
+def test_radar_maintenance_publish_keeps_steady_timeout_strict() -> None:
+    steady = RadarMicroBatchService(db=object())
+    maintenance = RadarMicroBatchService(
+        db=object(),
+        worker_name="radar_maintenance_rebuild",
+    )
+
+    assert steady._publish_transaction_timeout_seconds() == 1.0
+    assert maintenance._publish_transaction_timeout_seconds() == 120.0
 
 
 def _compact_row(*, identity_id: str, rank_score: int) -> dict[str, Any]:

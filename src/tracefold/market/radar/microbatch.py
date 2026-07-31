@@ -41,6 +41,7 @@ _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
 _PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 _STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0
 _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
+_MAINTENANCE_TRANSACTION_TIMEOUT_SECONDS = 120.0
 _TARGET_BATCH_SIZE = 32
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
@@ -98,7 +99,7 @@ class RadarMicroBatchService:
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
         with (
             self._session(
-                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+                transaction_timeout_seconds=self._publish_transaction_timeout_seconds(),
             ) as repos,
             repos.transaction(),
         ):
@@ -779,6 +780,11 @@ class RadarMicroBatchService:
             ),
             transaction_timeout_seconds=transaction_timeout_seconds,
         )
+
+    def _publish_transaction_timeout_seconds(self) -> float:
+        if self.worker_name == "radar_maintenance_rebuild":
+            return _MAINTENANCE_TRANSACTION_TIMEOUT_SECONDS
+        return _PUBLISH_TRANSACTION_TIMEOUT_SECONDS
 
 
 def compute_radar_target_batch(payload: dict[str, Any]) -> dict[str, Any]:

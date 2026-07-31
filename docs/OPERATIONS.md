@@ -79,6 +79,8 @@ One semantic shard is capped at 10,000 input rows/4 MiB and 1 MiB output.
 Claim, compute, publish, and full-turn hard timeouts are respectively 500 ms,
 2 s, 1 s, and 5 s. Overflow is split deterministically or quarantined as
 `shard_oversized`; it is never sampled or truncated.
+The explicit maintenance rebuild keeps the existing 120-second maintenance
+transaction budget; it does not relax the one-second steady publish limit.
 
 Radar is one stable `window × venue` shard inside the EDF coordinator. One turn
 claims at most 32 due target frontiers for that shard, recomputes their compact
