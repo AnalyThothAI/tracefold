@@ -38,7 +38,8 @@ from tracefold.platform.postgres.projection_frontier import (
 
 _CLAIM_LEASE_MS = 15_000
 _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
-_PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
+_CONTROL_TRANSACTION_TIMEOUT_SECONDS = 1.0
+_PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 3.0
 _STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0
 _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
 _MAINTENANCE_TRANSACTION_TIMEOUT_SECONDS = 120.0
@@ -99,7 +100,7 @@ class RadarMicroBatchService:
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
         with (
             self._session(
-                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+                transaction_timeout_seconds=_CONTROL_TRANSACTION_TIMEOUT_SECONDS,
             ) as repos,
             repos.transaction(),
         ):
@@ -659,7 +660,7 @@ class RadarMicroBatchService:
         quarantined = 0
         with (
             self._session(
-                transaction_timeout_seconds=_PUBLISH_TRANSACTION_TIMEOUT_SECONDS,
+                transaction_timeout_seconds=_CONTROL_TRANSACTION_TIMEOUT_SECONDS,
             ) as repos,
             repos.transaction(),
         ):
