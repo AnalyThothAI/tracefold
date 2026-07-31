@@ -100,6 +100,19 @@ class SteadyProjectionCoordinator(WorkerBase):
             },
         )
 
+    def next_iteration_delay_seconds(
+        self,
+        *,
+        result: WorkerResult,
+        duration_seconds: float,
+    ) -> float:
+        if result.processed or result.failed or result.dead:
+            return 0.0
+        return super().next_iteration_delay_seconds(
+            result=result,
+            duration_seconds=duration_seconds,
+        )
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)

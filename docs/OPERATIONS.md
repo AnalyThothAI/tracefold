@@ -54,6 +54,10 @@ bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
 coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
+After a productive or failed shard turn it repolls immediately; only an idle
+turn waits on the 50 ms polling cadence. This preserves single-shard resource
+ownership without spending a fixed sleep budget while a typed frontier is
+backlogged.
 `deadline_at_ms` is not a not-before time. Material changes are eligible
 immediately; `next_attempt_at_ms` delays only a scheduled recheck or retry.
 The eligibility expression has a bounded partial index on every projection

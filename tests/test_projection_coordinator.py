@@ -1,6 +1,8 @@
 import asyncio
 from dataclasses import dataclass
 
+import pytest
+
 from tracefold.app.projection_coordinator import SteadyProjectionCoordinator
 from tracefold.platform.config.settings import PerWorkerSettings
 from tracefold.platform.workers.projection_candidate import ProjectionShard
@@ -66,3 +68,39 @@ def test_projection_coordinator_runs_an_already_eligible_shard_before_its_deadli
         assert result.notes["projection_deadline_lag_ms"] == 0
 
     asyncio.run(scenario())
+
+
+def test_projection_coordinator_drains_completed_work_without_cadence_sleep() -> None:
+    coordinator = SteadyProjectionCoordinator(
+        settings=PerWorkerSettings(interval_seconds=0.05),
+        candidates=(),
+        telemetry=None,
+    )
+
+    assert (
+        coordinator.next_iteration_delay_seconds(
+            result=WorkerResult(processed=1),
+            duration_seconds=0.012,
+        )
+        == 0
+    )
+    assert (
+        coordinator.next_iteration_delay_seconds(
+            result=WorkerResult(failed=1),
+            duration_seconds=0.012,
+        )
+        == 0
+    )
+
+
+def test_projection_coordinator_keeps_bounded_idle_poll_cadence() -> None:
+    coordinator = SteadyProjectionCoordinator(
+        settings=PerWorkerSettings(interval_seconds=0.05),
+        candidates=(),
+        telemetry=None,
+    )
+
+    assert coordinator.next_iteration_delay_seconds(
+        result=WorkerResult(skipped=1),
+        duration_seconds=0.012,
+    ) == pytest.approx(0.038)

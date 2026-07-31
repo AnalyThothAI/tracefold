@@ -26,6 +26,11 @@ rebuild, backlog-clear loop, backfill, or phased load shifting. There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
 
+The projection coordinator executes exactly one semantic shard at a time.
+Productive turns repoll the typed frontier heads immediately, while an idle
+turn waits on the bounded polling cadence; backlog throughput therefore does
+not depend on an artificial per-shard sleep.
+
 ## Truth, control state, and derived state
 
 Material facts include:

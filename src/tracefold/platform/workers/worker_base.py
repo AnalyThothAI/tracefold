@@ -105,7 +105,7 @@ class WorkerBase(ABC):
             while not self._stop_event.is_set():
                 iteration_started = time.perf_counter()
                 try:
-                    await self._run_iteration(started=iteration_started)
+                    result = await self._run_iteration(started=iteration_started)
                 except Exception:
                     await self._wait_for_next_iteration(self._backoff_seconds())
                     continue
@@ -113,8 +113,8 @@ class WorkerBase(ABC):
                 if self._stop_event.is_set():
                     break
                 await self._wait_for_next_iteration(
-                    _successful_iteration_delay(
-                        interval_seconds=self.interval_seconds,
+                    self.next_iteration_delay_seconds(
+                        result=result,
                         duration_seconds=max(0.0, time.perf_counter() - iteration_started),
                     )
                 )
@@ -203,6 +203,18 @@ class WorkerBase(ABC):
     @property
     def interval_seconds(self) -> float:
         return float(self.settings.interval_seconds)
+
+    def next_iteration_delay_seconds(
+        self,
+        *,
+        result: WorkerResult,
+        duration_seconds: float,
+    ) -> float:
+        del result
+        return _successful_iteration_delay(
+            interval_seconds=self.interval_seconds,
+            duration_seconds=duration_seconds,
+        )
 
     async def _wait_for_next_iteration(self, delay_seconds: float) -> None:
         if self._stop_event.is_set():
