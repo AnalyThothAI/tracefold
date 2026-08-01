@@ -17,9 +17,9 @@ from tracefold.macro.history_policy import (
     market_history_limits,
     series_history_limits,
 )
+from tracefold.macro.market_calendar import is_us_market_session
 from tracefold.macro.module_payloads import build_typed_module_payload
 from tracefold.macro.registry import DATASET_REGISTRY
-from tracefold.macro.session_calendar import is_us_market_session
 from tracefold.macro.thesis import MacroEvidencePackV3, compile_evidence_pack_v3
 from tracefold.macro.thesis_repository import (
     MacroPublicationWriteConflict,

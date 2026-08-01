@@ -33,14 +33,14 @@ def market_clock(calendar_id: str | None, *, now_ms: int) -> MarketClock:
     return MarketClock(state="unknown", expected_at_ms=int(now_ms), next_open_ms=None)
 
 
-def is_us_equity_session(session_date: date) -> bool:
+def is_us_market_session(session_date: date) -> bool:
     return session_date.weekday() < 5 and session_date not in _us_market_holidays(session_date.year)
 
 
 def _equity_clock(now_ms: int) -> MarketClock:
     instant = datetime.fromtimestamp(int(now_ms) / 1_000, tz=UTC).astimezone(_NEW_YORK)
     session_date = instant.date()
-    if is_us_equity_session(session_date):
+    if is_us_market_session(session_date):
         opened = datetime.combine(session_date, _EQUITY_OPEN, tzinfo=_NEW_YORK)
         closed = datetime.combine(session_date, _equity_close(session_date), tzinfo=_NEW_YORK)
         if instant < opened:
@@ -99,7 +99,7 @@ def _previous_equity_close(before_date: date) -> datetime:
     candidate = before_date
     while True:
         candidate -= timedelta(days=1)
-        if is_us_equity_session(candidate):
+        if is_us_market_session(candidate):
             return datetime.combine(candidate, _equity_close(candidate), tzinfo=_NEW_YORK)
 
 
@@ -107,7 +107,7 @@ def _next_equity_open(after_date: date) -> datetime:
     candidate = after_date
     while True:
         candidate += timedelta(days=1)
-        if is_us_equity_session(candidate):
+        if is_us_market_session(candidate):
             return datetime.combine(candidate, _EQUITY_OPEN, tzinfo=_NEW_YORK)
 
 
@@ -179,4 +179,4 @@ def _epoch_ms(value: datetime) -> int:
     return int(value.astimezone(UTC).timestamp() * 1_000)
 
 
-__all__ = ["MarketClock", "MarketState", "is_us_equity_session", "market_clock"]
+__all__ = ["MarketClock", "MarketState", "is_us_market_session", "market_clock"]

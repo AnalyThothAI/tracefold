@@ -56,6 +56,7 @@ from .fed_analysis import (
     FedDocumentAnalysisDraft,
     MacroDocumentAnalysisService,
 )
+from .market_calendar import is_us_market_session
 from .module_payloads import build_typed_module_payload, schema_version_for_module
 from .projection import rebuild_all_macro_modules_for_maintenance
 from .projection_worker import MacroProjectionCandidate
@@ -97,7 +98,6 @@ from .reasons import MacroReason, MacroReasonImpact, MacroReasonRecovery, macro_
 from .registry import DATASET_REGISTRY, datasets_for_clock, datasets_for_module, require_dataset
 from .repository import MacroRepository
 from .runtime import MacroAcquisition
-from .session_calendar import is_us_market_session
 from .thesis import (
     MACRO_EVIDENCE_PACK_SCHEMA_VERSION,
     MACRO_LIVE_DELTA_SCHEMA_VERSION,
