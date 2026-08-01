@@ -501,23 +501,47 @@ class NewsBriefCandidate:
             await self._release_prework(claim)
             return False
         except NewsBriefExpectedError as exc:
-            failed = await self.db.run_business(
-                "news_brief_publish_failure",
-                self._fail_sync,
-                claim,
-                exc,
-                operation_timeout_seconds=3.0,
-            )
+            failure_submitted = False
+
+            def mark_failure_submitted() -> None:
+                nonlocal failure_submitted
+                failure_submitted = True
+
+            try:
+                failed = await self.db.run_business(
+                    "news_brief_publish_failure",
+                    self._fail_sync,
+                    claim,
+                    exc,
+                    operation_timeout_seconds=3.0,
+                    on_submitted=mark_failure_submitted,
+                )
+            except ResourceAdmissionTimeout:
+                if failure_submitted:
+                    raise
+                return False
             return failed is not None
         if claim_lost:
             return False
-        published = await self.db.run_business(
-            "news_brief_publish",
-            self._publish_sync,
-            prepared,
-            generated,
-            operation_timeout_seconds=3.0,
-        )
+        publish_submitted = False
+
+        def mark_publish_submitted() -> None:
+            nonlocal publish_submitted
+            publish_submitted = True
+
+        try:
+            published = await self.db.run_business(
+                "news_brief_publish",
+                self._publish_sync,
+                prepared,
+                generated,
+                operation_timeout_seconds=3.0,
+                on_submitted=mark_publish_submitted,
+            )
+        except ResourceAdmissionTimeout:
+            if publish_submitted:
+                raise
+            return False
         return published is not None
 
     async def _release_prework(self, claim: dict[str, Any]) -> bool:

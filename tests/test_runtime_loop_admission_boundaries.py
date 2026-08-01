@@ -104,6 +104,55 @@ def test_news_brief_prepare_watchdog_covers_both_bounded_database_sessions() -> 
     assert asyncio.run(scenario()) == [("news_brief_prepare", 7.0)]
 
 
+def test_news_brief_publish_retries_after_pre_submission_database_pressure() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
+            self.operations.append(operation_name)
+            if operation_name == "news_brief_prepare":
+                return {
+                    "completed_without_model": False,
+                    "claim": {"fingerprint": "fingerprint"},
+                    "stories": [],
+                }
+            if operation_name == "news_brief_start_model":
+                return True
+            if operation_name == "news_brief_publish":
+                raise ResourceAdmissionTimeout("worker_database_admission_timeout:news_brief_publish")
+            raise AssertionError(operation_name)
+
+    class _ModelAdapter:
+        async def run(self, _operation_name, _function, /, *_args, **kwargs):
+            kwargs["on_submitted"]()
+            await kwargs["after_submit"]()
+            return {"summary": "generated"}
+
+    async def scenario() -> tuple[bool, list[str]]:
+        database = _Database()
+        candidate = NewsBriefCandidate(
+            db=database,
+            model_adapter=_ModelAdapter(),
+            publisher=object(),
+            runtime_id="runtime-1",
+        )
+        completed = await candidate.execute(
+            ModelCandidate(
+                kind="news_brief",
+                target_key="fingerprint",
+                due_at_ms=1_000,
+                stable_order=20,
+            )
+        )
+        return completed, database.operations
+
+    assert asyncio.run(scenario()) == (
+        False,
+        ["news_brief_prepare", "news_brief_start_model", "news_brief_publish"],
+    )
+
+
 def test_due_loop_propagates_post_work_admission_timeout() -> None:
     async def turn() -> bool:
         raise ResourceAdmissionTimeout("publication_db_saturated")
