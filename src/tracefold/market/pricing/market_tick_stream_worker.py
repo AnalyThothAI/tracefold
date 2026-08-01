@@ -66,11 +66,15 @@ class MarketTickStream:
             await asyncio.sleep(0)
 
     async def _cycle(self, *, stop_event: asyncio.Event) -> _StreamPersistResult | None:
-        rows = await self.db.run_business(
-            "market_tick_stream_load",
-            self._list_stream_rows,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            rows = await self.db.run_business(
+                "market_tick_stream_load",
+                self._list_stream_rows,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            await _wait_or_stop(stop_event, _STREAM_RECONNECT_BACKOFF_SECONDS)
+            return None
         targets, _skipped_targets = _stream_targets(rows, limit=self.subscription_limit)
         if not targets:
             await _wait_or_stop(stop_event, 5.0)

@@ -129,7 +129,10 @@ class MacroThesisService:
         if now < cutoff_ms:
             return MacroThesisRunView(session_date, "not_due", None, None, None)
 
-        existing = await self._run_db(self._state, session_date)
+        try:
+            existing = await self._run_db(self._state, session_date)
+        except ResourceAdmissionTimeout:
+            return MacroThesisRunView(session_date, "retry_soon", None, None, None)
         if _is_current_v2_publication(existing):
             live, outcome = await self._run_db(self._refresh_deterministic, existing, now)
             return MacroThesisRunView(
@@ -176,6 +179,8 @@ class MacroThesisService:
                 cutoff_ms=cutoff_ms,
                 now_ms=now,
             )
+        except ResourceAdmissionTimeout:
+            return MacroThesisRunView(session_date, "retry_soon", None, None, None)
         except _ResearchInputCompilationPersisted:
             return _view_from_state(
                 session_date,

@@ -57,7 +57,10 @@ class AssetProfileRefresh:
         if not self.dex_profile_sources:
             return False
 
-        selected = await self._claim_next(observed_at_ms)
+        try:
+            selected = await self._claim_next(observed_at_ms)
+        except ResourceAdmissionTimeout:
+            return None
         if selected is None:
             return False
         profile_source, claim, _queue = selected

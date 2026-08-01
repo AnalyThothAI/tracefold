@@ -62,13 +62,16 @@ class NewsAcquisition:
     async def turn(self) -> bool | None:
         now_ms = _now_ms()
         claim_token = str(uuid4())
-        claimed = await self.db.run_business(
-            "news_source_claim",
-            self._claim_sync,
-            now_ms,
-            claim_token,
-            operation_timeout_seconds=0.5,
-        )
+        try:
+            claimed = await self.db.run_business(
+                "news_source_claim",
+                self._claim_sync,
+                now_ms,
+                claim_token,
+                operation_timeout_seconds=0.5,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         if claimed is None:
             return False
         source = source_definition(claimed)
@@ -274,12 +277,15 @@ class NewsBriefCandidate:
         )
 
     async def execute(self, candidate: ModelCandidate) -> bool:
-        prepared = await self.db.run_business(
-            "news_brief_prepare",
-            self._prepare_sync,
-            candidate.target_key,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            prepared = await self.db.run_business(
+                "news_brief_prepare",
+                self._prepare_sync,
+                candidate.target_key,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return False
         if prepared is None:
             return False
         if bool(prepared.get("completed_without_model")):

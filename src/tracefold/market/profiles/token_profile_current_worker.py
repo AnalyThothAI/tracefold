@@ -63,15 +63,18 @@ class ProfileProjectionCandidate:
     async def execute(self, shard: ProjectionShard) -> bool:
         now_ms = _now_ms()
         key = _parse_shard_key(shard.shard_key)
-        claim = await self.db.run_business(
-            "profile_projection_claim",
-            self.service.claim,
-            operation_timeout_seconds=0.5,
-            target_type=key["target_type"],
-            target_id=key["target_id"],
-            runtime_id=self.runtime_id,
-            now_ms=now_ms,
-        )
+        try:
+            claim = await self.db.run_business(
+                "profile_projection_claim",
+                self.service.claim,
+                operation_timeout_seconds=0.5,
+                target_type=key["target_type"],
+                target_id=key["target_id"],
+                runtime_id=self.runtime_id,
+                now_ms=now_ms,
+            )
+        except ResourceAdmissionTimeout:
+            return False
         if claim is None:
             return False
         submission = ResourceSubmissionTracker()

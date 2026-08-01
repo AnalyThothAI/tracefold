@@ -41,11 +41,14 @@ class MacroAcquisition:
         )
 
     async def turn(self) -> bool | None:
-        claim = await self.db.run_business(
-            "macro_target_claim",
-            self.service.claim_next,
-            operation_timeout_seconds=_CLAIM_TIMEOUT_SECONDS,
-        )
+        try:
+            claim = await self.db.run_business(
+                "macro_target_claim",
+                self.service.claim_next,
+                operation_timeout_seconds=_CLAIM_TIMEOUT_SECONDS,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         if claim is None:
             return False
 

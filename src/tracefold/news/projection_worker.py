@@ -62,14 +62,17 @@ class NewsProjectionCandidate:
 
     async def execute(self, shard: ProjectionShard) -> bool:
         now_ms = _now_ms()
-        claim = await self.db.run_business(
-            "news_projection_claim",
-            self.service.claim,
-            operation_timeout_seconds=0.5,
-            bucket_id=shard.shard_key,
-            runtime_id=self.runtime_id,
-            now_ms=now_ms,
-        )
+        try:
+            claim = await self.db.run_business(
+                "news_projection_claim",
+                self.service.claim,
+                operation_timeout_seconds=0.5,
+                bucket_id=shard.shard_key,
+                runtime_id=self.runtime_id,
+                now_ms=now_ms,
+            )
+        except ResourceAdmissionTimeout:
+            return False
         if claim is None:
             return False
         submission = ResourceSubmissionTracker()

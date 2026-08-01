@@ -122,7 +122,10 @@ class MacroDocumentAnalysisService:
         analysis_job_id: str | None = None,
     ) -> dict[str, Any]:
         now = int(now_ms if now_ms is not None else self.clock_ms())
-        prepared = await self._run_db(self._prepare_job, now, analysis_job_id)
+        try:
+            prepared = await self._run_db(self._prepare_job, now, analysis_job_id)
+        except ResourceAdmissionTimeout:
+            return {"status": "idle", "jobs_written": 0}
         jobs_written = int(prepared["jobs_written"])
         job = prepared["job"]
         if job is None:

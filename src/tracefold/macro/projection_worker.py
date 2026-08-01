@@ -56,14 +56,17 @@ class MacroProjectionCandidate:
 
     async def execute(self, shard: ProjectionShard) -> bool:
         now_ms = _now_ms()
-        claim = await self.db.run_business(
-            "macro_projection_claim",
-            self.service.claim_module,
-            operation_timeout_seconds=0.5,
-            module_id=shard.shard_key,
-            runtime_id=self.runtime_id,
-            now_ms=now_ms,
-        )
+        try:
+            claim = await self.db.run_business(
+                "macro_projection_claim",
+                self.service.claim_module,
+                operation_timeout_seconds=0.5,
+                module_id=shard.shard_key,
+                runtime_id=self.runtime_id,
+                now_ms=now_ms,
+            )
+        except ResourceAdmissionTimeout:
+            return False
         if claim is None:
             return False
         submission = ResourceSubmissionTracker()

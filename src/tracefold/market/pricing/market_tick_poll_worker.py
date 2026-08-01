@@ -28,6 +28,7 @@ from tracefold.market.provider_contracts import (
     MarketProviderExpectedError,
 )
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
 DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_rest"
@@ -59,27 +60,33 @@ class MarketTickPoll:
     async def sample(self) -> None:
         # DB read happens off the event loop; provider IO must not run while a
         # DB session is held, so we materialize rows first, then drop the session.
-        rows = await self.db.run_business(
-            "market_tick_poll_load",
-            self._list_poll_rows,
-            operation_timeout_seconds=3.0,
-        )
-        targets = _poll_targets(rows)
+        try:
+            rows = await self.db.run_business(
+                "market_tick_poll_load",
+                self._list_poll_rows,
+                operation_timeout_seconds=3.0,
+            )
+            targets = _poll_targets(rows)
 
-        chain_result = await self._poll_chain_targets_async(targets.chain_targets)
-        cex_result = await self._poll_cex_targets_async(targets.cex_targets)
+            chain_result = await self._poll_chain_targets_async(targets.chain_targets)
+            cex_result = await self._poll_cex_targets_async(targets.cex_targets)
+        except ResourceAdmissionTimeout:
+            return
 
         skipped_reasons: Counter[str] = Counter(targets.skipped_reasons)
         skipped_reasons.update(chain_result.skipped_reasons)
         skipped_reasons.update(cex_result.skipped_reasons)
         ticks = [*chain_result.ticks, *cex_result.ticks]
 
-        await self.db.run_business(
-            "market_tick_poll_publish",
-            self._persist_ticks,
-            ticks,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            await self.db.run_business(
+                "market_tick_poll_publish",
+                self._persist_ticks,
+                ticks,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return
 
     def _list_poll_rows(self) -> list[dict[str, Any]]:
         now_ms = int(self.clock())

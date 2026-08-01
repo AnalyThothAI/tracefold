@@ -37,12 +37,15 @@ class TokenImageMirror:
 
     async def turn(self, *, now_ms: int | None = None) -> str | bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-        claimed = await self.db.run_business(
-            "token_image_claim",
-            self._claim_one,
-            observed_at_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            claimed = await self.db.run_business(
+                "token_image_claim",
+                self._claim_one,
+                observed_at_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         if claimed is None:
             return False
         claim, terminal_asset, _queue_depth = claimed

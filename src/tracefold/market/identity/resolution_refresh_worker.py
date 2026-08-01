@@ -76,12 +76,15 @@ class ResolutionRefresh:
 
     async def turn(self, *, now_ms: int | None = None) -> bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else _now_ms())
-        lookups, _circuit_open = await self.db.run_business(
-            "resolution_claim",
-            self._claim_due_lookups,
-            observed_at_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            lookups, _circuit_open = await self.db.run_business(
+                "resolution_claim",
+                self._claim_due_lookups,
+                observed_at_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         if not lookups:
             return False
         for index, lookup in enumerate(lookups):

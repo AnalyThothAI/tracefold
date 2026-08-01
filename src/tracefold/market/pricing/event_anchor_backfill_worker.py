@@ -102,20 +102,26 @@ class EventAnchorBackfill:
 
     async def turn(self) -> bool | None:
         now_ms = int(self.clock())
-        stale_jobs = await self.db.run_business(
-            "event_anchor_expire",
-            self._expire_stale_jobs,
-            now_ms=now_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            stale_jobs = await self.db.run_business(
+                "event_anchor_expire",
+                self._expire_stale_jobs,
+                now_ms=now_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         stale_terminal = int(stale_jobs["expired"]) + int(stale_jobs["failed"])
         stale_rescheduled = int(stale_jobs["rescheduled"])
-        rows = await self.db.run_business(
-            "event_anchor_claim",
-            self._claim_due_jobs,
-            now_ms=now_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            rows = await self.db.run_business(
+                "event_anchor_claim",
+                self._claim_due_jobs,
+                now_ms=now_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
         if not rows:
             return bool(stale_terminal or stale_rescheduled)
 
