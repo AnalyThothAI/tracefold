@@ -47,6 +47,14 @@ describe("NewsPage", () => {
     expect(screen.getByText("信号").parentElement).toHaveTextContent("long");
     expect(screen.getByText("等级").parentElement).toHaveTextContent("A");
     expect(screen.getByText("关联代币").parentElement).toHaveTextContent("BTC · spot · Bitcoin");
+    const storyMain = screen
+      .getByText("Central banks respond to a new global policy shock")
+      .closest("a");
+    expect(storyMain).not.toBeNull();
+    const storyCoins = within(storyMain!).getByRole("group", { name: "OpenNews 关联代币" });
+    expect(storyCoins).toHaveTextContent("BTC");
+    expect(storyCoins).not.toHaveTextContent("spot");
+    expect(storyCoins).not.toHaveTextContent("Bitcoin");
     expect(screen.getByRole("link", { name: /最高评分 Item 原文/ })).toHaveAttribute(
       "href",
       "https://www.reuters.com/world/story",
@@ -66,6 +74,23 @@ describe("NewsPage", () => {
 
     expect(await screen.findByText("该 Item 未提供文章链接")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /最高评分 Item 原文/ })).not.toBeInTheDocument();
+  });
+
+  it("omits the prominent Story coin group when the selected Item has no coins", async () => {
+    const feed = newsFeedFixture();
+    feed.stories[0].provider_evidence = {
+      ...feed.stories[0].provider_evidence!,
+      provider_metadata: {
+        ...feed.stories[0].provider_evidence!.provider_metadata,
+        coins: [],
+      },
+    };
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" />);
+
+    await screen.findByText("Central banks respond to a new global policy shock");
+    expect(screen.queryByRole("group", { name: "OpenNews 关联代币" })).not.toBeInTheDocument();
   });
 
   it("keeps category as URL state and sends it to the Feed endpoint", async () => {

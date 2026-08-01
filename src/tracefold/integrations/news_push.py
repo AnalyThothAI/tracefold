@@ -187,13 +187,39 @@ def _news_story_card(
 
     original_title = _required_text(evidence_value, "title")
     title_zh = _optional_text(translation.get("title_zh"))
-    header_title = title_zh or original_title
+    headline = title_zh or original_title
+    symbols = _provider_coin_symbols(evidence_value)
+    header_title = f"[{' · '.join(symbols)}] {headline}" if symbols else headline
     return {
         "schema": "2.0",
         "header": {
             "title": {"tag": "plain_text", "content": header_title},
         },
     }
+
+
+def _provider_coin_symbols(evidence: Mapping[str, Any]) -> tuple[str, ...]:
+    metadata = evidence.get("provider_metadata")
+    if not isinstance(metadata, Mapping):
+        return ()
+    coins = metadata.get("coins")
+    if not isinstance(coins, list):
+        return ()
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for coin in coins:
+        if not isinstance(coin, Mapping):
+            continue
+        symbol_value = coin.get("symbol")
+        if not isinstance(symbol_value, str):
+            continue
+        symbol = symbol_value.strip()
+        identity = symbol.casefold()
+        if not symbol or identity in seen:
+            continue
+        seen.add(identity)
+        symbols.append(symbol)
+    return tuple(symbols)
 
 
 def _required_text(payload: Mapping[str, Any], key: str) -> str:

@@ -89,8 +89,8 @@ likewise queue policy, not profile facts.
 model outputs keyed by frozen evidence; they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze no-backfill baselines, selected Story evidence, translated or
-original-headline title-only cards, claims, retries, and explicit delivery
-receipts. They
+original-headline coin-prefixed title-only cards, claims, retries, and explicit
+delivery receipts. They
 do not become a second Story read model or notification product.
 
 ## Package map
@@ -349,11 +349,16 @@ Story and records the initialized baseline without network work. Later it
 qualifies a Story only when the maximum numeric OpenNews provider score among
 its current members is strictly greater than 70, chooses the highest-scored
 member with deterministic publication-time and Item-ID ties, and freezes that
-Story/Item evidence once. A Chinese headline bypasses translation; otherwise
-the serial model adapter calls code-owned `deepseek-v4-flash` in non-thinking
-mode. Translation failure freezes the original headline and still progresses
-to delivery. In every case the visible card contains only that translated or
-original headline as a plain-text header title.
+Story/Item evidence once. Its code-owned 10-second reconcile reads only
+persisted current Story membership and NewsItem metadata; it neither rebuilds
+Stories nor adds another acquisition path. A Chinese headline bypasses
+translation; otherwise the serial model adapter calls code-owned
+`deepseek-v4-flash` in non-thinking mode. Translation failure freezes the
+original headline and still progresses
+to delivery. The Adapter prefixes the selected Item's valid OpenNews coin
+symbols after translation, preserving provider order and deduplicating by
+case. The visible card remains one plain-text header title; Items without valid
+coins retain the translated or original headline alone.
 
 The Feishu Adapter receives only the frozen title-only card and sends outside
 the database transaction through the finite-operation capability. When the

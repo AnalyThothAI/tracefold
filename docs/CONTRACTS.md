@@ -60,9 +60,12 @@ Diagnostics expose only `feishu_webhook_url_configured` and
 contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
 Threshold, translator model, cadence, deadlines, retries, and card policy are
-code-owned. The Feishu JSON 2.0 card consists only of a plain-text header title:
-the translated headline when available, otherwise the original headline. It
-has no subtitle, body, metadata, or link button. Translation reuses
+code-owned. The Feishu JSON 2.0 card consists only of a plain-text header title.
+When the selected highest-score Item has valid OpenNews coin symbols, the title
+prefixes their provider order after case-insensitive deduplication, for example
+`[NEAR · BTC] 中文标题`; otherwise it is only the translated headline when
+available or the original headline. It has no subtitle, body, separate metadata,
+or link button. Translation reuses
 `llm.api_key` and `llm.base_url`; there is no second model credential or
 Google-translation fallback.
 

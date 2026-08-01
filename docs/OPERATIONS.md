@@ -231,10 +231,11 @@ Top-8 changed Story fingerprint
   -> validated Chinese immutable publication + current pointer
   -> /api/news/brief
 
-New current Story with max OpenNews provider score > 70
+Every 10 seconds, current Story with max persisted OpenNews provider score > 70
   -> News-owned durable push candidate
   -> first-enable baseline suppression or one frozen highest-score Item
   -> optional deepseek-v4-flash headline translation through model adapter
+  -> selected Item coin-symbol prefix added after translation
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
 ```
@@ -263,6 +264,26 @@ bounded by 10,000 rows, 4 MiB, and 25 seconds. There are no News frontiers,
 identity features, similarity edges, aliases, archive rows, or membership
 history.
 
+The push reconciler independently scans persisted current Story evidence every
+10 seconds. It performs no clustering, provider call, or model call and writes
+zero delivery rows for already-seen Stories. A newly ingested report must still
+enter a Story through the 60-second projection before it can qualify; a later
+`news.ai_update` on an existing Story no longer waits for another Story rebuild.
+
+`published_at_ms` is the provider's article clock, not the score-eligibility
+clock. OpenNews can publish a report first and later attach `aiRating` and
+`coins` through `news.ai_update`; the Story may therefore already exist while
+push remains ineligible. `threshold_observed_at_ms` freezes the selected Item's
+current `updated_at_ms` when the delivery candidate is inserted; it is the
+closest persisted qualification clock, not a dedicated first-score receive
+clock. A provider UI may show a later annotation while continuing to label the
+card with its original publication time. Treat `published -> threshold` as an
+annotation/ingest-latency approximation and `threshold -> sent` as the local
+push interval; the combined `published -> sent` interval alone does not prove a
+slow local push. Because raw WSS frame receipt history is not retained, the
+first interval cannot separate provider emission delay from transport, recovery,
+local queue delay, or another Item metadata update.
+
 The native Brief candidate exits before any model call when fewer than three
 Stories, fewer than two reporting origins, or an unchanged ordered Story
 fingerprint is observed. On provider or validation failure it records the
@@ -272,10 +293,12 @@ Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
 retried unsigned. Missing model credentials or a translation error still
-freezes and sends the original headline. The Feishu card always contains only
-that translated or original headline as its plain-text header title; it has no
-subtitle, body, metadata, or link button. Status and logs expose only configured
-booleans and sanitized error codes, never the webhook or signing secret.
+freezes and sends the original headline. After translation, the Adapter prefixes
+valid coin symbols from the selected highest-score Item, in provider order with
+case-insensitive deduplication. The Feishu card still contains only that single
+plain-text header title; it has no subtitle, body, separate metadata, or link
+button. Status and logs expose only configured booleans and sanitized error
+codes, never the webhook or signing secret.
 
 Diagnose News in this order:
 

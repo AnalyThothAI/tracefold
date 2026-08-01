@@ -80,8 +80,8 @@ lanes report explicit degradation or unavailable evidence:
   independent behavior;
 - absent model credentials leaves the corresponding Brief/analysis capability
   unavailable; specifically, absent `llm.api_key` makes News push use its
-  original headline instead of blocking delivery, while the card still shows
-  only that headline;
+  original headline instead of blocking delivery, while the card remains one
+  coin-prefixed plain-text title when the selected Item has valid coin symbols;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
@@ -89,7 +89,7 @@ lanes report explicit degradation or unavailable evidence:
 it never prints provider tokens, webhook URLs, signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
-the Feishu timestamp and signature. When absent, it sends the same title-only
+the Feishu timestamp and signature. When absent, it sends the same single-title
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. The translator reuses the DeepSeek-compatible
@@ -130,11 +130,12 @@ a persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 96-hour Story projection,
 and the single-capacity native-state model arbiter owns World Brief and the
 title-only push translator. Push is a separate News-owned delivery state
-machine: initial enablement suppresses the current eligible baseline, later
-strict score-greater-than-70 crossings freeze one highest-scored Item and send
-one optionally signed, title-only Feishu card with durable at-least-once
-retries. It is not
-a generic Notifications product or item-level analysis path.
+machine with a code-owned 10-second persisted-evidence reconcile: initial
+enablement suppresses the current eligible baseline, later strict
+score-greater-than-70 crossings freeze one highest-scored Item and send one
+optionally signed Feishu card whose only visible field is the selected Item's
+coin-symbol-prefixed title, with durable at-least-once retries. It is not a
+generic Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 

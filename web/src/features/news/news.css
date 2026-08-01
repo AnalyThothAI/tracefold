@@ -320,6 +320,21 @@
     font: 0.7rem var(--font-mono);
   }
 
+  .news-story-coin-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-inline-start: auto;
+  }
+
+  .news-story-coin-badges span {
+    padding: 0.08rem 0.3rem;
+    border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border));
+    border-radius: 999px;
+    color: var(--primary);
+    font-weight: 650;
+  }
+
   .news-factor-line {
     color: color-mix(in srgb, var(--muted-foreground) 84%, var(--foreground));
   }
@@ -446,6 +461,10 @@
       grid-template-columns: 3.25rem minmax(0, 1fr);
       gap: 0.65rem;
       padding: 0.75rem;
+    }
+
+    .news-story-coin-badges {
+      margin-inline-start: 0;
     }
 
     .news-story-counts {

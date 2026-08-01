@@ -439,7 +439,7 @@ def test_feishu_news_push_renders_title_only_v2_card() -> None:
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": "比特币 ETF 录得资金流入",
+                "content": "[BTC · ETH] 比特币 ETF 录得资金流入",
             }
         },
     }
@@ -470,7 +470,7 @@ def test_feishu_news_push_english_fallback_is_title_only() -> None:
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": "Fed holds rates steady",
+                "content": "[BTC · ETH] Fed holds rates steady",
             }
         },
     }
@@ -501,10 +501,49 @@ def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": "比特币 ETF 录得资金流入",
+                "content": "[BTC · ETH] 比特币 ETF 录得资金流入",
             }
         },
     }
+
+
+def test_feishu_news_push_coin_prefix_preserves_order_and_deduplicates() -> None:
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+    source = _news_push_source_payload()
+    source["provider_evidence"]["provider_metadata"]["coins"] = [
+        {"symbol": " NEAR "},
+        {"symbol": "BTC"},
+        {"symbol": "near"},
+        {"symbol": "  "},
+        {},
+        "invalid",
+        None,
+    ]
+    try:
+        rendered = delivery.render(source, _news_push_translation())
+    finally:
+        delivery.close()
+
+    assert rendered["card"]["header"]["title"]["content"] == ("[NEAR · BTC] 比特币 ETF 录得资金流入")
+
+
+@pytest.mark.parametrize("coins", (None, [], "BTC", [{"market_type": "spot"}]))
+def test_feishu_news_push_without_valid_coins_keeps_plain_headline(coins: object) -> None:
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+    source = _news_push_source_payload()
+    source["provider_evidence"]["provider_metadata"]["coins"] = coins
+    try:
+        rendered = delivery.render(source, _news_push_translation())
+    finally:
+        delivery.close()
+
+    assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
 
 
 def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None:
@@ -523,6 +562,7 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     translation = _news_push_translation()
     frozen = delivery.render(source, translation)
     source["provider_evidence"]["title"] = "MUTATED SOURCE"
+    source["provider_evidence"]["provider_metadata"]["coins"][0]["symbol"] = "SOL"
     translation["title_zh"] = "已变更翻译"
     try:
         first = delivery.deliver(frozen, idempotency_key="story-1")
@@ -536,6 +576,7 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
     sent_cards = [json.loads(request.content)["card"] for request in requests]
     assert sent_cards == [frozen["card"], frozen["card"]]
+    assert all(card["header"]["title"]["content"] == "[BTC · ETH] 比特币 ETF 录得资金流入" for card in sent_cards)
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
     assert all("已变更翻译" not in json.dumps(card, ensure_ascii=False) for card in sent_cards)
 

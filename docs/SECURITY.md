@@ -72,7 +72,8 @@ does not introduce another credential path. It calls code-owned
 `deepseek-v4-flash` with thinking explicitly disabled and a bounded title-only
 prompt/output. Translation failure cannot expose provider text or credentials
 through an error and cannot block the frozen title-only original-headline
-delivery.
+delivery. Coin symbols are not sent to the model; the deterministic Adapter
+adds the selected Item's validated symbols only after translation.
 
 The News Brief model receives only the bounded selected Story evidence. It has
 no source credential, provider fetch, filesystem, shell, or arbitrary database

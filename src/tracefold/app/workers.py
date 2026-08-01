@@ -88,6 +88,7 @@ _NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
+_NEWS_PUSH_RECONCILE_SECONDS = 10.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -364,16 +365,27 @@ async def run_workers(settings: Settings) -> None:
                     group.create_task(
                         _guard_child(
                             _run_periodic(
-                                lambda: _sample_news_story(
-                                    news_story=components.news_story,
-                                    news_push=components.news_push,
-                                ),
+                                lambda: _sample_news_story(news_story=components.news_story),
                                 period_seconds=60.0,
                                 stop_event=work_stop_event,
                             ),
                             on_fatal=enter_fatal,
                         ),
                         name="news-story-projection",
+                    )
+                )
+            if components.news_push is not None:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            _run_periodic(
+                                lambda: _sample_news_push(news_push=components.news_push),
+                                period_seconds=_NEWS_PUSH_RECONCILE_SECONDS,
+                                stop_event=work_stop_event,
+                            ),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="news-push-reconcile",
                     )
                 )
             business_tasks.append(
@@ -590,13 +602,16 @@ async def _run_periodic(
 async def _sample_news_story(
     *,
     news_story: NewsStoryProjection,
-    news_push: NewsStoryPush | None,
 ) -> None:
-    """Project the complete Story closure, then discover newly eligible pushes."""
+    """Project the complete Story closure on its fixed 60-second cadence."""
 
     await news_story.sample()
-    if news_push is not None:
-        await news_push.reconcile(now_ms=_now_ms())
+
+
+async def _sample_news_push(*, news_push: NewsStoryPush) -> None:
+    """Discover score-qualified Stories without rebuilding the Story closure."""
+
+    await news_push.reconcile(now_ms=_now_ms())
 
 
 async def _run_control(

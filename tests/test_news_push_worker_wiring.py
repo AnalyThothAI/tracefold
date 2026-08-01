@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,7 +13,7 @@ from tracefold.news import NewsPushReceipt, NewsPushTranslation, NewsStoryPush
 from tracefold.platform.config.settings import Settings
 
 
-def test_story_projection_completion_precedes_push_reconcile() -> None:
+def test_story_projection_and_push_reconcile_have_independent_periodic_samples() -> None:
     calls: list[tuple[str, int | None]] = []
 
     class _Story:
@@ -24,15 +25,22 @@ def test_story_projection_completion_precedes_push_reconcile() -> None:
             calls.append(("push", now_ms))
             return {"inserted": 0}
 
-    asyncio.run(
-        workers._sample_news_story(
-            news_story=_Story(),  # type: ignore[arg-type]
-            news_push=_Push(),  # type: ignore[arg-type]
-        )
-    )
+    asyncio.run(workers._sample_news_story(news_story=_Story()))  # type: ignore[arg-type]
+    asyncio.run(workers._sample_news_push(news_push=_Push()))  # type: ignore[arg-type]
 
     assert [name for name, _value in calls] == ["story", "push"]
     assert calls[1][1] is not None
+    assert workers._NEWS_PUSH_RECONCILE_SECONDS == 10.0
+
+
+def test_worker_root_wires_exactly_one_dedicated_push_reconcile_task() -> None:
+    source = inspect.getsource(workers.run_workers)
+
+    assert source.count('name="news-push-reconcile"') == 1
+    assert source.count("lambda: _sample_news_push") == 1
+    assert "if components.news_push is not None:" in source
+    assert "period_seconds=_NEWS_PUSH_RECONCILE_SECONDS" in source
+    assert "news_push" not in inspect.getsource(workers._sample_news_story)
 
 
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:

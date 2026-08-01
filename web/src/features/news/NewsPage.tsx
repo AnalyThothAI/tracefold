@@ -277,6 +277,7 @@ function StoryCard({ story }: { story: NewsStory }) {
             <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
               {relativeTime(story.last_published_at_ms)}
             </time>
+            <StoryCoinBadges metadata={providerEvidence?.provider_metadata ?? {}} />
           </span>
           <strong>{story.title}</strong>
           <small>{story.description || "原始来源未提供有效摘要"}</small>
@@ -538,6 +539,25 @@ function ProviderFacts({ metadata }: { metadata: NewsProviderMetadata }) {
         <dd>{metadata.source || "未提供"}</dd>
       </div>
     </dl>
+  );
+}
+
+function StoryCoinBadges({ metadata }: { metadata: NewsProviderMetadata }) {
+  const seen = new Set<string>();
+  const symbols = (metadata.coins ?? []).flatMap((coin) => {
+    const symbol = coin.symbol.trim();
+    const identity = symbol.toLowerCase();
+    if (!symbol || seen.has(identity)) return [];
+    seen.add(identity);
+    return [symbol];
+  });
+  if (!symbols.length) return null;
+  return (
+    <span aria-label="OpenNews 关联代币" className="news-story-coin-badges" role="group">
+      {symbols.map((symbol) => (
+        <span key={symbol}>{symbol}</span>
+      ))}
+    </span>
   );
 }
 
