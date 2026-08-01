@@ -36,8 +36,11 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
     ) in services["postgres"]["volumes"]
     assert len(services["postgres"]["volumes"]) == 2
     assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
-    assert "pg_isready" in services["postgres"]["healthcheck"]["test"][1]
-    assert "tracefold_migrate" in services["postgres"]["healthcheck"]["test"][1]
+    postgres_healthcheck = services["postgres"]["healthcheck"]["test"][1]
+    assert "pg_isready" in postgres_healthcheck
+    assert "tracefold_workers" in postgres_healthcheck
+    assert "tracefold_migrate" not in postgres_healthcheck
+    assert "tracefold_app" not in postgres_healthcheck
     assert services["postgres"]["secrets"] == [
         "postgres_password",
         "postgres_serve_password",
