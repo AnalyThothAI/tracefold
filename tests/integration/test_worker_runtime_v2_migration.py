@@ -331,6 +331,46 @@ def test_migration_maps_only_authorized_legacy_terminal_owners_and_preserves_evi
         conn.close()
 
 
+def test_migration_installs_v2_thesis_lifecycle_without_replacing_legacy_owned_function() -> None:
+    _prepare_0232()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        legacy = conn.execute(
+            """
+            SELECT oid, prosrc
+              FROM pg_proc
+             WHERE proname = 'enforce_macro_thesis_run_lifecycle'
+            """
+        ).fetchone()
+        assert legacy is not None
+    finally:
+        conn.close()
+
+    _upgrade_head()
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        unchanged = conn.execute(
+            """
+            SELECT oid, prosrc
+              FROM pg_proc
+             WHERE proname = 'enforce_macro_thesis_run_lifecycle'
+            """
+        ).fetchone()
+        assert unchanged == legacy
+        trigger_function = conn.execute(
+            """
+            SELECT procedure.proname
+              FROM pg_trigger AS trigger
+              JOIN pg_proc AS procedure ON procedure.oid = trigger.tgfoid
+             WHERE trigger.tgname = 'macro_thesis_runs_lifecycle'
+            """
+        ).fetchone()
+        assert trigger_function == {"proname": "enforce_macro_thesis_run_lifecycle_v2"}
+    finally:
+        conn.close()
+
+
 def test_migration_retains_matching_valid_native_leases_and_transient_attempt_floors() -> None:
     _prepare_0232()
     conn = connect_postgres_test(read_only=False)

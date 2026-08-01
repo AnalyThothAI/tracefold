@@ -86,7 +86,7 @@ def downgrade() -> None:
 def _create_thesis_lifecycle_trigger() -> None:
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION enforce_macro_thesis_run_lifecycle()
+        CREATE FUNCTION enforce_macro_thesis_run_lifecycle_v2()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -195,7 +195,7 @@ def _create_thesis_lifecycle_trigger() -> None:
 
         CREATE TRIGGER macro_thesis_runs_lifecycle
         BEFORE INSERT OR UPDATE OR DELETE ON macro_thesis_runs
-        FOR EACH ROW EXECUTE FUNCTION enforce_macro_thesis_run_lifecycle();
+        FOR EACH ROW EXECUTE FUNCTION enforce_macro_thesis_run_lifecycle_v2();
         """
     )
 
