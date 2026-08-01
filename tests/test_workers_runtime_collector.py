@@ -22,6 +22,7 @@ from tracefold.app.workers_runtime_collector import (
     _validate_sample,
     validate_workers_runtime_collection,
 )
+from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
@@ -31,6 +32,11 @@ from tracefold.platform.postgres.postgres_audit import (
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
+
+
+def test_runtime_and_frontier_contract_follow_news_hard_cut() -> None:
+    assert WORKERS_RUNTIME_VERSION == "2"
+    assert _FRONTIER_DOMAINS == ("radar", "profile", "macro")
 
 
 class _VirtualClock:
@@ -404,7 +410,11 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
         (("container", "container_memory_bytes"), 2 * 1024 * 1024 * 1024, "workers_container_memory_limit"),
         (("postgres", "worker_connections"), 5, "postgres_worker_connection_limit"),
         (("postgres", "lock_wait_count"), 1, "postgres_lock_wait"),
-        (("postgres", "max_transaction_seconds"), 2.1, "postgres_transaction_duration"),
+        (
+            ("postgres", "max_transaction_seconds"),
+            NEWS_STORY_PUBLISH_TIMEOUT_SECONDS + 0.1,
+            "postgres_transaction_duration",
+        ),
         (("telemetry", "resource_active", "finite_operation"), 4.0, "worker_resource_active_limit"),
     ],
 )
@@ -431,6 +441,18 @@ def test_nonconverging_nonempty_domain_backlog_fails_summary() -> None:
 
     assert summary["capacity"][domain]["passes"] is False
     assert "frontier_capacity_converges" in summary["failed_checks"]
+
+
+def test_database_wide_temp_growth_is_recorded_without_blame() -> None:
+    samples = _samples()
+    samples[-1]["postgres"]["temp_files"] += 1
+    samples[-1]["postgres"]["temp_bytes"] += 4096
+
+    summary = _summarize(samples)
+
+    assert summary["all_checks_passed"] is True
+    assert summary["postgres"]["temp_files_delta"] == 1
+    assert summary["postgres"]["temp_bytes_delta"] == 4096
 
 
 def _samples() -> list[dict]:

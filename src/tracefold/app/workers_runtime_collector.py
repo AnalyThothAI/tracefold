@@ -20,6 +20,7 @@ from psycopg import conninfo
 
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
+from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
     PUBLIC_NO_SQL_ROUTES,
@@ -48,7 +49,7 @@ _HTTP_TIMEOUT_SECONDS = 1.0
 _MAX_PROBE_BYTES = 64 * 1024
 _MAX_METRICS_BYTES = 4 * 1024 * 1024
 _MAX_RSS_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_TRANSACTION_SECONDS = 2.0
+_MAX_TRANSACTION_SECONDS = NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IPV4_ANY = ".".join(("0", "0", "0", "0"))
@@ -1095,9 +1096,10 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "container_memory_below_2_gib": max(container_memory_values) < _MAX_RSS_BYTES,
         "postgres_connections_at_most_4": max(int(row["worker_connections"]) for row in postgres_samples) <= 4,
         "postgres_lock_wait_zero": max(int(row["lock_wait_count"]) for row in postgres_samples) == 0,
-        "postgres_transaction_at_most_2_seconds": max(float(row["max_transaction_seconds"]) for row in postgres_samples)
+        "postgres_transaction_within_steady_budget": max(
+            float(row["max_transaction_seconds"]) for row in postgres_samples
+        )
         <= _MAX_TRANSACTION_SECONDS,
-        "postgres_temp_delta_zero": temp_file_delta == 0 and temp_byte_delta == 0,
         "postgres_query_audit_passed": bool(query_audit["ok"]),
         "deadline_counter_delta_zero": deadline_end - deadline_start == 0,
         "unresolved_deadline_misses_zero": all(

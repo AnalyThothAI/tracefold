@@ -44,6 +44,7 @@ from .opennews import (
     parse_opennews_rest_response,
 )
 from .projection import (
+    NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
     NewsProjectionService,
     NewsProjectionSnapshot,
     compute_news_story_projection,
@@ -73,6 +74,7 @@ __all__ = [
     "CLASSIFIER_VERSION",
     "IMPORTANCE_VERSION",
     "NEWS_LOCALE",
+    "NEWS_STORY_PUBLISH_TIMEOUT_SECONDS",
     "OPENNEWS_REST_LIMIT",
     "PUSH_PAYLOAD_SCHEMA_VERSION",
     "PUSH_PROVIDER_SCORE_THRESHOLD",

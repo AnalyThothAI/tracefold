@@ -570,7 +570,11 @@ revision/runtime/PID/container changes, restart or OOM, stale readiness,
 container memory at or above 2 GiB, PostgreSQL connection/lock/transaction
 violations, resource-cap violations, deadline/quarantine evidence, malformed
 field shapes, negative or non-finite (`NaN`/`Infinity`) measurements, any
-cumulative-counter regression, or a non-converging four-domain backlog.
+cumulative-counter regression, or a non-converging durable Frontier backlog.
+The transaction ceiling follows the longest active steady publication budget
+(currently the eight-second News Story publication). Database-wide temporary
+file counters are recorded for review but are not attributed to Workers; the
+first-sample analyzed query audit remains the fail-closed temp-plan gate.
 Arrival and completion counters are emitted only after the PostgreSQL
 transaction containing the frontier transition commits; rollback emits
 nothing. The 30-minute duration is the final `collector_elapsed_seconds` from
