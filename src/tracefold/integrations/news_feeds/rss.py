@@ -180,7 +180,7 @@ class RssFeedReader(NewsFeedReader):
         for attempt in range(1, self._max_attempts + 1):
             try:
                 response = self._bounded_get(url, headers=headers, budget=budget)
-            except httpx.TransportError:
+            except httpx.HTTPError:
                 if attempt >= self._max_attempts:
                     raise
                 continue
@@ -214,8 +214,8 @@ class RssFeedReader(NewsFeedReader):
                 if _looks_like_rss(direct.text):
                     return direct, "direct", None
                 direct_error_code = "non_feed_response"
-        except httpx.TransportError as exc:
-            direct_error_code = f"transport_{type(exc).__name__}"
+        except httpx.HTTPError as exc:
+            direct_error_code = f"protocol_{type(exc).__name__}"
 
         if not self._relay_base_url:
             raise NewsFeedAcquisitionError(

@@ -228,6 +228,50 @@ def test_rss_reader_falls_back_to_allowlisted_relay_after_direct_403() -> None:
     assert fetched.entries[0].guid == "relay-story"
 
 
+def test_rss_reader_translates_invalid_content_encoding_and_uses_relay() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "feed.example.com":
+            return httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                content=b"<rss version='2.0'><channel></channel></rss>",
+            )
+        return httpx.Response(
+            200,
+            content=b"""
+            <rss version="2.0"><channel><item>
+              <guid>relay-after-invalid-gzip</guid>
+              <link>https://feed.example.com/relay-after-invalid-gzip</link>
+              <title>Relay recovered the invalid encoded feed</title>
+              <pubDate>Sun, 26 Jul 2026 09:00:00 GMT</pubDate>
+            </item></channel></rss>
+            """,
+        )
+
+    reader = RssFeedReader(
+        transport=httpx.MockTransport(handler),
+        max_attempts=1,
+        relay_base_url="https://relay.example.com",
+        relay_auth_token="secret",
+        relay_allowed_urls={source().feed_url},
+    )
+    try:
+        fetched = parse_rss_feed_wire(reader.fetch_wire(source=source(), etag=None, last_modified=None))
+    finally:
+        reader.close()
+
+    assert [request.url.host for request in requests] == [
+        "feed.example.com",
+        "relay.example.com",
+    ]
+    assert fetched.fetch_path == "relay"
+    assert fetched.direct_error_code == "protocol_DecodingError"
+    assert fetched.entries[0].guid == "relay-after-invalid-gzip"
+
+
 def test_rss_reader_applies_body_bound_to_each_attempt_not_cumulative_failures() -> None:
     large_failed_body = b"blocked" + (b"x" * 2_600_000)
     large_feed = (
