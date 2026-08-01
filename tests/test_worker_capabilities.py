@@ -23,6 +23,14 @@ def _sleep_and_return(delay_seconds: float, value: int) -> int:
     return value
 
 
+def _ignore_sigterm_and_sleep(delay_seconds: float, value: int) -> int:
+    import signal
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(delay_seconds)
+    return value
+
+
 def _process_start_method() -> str:
     import multiprocessing
 
@@ -274,8 +282,8 @@ def test_cpu_native_timeout_finishes_before_the_wrapper_watchdog() -> None:
             with pytest.raises(CpuTaskTimeout, match="cpu_task_timeout:native_timeout"):
                 await capability.run(
                     "native_timeout",
-                    _sleep_and_return,
-                    0.2,
+                    _ignore_sigterm_and_sleep,
+                    10.0,
                     1,
                     service_timeout_seconds=0.05,
                 )

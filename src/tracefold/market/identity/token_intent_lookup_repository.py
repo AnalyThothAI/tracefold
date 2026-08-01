@@ -82,10 +82,15 @@ class TokenIntentLookupRepository:
             f"""
             WITH picked AS (
               SELECT DISTINCT lookup.intent_id
-              FROM events
-              JOIN token_intent_lookup_keys lookup ON lookup.event_id = events.event_id
+              FROM token_intent_lookup_keys lookup
+              JOIN LATERAL (
+                SELECT events.event_id
+                FROM events
+                WHERE events.event_id = lookup.event_id
+                  AND events.received_at_ms >= %s
+                LIMIT 1
+              ) recent_event ON true
               WHERE lookup.lookup_key IN ({placeholders})
-                AND events.received_at_ms >= %s
                 AND (%s::text IS NULL OR lookup.intent_id > %s::text)
               ORDER BY lookup.intent_id
               LIMIT %s
@@ -95,7 +100,7 @@ class TokenIntentLookupRepository:
             JOIN token_intents ON token_intents.intent_id = picked.intent_id
             ORDER BY token_intents.intent_id
             """,
-            (*keys, int(since_ms), after_intent_id, after_intent_id, parsed_limit),
+            (int(since_ms), *keys, after_intent_id, after_intent_id, parsed_limit),
         ).fetchall()
         return [dict(row) for row in rows]
 

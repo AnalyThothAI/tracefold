@@ -19,7 +19,7 @@ from tracefold.platform.resource import (
 )
 
 _THREAD_FUTURE_COMPLETION_GRACE_SECONDS = 0.500
-_CPU_FUTURE_COMPLETION_GRACE_SECONDS = 2.000
+_CPU_FUTURE_COMPLETION_GRACE_SECONDS = 4.000
 
 
 class FiniteOperations:
