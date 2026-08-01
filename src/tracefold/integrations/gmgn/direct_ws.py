@@ -178,12 +178,29 @@ class DirectGmgnWebSocketClient:
             try:
                 await self._subscribe_all(websocket)
                 self._set_connection_state("subscribed")
-                heartbeat_task = asyncio.create_task(self._heartbeat_loop(websocket))
+                receive_task = asyncio.create_task(
+                    self._receive_frames(websocket),
+                    name="gmgn-receiver",
+                )
+                heartbeat_task = asyncio.create_task(
+                    self._heartbeat_loop(websocket),
+                    name="gmgn-heartbeat",
+                )
+                stream_tasks = (receive_task, heartbeat_task)
                 try:
-                    await self._receive_frames(websocket)
+                    done, _ = await asyncio.wait(
+                        stream_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in stream_tasks:
+                        if task in done:
+                            await task
+                    raise RuntimeError("gmgn_stream_child_returned")
                 finally:
-                    heartbeat_task.cancel()
-                    await asyncio.gather(heartbeat_task, return_exceptions=True)
+                    for task in stream_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*stream_tasks, return_exceptions=True)
             finally:
                 await websocket.close()
                 if self.connection_state != "failed":

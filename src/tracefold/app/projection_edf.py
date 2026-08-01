@@ -55,9 +55,9 @@ async def run_projection_edf(
                     "projection_edf",
                     shard.domain,
                 )
-            await _wait_or_stop(stop_event, _IDLE_POLL_SECONDS)
-        else:
-            await _wait_or_stop(stop_event, _IDLE_POLL_SECONDS)
+            await asyncio.sleep(0)
+            continue
+        await _wait_or_stop(stop_event, _IDLE_POLL_SECONDS)
 
 
 async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
