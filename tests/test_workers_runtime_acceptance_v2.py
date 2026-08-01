@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.app.workers_runtime_acceptance_v2 import (
     EVIDENCE_SCHEMA_VERSION,
     RAW_EVIDENCE_SCHEMA_VERSION,
@@ -29,6 +30,9 @@ from tracefold.platform.postgres.postgres_audit import (
     PUBLIC_ROUTE_QUERY_COVERAGE,
 )
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
+
+_FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
 
 _AUTHORIZATION_URL = "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965794"
 _AUTHORIZED_BY = "aaurix"
@@ -555,7 +559,7 @@ class _AcceptanceClock:
 
 def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -> dict:
     at_ms = clock.clock_ms()
-    domains = ("news", "macro", "profile", "radar")
+    domains = _FRONTIER_DOMAINS
     return {
         "schema_version": COLLECTION_SCHEMA_VERSION,
         "sequence": sequence,
@@ -567,7 +571,7 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             "ok": True,
             "ready": True,
             "runtime_id": "runtime-test",
-            "runtime_version": "2",
+            "runtime_version": WORKERS_RUNTIME_VERSION,
             "runtime_revision": commit,
             "process_id": 1234,
             "lifecycle_state": "running",

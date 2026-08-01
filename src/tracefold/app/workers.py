@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum, auto
-from importlib.metadata import version
 from typing import Any
 from uuid import uuid4
 
@@ -24,7 +23,7 @@ from tracefold.app.provider_types import AssetMarketProviders
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import prewarm_worker_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
-from tracefold.app.workers_runtime import WorkersRuntimeRepository
+from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
 from tracefold.integrations.macro_sources import MacroSourceClient
@@ -167,7 +166,7 @@ async def run_workers(settings: Settings) -> None:
     """Run the sole Workers process root until an ordered graceful stop."""
 
     runtime_id = str(uuid4())
-    runtime_version = version("tracefold")
+    runtime_version = WORKERS_RUNTIME_VERSION
     started_at_ms = _now_ms()
     telemetry = TelemetryRegistry()
     probe_state = _ProbeState(

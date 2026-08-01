@@ -5,6 +5,7 @@ from typing import Any, Literal, cast
 from uuid import UUID
 
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
+WORKERS_RUNTIME_VERSION = "2"
 
 LifecycleState = Literal[
     "starting",
@@ -202,6 +203,7 @@ def _required_text(value: object, field: str) -> str:
 
 __all__ = [
     "WORKERS_RUNTIME_STALE_AFTER_MS",
+    "WORKERS_RUNTIME_VERSION",
     "FatalCode",
     "LifecycleState",
     "WorkersRuntimeRepository",

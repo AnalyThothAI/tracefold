@@ -18,6 +18,7 @@ from urllib.request import urlopen
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
 
+from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
@@ -630,7 +631,7 @@ def _validate_sample(
         or probe.get("unavailable_reason") is not None
     ):
         raise _SampleFailure("worker_not_ready")
-    if str(probe.get("runtime_version") or "") != "2":
+    if str(probe.get("runtime_version") or "") != WORKERS_RUNTIME_VERSION:
         raise _SampleFailure("worker_runtime_version")
     heartbeat_at_ms = _nonnegative_int(probe.get("heartbeat_at_ms"), stage="worker_heartbeat")
     if not 0 <= at_ms - heartbeat_at_ms <= MAX_SAMPLE_GAP_SECONDS * 1_000:
@@ -1116,7 +1117,7 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "resource_admission_observed_during_interval": resource_metrics["admission"]["count_delta"] > 0,
         "resource_service_observed_during_interval": resource_metrics["service"]["count_delta"] > 0,
-        "four_domain_capacity_converges": all(bool(row["passes"]) for row in capacity.values()),
+        "frontier_capacity_converges": all(bool(row["passes"]) for row in capacity.values()),
     }
     failed_checks = sorted(name for name, passed in checks.items() if not passed)
     return {
