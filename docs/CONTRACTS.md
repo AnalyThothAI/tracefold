@@ -60,8 +60,11 @@ Diagnostics expose only `feishu_webhook_url_configured` and
 contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
 Threshold, translator model, cadence, deadlines, retries, and card policy are
-code-owned. Translation reuses `llm.api_key` and `llm.base_url`; there is no
-second model credential or Google-translation fallback.
+code-owned. The Feishu JSON 2.0 card consists only of a plain-text header title:
+the translated headline when available, otherwise the original headline. It
+has no subtitle, body, metadata, or link button. Translation reuses
+`llm.api_key` and `llm.base_url`; there is no second model credential or
+Google-translation fallback.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial

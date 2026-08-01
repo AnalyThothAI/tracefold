@@ -155,7 +155,6 @@ def test_feishu_webhook_sends_signed_interactive_card_and_requires_current_succe
             {
                 "schema": "2.0",
                 "header": {"title": {"tag": "plain_text", "content": "中文标题"}},
-                "body": {"elements": []},
             },
             timestamp_seconds=1_599_360_473,
         )
@@ -188,7 +187,6 @@ def test_feishu_webhook_without_secret_omits_signature_fields() -> None:
             {
                 "schema": "2.0",
                 "header": {"title": {"tag": "plain_text", "content": "中文标题"}},
-                "body": {"elements": []},
             }
         )
     finally:
@@ -202,7 +200,6 @@ def test_feishu_webhook_without_secret_omits_signature_fields() -> None:
         "card": {
             "schema": "2.0",
             "header": {"title": {"tag": "plain_text", "content": "中文标题"}},
-            "body": {"elements": []},
         },
     }
 
@@ -418,7 +415,7 @@ def test_deepseek_news_push_translator_maps_sanitized_raw_failure() -> None:
     assert raised.value.code == "news_push_translation_failed"
 
 
-def test_feishu_news_push_renders_fixed_v2_card_with_separate_scores_and_safe_markdown() -> None:
+def test_feishu_news_push_renders_title_only_v2_card() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
@@ -437,37 +434,18 @@ def test_feishu_news_push_renders_fixed_v2_card_with_separate_scores_and_safe_ma
 
     assert rendered["channel"] == "feishu"
     assert rendered["translation"] == _news_push_translation()
-    card = rendered["card"]
-    assert card["schema"] == "2.0"
-    assert card["config"]["update_multi"] is True
-    assert card["header"]["title"] == {
-        "tag": "plain_text",
-        "content": "比特币 ETF 录得资金流入",
+    assert rendered["card"] == {
+        "schema": "2.0",
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": "比特币 ETF 录得资金流入",
+            }
+        },
     }
-    elements = card["body"]["elements"]
-    markdown = elements[0]["content"]
-    assert elements[0]["tag"] == "markdown"
-    assert r"**OpenNews 提供方证据**" "\n评分：91\n信号：long\n等级：A\\+" in markdown
-    assert "**Tracefold Story（独立评分）**\n重要性：64" in markdown
-    assert "来源：reuters" in markdown
-    assert "时间（UTC）：2026-08-01 00:00:00" in markdown
-    assert "代币：BTC · ETH" in markdown
-    assert "Story 成员：3 条" in markdown
-    assert "独立来源：2 个" in markdown
-    assert r"Original \[alert\]\(https://evil\.test\) \<at id=all\>\</at\>" in markdown
-    assert elements[1]["tag"] == "button"
-    assert elements[1]["behaviors"] == [
-        {
-            "type": "open_url",
-            "default_url": "https://example.com/story/1",
-            "pc_url": "",
-            "ios_url": "",
-            "android_url": "",
-        }
-    ]
 
 
-def test_feishu_news_push_english_fallback_is_explicit_and_linkless() -> None:
+def test_feishu_news_push_english_fallback_is_title_only() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
@@ -487,13 +465,15 @@ def test_feishu_news_push_english_fallback_is_explicit_and_linkless() -> None:
     finally:
         delivery.close()
 
-    card = rendered["card"]
-    assert card["header"]["title"]["content"] == "Fed holds rates steady（中文翻译不可用）"
-    elements = card["body"]["elements"]
-    assert len(elements) == 1
-    assert "标题（中文翻译不可用，使用英文原题）" in elements[0]["content"]
-    assert "Fed holds rates steady" in elements[0]["content"]
-    assert "原文链接：不可用（linkless）" in elements[0]["content"]
+    assert rendered["card"] == {
+        "schema": "2.0",
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": "Fed holds rates steady",
+            }
+        },
+    }
 
 
 def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
@@ -516,7 +496,15 @@ def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
     finally:
         delivery.close()
 
-    assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert rendered["card"] == {
+        "schema": "2.0",
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": "比特币 ETF 录得资金流入",
+            }
+        },
+    }
 
 
 def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None:
@@ -550,6 +538,52 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert sent_cards == [frozen["card"], frozen["card"]]
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
     assert all("已变更翻译" not in json.dumps(card, ensure_ascii=False) for card in sent_cards)
+
+
+def test_feishu_news_push_delivers_legacy_frozen_v2_card_unchanged() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"code": 0})
+
+    legacy_card = {
+        "schema": "2.0",
+        "config": {"update_multi": True},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": "legacy source facts"},
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "查看原文"},
+                },
+            ]
+        },
+        "header": {
+            "title": {"tag": "plain_text", "content": "旧卡片标题"},
+            "subtitle": {"tag": "plain_text", "content": "高分 News Story"},
+            "template": "blue",
+        },
+    }
+    frozen = {
+        "channel": "feishu",
+        "auth_mode": "signed",
+        "translation": _news_push_translation(),
+        "card": legacy_card,
+    }
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        "test-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        receipt = delivery.deliver(frozen, idempotency_key="legacy-story")
+    finally:
+        delivery.close()
+
+    assert receipt.provider == "feishu"
+    assert len(requests) == 1
+    assert json.loads(requests[0].content)["card"] == legacy_card
 
 
 @pytest.mark.parametrize(

@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import math
-import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -31,7 +27,6 @@ from .news_ai import (
 )
 
 _FEISHU_CHANNEL = "feishu"
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+.!|~<>-])")
 
 
 class DeepSeekNewsPushTranslator:
@@ -187,113 +182,16 @@ def _news_story_card(
     translation: Mapping[str, Any],
 ) -> dict[str, Any]:
     evidence_value = source_payload.get("provider_evidence")
-    story_value = source_payload.get("tracefold_story")
-    if not isinstance(evidence_value, Mapping) or not isinstance(story_value, Mapping):
+    if not isinstance(evidence_value, Mapping):
         raise ValueError("news_push_source_payload_invalid")
-    evidence = dict(evidence_value)
-    story = dict(story_value)
-    metadata_value = evidence.get("provider_metadata")
-    if not isinstance(metadata_value, Mapping):
-        raise ValueError("news_push_provider_metadata_invalid")
-    metadata = dict(metadata_value)
 
-    original_title = _required_text(evidence, "title")
-    translation_status = _required_text(translation, "status")
+    original_title = _required_text(evidence_value, "title")
     title_zh = _optional_text(translation.get("title_zh"))
-    displayed_title = title_zh or original_title
-    header_title = displayed_title if translation_status != "unavailable" else f"{displayed_title}（中文翻译不可用）"
-    displayed_title_label = (
-        "**中文标题**" if translation_status != "unavailable" else "**标题（中文翻译不可用，使用英文原题）**"
-    )
-    provider_score = _finite_number(evidence.get("provider_score"), "provider_score")
-    importance_score = _integer(story.get("importance_score"), "importance_score")
-    item_count = _nonnegative_integer(story.get("item_count"), "item_count")
-    source_count = _nonnegative_integer(story.get("source_count"), "source_count")
-    source = _required_text(evidence, "reporting_origin")
-    published_at = _published_at_utc(evidence.get("published_at_ms"))
-    signal = _optional_text(metadata.get("signal")) or "—"
-    grade = _optional_text(metadata.get("grade")) or "—"
-    coins = _coin_symbols(metadata.get("coins"))
-    url = _safe_http_url(evidence.get("url"))
-
-    markdown = "\n".join(
-        (
-            displayed_title_label,
-            _escape_lark_markdown(displayed_title),
-            "",
-            "**原始标题**",
-            _escape_lark_markdown(original_title),
-            "",
-            "**OpenNews 提供方证据**",
-            f"评分：{_display_number(provider_score)}",
-            f"信号：{_escape_lark_markdown(signal)}",
-            f"等级：{_escape_lark_markdown(grade)}",
-            "",
-            "**Tracefold Story（独立评分）**",
-            f"重要性：{importance_score}",
-            "",
-            "**新闻事实**",
-            f"来源：{_escape_lark_markdown(source)}",
-            f"时间（UTC）：{published_at}",
-            f"代币：{_escape_lark_markdown(coins)}",
-            f"Story 成员：{item_count} 条",
-            f"独立来源：{source_count} 个",
-            *(() if url else ("原文链接：不可用（linkless）",)),
-        )
-    )
-    elements: list[dict[str, Any]] = [
-        {
-            "tag": "markdown",
-            "content": markdown,
-            "text_align": "left",
-            "text_size": "normal_v2",
-            "margin": "0px 0px 0px 0px",
-        }
-    ]
-    if url:
-        elements.append(
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "查看原文"},
-                "type": "primary",
-                "width": "default",
-                "size": "medium",
-                "behaviors": [
-                    {
-                        "type": "open_url",
-                        "default_url": url,
-                        "pc_url": "",
-                        "ios_url": "",
-                        "android_url": "",
-                    }
-                ],
-                "margin": "0px 0px 0px 0px",
-            }
-        )
+    header_title = title_zh or original_title
     return {
         "schema": "2.0",
-        "config": {
-            "update_multi": True,
-            "style": {
-                "text_size": {
-                    "normal_v2": {
-                        "default": "normal",
-                        "pc": "normal",
-                        "mobile": "heading",
-                    }
-                }
-            },
-        },
-        "body": {
-            "direction": "vertical",
-            "padding": "12px 12px 12px 12px",
-            "elements": elements,
-        },
         "header": {
             "title": {"tag": "plain_text", "content": header_title},
-            "subtitle": {"tag": "plain_text", "content": "高分 News Story"},
-            "template": "blue",
-            "padding": "12px 12px 12px 12px",
         },
     }
 
@@ -310,77 +208,6 @@ def _optional_text(value: object) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
-
-
-def _finite_number(value: object, field: str) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"news_push_{field}_invalid")
-    numeric = float(value)
-    if not math.isfinite(numeric):
-        raise ValueError(f"news_push_{field}_invalid")
-    return int(numeric) if numeric.is_integer() else numeric
-
-
-def _integer(value: object, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"news_push_{field}_invalid")
-    return value
-
-
-def _nonnegative_integer(value: object, field: str) -> int:
-    result = _integer(value, field)
-    if result < 0:
-        raise ValueError(f"news_push_{field}_invalid")
-    return result
-
-
-def _published_at_utc(value: object) -> str:
-    published_at_ms = _nonnegative_integer(value, "published_at_ms")
-    return datetime.fromtimestamp(published_at_ms / 1_000, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _coin_symbols(value: object) -> str:
-    if not isinstance(value, list):
-        return "—"
-    symbols: list[str] = []
-    seen: set[str] = set()
-    for coin in value:
-        if not isinstance(coin, Mapping):
-            continue
-        symbol = _optional_text(coin.get("symbol"))
-        if symbol is None or symbol in seen:
-            continue
-        seen.add(symbol)
-        symbols.append(symbol)
-    return " · ".join(symbols) if symbols else "—"
-
-
-def _safe_http_url(value: object) -> str | None:
-    url = _optional_text(value)
-    if url is None:
-        return None
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in {None, 80, 443}
-    ):
-        return None
-    return url
-
-
-def _display_number(value: int | float) -> str:
-    return str(value)
-
-
-def _escape_lark_markdown(value: str) -> str:
-    return _MARKDOWN_SPECIAL.sub(r"\\\1", value)
 
 
 __all__ = [

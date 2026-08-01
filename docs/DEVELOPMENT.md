@@ -130,10 +130,10 @@ last-known-good retention, measured acquisition/projection latency, and
 browser verification of Feed, Story, Brief, and Sources. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, frozen at-least-once retry behavior, title-only
-translation with English fallback, exact signed and unsigned Feishu request
-shapes, response classification, and no model or network I/O inside a database
-transaction. Absence of a signing secret is an explicit unsigned mode, never a
-fallback after a signed attempt fails.
+card rendering with an original-headline fallback, exact signed and unsigned
+Feishu request shapes, response classification, and no model or network I/O
+inside a database transaction. Absence of a signing secret is an explicit
+unsigned mode, never a fallback after a signed attempt fails.
 
 ## Generated contracts
 

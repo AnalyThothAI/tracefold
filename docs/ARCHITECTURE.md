@@ -89,7 +89,8 @@ likewise queue policy, not profile facts.
 model outputs keyed by frozen evidence; they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze no-backfill baselines, selected Story evidence, translated or
-English-fallback cards, claims, retries, and explicit delivery receipts. They
+original-headline title-only cards, claims, retries, and explicit delivery
+receipts. They
 do not become a second Story read model or notification product.
 
 ## Package map
@@ -350,16 +351,18 @@ its current members is strictly greater than 70, chooses the highest-scored
 member with deterministic publication-time and Item-ID ties, and freezes that
 Story/Item evidence once. A Chinese headline bypasses translation; otherwise
 the serial model adapter calls code-owned `deepseek-v4-flash` in non-thinking
-mode. Translation failure freezes a marked English fallback and still
-progresses to delivery.
+mode. Translation failure freezes the original headline and still progresses
+to delivery. In every case the visible card contains only that translated or
+original headline as a plain-text header title.
 
-The Feishu Adapter receives only the frozen card and sends outside the database
-transaction through the finite-operation capability. When the optional signing
-secret is present, it adds the Feishu timestamp/signature pair; otherwise it
-sends an explicitly unsigned request with neither field. It never downgrades a
-failed signed request into an unsigned retry. The frozen envelope persists only
-the non-secret `auth_mode`; timestamp, signature, secret, and webhook remain
-runtime-only. A retry with a different configured mode terminates before
+The Feishu Adapter receives only the frozen title-only card and sends outside
+the database transaction through the finite-operation capability. When the
+optional signing secret is present, it adds the Feishu timestamp/signature
+pair; otherwise it sends an explicitly unsigned request with neither field. It
+never downgrades a failed signed request into an unsigned retry. The frozen
+envelope persists only the non-secret `auth_mode`; timestamp, signature,
+secret, and webhook remain runtime-only. A retry with a different configured
+mode terminates before
 network submission. Explicit Feishu `code == 0` is the only success. Transport
 failures, timeouts, HTTP 429, and 5xx are bounded
 retries; deterministic configuration, signing, authentication, and card errors

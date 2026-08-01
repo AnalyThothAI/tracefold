@@ -71,7 +71,8 @@ The push translator reuses the existing `llm.api_key` and `llm.base_url`; it
 does not introduce another credential path. It calls code-owned
 `deepseek-v4-flash` with thinking explicitly disabled and a bounded title-only
 prompt/output. Translation failure cannot expose provider text or credentials
-through an error and cannot block the frozen English fallback delivery.
+through an error and cannot block the frozen title-only original-headline
+delivery.
 
 The News Brief model receives only the bounded selected Story evidence. It has
 no source credential, provider fetch, filesystem, shell, or arbitrary database

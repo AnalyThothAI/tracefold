@@ -272,9 +272,10 @@ Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
 retried unsigned. Missing model credentials or a translation error still
-freezes and sends the marked original-headline card. Status and logs expose
-only configured booleans and sanitized error codes, never the webhook or
-signing secret.
+freezes and sends the original headline. The Feishu card always contains only
+that translated or original headline as its plain-text header title; it has no
+subtitle, body, metadata, or link button. Status and logs expose only configured
+booleans and sanitized error codes, never the webhook or signing secret.
 
 Diagnose News in this order:
 
