@@ -295,12 +295,19 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 WHERE schemaname = 'public'
                   AND indexname IN (
                     'idx_asset_identity_evidence_profile_source',
-                    'idx_asset_identity_evidence_asset_provider_lookup',
-                    'idx_token_intent_lookup_keys_event_lookup_intent'
+                    'idx_asset_identity_evidence_asset_provider_lookup'
                   )
                 """
             ).fetchall()
         }
+        resolution_lookup_index = conn.execute(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = 'idx_token_intent_lookup_keys_intent_lookup'
+            """
+        ).fetchone()
         projection_eligibility_indexes = {
             row["indexname"]
             for row in conn.execute(
@@ -423,8 +430,9 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert performance_indexes == {
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
-        "idx_token_intent_lookup_keys_event_lookup_intent",
     }
+    assert resolution_lookup_index is not None
+    assert "INCLUDE (event_id)" in resolution_lookup_index["indexdef"]
     assert projection_eligibility_indexes == {
         "idx_radar_projection_frontiers_microbatch_eligible",
         "idx_radar_projection_frontiers_expired_claim",
@@ -435,7 +443,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260801_0239"
+    assert version == latest_migration_version() == "20260801_0240"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -460,7 +468,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260801_0239"
+    assert version == latest_migration_version() == "20260801_0240"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
