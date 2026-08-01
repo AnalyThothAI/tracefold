@@ -136,7 +136,7 @@ def _worker(
     )
 
 
-def test_resolution_refresh_publishes_provider_fact_and_resolution_atomically(tmp_path) -> None:
+def test_resolution_refresh_commits_provider_fact_before_bounded_reprocess(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -145,7 +145,20 @@ def test_resolution_refresh_publishes_provider_fact_and_resolution_atomically(tm
         )
         market = _DexMarket(candidates=[_candidate("UPEG")])
 
-        progressed = asyncio.run(_worker(conn, market).turn(now_ms=NOW_MS + 60_000))
+        worker = _worker(conn, market)
+        provider_progressed = asyncio.run(worker.turn(now_ms=NOW_MS + 60_000))
+        before_reprocess = repositories_for_connection(conn).intent_resolutions.active_resolution_for_intent(
+            ingested.token_intents[0]["intent_id"]
+        )
+        pending = conn.execute(
+            """
+            SELECT reprocess_lookup_keys, reprocess_after_intent_id
+              FROM token_discovery_dirty_lookup_keys
+             WHERE lookup_key = 'symbol:UPEG'
+            """
+        ).fetchone()
+
+        reprocess_progressed = asyncio.run(worker.turn(now_ms=NOW_MS + 60_001))
 
         resolution = repositories_for_connection(conn).intent_resolutions.active_resolution_for_intent(
             ingested.token_intents[0]["intent_id"]
@@ -163,7 +176,13 @@ def test_resolution_refresh_publishes_provider_fact_and_resolution_atomically(tm
     finally:
         conn.close()
 
-    assert progressed is True
+    assert provider_progressed is True
+    assert before_reprocess["resolution_status"] == "NIL"
+    assert pending == {
+        "reprocess_lookup_keys": ["cex_token:UPEG", "project_symbol:UPEG", "symbol:UPEG"],
+        "reprocess_after_intent_id": None,
+    }
+    assert reprocess_progressed is True
     assert market.search_requests == 1
     assert resolution["resolution_status"] == "UNIQUE_BY_CONTEXT"
     assert resolution["target_id"] == f"asset:eip155:1:erc20:{ADDRESS}"
@@ -286,11 +305,11 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
 
     assert first is True
     assert continuation["reprocess_lookup_keys"] == ["cex_token:BULK", "project_symbol:BULK", "symbol:BULK"]
-    assert continuation["reprocess_after_intent_id"]
-    assert continuation["reprocess_resolved"] is True
+    assert continuation["reprocess_after_intent_id"] is None
+    assert continuation["reprocess_resolved"] is False
     assert continuation["attempt_count"] == 1
     assert continuation["lease_owner"] is None
-    assert first_resolved == 10
+    assert first_resolved == 0
     assert 51 <= turns <= 100
     assert market.search_requests == 1
     assert final_queue == 0

@@ -275,7 +275,7 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
 
         def native_statement_timeout() -> None:
-            time.sleep(0.05)
+            time.sleep(0.75)
             raise QueryCanceled("canceling statement due to statement timeout")
 
         try:

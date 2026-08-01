@@ -452,15 +452,15 @@ class DiscoveryRepository:
         claim: Mapping[str, Any],
         *,
         lookup_keys: list[str],
-        after_intent_id: str,
+        after_intent_id: str | None,
         resolved: bool,
         queue_due_at_ms: int,
         now_ms: int,
     ) -> bool:
         records = _claim_records([claim])
         keys = sorted({str(key).strip() for key in lookup_keys if str(key).strip()})
-        cursor_id = str(after_intent_id).strip()
-        if not keys or not cursor_id:
+        cursor_id = None if after_intent_id is None else str(after_intent_id).strip()
+        if not keys or cursor_id == "":
             raise ValueError("resolution_reprocess_continuation_required")
         params = _claim_params(records)
         params.update(

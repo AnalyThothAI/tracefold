@@ -162,7 +162,7 @@ def test_database_has_two_business_slots_and_an_independent_control_slot() -> No
                 submitted += 1
                 if submitted == 2:
                     both_started.set()
-            release.wait(timeout=2.0)
+            release.wait()
             return 1
 
         try:

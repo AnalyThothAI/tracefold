@@ -81,14 +81,13 @@ class TokenIntentLookupRepository:
         rows = self.conn.execute(
             f"""
             WITH picked AS (
-              SELECT DISTINCT token_intents.intent_id
-              FROM token_intent_lookup_keys
-              JOIN token_intents ON token_intents.intent_id = token_intent_lookup_keys.intent_id
-              JOIN events ON events.event_id = token_intents.event_id
-              WHERE token_intent_lookup_keys.lookup_key IN ({placeholders})
+              SELECT DISTINCT lookup.intent_id
+              FROM events
+              JOIN token_intent_lookup_keys lookup ON lookup.event_id = events.event_id
+              WHERE lookup.lookup_key IN ({placeholders})
                 AND events.received_at_ms >= %s
-                AND (%s::text IS NULL OR token_intents.intent_id > %s::text)
-              ORDER BY token_intents.intent_id
+                AND (%s::text IS NULL OR lookup.intent_id > %s::text)
+              ORDER BY lookup.intent_id
               LIMIT %s
             )
             SELECT token_intents.*
@@ -114,20 +113,19 @@ class TokenIntentLookupRepository:
         rows = self.conn.execute(
             f"""
             WITH picked AS (
-              SELECT DISTINCT token_intents.intent_id
-              FROM token_intent_lookup_keys
-              JOIN token_intents ON token_intents.intent_id = token_intent_lookup_keys.intent_id
-              JOIN events ON events.event_id = token_intents.event_id
+              SELECT DISTINCT lookup.intent_id
+              FROM events
+              JOIN token_intent_lookup_keys lookup ON lookup.event_id = events.event_id
               LEFT JOIN token_intent_resolutions current_resolution
-                ON current_resolution.intent_id = token_intents.intent_id
+                ON current_resolution.intent_id = lookup.intent_id
                AND current_resolution.is_current = true
-              WHERE token_intent_lookup_keys.lookup_key IN ({placeholders})
+              WHERE lookup.lookup_key IN ({placeholders})
                 AND events.received_at_ms >= %s
                 AND (
                   current_resolution.resolution_id IS NULL
                   OR current_resolution.resolution_status IN ('NIL', 'AMBIGUOUS')
                 )
-              ORDER BY token_intents.intent_id
+              ORDER BY lookup.intent_id
               LIMIT %s
             )
             SELECT token_intents.*

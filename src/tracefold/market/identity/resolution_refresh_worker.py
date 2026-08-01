@@ -163,7 +163,7 @@ class ResolutionRefresh:
             try:
                 published = await self.db.run_business(
                     "resolution_publish_success",
-                    self._publish_lookup_success_and_reprocess,
+                    self._publish_lookup_success,
                     lookup,
                     lookup_result,
                     observed_at_ms,
@@ -213,7 +213,7 @@ class ResolutionRefresh:
             )
         return [dict(row) for row in lookups], False
 
-    def _publish_lookup_success_and_reprocess(
+    def _publish_lookup_success(
         self,
         lookup: dict[str, Any],
         lookup_result: dict[str, Any],
@@ -256,22 +256,12 @@ class ResolutionRefresh:
                     now_ms=now_ms,
                     hot_not_found_retry_ms=self.hot_not_found_retry_ms,
                 )
-                page = _empty_reprocess_page()
                 if affected_lookup_keys:
-                    page = reprocess_token_intent_page(
-                        repos=repos,
-                        lookup_keys=affected_lookup_keys,
-                        after_intent_id=None,
-                        now_ms=now_ms,
-                        window=TOKEN_REPROCESS_WINDOW,
-                        limit=self.reprocess_limit,
-                    )
-                if page["has_more"]:
                     saved = repos.discovery.save_reprocess_continuation(
                         lookup,
                         lookup_keys=affected_lookup_keys,
-                        after_intent_id=str(page["next_after_intent_id"]),
-                        resolved=bool(page["resolved_intents"]),
+                        after_intent_id=None,
+                        resolved=False,
                         queue_due_at_ms=queue_due_at_ms,
                         now_ms=now_ms,
                     )
@@ -279,7 +269,7 @@ class ResolutionRefresh:
                     saved = _finish_one_lookup_claim(
                         repos=repos,
                         claim=lookup,
-                        resolved=bool(page["resolved_intents"]),
+                        resolved=False,
                         queue_due_at_ms=queue_due_at_ms,
                         now_ms=now_ms,
                         owner_key=self.name,
@@ -299,10 +289,11 @@ class ResolutionRefresh:
     ) -> bool:
         try:
             with self.db.worker_session(self.name) as repos, repos.transaction():
+                cursor = lookup.get("reprocess_after_intent_id")
                 page = reprocess_token_intent_page(
                     repos=repos,
                     lookup_keys=lookup_keys,
-                    after_intent_id=str(lookup["reprocess_after_intent_id"]),
+                    after_intent_id=None if cursor is None else str(cursor),
                     now_ms=now_ms,
                     window=TOKEN_REPROCESS_WINDOW,
                     limit=self.reprocess_limit,
@@ -542,14 +533,6 @@ def _write_dex_candidate(
     return str(asset["asset_id"])
 
 
-def _empty_reprocess_page() -> dict[str, Any]:
-    return {
-        "resolved_intents": 0,
-        "has_more": False,
-        "next_after_intent_id": None,
-    }
-
-
 def _provider_unavailable_error(exc: Exception) -> str:
     message = str(exc).strip()
     if not message:
@@ -595,7 +578,12 @@ def _continuation_lookup_keys(lookup: dict[str, Any]) -> list[str]:
     if not isinstance(value, (list, tuple)):
         raise RuntimeError("resolution_reprocess_lookup_keys_invalid")
     keys = sorted({str(key).strip() for key in value if str(key).strip()})
-    if not keys or not str(lookup.get("reprocess_after_intent_id") or "").strip():
+    cursor = lookup.get("reprocess_after_intent_id")
+    if (
+        not keys
+        or lookup.get("reprocess_queue_due_at_ms") is None
+        or (cursor is not None and not str(cursor).strip())
+    ):
         raise RuntimeError("resolution_reprocess_continuation_invalid")
     return keys
 
