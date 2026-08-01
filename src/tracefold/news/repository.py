@@ -2395,9 +2395,7 @@ class NewsRepository:
             push_status = (
                 "degraded"
                 if (
-                    not feishu_webhook_url_configured
-                    or push_snapshot["retry_count"]
-                    or push_snapshot["terminal_count"]
+                    not feishu_webhook_url_configured or push_snapshot["retry_count"] or push_snapshot["terminal_count"]
                 )
                 else str(push_snapshot["status"])
             )
