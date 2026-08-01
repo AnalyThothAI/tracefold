@@ -36,6 +36,7 @@ def _components(
         providers=provider_types_module.AssetMarketProviders(),
         collector=None,
         news=None,
+        news_story=None,
         news_brief=None,
         macro_source=None,
         macro_turns=(),

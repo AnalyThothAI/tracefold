@@ -1,51 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-import httpx
 import pytest
-from psycopg import pq
 
-import tracefold.news.repository as news_repository_module
-import tracefold.news.runtime as news_runtime_module
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
+    reset_postgres_schema,
 )
-from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.news import (
     NewsAcquisition,
-    NewsBriefCandidate,
-    NewsBriefDraft,
-    NewsBriefExpectedError,
     NewsFeedEntry,
     NewsFeedFetch,
     NewsInterface,
     NewsRepository,
     NewsSourceDefinition,
-    default_sources,
+    OpenNewsExpectedError,
+    opennews_source,
+    parse_opennews_message,
 )
-from tracefold.news.brief import brief_fingerprint
-from tracefold.news.projection import (
-    NewsProjectionService,
-    compute_news_component_projection,
-    compute_news_edge_block,
-    compute_news_identity_feature,
-    compute_news_score_bucket,
-    merge_final_edges,
-    plan_news_edge_pairs,
-    rebuild_all_news_for_maintenance,
-)
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
 
-NOW_MS = 1_779_000_000_000
+NOW_MS = 1_785_560_400_000
 
 
-class SingleConnectionDB:
+class _SingleConnectionDB:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
@@ -62,36 +44,13 @@ class SingleConnectionDB:
         **kwargs: Any,
     ) -> Any:
         del operation_timeout_seconds
-        on_submitted = kwargs.pop("on_submitted", None)
-        if on_submitted is not None:
-            on_submitted()
         return function(*args, **kwargs)
 
 
-class _InlineCapability:
-    async def run(self, _operation_name, function, /, *args, **kwargs):
-        kwargs.pop("timeout_seconds", None)
-        kwargs.pop("service_timeout_seconds", None)
-        kwargs.pop("operation_timeout_seconds", None)
-        kwargs.pop("allow_shutdown", None)
-        on_submitted = kwargs.pop("on_submitted", None)
-        if on_submitted is not None:
-            on_submitted()
-        after_submit = kwargs.pop("after_submit", None)
-        if after_submit is not None:
-            await after_submit()
-        return function(*args, **kwargs)
-
-
-class _PreSubmitAdmissionTimeout:
-    async def run(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise ResourceAdmissionTimeout("test_model_admission_timeout")
-
-
-class _FailingBusinessDB(SingleConnectionDB):
-    def __init__(self, conn: Any, operation_name: str) -> None:
+class _SlowLivePublishDB(_SingleConnectionDB):
+    def __init__(self, conn: Any) -> None:
         super().__init__(conn)
-        self.operation_name = operation_name
+        self.release_live_publish = asyncio.Event()
 
     async def run_business(
         self,
@@ -102,8 +61,8 @@ class _FailingBusinessDB(SingleConnectionDB):
         operation_timeout_seconds: float,
         **kwargs: Any,
     ) -> Any:
-        if operation_name == self.operation_name:
-            raise ResourceAdmissionTimeout(f"test_business_admission_timeout:{operation_name}")
+        if operation_name == "opennews_live_publish":
+            await self.release_live_publish.wait()
         return await super().run_business(
             operation_name,
             function,
@@ -113,1534 +72,654 @@ class _FailingBusinessDB(SingleConnectionDB):
         )
 
 
-class OneItemReader:
-    def fetch_wire(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        etag: str | None,
-        last_modified: str | None,
-    ) -> NewsFeedFetch:
-        del etag, last_modified
-        return NewsFeedFetch(
-            status_code=200,
-            fetch_path="direct",
-            entries=(
-                NewsFeedEntry(
-                    guid="story-1",
-                    link=f"https://{source.source_id}.example/story-1",
-                    title="Iran threatens to close Strait of Hormuz",
-                    description="Officials issued a formal statement.",
-                    published_at_ms=NOW_MS - 60_000,
-                    raw={"source": source.name},
-                ),
-            ),
-        )
+class _InlineCapability:
+    async def run(self, _operation_name: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("timeout_seconds", None)
+        kwargs.pop("service_timeout_seconds", None)
+        kwargs.pop("operation_timeout_seconds", None)
+        kwargs.pop("allow_shutdown", None)
+        on_submitted = kwargs.pop("on_submitted", None)
+        if on_submitted is not None:
+            on_submitted()
+        return function(*args, **kwargs)
+
+
+class _NoopReader:
+    def fetch_wire(self, **_kwargs: Any) -> NewsFeedFetch:
+        return NewsFeedFetch(status_code=200, fetch_path="direct", not_modified=True)
 
     def close(self) -> None:
         return None
 
 
-def _identity_news_fetch(value: NewsFeedFetch) -> NewsFeedFetch:
-    return value
+class _FakeOpenNewsRest:
+    def __init__(self, events: tuple[Any, ...]) -> None:
+        self.events = events
+        self.calls = 0
 
-
-class FixedBriefPublisher:
-    calls = 0
-
-    def publish(self, stories: list[Any]) -> NewsBriefDraft:
+    def fetch_latest(self) -> tuple[Any, ...]:
         self.calls += 1
-        return NewsBriefDraft(
-            lead=f"今日重点：{stories[0].title} [1]",
-            lines=tuple(f"第{index}条：{story.title} [{index}]" for index, story in enumerate(stories, 1)),
-            provider="test",
-            model="test-model",
-            raw_response="{}",
-        )
+        return self.events
 
     def close(self) -> None:
         return None
 
 
-class RaisingBriefPublisher:
-    calls = 0
+class _FakeOpenNewsWebSocket:
+    def __init__(self, message: dict[str, Any]) -> None:
+        self.message = message
+        self.connected = 0
+        self.delivered = False
+        self.closed = 0
+        self._block = asyncio.Event()
 
-    def publish(self, stories: list[Any]) -> NewsBriefDraft:
-        del stories
-        self.calls += 1
-        raise NewsBriefExpectedError("provider unavailable")
+    async def connect(self) -> None:
+        self.connected += 1
 
-    def close(self) -> None:
-        return None
+    async def receive(self) -> dict[str, Any]:
+        if not self.delivered:
+            self.delivered = True
+            return self.message
+        await self._block.wait()
+        return self.message
+
+    async def close(self) -> None:
+        self.closed += 1
 
 
-def source(
-    source_id: str,
-    name: str,
-    *,
-    tier: int = 1,
-    memberships: tuple[str, ...] = ("politics",),
-) -> NewsSourceDefinition:
+class _ReconnectOpenNewsWebSocket:
+    def __init__(self, message: dict[str, Any]) -> None:
+        self.message = message
+        self.connected = 0
+        self.closed = 0
+        self.delivered = False
+        self._block = asyncio.Event()
+
+    async def connect(self) -> None:
+        self.connected += 1
+
+    async def receive(self) -> dict[str, Any]:
+        if self.connected == 1:
+            raise OpenNewsExpectedError("opennews_ws_disconnected")
+        if not self.delivered:
+            self.delivered = True
+            return self.message
+        await self._block.wait()
+        return self.message
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+class _FloodOpenNewsWebSocket:
+    def __init__(self, *, count: int) -> None:
+        self.count = count
+        self.connected = 0
+        self.closed = 0
+        self.delivered = 0
+        self.release = asyncio.Event()
+        self._block = asyncio.Event()
+
+    async def connect(self) -> None:
+        self.connected += 1
+
+    async def receive(self) -> dict[str, Any]:
+        await self.release.wait()
+        if self.delivered < self.count:
+            sequence = self.delivered
+            self.delivered += 1
+            return {
+                "method": "news.update",
+                "params": {
+                    "id": f"flood-{sequence}",
+                    "text": f"Bounded buffer report {sequence}",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": NOW_MS + sequence,
+                },
+            }
+        await self._block.wait()
+        raise AssertionError("unreachable")
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+def _rss_source() -> NewsSourceDefinition:
     return NewsSourceDefinition(
-        source_id=source_id,
-        name=name,
-        feed_url=f"https://{source_id}.example/rss",
-        tier=tier,
-        memberships=memberships,
-        refresh_interval_seconds=120,
+        source_id="rss-reuters",
+        name="Reuters",
+        feed_url="https://example.com/rss",
+        tier=1,
+        memberships=("finance",),
     )
 
 
-def record(
-    repository: NewsRepository,
-    definition: NewsSourceDefinition,
-    *,
-    guid: str,
-    title: str,
-    published_at_ms: int,
-    started_at_ms: int = NOW_MS,
-    reporting_origin: str | None = None,
-    link: str | None = None,
-    description: str = "Durable source description for this report.",
-) -> dict[str, int]:
-    claim_token = _claim_source(repository, definition.source_id, started_at_ms)
-    return repository.record_fetch_success(
-        source=definition,
-        entries=(
-            NewsFeedEntry(
-                guid=guid,
-                link=link or f"https://{definition.source_id}.example/{guid}",
-                title=title,
-                description=description,
-                published_at_ms=published_at_ms,
-                reporting_origin=reporting_origin,
-                raw={"guid": guid},
-            ),
-        ),
-        started_at_ms=started_at_ms,
-        finished_at_ms=started_at_ms,
-        status_code=200,
-        fetch_path="direct",
-        direct_error_code=None,
-        etag=None,
-        last_modified=None,
-        not_modified=False,
-        claim_token=claim_token,
-    )
-
-
-def _claim_source(repository: NewsRepository, source_id: str, now_ms: int) -> str:
-    claim_token = str(uuid4())
+def _claim(repository: NewsRepository, source_id: str, now_ms: int) -> str:
+    token = str(uuid4())
     row = repository.conn.execute(
         """
         UPDATE news_sources
-           SET claim_token = %s::uuid,
-               claim_lease_expires_at_ms = %s,
-               last_fetch_started_at_ms = %s,
-               updated_at_ms = %s
-         WHERE source_id = %s
-         RETURNING source_id
+           SET claim_token=%s::uuid, claim_lease_expires_at_ms=%s,
+               last_fetch_started_at_ms=%s, updated_at_ms=%s
+         WHERE source_id=%s RETURNING source_id
         """,
-        (claim_token, int(now_ms) + 45_000, int(now_ms), int(now_ms), source_id),
+        (token, now_ms + 45_000, now_ms, now_ms, source_id),
     ).fetchone()
-    if row is None:
-        raise AssertionError(f"test source not found: {source_id}")
-    return claim_token
+    assert row is not None
+    return token
 
 
-def _run_due_brief(
-    candidate: NewsBriefCandidate,
-    *,
-    now_ms: int,
-    monkeypatch: pytest.MonkeyPatch,
-) -> bool:
-    monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: now_ms)
-    due = asyncio.run(candidate.peek(now_ms=now_ms))
-    if due is None:
-        return False
-    return asyncio.run(candidate.execute(due))
+async def _wait_for_item(conn: Any) -> None:
+    for _ in range(100):
+        if conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"]:
+            conn.commit()
+            return
+        conn.commit()
+        await asyncio.sleep(0.01)
+    raise AssertionError("OpenNews item was not published")
 
 
-def _seed_three_story_brief(repository: NewsRepository) -> None:
-    reuters = source("reuters", "Reuters")
-    ap = source("ap", "AP")
-    with repository.conn.transaction():
-        repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-        for definition, guid, title, offset in (
-            (reuters, "rates", "Central bank raises interest rate after policy shock", 30_000),
-            (ap, "quake", "Major earthquake strikes coastal region", 20_000),
-            (reuters, "cyber", "Cyber attack disrupts regional infrastructure", 10_000),
-        ):
-            record(
-                repository,
-                definition,
-                guid=guid,
-                title=title,
-                published_at_ms=NOW_MS - offset,
-            )
-        repository.rebuild_stories(now_ms=NOW_MS)
+async def _wait_until(predicate: Any, *, message: str) -> None:
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(message)
 
 
-def test_news_brief_pre_model_admission_releases_without_attempt(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+def test_fake_wss_rest_and_rss_converge_through_real_postgres_and_public_reads() -> None:
+    conn = connect_postgres_test(read_only=False)
     try:
-        migrate(conn)
-        _seed_three_story_brief(NewsRepository(conn))
-        candidate = NewsBriefCandidate(
-            db=SingleConnectionDB(conn),
-            publisher=FixedBriefPublisher(),
-            model_adapter=_PreSubmitAdmissionTimeout(),
-            runtime_id="admission-test",
-        )
-
-        assert (
-            _run_due_brief(
-                candidate,
-                now_ms=NOW_MS + 600_001,
-                monkeypatch=monkeypatch,
-            )
-            is False
-        )
-        row = conn.execute(
-            """
-            SELECT status, attempt_count, lease_owner, lease_expires_at_ms
-              FROM news_brief_runs
-             ORDER BY created_at_ms DESC
-             LIMIT 1
-            """
-        ).fetchone()
-        assert row == {
-            "status": "retryable",
-            "attempt_count": 0,
-            "lease_owner": None,
-            "lease_expires_at_ms": None,
+        reset_postgres_schema(conn)
+        message = {
+            "method": "news.update",
+            "params": {
+                "id": "wire-1",
+                "text": "Fed holds rates steady after policy meeting",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "link": None,
+                "ts": NOW_MS - 1_000,
+                "aiRating": {"score": 99, "signal": "long"},
+            },
         }
-    finally:
-        conn.close()
-
-
-def test_news_brief_post_model_publication_admission_is_fatal(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        _seed_three_story_brief(NewsRepository(conn))
-        candidate = NewsBriefCandidate(
-            db=_FailingBusinessDB(conn, "news_brief_publish"),
-            publisher=FixedBriefPublisher(),
-            model_adapter=_InlineCapability(),
-            runtime_id="admission-test",
-        )
-        due_at_ms = NOW_MS + 600_001
-        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: due_at_ms)
-        due = asyncio.run(candidate.peek(now_ms=due_at_ms))
-        assert due is not None
-
-        with pytest.raises(ResourceAdmissionTimeout, match="news_brief_publish"):
-            asyncio.run(candidate.execute(due))
-        row = conn.execute(
-            """
-            SELECT status, attempt_count, lease_owner
-              FROM news_brief_runs
-             ORDER BY created_at_ms DESC
-             LIMIT 1
-            """
-        ).fetchone()
-        assert row["status"] == "running"
-        assert row["attempt_count"] == 1
-        assert row["lease_owner"] == "news_brief:admission-test"
-    finally:
-        conn.close()
-
-
-def test_pipeline_persists_current_claim_time_for_each_fetch_cycle(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        clock = SimpleNamespace(now_ms=NOW_MS)
-        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: clock.now_ms)
-        pipeline = NewsAcquisition(
-            db=SingleConnectionDB(conn),
-            sources=(source("reuters", "Reuters"),),
-            feed_reader=OneItemReader(),
+        event = parse_opennews_message(message)
+        assert event is not None
+        rest = _FakeOpenNewsRest((event,))
+        websocket = _FakeOpenNewsWebSocket(message)
+        acquisition = NewsAcquisition(
+            db=_SingleConnectionDB(conn),
             finite_operations=_InlineCapability(),
             cpu=_InlineCapability(),
-            feed_parser=_identity_news_fetch,
+            sources=(_rss_source(), opennews_source()),
+            feed_reader=_NoopReader(),
+            feed_parser=lambda value: value,
+            opennews_rest_client=rest,
+            opennews_ws_client=websocket,
         )
-        asyncio.run(pipeline.reconcile())
-        assert asyncio.run(pipeline.turn()) is True
-        clock.now_ms = NOW_MS + 120_000
-        assert asyncio.run(pipeline.turn()) is True
-        assert conn.execute(
-            """
-            SELECT started_at_ms
-              FROM news_source_fetches
-             ORDER BY started_at_ms
-            """
-        ).fetchall() == [
-            {"started_at_ms": NOW_MS},
-            {"started_at_ms": NOW_MS + 120_000},
-        ]
-    finally:
-        conn.close()
 
+        async def exercise() -> None:
+            await acquisition.reconcile()
+            stop = asyncio.Event()
+            task = asyncio.create_task(acquisition.run_opennews(stop_event=stop))
+            await _wait_for_item(conn)
+            await asyncio.sleep(0.05)
+            stop.set()
+            await asyncio.wait_for(task, timeout=2.0)
+            await acquisition.close()
 
-def test_incremental_news_projection_persists_edges_and_publishes_only_affected_closure(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
+        asyncio.run(exercise())
         repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
+        rss = _rss_source()
         with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="iran-r",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                ap,
-                guid="iran-a",
-                title="Iran threatens to close Strait of Hormuz — live updates",
-                published_at_ms=NOW_MS - 30_000,
-                started_at_ms=NOW_MS + 1,
-            )
-
-        service = NewsProjectionService(db=SingleConnectionDB(conn))
-        runtime_id = str(uuid4())
-        projection_now_ms = NOW_MS + 60_001
-        processed = 0
-        while row := conn.execute(
-            """
-            SELECT bucket_id
-              FROM news_projection_frontiers
-             WHERE status IN ('dirty', 'retry_wait')
-               AND deadline_at_ms <= %s
-             ORDER BY deadline_at_ms, bucket_id
-             LIMIT 1
-            """,
-            (projection_now_ms,),
-        ).fetchone():
-            claim = service.claim(
-                bucket_id=str(row["bucket_id"]),
-                runtime_id=runtime_id,
-                now_ms=projection_now_ms,
-            )
-            assert claim is not None
-            target = service.load_target(claim, now_ms=projection_now_ms)
-            feature = compute_news_identity_feature(target)
-            context = service.load_context(
-                claim,
-                feature,
-                now_ms=projection_now_ms,
-            )
-            edge_plan = plan_news_edge_pairs(context)
-            new_edges = compute_news_edge_block(edge_plan["recompute_pairs"])
-            edge_plan["new_edges"] = new_edges
-            projection = compute_news_component_projection(
-                {
-                    **context,
-                    "final_edges": merge_final_edges(
-                        existing_edges=context["existing_edges"],
-                        affected_pairs=edge_plan["affected_pairs"],
-                        new_edges=new_edges,
+            repository.record_fetch_success(
+                source=rss,
+                entries=(
+                    NewsFeedEntry(
+                        guid="rss-1",
+                        link="https://reuters.example/article",
+                        title="Fed holds rates steady after policy meeting",
+                        published_at_ms=NOW_MS - 2_000,
+                        reporting_origin="Reuters",
+                        raw={"guid": "rss-1"},
                     ),
-                }
-            )
-            result = service.publish(
-                claim,
-                feature=feature,
-                context=context,
-                edge_plan=edge_plan,
-                projection=projection,
-                now_ms=projection_now_ms,
-            )
-            assert result["projection_status"] == "published"
-            processed += 1
-
-        assert processed == 2
-        assert conn.execute("SELECT count(*) AS n FROM news_identity_features").fetchone()["n"] == 2
-        assert conn.execute("SELECT count(*) AS n FROM news_similarity_edges").fetchone()["n"] == 1
-        assert conn.execute(
-            """
-            SELECT item_count, source_count
-              FROM news_stories
-             WHERE active
-            """
-        ).fetchall() == [{"item_count": 2, "source_count": 2}]
-        assert conn.execute("SELECT count(*) AS n FROM news_story_members WHERE current").fetchone()["n"] == 2
-        assert (
-            conn.execute(
-                """
-            SELECT facet_type, facet_value, story_count
-            FROM news_story_facet_counts
-            ORDER BY facet_type, facet_value
-            """
-            ).fetchall()
-            == conn.execute(
-                """
-            SELECT facet_type, facet_value, story_count
-            FROM (
-              SELECT 'category'::text AS facet_type,
-                     category AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              WHERE active
-              GROUP BY category
-              UNION ALL
-              SELECT 'level'::text AS facet_type,
-                     level AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              WHERE active
-              GROUP BY level
-            ) expected
-            ORDER BY facet_type, facet_value
-            """
-            ).fetchall()
-        )
-        assert conn.execute(
-            """
-            SELECT source_id, story_count
-            FROM news_source_facet_counts
-            ORDER BY source_id
-            """
-        ).fetchall() == [
-            {"source_id": "ap", "story_count": 1},
-            {"source_id": "reuters", "story_count": 1},
-        ]
-        assert conn.execute(
-            """
-            SELECT count(*) AS count
-            FROM news_brief_selection_current selection
-            JOIN news_stories story ON story.story_id = selection.story_id
-            WHERE story.active
-            """
-        ).fetchone() == {"count": 1}
-
-        score_row = conn.execute(
-            """
-            SELECT bucket_id, deadline_at_ms
-              FROM news_projection_frontiers
-             WHERE bucket_id LIKE 'score-bucket:%'
-             ORDER BY bucket_id
-            """
-        ).fetchone()
-        assert score_row is not None
-        score_now_ms = int(score_row["deadline_at_ms"])
-        score_claim = service.claim(
-            bucket_id=str(score_row["bucket_id"]),
-            runtime_id=runtime_id,
-            now_ms=score_now_ms,
-        )
-        assert score_claim is not None
-        loaded_score = service.load_score_bucket(
-            score_claim,
-            now_ms=score_now_ms,
-        )
-        score_projection = compute_news_score_bucket(loaded_score)
-        score_result = service.publish_score_bucket(
-            score_claim,
-            projection=score_projection,
-            now_ms=score_now_ms,
-        )
-        assert score_result["projection_status"] == "published"
-        assert conn.execute(
-            """
-            SELECT status, deadline_at_ms
-              FROM news_projection_frontiers
-             WHERE bucket_id = %s
-            """,
-            (score_row["bucket_id"],),
-        ).fetchone() == {
-            "status": "dirty",
-            "deadline_at_ms": score_now_ms + 60 * 60 * 1000,
-        }
-    finally:
-        conn.close()
-
-
-def test_wallstengine_rss_runs_reader_worker_receipts_and_duplicate_zero_writes(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    rss_body = b"""
-    <rss version="2.0"><channel>
-      <item>
-        <guid>wall-quote</guid>
-        <link>https://x.com/wallstengine/status/301</link>
-        <title>Fed pricing now implies two cuts before year end</title>
-        <description><![CDATA[
-          Fed pricing now implies two cuts before year end
-          <hr>
-          Federal Reserve: The committee will remain data dependent
-          while monitoring inflation and employment risks.
-        ]]></description>
-        <pubDate>Sun, 17 May 2026 06:35:00 GMT</pubDate>
-      </item>
-      <item>
-        <guid>wall-302</guid>
-        <link>https://x.com/wallstengine/status/302</link>
-        <title>Government announces emergency tariff package</title>
-        <pubDate>Sun, 17 May 2026 06:34:00 GMT</pubDate>
-      </item>
-      <item>
-        <guid>wall-303</guid>
-        <link>https://x.com/wallstengine/status/303</link>
-        <title>Oil markets brace for a volatile opening</title>
-        <pubDate>Sun, 17 May 2026 06:33:00 GMT</pubDate>
-      </item>
-      <item>
-        <guid>wall-304</guid>
-        <link>https://x.com/wallstengine/status/304</link>
-        <title>Equity futures hold near the overnight range</title>
-        <pubDate>Sun, 17 May 2026 06:32:00 GMT</pubDate>
-      </item>
-      <item>
-        <guid>wall-305</guid>
-        <link>https://x.com/wallstengine/status/305</link>
-        <title>Treasury yields edge lower before the open</title>
-        <pubDate>Sun, 17 May 2026 06:31:00 GMT</pubDate>
-      </item>
-      <item>
-        <guid>wall-older-than-cap</guid>
-        <link>https://x.com/wallstengine/status/300</link>
-        <title>This sixth entry must not enter the pipeline</title>
-        <pubDate>Sun, 17 May 2026 06:30:00 GMT</pubDate>
-      </item>
-    </channel></rss>
-    """
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.url.host == "rsshub"
-        assert request.url.path.endswith(
-            "/twitter/user/wallstengine/includeReplies=0&includeRts=0&showRetweetTextInTitle=1&showQuotedInTitle=0"
-        )
-        if len(requests) == 2:
-            assert request.headers["if-none-match"] == '"wall-etag-1"'
-            return httpx.Response(304, headers={"etag": '"wall-etag-1"'})
-        assert len(requests) in {1, 3}
-        if len(requests) == 3:
-            assert request.headers["if-none-match"] == '"wall-etag-1"'
-        return httpx.Response(
-            200,
-            content=rss_body,
-            headers={"etag": f'"wall-etag-{1 if len(requests) == 1 else 2}"'},
-        )
-
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    reader = RssFeedReader(
-        transport=httpx.MockTransport(handler),
-        max_attempts=1,
-    )
-    cluster_transaction_states: list[pq.TransactionStatus] = []
-    original_cluster_texts = news_repository_module.cluster_texts
-
-    def observed_cluster_texts(titles):
-        cluster_transaction_states.append(conn.info.transaction_status)
-        return original_cluster_texts(titles)
-
-    monkeypatch.setattr(news_repository_module, "cluster_texts", observed_cluster_texts)
-    try:
-        migrate(conn)
-        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
-        clock = SimpleNamespace(now_ms=NOW_MS)
-        monkeypatch.setattr(news_runtime_module, "_now_ms", lambda: clock.now_ms)
-        pipeline = NewsAcquisition(
-            db=SingleConnectionDB(conn),
-            sources=(wallstengine,),
-            feed_reader=reader,
-            finite_operations=_InlineCapability(),
-            cpu=_InlineCapability(),
-            feed_parser=parse_rss_feed_wire,
-        )
-        asyncio.run(pipeline.reconcile())
-        assert asyncio.run(pipeline.turn()) is True
-        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-        assert asyncio.run(pipeline.turn()) is True
-        clock.now_ms += wallstengine.refresh_interval_seconds * 1000
-        assert asyncio.run(pipeline.turn()) is True
-        assert cluster_transaction_states == []
-        assert conn.execute("SELECT count(*) AS n FROM news_stories").fetchone()["n"] == 0
-        assert (
-            conn.execute(
-                """
-            SELECT count(*) AS n
-              FROM news_projection_frontiers
-             WHERE bucket_id LIKE 'identity:%'
-               AND status = 'dirty'
-            """
-            ).fetchone()["n"]
-            == 5
-        )
-
-        fetches = conn.execute(
-            """
-            SELECT status, entries_seen, observations_inserted,
-                   items_inserted, items_updated, rejection_counts
-              FROM news_source_fetches
-             WHERE source_id = %s
-             ORDER BY started_at_ms
-            """,
-            (wallstengine.source_id,),
-        ).fetchall()
-        assert [row["status"] for row in fetches] == [
-            "success",
-            "not_modified",
-            "success",
-        ]
-        assert fetches[0]["rejection_counts"] == {"per_feed_cap": 1}
-        assert fetches[2]["rejection_counts"] == {
-            "duplicate": 5,
-            "per_feed_cap": 1,
-        }
-        assert conn.execute(
-            "SELECT count(*) AS count FROM news_feed_observations WHERE source_id = %s",
-            (wallstengine.source_id,),
-        ).fetchone() == {"count": 10}
-        assert conn.execute(
-            "SELECT count(*) AS count FROM news_items WHERE source_id = %s",
-            (wallstengine.source_id,),
-        ).fetchone() == {"count": 5}
-        quote = conn.execute(
-            """
-            SELECT title, description
-              FROM news_items
-             WHERE source_id = %s AND source_item_key = 'wall-quote'
-            """,
-            (wallstengine.source_id,),
-        ).fetchone()
-        assert quote["title"] == "Fed pricing now implies two cuts before year end"
-        assert "Federal Reserve" in quote["description"]
-        assert all(
-            candidate["representative_source_id"] == wallstengine.source_id
-            for candidate in NewsRepository(conn).brief_candidates()
-        )
-    finally:
-        reader.close()
-        conn.close()
-
-
-def test_item_story_feed_and_brief_form_one_persisted_chain(tmp_path, monkeypatch) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
-        with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="iran-r",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                ap,
-                guid="iran-a",
-                title="Iran threatens to close Strait of Hormuz — live updates",
-                published_at_ms=NOW_MS - 30_000,
-            )
-            record(
-                repository,
-                reuters,
-                guid="rates",
-                title="Central bank raises interest rate after policy shock",
-                published_at_ms=NOW_MS - 20_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            record(
-                repository,
-                ap,
-                guid="quake",
-                title="Major earthquake strikes coastal region",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            projection = repository.rebuild_stories(now_ms=NOW_MS)
-        assert projection["stories"] == 3
-        assert conn.execute("SELECT count(*) AS n FROM news_feed_observations").fetchone()["n"] == 4
-        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 4
-
-        interface = NewsInterface(repository)
-        feed = interface.get_feed(sort="importance")
-        assert len(feed["stories"]) == 3
-        assert feed["has_more"] is False
-        iran = next(row for row in feed["stories"] if row["item_count"] == 2)
-        assert iran["source_count"] == 2
-        detail = interface.get_story(story_id=iran["story_id"])
-        assert detail is not None
-        assert len(detail["members"]) == 2
-        first_member_page = interface.get_story(
-            story_id=iran["story_id"],
-            members_limit=1,
-        )
-        assert first_member_page is not None
-        assert first_member_page["members_page"]["has_more"] is True
-        second_member_page = interface.get_story(
-            story_id=iran["story_id"],
-            members_limit=1,
-            members_cursor=first_member_page["members_page"]["next_cursor"],
-        )
-        assert second_member_page is not None
-        assert second_member_page["members_page"]["has_more"] is False
-        assert {
-            first_member_page["members"][0]["item_id"],
-            second_member_page["members"][0]["item_id"],
-        } == {member["item_id"] for member in detail["members"]}
-        first_source_page = interface.get_sources(limit=1)
-        assert first_source_page["page"]["has_more"] is True
-        second_source_page = interface.get_sources(
-            limit=1,
-            cursor=first_source_page["page"]["next_cursor"],
-        )
-        assert second_source_page["items"][0]["source_id"] != first_source_page["items"][0]["source_id"]
-
-        publisher = FixedBriefPublisher()
-        candidate = NewsBriefCandidate(
-            db=SingleConnectionDB(conn),
-            publisher=publisher,
-            model_adapter=_InlineCapability(),
-            runtime_id="integration-test",
-        )
-        due_at_ms = NOW_MS + 600_001
-        assert _run_due_brief(candidate, now_ms=due_at_ms, monkeypatch=monkeypatch) is True
-        brief = interface.get_world_brief(now_ms=due_at_ms)
-        assert brief["state"] == "ready"
-        assert len(brief["publication"]["selected_story_ids"]) == 3
-        assert publisher.calls == 1
-        assert _run_due_brief(candidate, now_ms=due_at_ms + 1, monkeypatch=monkeypatch) is False
-        assert publisher.calls == 1
-    finally:
-        conn.close()
-
-
-def test_source_inventory_hard_cut_disables_and_unserves_retired_sources(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        retained = source("reuters", "Reuters")
-        retired = source("regional-general", "Regional General", tier=4, memberships=("asia",))
-        with conn.transaction():
-            repository.sync_sources((retained, retired), now_ms=NOW_MS)
-            record(
-                repository,
-                retained,
-                guid="retained",
-                title="Federal Reserve signals policy decision",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                retired,
-                guid="retired",
-                title="Local festival opens in regional capital",
-                published_at_ms=NOW_MS - 30_000,
-            )
-            assert repository.rebuild_stories(now_ms=NOW_MS)["stories"] == 2
-
-        with conn.transaction():
-            repository.sync_sources((retained,), now_ms=NOW_MS + 1)
-            projection = repository.rebuild_stories(now_ms=NOW_MS + 1)
-
-        assert projection["stories"] == 1
-        assert conn.execute(
-            "SELECT enabled FROM news_sources WHERE source_id = %s",
-            (retired.source_id,),
-        ).fetchone() == {"enabled": False}
-        assert conn.execute(
-            "SELECT active FROM news_items WHERE source_id = %s",
-            (retired.source_id,),
-        ).fetchone() == {"active": False}
-        assert [row["source_id"] for row in repository.list_sources()["items"]] == [retained.source_id]
-        feed = repository.list_feed()
-        assert len(feed["stories"]) == 1
-        assert feed["stories"][0]["source_id"] == retained.source_id
-        assert all(
-            candidate["representative_source_id"] == retained.source_id for candidate in repository.brief_candidates()
-        )
-    finally:
-        conn.close()
-
-
-def test_wallstengine_uses_ordinary_item_story_classification_and_brief_rules(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
-        reuters = source("reuters", "Reuters")
-        with conn.transaction():
-            repository.sync_sources((wallstengine, reuters), now_ms=NOW_MS)
-            record(
-                repository,
-                wallstengine,
-                guid="wall-only",
-                title="Positioning looks stretched into the closing bell",
-                description=(
-                    "The quoted report says the central bank raised interest rates "
-                    "after an emergency inflation meeting."
                 ),
-                published_at_ms=NOW_MS - 40_000,
-                link="https://x.com/wallstengine/status/201",
+                started_at_ms=NOW_MS,
+                finished_at_ms=NOW_MS,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+                claim_token=_claim(repository, rss.source_id, NOW_MS),
             )
-            record(
-                repository,
-                wallstengine,
-                guid="wall-tariff",
-                title="Government announces emergency tariff package",
-                published_at_ms=NOW_MS - 30_000,
-                started_at_ms=NOW_MS + 1,
-                link="https://x.com/wallstengine/status/202",
-            )
-            record(
-                repository,
-                reuters,
-                guid="reuters-tariff",
-                title="Government announces emergency tariff package",
-                published_at_ms=NOW_MS - 20_000,
-                started_at_ms=NOW_MS + 2,
-            )
-            record(
-                repository,
-                reuters,
-                guid="reuters-rate",
-                title="Central bank raises interest rate after policy shock",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 3,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-
-        wall_item = conn.execute(
-            """
-            SELECT title, description, category, source_id
-              FROM news_items
-             WHERE source_id = %s AND source_item_key = 'wall-only'
-            """,
-            (wallstengine.source_id,),
-        ).fetchone()
-        assert wall_item["category"] == "general"
-        assert "central bank raised interest rates" in wall_item["description"]
-
-        corroborated = conn.execute(
-            """
-            SELECT source_count
-              FROM news_stories
-             WHERE active
-               AND representative_title = 'Government announces emergency tariff package'
-            """
-        ).fetchone()
-        assert corroborated == {"source_count": 2}
-
-        candidates = repository.brief_candidates()
-        wall_only = next(
-            candidate
-            for candidate in candidates
-            if candidate["representative_title"] == "Positioning looks stretched into the closing bell"
-        )
-        assert wall_only["representative_source_id"] == wallstengine.source_id
-        assert wall_only["source_count"] == 1
-        assert wall_only["category"] == "general"
-        assert {
-            key for key in wall_only if "wallstengine" in str(key).casefold() or "social" in str(key).casefold()
-        } == set()
-    finally:
-        conn.close()
-
-
-def test_pubdate_only_drift_writes_observation_but_not_item_or_story(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        with conn.transaction():
-            repository.sync_sources((reuters,), now_ms=NOW_MS)
-            first = record(
-                repository,
-                reuters,
-                guid="same-guid",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        before_item = conn.execute(
-            """
-            SELECT published_at_ms, last_observed_at_ms, updated_at_ms
-              FROM news_items
-            """
-        ).fetchone()
-        before_story = conn.execute("SELECT story_id, state_fingerprint, updated_at_ms FROM news_stories").fetchone()
-        with conn.transaction():
-            second = record(
-                repository,
-                reuters,
-                guid="same-guid",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS + 30_000,
-                started_at_ms=NOW_MS + 120_000,
-            )
-            projection = repository.rebuild_stories(now_ms=NOW_MS + 120_000)
-        assert first["items_inserted"] == 1
-        assert second["items_inserted"] == 0
-        assert second["items_updated"] == 0
-        assert projection["story_writes"] == 0
-        assert projection["projection_status"] == "unchanged_input"
-        assert projection["clustered"] == 0
-        assert (
-            conn.execute("SELECT published_at_ms, last_observed_at_ms, updated_at_ms FROM news_items").fetchone()
-            == before_item
-        )
-        assert (
-            conn.execute("SELECT story_id, state_fingerprint, updated_at_ms FROM news_stories").fetchone()
-            == before_story
-        )
+            result = repository.rebuild_stories(now_ms=NOW_MS)
+        assert result["stories"] == 1
         assert conn.execute("SELECT count(*) AS n FROM news_feed_observations").fetchone()["n"] == 2
-        with conn.transaction():
-            next_epoch = repository.rebuild_stories(now_ms=NOW_MS + 3_600_000)
-        assert next_epoch["projection_status"] == "rebuilt"
-        assert next_epoch["clustered"] == 1
-    finally:
-        conn.close()
-
-
-def test_corroboration_counts_physical_sources_not_reporting_origin(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        aggregator = source("google-world", "Google World")
-        direct = source("direct-feed", "Direct Feed")
-        with conn.transaction():
-            repository.sync_sources((aggregator, direct), now_ms=NOW_MS)
-            record(
-                repository,
-                aggregator,
-                guid="copy-1",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS - 60_000,
-                reporting_origin="reuters",
-            )
-            record(
-                repository,
-                aggregator,
-                guid="copy-2",
-                title="Iran threatens to close Strait of Hormuz — live updates",
-                published_at_ms=NOW_MS - 50_000,
-                reporting_origin="ap",
-                started_at_ms=NOW_MS + 1,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        story = conn.execute("SELECT * FROM news_stories WHERE active").fetchone()
+        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 2
+        story = NewsInterface(repository).get_feed()["stories"][0]
         assert story["item_count"] == 2
         assert story["source_count"] == 1
-        assert dict(story["importance_factors"])["physical_source_count"] == 1
-
-        with conn.transaction():
-            record(
-                repository,
-                direct,
-                guid="direct",
-                title="Iran threatens to close Strait of Hormuz amid blockade",
-                published_at_ms=NOW_MS - 40_000,
-                reporting_origin="reuters",
-                started_at_ms=NOW_MS + 2,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        story = conn.execute("SELECT * FROM news_stories WHERE active").fetchone()
-        assert story["source_count"] == 2
-        assert dict(story["importance_factors"])["physical_source_count"] == 2
-    finally:
-        conn.close()
-
-
-def test_live_alias_unions_temporary_clusters_before_materialization(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        with conn.transaction():
-            repository.sync_sources((reuters,), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="a",
-                title="Central bank raises interest rate",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                reuters,
-                guid="b",
-                title="Central bank raises interest rate — live updates",
-                published_at_ms=NOW_MS - 50_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        original_story_id = conn.execute("SELECT story_id FROM news_stories WHERE active").fetchone()["story_id"]
-
-        with conn.transaction():
-            record(
-                repository,
-                reuters,
-                guid="a",
-                title="Wildfire forces evacuation of coastal town",
-                published_at_ms=NOW_MS - 40_000,
-                started_at_ms=NOW_MS + 120_000,
-            )
-            record(
-                repository,
-                reuters,
-                guid="b",
-                title="Technology company releases new processor",
-                published_at_ms=NOW_MS - 30_000,
-                started_at_ms=NOW_MS + 120_001,
-            )
-            projection = repository.rebuild_stories(now_ms=NOW_MS + 120_000)
-        assert projection["temporary_clusters"] == 2
-        assert projection["stories"] == 1
-        story = conn.execute("SELECT story_id, item_count FROM news_stories WHERE active").fetchone()
-        assert story == {"story_id": original_story_id, "item_count": 2}
-        owners = conn.execute(
+        assert story["source_name"] == "reuters"
+        detail = NewsInterface(repository).get_story(story_id=story["story_id"])
+        assert detail is not None
+        assert len(detail["members"]) == 2
+        assert any(member["url"] is None for member in detail["members"])
+        assert rest.calls >= 1
+        opennews_status = conn.execute(
             """
-            SELECT item_id, count(*) AS owners
-              FROM news_story_members
-             WHERE current
-             GROUP BY item_id
+            SELECT live_connected, last_recovery_at_ms, gap_unclosed
+              FROM news_sources WHERE source_id='news-opennews'
             """
-        ).fetchall()
-        assert {row["owners"] for row in owners} == {1}
-    finally:
-        conn.close()
-
-
-def test_flat_feed_uses_keyset_order_and_filter_before_pagination(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        authority = source("authority", "Authority", tier=1)
-        standard = source("standard", "Standard", tier=4)
-        with conn.transaction():
-            repository.sync_sources((authority, standard), now_ms=NOW_MS)
-            record(
-                repository,
-                authority,
-                guid="older",
-                title="Central bank warns recession may deepen",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                standard,
-                guid="newer",
-                title="Government announces new tariff schedule",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        importance = repository.list_feed(
-            category="economic",
-            sort="importance",
-            limit=1,
-        )
-        latest = repository.list_feed(
-            category="economic",
-            sort="latest",
-            limit=1,
-        )
-        assert importance["stories"][0]["source_id"] == "authority"
-        assert latest["stories"][0]["source_id"] == "standard"
-        assert importance["has_more"] is True
-        second = repository.list_feed(
-            category="economic",
-            sort="importance",
-            limit=1,
-            cursor=importance["next_cursor"],
-        )
-        assert second["stories"][0]["source_id"] == "standard"
-        assert second["has_more"] is False
-    finally:
-        conn.close()
-
-
-def test_brief_states_are_evidence_driven_and_keep_last_known_good(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
-        with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="one",
-                title="Central bank raises interest rate after policy shock",
-                published_at_ms=NOW_MS - 30_000,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        publisher = FixedBriefPublisher()
-        candidate = NewsBriefCandidate(
-            db=SingleConnectionDB(conn),
-            publisher=publisher,
-            model_adapter=_InlineCapability(),
-            runtime_id="integration-test",
-        )
-        insufficient_at_ms = NOW_MS + 600_001
-        assert _run_due_brief(candidate, now_ms=insufficient_at_ms, monkeypatch=monkeypatch) is True
-        assert publisher.calls == 0
-        assert repository.get_brief(now_ms=insufficient_at_ms)["state"] == ("insufficient_material")
-        first_updated_at_ms = conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"]
-        assert _run_due_brief(candidate, now_ms=insufficient_at_ms + 1, monkeypatch=monkeypatch) is False
-        assert publisher.calls == 0
+        ).fetchone()
+        assert opennews_status["live_connected"] is False
+        assert opennews_status["gap_unclosed"] is False
+        assert opennews_status["last_recovery_at_ms"] is not None
         assert (
-            conn.execute("SELECT updated_at_ms FROM news_brief_runs").fetchone()["updated_at_ms"] == first_updated_at_ms
-        )
-
-        with conn.transaction():
-            record(
-                repository,
-                ap,
-                guid="two",
-                title="Major earthquake strikes coastal region",
-                published_at_ms=NOW_MS - 20_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            record(
-                repository,
-                reuters,
-                guid="three",
-                title="Cyber attack disrupts regional infrastructure",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 2,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS + 700_000)
-        ready_at_ms = NOW_MS + 1_300_001
-        assert _run_due_brief(candidate, now_ms=ready_at_ms, monkeypatch=monkeypatch) is True
-        ready = repository.get_brief(now_ms=ready_at_ms)
-        assert ready["state"] == "ready"
-        publication_id = ready["publication"]["publication_id"]
-
-        with conn.transaction():
-            record(
-                repository,
-                ap,
-                guid="four",
-                title="Government announces emergency tariff package",
-                published_at_ms=NOW_MS + 70_000,
-                started_at_ms=NOW_MS + 120_000,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS + 1_400_000)
-        stale_at_ms = NOW_MS + 1_400_001
-        stale = repository.get_brief(now_ms=stale_at_ms)
-        assert stale["state"] == "stale_fallback"
-        assert stale["publication"]["publication_id"] == publication_id
-
-        failing = NewsBriefCandidate(
-            db=SingleConnectionDB(conn),
-            publisher=RaisingBriefPublisher(),
-            model_adapter=_InlineCapability(),
-            runtime_id="integration-test",
-        )
-        failure_at_ms = NOW_MS + 2_000_001
-        assert _run_due_brief(failing, now_ms=failure_at_ms, monkeypatch=monkeypatch) is True
-        after_failure = repository.get_brief(now_ms=failure_at_ms)
-        assert after_failure["state"] == "stale_fallback"
-        assert after_failure["publication"]["publication_id"] == publication_id
-        assert after_failure["latest_run"]["status"] == "retryable"
-    finally:
-        conn.close()
-
-
-def test_news_status_exposes_warming_coverage_paths_and_complete_rebuild(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        direct = source("direct", "Direct")
-        relayed = source("relayed", "Relayed")
-        with conn.transaction():
-            repository.sync_sources((direct, relayed), now_ms=NOW_MS)
-        warming = repository.health_snapshot(now_ms=NOW_MS)
-        assert warming["status"] == "warming"
-        assert warming["layers"]["ingest"]["configured_sources"] == 2
-        assert warming["layers"]["ingest"]["attempted_sources"] == 0
-
-        with conn.transaction():
-            repository.record_fetch_success(
-                source=direct,
-                entries=(),
-                started_at_ms=NOW_MS,
-                finished_at_ms=NOW_MS,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag=None,
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_source(repository, direct.source_id, NOW_MS),
-            )
-            repository.record_fetch_failure(
-                source_id=relayed.source_id,
-                started_at_ms=NOW_MS,
-                finished_at_ms=NOW_MS,
-                error=RuntimeError("relay unavailable"),
-                status_code=503,
-                fetch_path="relay",
-                direct_error_code="http_403",
-                claim_token=_claim_source(repository, relayed.source_id, NOW_MS),
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        degraded = repository.health_snapshot(now_ms=NOW_MS)
-        ingest = degraded["layers"]["ingest"]
-        assert degraded["status"] == "degraded"
-        assert ingest["terminal_sources"] == 2
-        assert ingest["empty_sources"] == 1
-        assert ingest["failing_sources"] == 1
-        assert ingest["direct_success_sources"] == 1
-        assert ingest["relay_success_sources"] == 0
-        assert ingest["both_failed_sources"] == 1
-        assert degraded["layers"]["story"]["invariant_error_count"] == 0
-
-        story = degraded["layers"]["story"]
-        assert "last_complete_rebuild_at_ms" not in story
-        assert "runtime_status" not in story
-    finally:
-        conn.close()
-
-
-def test_news_maintenance_rebuild_seeds_incremental_features_and_edges(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(
-        tmp_path / "postgres_test_db",
-        read_only=False,
-    )
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
-        with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="maintenance-r",
-                title="Iran threatens to close Strait of Hormuz",
-                published_at_ms=NOW_MS - 60_000,
-            )
-            record(
-                repository,
-                ap,
-                guid="maintenance-a",
-                title="Iran threatens to close Strait of Hormuz — live updates",
-                published_at_ms=NOW_MS - 30_000,
-                started_at_ms=NOW_MS + 1,
-            )
-
-        result = rebuild_all_news_for_maintenance(
-            db=SingleConnectionDB(conn),
-            now_ms=NOW_MS + 60_001,
-        )
-
-        assert result["projection_status"] == "rebuilt"
-        assert result["items_seeded"] == 2
-        assert result["active_features"] == 2
-        assert result["similarity_edges"] == 1
-        assert result["active_stories"] == 1
-    finally:
-        conn.close()
-
-
-def test_wallstengine_empty_success_and_failure_use_ordinary_ingest_health(
-    tmp_path,
-) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        wallstengine = next(definition for definition in default_sources() if definition.name == "WallStEngine")
-        with conn.transaction():
-            repository.sync_sources((wallstengine,), now_ms=NOW_MS)
-            repository.record_fetch_success(
-                source=wallstengine,
-                entries=(),
-                started_at_ms=NOW_MS,
-                finished_at_ms=NOW_MS,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag=None,
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_source(repository, wallstengine.source_id, NOW_MS),
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        empty = repository.health_snapshot(now_ms=NOW_MS)
-        assert empty["layers"]["ingest"]["empty_sources"] == 1
-        assert empty["layers"]["ingest"]["failing_sources"] == 0
-
-        with conn.transaction():
-            repository.record_fetch_failure(
-                source_id=wallstengine.source_id,
-                started_at_ms=NOW_MS + 120_000,
-                finished_at_ms=NOW_MS + 120_000,
-                error=RuntimeError("RSSHub credentials unavailable"),
-                status_code=503,
-                fetch_path="direct",
-                direct_error_code=None,
-                claim_token=_claim_source(repository, wallstengine.source_id, NOW_MS + 120_000),
-            )
-        failed = repository.health_snapshot(now_ms=NOW_MS + 120_000)
-        ingest = failed["layers"]["ingest"]
-        assert failed["status"] == "degraded"
-        assert ingest["failing_sources"] == 1
-        assert ingest["relay_success_sources"] == 0
-    finally:
-        conn.close()
-
-
-def test_news_status_detects_persisted_story_aggregate_corruption(tmp_path) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        with conn.transaction():
-            repository.sync_sources((reuters,), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="one",
-                title="Major earthquake strikes coastal region",
-                published_at_ms=NOW_MS - 10_000,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
             conn.execute(
                 """
-                UPDATE news_stories
-                   SET item_count = item_count + 1
-                 WHERE active
+                SELECT count(*) AS n FROM news_source_fetches
+                 WHERE source_id='news-opennews' AND fetch_path='opennews_rest'
                 """
-            )
-            repository.refresh_projection_summary_for_maintenance(now_ms=NOW_MS)
-
-        health = repository.health_snapshot(now_ms=NOW_MS)
-        story = health["layers"]["story"]
-        assert story["status"] == "degraded"
-        assert story["invalid_story_aggregate_count"] == 1
-        assert story["invariant_error_count"] == 1
-        assert "story_aggregate_invalid" in story["reasons"]
+            ).fetchone()["n"]
+            >= 1
+        )
     finally:
         conn.close()
 
 
-def test_expired_brief_lease_is_publicly_failed_not_running(tmp_path) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+def test_opennews_disconnect_reconnects_and_rest_closes_the_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = connect_postgres_test(read_only=False)
     try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
-        with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="one",
-                title="Central bank raises interest rate after policy shock",
-                published_at_ms=NOW_MS - 30_000,
-            )
-            record(
-                repository,
-                ap,
-                guid="two",
-                title="Major earthquake strikes coastal region",
-                published_at_ms=NOW_MS - 20_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            record(
-                repository,
-                reuters,
-                guid="three",
-                title="Cyber attack disrupts regional infrastructure",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 2,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-            candidates = repository.brief_candidates()
-            claim = repository.claim_brief_run(
-                fingerprint=brief_fingerprint(candidates),
-                story_count=len(candidates),
-                source_count=2,
-                now_ms=NOW_MS,
-                max_attempts=3,
-                lease_owner="test-runtime",
-            )
-            assert claim is not None
-        expired = repository.get_brief(now_ms=NOW_MS + 121_000)
-        assert expired["state"] == "failed"
-        assert expired["latest_run"]["status"] == "failed"
-        assert expired["latest_run"]["last_error"] == "brief_lease_expired"
-    finally:
-        conn.close()
+        reset_postgres_schema(conn)
+        monkeypatch.setattr("tracefold.news.runtime._OPENNEWS_RECONNECT_SECONDS", 0.01)
+        message = {
+            "method": "news.update",
+            "params": {
+                "id": "after-reconnect",
+                "text": "OpenNews resumes after a disconnected socket",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": NOW_MS,
+            },
+        }
+        rest = _FakeOpenNewsRest(())
+        websocket = _ReconnectOpenNewsWebSocket(message)
+        acquisition = NewsAcquisition(
+            db=_SingleConnectionDB(conn),
+            finite_operations=_InlineCapability(),
+            cpu=_InlineCapability(),
+            sources=(_rss_source(), opennews_source()),
+            feed_reader=_NoopReader(),
+            feed_parser=lambda value: value,
+            opennews_rest_client=rest,
+            opennews_ws_client=websocket,
+        )
 
-
-def test_brief_publication_rejects_changed_source_fingerprint(tmp_path) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        repository = NewsRepository(conn)
-        reuters = source("reuters", "Reuters")
-        ap = source("ap", "AP")
-        with conn.transaction():
-            repository.sync_sources((reuters, ap), now_ms=NOW_MS)
-            record(
-                repository,
-                reuters,
-                guid="one",
-                title="Central bank raises interest rate after policy shock",
-                published_at_ms=NOW_MS - 30_000,
-            )
-            record(
-                repository,
-                ap,
-                guid="two",
-                title="Major earthquake strikes coastal region",
-                published_at_ms=NOW_MS - 20_000,
-                started_at_ms=NOW_MS + 1,
-            )
-            record(
-                repository,
-                reuters,
-                guid="three",
-                title="Cyber attack disrupts regional infrastructure",
-                published_at_ms=NOW_MS - 10_000,
-                started_at_ms=NOW_MS + 2,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS)
-        candidates = repository.brief_candidates()
-        fingerprint = brief_fingerprint(candidates)
-        with conn.transaction():
-            claim = repository.claim_brief_run(
-                fingerprint=fingerprint,
-                story_count=len(candidates),
-                source_count=2,
-                now_ms=NOW_MS,
-                max_attempts=3,
-                lease_owner="test-runtime",
-            )
-        assert claim is not None
-        with conn.transaction():
-            record(
-                repository,
-                ap,
-                guid="four",
-                title="Government announces emergency tariff package",
-                published_at_ms=NOW_MS + 30_000,
-                started_at_ms=NOW_MS + 30_000,
-            )
-            repository.rebuild_stories(now_ms=NOW_MS + 30_000)
-        with conn.transaction():
-            publication = repository.publish_brief(
-                run_id=claim["run_id"],
-                lease_owner=claim["lease_owner"],
-                fingerprint=fingerprint,
-                stories=candidates,
-                draft=NewsBriefDraft(
-                    lead="今日重点发生变化 [1]",
-                    lines=tuple(
-                        f"第{index}条：{story['representative_title']} [{index}]"
-                        for index, story in enumerate(candidates, 1)
-                    ),
-                    provider="test",
-                    model="test",
-                    raw_response="{}",
+        async def exercise() -> None:
+            await acquisition.reconcile()
+            stop = asyncio.Event()
+            task = asyncio.create_task(acquisition.run_opennews(stop_event=stop))
+            await _wait_until(
+                lambda: (
+                    websocket.connected >= 2
+                    and conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 1
                 ),
-                validation={"citation_index_lock": True},
-                now_ms=NOW_MS + 31_000,
+                message="OpenNews did not reconnect and publish",
             )
-        assert publication is None
-        assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 0
+            await _wait_until(
+                lambda: rest.calls >= 2,
+                message="OpenNews reconnect did not request REST recovery",
+            )
+            stop.set()
+            await asyncio.wait_for(task, timeout=2.0)
+            await acquisition.close()
+
+        asyncio.run(exercise())
+        status = conn.execute(
+            """
+            SELECT live_connected, gap_unclosed, last_recovery_at_ms
+              FROM news_sources WHERE source_id='news-opennews'
+            """
+        ).fetchone()
+        assert websocket.closed >= 2
+        assert status["live_connected"] is False
+        assert status["gap_unclosed"] is False
+        assert status["last_recovery_at_ms"] is not None
     finally:
         conn.close()
 
 
-def test_destructive_schema_contains_only_current_news_tables(tmp_path) -> None:
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+def test_opennews_buffer_is_bounded_and_overflow_requests_rest_recovery() -> None:
+    conn = connect_postgres_test(read_only=False)
     try:
-        migrate(conn)
-        tables = {
-            row["tablename"]
-            for row in conn.execute(
+        reset_postgres_schema(conn)
+        rest = _FakeOpenNewsRest(())
+        websocket = _FloodOpenNewsWebSocket(count=300)
+        db = _SlowLivePublishDB(conn)
+        acquisition = NewsAcquisition(
+            db=db,
+            finite_operations=_InlineCapability(),
+            cpu=_InlineCapability(),
+            sources=(opennews_source(),),
+            feed_reader=_NoopReader(),
+            feed_parser=lambda value: value,
+            opennews_rest_client=rest,
+            opennews_ws_client=websocket,
+        )
+
+        async def exercise() -> None:
+            await acquisition.reconcile()
+            stop = asyncio.Event()
+            task = asyncio.create_task(acquisition.run_opennews(stop_event=stop))
+            await _wait_until(lambda: rest.calls >= 1, message="startup recovery did not run")
+            websocket.release.set()
+            await _wait_until(
+                lambda: websocket.delivered == 300 and rest.calls >= 2,
+                message="buffer overflow did not request recovery",
+            )
+            assert acquisition._opennews_queue.qsize() == 256
+            db.release_live_publish.set()
+            stop.set()
+            await asyncio.wait_for(task, timeout=3.0)
+            await acquisition.close()
+
+        asyncio.run(exercise())
+        observations = conn.execute(
+            """
+            SELECT count(*) AS n FROM news_feed_observations
+             WHERE source_id='news-opennews' AND observation_kind='report'
+            """
+        ).fetchone()["n"]
+        assert 0 < observations <= 257
+        assert rest.calls >= 2
+        assert (
+            conn.execute(
                 """
-                SELECT tablename
-                  FROM pg_tables
-                 WHERE schemaname = 'public' AND tablename LIKE 'news_%'
+                SELECT count(*) AS n FROM news_source_fetches
+                 WHERE source_id='news-opennews' AND fetch_path='opennews_rest'
                 """
-            ).fetchall()
+            ).fetchone()["n"]
+            >= 2
+        )
+    finally:
+        conn.close()
+
+
+def test_missing_opennews_token_is_visible_and_does_not_block_rss() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        acquisition = NewsAcquisition(
+            db=_SingleConnectionDB(conn),
+            finite_operations=_InlineCapability(),
+            cpu=_InlineCapability(),
+            sources=(_rss_source(), opennews_source()),
+            feed_reader=_NoopReader(),
+            feed_parser=lambda value: value,
+        )
+        asyncio.run(acquisition.reconcile())
+        status = conn.execute(
+            """
+            SELECT live_connected, gap_unclosed, last_error
+              FROM news_sources WHERE source_id='news-opennews'
+            """
+        ).fetchone()
+        assert status == {
+            "live_connected": False,
+            "gap_unclosed": True,
+            "last_error": "opennews_token_missing",
         }
-        assert tables == {
-            "news_sources",
-            "news_source_memberships",
-            "news_source_fetches",
-            "news_feed_observations",
-            "news_items",
-            "news_stories",
-            "news_story_members",
-            "news_story_aliases",
-            "news_story_input_state",
-            "news_projection_summary",
-            "news_story_facet_counts",
-            "news_source_facet_counts",
-            "news_brief_selection_current",
-            "news_projection_frontiers",
-            "news_identity_features",
-            "news_similarity_edges",
-            "news_brief_runs",
-            "news_brief_publications",
-            "news_brief_current",
+        repository = NewsRepository(conn)
+        due_at_ms = conn.execute("SELECT next_fetch_at_ms FROM news_sources WHERE source_id='rss-reuters'").fetchone()[
+            "next_fetch_at_ms"
+        ]
+        with conn.transaction():
+            claimed = repository.claim_due_source(
+                now_ms=int(due_at_ms),
+                claim_token=str(uuid4()),
+                lease_ms=45_000,
+            )
+        assert claimed is not None
+        assert claimed["source_id"] == "rss-reuters"
+    finally:
+        conn.close()
+
+
+def test_observation_kinds_do_not_create_extra_news_items() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        report = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "wire-1",
+                    "text": "Linkless market wire",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": NOW_MS,
+                },
+            }
+        )
+        translation = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "wire-1-zh",
+                    "text": "市场快讯",
+                    "translationOf": "wire-1",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": NOW_MS,
+                },
+            }
+        )
+        annotation = parse_opennews_message(
+            {"method": "news.ai_update", "params": {"id": "wire-1", "aiRating": {"score": 80}}}
+        )
+        assert report and translation and annotation
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            first = repository.record_opennews_events(
+                source=source,
+                events=(report, translation, annotation),
+                observed_at_ms=NOW_MS,
+            )
+            repeated = repository.record_opennews_events(
+                source=source,
+                events=(report, translation, annotation),
+                observed_at_ms=NOW_MS + 1,
+            )
+        assert first == {
+            "entries_seen": 3,
+            "observations_inserted": 3,
+            "items_inserted": 1,
+            "items_updated": 0,
         }
+        assert repeated["observations_inserted"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM news_feed_observations").fetchone()["n"] == 3
+    finally:
+        conn.close()
+
+
+def test_full_projection_unchanged_input_writes_zero_and_expiry_changes_story_id() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = _rss_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            for guid, title, published in (
+                ("early", "Fed holds rates steady", NOW_MS - 95 * 60 * 60 * 1_000),
+                ("late", "Fed holds rates steady today", NOW_MS - 60_000),
+            ):
+                repository.record_fetch_success(
+                    source=source,
+                    entries=(
+                        NewsFeedEntry(
+                            guid=guid,
+                            link=f"https://example.com/{guid}",
+                            title=title,
+                            published_at_ms=published,
+                            reporting_origin="Reuters",
+                            raw={"guid": guid},
+                        ),
+                    ),
+                    started_at_ms=NOW_MS + (1 if guid == "late" else 0),
+                    finished_at_ms=NOW_MS + (1 if guid == "late" else 0),
+                    status_code=200,
+                    fetch_path="direct",
+                    direct_error_code=None,
+                    etag=None,
+                    last_modified=None,
+                    not_modified=False,
+                    claim_token=_claim(repository, source.source_id, NOW_MS + (1 if guid == "late" else 0)),
+                )
+            first = repository.rebuild_stories(now_ms=NOW_MS)
+            old_id = conn.execute("SELECT story_id FROM news_stories").fetchone()["story_id"]
+            second = repository.rebuild_stories(now_ms=NOW_MS)
+        assert first["rows_written"] > 0
+        assert second["projection_status"] == "unchanged_input"
+        assert second["rows_written"] == 0
+        with conn.transaction():
+            third = repository.rebuild_stories(now_ms=NOW_MS + 2 * 60 * 60 * 1_000)
+        new_id = conn.execute("SELECT story_id FROM news_stories").fetchone()["story_id"]
+        assert third["projection_status"] == "rebuilt"
+        assert old_id != new_id
+        assert NewsInterface(repository).get_story(story_id=old_id) is None
+    finally:
+        conn.close()
+
+
+def test_stale_full_projection_snapshot_writes_nothing() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = _rss_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_fetch_success(
+                source=source,
+                entries=(
+                    NewsFeedEntry(
+                        guid="first",
+                        link="https://example.com/first",
+                        title="Fed holds rates steady",
+                        published_at_ms=NOW_MS - 60_000,
+                        reporting_origin="Reuters",
+                        raw={"guid": "first"},
+                    ),
+                ),
+                started_at_ms=NOW_MS,
+                finished_at_ms=NOW_MS,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+                claim_token=_claim(repository, source.source_id, NOW_MS),
+            )
+            payload = repository.load_story_projection(now_ms=NOW_MS)
+        snapshot = NewsProjectionSnapshot(
+            input_fingerprint=str(payload["input_fingerprint"]),
+            cutoff_ms=int(payload["cutoff_ms"]),
+            scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
+            current_input_fingerprint=None,
+            rows=tuple(dict(row) for row in payload["rows"]),
+        )
+        projection = compute_news_story_projection(snapshot)
+        with conn.transaction():
+            repository.record_fetch_success(
+                source=source,
+                entries=(
+                    NewsFeedEntry(
+                        guid="second",
+                        link="https://example.com/second",
+                        title="Treasury market opens after policy meeting",
+                        published_at_ms=NOW_MS,
+                        reporting_origin="AP",
+                        raw={"guid": "second"},
+                    ),
+                ),
+                started_at_ms=NOW_MS + 1,
+                finished_at_ms=NOW_MS + 1,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+                claim_token=_claim(repository, source.source_id, NOW_MS + 1),
+            )
+            result = repository.publish_story_projection(
+                snapshot=snapshot,
+                projection=projection,
+                now_ms=NOW_MS + 1,
+            )
+        assert result["projection_status"] == "stale_snapshot"
+        assert result["rows_written"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_stories").fetchone()["n"] == 0
+    finally:
+        conn.close()
+
+
+def test_story_invariant_failure_rolls_back_entire_publication() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = _rss_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_fetch_success(
+                source=source,
+                entries=(
+                    NewsFeedEntry(
+                        guid="one",
+                        link="https://example.com/one",
+                        title="Fed holds rates steady",
+                        published_at_ms=NOW_MS,
+                        reporting_origin="Reuters",
+                        raw={"guid": "one"},
+                    ),
+                ),
+                started_at_ms=NOW_MS,
+                finished_at_ms=NOW_MS,
+                status_code=200,
+                fetch_path="direct",
+                direct_error_code=None,
+                etag=None,
+                last_modified=None,
+                not_modified=False,
+                claim_token=_claim(repository, source.source_id, NOW_MS),
+            )
+            payload = repository.load_story_projection(now_ms=NOW_MS)
+        snapshot = NewsProjectionSnapshot(
+            input_fingerprint=str(payload["input_fingerprint"]),
+            cutoff_ms=int(payload["cutoff_ms"]),
+            scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
+            current_input_fingerprint=None,
+            rows=tuple(dict(row) for row in payload["rows"]),
+        )
+        projection = compute_news_story_projection(snapshot)
+        projection["stories"][0]["item_count"] = 2
+        with pytest.raises(RuntimeError, match="news_story_invariant_failed"), conn.transaction():
+            repository.publish_story_projection(
+                snapshot=snapshot,
+                projection=projection,
+                now_ms=NOW_MS,
+            )
+        assert conn.execute("SELECT count(*) AS n FROM news_stories").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_story_members").fetchone()["n"] == 0
+        assert conn.execute("SELECT importance_score FROM news_items").fetchone()["importance_score"] == 0
     finally:
         conn.close()

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 SOURCE_INVENTORY_VERSION = "us_finance_global_politics_crypto_v1"
 STORY_IDENTITY_VERSION = "worldmonitor_story_identity_f73de5b7"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_f73de5b7"
-IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_physical_source"
+IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_reporting_origin"
 BRIEF_PROMPT_VERSION = "worldmonitor_top8_zh_v1"
 BRIEF_WORKFLOW_VERSION = "worldmonitor_world_brief_v1"
 BRIEF_SCHEMA_VERSION = "worldmonitor_world_brief_schema_v1"
@@ -52,6 +52,7 @@ class NewsSourceDefinition(ExactNewsModel):
     tier: int = Field(ge=1, le=4)
     lang: str = "en"
     memberships: tuple[str, ...]
+    source_kind: Literal["rss", "opennews"] = "rss"
     enabled: bool = True
     refresh_interval_seconds: int = Field(default=120, ge=1)
 
@@ -114,7 +115,7 @@ class NewsBriefStory(ExactNewsModel):
     story_id: str
     title: str
     source: str
-    url: str
+    url: str | None
     source_count: int
     importance_score: int
     level: ThreatLevel

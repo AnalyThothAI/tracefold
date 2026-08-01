@@ -97,8 +97,6 @@ def _hard_cut_invariants(conn: Any) -> dict[str, Any]:
                   SELECT status FROM token_profile_projection_frontiers
                   UNION ALL
                   SELECT status FROM macro_module_frontiers
-                  UNION ALL
-                  SELECT status FROM news_projection_frontiers
                 ) projection
                 WHERE status = 'quarantined'
               ) AS projection_quarantines,
@@ -153,7 +151,17 @@ def _hard_cut_invariants(conn: Any) -> dict[str, Any]:
               to_regclass('public.token_profile_current_dirty_targets') IS NOT NULL
                 AS old_profile_queue_exists,
               to_regclass('public.token_radar_rank_source_events') IS NOT NULL
-                AS old_radar_source_table_exists
+                AS old_radar_source_table_exists,
+              to_regclass('public.news_identity_features') IS NOT NULL
+                AS old_news_identity_features_exists,
+              to_regclass('public.news_similarity_edges') IS NOT NULL
+                AS old_news_similarity_edges_exists,
+              to_regclass('public.news_story_aliases') IS NOT NULL
+                AS old_news_story_aliases_exists,
+              to_regclass('public.news_story_input_state') IS NOT NULL
+                AS old_news_story_input_state_exists,
+              to_regclass('public.news_projection_frontiers') IS NOT NULL
+                AS old_news_projection_frontiers_exists
             """,
             {
                 "projection_version": TOKEN_RADAR_PROJECTION_VERSION,
@@ -179,6 +187,11 @@ def _hard_cut_invariants(conn: Any) -> dict[str, Any]:
             "old_radar_queue_exists",
             "old_profile_queue_exists",
             "old_radar_source_table_exists",
+            "old_news_identity_features_exists",
+            "old_news_similarity_edges_exists",
+            "old_news_story_aliases_exists",
+            "old_news_story_input_state_exists",
+            "old_news_projection_frontiers_exists",
         )
         if bool(row[name])
     )

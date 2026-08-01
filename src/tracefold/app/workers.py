@@ -38,6 +38,7 @@ from tracefold.integrations.news_feeds import (
     is_public_https_feed_url,
     parse_rss_feed_wire,
 )
+from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
     FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
@@ -63,7 +64,13 @@ from tracefold.market import (
     TickLookup,
     TokenImageMirror,
 )
-from tracefold.news import NewsAcquisition, NewsBriefCandidate, NewsProjectionCandidate, default_sources
+from tracefold.news import (
+    NewsAcquisition,
+    NewsBriefCandidate,
+    NewsStoryProjection,
+    default_sources,
+    opennews_source,
+)
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
@@ -145,6 +152,7 @@ class _Components:
     providers: AssetMarketProviders
     collector: CollectorService | None
     news: NewsAcquisition | None
+    news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
@@ -314,6 +322,16 @@ async def run_workers(settings: Settings) -> None:
                         name="okx-market-stream",
                     )
                 )
+            if components.news is not None and components.news.opennews_enabled:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            components.news.run_opennews(stop_event=work_stop_event),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="opennews-stream",
+                    )
+                )
             for index, (turn, idle_seconds) in enumerate(components.due_turns):
                 business_tasks.append(
                     group.create_task(
@@ -340,6 +358,20 @@ async def run_workers(settings: Settings) -> None:
                             on_fatal=enter_fatal,
                         ),
                         name="market-tick-poll",
+                    )
+                )
+            if components.news_story is not None:
+                business_tasks.append(
+                    group.create_task(
+                        _guard_child(
+                            _run_periodic(
+                                components.news_story.sample,
+                                period_seconds=60.0,
+                                stop_event=work_stop_event,
+                            ),
+                            on_fatal=enter_fatal,
+                        ),
+                        name="news-story-projection",
                     )
                 )
             business_tasks.append(
@@ -681,10 +713,15 @@ async def _wire_components(
 
     due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
     news: NewsAcquisition | None = None
+    news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
-        sources = default_sources()
+        sources = (*default_sources(), opennews_source())
+        opennews_rest = OpenNewsRestClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+        opennews_ws = (
+            OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+        )
         news = NewsAcquisition(
             db=db,
             finite_operations=finite,
@@ -696,10 +733,17 @@ async def _wire_components(
                 relay_base_url=settings.news.relay.base_url,
                 relay_auth_header=settings.news.relay.auth_header,
                 relay_auth_token=settings.news.relay.auth_token,
-                relay_allowed_urls={source.feed_url for source in sources if is_public_https_feed_url(source.feed_url)},
+                relay_allowed_urls={
+                    source.feed_url
+                    for source in sources
+                    if source.source_kind == "rss" and is_public_https_feed_url(source.feed_url)
+                },
             ),
             feed_parser=parse_rss_feed_wire,
+            opennews_rest_client=opennews_rest,
+            opennews_ws_client=opennews_ws,
         )
+        news_story = NewsStoryProjection(db=db, cpu=cpu)
         due_turns.append((news.turn, 1.0))
         configured_base_url = settings.llm.base_url or ("https://api.deepseek.com/v1" if settings.llm.api_key else "")
         news_brief = NewsBriefCandidate(
@@ -860,12 +904,12 @@ async def _wire_components(
         RadarProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=10),
         ProfileProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=20),
         MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=30),
-        NewsProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=40),
     )
     return _Components(
         providers=providers,
         collector=collector,
         news=news,
+        news_story=news_story,
         news_brief=news_brief,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),

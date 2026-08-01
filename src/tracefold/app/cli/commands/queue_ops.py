@@ -25,7 +25,6 @@ _QUEUE_TABLES_BY_OWNER: dict[str, tuple[str, ...]] = {
     "radar_projection": ("radar_projection_frontiers",),
     "profile_projection": ("token_profile_projection_frontiers",),
     "macro_projection": ("macro_module_frontiers",),
-    "news_projection": ("news_projection_frontiers",),
     "news_brief": ("news_brief_runs",),
     "macro_thesis": ("macro_thesis_runs",),
     "macro_document_analysis": ("macro_document_analysis_jobs",),

@@ -236,9 +236,8 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "sql": """
             SELECT stories.story_id
             FROM news_stories stories
-            JOIN news_sources sources
-              ON sources.source_id = stories.representative_source_id
-            WHERE stories.active
+            JOIN news_items representative
+              ON representative.item_id = stories.representative_item_id
             ORDER BY stories.importance_score DESC,
                      stories.last_published_at_ms DESC,
                      stories.story_id
@@ -287,8 +286,7 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             JOIN news_items items ON items.item_id = members.item_id
             JOIN news_sources sources ON sources.source_id = items.source_id
             WHERE members.story_id = %s
-            ORDER BY members.current DESC,
-                     items.published_at_ms DESC,
+            ORDER BY items.published_at_ms DESC,
                      items.item_id
             LIMIT 101
         """,
@@ -707,14 +705,12 @@ class ProjectionValidationAudit:
                      category AS facet_value,
                      count(*)::integer AS story_count
               FROM news_stories
-              WHERE active
               GROUP BY category
               UNION ALL
               SELECT 'level'::text AS facet_type,
                      level AS facet_value,
                      count(*)::integer AS story_count
               FROM news_stories
-              WHERE active
               GROUP BY level
             ),
             story_facet_mismatch AS (
@@ -735,8 +731,6 @@ class ProjectionValidationAudit:
                 ON story.story_id = member.story_id
               JOIN news_items item
                 ON item.item_id = member.item_id
-              WHERE story.active
-                AND member.current
               GROUP BY item.source_id
             ),
             source_facet_mismatch AS (
@@ -748,31 +742,29 @@ class ProjectionValidationAudit:
                  OR current.source_id IS NULL
                  OR current.story_count IS DISTINCT FROM expected.story_count
             ),
-            brief_candidates AS (
-              SELECT candidate.story_id,
-                     candidate.importance_score,
-                     candidate.last_published_at_ms
-              FROM news_sources source
-              CROSS JOIN LATERAL (
-                SELECT story.story_id,
-                       story.importance_score,
-                       story.last_published_at_ms
+            brief_ranked_by_origin AS (
+              SELECT story.story_id,
+                     story.importance_score,
+                     story.last_published_at_ms,
+                     row_number() OVER (
+                       PARTITION BY item.reporting_origin
+                       ORDER BY story.importance_score DESC,
+                                story.last_published_at_ms DESC,
+                                story.story_id
+                     ) AS origin_rank
                 FROM news_stories story
                 JOIN news_items item
                   ON item.item_id = story.representative_item_id
-                WHERE source.enabled
-                  AND story.active
-                  AND story.representative_source_id = source.source_id
-                  AND NOT item.brief_excluded
-                ORDER BY story.importance_score DESC,
-                         story.last_published_at_ms DESC,
-                         story.story_id
-                LIMIT 3
-              ) candidate
-              ORDER BY candidate.importance_score DESC,
-                       candidate.last_published_at_ms DESC,
-                       candidate.story_id
-              LIMIT 8
+               WHERE NOT item.brief_excluded
+            ),
+            brief_candidates AS (
+              SELECT story_id, importance_score, last_published_at_ms
+                FROM brief_ranked_by_origin
+               WHERE origin_rank <= 3
+               ORDER BY importance_score DESC,
+                        last_published_at_ms DESC,
+                        story_id
+               LIMIT 8
             ),
             brief_expected AS (
               SELECT row_number() OVER (

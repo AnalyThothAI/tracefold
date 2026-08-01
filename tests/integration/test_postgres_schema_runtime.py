@@ -83,8 +83,6 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_items",
     "news_stories",
     "news_story_members",
-    "news_story_aliases",
-    "news_story_input_state",
     "news_projection_summary",
     "news_story_facet_counts",
     "news_source_facet_counts",
@@ -434,6 +432,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "feed_url",
         "tier",
         "lang",
+        "source_kind",
         "enabled",
         "refresh_interval_seconds",
         "etag",
@@ -444,6 +443,10 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "last_http_status",
         "consecutive_failures",
         "last_error",
+        "live_connected",
+        "last_live_at_ms",
+        "last_recovery_at_ms",
+        "gap_unclosed",
         "next_fetch_at_ms",
         "claim_token",
         "claim_lease_expires_at_ms",
@@ -492,14 +495,13 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "idx_radar_projection_frontiers_microbatch_eligible",
         "idx_radar_projection_frontiers_expired_claim",
         "idx_macro_module_frontiers_eligible",
-        "idx_news_projection_frontiers_eligible",
         "idx_token_profile_projection_frontiers_eligible",
     }
     assert event_reloptions == {
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260731_0233"
+    assert version == latest_migration_version() == "20260801_0234"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -524,7 +526,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260731_0233"
+    assert version == latest_migration_version() == "20260801_0234"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -562,7 +564,7 @@ def test_projection_eligibility_migration_preserves_material_deadlines_and_sched
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260731_0233")
 
         rows = conn.execute(
             """
@@ -667,7 +669,7 @@ def test_news_score_bucket_migration_collapses_story_timer_fanout(
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260731_0233")
 
         rows = conn.execute(
             """
@@ -903,7 +905,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260731_0233"
+        assert version == "20260801_0234"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

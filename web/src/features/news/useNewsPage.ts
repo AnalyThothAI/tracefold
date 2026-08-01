@@ -14,7 +14,7 @@ export type NewsStory = {
     diplomacy_flashpoint_boost: number;
     entity_corroboration_boost: number;
     recency_points: number;
-    physical_source_count: number;
+    reporting_origin_count: number;
     scoring_corroboration_count: number;
     severity_level: NewsLevel;
     severity_points: number;
@@ -32,7 +32,7 @@ export type NewsStory = {
   scoring_item_id: string;
   story_id: string;
   title: string;
-  url: string;
+  url: string | null;
 };
 
 export type NewsFeed = {
@@ -54,13 +54,10 @@ export type NewsFeed = {
 
 export type NewsStoryMember = {
   category: string;
-  current: boolean;
   description: string;
-  first_joined_at_ms: number;
   importance_score: number;
   item_id: string;
   lang: string;
-  last_confirmed_at_ms: number;
   last_observed_at_ms: number;
   level: NewsLevel;
   published_at_ms: number;
@@ -69,11 +66,10 @@ export type NewsStoryMember = {
   source_name: string;
   tier: number;
   title: string;
-  url: string;
+  url: string | null;
 };
 
 export type NewsStoryDetail = NewsStory & {
-  active: boolean;
   canonical_title: string;
   members: NewsStoryMember[];
 };
@@ -94,7 +90,7 @@ export type BriefPublication = {
     source: string;
     story_id: string;
     title: string;
-    url: string;
+    url: string | null;
   }>;
   validation: {
     citation_index_lock: boolean;
@@ -142,6 +138,11 @@ export type WorldBrief = {
 export type NewsSource = {
   consecutive_failures: number;
   enabled: boolean;
+  source_kind: "rss" | "opennews";
+  live_connected: boolean;
+  last_live_at_ms: number | null;
+  last_recovery_at_ms: number | null;
+  gap_unclosed: boolean;
   feed_url: string;
   lang: string;
   last_error: string | null;
@@ -150,7 +151,7 @@ export type NewsSource = {
   latest_entries_seen: number | null;
   latest_fetch_duration_ms: number | null;
   latest_fetch_error_code: string | null;
-  latest_fetch_path: "direct" | "relay" | null;
+  latest_fetch_path: "direct" | "relay" | "opennews_rest" | null;
   latest_direct_error_code: string | null;
   latest_fetch_finished_at_ms: number | null;
   latest_fetch_status: "success" | "not_modified" | "failed" | null;

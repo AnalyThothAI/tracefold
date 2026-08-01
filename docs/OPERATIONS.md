@@ -48,14 +48,15 @@ tracefold workers
   -> one pinned singleton session / business DB executor 2 / control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
   -> spawn-only Pebble ProcessPool 1
-  -> acquisition clocks + one EDF projection coordinator
+  -> acquisition clocks + one fixed-period News Story writer
+     + one EDF projection coordinator
   -> one serial native-state model arbiter
 ```
 
 Every acquisition/projection/model task uses a short claim transaction,
 bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
-coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
+coordinator polls typed Radar, Macro, and Profile candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
 After a productive or failed shard turn it repolls immediately; only an idle
 turn waits on the 250 ms polling cadence. This preserves single-shard resource
@@ -64,7 +65,7 @@ backlogged.
 `deadline_at_ms` is not a not-before time. Material changes are eligible
 immediately; `next_attempt_at_ms` delays only a scheduled recheck or retry.
 The eligibility expression has a bounded partial index on every projection
-frontier, so an idle poll does not scan future News expiry rows. There is no
+frontier. There is no
 generic scheduler, database wake plane, startup rebuild, phased load shifting,
 or configurable concurrency.
 
@@ -171,12 +172,11 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-source claim -> News acquisition turn -> one bounded provider conversation
-  -> receipt/observation/item
-  -> typed identity frontiers + persisted features/similarity edges
-  -> bounded affected component Story/member/alias closure
-  -> at most 64 stable hourly score-bucket frontiers
-  -> set-based item/Story score publication
+RSS source claim/fetch + persistent OpenNews WSS/REST recovery
+  -> semantic observation -> report-only NewsItem materialization
+  -> every 60 seconds load complete enabled 96-hour item window
+  -> WorldMonitor clustering + classification + importance
+  -> compare-and-publish current Story/member/facet/Brief selection closure
   -> /api/news/feed + /api/news/stories/{story_id}
 
 Top-8 changed Story fingerprint
@@ -187,45 +187,54 @@ Top-8 changed Story fingerprint
   -> /api/news/brief
 ```
 
-The News acquisition loop claims one due source in a short transaction, performs provider
-I/O outside the database through the three-slot finite-operation capability, and closes
-the source in a short transaction. One source failure records a
-failed receipt, increments its failure count, and cannot block another source.
+The RSS acquisition loop claims one due source in a short transaction,
+performs provider I/O outside the database through the three-slot
+finite-operation capability, and closes the source in a short transaction.
+One source failure records a failed receipt, increments its failure count, and
+cannot block another source.
 A successful response retains ETag and Last-Modified; a `304` still permits
 the deterministic 96-hour expiry/recluster pass. Direct transport/403/429/5xx/
 HTML/non-RSS failure can use the configured relay only for a code-owned public
 HTTPS source URL; the winning path and bounded diagnostics are persisted
 without secrets. HTTP, localhost, Docker service names, link-local, loopback,
-private, and other non-public destinations never use the relay. The internal
-6551NEWS and WallStEngine RSSHub sources therefore record failures directly.
+private, and other non-public destinations never use the relay. Internal
+RSSHub sources therefore record failures directly.
 
-The News acquisition publication is the only NewsItem writer. The EDF projection domain is the
-only Story, membership, alias, feature, and edge writer. Restart re-reads typed
-frontiers; it never performs a full-window steady rebuild. Unchanged
-component closures write zero serving rows. The one-hour scoring epoch is one
-global clock partitioned into at most 64 stable score buckets, not one timer
-per Story. A bucket loads only its current members, computes outside the
-database, and publishes changed item/Story score fields with set-based writes
-inside one short transaction. This prevents an hourly Story-count fanout while
-preserving the 60-second public Story deadline.
+The same acquisition module owns OpenNews. One persistent WSS receiver runs
+outside the finite-operation capability, feeds a 256-event queue, and reconnects
+after expected transport failures. REST recovery uses a finite-operation slot
+at startup, reconnect, overflow, and every five minutes, with page 1, limit
+100, and a 30-minute overlap. Recovery success/failure has an explicit fetch
+receipt. `/api/news/sources` shows live connection, last recovery, and whether
+a gap remains unclosed. Missing `news.opennews_token` degrades only OpenNews;
+RSS continues.
+
+The acquisition publication is the only NewsItem writer. The fixed-period
+Story projection is the only Story/member/facet/Brief-selection writer. It
+re-reads the complete current 96-hour window every 60 seconds, calculates
+outside the database, rejects stale snapshots, and atomically publishes the
+current closure. Unchanged inputs write zero serving rows. The operation is
+bounded by 10,000 rows, 4 MiB, and 25 seconds. There are no News frontiers,
+identity features, similarity edges, aliases, archive rows, or membership
+history.
 
 The native Brief candidate exits before any model call when fewer than three
-Stories, fewer than two physical sources, or an unchanged ordered Story
+Stories, fewer than two reporting origins, or an unchanged ordered Story
 fingerprint is observed. On provider or validation failure it records the
 failed run and keeps the last-known-good current pointer.
 
 Diagnose News in this order:
 
 1. `/api/news/sources`: enabled count, due source, last success, HTTP status,
-   failure count, conditional-fetch validators;
+   failure count, conditional-fetch validators, OpenNews live/recovery/gap;
 2. `news_source_fetches`: one receipt for the source attempt, duration, parsed
    entry count, admitted/updated/observation counts, and bounded gate counts
    (`per_feed_cap`, `missing_title`, `missing_http_url`, `missing_date`,
    `future_date`, `stale_age`, and `duplicate`);
 3. `news_feed_observations`: raw entry exists even when rejected;
 4. `news_items`: admitted source identity and content fingerprint;
-5. `news_story_members` and `news_stories`: membership closure, stable
-   Story ID, state fingerprint, physical-source count, score factors;
+5. `news_story_members` and `news_stories`: current membership closure,
+   full-SHA Story ID, state fingerprint, reporting-origin count, score factors;
 6. `/api/news/feed`: flat global keyset order, filters, facets, and cursor;
 7. `news_brief_runs`, `news_brief_current`, and
    `news_brief_publications`: candidate fingerprint, lease/run state, current
@@ -238,7 +247,7 @@ News health has three layers:
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | every source has a terminal first attempt, no current failures, and at least 80% succeeded in the last hour | no sources, incomplete first coverage, any current source failure, low recent coverage, or material polling backlog |
-| story | active admitted items close into coherent active Story aggregates | missing/duplicate ownership, aggregate mismatch, or no active Stories |
+| story | current 96-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
 
 The HTTP service remains ready when News is degraded; the structured News

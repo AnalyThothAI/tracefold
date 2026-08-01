@@ -316,7 +316,7 @@ def test_worldmonitor_importance_score_matrix(
     assert factors["total"] == expected
 
 
-def test_importance_is_worldmonitor_55_20_15_10_and_physical_source_based() -> None:
+def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> None:
     factors = importance_factors(
         level="high",
         tier=1,
@@ -330,7 +330,7 @@ def test_importance_is_worldmonitor_55_20_15_10_and_physical_source_based() -> N
         "severity_points": 41.25,
         "source_tier": 1,
         "source_points": 20.0,
-        "physical_source_count": 3,
+        "reporting_origin_count": 3,
         "scoring_corroboration_count": 3,
         "corroboration_points": 9.0,
         "recency_points": 10.0,
@@ -340,13 +340,13 @@ def test_importance_is_worldmonitor_55_20_15_10_and_physical_source_based() -> N
     }
 
 
-def test_top8_keeps_rank_and_caps_physical_source_at_three() -> None:
+def test_top8_keeps_rank_and_caps_reporting_origin_at_three() -> None:
     stories = [
         {
             "story_id": f"story-{index}",
             "importance_score": 100 - index,
             "last_published_at_ms": 100 - index,
-            "representative_source_id": "reuters" if index < 5 else f"feed-{index}",
+            "representative_source_name": "reuters" if index < 5 else f"feed-{index}",
         }
         for index in range(12)
     ]

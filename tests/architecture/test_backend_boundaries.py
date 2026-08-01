@@ -41,7 +41,6 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_provider_items",
     "news_projection_dirty_targets",
     "news_intel",
-    "opennews",
     "cryptopanic",
     "NewsAnalysisWorker",
     "StoryInterface",
@@ -51,7 +50,6 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_analysis",
     "verification_status",
     "evidence_set_hash",
-    "news_story_project",
     "news_brief_plan",
     "news_ai_publish",
     "NewsStoryProjectWorker",
@@ -199,6 +197,34 @@ def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> N
             violations.extend(
                 f"{relative}:{marker}" for marker in RETIRED_NEWS_RUNTIME_MARKERS if marker.lower() in content
             )
+    assert violations == []
+
+
+def test_news_kiss_has_one_acquisition_module_and_one_story_writer() -> None:
+    news_source = "\n".join(path.read_text(encoding="utf-8") for path in _python_files(SRC / "news"))
+    workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
+
+    assert news_source.count("class NewsAcquisition:") == 1
+    assert news_source.count("class NewsStoryProjection:") == 1
+    assert workers_source.count("NewsAcquisition(") == 1
+    assert workers_source.count("NewsStoryProjection(") == 1
+
+
+def test_news_kiss_retired_tables_have_no_production_owner() -> None:
+    retired_tables = {
+        "news_identity_features",
+        "news_similarity_edges",
+        "news_story_aliases",
+        "news_story_input_state",
+        "news_projection_frontiers",
+    }
+    allowed_absence_audit = SRC / "app" / "hard_cut.py"
+    violations: list[str] = []
+    for path in _python_files(SRC):
+        if path == allowed_absence_audit:
+            continue
+        source = path.read_text(encoding="utf-8")
+        violations.extend(f"{path.relative_to(ROOT)}:{table}" for table in retired_tables if table in source)
     assert violations == []
 
 

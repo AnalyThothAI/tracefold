@@ -11,7 +11,7 @@ publications are derived state.
 ```text
 providers / public streams
   -> tracefold workers
-  -> PostgreSQL material facts + typed projection frontiers + native model state
+  -> PostgreSQL material facts + bounded projection state + native model state
   -> single-writer read models or immutable publications
   -> tracefold serve
   -> HTTP / persisted-live WebSocket / React
@@ -20,11 +20,11 @@ providers / public streams
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model/CPU capabilities, singleton runtime
-status, and one EDF projection
-coordinator. Workers recover exclusively by re-reading PostgreSQL typed
-projection frontiers, native News/Thesis/Document model state, and queues on
-bounded code-owned clocks. Startup performs no full
-rebuild, backlog-clear loop, backfill, or phased load shifting. There is no
+status, one fixed-period News Story writer, and one EDF projection
+coordinator for the frontier-backed domains. Workers recover exclusively by
+re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native
+Brief/Thesis/Document model state, and queues on bounded code-owned clocks.
+There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
 
@@ -57,13 +57,12 @@ business payload is unchanged.
 
 Source configuration/fetch health in `news_sources`, queues, leases, retries,
 fetch attempts, sync runs, terminal events, and agent checkpoints are control
-or audit state. Typed Radar, Macro, News, and Profile frontiers store stable
+or audit state. Typed Radar, Macro, and Profile frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Persisted News
-identity features and similarity edges and Radar source edges are
+before its deadline; the deadline is never a start gate. Radar source edges are
 deterministic rebuildable state, not alternate business truth. Profile refresh
 heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
@@ -90,7 +89,8 @@ tracefold.news
   repository.py     PostgreSQL observation, item, Story, and Brief state
   interface.py      sole external News read interface
   runtime.py        bounded source acquisition and native Brief candidate
-  projection.py     incremental identity/scoring reducer
+  projection.py     complete 96-hour WorldMonitor Story calculation
+  story_store.py    current-only Story compare-and-publish store
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -209,15 +209,13 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
 `f73de5b7`, not an independent editorial ontology:
 
 ```text
-73 physical RSS/RSSHub sources / 73 logical memberships
+RSS/RSSHub catalog + additive OpenNews source
   -> conditional direct fetch, then public-HTTPS-only relay fallback
-  -> ETag / Last-Modified, first five entries
-  -> immutable FeedObservation before admission
-  -> idempotent NewsItem
-  -> input-fingerprint comparison
-  -> full 96-hour WorldMonitor title clustering only when changed
-  -> canonical alias union
-  -> coherent persistent Story + members + aliases
+  + persistent OpenNews WSS with bounded queue and REST gap recovery
+  -> semantic immutable FeedObservation before admission
+  -> report observations materialize idempotent NewsItems
+  -> complete 96-hour WorldMonitor title clustering every 60 seconds
+  -> coherent current-only Story + members
   -> one flat global cursor Feed; category is a facet
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
@@ -233,30 +231,33 @@ explicit regional exceptions. General local/regional news feeds are retired
 from serving. Trump Truth Social is a tier-1 first-party source and enters the
 ordinary Story/Brief lane without a separate corroboration gate.
 
-The News acquisition due loop is the only NewsItem writer. Startup synchronizes the code-owned
-source catalog, claims one due source, performs provider I/O outside
-transactions under the global three-slot finite-operation capability, records one FetchReceipt per attempt,
-and commits each source independently. Every parsed entry first becomes an immutable
-`news_feed_observations` row. Missing title, non-HTTP URL, missing date, and
-future time beyond one hour remain auditable rejected observations and never
-become NewsItems. Valid entries older than 96 hours are persisted as
-historical inactive NewsItems so acquisition loss stays distinguishable from
-active-cluster eligibility.
+`NewsAcquisition` is the only NewsItem writer. Its RSS lane claims one due
+source, performs bounded provider I/O outside transactions, records one fetch
+receipt, and commits each source independently. Its OpenNews lane owns one
+persistent authenticated WSS receiver, one 256-event in-memory queue, one
+publisher, and one REST recovery loop under the same structured-concurrency
+root. REST runs at startup, after reconnect or overflow, and every five
+minutes; each turn is page 1, limit 100, with a 30-minute overlap. The stream
+socket does not consume a finite-operation permit; REST does.
 
-The EDF News projection domain is the only Story/member/alias/feature/edge
-writer. It runs ordered identity work before scoring, keeps candidate-pair
-blocks at or below 4,096 and buckets at or below 250, and recomputes only
-affected components and expiry closures. Pure calculation occurs outside the
-write transaction. The CAS publication compares the input fingerprint again
-and writes the complete affected component closure; unchanged input performs
-zero serving writes.
+Every provider event first becomes `news_feed_observations`. Its semantic
+identity is provider/source, provider record key, observation kind, and
+normalized payload hash, so reconnect and REST/WSS overlap insert zero
+duplicates. Only `report` observations materialize NewsItems. OpenNews
+translations and `news.ai_update` are observation-only;
+`strategy.triggered` and non-news engine events are ignored. Provider AI
+ratings are evidence only and cannot affect identity, classification, score,
+Story, or Brief. Missing title or date and dates more than one hour in the
+future remain auditable rejected observations. Linkless OpenNews dispatches
+are valid evidence; RSS still requires an article URL.
 
-The persisted one-hour scoring epoch is a single global clock expressed as at
-most 64 stable `score-bucket` frontiers. Story IDs deterministically select a
-bucket; timestamps never become serving or frontier identity. Each bucket
-loads only current members, computes the same WorldMonitor factors outside the
-database, and publishes changed item/Story score fields in set-based writes.
-There is no per-Story timer fanout, scoring worker, or second scheduler.
+The sole Story writer loads all enabled NewsItems in the current 96-hour
+window, computes outside the database, and compares the input fingerprint
+again under the publication lock. It runs every 60 seconds and is bounded by
+10,000 rows, 4 MiB input, and a 25-second operation budget. An unchanged input
+writes zero serving rows; a stale snapshot writes nothing. There are no News
+frontiers, identity-feature rows, similarity-edge rows, aliases, or
+membership history.
 
 WallStEngine is one ordinary tier-4 English source in the Finance membership.
 Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
@@ -266,21 +267,20 @@ classification, Story source count, ranking, health, and Brief rules as every
 other source. Internal HTTP/RSSHub URLs are direct-only; only code-owned public
 HTTPS feed URLs may be sent to the external relay.
 
-NewsItem identity is `(source_id, source_item_key)`, where the source item key
-comes from GUID and canonical URL. Tracking parameters are removed. The
-content fingerprint covers canonical URL, title, and description,
-but deliberately excludes `pubDate`: a source timestamp drift produces a new
-observation and zero NewsItem or Story writes.
+NewsItem identity is `(source_id, source_item_key)`. RSS uses GUID or canonical
+URL. OpenNews uses canonical article URL when present and otherwise
+`dispatch:opennews:<provider-id>`. Tracking parameters are removed. The whole
+winning OpenNews report is selected deterministically; translations and
+provider annotations never overwrite it.
 
 Story identity is the Python port of WorldMonitor's
 `shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
 512-dimensional vectors, uniform and boosted cosine channels, threshold
 `0.615`, exact-duplicate union, high-containment rescue, 250-item candidate
-buckets, and deterministic union-find. Persisted features and similarity edges
-let the reducer close only affected components. Crossing the 250/251 boundary
-dirties the complete bucket. Existing member ownership and seven-day title
-aliases preserve a stable Story ID across representative changes; dropped
-Stories are archived, not treated as current. There is no embedding,
+buckets, and deterministic union-find. A Story ID is the full SHA-256 of the
+earliest normalized title in that current cluster. It may change when the
+earliest item expires; the previous Story is removed and its detail route
+returns not found. There is no archived Story product, embedding,
 translation, full-article extraction, browser clustering, revision product, or
 per-Story AI analysis.
 
@@ -288,18 +288,18 @@ Threat level and category use WorldMonitor's deterministic keyword classifier,
 including exclusions and historical downgrade. There is no item-level AI
 classifier or cache. Importance uses WorldMonitor's 55% severity, 20% source
 tier, 15% corroboration, and 10% recency, followed by the narrow
-diplomacy/flashpoint and entity-corroboration boosts. Corroboration counts
-distinct physical source IDs; logical memberships and parsed reporting-origin
-metadata never increase it. Because Tracefold persists this otherwise
+diplomacy/flashpoint and entity-corroboration boosts. Corroboration and public
+`source_count` count distinct reporting origins, so one Reuters report seen
+through both RSS and OpenNews counts once. Because Tracefold persists this otherwise
 request-time score, recency uses the equivalent one-hour healthy-cache epoch;
 unchanged input within an epoch writes zero serving rows. The API exposes the
 scoring item and factor breakdown. Global clustering precedes filtering,
 sorting, and keyset pagination; category is a facet, never a bucket or cap.
 
-The native News Brief candidate selects at most eight Stories, caps one representative
-physical source at three, and excludes opinion, feel-good, and ephemeral live
-coverage. It requires at least three Stories from at least two physical
-sources before making a model call.
+The native News Brief candidate selects at most eight Stories, caps one
+representative reporting origin at three, and excludes opinion, feel-good,
+and ephemeral live coverage. It requires at least three Stories from at least
+two reporting origins before making a model call.
 Its fingerprint binds the ordered Story state and the prompt/workflow/schema/
 locale contract. An unchanged fingerprint makes no model call and no write.
 The provider chain gets one bounded attempt per configured provider under one
@@ -310,20 +310,21 @@ Publication history is immutable; failed runs cannot replace last-known-good.
 `news_brief_current` is the single current pointer and the read contract
 exposes `unavailable`, `insufficient_material`, `running`, `ready`,
 `stale_fallback`, or `failed` honestly. `running` requires a current database
-run with an unexpired lease and heartbeat.
-Typed Story frontiers are polled by the single EDF and productive work repolls
-immediately. News Brief preserves the first-dirty 600-second debounce in native
-domain state; once due, the serial model arbiter repolls after every completed
-candidate. No per-Story or Brief worker timer is a correctness authority.
+run with an unexpired lease and heartbeat. News Brief preserves the first-dirty
+600-second debounce in native domain state; once due, the serial model arbiter
+repolls after every completed candidate.
 
-The complete live News storage boundary is exactly twelve tables:
+The complete live News storage boundary is exactly fourteen tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,
 `news_feed_observations`, `news_items`, `news_stories`,
-`news_story_members`, `news_story_aliases`, `news_story_input_state`,
+`news_story_members`, `news_projection_summary`,
+`news_story_facet_counts`, `news_source_facet_counts`,
+`news_brief_selection_current`,
 `news_brief_runs`,
 `news_brief_publications`, and `news_brief_current`. The
-`20260728_0210` current-schema baseline creates only this News model on an empty
-database and has no downgrade or compatibility lane.
+`20260801_0234` hard cut removes incremental identity features, similarity
+edges, aliases, input state, and Story frontiers; it has no downgrade or
+compatibility lane.
 
 ### Macro
 

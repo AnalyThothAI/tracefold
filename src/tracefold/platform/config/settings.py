@@ -255,7 +255,14 @@ class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
+    opennews_token: str | None = None
     relay: NewsRelaySettings = Field(default_factory=NewsRelaySettings)
+
+    @field_validator("opennews_token", mode="before")
+    @classmethod
+    def parse_opennews_token(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
 
 
 class Settings(BaseModel):
@@ -413,6 +420,7 @@ providers:
 
 news:
   enabled: true
+  opennews_token:
   relay:
     base_url: ""
     auth_header: "x-relay-key"

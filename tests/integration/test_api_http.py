@@ -700,8 +700,8 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail["story_id"] == story_id
     assert detail["representative_item_id"]
     assert detail["scoring_item_id"]
-    assert detail["members"][0]["current"] is True
-    assert detail["members"][0]["first_joined_at_ms"] <= detail["members"][0]["last_confirmed_at_ms"]
+    assert "current" not in detail["members"][0]
+    assert "active" not in detail
     assert detail["members"][0]["reporting_origin"]
     assert detail["members_page"] == {
         "returned_count": 1,

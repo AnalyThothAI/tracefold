@@ -13,15 +13,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
 
-from tracefold.platform.postgres.projection_frontier import (
-    NEWS_FRONTIER,
-    ProjectionFrontierRepository,
-)
 from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 from .brief import brief_fingerprint
-from .classification import SEVERITY_VALUES, classify_by_keyword
-from .identity import cluster_texts, normalize_story_text
+from .classification import classify_by_keyword
+from .identity import normalize_story_text
 from .models import (
     BRIEF_PROMPT_VERSION,
     BRIEF_SCHEMA_VERSION,
@@ -34,27 +30,21 @@ from .models import (
     NewsBriefDraft,
     NewsFeedEntry,
     NewsSourceDefinition,
-    ThreatLevel,
 )
+from .opennews import OpenNewsEvent
 from .ranking import (
-    diplomacy_entity_keys,
-    importance_factors,
     is_delayed_brief_excluded,
-    promote_diplomacy_severity,
     select_top_stories,
 )
 
 _PIPELINE_LOCK_KEY = 727_301_984
 _BRIEF_LOCK_KEY = 727_301_985
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
-_ALIAS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 _SCORING_EPOCH_MS = 60 * 60 * 1000
 _OPERATIONS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 _BRIEF_LEASE_MS = 120_000
 _PUBLIC_LIST_LIMIT = 100
-_STORY_PROJECTION_KEY = "current"
-_STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:incremental-v1"
-_NEWS_PUBLIC_DEADLINE_MS = 60_000
+_STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:full-window-v1"
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -125,6 +115,47 @@ def _content_fingerprint(*, title: str, description: str, canonical_url: str) ->
     )
 
 
+def _opennews_content_fingerprint(
+    *,
+    title: str,
+    description: str,
+    canonical_url: str | None,
+    reporting_origin: str,
+    published_at_ms: int,
+    language: str,
+) -> str:
+    return _sha256_json(
+        {
+            "title": title,
+            "description": description,
+            "canonical_url": canonical_url,
+            "reporting_origin": reporting_origin,
+            "published_at_ms": published_at_ms,
+            "language": language,
+        }
+    )
+
+
+def _opennews_report_rank(
+    *,
+    reporting_origin: str,
+    canonical_url: str | None,
+    title: str,
+    description: str,
+    published_at_ms: int,
+    observation_id: str,
+) -> tuple[int, int, int, str]:
+    origin = str(reporting_origin or "").strip().lower()
+    explicit_origin = int(bool(origin and origin != "opennews"))
+    completeness = len(str(title).strip()) + len(str(description).strip()) + (1 if canonical_url else 0)
+    return (
+        explicit_origin,
+        int(published_at_ms),
+        completeness,
+        str(observation_id),
+    )
+
+
 def _alias_key(normalized_title: str) -> str:
     return hashlib.sha256(normalized_title.encode()).hexdigest()
 
@@ -179,6 +210,10 @@ class NewsRepository:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
+    @staticmethod
+    def stable_json_hash(value: object) -> str:
+        return _sha256_json(value)
+
     # Source inventory and acquisition -----------------------------------------
 
     def sync_sources(self, sources: Sequence[NewsSourceDefinition], *, now_ms: int) -> None:
@@ -192,12 +227,12 @@ class NewsRepository:
                 """
                 INSERT INTO news_sources (
                   source_id, name, feed_url, tier, lang, enabled,
-                  refresh_interval_seconds, next_fetch_at_ms,
+                  source_kind, refresh_interval_seconds, next_fetch_at_ms,
                   created_at_ms, updated_at_ms
                 )
                 VALUES (
                   %(source_id)s, %(name)s, %(feed_url)s, %(tier)s, %(lang)s,
-                  %(enabled)s, %(refresh_interval_seconds)s, %(now_ms)s,
+                  %(enabled)s, %(source_kind)s, %(refresh_interval_seconds)s, %(now_ms)s,
                   %(now_ms)s, %(now_ms)s
                 )
                 ON CONFLICT (source_id) DO UPDATE SET
@@ -206,6 +241,7 @@ class NewsRepository:
                   tier = EXCLUDED.tier,
                   lang = EXCLUDED.lang,
                   enabled = EXCLUDED.enabled,
+                  source_kind = EXCLUDED.source_kind,
                   refresh_interval_seconds = EXCLUDED.refresh_interval_seconds,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE (
@@ -214,6 +250,7 @@ class NewsRepository:
                   news_sources.tier,
                   news_sources.lang,
                   news_sources.enabled,
+                  news_sources.source_kind,
                   news_sources.refresh_interval_seconds
                 ) IS DISTINCT FROM (
                   EXCLUDED.name,
@@ -221,6 +258,7 @@ class NewsRepository:
                   EXCLUDED.tier,
                   EXCLUDED.lang,
                   EXCLUDED.enabled,
+                  EXCLUDED.source_kind,
                   EXCLUDED.refresh_interval_seconds
                 )
                 """,
@@ -260,30 +298,7 @@ class NewsRepository:
             str(row["source_id"]): bool(row["enabled"])
             for row in self.conn.execute("SELECT source_id, enabled FROM news_sources").fetchall()
         }
-        changed_source_ids = sorted(
-            source_id
-            for source_id, enabled in current_enabled.items()
-            if source_id in previous_enabled and previous_enabled[source_id] != enabled
-        )
-        if changed_source_ids:
-            for row in self.conn.execute(
-                """
-                SELECT item.item_id, item.content_fingerprint,
-                       item.published_at_ms, source.enabled
-                  FROM news_items item
-                  JOIN news_sources source ON source.source_id = item.source_id
-                 WHERE item.source_id = ANY(%s)
-                 ORDER BY item.item_id
-                """,
-                (changed_source_ids,),
-            ).fetchall():
-                self._mark_identity_dirty(
-                    item_id=str(row["item_id"]),
-                    content_fingerprint=str(row["content_fingerprint"]),
-                    published_at_ms=int(row["published_at_ms"]),
-                    active=bool(row["enabled"]) and int(row["published_at_ms"]) >= now_ms - _ACTIVE_WINDOW_MS,
-                    now_ms=now_ms,
-                )
+        del previous_enabled, current_enabled
 
     def claim_due_source(
         self,
@@ -303,6 +318,7 @@ class NewsRepository:
                  WHERE source_id = s.source_id
               ) m ON true
              WHERE s.enabled
+               AND s.source_kind = 'rss'
                AND s.next_fetch_at_ms <= %s
                AND (
                  s.claim_token IS NULL
@@ -410,7 +426,6 @@ class NewsRepository:
 
         inserted = 0
         updated = 0
-        projection_frontiers_written = 0
         observations = 0
         rejection_counts: Counter[str] = Counter(
             {str(key): max(0, int(value)) for key, value in (gate_counts or {}).items() if int(value) > 0}
@@ -454,37 +469,23 @@ class NewsRepository:
                 and entry.published_at_ms < finished_at_ms - _ACTIVE_WINDOW_MS
             )
             gate_reason = "stale_age" if stale else rejection
-            observation_id = deterministic_id(
-                "news_observation",
-                fetch_id,
-                source_item_key,
+            observation = self._insert_observation(
+                fetch_id=fetch_id,
+                source_id=source.source_id,
+                source_item_key=source_item_key,
+                observation_kind="report",
+                observed_at_ms=finished_at_ms,
+                title=title or None,
+                url=canonical_url or None,
+                published_at_ms=entry.published_at_ms,
+                raw=entry.raw,
+                admitted=rejection is None,
+                rejection_reason=gate_reason,
             )
-            row_count = self.conn.execute(
-                """
-                INSERT INTO news_feed_observations (
-                  observation_id, fetch_id, source_id, source_item_key,
-                  observed_at_ms, title, url, published_at_ms, raw,
-                  admitted, rejection_reason, created_at_ms
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (observation_id) DO NOTHING
-                """,
-                (
-                    observation_id,
-                    fetch_id,
-                    source.source_id,
-                    source_item_key,
-                    finished_at_ms,
-                    title or None,
-                    canonical_url or None,
-                    entry.published_at_ms,
-                    Jsonb(entry.raw),
-                    rejection is None,
-                    gate_reason,
-                    finished_at_ms,
-                ),
-            ).rowcount
-            observations += int(row_count or 0)
+            observations += int(observation["inserted"])
+            if not observation["inserted"]:
+                rejection_counts["duplicate"] += 1
+                continue
             if rejection is not None:
                 rejection_counts[rejection] += 1
                 continue
@@ -550,13 +551,6 @@ class NewsRepository:
                     ),
                 )
                 inserted += 1
-                projection_frontiers_written += self._mark_identity_dirty(
-                    item_id=item_id,
-                    content_fingerprint=fingerprint,
-                    published_at_ms=published_at_ms,
-                    active=not stale,
-                    now_ms=finished_at_ms,
-                )
             elif str(existing["content_fingerprint"]) == fingerprint:
                 rejection_counts["duplicate"] += 1
             else:
@@ -606,13 +600,6 @@ class NewsRepository:
                     ),
                 )
                 updated += 1
-                projection_frontiers_written += self._mark_identity_dirty(
-                    item_id=item_id,
-                    content_fingerprint=fingerprint,
-                    published_at_ms=published_at_ms,
-                    active=not stale,
-                    now_ms=finished_at_ms,
-                )
 
         self.conn.execute(
             """
@@ -638,34 +625,441 @@ class NewsRepository:
             "observations_inserted": observations,
             "items_inserted": inserted,
             "items_updated": updated,
-            "projection_frontiers_written": projection_frontiers_written,
+            "projection_frontiers_written": 0,
         }
 
-    def _mark_identity_dirty(
+    def _insert_observation(
         self,
         *,
-        item_id: str,
-        content_fingerprint: str,
-        published_at_ms: int,
-        active: bool,
-        now_ms: int,
-    ) -> int:
-        input_fingerprint = _sha256_json(
+        fetch_id: str | None,
+        source_id: str,
+        source_item_key: str,
+        observation_kind: str,
+        observed_at_ms: int,
+        title: str | None,
+        url: str | None,
+        published_at_ms: int | None,
+        raw: Mapping[str, Any],
+        admitted: bool,
+        rejection_reason: str | None,
+    ) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            WITH payload AS (
+              SELECT %(raw)s::jsonb AS raw
+            ), identified AS (
+              SELECT raw,
+                     encode(sha256(convert_to(raw::text, 'UTF8')), 'hex')
+                       AS payload_fingerprint
+                FROM payload
+            ), inserted AS (
+              INSERT INTO news_feed_observations (
+                observation_id, fetch_id, source_id, source_item_key,
+                observation_kind, payload_fingerprint, observed_at_ms,
+                title, url, published_at_ms, raw, admitted,
+                rejection_reason, created_at_ms
+              )
+              SELECT
+                'news_observation_' || substr(
+                  encode(
+                    sha256(
+                      convert_to(
+                        concat_ws(
+                          chr(31), 'news_observation', %(source_id)s::text,
+                          %(source_item_key)s::text, %(observation_kind)s::text,
+                          identified.payload_fingerprint
+                        ),
+                        'UTF8'
+                      )
+                    ),
+                    'hex'
+                  ),
+                  1,
+                  32
+                ),
+                %(fetch_id)s, %(source_id)s, %(source_item_key)s,
+                %(observation_kind)s, identified.payload_fingerprint,
+                %(observed_at_ms)s, %(title)s, %(url)s, %(published_at_ms)s,
+                identified.raw, %(admitted)s, %(rejection_reason)s,
+                %(observed_at_ms)s
+              FROM identified
+              ON CONFLICT (
+                source_id, source_item_key, observation_kind,
+                payload_fingerprint
+              ) DO NOTHING
+              RETURNING observation_id, payload_fingerprint
+            )
+            SELECT observation_id, payload_fingerprint, true AS inserted
+              FROM inserted
+            UNION ALL
+            SELECT observation_id, payload_fingerprint, false AS inserted
+              FROM news_feed_observations
+             WHERE source_id = %(source_id)s
+               AND source_item_key = %(source_item_key)s
+               AND observation_kind = %(observation_kind)s
+               AND payload_fingerprint = (
+                 SELECT payload_fingerprint FROM identified
+               )
+             LIMIT 1
+            """,
             {
-                "item_id": item_id,
-                "content_fingerprint": content_fingerprint,
-                "published_at_ms": int(published_at_ms),
-                "active": bool(active),
-            }
+                "fetch_id": fetch_id,
+                "source_id": source_id,
+                "source_item_key": source_item_key,
+                "observation_kind": observation_kind,
+                "observed_at_ms": int(observed_at_ms),
+                "title": title,
+                "url": url,
+                "published_at_ms": published_at_ms,
+                "raw": Jsonb(dict(raw)),
+                "admitted": bool(admitted),
+                "rejection_reason": rejection_reason,
+            },
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("news_observation_semantic_identity_failed")
+        return dict(row)
+
+    def record_opennews_events(
+        self,
+        *,
+        source: NewsSourceDefinition,
+        events: Sequence[OpenNewsEvent],
+        observed_at_ms: int,
+        recovery_started_at_ms: int | None = None,
+    ) -> dict[str, int]:
+        """Publish one bounded OpenNews batch through the sole NewsItem policy."""
+
+        if source.source_kind != "opennews":
+            raise ValueError("opennews_source_required")
+        fetch_id = (
+            deterministic_id("news_fetch", source.source_id, recovery_started_at_ms)
+            if recovery_started_at_ms is not None
+            else None
         )
-        return ProjectionFrontierRepository(self.conn).mark_dirty(
-            NEWS_FRONTIER,
-            key={"bucket_id": f"identity:{item_id}"},
-            dirty_at_ms=now_ms,
-            deadline_at_ms=now_ms + _NEWS_PUBLIC_DEADLINE_MS,
-            input_fingerprint=input_fingerprint,
-            version=_STORY_PROJECTION_VERSION,
-            extra_insert={"active_item_count": int(active)},
+        if fetch_id is not None:
+            recovery_started = cast(int, recovery_started_at_ms)
+            self._insert_fetch(
+                fetch_id=fetch_id,
+                source_id=source.source_id,
+                started_at_ms=recovery_started,
+                finished_at_ms=int(observed_at_ms),
+                status="success",
+                fetch_path="opennews_rest",
+                direct_error_code=None,
+                http_status=200,
+                entries_seen=len(events),
+                observations_inserted=0,
+                items_inserted=0,
+                items_updated=0,
+                rejection_counts={},
+            )
+        observations_inserted = 0
+        items_inserted = 0
+        items_updated = 0
+        rejections: Counter[str] = Counter()
+        for event in events:
+            entry = event.entry
+            title = str(entry.title or "").strip() if entry is not None else None
+            url = _canonical_url(str(entry.link or "")) or None if entry is not None else None
+            published_at_ms = entry.published_at_ms if entry is not None else None
+            rejection = None
+            if event.observation_kind == "report":
+                rejection = self._opennews_rejection_reason(
+                    title=str(title or ""),
+                    published_at_ms=published_at_ms,
+                    now_ms=observed_at_ms,
+                )
+            observation = self._insert_observation(
+                fetch_id=fetch_id,
+                source_id=source.source_id,
+                source_item_key=event.provider_record_id,
+                observation_kind=event.observation_kind,
+                observed_at_ms=observed_at_ms,
+                title=title,
+                url=url,
+                published_at_ms=published_at_ms,
+                raw=event.raw,
+                admitted=event.observation_kind == "report" and rejection is None,
+                rejection_reason=rejection,
+            )
+            if not observation["inserted"]:
+                rejections["duplicate"] += 1
+                continue
+            observations_inserted += 1
+            if event.observation_kind != "report" or entry is None:
+                continue
+            if rejection is not None:
+                rejections[rejection] += 1
+                continue
+            if published_at_ms is None:
+                raise RuntimeError("opennews_published_at_invariant")
+            if published_at_ms < observed_at_ms - _ACTIVE_WINDOW_MS:
+                rejections["stale_age"] += 1
+                continue
+            reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
+            description = str(entry.description or "").strip()
+            language = entry.language or source.lang
+            content_fingerprint = _opennews_content_fingerprint(
+                title=str(title),
+                description=description,
+                canonical_url=url,
+                reporting_origin=reporting_origin,
+                published_at_ms=published_at_ms,
+                language=language,
+            )
+            item_id = deterministic_id("news_item", source.source_id, event.source_item_key)
+            current = self.conn.execute(
+                """
+                SELECT content_fingerprint, winning_observation_id,
+                       reporting_origin, canonical_url, title, description,
+                       published_at_ms
+                  FROM news_items
+                 WHERE item_id = %s
+                """,
+                (item_id,),
+            ).fetchone()
+            incoming_rank = _opennews_report_rank(
+                reporting_origin=reporting_origin,
+                canonical_url=url,
+                title=str(title),
+                description=description,
+                published_at_ms=published_at_ms,
+                observation_id=str(observation["observation_id"]),
+            )
+            if current is not None:
+                current_rank = _opennews_report_rank(
+                    reporting_origin=str(current["reporting_origin"]),
+                    canonical_url=current["canonical_url"],
+                    title=str(current["title"]),
+                    description=str(current["description"]),
+                    published_at_ms=int(current["published_at_ms"]),
+                    observation_id=str(current["winning_observation_id"] or ""),
+                )
+                if incoming_rank <= current_rank:
+                    continue
+            classification = classify_by_keyword(str(title), now_ms=observed_at_ms)
+            values = {
+                "canonical_url": url,
+                "reporting_origin": reporting_origin,
+                "title": str(title),
+                "normalized_title": normalize_story_text(str(title)),
+                "description": description,
+                "lang": language,
+                "published_at_ms": published_at_ms,
+                "last_observed_at_ms": observed_at_ms,
+                "content_fingerprint": content_fingerprint,
+                "level": classification.level,
+                "category": classification.category,
+                "classification_source": classification.source,
+                "classification_confidence": classification.confidence,
+                "brief_excluded": is_delayed_brief_excluded(
+                    title=str(title),
+                    url=str(url or ""),
+                    description=description,
+                ),
+                "winning_observation_id": observation["observation_id"],
+            }
+            if current is None:
+                self.conn.execute(
+                    """
+                    INSERT INTO news_items (
+                      item_id, source_id, source_item_key, canonical_url,
+                      reporting_origin, title, normalized_title, description,
+                      lang, published_at_ms, first_observed_at_ms,
+                      last_observed_at_ms, content_fingerprint, level, category,
+                      classification_source, classification_confidence,
+                      importance_score, importance_factors, brief_excluded,
+                      active, winning_observation_id, created_at_ms, updated_at_ms
+                    ) VALUES (
+                      %(item_id)s, %(source_id)s, %(source_item_key)s,
+                      %(canonical_url)s, %(reporting_origin)s, %(title)s,
+                      %(normalized_title)s, %(description)s, %(lang)s,
+                      %(published_at_ms)s, %(last_observed_at_ms)s,
+                      %(last_observed_at_ms)s, %(content_fingerprint)s,
+                      %(level)s, %(category)s, %(classification_source)s,
+                      %(classification_confidence)s, 0, '{}'::jsonb,
+                      %(brief_excluded)s, true, %(winning_observation_id)s,
+                      %(last_observed_at_ms)s, %(last_observed_at_ms)s
+                    )
+                    """,
+                    {
+                        **values,
+                        "item_id": item_id,
+                        "source_id": source.source_id,
+                        "source_item_key": event.source_item_key,
+                    },
+                )
+                items_inserted += 1
+            elif str(current["content_fingerprint"]) != content_fingerprint:
+                self.conn.execute(
+                    """
+                    UPDATE news_items
+                       SET canonical_url = %(canonical_url)s,
+                           reporting_origin = %(reporting_origin)s,
+                           title = %(title)s,
+                           normalized_title = %(normalized_title)s,
+                           description = %(description)s,
+                           lang = %(lang)s,
+                           published_at_ms = %(published_at_ms)s,
+                           last_observed_at_ms = %(last_observed_at_ms)s,
+                           content_fingerprint = %(content_fingerprint)s,
+                           level = %(level)s,
+                           category = %(category)s,
+                           classification_source = %(classification_source)s,
+                           classification_confidence = %(classification_confidence)s,
+                           brief_excluded = %(brief_excluded)s,
+                           active = true,
+                           winning_observation_id = %(winning_observation_id)s,
+                           updated_at_ms = %(last_observed_at_ms)s
+                     WHERE item_id = %(item_id)s
+                    """,
+                    {**values, "item_id": item_id},
+                )
+                items_updated += 1
+        if fetch_id is not None:
+            self.conn.execute(
+                """
+                UPDATE news_source_fetches
+                   SET observations_inserted = %s,
+                       items_inserted = %s,
+                       items_updated = %s,
+                       rejection_counts = %s
+                 WHERE fetch_id = %s
+                """,
+                (
+                    observations_inserted,
+                    items_inserted,
+                    items_updated,
+                    Jsonb(dict(rejections)),
+                    fetch_id,
+                ),
+            )
+            self.conn.execute(
+                """
+                UPDATE news_sources
+                   SET last_fetch_started_at_ms = %s,
+                       last_fetch_finished_at_ms = %s,
+                       last_recovery_at_ms = %s,
+                       last_success_at_ms = %s,
+                       last_http_status = 200,
+                       consecutive_failures = 0,
+                       last_error = NULL,
+                       gap_unclosed = false,
+                       next_fetch_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE source_id = %s
+                """,
+                (
+                    recovery_started_at_ms,
+                    observed_at_ms,
+                    observed_at_ms,
+                    observed_at_ms,
+                    observed_at_ms + 300_000,
+                    observed_at_ms,
+                    source.source_id,
+                ),
+            )
+        return {
+            "entries_seen": len(events),
+            "observations_inserted": observations_inserted,
+            "items_inserted": items_inserted,
+            "items_updated": items_updated,
+        }
+
+    @staticmethod
+    def _opennews_rejection_reason(
+        *,
+        title: str,
+        published_at_ms: int | None,
+        now_ms: int,
+    ) -> str | None:
+        if not title:
+            return "missing_title"
+        if published_at_ms is None:
+            return "missing_date"
+        if published_at_ms > now_ms + 3_600_000:
+            return "future_date"
+        return None
+
+    def update_opennews_live_status(
+        self,
+        *,
+        source_id: str,
+        connected: bool,
+        now_ms: int,
+        error_code: str | None,
+        gap_unclosed: bool,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_sources
+               SET live_connected = %s,
+                   last_live_at_ms = CASE WHEN %s THEN %s ELSE last_live_at_ms END,
+                   last_error = %s,
+                   gap_unclosed = %s,
+                   updated_at_ms = %s
+             WHERE source_id = %s AND source_kind = 'opennews'
+            """,
+            (
+                connected,
+                connected,
+                now_ms,
+                error_code,
+                gap_unclosed,
+                now_ms,
+                source_id,
+            ),
+        )
+
+    def record_opennews_recovery_failure(
+        self,
+        *,
+        source_id: str,
+        started_at_ms: int,
+        finished_at_ms: int,
+        error_code: str,
+        status_code: int | None,
+    ) -> None:
+        fetch_id = deterministic_id("news_fetch", source_id, started_at_ms)
+        self._insert_fetch(
+            fetch_id=fetch_id,
+            source_id=source_id,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            status="failed",
+            fetch_path="opennews_rest",
+            direct_error_code=None,
+            http_status=status_code,
+            entries_seen=0,
+            observations_inserted=0,
+            items_inserted=0,
+            items_updated=0,
+            rejection_counts={},
+            error_code=str(error_code)[:500],
+        )
+        self.conn.execute(
+            """
+            UPDATE news_sources
+               SET last_fetch_started_at_ms=%s,
+                   last_fetch_finished_at_ms=%s,
+                   last_http_status=%s,
+                   consecutive_failures=consecutive_failures + 1,
+                   last_error=%s,
+                   gap_unclosed=true,
+                   next_fetch_at_ms=%s,
+                   updated_at_ms=%s
+             WHERE source_id=%s AND source_kind='opennews'
+            """,
+            (
+                started_at_ms,
+                finished_at_ms,
+                status_code,
+                str(error_code)[:500],
+                finished_at_ms + 300_000,
+                finished_at_ms,
+                source_id,
+            ),
         )
 
     def record_fetch_failure(
@@ -843,646 +1237,66 @@ class NewsRepository:
 
     # Persistent Story projection ----------------------------------------------
 
-    def prepare_story_projection(self, *, now_ms: int) -> StoryProjectionPreparation:
-        projection_input = self._story_projection_input(now_ms=now_ms)
-        projection_state = self.conn.execute(
-            """
-            SELECT input_fingerprint, story_count
-              FROM news_story_input_state
-             WHERE singleton_key = %s
-            """,
-            (_STORY_PROJECTION_KEY,),
-        ).fetchone()
-        if projection_state is not None and str(projection_state["input_fingerprint"]) == projection_input.fingerprint:
-            return StoryProjectionPreparation(
-                input=projection_input,
-                item_ids=(),
-                temporary_clusters=(),
-                current_story_count=int(projection_state["story_count"]),
-            )
-        rows = self.conn.execute(
-            """
-            SELECT item.item_id, item.title
-            FROM news_items item
-            JOIN news_sources source ON source.source_id = item.source_id
-            WHERE item.published_at_ms >= %s
-              AND source.enabled
-            ORDER BY item.published_at_ms, item.item_id
-            """,
-            (projection_input.cutoff_ms,),
-        ).fetchall()
-        clusters = cluster_texts([str(row["title"]) for row in rows])
-        return StoryProjectionPreparation(
-            input=projection_input,
-            item_ids=tuple(str(row["item_id"]) for row in rows),
-            temporary_clusters=tuple(tuple(int(index) for index in cluster) for cluster in clusters),
+    def load_story_projection(self, *, now_ms: int) -> dict[str, Any]:
+        from .story_store import load_story_projection
+
+        return load_story_projection(self, now_ms=now_ms)
+
+    def publish_story_projection(
+        self,
+        *,
+        snapshot: Any,
+        projection: Mapping[str, Any],
+        now_ms: int,
+    ) -> dict[str, Any]:
+        from .story_store import publish_story_projection
+
+        return publish_story_projection(
+            self,
+            snapshot=snapshot,
+            projection=projection,
+            now_ms=now_ms,
         )
 
-    def rebuild_stories(
+    def record_story_projection_failure(
         self,
         *,
         now_ms: int,
-        prepared: StoryProjectionPreparation | None = None,
-    ) -> dict[str, Any]:
-        preparation = prepared or self.prepare_story_projection(now_ms=now_ms)
-        if not preparation.requires_rebuild:
-            story_count = int(preparation.current_story_count or 0)
+        error_code: str,
+    ) -> None:
+        from .story_store import record_story_projection_failure
+
+        record_story_projection_failure(
+            self,
+            now_ms=now_ms,
+            error_code=error_code,
+        )
+
+    def rebuild_stories(self, *, now_ms: int) -> dict[str, Any]:
+        from .projection import NewsProjectionSnapshot, compute_news_story_projection
+
+        payload = self.load_story_projection(now_ms=now_ms)
+        snapshot = NewsProjectionSnapshot(
+            input_fingerprint=str(payload["input_fingerprint"]),
+            cutoff_ms=int(payload["cutoff_ms"]),
+            scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
+            current_input_fingerprint=(
+                str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
+            ),
+            rows=tuple(dict(row) for row in payload["rows"]),
+        )
+        if snapshot.unchanged:
             return {
-                "items": preparation.input.item_count,
-                "temporary_clusters": 0,
-                "stories": story_count,
-                "story_writes": 0,
-                "membership_writes": 0,
-                "rows_written": 0,
-                "added": 0,
-                "archived": 0,
-                "unchanged": story_count,
                 "projection_status": "unchanged_input",
-                "clustered": 0,
-            }
-        self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
-        projection_input = self._story_projection_input(now_ms=now_ms)
-        if projection_input.fingerprint != preparation.input.fingerprint:
-            return {
-                "items": projection_input.item_count,
-                "temporary_clusters": 0,
+                "items": len(snapshot.rows),
                 "stories": 0,
-                "story_writes": 0,
-                "membership_writes": 0,
                 "rows_written": 0,
-                "added": 0,
-                "archived": 0,
-                "unchanged": 0,
-                "projection_status": "stale_snapshot",
-                "clustered": 0,
             }
-        active_before = {
-            str(row["story_id"])
-            for row in self.conn.execute("SELECT story_id FROM news_stories WHERE active").fetchall()
-        }
-        cutoff_ms = projection_input.cutoff_ms
-        scoring_now_ms = projection_input.scoring_epoch_ms
-        self.conn.execute(
-            """
-            UPDATE news_items AS item
-               SET active = (
-                 item.published_at_ms >= %s
-                 AND EXISTS (
-                   SELECT 1
-                     FROM news_sources AS source
-                    WHERE source.source_id = item.source_id
-                      AND source.enabled
-                 )
-               )
-             WHERE active IS DISTINCT FROM (
-               item.published_at_ms >= %s
-               AND EXISTS (
-                 SELECT 1
-                   FROM news_sources AS source
-                  WHERE source.source_id = item.source_id
-                    AND source.enabled
-               )
-             )
-            """,
-            (cutoff_ms, cutoff_ms),
-        )
-        items = [
-            dict(row)
-            for row in self.conn.execute(
-                """
-                SELECT i.*, s.name AS source_name, s.tier
-                  FROM news_items i
-                  JOIN news_sources s ON s.source_id = i.source_id
-                 WHERE i.active AND s.enabled
-                 ORDER BY i.published_at_ms, i.item_id
-                """
-            ).fetchall()
-        ]
-        item_ids = tuple(str(item["item_id"]) for item in items)
-        if item_ids != preparation.item_ids:
-            raise RuntimeError("news_story_input_snapshot_changed")
-        temporary_clusters = [list(cluster) for cluster in preparation.temporary_clusters]
-
-        previous_by_item = {
-            str(row["item_id"]): str(row["story_id"])
-            for row in self.conn.execute("SELECT item_id, story_id FROM news_story_members WHERE current").fetchall()
-        }
-        alias_by_key = {
-            str(row["alias_key"]): str(row["story_id"])
-            for row in self.conn.execute(
-                """
-                SELECT alias_key, story_id
-                  FROM news_story_aliases
-                 WHERE expires_at_ms > %s
-                """,
-                (now_ms,),
-            ).fetchall()
-        }
-
-        candidate_counts_by_cluster: list[Counter[str]] = []
-        parents = list(range(len(temporary_clusters)))
-
-        def find(value: int) -> int:
-            while parents[value] != value:
-                parents[value] = parents[parents[value]]
-                value = parents[value]
-            return value
-
-        def union(left: int, right: int) -> None:
-            left_root = find(left)
-            right_root = find(right)
-            if left_root != right_root:
-                parents[max(left_root, right_root)] = min(left_root, right_root)
-
-        first_cluster_by_story: dict[str, int] = {}
-        for cluster_index, indices in enumerate(temporary_clusters):
-            candidates: Counter[str] = Counter()
-            for item_index in indices:
-                item = items[item_index]
-                item_id = str(item["item_id"])
-                if item_id in previous_by_item:
-                    candidates[previous_by_item[item_id]] += 1
-                story_id = alias_by_key.get(_alias_key(str(item["normalized_title"])))
-                if story_id:
-                    candidates[story_id] += 1
-            candidate_counts_by_cluster.append(candidates)
-            for story_id in candidates:
-                previous_cluster = first_cluster_by_story.setdefault(story_id, cluster_index)
-                union(previous_cluster, cluster_index)
-
-        merged_indices: dict[int, list[int]] = {}
-        merged_candidates: dict[int, Counter[str]] = {}
-        for cluster_index, indices in enumerate(temporary_clusters):
-            root = find(cluster_index)
-            merged_indices.setdefault(root, []).extend(indices)
-            merged_candidates.setdefault(root, Counter()).update(candidate_counts_by_cluster[cluster_index])
-        clusters = [
-            sorted(indices)
-            for _, indices in sorted(
-                merged_indices.items(),
-                key=lambda pair: min(pair[1], default=-1),
-            )
-        ]
-        candidates_for_cluster = [
-            merged_candidates[root]
-            for root, _ in sorted(
-                merged_indices.items(),
-                key=lambda pair: min(pair[1], default=-1),
-            )
-        ]
-
-        cluster_by_item: dict[str, int] = {}
-        for cluster_index, indices in enumerate(clusters):
-            for item_index in indices:
-                cluster_by_item[str(items[item_index]["item_id"])] = cluster_index
-        entity_buckets: dict[str, dict[str, set[str] | set[int]]] = {}
-        for item in items:
-            if scoring_now_ms - int(item["published_at_ms"]) > 86_400_000:
-                continue
-            for entity_key in diplomacy_entity_keys(str(item["title"])):
-                bucket = entity_buckets.setdefault(
-                    entity_key,
-                    {"clusters": set(), "sources": set(), "tier12_sources": set()},
-                )
-                cast(set[int], bucket["clusters"]).add(cluster_by_item[str(item["item_id"])])
-                cast(set[str], bucket["sources"]).add(str(item["source_id"]))
-                if int(item["tier"]) <= 2:
-                    cast(set[str], bucket["tier12_sources"]).add(str(item["source_id"]))
-        entity_signal_by_cluster: dict[int, tuple[int, int]] = {}
-        for bucket in entity_buckets.values():
-            sources = cast(set[str], bucket["sources"])
-            if len(sources) < 2:
-                continue
-            signal = (
-                len(sources),
-                len(cast(set[str], bucket["tier12_sources"])),
-            )
-            for cluster_index in cast(set[int], bucket["clusters"]):
-                previous = entity_signal_by_cluster.get(cluster_index, (0, 0))
-                entity_signal_by_cluster[cluster_index] = (
-                    max(previous[0], signal[0]),
-                    max(previous[1], signal[1]),
-                )
-
-        story_writes = 0
-        membership_writes = 0
-        changed_story_ids: set[str] = set()
-        current_story_ids: list[str] = []
-        current_item_ids: list[str] = []
-        for cluster_index, indices in enumerate(clusters):
-            members = [items[index] for index in indices]
-            physical_sources = {str(member["source_id"]) for member in members}
-            source_count = len(physical_sources)
-            entity_source_count, tier12_entity_source_count = entity_signal_by_cluster.get(cluster_index, (0, 0))
-            for member in members:
-                classified = classify_by_keyword(
-                    str(member["title"]),
-                    now_ms=scoring_now_ms,
-                )
-                level = promote_diplomacy_severity(
-                    classified.level,
-                    title=str(member["title"]),
-                    tier12_origin_count=tier12_entity_source_count,
-                )
-                factors = importance_factors(
-                    level=level,
-                    tier=int(member["tier"]),
-                    corroboration_count=source_count,
-                    published_at_ms=int(member["published_at_ms"]),
-                    now_ms=scoring_now_ms,
-                    title=str(member["title"]),
-                    entity_corroboration_count=entity_source_count,
-                )
-                member.update(
-                    {
-                        "level": level,
-                        "category": classified.category,
-                        "classification_source": classified.source,
-                        "classification_confidence": classified.confidence,
-                        "importance_score": int(factors["total"]),
-                        "importance_factors": factors,
-                    }
-                )
-                self.conn.execute(
-                    """
-                    UPDATE news_items
-                       SET importance_score = %s,
-                           importance_factors = %s,
-                           level = %s,
-                           category = %s,
-                           classification_source = %s,
-                           classification_confidence = %s,
-                           updated_at_ms = %s
-                     WHERE item_id = %s
-                       AND (
-                         importance_score IS DISTINCT FROM %s
-                         OR importance_factors IS DISTINCT FROM %s
-                         OR level IS DISTINCT FROM %s
-                         OR category IS DISTINCT FROM %s
-                         OR classification_source IS DISTINCT FROM %s
-                         OR classification_confidence IS DISTINCT FROM %s
-                       )
-                    """,
-                    (
-                        member["importance_score"],
-                        Jsonb(factors),
-                        level,
-                        classified.category,
-                        classified.source,
-                        classified.confidence,
-                        now_ms,
-                        member["item_id"],
-                        member["importance_score"],
-                        Jsonb(factors),
-                        level,
-                        classified.category,
-                        classified.source,
-                        classified.confidence,
-                    ),
-                )
-
-            earliest = min(
-                members,
-                key=lambda member: (
-                    int(member["published_at_ms"]),
-                    str(member["normalized_title"]),
-                    str(member["item_id"]),
-                ),
-            )
-            canonical_key = _alias_key(str(earliest["normalized_title"]))
-            candidates = candidates_for_cluster[cluster_index]
-            if candidates:
-                max_hits = max(candidates.values())
-                story_id = min(story for story, hits in candidates.items() if hits == max_hits)
-            else:
-                story_id = deterministic_id("story", canonical_key)
-            current_story_ids.append(story_id)
-
-            representative = min(
-                members,
-                key=lambda member: (
-                    int(member["tier"]),
-                    -int(member["published_at_ms"]),
-                    str(member["normalized_title"]),
-                    str(member["item_id"]),
-                ),
-            )
-            scoring_item = min(
-                members,
-                key=lambda member: (
-                    -int(member["importance_score"]),
-                    int(member["tier"]),
-                    -int(member["published_at_ms"]),
-                    str(member["source_id"]),
-                    str(member["item_id"]),
-                ),
-            )
-            level = cast(
-                ThreatLevel,
-                max(
-                    (str(member["level"]) for member in members),
-                    key=lambda value: (SEVERITY_VALUES[cast(ThreatLevel, value)], value),
-                ),
-            )
-            category = cast(
-                EventCategory,
-                _mode(
-                    [str(member["category"]) for member in members],
-                    _CATEGORY_ORDER,
-                ),
-            )
-            first_published_at_ms = min(int(member["published_at_ms"]) for member in members)
-            last_published_at_ms = max(int(member["published_at_ms"]) for member in members)
-            fingerprint = _sha256_json(
-                {
-                    "identity_version": STORY_IDENTITY_VERSION,
-                    "canonical_key": canonical_key,
-                    "representative_item_id": representative["item_id"],
-                    "scoring_item_id": scoring_item["item_id"],
-                    "members": sorted(str(member["item_id"]) for member in members),
-                    "level": level,
-                    "category": category,
-                    "importance_score": scoring_item["importance_score"],
-                    "importance_factors": scoring_item["importance_factors"],
-                    "source_count": source_count,
-                    "first": first_published_at_ms,
-                    "last": last_published_at_ms,
-                }
-            )
-            row_count = self.conn.execute(
-                """
-                INSERT INTO news_stories (
-                  story_id, canonical_key, canonical_title,
-                  representative_item_id, representative_source_id,
-                  representative_title, representative_url,
-                  representative_description, scoring_item_id,
-                  level, category, importance_score, importance_factors,
-                  item_count, source_count, first_published_at_ms,
-                  last_published_at_ms, active, state_fingerprint,
-                  created_at_ms, updated_at_ms
-                )
-                VALUES (
-                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, true, %s, %s, %s
-                )
-                ON CONFLICT (story_id) DO UPDATE SET
-                  canonical_key = EXCLUDED.canonical_key,
-                  canonical_title = EXCLUDED.canonical_title,
-                  representative_item_id = EXCLUDED.representative_item_id,
-                  representative_source_id = EXCLUDED.representative_source_id,
-                  representative_title = EXCLUDED.representative_title,
-                  representative_url = EXCLUDED.representative_url,
-                  representative_description = EXCLUDED.representative_description,
-                  scoring_item_id = EXCLUDED.scoring_item_id,
-                  level = EXCLUDED.level,
-                  category = EXCLUDED.category,
-                  importance_score = EXCLUDED.importance_score,
-                  importance_factors = EXCLUDED.importance_factors,
-                  item_count = EXCLUDED.item_count,
-                  source_count = EXCLUDED.source_count,
-                  first_published_at_ms = EXCLUDED.first_published_at_ms,
-                  last_published_at_ms = EXCLUDED.last_published_at_ms,
-                  active = true,
-                  state_fingerprint = EXCLUDED.state_fingerprint,
-                  updated_at_ms = EXCLUDED.updated_at_ms
-                WHERE news_stories.state_fingerprint IS DISTINCT FROM
-                      EXCLUDED.state_fingerprint
-                   OR NOT news_stories.active
-                """,
-                (
-                    story_id,
-                    canonical_key,
-                    str(earliest["title"]),
-                    representative["item_id"],
-                    representative["source_id"],
-                    representative["title"],
-                    representative["canonical_url"],
-                    representative["description"],
-                    scoring_item["item_id"],
-                    level,
-                    category,
-                    scoring_item["importance_score"],
-                    Jsonb(scoring_item["importance_factors"]),
-                    len(members),
-                    source_count,
-                    first_published_at_ms,
-                    last_published_at_ms,
-                    fingerprint,
-                    now_ms,
-                    now_ms,
-                ),
-            ).rowcount
-            story_writes += int(row_count or 0)
-            if row_count:
-                changed_story_ids.add(story_id)
-
-            for member in members:
-                item_id = str(member["item_id"])
-                current_item_ids.append(item_id)
-                membership_writes += int(
-                    self.conn.execute(
-                        """
-                        UPDATE news_story_members
-                           SET current = false
-                         WHERE item_id = %s AND story_id <> %s AND current
-                        """,
-                        (item_id, story_id),
-                    ).rowcount
-                    or 0
-                )
-                membership_writes += int(
-                    self.conn.execute(
-                        """
-                        INSERT INTO news_story_members (
-                          story_id, item_id, current,
-                          first_joined_at_ms, last_confirmed_at_ms
-                        )
-                        VALUES (%s, %s, true, %s, %s)
-                        ON CONFLICT (story_id, item_id) DO UPDATE SET
-                          current = true,
-                          last_confirmed_at_ms = EXCLUDED.last_confirmed_at_ms
-                        WHERE NOT news_story_members.current
-                        """,
-                        (story_id, item_id, now_ms, now_ms),
-                    ).rowcount
-                    or 0
-                )
-                self.conn.execute(
-                    """
-                    INSERT INTO news_story_aliases (
-                      alias_key, story_id, expires_at_ms, created_at_ms
-                    )
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (alias_key) DO UPDATE SET
-                      story_id = EXCLUDED.story_id,
-                      expires_at_ms = EXCLUDED.expires_at_ms
-                    WHERE news_story_aliases.story_id IS DISTINCT FROM
-                          EXCLUDED.story_id
-                       OR news_story_aliases.expires_at_ms < %s
-                    """,
-                    (
-                        _alias_key(str(member["normalized_title"])),
-                        story_id,
-                        now_ms + _ALIAS_TTL_MS,
-                        now_ms,
-                        now_ms + _ALIAS_TTL_MS - _SCORING_EPOCH_MS,
-                    ),
-                )
-
-        unique_story_ids = sorted(set(current_story_ids))
-        if unique_story_ids:
-            story_writes += int(
-                self.conn.execute(
-                    """
-                    UPDATE news_stories
-                       SET active = false, updated_at_ms = %s
-                     WHERE active AND NOT (story_id = ANY(%s))
-                    """,
-                    (now_ms, unique_story_ids),
-                ).rowcount
-                or 0
-            )
-        else:
-            story_writes += int(
-                self.conn.execute(
-                    """
-                    UPDATE news_stories
-                       SET active = false, updated_at_ms = %s
-                     WHERE active
-                    """,
-                    (now_ms,),
-                ).rowcount
-                or 0
-            )
-        if current_item_ids:
-            membership_writes += int(
-                self.conn.execute(
-                    """
-                    UPDATE news_story_members
-                       SET current = false
-                     WHERE current AND NOT (item_id = ANY(%s))
-                    """,
-                    (current_item_ids,),
-                ).rowcount
-                or 0
-            )
-        else:
-            membership_writes += int(
-                self.conn.execute("UPDATE news_story_members SET current = false WHERE current").rowcount or 0
-            )
-        invariant_counts = self._story_invariant_counts()
-        if invariant_counts["total"] > 0:
-            raise RuntimeError(
-                "news_story_invariant_failed:" + json.dumps(invariant_counts, sort_keys=True, separators=(",", ":"))
-            )
-        self.conn.execute(
-            "DELETE FROM news_story_aliases WHERE expires_at_ms <= %s",
-            (now_ms,),
-        )
-        self.conn.execute(
-            "DELETE FROM news_source_fetches WHERE created_at_ms < %s",
-            (now_ms - _OPERATIONS_RETENTION_MS,),
-        )
-        self.conn.execute(
-            """
-            DELETE FROM news_brief_runs
-             WHERE updated_at_ms < %s
-               AND (
-                 status IN ('failed', 'insufficient_material')
-                 OR (
-                   status = 'running'
-                   AND lease_expires_at_ms IS NOT NULL
-                   AND lease_expires_at_ms < %s
-                 )
-               )
-            """,
-            (
-                now_ms - _OPERATIONS_RETENTION_MS,
-                now_ms - _OPERATIONS_RETENTION_MS,
-            ),
-        )
-        current_story_id_set = set(unique_story_ids)
-        self.conn.execute(
-            """
-            INSERT INTO news_story_input_state (
-              singleton_key, input_fingerprint, scoring_epoch_ms,
-              item_count, temporary_cluster_count, story_count, projected_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (singleton_key) DO UPDATE SET
-              input_fingerprint = EXCLUDED.input_fingerprint,
-              scoring_epoch_ms = EXCLUDED.scoring_epoch_ms,
-              item_count = EXCLUDED.item_count,
-              temporary_cluster_count = EXCLUDED.temporary_cluster_count,
-              story_count = EXCLUDED.story_count,
-              projected_at_ms = EXCLUDED.projected_at_ms
-            """,
-            (
-                _STORY_PROJECTION_KEY,
-                projection_input.fingerprint,
-                projection_input.scoring_epoch_ms,
-                len(items),
-                len(temporary_clusters),
-                len(current_story_id_set),
-                now_ms,
-            ),
-        )
-        self.refresh_projection_summary_for_maintenance(now_ms=now_ms)
-        self.refresh_bounded_read_models_for_maintenance(now_ms=now_ms)
-        return {
-            "items": len(items),
-            "temporary_clusters": len(temporary_clusters),
-            "stories": len(current_story_id_set),
-            "story_writes": story_writes,
-            "membership_writes": membership_writes,
-            "rows_written": story_writes + membership_writes,
-            "added": len(current_story_id_set - active_before),
-            "archived": len(active_before - current_story_id_set),
-            "unchanged": len((current_story_id_set & active_before) - changed_story_ids),
-            "projection_status": "rebuilt",
-            "clustered": len(items),
-        }
-
-    def _story_projection_input(self, *, now_ms: int) -> _StoryProjectionInput:
-        cutoff_ms = int(now_ms) - _ACTIVE_WINDOW_MS
-        scoring_epoch_ms = int(now_ms) - (int(now_ms) % _SCORING_EPOCH_MS)
-        rows = self.conn.execute(
-            """
-            SELECT
-              item.item_id,
-              item.source_id,
-              item.content_fingerprint,
-              item.published_at_ms,
-              source.tier
-            FROM news_items item
-            JOIN news_sources source ON source.source_id = item.source_id
-            WHERE item.published_at_ms >= %s
-              AND source.enabled
-            ORDER BY item.published_at_ms, item.item_id
-            """,
-            (cutoff_ms,),
-        ).fetchall()
-        fingerprint = _sha256_json(
-            {
-                "projection_version": _STORY_PROJECTION_VERSION,
-                "scoring_epoch_ms": scoring_epoch_ms,
-                "items": [
-                    [
-                        str(row["item_id"]),
-                        str(row["source_id"]),
-                        str(row["content_fingerprint"]),
-                        int(row["published_at_ms"]),
-                        int(row["tier"]),
-                    ]
-                    for row in rows
-                ],
-            }
-        )
-        return _StoryProjectionInput(
-            fingerprint=fingerprint,
-            cutoff_ms=cutoff_ms,
-            scoring_epoch_ms=scoring_epoch_ms,
-            item_count=len(rows),
+        projection = compute_news_story_projection(snapshot)
+        return self.publish_story_projection(
+            snapshot=snapshot,
+            projection=projection,
+            now_ms=now_ms,
         )
 
     def _story_invariant_counts(self) -> dict[str, int]:
@@ -1492,7 +1306,7 @@ class NewsRepository:
               SELECT i.item_id, count(m.story_id) AS owner_count
                 FROM news_items i
                 LEFT JOIN news_story_members m
-                  ON m.item_id = i.item_id AND m.current
+                  ON m.item_id = i.item_id
                WHERE i.active
                GROUP BY i.item_id
             ),
@@ -1503,7 +1317,7 @@ class NewsRepository:
                      st.first_published_at_ms AS stored_first_at_ms,
                      st.last_published_at_ms AS stored_last_at_ms,
                      count(m.item_id) AS actual_item_count,
-                     count(DISTINCT i.source_id) AS actual_source_count,
+                     count(DISTINCT i.reporting_origin) AS actual_source_count,
                      min(i.published_at_ms) AS actual_first_at_ms,
                      max(i.published_at_ms) AS actual_last_at_ms,
                      bool_or(m.item_id = st.representative_item_id)
@@ -1512,9 +1326,8 @@ class NewsRepository:
                        AS scoring_item_is_member
                 FROM news_stories st
                 LEFT JOIN news_story_members m
-                  ON m.story_id = st.story_id AND m.current
+                  ON m.story_id = st.story_id
                 LEFT JOIN news_items i ON i.item_id = m.item_id
-               WHERE st.active
                GROUP BY st.story_id
             ),
             invalid_stories AS (
@@ -1551,7 +1364,7 @@ class NewsRepository:
                      SELECT count(*) FROM news_items WHERE active
                    ),
                    active_story_count = (
-                     SELECT count(*) FROM news_stories WHERE active
+                     SELECT count(*) FROM news_stories
                    ),
                    unmaterialized_item_count = (
                      SELECT count(*)
@@ -1561,7 +1374,6 @@ class NewsRepository:
                          SELECT 1
                          FROM news_story_members member
                          WHERE member.item_id = item.item_id
-                           AND member.current
                        )
                    ),
                    invalid_owner_count = %s,
@@ -1576,7 +1388,6 @@ class NewsRepository:
                    newest_story_at_ms = (
                      SELECT last_published_at_ms
                      FROM news_stories
-                     WHERE active
                      ORDER BY last_published_at_ms DESC,
                               importance_score DESC,
                               story_id
@@ -1585,7 +1396,6 @@ class NewsRepository:
                    last_material_change_at_ms = (
                      SELECT max(updated_at_ms)
                      FROM news_stories
-                     WHERE active
                    ),
                    updated_at_ms = %s
              WHERE singleton_key = 'current'
@@ -1597,107 +1407,22 @@ class NewsRepository:
             ),
         )
 
-    def projection_facet_snapshot(self, *, story_ids: Sequence[str]) -> dict[str, Any]:
-        ids = sorted({str(value) for value in story_ids if str(value)})
-        if not ids:
-            return {"story_facets": [], "source_pairs": []}
-        story_facets = [
-            dict(row)
-            for row in self.conn.execute(
-                """
-                SELECT story_id, category, level
-                FROM news_stories
-                WHERE active
-                  AND story_id = ANY(%s)
-                ORDER BY story_id
-                """,
-                (ids,),
-            ).fetchall()
-        ]
-        source_pairs = [
-            dict(row)
-            for row in self.conn.execute(
-                """
-                SELECT DISTINCT story.story_id, item.source_id
-                FROM news_stories story
-                JOIN news_story_members member
-                  ON member.story_id = story.story_id
-                 AND member.current
-                JOIN news_items item
-                  ON item.item_id = member.item_id
-                WHERE story.active
-                  AND story.story_id = ANY(%s)
-                ORDER BY story.story_id, item.source_id
-                """,
-                (ids,),
-            ).fetchall()
-        ]
-        return {
-            "story_facets": story_facets,
-            "source_pairs": source_pairs,
-        }
-
-    def apply_projection_facet_delta(
-        self,
-        *,
-        before: Mapping[str, Any],
-        after: Mapping[str, Any],
-        now_ms: int,
-    ) -> int:
-        before_story = _story_facet_counter(before.get("story_facets"))
-        after_story = _story_facet_counter(after.get("story_facets"))
-        before_sources = _source_facet_counter(before.get("source_pairs"))
-        after_sources = _source_facet_counter(after.get("source_pairs"))
-        writes = 0
-        for key in sorted(set(before_story) | set(after_story)):
-            delta = int(after_story[key]) - int(before_story[key])
-            if delta:
-                writes += self._apply_story_facet_count_delta(
-                    facet_type=key[0],
-                    facet_value=key[1],
-                    delta=delta,
-                    now_ms=now_ms,
-                )
-        for source_id in sorted(set(before_sources) | set(after_sources)):
-            delta = int(after_sources[source_id]) - int(before_sources[source_id])
-            if delta:
-                writes += self._apply_source_facet_count_delta(
-                    source_id=source_id,
-                    delta=delta,
-                    now_ms=now_ms,
-                )
-        return writes
-
     def refresh_brief_selection(self, *, now_ms: int) -> int:
-        desired = [
-            str(row["story_id"])
-            for row in self.conn.execute(
-                """
-                SELECT candidate.story_id
-                FROM news_sources source
-                CROSS JOIN LATERAL (
-                  SELECT story.story_id,
-                         story.importance_score,
-                         story.last_published_at_ms
-                  FROM news_stories story
-                  JOIN news_items item
-                    ON item.item_id = story.representative_item_id
-                  WHERE source.enabled
-                    AND story.active
-                    AND story.representative_source_id = source.source_id
-                    AND NOT item.brief_excluded
-                  ORDER BY story.importance_score DESC,
-                           story.last_published_at_ms DESC,
-                           story.story_id
-                  LIMIT 3
-                ) candidate
-                ORDER BY candidate.importance_score DESC,
-                         candidate.last_published_at_ms DESC,
-                         candidate.story_id
-                LIMIT 8
-                """
-            ).fetchall()
-        ]
+        candidates = self.conn.execute(
+            """
+            SELECT story.story_id, story.importance_score,
+                   story.last_published_at_ms,
+                   item.reporting_origin AS representative_source_name
+              FROM news_stories story
+              JOIN news_items item
+                ON item.item_id = story.representative_item_id
+             WHERE NOT item.brief_excluded
+             ORDER BY story.importance_score DESC,
+                      story.last_published_at_ms DESC,
+                      story.story_id
+            """
+        ).fetchall()
+        desired = [str(row["story_id"]) for row in select_top_stories(candidates, limit=8, max_per_source=3)]
         existing = [
             str(row["story_id"])
             for row in self.conn.execute(
@@ -1802,170 +1527,6 @@ class NewsRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def refresh_bounded_read_models_for_maintenance(self, *, now_ms: int) -> None:
-        self.conn.execute("DELETE FROM news_story_facet_counts")
-        self.conn.execute(
-            """
-            INSERT INTO news_story_facet_counts (
-              facet_type, facet_value, story_count, updated_at_ms
-            )
-            SELECT facets.facet_type, facets.facet_value,
-                   facets.story_count, %s
-            FROM (
-              SELECT 'category'::text AS facet_type,
-                     category AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              WHERE active
-              GROUP BY category
-              UNION ALL
-              SELECT 'level'::text AS facet_type,
-                     level AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              WHERE active
-              GROUP BY level
-            ) facets
-            """,
-            (int(now_ms),),
-        )
-        self.conn.execute("DELETE FROM news_source_facet_counts")
-        self.conn.execute(
-            """
-            INSERT INTO news_source_facet_counts (
-              source_id, story_count, updated_at_ms
-            )
-            SELECT item.source_id,
-                   count(DISTINCT member.story_id)::integer,
-                   %s
-            FROM news_story_members member
-            JOIN news_stories story
-              ON story.story_id = member.story_id
-            JOIN news_items item
-              ON item.item_id = member.item_id
-            WHERE story.active
-              AND member.current
-            GROUP BY item.source_id
-            """,
-            (int(now_ms),),
-        )
-        self.refresh_brief_selection(now_ms=now_ms)
-
-    def _apply_story_facet_count_delta(
-        self,
-        *,
-        facet_type: str,
-        facet_value: str,
-        delta: int,
-        now_ms: int,
-    ) -> int:
-        if delta > 0:
-            return int(
-                self.conn.execute(
-                    """
-                    INSERT INTO news_story_facet_counts (
-                      facet_type, facet_value, story_count, updated_at_ms
-                    )
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (facet_type, facet_value) DO UPDATE SET
-                      story_count = (
-                        news_story_facet_counts.story_count
-                        + EXCLUDED.story_count
-                      ),
-                      updated_at_ms = EXCLUDED.updated_at_ms
-                    """,
-                    (facet_type, facet_value, int(delta), int(now_ms)),
-                ).rowcount
-                or 0
-            )
-        removed = int(
-            self.conn.execute(
-                """
-                DELETE FROM news_story_facet_counts
-                WHERE facet_type = %s
-                  AND facet_value = %s
-                  AND story_count = %s
-                """,
-                (facet_type, facet_value, -int(delta)),
-            ).rowcount
-            or 0
-        )
-        if removed:
-            return removed
-        updated = int(
-            self.conn.execute(
-                """
-                UPDATE news_story_facet_counts
-                SET story_count = story_count + %s,
-                    updated_at_ms = %s
-                WHERE facet_type = %s
-                  AND facet_value = %s
-                  AND story_count > %s
-                """,
-                (int(delta), int(now_ms), facet_type, facet_value, -int(delta)),
-            ).rowcount
-            or 0
-        )
-        if updated != 1:
-            raise RuntimeError("news_story_facet_delta_invalid")
-        return updated
-
-    def _apply_source_facet_count_delta(
-        self,
-        *,
-        source_id: str,
-        delta: int,
-        now_ms: int,
-    ) -> int:
-        if delta > 0:
-            return int(
-                self.conn.execute(
-                    """
-                    INSERT INTO news_source_facet_counts (
-                      source_id, story_count, updated_at_ms
-                    )
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (source_id) DO UPDATE SET
-                      story_count = (
-                        news_source_facet_counts.story_count
-                        + EXCLUDED.story_count
-                      ),
-                      updated_at_ms = EXCLUDED.updated_at_ms
-                    """,
-                    (source_id, int(delta), int(now_ms)),
-                ).rowcount
-                or 0
-            )
-        removed = int(
-            self.conn.execute(
-                """
-                DELETE FROM news_source_facet_counts
-                WHERE source_id = %s
-                  AND story_count = %s
-                """,
-                (source_id, -int(delta)),
-            ).rowcount
-            or 0
-        )
-        if removed:
-            return removed
-        updated = int(
-            self.conn.execute(
-                """
-                UPDATE news_source_facet_counts
-                SET story_count = story_count + %s,
-                    updated_at_ms = %s
-                WHERE source_id = %s
-                  AND story_count > %s
-                """,
-                (int(delta), int(now_ms), source_id, -int(delta)),
-            ).rowcount
-            or 0
-        )
-        if updated != 1:
-            raise RuntimeError("news_source_facet_delta_invalid")
-        return updated
-
     # Read contract ------------------------------------------------------------
 
     def list_feed(
@@ -1987,7 +1548,7 @@ class NewsRepository:
             "level": str(level or "").strip().lower() or None,
             "source_id": str(source_id or "").strip() or None,
         }
-        where = ["st.active"]
+        where = ["true"]
         params: list[Any] = []
         if filters["category"]:
             where.append("st.category = %s")
@@ -2003,7 +1564,6 @@ class NewsRepository:
                     FROM news_story_members fm
                     JOIN news_items fi ON fi.item_id = fm.item_id
                    WHERE fm.story_id = st.story_id
-                     AND fm.current
                      AND fi.source_id = %s
                 )
                 """
@@ -2065,10 +1625,11 @@ class NewsRepository:
         )
         rows = self.conn.execute(
             f"""
-            SELECT st.*, src.name AS representative_source_name
+            SELECT st.*, representative.reporting_origin
+                         AS representative_source_name
               FROM news_stories st
-              JOIN news_sources src
-                ON src.source_id = st.representative_source_id
+              JOIN news_items representative
+                ON representative.item_id = st.representative_item_id
              WHERE {" AND ".join(where)}
              ORDER BY {order}
              LIMIT %s
@@ -2153,10 +1714,11 @@ class NewsRepository:
             raise ValueError("news_story_members_limit_invalid")
         row = self.conn.execute(
             """
-            SELECT st.*, src.name AS representative_source_name
+            SELECT st.*, representative.reporting_origin
+                         AS representative_source_name
               FROM news_stories st
-              JOIN news_sources src
-                ON src.source_id = st.representative_source_id
+              JOIN news_items representative
+                ON representative.item_id = st.representative_item_id
              WHERE st.story_id = %s
             """,
             (story_id,),
@@ -2172,7 +1734,6 @@ class NewsRepository:
             if decoded.get("story_id") != story_id:
                 raise ValueError("news_story_members_cursor_story_mismatch")
             try:
-                current_rank = int(decoded["current_rank"])
                 published_at_ms = int(decoded["published_at_ms"])
                 item_id = str(decoded["item_id"])
             except (KeyError, TypeError, ValueError) as exc:
@@ -2180,14 +1741,9 @@ class NewsRepository:
             member_where.append(
                 """
                 (
-                  CASE WHEN m.current THEN 1 ELSE 0 END < %s
+                  i.published_at_ms < %s
                   OR (
-                    CASE WHEN m.current THEN 1 ELSE 0 END = %s
-                    AND i.published_at_ms < %s
-                  )
-                  OR (
-                    CASE WHEN m.current THEN 1 ELSE 0 END = %s
-                    AND i.published_at_ms = %s
+                    i.published_at_ms = %s
                     AND i.item_id > %s
                   )
                 )
@@ -2195,10 +1751,7 @@ class NewsRepository:
             )
             member_params.extend(
                 [
-                    current_rank,
-                    current_rank,
                     published_at_ms,
-                    current_rank,
                     published_at_ms,
                     item_id,
                 ]
@@ -2206,13 +1759,12 @@ class NewsRepository:
         member_params.append(members_limit + 1)
         members = self.conn.execute(
             f"""
-            SELECT i.*, src.name AS source_name, src.tier,
-                   m.current, m.first_joined_at_ms, m.last_confirmed_at_ms
+            SELECT i.*, i.reporting_origin AS source_name, src.tier
               FROM news_story_members m
               JOIN news_items i ON i.item_id = m.item_id
               JOIN news_sources src ON src.source_id = i.source_id
              WHERE {" AND ".join(member_where)}
-             ORDER BY m.current DESC, i.published_at_ms DESC, i.item_id
+             ORDER BY i.published_at_ms DESC, i.item_id
              LIMIT %s
             """,
             member_params,
@@ -2227,7 +1779,6 @@ class NewsRepository:
                     "v": 1,
                     "kind": "story_members",
                     "story_id": story_id,
-                    "current_rank": 1 if bool(last["current"]) else 0,
                     "published_at_ms": int(last["published_at_ms"]),
                     "item_id": str(last["item_id"]),
                 }
@@ -2235,7 +1786,6 @@ class NewsRepository:
         return {
             **_story_summary(row),
             "canonical_title": str(row["canonical_title"]),
-            "active": bool(row["active"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
                 "returned_count": len(page),
@@ -2333,12 +1883,13 @@ class NewsRepository:
     def brief_candidates(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT story.*, source.name AS representative_source_name
+            SELECT story.*,
+                   representative.reporting_origin AS representative_source_name
             FROM news_brief_selection_current selection
             JOIN news_stories story
               ON story.story_id = selection.story_id
-            JOIN news_sources source
-              ON source.source_id = story.representative_source_id
+            JOIN news_items representative
+              ON representative.item_id = story.representative_item_id
             ORDER BY selection.rank
             """
         ).fetchall()
@@ -2842,7 +2393,7 @@ class NewsRepository:
     def get_brief(self, *, now_ms: int, history_limit: int = 20) -> dict[str, Any]:
         candidates = self.brief_candidates()
         fingerprint = brief_fingerprint(candidates)
-        candidate_sources = {str(candidate["representative_source_id"]) for candidate in candidates}
+        candidate_sources = {str(candidate["representative_source_name"]) for candidate in candidates}
         sufficient = len(candidates) >= 3 and len(candidate_sources) >= 2
         current = self.conn.execute(
             """
@@ -2961,8 +2512,20 @@ class NewsRepository:
                    max(s.last_success_at_ms) AS last_success_at_ms
               FROM news_sources s
               LEFT JOIN latest_fetch lf ON lf.source_id = s.source_id
+             WHERE s.source_kind = 'rss'
             """,
             (now_ms - 3_600_000, now_ms - 300_000),
+        ).fetchone()
+        opennews = self.conn.execute(
+            """
+            SELECT source_id, live_connected, last_live_at_ms,
+                   last_recovery_at_ms, gap_unclosed, last_error,
+                   last_http_status
+              FROM news_sources
+             WHERE source_kind = 'opennews' AND enabled
+             ORDER BY source_id
+             LIMIT 1
+            """
         ).fetchone()
         recent_fetches = self.conn.execute(
             """
@@ -2984,7 +2547,9 @@ class NewsRepository:
                    newest_item_at_ms,
                    unmaterialized_item_count,
                    invalid_owner_count,
-                   invalid_story_aggregate_count
+                   invalid_story_aggregate_count,
+                   last_attempt_at_ms,
+                   last_error
               FROM news_projection_summary
              WHERE singleton_key = 'current'
             """
@@ -3012,6 +2577,14 @@ class NewsRepository:
             ingest_reasons.append("material_source_poll_overdue")
         else:
             ingest_status = "ready"
+        opennews_payload = dict(opennews) if opennews is not None else None
+        if opennews_payload is not None and (
+            not bool(opennews_payload["live_connected"])
+            or bool(opennews_payload["gap_unclosed"])
+            or opennews_payload["last_error"] is not None
+        ):
+            ingest_status = "degraded"
+            ingest_reasons.append("opennews_unavailable_or_gap_unclosed")
 
         unmaterialized = int(story["unmaterialized_item_count"] or 0)
         invalid_owners = int(story["invalid_owner_count"] or 0)
@@ -3026,6 +2599,9 @@ class NewsRepository:
                 story_reasons.append("current_item_owner_invalid")
             if invalid_aggregates:
                 story_reasons.append("story_aggregate_invalid")
+        elif story["last_error"] is not None:
+            story_status = "degraded"
+            story_reasons.append(str(story["last_error"]))
         elif active_stories == 0:
             story_status = "warming"
             story_reasons.append("no_active_stories_yet")
@@ -3059,6 +2635,7 @@ class NewsRepository:
                 "both_failed_sources": int(source["both_failed_count"] or 0),
                 "last_success_at_ms": source["last_success_at_ms"],
                 "gate_counts_1h": dict(gate_counts),
+                "opennews": opennews_payload,
             },
             "story": {
                 "status": story_status,
@@ -3075,6 +2652,8 @@ class NewsRepository:
                 "identity_version": STORY_IDENTITY_VERSION,
                 "classifier_version": CLASSIFIER_VERSION,
                 "importance_version": IMPORTANCE_VERSION,
+                "last_attempt_at_ms": story["last_attempt_at_ms"],
+                "last_error": story["last_error"],
             },
             "brief": {
                 "status": brief_status,
@@ -3100,7 +2679,7 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "story_id": str(row["story_id"]),
         "title": str(row["representative_title"]),
         "description": str(row["representative_description"]),
-        "url": str(row["representative_url"]),
+        "url": str(row["representative_url"]) if row["representative_url"] else None,
         "source_id": str(row["representative_source_id"]),
         "source_name": str(row["representative_source_name"]),
         "representative_item_id": str(row["representative_item_id"]),
@@ -3125,7 +2704,7 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "tier": int(row["tier"]),
         "title": str(row["title"]),
         "description": str(row["description"]),
-        "url": str(row["canonical_url"]),
+        "url": str(row["canonical_url"]) if row["canonical_url"] else None,
         "lang": str(row["lang"]),
         "published_at_ms": int(row["published_at_ms"]),
         "last_observed_at_ms": int(row["last_observed_at_ms"]),
@@ -3133,9 +2712,6 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "category": str(row["category"]),
         "importance_score": int(row["importance_score"]),
         "importance_factors": dict(row["importance_factors"]),
-        "current": bool(row["current"]),
-        "first_joined_at_ms": int(row["first_joined_at_ms"]),
-        "last_confirmed_at_ms": int(row["last_confirmed_at_ms"]),
     }
 
 

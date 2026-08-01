@@ -66,6 +66,10 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "channels": list(settings.upstream.channels),
                     "chains": list(settings.upstream.chains),
                 },
+                "news": {
+                    "enabled": settings.news.enabled,
+                    "opennews_token_configured": bool(settings.news.opennews_token),
+                },
                 "providers": {
                     "gmgn": {
                         "configured": settings.gmgn_configured,

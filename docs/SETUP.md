@@ -37,11 +37,16 @@ current OpenAI-compatible provider, and optional `openrouter_api_key` and
 `groq_api_key` for News provider fallback. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
 credential path.
+Set `news.opennews_token` to enable the additive authenticated OpenNews WSS
+and REST recovery lane. `tracefold config` reports only whether it is
+configured; it never prints the token. When it is absent, the RSS lane remains
+available and OpenNews reports a source-specific degraded state.
 An enabled model candidate with no configured provider reports an explicit
 unavailable state and makes no model call.
 
 News correctness does not depend on the model. The News acquisition due loop
-owns source claim/fetch/persist, the EDF coordinator owns deterministic Story
+and persistent OpenNews tasks share one acquisition module and sole NewsItem
+writer. A fixed 60-second writer owns the complete current 96-hour Story
 projection, and the single-capacity native-state model arbiter owns World
 Brief. There is no item-level AI path.
 Changing cadence does not repair source admission, Story identity, or Brief

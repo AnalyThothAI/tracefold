@@ -42,18 +42,10 @@ MACRO_FRONTIER = FrontierSpec(
     version_column="projection_version",
     stable_order=30,
 )
-NEWS_FRONTIER = FrontierSpec(
-    domain="news",
-    table="news_projection_frontiers",
-    key_columns=("bucket_id",),
-    version_column="projection_version",
-    stable_order=40,
-)
 FRONTIER_SPECS = (
     RADAR_FRONTIER,
     PROFILE_FRONTIER,
     MACRO_FRONTIER,
-    NEWS_FRONTIER,
 )
 
 
@@ -775,7 +767,6 @@ def _required_text(value: object, field: str) -> str:
 __all__ = [
     "FRONTIER_SPECS",
     "MACRO_FRONTIER",
-    "NEWS_FRONTIER",
     "PROFILE_FRONTIER",
     "RADAR_FRONTIER",
     "FrontierSpec",
