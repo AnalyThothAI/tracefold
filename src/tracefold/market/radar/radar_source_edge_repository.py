@@ -8,6 +8,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from tracefold.market.radar.constants import (
+    RADAR_PROJECTION_DEADLINE_MS,
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
     TOKEN_RADAR_RESOLVER_POLICY_VERSION,
@@ -24,12 +25,6 @@ from tracefold.platform.validation import require_positive_int
 _MAX_ANALYSIS_LOOKBACK_MS = 48 * 60 * 60 * 1000
 _BASELINE_WINDOW_COUNT = 7
 _EVENT_RESOLUTION_CAP = 100
-_DEADLINE_MS = {
-    "5m": 10_000,
-    "1h": 60_000,
-    "4h": 60_000,
-    "24h": 60_000,
-}
 
 
 class RadarSourceEdgeRepository:
@@ -224,33 +219,99 @@ class RadarSourceEdgeRepository:
 
         require_transaction(self.conn, operation="radar_market_frontier_mark_dirty")
         marker = _required_text(input_fingerprint, "input_fingerprint")
-        changed = 0
-        for target_type, target_id in sorted(set(targets)):
-            for window in WINDOW_MS:
-                changed += self.frontiers.mark_dirty(
-                    RADAR_FRONTIER,
-                    key={
-                        "target_type": _required_text(target_type, "target_type"),
-                        "target_id": _required_text(target_id, "target_id"),
-                        "window_key": window,
-                        "venue": TOKEN_RADAR_DEFAULT_VENUE,
-                    },
-                    dirty_at_ms=int(now_ms),
-                    deadline_at_ms=int(now_ms) + _DEADLINE_MS[window],
-                    input_fingerprint=_fingerprint(
-                        {
-                            "kind": "market_current",
-                            "marker": marker,
-                            "target_type": target_type,
-                            "target_id": target_id,
-                            "window": window,
-                        }
-                    ),
-                    version=TOKEN_RADAR_PROJECTION_VERSION,
+        unique_targets = sorted(
+            {
+                (
+                    _required_text(target_type, "target_type"),
+                    _required_text(target_id, "target_id"),
                 )
+                for target_type, target_id in targets
+            }
+        )
+        if not unique_targets:
+            return 0
+        feature_windows = self.conn.execute(
+            """
+            WITH targets(target_type, target_id) AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::text[])
+            )
+            SELECT target_type, target_id, window_key
+            FROM (
+              SELECT
+                feature.target_type_key AS target_type,
+                feature.identity_id AS target_id,
+                feature."window" AS window_key
+              FROM token_radar_target_features feature
+              JOIN targets
+                ON targets.target_type = feature.target_type_key
+               AND targets.target_id = feature.identity_id
+              WHERE feature.projection_version = %s
+                AND feature."window" = ANY(%s)
+              UNION
+              SELECT
+                frontier.target_type,
+                frontier.target_id,
+                frontier.window_key
+              FROM radar_projection_frontiers frontier
+              JOIN targets
+                ON targets.target_type = frontier.target_type
+               AND targets.target_id = frontier.target_id
+              WHERE frontier.projection_version = %s
+                AND frontier.venue = %s
+                AND frontier.status IN (
+                  'dirty', 'retry_wait', 'running', 'quarantined'
+                )
+                AND frontier.window_key = ANY(%s)
+            ) candidates
+            ORDER BY target_type, target_id, window_key
+            """,
+            (
+                [target_type for target_type, _target_id in unique_targets],
+                [target_id for _target_type, target_id in unique_targets],
+                TOKEN_RADAR_PROJECTION_VERSION,
+                list(WINDOW_MS),
+                TOKEN_RADAR_PROJECTION_VERSION,
+                TOKEN_RADAR_DEFAULT_VENUE,
+                list(WINDOW_MS),
+            ),
+        ).fetchall()
+        changed = 0
+        for row in feature_windows:
+            target_type = _required_text(row["target_type"], "target_type")
+            target_id = _required_text(row["target_id"], "target_id")
+            window = _required_text(row["window_key"], "window_key")
+            changed += self.frontiers.mark_dirty(
+                RADAR_FRONTIER,
+                key={
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "window_key": window,
+                    "venue": TOKEN_RADAR_DEFAULT_VENUE,
+                },
+                dirty_at_ms=int(now_ms),
+                deadline_at_ms=int(now_ms) + RADAR_PROJECTION_DEADLINE_MS[window],
+                input_fingerprint=_fingerprint(
+                    {
+                        "kind": "market_current",
+                        "marker": marker,
+                        "target_type": target_type,
+                        "target_id": target_id,
+                        "window": window,
+                    }
+                ),
+                version=TOKEN_RADAR_PROJECTION_VERSION,
+            )
         return changed
 
-    def expire_due(self, *, now_ms: int, limit: int) -> int:
+    def expire_due(
+        self,
+        *,
+        now_ms: int,
+        limit: int,
+        window: str,
+        venue: str,
+    ) -> int:
         """Delete one deterministic expiry batch and dirty only its closures."""
 
         require_transaction(self.conn, operation="radar_source_edge_expire_due")
@@ -258,6 +319,8 @@ class RadarSourceEdgeRepository:
             limit,
             error_code="radar_source_edge_expiry_limit_required",
         )
+        window_key = _required_text(window, "window")
+        venue_key = _required_text(venue, "venue")
         rows = [
             dict(row)
             for row in self.conn.execute(
@@ -265,6 +328,8 @@ class RadarSourceEdgeRepository:
                 SELECT *
                 FROM radar_source_edges
                 WHERE expires_at_ms <= %s
+                  AND window_key = %s
+                  AND venue = %s
                 ORDER BY
                   expires_at_ms,
                   target_type,
@@ -276,7 +341,7 @@ class RadarSourceEdgeRepository:
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
                 """,
-                (int(now_ms), row_limit),
+                (int(now_ms), window_key, venue_key, row_limit),
             ).fetchall()
         ]
         if not rows:
@@ -311,16 +376,23 @@ class RadarSourceEdgeRepository:
         if deleted != len(rows):
             raise RuntimeError("radar_source_edge_expiry_cas_mismatch")
         changed_frontiers: dict[tuple[str, str, str, str], list[str]] = {}
+        dirty_at_by_frontier: dict[tuple[str, str, str, str], int] = {}
         for row in rows:
+            frontier_key = _edge_key(row)[:4]
             _record_frontier_change(
                 changed_frontiers,
-                _edge_key(row)[:4],
+                frontier_key,
                 f"expired:{row['input_fingerprint']}",
             )
-        self._mark_changed_frontiers(
-            changed_frontiers,
-            dirty_at_ms=int(now_ms),
-        )
+            dirty_at_by_frontier[frontier_key] = min(
+                dirty_at_by_frontier.get(frontier_key, int(row["expires_at_ms"])),
+                int(row["expires_at_ms"]),
+            )
+        for frontier_key in sorted(changed_frontiers):
+            self._mark_changed_frontiers(
+                {frontier_key: changed_frontiers[frontier_key]},
+                dirty_at_ms=dirty_at_by_frontier[frontier_key],
+            )
         return deleted
 
     def _mark_changed_frontiers(
@@ -339,7 +411,7 @@ class RadarSourceEdgeRepository:
                     "venue": venue,
                 },
                 dirty_at_ms=int(dirty_at_ms),
-                deadline_at_ms=int(dirty_at_ms) + _DEADLINE_MS[window],
+                deadline_at_ms=int(dirty_at_ms) + RADAR_PROJECTION_DEADLINE_MS[window],
                 input_fingerprint=_fingerprint(
                     {
                         "target_type": target_type,

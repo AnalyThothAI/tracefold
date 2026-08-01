@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from tracefold.app.model_arbiter import run_model_arbiter
-from tracefold.app.workers import _run_due, _run_periodic
+from tracefold.app.workers import (
+    _MARKET_TICK_POLL_SECONDS,
+    _run_due,
+    _run_periodic,
+)
 from tracefold.macro.runtime import MacroAcquisition
 from tracefold.market.identity.resolution_refresh_worker import ResolutionRefresh
 from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
@@ -167,6 +171,11 @@ def test_periodic_loop_propagates_post_work_admission_timeout() -> None:
 
     with pytest.raises(ResourceAdmissionTimeout, match="sampler_publication_db_saturated"):
         asyncio.run(_run_periodic(sample, period_seconds=1.0, stop_event=asyncio.Event()))
+
+
+def test_market_poll_period_stays_below_one_hundred_thousand_monthly_calls() -> None:
+    max_31_day_turns = 1 + int(31 * 24 * 60 * 60 / _MARKET_TICK_POLL_SECONDS)
+    assert max_31_day_turns < 100_000
 
 
 def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() -> None:
