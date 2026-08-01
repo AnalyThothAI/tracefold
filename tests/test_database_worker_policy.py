@@ -347,6 +347,36 @@ def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> 
     asyncio.run(scenario())
 
 
+def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fatal() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_TimedOutWorkerPool(), telemetry=None)
+
+        def checkout() -> None:
+            with database.worker_session("pool_checkout"):
+                pass
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_pool_timeout:business_checkout",
+            ):
+                await database.run_business(
+                    "business_checkout",
+                    checkout,
+                    operation_timeout_seconds=1.0,
+                )
+            with pytest.raises(PoolTimeout):
+                await database.run_control(
+                    "control_checkout",
+                    checkout,
+                    operation_timeout_seconds=1.0,
+                )
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
 def test_serve_admission_reserves_search_and_control_lanes() -> None:
     conn = _FakeConnection()
     database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
@@ -438,6 +468,11 @@ class _TimedOutApiPool:
     def connection(self, timeout: float | None = None):
         raise PoolTimeout("test")
         yield
+
+
+class _TimedOutWorkerPool:
+    def getconn(self, timeout: float | None = None) -> _FakeConnection:
+        raise PoolTimeout("test")
 
 
 class _RecordingSessionDatabase:

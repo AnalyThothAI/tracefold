@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from contextlib import suppress
@@ -74,6 +75,7 @@ class OpenNewsWebSocketClient:
                 max_size=OPENNEWS_MAX_FRAME_BYTES,
                 max_queue=16,
             )
+            self._websocket = websocket
             await websocket.send(
                 json.dumps(
                     {
@@ -86,12 +88,15 @@ class OpenNewsWebSocketClient:
             )
             ack = _json_object(await _bounded_recv(websocket))
             if ack.get("error"):
-                await websocket.close()
                 raise OpenNewsExpectedError("opennews_subscribe_failed")
-            self._websocket = websocket
         except OpenNewsExpectedError:
+            await self.close()
+            raise
+        except asyncio.CancelledError:
+            await self.close()
             raise
         except Exception:
+            await self.close()
             raise OpenNewsExpectedError("opennews_connect_failed") from None
 
     async def receive(self) -> Mapping[str, Any] | str:
@@ -118,8 +123,6 @@ class OpenNewsWebSocketClient:
 
 
 async def _bounded_recv(websocket: Any) -> Any:
-    import asyncio
-
     while True:
         try:
             return await asyncio.wait_for(websocket.recv(), timeout=OPENNEWS_WS_IDLE_SECONDS)

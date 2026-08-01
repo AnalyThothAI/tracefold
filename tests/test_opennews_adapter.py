@@ -45,6 +45,39 @@ def test_opennews_token_is_trimmed_and_optional() -> None:
     assert NewsSettings(opennews_token="  ").opennews_token is None
 
 
+def test_websocket_handshake_owns_and_closes_partial_connection(monkeypatch) -> None:
+    class _WebSocket:
+        def __init__(self) -> None:
+            self.owned_during_send = False
+            self.close_calls = 0
+
+        async def send(self, _payload: str) -> None:
+            self.owned_during_send = client._websocket is self
+
+        async def recv(self) -> str:
+            return "not-json"
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    async def connect(*_args, **_kwargs):
+        return websocket
+
+    async def scenario() -> None:
+        with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
+            await client.connect()
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    websocket = _WebSocket()
+    monkeypatch.setattr(opennews_client.websockets, "connect", connect)
+
+    asyncio.run(scenario())
+
+    assert websocket.owned_during_send
+    assert websocket.close_calls == 1
+    assert client._websocket is None
+
+
 def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
     event = parse_opennews_message(
         {

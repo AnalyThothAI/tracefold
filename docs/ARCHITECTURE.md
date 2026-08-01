@@ -48,10 +48,10 @@ single generated-default authority and `~/.tracefold/config.yaml` remains the
 single live application config.
 
 The projection coordinator executes exactly one semantic shard at a time.
-Every productive or failed turn waits on the fixed 250 ms bounded repoll
-cadence before reading the typed frontier heads again. Idle polling is likewise
-bounded by a code-owned cadence. These waits prevent a successful backlog from
-becoming a hot loop; they are scheduling policy, not a correctness authority.
+A productive turn yields cooperatively and immediately rereads every typed
+frontier head so a real backlog can converge. Failed and idle turns wait on the
+fixed 250 ms code-owned cadence to prevent contention from becoming a hot loop;
+that cadence is scheduling policy, not a correctness authority.
 
 ## Truth, control state, and derived state
 

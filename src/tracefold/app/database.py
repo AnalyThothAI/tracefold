@@ -345,6 +345,12 @@ class WorkerDatabase:
             raise ResourceAdmissionTimeout(
                 f"worker_database_transaction_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
+        except PoolTimeout as exc:
+            if capability != "database_business":
+                raise
+            raise ResourceAdmissionTimeout(
+                f"worker_database_pool_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
         except OperationalError as exc:
             if capability != "database_business":
                 raise
