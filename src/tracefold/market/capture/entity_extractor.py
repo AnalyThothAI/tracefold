@@ -156,7 +156,7 @@ def _extract_surface_entities(
                 end=end,
             ),
         )
-        domain = urlparse(cleaned).netloc.lower()
+        domain = _url_host(cleaned)
         if domain:
             _append_unique(
                 entities,
@@ -233,11 +233,20 @@ def _single_evm_chain_hint(text: str) -> str | None:
 
 
 def _chain_from_url(raw_url: str) -> str | None:
-    host = urlparse(raw_url).netloc.lower()
+    host = _url_host(raw_url)
+    if host is None:
+        return None
     for domain, chain in EXPLORER_HOST_CHAINS.items():
         if host == domain or host.endswith(f".{domain}"):
             return chain
     return None
+
+
+def _url_host(raw_url: str) -> str | None:
+    try:
+        return urlparse(raw_url).netloc.lower()
+    except ValueError:
+        return None
 
 
 def _append_unique(
