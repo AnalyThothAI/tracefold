@@ -26,6 +26,7 @@ _BRIEF_MAX_ATTEMPTS = 3
 _OPENNEWS_BUFFER_CAPACITY = 256
 _OPENNEWS_RECONNECT_SECONDS = 3.0
 _OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS = 5 * 60
+_OPENNEWS_RECOVERY_MAX_PAGES = 11
 
 
 class NewsAcquisition:
@@ -222,23 +223,28 @@ class NewsAcquisition:
                     started_at_ms,
                     operation_timeout_seconds=3.0,
                 )
-                events = await self.finite_operations.run(
-                    "opennews_rest_recovery",
-                    client.fetch_latest,
-                    timeout_seconds=25.0,
-                )
-                await self.db.run_business(
-                    "opennews_recovery_publish",
-                    self._publish_opennews_sync,
-                    tuple(events[:100]),
-                    _now_ms(),
-                    started_at_ms,
-                    operation_timeout_seconds=3.0,
-                )
-                recovery_covered_gap = _opennews_recovery_covers_boundary(
-                    events,
-                    boundary_provider_record_id=self._opennews_gap_boundary_provider_record_id,
-                )
+                recovery_covered_gap = False
+                for page in range(1, _OPENNEWS_RECOVERY_MAX_PAGES + 1):
+                    events = await self.finite_operations.run(
+                        "opennews_rest_recovery",
+                        client.fetch_page,
+                        page,
+                        timeout_seconds=25.0,
+                    )
+                    await self.db.run_business(
+                        "opennews_recovery_publish",
+                        self._publish_opennews_sync,
+                        tuple(events[:100]),
+                        _now_ms(),
+                        started_at_ms,
+                        operation_timeout_seconds=3.0,
+                    )
+                    recovery_covered_gap = _opennews_recovery_covers_boundary(
+                        events,
+                        boundary_provider_record_id=self._opennews_gap_boundary_provider_record_id,
+                    )
+                    if recovery_covered_gap:
+                        break
                 if recovery_covered_gap:
                     gap_closed = await self._update_opennews_status(
                         connected=self._opennews_connected,
