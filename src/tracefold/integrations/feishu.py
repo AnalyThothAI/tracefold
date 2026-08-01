@@ -14,6 +14,8 @@ import httpx
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
+FEISHU_AUTH_MODE_SIGNED = "signed"
+FEISHU_AUTH_MODE_UNSIGNED = "unsigned"
 _FEISHU_WEBHOOK_PATH_PREFIX = "/open-apis/bot/v2/hook/"
 _FEISHU_TIMEOUT_SECONDS = 10.0
 
@@ -42,23 +44,21 @@ class FeishuDeliveryReceipt:
 
 
 class FeishuWebhookClient:
-    """One signed V2 custom-bot webhook call; the News push Module owns retry policy."""
+    """One V2 custom-bot webhook call; the News push Module owns retry policy."""
 
     def __init__(
         self,
         *,
         webhook_url: str,
-        signing_secret: str,
+        signing_secret: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         normalized_url = str(webhook_url or "").strip()
         normalized_secret = str(signing_secret or "").strip()
         if not _is_feishu_webhook_url(normalized_url):
             raise ValueError("news_push_feishu_webhook_url_invalid")
-        if not normalized_secret:
-            raise ValueError("news_push_feishu_signing_secret_required")
         self._webhook_url = normalized_url
-        self._signing_secret = normalized_secret
+        self._signing_secret = normalized_secret or None
         self._client = httpx.Client(
             timeout=httpx.Timeout(_FEISHU_TIMEOUT_SECONDS),
             headers={"Content-Type": "application/json; charset=utf-8"},
@@ -66,24 +66,32 @@ class FeishuWebhookClient:
             transport=transport,
         )
 
+    @property
+    def auth_mode(self) -> str:
+        return FEISHU_AUTH_MODE_SIGNED if self._signing_secret is not None else FEISHU_AUTH_MODE_UNSIGNED
+
     def send(
         self,
         card: Mapping[str, Any],
         *,
         timestamp_seconds: int | None = None,
     ) -> FeishuDeliveryReceipt:
-        timestamp = int(time.time()) if timestamp_seconds is None else int(timestamp_seconds)
-        if timestamp <= 0:
-            raise FeishuTerminalError("feishu_timestamp_invalid")
         payload = {
-            "timestamp": str(timestamp),
-            "sign": generate_feishu_signature(
-                timestamp_seconds=timestamp,
-                signing_secret=self._signing_secret,
-            ),
             "msg_type": "interactive",
             "card": dict(card),
         }
+        if self._signing_secret is not None:
+            timestamp = int(time.time()) if timestamp_seconds is None else int(timestamp_seconds)
+            if timestamp <= 0:
+                raise FeishuTerminalError("feishu_timestamp_invalid")
+            payload = {
+                "timestamp": str(timestamp),
+                "sign": generate_feishu_signature(
+                    timestamp_seconds=timestamp,
+                    signing_secret=self._signing_secret,
+                ),
+                **payload,
+            }
         try:
             body = json.dumps(
                 payload,
@@ -158,6 +166,8 @@ def _is_feishu_webhook_url(value: str) -> bool:
 
 
 __all__ = [
+    "FEISHU_AUTH_MODE_SIGNED",
+    "FEISHU_AUTH_MODE_UNSIGNED",
     "FEISHU_WEBHOOK_RATE_LIMIT_CODE",
     "FEISHU_WEBHOOK_REQUEST_MAX_BYTES",
     "FeishuDeliveryError",

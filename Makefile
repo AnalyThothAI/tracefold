@@ -2,8 +2,16 @@ UV_CACHE_DIR ?= /tmp/tracefold-uv-cache
 export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
+TRACEFOLD_API_HOST ?= 127.0.0.1
+TRACEFOLD_API_PORT ?= 8765
+TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
+TRACEFOLD_WORKERS_PORT ?= 8766
+TRACEFOLD_API_URL ?= http://127.0.0.1:$(TRACEFOLD_API_PORT)
+TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
+TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
+export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers status recent asset-flow docker-check docker-up docker-status docker-logs docker-down docker-serve-shell docker-workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status logs down preflight sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers recent asset-flow serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -77,48 +85,83 @@ serve: ## run the read-only public runtime in foreground
 workers: ## run the ingestion/projection/provider/model runtime in foreground
 	@$(TRACEFOLD) workers
 
-status: ## print health and readiness for the running API
-	@curl -fsS http://127.0.0.1:8765/healthz
-	@curl -fsS http://127.0.0.1:8765/readyz
-
 recent: ## print recent stored events
 	@$(TRACEFOLD) recent --limit 20
 
 asset-flow: ## print 5m token activity
 	@$(TRACEFOLD) asset-flow --window 5m --limit 20
 
-docker-check: ## verify Docker CLI, Compose plugin, and daemon access
+preflight: ## verify the one-command startup prerequisites
+	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed or not on PATH" >&2; exit 127; }
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed or not on PATH" >&2; exit 127; }
 	@docker compose version >/dev/null 2>&1 || { echo "docker compose plugin is unavailable" >&2; exit 127; }
+	@command -v curl >/dev/null 2>&1 || { echo "curl is not installed or not on PATH" >&2; exit 127; }
 	@docker info >/dev/null 2>&1 || { \
 		echo "Docker daemon is not reachable from this shell." >&2; \
-		echo "Start Docker Desktop or grant this terminal access to the Docker socket, then rerun make docker-up." >&2; \
+		echo "Start Docker Desktop or grant this terminal access to the Docker socket, then rerun make up." >&2; \
 		exit 1; \
 	}
 
-docker-up: docker-check init ## build and start the full container stack
-	@if [ -n "$${GITHUB_TOKEN:-}" ]; then \
-		docker compose up -d --build; \
-	elif command -v gh >/dev/null 2>&1 && GITHUB_TOKEN=$$(gh auth token 2>/dev/null); then \
-		GITHUB_TOKEN="$$GITHUB_TOKEN" docker compose up -d --build; \
-	else \
-		docker compose up -d --build; \
-	fi
+up: preflight init ## build, migrate, start, and verify the complete product
+	@set -eu; \
+		token="$${GITHUB_TOKEN:-}"; \
+		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
+			token=$$(gh auth token 2>/dev/null || true); \
+		fi; \
+		revision=$$(git rev-parse --verify HEAD 2>/dev/null || true); \
+		if ! GITHUB_TOKEN="$$token" TRACEFOLD_BUILD_REVISION="$$revision" \
+			docker compose up -d --build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS); then \
+			docker compose ps --all >&2 || true; \
+			echo "Startup failed. Run make logs for diagnostics." >&2; \
+			exit 1; \
+		fi
+	@$(MAKE) --no-print-directory status
+	@echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
-docker-status: ## show container and readiness
-	@docker compose ps
-	@curl -fsS http://127.0.0.1:8765/readyz || true
+status: preflight ## fail closed unless database, API, Workers, and console are ready
+	@docker compose ps --all
+	@set -eu; \
+		failed=0; \
+		for service in postgres serve workers; do \
+			container_id=$$(docker compose ps -q "$$service"); \
+			if [ -z "$$container_id" ]; then \
+				echo "$$service: missing or stopped" >&2; \
+				failed=1; \
+				continue; \
+			fi; \
+			state=$$(docker inspect --format '{{.State.Status}}' "$$container_id"); \
+			health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$container_id"); \
+			if [ "$$state" != "running" ] || [ "$$health" != "healthy" ]; then \
+				echo "$$service: state=$$state health=$$health" >&2; \
+				failed=1; \
+			fi; \
+		done; \
+		migrate_id=$$(docker compose ps --all -q migrate); \
+		if [ -z "$$migrate_id" ]; then \
+			echo "migrate: missing" >&2; \
+			failed=1; \
+		elif [ "$$(docker inspect --format '{{.State.ExitCode}}' "$$migrate_id")" != "0" ]; then \
+			echo "migrate: failed" >&2; \
+			failed=1; \
+		fi; \
+		curl -fsS "$(TRACEFOLD_API_URL)/readyz" >/dev/null || { echo "serve readiness failed" >&2; failed=1; }; \
+		curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" >/dev/null || { echo "workers readiness failed" >&2; failed=1; }; \
+		curl -fsS "$(TRACEFOLD_API_URL)/" | grep -Eiq '<(!doctype html|html)' || { echo "console HTML missing" >&2; failed=1; }; \
+		if [ "$$failed" -ne 0 ]; then \
+			echo "Run make logs for diagnostics." >&2; \
+			exit 1; \
+		fi
 
-docker-logs: ## tail serve, workers, and PostgreSQL logs
-	@docker compose logs -f --tail=100 serve workers postgres
+logs: preflight ## tail Serve, Workers, migration, and PostgreSQL logs
+	@docker compose logs -f --tail=100 serve workers migrate postgres
 
-docker-down: ## stop container service
+down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down
 
-docker-serve-shell: ## open shell in the serve container
+serve-shell: preflight ## open a shell in the Serve container
 	@docker compose exec serve /bin/sh
 
-docker-workers-shell: ## open shell in the workers container
+workers-shell: preflight ## open a shell in the Workers container
 	@docker compose exec workers /bin/sh
 
 clean: ## remove local test/cache artifacts

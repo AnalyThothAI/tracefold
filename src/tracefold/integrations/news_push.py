@@ -17,6 +17,8 @@ from tracefold.news import (
 )
 
 from .feishu import (
+    FEISHU_AUTH_MODE_SIGNED,
+    FEISHU_AUTH_MODE_UNSIGNED,
     FeishuDeliveryError,
     FeishuRetryableError,
     FeishuTerminalError,
@@ -77,7 +79,7 @@ class FeishuNewsPushDelivery:
     def __init__(
         self,
         webhook_url: str,
-        signing_secret: str,
+        signing_secret: str | None = None,
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
@@ -104,6 +106,7 @@ class FeishuNewsPushDelivery:
             ) from None
         return {
             "channel": _FEISHU_CHANNEL,
+            "auth_mode": self._client.auth_mode,
             "translation": frozen_translation,
             "card": card,
         }
@@ -125,6 +128,20 @@ class FeishuNewsPushDelivery:
             if not isinstance(card, Mapping) or card.get("schema") != "2.0":
                 raise NewsPushDeliveryError(
                     "news_push_feishu_frozen_card_invalid",
+                    retryable=False,
+                )
+            auth_mode = payload.get("auth_mode")
+            if not isinstance(auth_mode, str) or auth_mode not in (
+                FEISHU_AUTH_MODE_SIGNED,
+                FEISHU_AUTH_MODE_UNSIGNED,
+            ):
+                raise NewsPushDeliveryError(
+                    "news_push_feishu_frozen_auth_mode_invalid",
+                    retryable=False,
+                )
+            if auth_mode != self._client.auth_mode:
+                raise NewsPushDeliveryError(
+                    "news_push_feishu_auth_mode_mismatch",
                     retryable=False,
                 )
             receipt = self._client.send(card)

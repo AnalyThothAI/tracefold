@@ -770,8 +770,8 @@ async def _wire_components(
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
             signing_secret = settings.news.push.feishu_signing_secret
-            if not webhook_url or not signing_secret:
-                raise RuntimeError("news_push_credentials_missing_after_validation")
+            if not webhook_url:
+                raise RuntimeError("news_push_webhook_missing_after_validation")
             news_push = NewsStoryPush(
                 db=db,
                 model_adapter=model_adapter,

@@ -29,6 +29,24 @@ There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
 
+The deployment composition has four required boundaries: PostgreSQL, one
+successful migration job, Serve, and Workers. `make up` is only their
+fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
+On an empty PostgreSQL volume, the image's `initdb` hook creates the
+non-login owner plus least-privilege Serve, Workers, and migrate roles from
+separate password files, then revokes the bootstrap login before the migration
+job runs. That hook is never replayed against a non-empty cluster. Repeated
+startup therefore preserves the database and operator-owned credentials, while
+an unknown existing schema or missing role fails instead of being implicitly
+hard-cut.
+
+The same image contains the Python service and a production React build. Serve
+owns the static console and public HTTP/WebSocket boundary; Workers exposes
+only its loopback operational boundary. Image construction and Compose startup
+do not become alternate configuration sources: `tracefold init` remains the
+single generated-default authority and `~/.tracefold/config.yaml` remains the
+single live application config.
+
 The projection coordinator executes exactly one semantic shard at a time.
 Every productive or failed turn waits on the fixed 250 ms bounded repoll
 cadence before reading the typed frontier heads again. Idle polling is likewise
@@ -235,7 +253,7 @@ OpenNews source
   -> complete 96-hour WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
   -> News-owned strict score>70 push state -> optional title translation
-     -> signed Feishu card
+     -> signed or explicitly unsigned Feishu card
   -> one flat global cursor Feed; category is a facet
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
@@ -334,14 +352,20 @@ the serial model adapter calls code-owned `deepseek-v4-flash` in non-thinking
 mode. Translation failure freezes a marked English fallback and still
 progresses to delivery.
 
-The Feishu Adapter receives only the frozen card. It signs and sends outside
-the database transaction through the finite-operation capability. Explicit
-Feishu `code == 0` is the only success. Transport failures, timeouts, HTTP 429,
-and 5xx are bounded retries; deterministic configuration, signing,
-authentication, and card errors are terminal. The semantics are durable
-at-least-once: an ambiguous response loss may duplicate externally, while a
-confirmed success is never resent. Dedupe follows current `story_id`; no
-historical Story alias or membership-overlap identity is introduced.
+The Feishu Adapter receives only the frozen card and sends outside the database
+transaction through the finite-operation capability. When the optional signing
+secret is present, it adds the Feishu timestamp/signature pair; otherwise it
+sends an explicitly unsigned request with neither field. It never downgrades a
+failed signed request into an unsigned retry. The frozen envelope persists only
+the non-secret `auth_mode`; timestamp, signature, secret, and webhook remain
+runtime-only. A retry with a different configured mode terminates before
+network submission. Explicit Feishu `code == 0` is the only success. Transport
+failures, timeouts, HTTP 429, and 5xx are bounded
+retries; deterministic configuration, signing, authentication, and card errors
+are terminal. The semantics are durable at-least-once: an ambiguous response
+loss may duplicate externally, while a confirmed success is never resent.
+Dedupe follows current `story_id`; no historical Story alias or
+membership-overlap identity is introduced.
 
 The complete live News storage boundary is exactly fourteen tables:
 `news_sources`, `news_source_memberships`, `news_items`, `news_stories`,

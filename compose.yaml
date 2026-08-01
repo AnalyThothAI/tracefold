@@ -34,10 +34,14 @@ services:
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
     secrets:
       - postgres_password
+      - postgres_serve_password
+      - postgres_workers_password
+      - postgres_migrate_password
     ports:
       - "${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"
     volumes:
       - tracefold-postgres:/var/lib/postgresql
+      - ./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tracefold_workers -d tracefold"]
       interval: 10s
@@ -98,7 +102,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "8765:8765"
+      - "${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
@@ -141,7 +145,7 @@ services:
     environment:
       FINANCE_FRED_API_KEY: ${FINANCE_FRED_API_KEY:-}
     ports:
-      - "127.0.0.1:8766:8766"
+      - "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
@@ -173,5 +177,11 @@ volumes:
 secrets:
   postgres_password:
     file: ${HOME}/.tracefold/postgres_password
+  postgres_serve_password:
+    file: ${HOME}/.tracefold/postgres_serve_password
+  postgres_workers_password:
+    file: ${HOME}/.tracefold/postgres_workers_password
+  postgres_migrate_password:
+    file: ${HOME}/.tracefold/postgres_migrate_password
   github_token:
     environment: GITHUB_TOKEN

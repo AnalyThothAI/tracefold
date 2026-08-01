@@ -13,7 +13,21 @@ API, and public WebSocket settings. Worker topology, cadence, deadlines,
 resource limits, batches, leases, retries, and model reservations are
 code-owned and are not configuration fields.
 
-Repository examples, fixtures, `.env` files, and generated docs are not runtime configuration. `uv run tracefold config` reports the effective paths and redacted settings. Unknown settings or worker keys fail validation.
+Repository fixtures, `.env` files, and generated docs are not runtime
+configuration. No static example is a second schema authority: the
+`tracefold init` command generates the default directly from the typed settings
+implementation.
+`uv run tracefold config` reports the effective paths and redacted settings.
+Unknown settings or worker keys fail validation.
+
+`tracefold init` creates the operator directory, config, cache/log directories,
+and bootstrap/Serve/Workers/migrate password files. The operator directory is
+mode `0700`; config and password files are `0600`. A normal rerun preserves
+existing config and password contents while repairing permissions.
+`tracefold init --force` replaces only `config.yaml`; it does not rotate
+existing database passwords. The generated config has a new WebSocket token
+but no live provider/model/webhook credential, and `news.push.enabled` is
+false.
 
 The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
@@ -37,12 +51,17 @@ source. It is reported only as the redacted boolean
 `opennews_token_missing`; no substitute credential path is used.
 
 `news.push` contains `enabled`, `feishu_webhook_url`, and
-`feishu_signing_secret`. Enabling push requires both secrets; the webhook must
-be the supported Feishu HTTPS custom-bot v2 boundary. Diagnostics expose only
-`feishu_webhook_url_configured` and `feishu_signing_secret_configured`. Threshold,
-translator model, cadence, deadlines, retries, and card policy are code-owned.
-Translation reuses `llm.api_key` and `llm.base_url`; there is no second model
-credential or Google-translation fallback.
+optional `feishu_signing_secret`. Enabling push requires the webhook, which
+must be the supported Feishu HTTPS custom-bot v2 boundary. If a non-empty
+signing secret is present, delivery includes the computed `timestamp` and
+`sign`; if absent, delivery is unsigned and includes neither field.
+Diagnostics expose only `feishu_webhook_url_configured` and
+`feishu_signing_secret_configured`. Each frozen internal delivery envelope
+contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
+change modes; it never contains the webhook, secret, timestamp, or signature.
+Threshold, translator model, cadence, deadlines, retries, and card policy are
+code-owned. Translation reuses `llm.api_key` and `llm.base_url`; there is no
+second model credential or Google-translation fallback.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
@@ -50,6 +69,21 @@ native-state model arbiter, and all resource capacities are code-owned.
 Configuration cannot add another worker or derived product lane. Explicit
 Macro backfill is a synchronous CLI maintenance action and is absent from the
 steady Workers root.
+
+## Operator lifecycle
+
+The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
+Compose, `curl`, and daemon access; runs idempotent initialization; builds the
+frontend and backend image; performs fresh-volume role bootstrap; runs the
+one-shot migration; starts Serve and Workers; and waits for required health and
+console boundaries. A repeated invocation preserves config, passwords, and
+named-volume data.
+
+`make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
+runtime readiness endpoint, or console HTML is missing or unhealthy.
+`make logs` follows the bounded startup services. `make down` stops the stack
+without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
+an unknown non-empty database.
 
 ## HTTP
 
@@ -308,8 +342,9 @@ current items, material facts, acquisition targets, Fed document analysis, and
 the six module rows.
 `20260801_0237` adds the durable OpenNews recovery boundary, and
 `20260801_0238` adds the News push baseline and delivery ledger. Applying either
-migration does not send a message; delivery begins only after explicit signed
-push configuration and the first enabled reconcile establishes its baseline.
+migration does not send a message; delivery begins only after an explicit
+webhook-backed push configuration and the first enabled reconcile establishes
+its baseline. Signing is optional.
 
 ### Token images
 

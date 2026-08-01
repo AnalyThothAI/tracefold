@@ -2386,8 +2386,6 @@ class NewsRepository:
             push_reasons: list[str] = []
             if not feishu_webhook_url_configured:
                 push_reasons.append("feishu_webhook_url_not_configured")
-            if not feishu_signing_secret_configured:
-                push_reasons.append("feishu_signing_secret_not_configured")
             if not push_snapshot["initialized"]:
                 push_reasons.append("push_baseline_uninitialized")
             if push_snapshot["retry_count"]:
@@ -2398,7 +2396,6 @@ class NewsRepository:
                 "degraded"
                 if (
                     not feishu_webhook_url_configured
-                    or not feishu_signing_secret_configured
                     or push_snapshot["retry_count"]
                     or push_snapshot["terminal_count"]
                 )

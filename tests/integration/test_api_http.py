@@ -773,7 +773,6 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     settings.news.push = type(settings.news.push)(
         enabled=True,
         feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook"),
-        feishu_signing_secret="status-test-signing-secret",
     )
     app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)
@@ -811,6 +810,10 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
 
         with write_repositories() as repos, repos.transaction():
             repos.news.initialize_push_baseline(now_ms=now_ms + 1)
+
+        unsigned_ready_response = client.get("/api/news/status", headers=headers)
+
+        with write_repositories() as repos, repos.transaction():
             for story_id in ("a" * 64, "b" * 64, "c" * 64, "d" * 64):
                 assert repos.news.insert_push_candidate(
                     story_id=story_id,
@@ -886,6 +889,15 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
         "push": "warming",
     }
     assert warming["layers"]["push"]["initialized"] is False
+    assert warming["layers"]["push"]["feishu_signing_secret_configured"] is False
+    assert warming["layers"]["push"]["reasons"] == ["push_baseline_uninitialized"]
+
+    assert unsigned_ready_response.status_code == 200
+    unsigned_ready = unsigned_ready_response.json()["data"]
+    assert unsigned_ready["status"] == "ready"
+    assert unsigned_ready["layers"]["push"]["status"] == "ready"
+    assert unsigned_ready["layers"]["push"]["reasons"] == []
+    assert unsigned_ready["layers"]["push"]["feishu_signing_secret_configured"] is False
 
     assert degraded_response.status_code == 200
     degraded = degraded_response.json()["data"]
@@ -894,7 +906,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert push["status"] == "degraded"
     assert push["enabled"] is True
     assert push["feishu_webhook_url_configured"] is True
-    assert push["feishu_signing_secret_configured"] is True
+    assert push["feishu_signing_secret_configured"] is False
     assert push["initialized"] is True
     assert push["baseline_at_ms"] == now_ms + 1
     assert push["pending_count"] == 1

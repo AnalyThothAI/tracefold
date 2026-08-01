@@ -16,6 +16,36 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, provider names, error classes, and command
 results; never secret values.
 
+## Operator lifecycle
+
+The canonical complete-product lifecycle is:
+
+```bash
+make up
+make status
+make logs
+make down
+```
+
+`make up` preflights `uv`, Docker, Compose, `curl`, and daemon access, runs
+idempotent initialization, builds the Python/React image, starts PostgreSQL,
+requires the one-shot migration to succeed, starts Serve and Workers, and then
+runs the same fail-closed status gate. On failure, use `make logs`; rerunning
+`make up` preserves operator config, four password files, and named-volume data.
+`make down` stops containers without deleting that volume.
+
+Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
+creates a non-login owner plus the separate Serve, Workers, and migrate roles
+from their mode-`0600` password files, revokes the bootstrap login, and only
+then permits migration. It is not a periodic reconciler and will not mutate an
+unknown non-empty cluster. Such a cluster must already satisfy the role/schema
+contract or use an independently authorized maintenance cutover.
+
+`make status` prints Compose state and returns non-zero unless PostgreSQL,
+migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
+HTML console all pass. It must not be replaced by a liveness-only `curl` or a
+Compose command whose exit status ignores an unhealthy Worker.
+
 ## Health and status
 
 | Surface | Meaning | SQL/queue inspection |
@@ -24,6 +54,7 @@ results; never secret values.
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
 | Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
 | `/api/status` | serve snapshot plus persisted worker status | bounded control read |
+| `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
 Queue backlog, optional provider degradation, and a missing Fed document
@@ -203,7 +234,7 @@ New current Story with max OpenNews provider score > 70
   -> News-owned durable push candidate
   -> first-enable baseline suppression or one frozen highest-score Item
   -> optional deepseek-v4-flash headline translation through model adapter
-  -> signed Feishu card through finite-operation adapter
+  -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
 ```
 
@@ -236,6 +267,14 @@ Stories, fewer than two reporting origins, or an unchanged ordered Story
 fingerprint is observed. On provider or validation failure it records the
 failed run and keeps the last-known-good current pointer.
 
+Enabled push requires a valid Feishu webhook but not a signing secret. With a
+secret, each request carries the Feishu timestamp/signature pair; without one,
+the request deliberately carries neither. A signed request that fails is never
+retried unsigned. Missing model credentials or a translation error still
+freezes and sends the marked original-headline card. Status and logs expose
+only configured booleans and sanitized error codes, never the webhook or
+signing secret.
+
 Diagnose News in this order:
 
 1. `/api/news/sources`: OpenNews live/recovery/gap and current error;
@@ -258,7 +297,7 @@ News health has four layers:
 | ingest | OpenNews is connected, its recovery gap is closed, and at least one item has succeeded | source not configured, no item yet, disconnected stream, open gap, or current provider error |
 | story | current 96-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
-| push | disabled, or configured with initialized baseline and no terminal delivery | missing required secrets, uninitialized enabled state, retry backlog beyond policy, or terminal delivery error |
+| push | disabled, or webhook-configured with initialized baseline and no terminal delivery | missing required webhook, uninitialized enabled state, retry backlog beyond policy, or terminal delivery error |
 
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
@@ -385,7 +424,7 @@ Start with redacted runtime context:
 ```bash
 uv run tracefold config
 curl -fsS http://127.0.0.1:8765/readyz
-docker compose ps --all
+make status
 ```
 
 Then inspect live activity, blockers, and normalized top SQL:

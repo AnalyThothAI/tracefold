@@ -2,51 +2,121 @@
 
 > **Scope.** Owns install, dev-loop, and deployment commands for both the Python service and the `web/` frontend. Runtime invariants live in `OPERATIONS.md`.
 
-## Python service
+## Complete operator startup
+
+Install Git, Make, [uv](https://docs.astral.sh/uv/), Docker with the Compose
+plugin, and `curl`; start the Docker daemon. From a fresh clone, run:
 
 ```bash
-uv sync
-uv run pytest
-uv run ruff check .
-uv run python -m compileall src tests
+make up
 ```
 
-Bring up the service:
+This is the canonical startup path. It preflights `uv`, Docker, Compose,
+`curl`, and daemon access; idempotently initializes the operator directory;
+builds the React console and Python service; initializes PostgreSQL and its
+least-privilege roles on a fresh named volume; migrates to the current Alembic
+head; starts Serve and Workers; and waits for PostgreSQL, migration, both
+runtime readiness boundaries, and an HTML console. Any failed boundary makes
+the command return non-zero and directs the operator to `make logs`.
 
 ```bash
-uv run tracefold init      # create config.yaml and four role password files
-uv run tracefold serve     # read-only HTTP/static/WebSocket runtime
-uv run tracefold workers   # ingestion/projection/provider/model runtime
+make status  # fail closed unless the complete product is ready
+make logs    # follow PostgreSQL, migration, Serve, and Workers logs
+make down    # stop containers; preserve config, passwords, and database data
 ```
 
-`init` writes `~/.tracefold/config.yaml` plus separate bootstrap, serve,
-workers, and migrate PostgreSQL password files with mode `0600`.
-Worker topology and all safety/resource budgets are code-owned. Rerun
-`uv run tracefold init --force` only when you
-intentionally want to replace these operator-owned files.
+The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
+and Workers metrics/readiness are bound to loopback by default. A second
+`make up` preserves the operator files and named-volume data.
 
-For real data, edit the operator-owned files in `~/.tracefold/`
-instead of adding repository-local `.env` files or editing generated examples.
-`config.yaml` must point at the live PostgreSQL store and contain the provider
-credentials/endpoints needed by the enabled data lanes, including GMGN OpenAPI
-for exact token profiles and OKX provider settings for discovery, market data,
-or DEX WebSocket lanes when those paths are enabled. Keep secrets out of
+### Initialization semantics
+
+`make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
+`0700`, `logs/` and `cache/`, one credential-empty `config.yaml`, and four
+independent PostgreSQL password files:
+
+```text
+postgres_password
+postgres_serve_password
+postgres_workers_password
+postgres_migrate_password
+```
+
+The config and all password files are mode `0600`. Ordinary `tracefold init`
+never overwrites an existing config, never rotates an existing password, and
+repairs the required permissions on every run. `tracefold init --force`
+replaces only `config.yaml` with a newly generated default; it still preserves
+all existing PostgreSQL passwords. Back up intentional config changes before
+using `--force`.
+
+`tracefold init` is the sole default-config authority. There is no maintained
+static example or `.env` fallback. The generated default creates a local
+WebSocket token but contains no external provider, model, OpenNews, or Feishu
+credential, and leaves News push disabled. Edit only the operator-owned
+`~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
+
+The generated PostgreSQL DSNs are container-network addresses. The fresh-volume
+bootstrap runs only during PostgreSQL `initdb`: it creates the non-login owner
+plus Serve, Workers, and migrate roles, then revokes the temporary bootstrap
+login before ordinary migration. It never attempts to reinterpret or hard-cut
+an unknown non-empty volume. Existing deployments must already have the
+least-privilege roles, or use their explicitly authorized maintenance/cutover
+path; startup fails closed when the migrate role or schema contract is not
+valid.
+
+### Credential-dependent capabilities
+
+The product process is usable without optional live credentials, but affected
+lanes report explicit degradation or unavailable evidence:
+
+- absent `news.opennews_token` produces `opennews_token_missing`; it does not
+  invent News or switch to another acquisition source;
+- absent GMGN/OKX credentials leave their authenticated profile, discovery, or
+  market lanes unavailable, while configured keyless sources keep their own
+  independent behavior;
+- absent model credentials leaves the corresponding Brief/analysis capability
+  unavailable; specifically, absent `llm.api_key` makes News push use its
+  marked original-headline fallback instead of blocking delivery;
+- News push remains off until `news.push.enabled: true` and a supported
+  `news.push.feishu_webhook_url` are both configured.
+
+`tracefold config` reports the effective file paths and configured booleans;
+it never prints provider tokens, webhook URLs, signing secrets, or model keys.
+
+`news.push.feishu_signing_secret` is optional. When present, the Adapter adds
+the Feishu timestamp and signature. When absent, it sends the same bounded
+interactive card unsigned, without `timestamp` or `sign`; the operator owns
+that reduced-authentication choice. Configuration diagnostics report only
+configured booleans. The translator reuses the DeepSeek-compatible
+`llm.api_key` and `llm.base_url`, fixes the model to `deepseek-v4-flash`, and
+has no second credential or Google-translation fallback.
+
+An unsigned operator configuration uses the existing generated fields; do not
+add another secrets file or environment variable:
+
+```yaml
+news:
+  enabled: true
+  opennews_token: "<operator secret>"
+  push:
+    enabled: true
+    feishu_webhook_url: "<Feishu v2 webhook>"
+    feishu_signing_secret:
+```
+
+Leave the signing field empty only when unsigned delivery is intentional. Do
+not commit the populated operator config.
+
+Worker topology and all safety/resource budgets are code-owned. For real data,
+`config.yaml` must contain the credentials/endpoints needed by each enabled
+lane, including GMGN OpenAPI for exact token profiles and OKX provider settings
+for discovery, market data, or DEX WebSocket paths.
 The `llm` block owns operator credentials: `api_key` plus `base_url` for the
 current OpenAI-compatible provider, and optional `openrouter_api_key` and
 `groq_api_key` for News provider fallback. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
 credential path.
-Set `news.opennews_token` to enable the production News WSS and REST recovery
-lane. `tracefold config` reports only whether it is configured; it never prints
-the token. When it is absent, News reports `opennews_token_missing`.
-Set `news.push.enabled: true` only after adding a newly rotated Feishu webhook
-URL and signing secret under `news.push`; both are required and diagnostics
-report configured booleans only. The push translator reuses the existing
-DeepSeek-compatible `llm.api_key` and `llm.base_url` and fixes the translation
-model to `deepseek-v4-flash`; no second model credential is configured.
-If that credential is absent, title translation is marked unavailable without
-a model call and the frozen card still carries the original headline.
 
 News correctness does not depend on the model. The OpenNews WSS receiver, REST
 recovery, and publisher share one acquisition module and sole NewsItem writer.
@@ -58,8 +128,8 @@ and the single-capacity native-state model arbiter owns World Brief and the
 title-only push translator. Push is a separate News-owned delivery state
 machine: initial enablement suppresses the current eligible baseline, later
 strict score-greater-than-70 crossings freeze one highest-scored Item and send
-one signed Feishu card with durable at-least-once retries. It is not a generic
-Notifications product or item-level analysis path.
+one optionally signed Feishu card with durable at-least-once retries. It is not
+a generic Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -170,8 +240,9 @@ per-attempt, and stored intermediate history while preserving current items,
 facts, targets, document analyses, and module rows.
 Migration `20260801_0237` adds the persisted OpenNews recovery boundary and
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
-disabled after migration until the signed Feishu settings are explicitly
-enabled; the first enabled reconcile records a no-backfill baseline.
+disabled after migration until the Feishu webhook and push switch are
+explicitly configured; signing remains optional. The first enabled reconcile
+records a no-backfill baseline.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a
@@ -182,7 +253,26 @@ The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands
 here. A snapshot lives at `generated/cli-help.md`.
 
-## Docker Compose
+## Container deployment
+
+`make up`, `make status`, `make logs`, and `make down` are the supported
+operator lifecycle. `make up` passes an existing `GITHUB_TOKEN` into the image
+build as a BuildKit secret; when unset, it uses `gh auth token` if available.
+Public dependencies need neither. The token is not stored in an image layer or
+application config.
+
+Compose bind-mounts only role-appropriate files from `~/.tracefold/`. Serve
+receives only its SELECT credential; Workers receives only its DML credential;
+the migrate credential is absent from both steady containers. PostgreSQL data
+is pinned to the `tracefold-postgres` named volume, and `make down` does not
+delete it.
+
+Fresh-volume bootstrap is an `initdb` hook, not a steady service or a generic
+role-repair mechanism. Normal startup consists of PostgreSQL, the one-shot
+migration service, and separate Serve/Workers runtimes. `make status` returns
+non-zero for a failed/missing migration, stopped or unhealthy required
+container, failed Serve or Workers readiness endpoint, or missing HTML console.
+Use `make logs` for the bounded startup evidence named by a failure.
 
 ### Authorized Issue #33 in-place hard cut
 
@@ -212,27 +302,18 @@ Because the legacy bootstrap superuser login is deliberately revoked,
 cluster-owner recovery afterward requires local/container PostgreSQL
 administration rather than the old network credential.
 
+After a successful one-time cutover, use the ordinary lifecycle again:
+
 ```bash
-export GITHUB_TOKEN="$(gh auth token)"  # required when GitHub dependencies are private
-make docker-check
-make docker-up
-make docker-status
-make docker-logs
-make docker-down
+make up
+make status
+make logs
+make down
 ```
 
-Bind-mounts only the role-appropriate files from host `~/.tracefold/`.
-Serve receives only its SELECT credential; workers receives only its DML
-credential; the migrate credential is absent from both steady containers.
-PostgreSQL data is pinned to the `tracefold-postgres` named volume.
-
-Normal Compose starts PostgreSQL, the one-shot migration service, and separate
-serve/workers runtimes. Production News is OpenNews-only.
-
-`make docker-check` verifies the Docker CLI, the Compose plugin, and daemon
-access before the build starts. If it reports that the Docker daemon is not
-reachable, start Docker Desktop or grant the current terminal access to the
-Docker socket before rerunning `make docker-up`.
+The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, and daemon
+access before a build starts. If the daemon is unavailable, start Docker
+Desktop or grant this shell access to the Docker socket, then rerun `make up`.
 
 The official PostgreSQL 18 Bookworm image preloads `pg_stat_statements` with
 query IDs enabled. Use `tracefold db health`, supported audit/query-audit and
@@ -240,12 +321,56 @@ status/metrics surfaces, the SQL in `OPERATIONS.md`, and `docker compose logs`
 for diagnosis. Compose has no custom PostgreSQL build, auxiliary observability
 services, host log mount, or HTML-report path.
 
-## Frontend (`web/`)
+## Explicit development loops
+
+The container workflow is the fresh-clone onboarding path. It is not equivalent
+to starting only `tracefold serve`: the complete product also requires a
+current PostgreSQL schema, one Workers runtime, and a built or proxied console.
+
+For frontend-only development, keep the complete stack running and start Vite
+against its loopback API:
+
+```bash
+make up
+cd web
+npm ci
+npm run dev          # Vite console with API/WebSocket proxy to 127.0.0.1:8765
+```
+
+For an intentional host-process backend loop, first provision PostgreSQL roles
+and set the three DSNs in `~/.tracefold/config.yaml` to a database reachable
+from the host. This is for development against an already prepared database;
+it does not bootstrap a blank cluster. Then use separate terminals:
+
+```bash
+# one-time dependency/schema preparation
+uv sync
+cd web && npm ci && cd ..
+uv run tracefold db migrate
+
+# terminal 1
+uv run tracefold serve
+
+# terminal 2
+uv run tracefold workers
+
+# terminal 3
+cd web && npm run dev
+```
+
+Developer checks remain separate from startup:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run python -m compileall src tests
+cd web && npm run typecheck && npm run lint
+```
+
+Other frontend commands are:
 
 ```bash
 cd web
-npm install
-npm run dev          # vite dev server with API proxy
 npm run build        # production bundle
 npm run preview      # serve the build locally
 ```

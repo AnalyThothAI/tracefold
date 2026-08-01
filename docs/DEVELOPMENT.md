@@ -65,6 +65,31 @@ Select commands by risk:
 universal completion mandate. Run only the additional lanes that cross the
 changed seam and report omitted evidence honestly.
 
+### Operator onboarding acceptance
+
+Startup changes treat `make up`, `make status`, `make logs`, and `make down` as
+one public lifecycle seam. Tests must keep `tracefold init` as the only default
+config authority, reject a returned static example, verify `0700`/`0600`
+permissions and non-rotation, inspect the Compose role/bootstrap boundary, and
+prove that status cannot pass with a failed migration, stopped Worker, failed
+readiness endpoint, or missing console.
+
+The release acceptance uses an isolated empty home and a distinct empty Compose
+volume. The first `make up` must reach Alembic head with healthy Serve/Workers
+and real console HTML; the second must preserve config/password hashes and a
+database sentinel. Missing optional live credentials must appear as capability
+degradation rather than startup failure or fake data. A failed startup keeps
+its containers/logs available for `make logs` and returns non-zero.
+
+The focused maintained checks include:
+
+```bash
+uv run pytest -q \
+  tests/architecture/test_onboarding_surface.py \
+  tests/integration/test_cli.py \
+  tests/integration/test_compose_postgres.py
+```
+
 ### News WorldMonitor parity evaluation
 
 News identity, classification, importance, and Brief selection are frozen to
@@ -105,8 +130,10 @@ last-known-good retention, measured acquisition/projection latency, and
 browser verification of Feed, Story, Brief, and Sources. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, frozen at-least-once retry behavior, title-only
-translation with English fallback, signed Feishu response classification, and
-no model or network I/O inside a database transaction.
+translation with English fallback, exact signed and unsigned Feishu request
+shapes, response classification, and no model or network I/O inside a database
+transaction. Absence of a signing secret is an explicit unsigned mode, never a
+fallback after a signed attempt fails.
 
 ## Generated contracts
 

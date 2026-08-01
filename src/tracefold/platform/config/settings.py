@@ -271,11 +271,9 @@ class NewsPushSettings(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def require_enabled_credentials(self) -> NewsPushSettings:
+    def require_enabled_webhook(self) -> NewsPushSettings:
         if self.enabled and not self.feishu_webhook_url:
             raise ValueError("news_push_feishu_webhook_url_required")
-        if self.enabled and not self.feishu_signing_secret:
-            raise ValueError("news_push_feishu_signing_secret_required")
         return self
 
 
@@ -380,10 +378,15 @@ def load_settings(*, require_ws_token: bool = True) -> Settings:
 def write_default_config(*, force: bool = False) -> Path:
     home = app_home()
     path = config_path(home)
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "logs").mkdir(parents=True, exist_ok=True)
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.chmod(0o700)
+    for directory_name in ("logs", "cache"):
+        directory = home / directory_name
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
     if force or not path.exists():
         path.write_text(default_config_yaml(), encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 

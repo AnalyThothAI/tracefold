@@ -30,12 +30,14 @@ from tracefold.platform.config.settings import NewsPushSettings, Settings, defau
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 
 
-def test_news_push_settings_require_signed_feishu_when_enabled() -> None:
+def test_news_push_settings_require_only_feishu_webhook_when_enabled() -> None:
     assert NewsPushSettings().enabled is False
     with pytest.raises(ValidationError, match="news_push_feishu_webhook_url_required"):
         NewsPushSettings(enabled=True)
-    with pytest.raises(ValidationError, match="news_push_feishu_signing_secret_required"):
-        NewsPushSettings(enabled=True, feishu_webhook_url=_FEISHU_TEST_URL)
+
+    unsigned = NewsPushSettings(enabled=True, feishu_webhook_url=_FEISHU_TEST_URL)
+    assert unsigned.feishu_webhook_url == _FEISHU_TEST_URL
+    assert unsigned.feishu_signing_secret is None
 
     configured = NewsPushSettings(
         enabled=True,
@@ -168,6 +170,41 @@ def test_feishu_webhook_sends_signed_interactive_card_and_requires_current_succe
     assert payload["sign"] == "wSds2BzzFIIGf/WrhUO+NI1q/9j+FRJd3JNHKAq0NZY="
     assert payload["msg_type"] == "interactive"
     assert payload["card"]["schema"] == "2.0"
+
+
+def test_feishu_webhook_without_secret_omits_signature_fields() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"code": 0})
+
+    client = FeishuWebhookClient(
+        webhook_url=_FEISHU_TEST_URL,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        receipt = client.send(
+            {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "中文标题"}},
+                "body": {"elements": []},
+            }
+        )
+    finally:
+        client.close()
+
+    assert receipt.status_code == 200
+    assert len(requests) == 1
+    payload = json.loads(requests[0].content)
+    assert payload == {
+        "msg_type": "interactive",
+        "card": {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "中文标题"}},
+            "body": {"elements": []},
+        },
+    }
 
 
 @pytest.mark.parametrize("status_code", [429, 500, 503])
@@ -507,10 +544,104 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
 
     assert first.provider == second.provider == "feishu"
     assert first.details == {"status_code": 200, "code": 0}
+    assert frozen["auth_mode"] == "signed"
+    assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
     sent_cards = [json.loads(request.content)["card"] for request in requests]
     assert sent_cards == [frozen["card"], frozen["card"]]
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
     assert all("已变更翻译" not in json.dumps(card, ensure_ascii=False) for card in sent_cards)
+
+
+@pytest.mark.parametrize(
+    ("render_secret", "delivery_secret"),
+    (("render-secret", None), (None, "delivery-secret")),
+)
+def test_feishu_news_push_rejects_cross_restart_auth_mode_change_without_network(
+    render_secret: str | None,
+    delivery_secret: str | None,
+) -> None:
+    rendered_by = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        render_secret,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+    )
+    frozen = rendered_by.render(_news_push_source_payload(), _news_push_translation())
+    rendered_by.close()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"code": 0})
+
+    restarted = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        delivery_secret,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(NewsPushDeliveryError) as raised:
+            restarted.deliver(frozen, idempotency_key="story-1")
+    finally:
+        restarted.close()
+
+    assert raised.value.code == "news_push_feishu_auth_mode_mismatch"
+    assert raised.value.retryable is False
+    assert requests == []
+
+
+@pytest.mark.parametrize(
+    ("signing_secret", "expected_auth_mode", "expected_signed"),
+    (("test-secret", "signed", True), (None, "unsigned", False)),
+)
+def test_feishu_news_push_cross_restart_same_auth_mode_retries_frozen_card(
+    signing_secret: str | None,
+    expected_auth_mode: str,
+    expected_signed: bool,
+) -> None:
+    first_requests: list[httpx.Request] = []
+
+    def first_handler(request: httpx.Request) -> httpx.Response:
+        first_requests.append(request)
+        return httpx.Response(503)
+
+    first_runtime = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        signing_secret,
+        transport=httpx.MockTransport(first_handler),
+    )
+    frozen = first_runtime.render(_news_push_source_payload(), _news_push_translation())
+    try:
+        with pytest.raises(NewsPushDeliveryError) as first_failure:
+            first_runtime.deliver(frozen, idempotency_key="story-1")
+    finally:
+        first_runtime.close()
+
+    retry_requests: list[httpx.Request] = []
+
+    def retry_handler(request: httpx.Request) -> httpx.Response:
+        retry_requests.append(request)
+        return httpx.Response(200, json={"code": 0})
+
+    restarted = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        signing_secret,
+        transport=httpx.MockTransport(retry_handler),
+    )
+    try:
+        receipt = restarted.deliver(frozen, idempotency_key="story-1")
+    finally:
+        restarted.close()
+
+    assert first_failure.value.retryable is True
+    assert frozen["auth_mode"] == expected_auth_mode
+    assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
+    assert signing_secret is None or signing_secret not in json.dumps(frozen)
+    assert receipt.provider == "feishu"
+    assert len(first_requests) == len(retry_requests) == 1
+    for request in (*first_requests, *retry_requests):
+        request_payload = json.loads(request.content)
+        assert ("timestamp" in request_payload) is expected_signed
+        assert ("sign" in request_payload) is expected_signed
 
 
 @pytest.mark.parametrize(
@@ -567,6 +698,39 @@ def test_feishu_news_push_rejects_invalid_frozen_payload_as_terminal() -> None:
 
     assert raised.value.retryable is False
     assert raised.value.code == "news_push_feishu_frozen_card_invalid"
+    assert called is False
+
+
+@pytest.mark.parametrize("auth_mode", (None, "other", [], {}))
+def test_feishu_news_push_rejects_missing_or_invalid_frozen_auth_mode_without_network(
+    auth_mode: object,
+) -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"code": 0})
+
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(NewsPushDeliveryError) as raised:
+            delivery.deliver(
+                {
+                    "channel": "feishu",
+                    "auth_mode": auth_mode,
+                    "card": {"schema": "2.0"},
+                },
+                idempotency_key="story-1",
+            )
+    finally:
+        delivery.close()
+
+    assert raised.value.retryable is False
+    assert raised.value.code == "news_push_feishu_frozen_auth_mode_invalid"
     assert called is False
 
 

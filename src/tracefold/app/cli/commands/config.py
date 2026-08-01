@@ -114,7 +114,7 @@ def _ensure_postgres_password_file(app_home: Path, *, role: str) -> Path:
     path = app_home / f"postgres_{role}_password"
     if not path.exists():
         path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
-        path.chmod(0o600)
+    path.chmod(0o600)
     return path
 
 
@@ -125,7 +125,7 @@ def _ensure_bootstrap_postgres_password_file(app_home: Path) -> Path:
             secrets.token_urlsafe(32) + "\n",
             encoding="utf-8",
         )
-        path.chmod(0o600)
+    path.chmod(0o600)
     return path
 
 

@@ -1,6 +1,6 @@
 # Security
 
-> **Scope.** Owns secret handling, supported config-source rules, and the change-confirmation requirement for sensitive subsystems. Operational invariants live in `RELIABILITY.md`.
+> **Scope.** Owns secret handling, supported config-source rules, and the change-confirmation requirement for sensitive subsystems. Operational invariants live in `OPERATIONS.md`.
 
 ## Secrets
 
@@ -17,6 +17,14 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, provider credentials and URLs, API/auth,
 domain/source-family enablement, model provider/name, and logging.
+
+`tracefold init` is the sole default-config generator. It creates
+`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/migrate
+secret files with mode `0600`; reruns repair those permissions. Without
+`--force`, an existing config is preserved byte-for-byte. `--force` replaces
+only the generated config and does not rotate existing PostgreSQL passwords.
+Generated defaults contain no live provider, model, or webhook credential and
+leave outbound News push disabled.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model
@@ -43,13 +51,21 @@ never contain the token or authorization header. Provider AI ratings are
 descriptive NewsItem metadata and cannot change identity, Story membership, or
 importance.
 
-`news.push.feishu_webhook_url` and `news.push.feishu_signing_secret` are
-operator-owned secrets. They must be configured together, are reported only
-as configured booleans, and never appear in logs, errors, status payloads,
+`news.push.feishu_webhook_url` and the optional
+`news.push.feishu_signing_secret` are operator-owned secrets. They are reported
+only as configured booleans and never appear in logs, errors, status payloads,
 generated artifacts, or persisted delivery rows. A webhook disclosed outside
-the operator config is treated as compromised and rotated before live use.
-Signing is mandatory when push is enabled. The Adapter accepts only the
-configured Feishu HTTPS webhook boundary and never follows redirects.
+the operator config should be treated as compromised and rotated before live
+use. Enabling delivery requires the supported Feishu HTTPS webhook. When a
+signing secret is configured, the Adapter sends a timestamp and signature;
+without one it deliberately sends an unsigned body containing neither field.
+Unsigned delivery has weaker request authentication and is an explicit
+operator choice, not a fallback after a signing error. In both modes the
+Adapter accepts only the configured Feishu webhook boundary and never follows
+redirects. The frozen delivery payload records only the non-secret `auth_mode`
+(`signed` or `unsigned`), never the webhook, signing secret, timestamp, or
+signature. A retry whose frozen mode differs from current configuration is
+terminal before network submission.
 
 The push translator reuses the existing `llm.api_key` and `llm.base_url`; it
 does not introduce another credential path. It calls code-owned

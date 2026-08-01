@@ -28,7 +28,7 @@ from tracefold.market import (
     TwitterEvent,
     parse_gmgn_token_payload,
 )
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.settings import Settings, default_config_yaml
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 
@@ -324,14 +324,14 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
         self.assertNotIn("workers", payload["data"])
 
-    def test_config_example_matches_the_current_hard_cut_schema(self):
-        example_path = Path(__file__).resolve().parents[2] / "config.example.yaml"
-        payload = yaml.safe_load(example_path.read_text(encoding="utf-8"))
+    def test_generated_default_config_matches_the_current_hard_cut_schema(self):
+        payload = yaml.safe_load(default_config_yaml())
 
         settings = Settings.model_validate(payload)
 
         self.assertTrue(settings.news.enabled)
         self.assertTrue(settings.providers.macro_sources.enabled)
+        self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
@@ -444,16 +444,54 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     payload = json.loads(stdout.getvalue())
     assert exit_code == 0
     assert payload["data"]["created"] is True
-    assert (tmp_path / ".tracefold" / "config.yaml").is_file()
+    app_home = tmp_path / ".tracefold"
+    config_path = app_home / "config.yaml"
+    assert config_path.is_file()
+    assert app_home.stat().st_mode & 0o777 == 0o700
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    for directory_name in ("logs", "cache"):
+        directory = app_home / directory_name
+        assert directory.is_dir()
+        assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
         "postgres_migrate_password",
     ):
-        path = tmp_path / ".tracefold" / name
+        path = app_home / name
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    first_stdout = io.StringIO()
+    second_stdout = io.StringIO()
+
+    assert main(["init"], stdout=first_stdout) == 0
+    app_home = tmp_path / ".tracefold"
+    tracked_names = (
+        "config.yaml",
+        "postgres_password",
+        "postgres_serve_password",
+        "postgres_workers_password",
+        "postgres_migrate_password",
+    )
+    before = {name: (app_home / name).read_bytes() for name in tracked_names}
+    app_home.chmod(0o755)
+    for name in tracked_names:
+        (app_home / name).chmod(0o644)
+    for directory_name in ("logs", "cache"):
+        (app_home / directory_name).chmod(0o755)
+
+    assert main(["init"], stdout=second_stdout) == 0
+
+    assert json.loads(second_stdout.getvalue())["data"]["created"] is False
+    assert {name: (app_home / name).read_bytes() for name in tracked_names} == before
+    assert app_home.stat().st_mode & 0o777 == 0o700
+    assert all((app_home / name).stat().st_mode & 0o777 == 0o600 for name in tracked_names)
+    assert all((app_home / name).stat().st_mode & 0o777 == 0o700 for name in ("logs", "cache"))
 
 
 def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkeypatch, tmp_path):

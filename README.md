@@ -45,51 +45,64 @@ Other packages import business capabilities from `tracefold.market`,
 `tracefold.news`, or `tracefold.macro`, not from their internal modules. See
 [Architecture](docs/ARCHITECTURE.md).
 
-## Runtime
+## Start the complete product
 
-Live configuration is operator-owned:
+Prerequisites are Git, Make, [uv](https://docs.astral.sh/uv/), a running
+Docker daemon, the Docker Compose plugin, and `curl`. On macOS, start Docker
+Desktop before continuing. From a fresh clone, the complete operator path is
+one command:
+
+```bash
+make up
+```
+
+`make up` preflights the prerequisites, initializes the operator files without
+overwriting existing choices, builds both the React console and Python
+service, bootstraps least-privilege PostgreSQL roles on a fresh volume,
+migrates to the current schema, starts Serve and Workers, and waits for both
+runtimes plus the HTML console. It exits non-zero and points to `make logs` if
+any required boundary is not ready.
+
+Open `http://127.0.0.1:8765/` after it succeeds. The lifecycle is deliberately
+small:
+
+```bash
+make status  # fail closed unless DB, migration, Serve, Workers, and console are ready
+make logs    # follow service logs; Ctrl-C leaves the services running
+make down    # stop containers without deleting PostgreSQL data
+```
+
+A second `make up` preserves the PostgreSQL volume, operator configuration,
+and role passwords. The generated defaults contain no provider, model, or
+webhook credential, and News push is disabled. The product still starts;
+credential-dependent capabilities report an explicit degraded or unavailable
+state instead of fabricating data. Add credentials only to
+`~/.tracefold/config.yaml`, then rerun `make up`.
+
+The operator-owned runtime directory is:
 
 ```text
-~/.tracefold/config.yaml
-~/.tracefold/postgres_password
-~/.tracefold/rsshub.env       # optional; Compose RSSHub credentials only
+~/.tracefold/config.yaml                 # 0600
+~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
+~/.tracefold/postgres_serve_password     # read-only runtime; 0600
+~/.tracefold/postgres_workers_password   # writer runtime; 0600
+~/.tracefold/postgres_migrate_password   # migration runtime; 0600
 ~/.tracefold/logs/
 ~/.tracefold/cache/
 ```
 
-Repository fixtures and `.env` files are not runtime truth. Confirm effective
-paths without printing secrets:
+The directory itself is mode `0700`. `tracefold init` is the sole default
+configuration generator; repository fixtures and `.env` files are not runtime
+truth. Confirm the active path and redacted credential booleans with:
 
 ```bash
 uv run tracefold config
 ```
 
-Quick start:
-
-```bash
-make sync
-make init
-make db-migrate
-make serve
-```
-
-The console is served at `http://127.0.0.1:8765/`. Docker users can run
-`make docker-up`, inspect with `make docker-status`, and stop with
-`make docker-down`.
-
-Useful read-only checks:
-
-```bash
-curl -fsS http://127.0.0.1:8765/healthz
-curl -fsS http://127.0.0.1:8765/readyz
-uv run tracefold db health
-uv run tracefold ops queue-inspect --status active
-uv run tracefold macro status
-```
-
-Exact HTTP fields come from
-[OpenAPI](docs/generated/openapi.json). The complete CLI snapshot is
-[cli-help.md](docs/generated/cli-help.md).
+Exact HTTP fields come from [OpenAPI](docs/generated/openapi.json). The
+complete CLI snapshot is [cli-help.md](docs/generated/cli-help.md). Detailed
+installation, credential, initialization, and development-loop instructions
+are in [Setup](docs/SETUP.md).
 
 ## Development
 

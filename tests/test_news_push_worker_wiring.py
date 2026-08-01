@@ -119,7 +119,6 @@ def test_push_wiring_requires_both_news_and_push_enabled(
             "push": {
                 "enabled": push_enabled,
                 "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
-                "feishu_signing_secret": "test-signing-secret",
             },
         },
         providers={"macro_sources": {"enabled": False}},
@@ -149,7 +148,7 @@ def test_push_wiring_requires_both_news_and_push_enabled(
         }
         assert constructed[1][1] == {
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
-            "signing_secret": "test-signing-secret",
+            "signing_secret": None,
         }
     else:
         assert constructed == []
