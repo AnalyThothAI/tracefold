@@ -3,8 +3,79 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from curl_cffi.curl import CurlError
 
 from tracefold.integrations.gmgn.direct_ws import DirectGmgnWebSocketClient
+
+
+def test_connect_curl_error_is_retried_instead_of_stopping_client() -> None:
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def ws_connect(self, *_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts >= 2:
+                retried.set()
+            raise CurlError("TLS connect failed")
+
+    async def on_frame(_frame: str) -> None:
+        return None
+
+    async def scenario() -> None:
+        client = DirectGmgnWebSocketClient(
+            app_version="test",
+            channels=["public_broadcast"],
+            chains=["sol"],
+            on_frame=on_frame,
+            reconnect_delay=0,
+            session_factory=_Session,
+        )
+        task = asyncio.create_task(client.run())
+        try:
+            await asyncio.wait_for(retried.wait(), timeout=0.5)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert attempts >= 2
+
+    attempts = 0
+    retried = asyncio.Event()
+    asyncio.run(scenario())
+
+
+def test_connect_unknown_error_still_stops_client() -> None:
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def ws_connect(self, *_args, **_kwargs):
+            raise RuntimeError("connection invariant failed")
+
+    async def on_frame(_frame: str) -> None:
+        return None
+
+    async def scenario() -> None:
+        client = DirectGmgnWebSocketClient(
+            app_version="test",
+            channels=["public_broadcast"],
+            chains=["sol"],
+            on_frame=on_frame,
+            session_factory=_Session,
+        )
+
+        with pytest.raises(RuntimeError, match="connection invariant failed"):
+            await asyncio.wait_for(client.run(), timeout=0.5)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from curl_cffi import requests as curl_requests
+from curl_cffi.curl import CurlError
 from loguru import logger
 
 from tracefold.market import GmgnStreamExpectedError
@@ -140,7 +141,7 @@ class DirectGmgnWebSocketClient:
             except (
                 GmgnStreamExpectedError,
                 UpstreamIdleTimeoutError,
-                curl_requests.RequestsError,
+                CurlError,
                 OSError,
             ) as exc:
                 reconnect_count += 1
