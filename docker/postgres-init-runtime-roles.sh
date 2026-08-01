@@ -56,6 +56,8 @@ fi
 # Install the non-trusted extension before revoking the bootstrap superuser's
 # login, then hand all application DDL to the non-login owner role.
 psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+	BEGIN;
+
 	CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public;
 	CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
 
@@ -80,4 +82,6 @@ psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGR
 	ALTER VIEW public.pg_stat_statements OWNER TO tracefold_owner;
 	ALTER VIEW public.pg_stat_statements_info OWNER TO tracefold_owner;
 	ALTER ROLE tracefold_app NOLOGIN;
+
+	COMMIT;
 EOSQL

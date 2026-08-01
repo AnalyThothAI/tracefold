@@ -72,9 +72,10 @@ make logs    # follow service logs; Ctrl-C leaves the services running
 make down    # stop containers without deleting PostgreSQL data
 ```
 
-A second `make up` preserves the PostgreSQL volume, operator configuration,
-and role passwords. The generated defaults contain no provider, model, or
-webhook credential, and News push is disabled. The product still starts;
+A second `make up` recreates the containers so configuration changes take
+effect while preserving the PostgreSQL volume, operator configuration, and
+role passwords. The generated defaults contain no provider, model, or webhook
+credential, and News push is disabled. The product still starts;
 credential-dependent capabilities report an explicit degraded or unavailable
 state instead of fabricating data. Add credentials only to
 `~/.tracefold/config.yaml`, then rerun `make up`.

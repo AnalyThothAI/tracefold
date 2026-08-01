@@ -115,6 +115,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert result.stderr == ""
     assert all(password not in result.stdout and password not in result.stderr for password in passwords.values())
     sql = capture_path.read_text(encoding="utf-8")
+    assert sql.lstrip().startswith("BEGIN;")
     assert sql.index("CREATE EXTENSION IF NOT EXISTS pg_stat_statements") < sql.index("CREATE ROLE tracefold_owner")
     assert "CREATE ROLE tracefold_owner" in sql
     assert "CREATE ROLE tracefold_serve" in sql
@@ -126,7 +127,8 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "ALTER SCHEMA public OWNER TO tracefold_owner" in sql
     assert "ALTER VIEW public.pg_stat_statements OWNER TO tracefold_owner" in sql
     assert "ALTER VIEW public.pg_stat_statements_info OWNER TO tracefold_owner" in sql
-    assert sql.rstrip().endswith("ALTER ROLE tracefold_app NOLOGIN;")
+    assert sql.index("ALTER ROLE tracefold_app NOLOGIN;") < sql.index("COMMIT;")
+    assert sql.rstrip().endswith("COMMIT;")
     assert "DROP DATABASE" not in sql
     assert "DROP SCHEMA" not in sql
 
@@ -173,6 +175,7 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
         "tracefold_migrate",
         "tracefold_migrate_owner_membership",
         "public_schema_owner",
+        "bootstrap_login_disabled",
     ):
         assert f"tracefold_runtime_role_contract_invalid:{contract_part}" in migration
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in migration

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +20,63 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
         "docker-logs",
         "docker-down",
     }.isdisjoint(targets)
+    assert "--force-recreate" in makefile
+
+
+def test_status_rejects_a_still_running_migration(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+if [ "$1" = "info" ]; then exit 0; fi
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
+  service=""
+  for argument do service="$argument"; done
+  if [ "$service" = "migrate" ]; then printf '%s\\n' migrate-id; else printf '%s\\n' "${service}-id"; fi
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  format="$3"
+  case "$format" in
+    *State.Status*) printf '%s\\n' running ;;
+    *State.ExitCode*) printf '%s\\n' 0 ;;
+    *State.Health*) printf '%s\\n' healthy ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o700)
+    fake_curl = bin_dir / "curl"
+    fake_curl.write_text(
+        """#!/bin/sh
+url=''
+for argument do url="$argument"; done
+case "$url" in */) printf '<html></html>' ;; esac
+""",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o700)
+    fake_uv = bin_dir / "uv"
+    fake_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_uv.chmod(0o700)
+
+    result = subprocess.run(
+        ["make", "status"],
+        cwd=ROOT,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "migrate: state=running exit_code=0" in result.stderr
 
 
 def test_readme_routes_fresh_clone_to_the_complete_stack() -> None:

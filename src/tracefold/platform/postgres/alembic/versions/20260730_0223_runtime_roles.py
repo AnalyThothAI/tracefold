@@ -139,6 +139,14 @@ def upgrade() -> None:
           ) THEN
             RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:public_schema_owner';
           END IF;
+          IF current_user = 'tracefold_owner' AND NOT EXISTS (
+            SELECT 1
+              FROM pg_roles
+             WHERE rolname = 'tracefold_app'
+               AND NOT rolcanlogin
+          ) THEN
+            RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:bootstrap_login_disabled';
+          END IF;
         END
         $role_contract$;
 

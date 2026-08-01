@@ -27,13 +27,16 @@ make down    # stop containers; preserve config, passwords, and database data
 
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
 and Workers metrics/readiness are bound to loopback by default. A second
-`make up` preserves the operator files and named-volume data.
+`make up` deliberately recreates the containers so edits to the bind-mounted
+operator config take effect, while preserving the operator files and
+named-volume data.
 
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
-`0700`, `logs/` and `cache/`, one credential-empty `config.yaml`, and four
-independent PostgreSQL password files:
+`0700`, `logs/` and `cache/`, one config with a locally generated WebSocket
+token but no external credentials, and four independent PostgreSQL password
+files:
 
 ```text
 postgres_password

@@ -110,7 +110,7 @@ up: preflight init ## build, migrate, start, and verify the complete product
 		fi; \
 		revision=$$(git rev-parse --verify HEAD 2>/dev/null || true); \
 		if ! GITHUB_TOKEN="$$token" TRACEFOLD_BUILD_REVISION="$$revision" \
-			docker compose up -d --build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS); then \
+			docker compose up -d --build --force-recreate --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS); then \
 			docker compose ps --all >&2 || true; \
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
@@ -140,13 +140,23 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 		if [ -z "$$migrate_id" ]; then \
 			echo "migrate: missing" >&2; \
 			failed=1; \
-		elif [ "$$(docker inspect --format '{{.State.ExitCode}}' "$$migrate_id")" != "0" ]; then \
-			echo "migrate: failed" >&2; \
-			failed=1; \
+		else \
+			migrate_state=$$(docker inspect --format '{{.State.Status}}' "$$migrate_id"); \
+			migrate_exit_code=$$(docker inspect --format '{{.State.ExitCode}}' "$$migrate_id"); \
+			if [ "$$migrate_state" != "exited" ] || [ "$$migrate_exit_code" != "0" ]; then \
+				echo "migrate: state=$$migrate_state exit_code=$$migrate_exit_code" >&2; \
+				failed=1; \
+			fi; \
 		fi; \
 		curl -fsS "$(TRACEFOLD_API_URL)/readyz" >/dev/null || { echo "serve readiness failed" >&2; failed=1; }; \
 		curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" >/dev/null || { echo "workers readiness failed" >&2; failed=1; }; \
-		curl -fsS "$(TRACEFOLD_API_URL)/" | grep -Eiq '<(!doctype html|html)' || { echo "console HTML missing" >&2; failed=1; }; \
+		if ! console_html=$$(curl -fsS "$(TRACEFOLD_API_URL)/"); then \
+			echo "console request failed" >&2; \
+			failed=1; \
+		elif ! printf '%s' "$$console_html" | grep -Eiq '<(!doctype html|html)'; then \
+			echo "console HTML missing" >&2; \
+			failed=1; \
+		fi; \
 		if [ "$$failed" -ne 0 ]; then \
 			echo "Run make logs for diagnostics." >&2; \
 			exit 1; \
