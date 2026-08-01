@@ -36,6 +36,7 @@ HOT_PROJECTION_WINDOWS = ("5m", "1h")
 HOT_PROJECTION_LIMIT = 100
 ERROR_REFRESH_BACKOFF_MS = (30_000, 60_000, 300_000, 1_800_000, 3_600_000)
 MAX_DEX_SYMBOL_CANDIDATES_PER_CHAIN = 3
+_REPROCESS_PAGE_LIMIT = 100
 
 
 class ResolutionRefresh:
@@ -47,7 +48,7 @@ class ResolutionRefresh:
         finite_operations: Any,
         runtime_id: str,
         claim_limit: int = 1,
-        reprocess_limit: int = 500,
+        reprocess_limit: int = _REPROCESS_PAGE_LIMIT,
         chain_ids: tuple[str, ...] = (
             "solana",
             "eip155:1",

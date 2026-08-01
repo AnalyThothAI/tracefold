@@ -94,7 +94,7 @@ class TokenIntentLookupRepository:
             SELECT token_intents.*
             FROM picked
             JOIN token_intents ON token_intents.intent_id = picked.intent_id
-            ORDER BY token_intents.created_at_ms DESC, token_intents.intent_id
+            ORDER BY token_intents.intent_id
             """,
             (*keys, int(since_ms), after_intent_id, after_intent_id, parsed_limit),
         ).fetchall()

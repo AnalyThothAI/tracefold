@@ -68,6 +68,11 @@ frontier, so an idle poll does not scan future News expiry rows. There is no
 generic scheduler, database wake plane, startup rebuild, phased load shifting,
 or configurable concurrency.
 
+Resolution performs one external lookup per durable turn and reprocesses at
+most 100 affected intents in each publication transaction. Larger closures use
+the persisted keyset continuation and immediately repoll without refetching the
+provider result.
+
 Serve owns a read-only pool of eight with ordinary/search/control admission
 `6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
 JIT off, parallel gather off, and 8 MiB work memory. Workers owns the exact

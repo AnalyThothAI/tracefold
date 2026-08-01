@@ -118,14 +118,21 @@ def _ingest_service(conn: Any) -> IngestService:
     )
 
 
-def _worker(conn: Any, market: Any, *, reprocess_limit: int = 500, finite: Any = None) -> ResolutionRefresh:
+def _worker(
+    conn: Any,
+    market: Any,
+    *,
+    reprocess_limit: int | None = None,
+    finite: Any = None,
+) -> ResolutionRefresh:
+    kwargs = {} if reprocess_limit is None else {"reprocess_limit": reprocess_limit}
     return ResolutionRefresh(
         db=_InlineDatabase(conn),
         dex_discovery_market=market,
         finite_operations=finite or _InlineFiniteOperations(),
         runtime_id="integration-test",
         chain_ids=("eip155:1",),
-        reprocess_limit=reprocess_limit,
+        **kwargs,
     )
 
 
@@ -222,7 +229,7 @@ def test_resolution_refresh_provider_outage_does_not_spend_target_attempt(tmp_pa
     }
 
 
-def test_resolution_refresh_durably_continues_beyond_500_without_refetch(tmp_path) -> None:
+def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_without_refetch(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -236,7 +243,7 @@ def test_resolution_refresh_durably_continues_beyond_500_without_refetch(tmp_pat
                 )
             )
         market = _DexMarket(candidates=[_candidate("BULK")])
-        worker = _worker(conn, market, reprocess_limit=500)
+        worker = _worker(conn, market)
 
         first = asyncio.run(worker.turn(now_ms=NOW_MS + 60_000))
         continuation = conn.execute(
@@ -256,7 +263,13 @@ def test_resolution_refresh_durably_continues_beyond_500_without_refetch(tmp_pat
             (f"asset:eip155:1:erc20:{ADDRESS}",),
         ).fetchone()["count"]
 
-        second = asyncio.run(worker.turn(now_ms=NOW_MS + 60_001))
+        turns = 1
+        while conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM token_discovery_dirty_lookup_keys WHERE lookup_key = 'symbol:BULK') AS open"
+        ).fetchone()["open"]:
+            turns += 1
+            assert turns <= 20
+            assert asyncio.run(worker.turn(now_ms=NOW_MS + 60_000 + turns)) is True
         final_queue = conn.execute(
             "SELECT COUNT(*) AS count FROM token_discovery_dirty_lookup_keys WHERE lookup_key = 'symbol:BULK'"
         ).fetchone()["count"]
@@ -277,8 +290,8 @@ def test_resolution_refresh_durably_continues_beyond_500_without_refetch(tmp_pat
     assert continuation["reprocess_resolved"] is True
     assert continuation["attempt_count"] == 1
     assert continuation["lease_owner"] is None
-    assert first_resolved == 500
-    assert second is True
+    assert first_resolved == 100
+    assert 6 <= turns <= 20
     assert market.search_requests == 1
     assert final_queue == 0
     assert final_resolved == 501
