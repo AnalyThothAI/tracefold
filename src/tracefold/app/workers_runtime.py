@@ -175,7 +175,7 @@ def workers_runtime_status(
 
 
 def _takeover_allowed(row: Mapping[str, Any], *, now_ms: int) -> bool:
-    if str(row["lifecycle_state"]) == "stopped":
+    if str(row["lifecycle_state"]) in {"stopped", "failed"}:
         return True
     return int(now_ms) - int(row["heartbeat_at_ms"]) > WORKERS_RUNTIME_STALE_AFTER_MS
 

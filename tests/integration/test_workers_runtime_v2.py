@@ -234,7 +234,7 @@ def test_steady_and_maintenance_locks_are_mutually_exclusive(tmp_path) -> None:
         asyncio.run(second.aclose())
 
 
-def test_fresh_failed_row_blocks_takeover_but_current_admission_clock_allows_stale_takeover(
+def test_terminal_runtime_rows_allow_immediate_takeover(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -248,6 +248,14 @@ def test_fresh_failed_row_blocks_takeover_but_current_admission_clock_allows_sta
                 started_at_ms=1_000,
                 now_ms=1_000,
             )
+        with conn.transaction():
+            assert not repository.begin(
+                runtime_id=SECOND_RUNTIME_ID,
+                runtime_version="v2",
+                started_at_ms=1_500,
+                now_ms=1_500,
+            )
+        with conn.transaction():
             repository.transition(
                 runtime_id=RUNTIME_ID,
                 lifecycle_state="failed",
@@ -255,30 +263,23 @@ def test_fresh_failed_row_blocks_takeover_but_current_admission_clock_allows_sta
                 now_ms=2_000,
             )
         with conn.transaction():
-            assert not repository.begin(
+            assert repository.begin(
                 runtime_id=SECOND_RUNTIME_ID,
                 runtime_version="v2",
                 started_at_ms=2_001,
                 now_ms=2_001,
             )
-        with conn.transaction():
-            assert repository.begin(
-                runtime_id=SECOND_RUNTIME_ID,
-                runtime_version="v2",
-                started_at_ms=2_001,
-                now_ms=17_001,
-            )
             row = repository.read()
             assert row is not None
             assert row["started_at_ms"] == 2_001
-            assert row["heartbeat_at_ms"] == 17_001
-            repository.transition(runtime_id=SECOND_RUNTIME_ID, lifecycle_state="stopped", now_ms=17_002)
+            assert row["heartbeat_at_ms"] == 2_001
+            repository.transition(runtime_id=SECOND_RUNTIME_ID, lifecycle_state="stopped", now_ms=2_002)
         with conn.transaction():
             assert repository.begin(
                 runtime_id=RUNTIME_ID,
                 runtime_version="v2",
-                started_at_ms=17_003,
-                now_ms=17_003,
+                started_at_ms=2_003,
+                now_ms=2_003,
             )
     finally:
         conn.close()
