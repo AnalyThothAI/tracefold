@@ -19,11 +19,44 @@ from tracefold.app.workers_runtime_collector import (
     COLLECTION_FILE,
     COLLECTION_SCHEMA_VERSION,
     SAMPLES_FILE,
-    CollectorDependencies,
     _collect_fixed_interval,
+    _CollectorDependencies,
     _summarize,
 )
+from tracefold.platform.postgres.postgres_audit import (
+    HOT_QUERIES,
+    PUBLIC_NO_SQL_ROUTES,
+    PUBLIC_ROUTE_QUERY_COVERAGE,
+)
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+
+_AUTHORIZATION_URL = "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965794"
+_AUTHORIZED_BY = "aaurix"
+_AUTHORIZED_AT_MS = 1_785_561_696_000
+_AUTHORIZATION_STATEMENT = (
+    "## Authoritative production hard-cut authorization record — 2026-08-01\n"
+    "\n"
+    "This records the production operator authorization relayed in the active Codex task and "
+    "supersedes every snapshot, backup, restore-drill, and snapshot_restore acceptance clause "
+    "in this Issue for the current cutover.\n"
+    "\n"
+    "Authorized boundary:\n"
+    "\n"
+    "- deploy the verified implementation by merging directly into `main` and cutting over "
+    "the existing production PostgreSQL database in place;\n"
+    "- downtime is allowed;\n"
+    "- do not create a backup or snapshot and do not perform a restore drill;\n"
+    "- old and new Workers must never overlap;\n"
+    "- if any gate fails, stop the new Workers and fix forward on the current database before "
+    "retrying;\n"
+    "- no waiver, placeholder hash, or manually asserted boolean may represent restore or "
+    "runtime acceptance as passed.\n"
+    "\n"
+    "This comment records authorization only. It does not claim that implementation, "
+    "deployment, the continuous 30-minute gate, independent review, or Issue completion has "
+    "passed."
+)
+_AUTHORIZATION_STATEMENT_SHA256 = "0fcdc80cfa8e20d74c5f9fcb92bbc6cb611e807b489f2386a260a6afea022886"
 
 
 @pytest.fixture(autouse=True)
@@ -122,16 +155,54 @@ def test_operator_authorized_fix_forward_boundary_is_exact(
     assert not (tmp_path / SEAL_FILE).exists()
 
 
-def test_operator_authorization_statement_is_bound_to_issue_comment(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        (
+            "source_url",
+            "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965795",
+            "workers_runtime_operator_authorization_source_url_invalid",
+        ),
+        ("authorized_by", "another-user", "workers_runtime_operator_authorization_identity_invalid"),
+        ("authorized_at_ms", _AUTHORIZED_AT_MS + 1, "workers_runtime_operator_authorization_time_invalid"),
+        ("statement", f"{_AUTHORIZATION_STATEMENT}\n", "workers_runtime_operator_authorization_statement_invalid"),
+        (
+            "statement_sha256",
+            "f" * 64,
+            "workers_runtime_operator_authorization_statement_hash_invalid",
+        ),
+    ),
+)
+def test_operator_authorization_is_exactly_bound_to_issue_comment(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    error: str,
+) -> None:
     evidence = _complete_evidence(tmp_path)
     raw = json.loads((tmp_path / "raw-evidence.json").read_text())
     authorization = raw["proofs"]["startup_recovery_operator_authorized_fix_forward_boundary"]["authorization"]
-    authorization["statement"] = "different instruction"
+    authorization[field] = value
     (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
     _refresh_artifact_hashes(tmp_path, evidence)
     (tmp_path / "evidence.json").write_text(json.dumps(evidence))
 
-    with pytest.raises(ValueError, match="workers_runtime_operator_authorization_statement_hash_invalid"):
+    with pytest.raises(ValueError, match=error):
+        seal_workers_runtime_evidence(tmp_path)
+    assert not (tmp_path / SEAL_FILE).exists()
+
+
+def test_operator_authorization_rejects_rehashed_statement_tampering(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    raw = json.loads((tmp_path / "raw-evidence.json").read_text())
+    authorization = raw["proofs"]["startup_recovery_operator_authorized_fix_forward_boundary"]["authorization"]
+    authorization["statement"] = "different instruction"
+    authorization["statement_sha256"] = hashlib.sha256(authorization["statement"].encode()).hexdigest()
+    (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_operator_authorization_statement_invalid"):
         seal_workers_runtime_evidence(tmp_path)
     assert not (tmp_path / SEAL_FILE).exists()
 
@@ -362,20 +433,16 @@ def _complete_evidence(root: Path) -> dict:
             "status": "passed",
             "checks": {name: True},
         }
-    authorization_statement = (
-        "The production operator authorized an in-place main production cutover without backup, "
-        "with downtime allowed and fix-forward recovery."
-    )
     raw_proofs["startup_recovery_operator_authorized_fix_forward_boundary"] = {
         "status": "passed",
         "authorization": {
             "source_kind": "github_issue_comment",
-            "source_url": "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-1234567890",
+            "source_url": _AUTHORIZATION_URL,
             "authority_role": "production_operator",
-            "authorized_by": "test-owner",
-            "authorized_at_ms": 1_799_999_000_000,
-            "statement": authorization_statement,
-            "statement_sha256": hashlib.sha256(authorization_statement.encode()).hexdigest(),
+            "authorized_by": _AUTHORIZED_BY,
+            "authorized_at_ms": _AUTHORIZED_AT_MS,
+            "statement": _AUTHORIZATION_STATEMENT,
+            "statement_sha256": _AUTHORIZATION_STATEMENT_SHA256,
         },
         "boundary": {
             "deployment_target": "main_production",
@@ -395,7 +462,7 @@ def _complete_evidence(root: Path) -> dict:
             "versions": evidence["versions"],
             "configuration": evidence["configuration"],
         },
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -523,6 +590,7 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
         "postgres": {
             "worker_connections": 4,
             "lock_wait_count": 0,
+            "waits_by_type": {"Client": 3, "none": 1},
             "max_transaction_seconds": 0.1,
             "temp_files": 7,
             "temp_bytes": 4096,
@@ -536,8 +604,19 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
                 }
                 for domain in domains
             },
+            **({"query_audit": _query_audit()} if sequence == 0 else {}),
         },
         "telemetry": {
+            "metric_families": sorted(
+                {
+                    "tracefold_worker_projection_deadline_misses",
+                    "tracefold_worker_projection_soft_slo_overruns",
+                    "tracefold_worker_projection_transitions",
+                    "tracefold_worker_resource_active",
+                    "tracefold_worker_resource_admission_seconds",
+                    "tracefold_worker_resource_service_seconds",
+                }
+            ),
             "resource_active": {
                 "database_business": 0.0,
                 "database_control": 0.0,
@@ -546,10 +625,71 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
                 "cpu_process": 0.0,
             },
             "projection_deadline_misses_total": {domain: 0.0 for domain in domains},
+            "projection_soft_slo_overruns_total": {domain: 0.0 for domain in domains},
             "projection_transitions_total": {domain: {"arrival": 0.0, "completion": 0.0} for domain in domains},
-            "resource_service": [],
-            "resource_admission": [],
+            "resource_service": _resource_rows(
+                "service",
+                count=sequence + 1,
+                seconds=(sequence + 1) * 0.002,
+            ),
+            "resource_admission": _resource_rows(
+                "admission",
+                count=sequence + 1,
+                seconds=(sequence + 1) * 0.001,
+            ),
         },
+    }
+
+
+def _resource_rows(kind: str, *, count: int, seconds: float) -> list[dict]:
+    prefix = f"tracefold_worker_resource_{kind}_seconds"
+    labels = {
+        "capability": "database_control",
+        "operation": "runtime_heartbeat",
+        "outcome": "accepted" if kind == "admission" else "success",
+    }
+    return [
+        {"name": f"{prefix}_count", "labels": labels, "value": float(count)},
+        {"name": f"{prefix}_sum", "labels": labels, "value": float(seconds)},
+    ]
+
+
+def _query_audit() -> dict:
+    metrics = {
+        "plan_json_valid": True,
+        "execution_time_ms": 0.1,
+        "planning_time_ms": 0.1,
+        "returned_rows": 0,
+        "read_rows": 0,
+        "read_return_amplification": 0.0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+        "large_seq_scans": [],
+    }
+    return {
+        "ok": True,
+        "engine": "postgresql",
+        "analyze": True,
+        "thresholds": {
+            "large_seq_scan_plan_rows": 10_000,
+            "max_read_return_amplification": 100,
+            "temp_blocks": 0,
+        },
+        "route_coverage": {
+            "query_routes": json.loads(json.dumps(PUBLIC_ROUTE_QUERY_COVERAGE)),
+            "no_sql_routes": sorted(PUBLIC_NO_SQL_ROUTES),
+            "missing_query_names": [],
+        },
+        "queries": [
+            {
+                "ok": True,
+                "name": str(query["name"]),
+                "plan": [{"Plan": {"Node Type": "Result"}}],
+                "metrics": dict(metrics),
+                "violations": [],
+            }
+            for query in HOT_QUERIES
+        ],
     }
 
 

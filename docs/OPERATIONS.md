@@ -571,16 +571,46 @@ uv run tracefold ops collect-workers-runtime-acceptance \
   --bundle /absolute/path/to/issue-33-runtime-evidence
 ```
 
-The collector fails closed on a dirty or changing checkout, revision/runtime/
-PID/container changes, restart or OOM, stale readiness, container memory at or
-above 2 GiB, PostgreSQL connection/lock/transaction violations, resource-cap
-violations, deadline/quarantine evidence, transition-counter regression, or a
-non-converging four-domain backlog. Arrival and completion counters are emitted
-only after the PostgreSQL transaction containing the frontier transition
-commits; rollback emits nothing. The 30-minute duration is the final
-`collector_elapsed_seconds` from the collector's monotonic clock, while wall
-clock timestamps continue to prove heartbeat freshness and the maximum sample
-gap. A failed collection retains its raw samples and returns non-zero.
+The first sample embeds the complete result of
+`PostgresQueryAudit.run(analyze=True)`. Validation binds the exact public-route
+coverage and no-SQL route sets, requires every declared hot query, executes its
+read-only plan, and rejects any route gap, missing plan/metric, large-table
+sequential scan, temporary-block use, or other query-audit violation. This is
+the production query-plan gate; a separately asserted query-analysis boolean
+cannot replace it.
+
+Every sample records the complete observed Worker `wait_event_type`
+distribution and requires its counts to reconcile to the Worker connection
+count. `Lock` must remain zero. Other wait types are not interpreted as a
+blanket failure; their interval maxima are sealed for operator and independent
+review. The collector also requires all six Prometheus families for projection
+deadline misses, projection soft-SLO overruns, projection transitions,
+resource-active gauges, resource-admission duration, and resource-service
+duration. A missing required family fails closed instead of becoming an
+implicit zero.
+
+Admission and service evidence are independent. Each requires complete
+`capability`, `operation`, and `outcome` labels plus matching cumulative
+`_count`/`_sum` series. Every exact series must remain present and monotonic
+between samples, and each class must show a real positive count delta during
+the 30-minute interval. Active capability gauges must remain within their
+code-owned caps. A Radar whole turn over five seconds increments the per-domain
+soft-SLO counter and is sealed as latency evidence, but that increment alone
+does not fail the gate; it is not a fatal turn deadline. Counter regression or
+an invalid soft-SLO metric shape still fails collection.
+
+More generally, the collector fails closed on a dirty or changing checkout,
+revision/runtime/PID/container changes, restart or OOM, stale readiness,
+container memory at or above 2 GiB, PostgreSQL connection/lock/transaction
+violations, resource-cap violations, deadline/quarantine evidence, malformed
+field shapes, negative or non-finite (`NaN`/`Infinity`) measurements, any
+cumulative-counter regression, or a non-converging four-domain backlog.
+Arrival and completion counters are emitted only after the PostgreSQL
+transaction containing the frontier transition commits; rollback emits
+nothing. The 30-minute duration is the final `collector_elapsed_seconds` from
+the collector's monotonic clock, while wall-clock timestamps continue to prove
+heartbeat freshness and the maximum sample gap. A failed collection retains
+its raw samples and returns non-zero.
 
 Add the measured collection, the offline/startup artifacts, the operator
 authorization record, and an independent reviewer disposition to the complete
@@ -602,11 +632,14 @@ and resource limits. The real gate's declared duration, miss/quarantine counts,
 and capacity rows must equal that recomputed summary exactly; editing either
 the collection summary or any raw sample fails sealing.
 
-The sealer also requires production query analysis without route gaps or plan
-violations, semantic and permission passes, runtime/model-reservation evidence,
-and reviewer pass. The declared commit must equal the current checkout HEAD,
-the checkout must have no tracked or untracked changes, the absolute operator
-config path must exist, and every raw artifact must bind the same
+The sealer revalidates the embedded first-sample production query audit and
+recomputes its summary, every sampled wait distribution, required metric-family
+presence, per-series resource monotonicity, independent admission/service
+interval deltas, and recorded Radar soft-SLO counters from the bound JSONL. It
+also requires semantic and permission passes, runtime/model-reservation
+evidence, and reviewer pass. The declared commit must equal the current
+checkout HEAD; the checkout must have no tracked or untracked changes, the
+absolute operator config path must exist, and every raw artifact must bind the same
 repository/session/cutoff, commit/migration, and redacted enablement. Every
 passing proof and the independent review must bind an `artifact_path` plus its
 actual SHA-256 to a regular JSON file inside the bundle. Raw proof files use

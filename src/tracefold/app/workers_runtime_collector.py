@@ -18,11 +18,19 @@ from urllib.request import urlopen
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
 
+from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION
+from tracefold.platform.postgres.postgres_audit import (
+    HOT_QUERIES,
+    PUBLIC_NO_SQL_ROUTES,
+    PUBLIC_ROUTE_QUERY_COVERAGE,
+    PostgresQueryAudit,
+)
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     with_password_from_file,
 )
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 COLLECTION_DURATION_SECONDS = 30 * 60
 SAMPLE_INTERVAL_SECONDS = 10
@@ -51,17 +59,34 @@ _RESOURCE_CAPS = {
     "model_adapter": 1.0,
     "cpu_process": 1.0,
 }
-_DOMAINS = ("news", "macro", "profile", "radar")
-_FRONTIER_TABLES = {
-    "radar": "radar_projection_frontiers",
-    "profile": "token_profile_projection_frontiers",
-    "macro": "macro_module_frontiers",
-    "news": "news_projection_frontiers",
+_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
+_FRONTIER_TABLES = {spec.domain: spec.table for spec in FRONTIER_SPECS}
+_REQUIRED_METRIC_FAMILIES = {
+    "tracefold_worker_projection_deadline_misses",
+    "tracefold_worker_projection_soft_slo_overruns",
+    "tracefold_worker_projection_transitions",
+    "tracefold_worker_resource_active",
+    "tracefold_worker_resource_admission_seconds",
+    "tracefold_worker_resource_service_seconds",
+}
+_RESOURCE_METRIC_NAMES = {
+    "resource_admission": {
+        "tracefold_worker_resource_admission_seconds_count",
+        "tracefold_worker_resource_admission_seconds_sum",
+    },
+    "resource_service": {
+        "tracefold_worker_resource_service_seconds_count",
+        "tracefold_worker_resource_service_seconds_sum",
+    },
+}
+_RESOURCE_OUTCOMES = {
+    "resource_admission": {"accepted", "timeout"},
+    "resource_service": {"cancelled", "error", "success"},
 }
 
 
 @dataclass(frozen=True, slots=True)
-class CollectorDependencies:
+class _CollectorDependencies:
     clock_ms: Callable[[], int]
     monotonic: Callable[[], float]
     sleep: Callable[[float], None]
@@ -86,7 +111,7 @@ def collect_workers_runtime_acceptance(bundle_dir: Path, settings: Any) -> dict[
         return _collect_fixed_interval(
             bundle,
             metadata=metadata,
-            dependencies=CollectorDependencies(
+            dependencies=_CollectorDependencies(
                 clock_ms=lambda: int(time.time() * 1_000),
                 monotonic=time.monotonic,
                 sleep=time.sleep,
@@ -110,7 +135,7 @@ def _collect_fixed_interval(
     bundle: Path,
     *,
     metadata: dict[str, Any],
-    dependencies: CollectorDependencies,
+    dependencies: _CollectorDependencies,
 ) -> dict[str, Any]:
     samples_path = bundle / SAMPLES_FILE
     start_monotonic = float(dependencies.monotonic())
@@ -321,7 +346,10 @@ class _ProductionSampler:
         )
         container = self._read_container(probe_process_id=int(probe.get("process_id") or 0))
         at_ms = int(time.time() * 1_000)
-        postgres = self._read_postgres(now_ms=at_ms)
+        postgres = self._read_postgres(
+            now_ms=at_ms,
+            include_query_audit=sequence == 0,
+        )
         return {
             "schema_version": COLLECTION_SCHEMA_VERSION,
             "sequence": int(sequence),
@@ -441,21 +469,37 @@ class _ProductionSampler:
             ),
         }
 
-    def _read_postgres(self, *, now_ms: int) -> dict[str, Any]:
+    def _read_postgres(
+        self,
+        *,
+        now_ms: int,
+        include_query_audit: bool,
+    ) -> dict[str, Any]:
         try:
             activity = self._conn.execute(
                 """
+                WITH worker_activity AS (
+                  SELECT
+                    COALESCE(wait_event_type, 'none') AS wait_event_type,
+                    COUNT(*) AS wait_count,
+                    COALESCE(
+                      MAX(EXTRACT(EPOCH FROM (clock_timestamp() - xact_start)))
+                        FILTER (WHERE xact_start IS NOT NULL),
+                      0
+                    ) AS max_transaction_seconds
+                  FROM pg_stat_activity
+                  WHERE datname = current_database()
+                    AND application_name LIKE 'tracefold_workers%'
+                  GROUP BY COALESCE(wait_event_type, 'none')
+                )
                 SELECT
-                  COUNT(*) AS worker_connections,
-                  COUNT(*) FILTER (WHERE wait_event_type = 'Lock') AS lock_wait_count,
+                  COALESCE(SUM(wait_count), 0) AS worker_connections,
+                  COALESCE(MAX(max_transaction_seconds), 0) AS max_transaction_seconds,
                   COALESCE(
-                    MAX(EXTRACT(EPOCH FROM (clock_timestamp() - xact_start)))
-                      FILTER (WHERE xact_start IS NOT NULL),
-                    0
-                  ) AS max_transaction_seconds
-                FROM pg_stat_activity
-                WHERE datname = current_database()
-                  AND application_name LIKE 'tracefold_workers%'
+                    jsonb_object_agg(wait_event_type, wait_count ORDER BY wait_event_type),
+                    '{}'::jsonb
+                  ) AS waits_by_type
+                FROM worker_activity
                 """
             ).fetchone()
             database = self._conn.execute(
@@ -466,6 +510,15 @@ class _ProductionSampler:
                 """
             ).fetchone()
             frontier_rows = self._conn.execute(_frontier_snapshot_sql(), {"now_ms": int(now_ms)}).fetchall()
+            query_audit = (
+                PostgresQueryAudit(
+                    self._conn,
+                    token_radar_projection_version=TOKEN_RADAR_PROJECTION_VERSION,
+                    now_ms=now_ms,
+                ).run(analyze=True)
+                if include_query_audit
+                else None
+            )
         except BaseException as exc:
             raise _SampleFailure("postgres_sample", exc) from exc
         if activity is None or database is None:
@@ -490,14 +543,21 @@ class _ProductionSampler:
                 "unresolved_quarantine": int(row["unresolved_quarantine"]),
                 "counts_by_status": dict(row["counts_by_status"] or {}),
             }
-        return {
+        waits_by_type = {
+            str(wait_type): int(wait_count) for wait_type, wait_count in dict(activity["waits_by_type"] or {}).items()
+        }
+        payload = {
             "worker_connections": int(activity["worker_connections"]),
-            "lock_wait_count": int(activity["lock_wait_count"]),
+            "lock_wait_count": int(waits_by_type.get("Lock", 0)),
+            "waits_by_type": waits_by_type,
             "max_transaction_seconds": float(activity["max_transaction_seconds"]),
             "temp_files": int(database["temp_files"]),
             "temp_bytes": int(database["temp_bytes"]),
             "frontiers": frontiers,
         }
+        if query_audit is not None:
+            payload["query_audit"] = query_audit
+        return payload
 
     def _run_text(self, arguments: list[str | None], *, stage: str) -> str:
         if any(argument is None for argument in arguments):
@@ -564,14 +624,25 @@ def _validate_sample(
             raise _SampleFailure("sample_gap")
     probe = _mapping(sample, "probe", stage="worker_readiness_payload")
     if (
-        probe.get("ready") is not True
+        probe.get("ok") is not True
+        or probe.get("ready") is not True
         or probe.get("lifecycle_state") != "running"
         or probe.get("unavailable_reason") is not None
     ):
         raise _SampleFailure("worker_not_ready")
+    if str(probe.get("runtime_version") or "") != "2":
+        raise _SampleFailure("worker_runtime_version")
     heartbeat_at_ms = _nonnegative_int(probe.get("heartbeat_at_ms"), stage="worker_heartbeat")
     if not 0 <= at_ms - heartbeat_at_ms <= MAX_SAMPLE_GAP_SECONDS * 1_000:
         raise _SampleFailure("worker_heartbeat_stale")
+    if (
+        _positive_int(
+            probe.get("heartbeat_stale_after_ms"),
+            stage="worker_heartbeat_stale_after",
+        )
+        > MAX_SAMPLE_GAP_SECONDS * 1_000
+    ):
+        raise _SampleFailure("worker_heartbeat_policy")
     revision = str(probe.get("runtime_revision") or "")
     if not _COMMIT_PATTERN.fullmatch(revision) or revision != metadata["versions"]["commit_sha"]:
         raise _SampleFailure("worker_runtime_revision_mismatch")
@@ -583,7 +654,7 @@ def _validate_sample(
         prior_heartbeat = _nonnegative_int(prior_probe.get("heartbeat_at_ms"), stage="previous_worker_heartbeat")
         if heartbeat_at_ms < prior_heartbeat:
             raise _SampleFailure("worker_heartbeat_regressed")
-    if float(probe.get("probe_rtt_ms") or -1) < 0 or float(probe.get("probe_rtt_ms") or 0) > 1_000:
+    if _nonnegative_float(probe.get("probe_rtt_ms"), stage="worker_probe_latency") > 1_000:
         raise _SampleFailure("worker_probe_latency")
 
     container = _mapping(sample, "container", stage="workers_container_payload")
@@ -597,33 +668,342 @@ def _validate_sample(
         raise _SampleFailure("workers_container_identity")
     if not str(container.get("image_id") or "").strip():
         raise _SampleFailure("workers_image_identity")
+    _nonnegative_int(container.get("restart_count"), stage="workers_restart_count")
+    _positive_int(container.get("host_process_id"), stage="workers_host_process_id")
     _nonnegative_int(container.get("process_rss_bytes"), stage="workers_process_rss")
     if _nonnegative_int(container.get("container_memory_bytes"), stage="workers_container_memory") >= _MAX_RSS_BYTES:
         raise _SampleFailure("workers_container_memory_limit")
 
     postgres = _mapping(sample, "postgres", stage="postgres_payload")
-    if _nonnegative_int(postgres.get("worker_connections"), stage="postgres_worker_connections") > 4:
+    worker_connections = _positive_int(
+        postgres.get("worker_connections"),
+        stage="postgres_worker_connections",
+    )
+    if worker_connections > 4:
         raise _SampleFailure("postgres_worker_connection_limit")
-    if _nonnegative_int(postgres.get("lock_wait_count"), stage="postgres_lock_wait_count") != 0:
+    waits_by_type = _mapping(postgres, "waits_by_type", stage="postgres_waits_by_type")
+    if not waits_by_type:
+        raise _SampleFailure("postgres_waits_by_type")
+    normalized_waits: dict[str, int] = {}
+    for raw_wait_type, raw_count in waits_by_type.items():
+        wait_type = str(raw_wait_type).strip()
+        if not wait_type or wait_type in normalized_waits:
+            raise _SampleFailure("postgres_waits_by_type")
+        normalized_waits[wait_type] = _nonnegative_int(
+            raw_count,
+            stage=f"postgres_wait_count:{wait_type}",
+        )
+    if sum(normalized_waits.values()) != worker_connections:
+        raise _SampleFailure("postgres_wait_count_mismatch")
+    lock_wait_count = _nonnegative_int(
+        postgres.get("lock_wait_count"),
+        stage="postgres_lock_wait_count",
+    )
+    if lock_wait_count != normalized_waits.get("Lock", 0):
+        raise _SampleFailure("postgres_lock_wait_count_mismatch")
+    if lock_wait_count != 0:
         raise _SampleFailure("postgres_lock_wait")
-    if float(postgres.get("max_transaction_seconds") or 0) > _MAX_TRANSACTION_SECONDS:
+    if (
+        _nonnegative_float(
+            postgres.get("max_transaction_seconds"),
+            stage="postgres_transaction_duration",
+        )
+        > _MAX_TRANSACTION_SECONDS
+    ):
         raise _SampleFailure("postgres_transaction_duration")
+    temp_files = _nonnegative_int(postgres.get("temp_files"), stage="postgres_temp_files")
+    temp_bytes = _nonnegative_int(postgres.get("temp_bytes"), stage="postgres_temp_bytes")
+    if previous is not None:
+        previous_postgres = _mapping(previous, "postgres", stage="previous_postgres_payload")
+        if temp_files < _nonnegative_int(
+            previous_postgres.get("temp_files"),
+            stage="previous_postgres_temp_files",
+        ) or temp_bytes < _nonnegative_int(
+            previous_postgres.get("temp_bytes"),
+            stage="previous_postgres_temp_bytes",
+        ):
+            raise _SampleFailure("postgres_temp_counter_regressed")
+    if sequence == 0:
+        _validate_query_audit(_mapping(postgres, "query_audit", stage="postgres_query_audit"))
+    elif "query_audit" in postgres:
+        raise _SampleFailure("postgres_query_audit_repeated")
     frontiers = _mapping(postgres, "frontiers", stage="projection_frontiers")
     if set(frontiers) != set(_DOMAINS):
         raise _SampleFailure("projection_frontier_domains")
     for domain in _DOMAINS:
         frontier = _mapping(frontiers, domain, stage=f"projection_frontier_{domain}")
-        if _nonnegative_int(frontier.get("unresolved_deadline_misses"), stage=f"{domain}_deadline_misses") != 0:
+        actionable_count = _nonnegative_int(
+            frontier.get("actionable_count"),
+            stage=f"{domain}_actionable_count",
+        )
+        _nonnegative_int(frontier.get("oldest_age_ms"), stage=f"{domain}_oldest_age")
+        deadline_misses = _nonnegative_int(
+            frontier.get("unresolved_deadline_misses"),
+            stage=f"{domain}_deadline_misses",
+        )
+        quarantine = _nonnegative_int(
+            frontier.get("unresolved_quarantine"),
+            stage=f"{domain}_quarantine",
+        )
+        counts_by_status = _mapping(
+            frontier,
+            "counts_by_status",
+            stage=f"{domain}_counts_by_status",
+        )
+        if not set(counts_by_status).issubset({"clean", "dirty", "running", "retry_wait", "quarantined"}):
+            raise _SampleFailure(f"{domain}_frontier_status")
+        normalized_status_counts = {
+            status: _nonnegative_int(value, stage=f"{domain}_frontier_status:{status}")
+            for status, value in counts_by_status.items()
+        }
+        if actionable_count != sum(normalized_status_counts.get(status, 0) for status in _ACTIONABLE_STATUSES):
+            raise _SampleFailure(f"{domain}_actionable_count_mismatch")
+        if quarantine != normalized_status_counts.get("quarantined", 0):
+            raise _SampleFailure(f"{domain}_quarantine_count_mismatch")
+        if deadline_misses > actionable_count:
+            raise _SampleFailure(f"{domain}_deadline_count_mismatch")
+        if deadline_misses != 0:
             raise _SampleFailure(f"{domain}_unresolved_deadline_miss")
-        if _nonnegative_int(frontier.get("unresolved_quarantine"), stage=f"{domain}_quarantine") != 0:
+        if quarantine != 0:
             raise _SampleFailure(f"{domain}_projection_quarantine")
 
     telemetry = _mapping(sample, "telemetry", stage="worker_telemetry")
+    previous_telemetry = (
+        _mapping(previous, "telemetry", stage="previous_worker_telemetry") if previous is not None else None
+    )
+    _validate_telemetry(telemetry, previous=previous_telemetry)
+
+
+def _validate_query_audit(audit: dict[str, Any]) -> None:
+    if audit.get("ok") is not True or audit.get("engine") != "postgresql" or audit.get("analyze") is not True:
+        raise _SampleFailure("postgres_query_audit_failed")
+    thresholds = _mapping(audit, "thresholds", stage="postgres_query_audit_thresholds")
+    if not thresholds:
+        raise _SampleFailure("postgres_query_audit_thresholds")
+    for name, value in thresholds.items():
+        _nonnegative_float(value, stage=f"postgres_query_audit_threshold:{name}")
+
+    coverage = _mapping(audit, "route_coverage", stage="postgres_query_audit_route_coverage")
+    expected_routes = json.loads(json.dumps(PUBLIC_ROUTE_QUERY_COVERAGE, sort_keys=True))
+    observed_routes = json.loads(json.dumps(coverage.get("query_routes"), sort_keys=True))
+    if observed_routes != expected_routes:
+        raise _SampleFailure("postgres_query_audit_route_coverage")
+    if coverage.get("no_sql_routes") != sorted(PUBLIC_NO_SQL_ROUTES):
+        raise _SampleFailure("postgres_query_audit_no_sql_routes")
+    if coverage.get("missing_query_names") != []:
+        raise _SampleFailure("postgres_query_audit_route_gap")
+
+    queries = audit.get("queries")
+    if not isinstance(queries, list) or not queries:
+        raise _SampleFailure("postgres_query_audit_queries")
+    expected_names = {str(item["name"]) for item in HOT_QUERIES}
+    observed_names: set[str] = set()
+    for raw in queries:
+        if not isinstance(raw, Mapping):
+            raise _SampleFailure("postgres_query_audit_query")
+        query = dict(raw)
+        name = str(query.get("name") or "").strip()
+        if not name or name in observed_names:
+            raise _SampleFailure("postgres_query_audit_query_name")
+        observed_names.add(name)
+        if query.get("ok") is not True or query.get("violations") != []:
+            raise _SampleFailure(f"postgres_query_audit_violation:{name}")
+        plan = query.get("plan")
+        if not isinstance(plan, list) or not plan:
+            raise _SampleFailure(f"postgres_query_audit_plan:{name}")
+        metrics = _mapping(query, "metrics", stage=f"postgres_query_audit_metrics:{name}")
+        if metrics.get("plan_json_valid") is not True:
+            raise _SampleFailure(f"postgres_query_audit_plan:{name}")
+        for metric in ("execution_time_ms", "planning_time_ms"):
+            value = metrics.get(metric)
+            if value is not None:
+                _nonnegative_float(value, stage=f"postgres_query_audit_metric:{name}:{metric}")
+        for metric in (
+            "returned_rows",
+            "read_rows",
+            "temp_read_blocks",
+            "temp_written_blocks",
+        ):
+            _nonnegative_int(
+                metrics.get(metric),
+                stage=f"postgres_query_audit_metric:{name}:{metric}",
+            )
+        _nonnegative_float(
+            metrics.get("read_return_amplification"),
+            stage=f"postgres_query_audit_metric:{name}:read_return_amplification",
+        )
+        if metrics.get("large_seq_scans") != []:
+            raise _SampleFailure(f"postgres_query_audit_large_seq_scan:{name}")
+    if observed_names != expected_names:
+        raise _SampleFailure("postgres_query_audit_query_coverage")
+
+
+def _validate_telemetry(
+    telemetry: dict[str, Any],
+    *,
+    previous: dict[str, Any] | None,
+) -> None:
+    raw_families = telemetry.get("metric_families")
+    if not isinstance(raw_families, list) or any(
+        not isinstance(name, str) or not name.strip() for name in raw_families
+    ):
+        raise _SampleFailure("worker_metric_families")
+    metric_families = set(raw_families)
+    if len(metric_families) != len(raw_families):
+        raise _SampleFailure("worker_metric_families")
+    missing_families = _REQUIRED_METRIC_FAMILIES - metric_families
+    if missing_families:
+        raise _SampleFailure(f"worker_metric_family_missing:{sorted(missing_families)[0]}")
+
     active = _mapping(telemetry, "resource_active", stage="worker_resource_active")
+    if set(active) != set(_RESOURCE_CAPS):
+        raise _SampleFailure("worker_resource_active_capabilities")
     for capability, cap in _RESOURCE_CAPS.items():
-        value = float(active.get(capability, 0.0))
-        if value < 0 or value > cap:
+        value = _nonnegative_float(
+            active.get(capability),
+            stage=f"worker_resource_active:{capability}",
+        )
+        if value > cap:
             raise _SampleFailure(f"worker_resource_active_limit:{capability}")
+
+    deadline_misses = _counter_domain_values(
+        telemetry,
+        "projection_deadline_misses_total",
+        stage="projection_deadline_metrics",
+    )
+    soft_slo_overruns = _counter_domain_values(
+        telemetry,
+        "projection_soft_slo_overruns_total",
+        stage="projection_soft_slo_metrics",
+    )
+    transitions = _mapping(
+        telemetry,
+        "projection_transitions_total",
+        stage="projection_transition_metrics",
+    )
+    if set(transitions) != set(_DOMAINS):
+        raise _SampleFailure("projection_transition_domains")
+    normalized_transitions: dict[str, dict[str, float]] = {}
+    for domain in _DOMAINS:
+        domain_values = _mapping(
+            transitions,
+            domain,
+            stage=f"projection_transition_metrics:{domain}",
+        )
+        if set(domain_values) != {"arrival", "completion"}:
+            raise _SampleFailure(f"projection_transition_shape:{domain}")
+        normalized_transitions[domain] = {
+            transition: _nonnegative_float(
+                domain_values.get(transition),
+                stage=f"projection_transition_metric:{domain}:{transition}",
+            )
+            for transition in ("arrival", "completion")
+        }
+
+    resources = {key: _validate_resource_metric_rows(telemetry.get(key), key=key) for key in _RESOURCE_METRIC_NAMES}
+    if previous is None:
+        return
+
+    previous_deadline_misses = _counter_domain_values(
+        previous,
+        "projection_deadline_misses_total",
+        stage="previous_projection_deadline_metrics",
+    )
+    previous_soft_slo = _counter_domain_values(
+        previous,
+        "projection_soft_slo_overruns_total",
+        stage="previous_projection_soft_slo_metrics",
+    )
+    previous_transitions = _mapping(
+        previous,
+        "projection_transitions_total",
+        stage="previous_projection_transition_metrics",
+    )
+    for domain in _DOMAINS:
+        if deadline_misses[domain] < previous_deadline_misses[domain]:
+            raise _SampleFailure(f"projection_deadline_counter_regressed:{domain}")
+        if soft_slo_overruns[domain] < previous_soft_slo[domain]:
+            raise _SampleFailure(f"projection_soft_slo_counter_regressed:{domain}")
+        previous_domain_transitions = _mapping(
+            previous_transitions,
+            domain,
+            stage=f"previous_projection_transition_metrics:{domain}",
+        )
+        for transition in ("arrival", "completion"):
+            previous_value = _nonnegative_float(
+                previous_domain_transitions.get(transition),
+                stage=f"previous_projection_transition_metric:{domain}:{transition}",
+            )
+            if normalized_transitions[domain][transition] < previous_value:
+                raise _SampleFailure(f"projection_transition_counter_regressed:{domain}")
+    for key, current_rows in resources.items():
+        previous_rows = _validate_resource_metric_rows(previous.get(key), key=key)
+        for series, previous_value in previous_rows.items():
+            current_value = current_rows.get(series)
+            if current_value is None:
+                raise _SampleFailure(f"worker_{key}_series_disappeared")
+            if current_value < previous_value:
+                raise _SampleFailure(f"worker_{key}_counter_regressed")
+
+
+def _counter_domain_values(
+    telemetry: Mapping[str, Any],
+    key: str,
+    *,
+    stage: str,
+) -> dict[str, float]:
+    values = _mapping(telemetry, key, stage=stage)
+    if set(values) != set(_DOMAINS):
+        raise _SampleFailure(f"{stage}_domains")
+    return {domain: _nonnegative_float(values.get(domain), stage=f"{stage}:{domain}") for domain in _DOMAINS}
+
+
+def _validate_resource_metric_rows(
+    raw_rows: Any,
+    *,
+    key: str,
+) -> dict[tuple[str, tuple[tuple[str, str], ...]], float]:
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise _SampleFailure(f"worker_{key}_required")
+    allowed_names = _RESOURCE_METRIC_NAMES[key]
+    allowed_outcomes = _RESOURCE_OUTCOMES[key]
+    rows: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+    grouped_names: dict[tuple[tuple[str, str], ...], set[str]] = {}
+    for raw in raw_rows:
+        if not isinstance(raw, Mapping):
+            raise _SampleFailure(f"worker_{key}_row")
+        row = dict(raw)
+        name = str(row.get("name") or "")
+        if name not in allowed_names:
+            raise _SampleFailure(f"worker_{key}_name")
+        labels = _mapping(row, "labels", stage=f"worker_{key}_labels")
+        if set(labels) != {"capability", "operation", "outcome"}:
+            raise _SampleFailure(f"worker_{key}_labels")
+        capability = str(labels["capability"]).strip()
+        operation = str(labels["operation"]).strip()
+        outcome = str(labels["outcome"]).strip()
+        if capability not in _RESOURCE_CAPS or not operation or outcome not in allowed_outcomes:
+            raise _SampleFailure(f"worker_{key}_labels")
+        normalized_labels = tuple(
+            sorted(
+                (
+                    ("capability", capability),
+                    ("operation", operation),
+                    ("outcome", outcome),
+                )
+            )
+        )
+        series = (name, normalized_labels)
+        if series in rows:
+            raise _SampleFailure(f"worker_{key}_duplicate_series")
+        value = _nonnegative_float(row.get("value"), stage=f"worker_{key}_value")
+        if name.endswith("_count") and not value.is_integer():
+            raise _SampleFailure(f"worker_{key}_count")
+        rows[series] = value
+        grouped_names.setdefault(normalized_labels, set()).add(name)
+    if any(names != allowed_names for names in grouped_names.values()):
+        raise _SampleFailure(f"worker_{key}_incomplete_series")
+    return rows
 
 
 def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -653,6 +1033,49 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
     temp_byte_delta = int(postgres_samples[-1]["temp_bytes"]) - int(postgres_samples[0]["temp_bytes"])
     deadline_start = _deadline_counter_total(telemetry_samples[0])
     deadline_end = _deadline_counter_total(telemetry_samples[-1])
+    soft_slo = {
+        domain: {
+            "counter_start": float(telemetry_samples[0]["projection_soft_slo_overruns_total"][domain]),
+            "counter_delta": float(telemetry_samples[-1]["projection_soft_slo_overruns_total"][domain])
+            - float(telemetry_samples[0]["projection_soft_slo_overruns_total"][domain]),
+            "counter_end": float(telemetry_samples[-1]["projection_soft_slo_overruns_total"][domain]),
+        }
+        for domain in _DOMAINS
+    }
+    resource_metrics = {
+        "admission": _resource_metric_summary(
+            telemetry_samples[0],
+            telemetry_samples[-1],
+            key="resource_admission",
+        ),
+        "service": _resource_metric_summary(
+            telemetry_samples[0],
+            telemetry_samples[-1],
+            key="resource_service",
+        ),
+        "max_active": {
+            capability: max(
+                float(_mapping(row, "resource_active", stage="worker_resource_active")[capability])
+                for row in telemetry_samples
+            )
+            for capability in _RESOURCE_CAPS
+        },
+    }
+    wait_types = sorted(
+        {
+            str(wait_type)
+            for row in postgres_samples
+            for wait_type in _mapping(row, "waits_by_type", stage="postgres_waits_by_type")
+        }
+    )
+    max_waits_by_type = {
+        wait_type: max(
+            int(_mapping(row, "waits_by_type", stage="postgres_waits_by_type").get(wait_type, 0))
+            for row in postgres_samples
+        )
+        for wait_type in wait_types
+    }
+    query_audit = _query_audit_summary(_mapping(postgres_samples[0], "query_audit", stage="postgres_query_audit"))
     capacity = _capacity_summary(first, last, duration_ms=duration_ms)
 
     checks = {
@@ -674,6 +1097,7 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "postgres_transaction_at_most_2_seconds": max(float(row["max_transaction_seconds"]) for row in postgres_samples)
         <= _MAX_TRANSACTION_SECONDS,
         "postgres_temp_delta_zero": temp_file_delta == 0 and temp_byte_delta == 0,
+        "postgres_query_audit_passed": bool(query_audit["ok"]),
         "deadline_counter_delta_zero": deadline_end - deadline_start == 0,
         "unresolved_deadline_misses_zero": all(
             int(frontier["unresolved_deadline_misses"]) == 0
@@ -686,10 +1110,12 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
             for frontier in _mapping(row, "frontiers", stage="projection_frontiers").values()
         ),
         "resource_active_within_caps": all(
-            0 <= float(_mapping(row, "resource_active", stage="worker_resource_active").get(capability, 0.0)) <= cap
+            0 <= float(_mapping(row, "resource_active", stage="worker_resource_active")[capability]) <= cap
             for row in telemetry_samples
             for capability, cap in _RESOURCE_CAPS.items()
         ),
+        "resource_admission_observed_during_interval": resource_metrics["admission"]["count_delta"] > 0,
+        "resource_service_observed_during_interval": resource_metrics["service"]["count_delta"] > 0,
         "four_domain_capacity_converges": all(bool(row["passes"]) for row in capacity.values()),
     }
     failed_checks = sorted(name for name, passed in checks.items() if not passed)
@@ -718,6 +1144,8 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "max_transaction_seconds": max(float(row["max_transaction_seconds"]) for row in postgres_samples),
             "temp_files_delta": temp_file_delta,
             "temp_bytes_delta": temp_byte_delta,
+            "max_waits_by_type": max_waits_by_type,
+            "query_audit": query_audit,
         },
         "deadline_misses": {
             "unresolved_start": _unresolved_total(postgres_samples[0], "unresolved_deadline_misses"),
@@ -728,7 +1156,62 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
             postgres_samples[-1],
             "unresolved_quarantine",
         ),
+        "projection_soft_slo_overruns": soft_slo,
+        "resource_metrics": resource_metrics,
         "capacity": capacity,
+    }
+
+
+def _query_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    _validate_query_audit(audit)
+    queries = audit["queries"]
+    return {
+        "ok": True,
+        "analyze": True,
+        "query_count": len(queries),
+        "query_names": sorted(str(query["name"]) for query in queries),
+        "route_gap_count": len(audit["route_coverage"]["missing_query_names"]),
+        "violations": sorted({str(violation) for query in queries for violation in query["violations"]}),
+        "artifact_sha256": hashlib.sha256(
+            json.dumps(
+                audit,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _resource_metric_summary(
+    first: Mapping[str, Any],
+    last: Mapping[str, Any],
+    *,
+    key: str,
+) -> dict[str, Any]:
+    start_rows = _validate_resource_metric_rows(first.get(key), key=key)
+    end_rows = _validate_resource_metric_rows(last.get(key), key=key)
+    count_name = next(name for name in _RESOURCE_METRIC_NAMES[key] if name.endswith("_count"))
+    sum_name = next(name for name in _RESOURCE_METRIC_NAMES[key] if name.endswith("_sum"))
+
+    def total(rows: Mapping[tuple[str, tuple[tuple[str, str], ...]], float], name: str) -> float:
+        return sum(value for (metric_name, _labels), value in rows.items() if metric_name == name)
+
+    count_start = total(start_rows, count_name)
+    count_end = total(end_rows, count_name)
+    seconds_start = total(start_rows, sum_name)
+    seconds_end = total(end_rows, sum_name)
+    if count_end < count_start or seconds_end < seconds_start:
+        raise _SampleFailure(f"worker_{key}_counter_regressed")
+    return {
+        "series_count_start": len(start_rows) // 2,
+        "series_count_end": len(end_rows) // 2,
+        "count_start": int(count_start),
+        "count_delta": int(count_end - count_start),
+        "count_end": int(count_end),
+        "seconds_sum_start": seconds_start,
+        "seconds_sum_delta": seconds_end - seconds_start,
+        "seconds_sum_end": seconds_end,
     }
 
 
@@ -790,14 +1273,17 @@ def _capacity_summary(
 
 
 def _parse_worker_metrics(payload: str) -> dict[str, Any]:
-    resource_active = {capability: 0.0 for capability in _RESOURCE_CAPS}
+    resource_active: dict[str, float] = {}
     deadline_misses: dict[str, float] = {domain: 0.0 for domain in _DOMAINS}
+    soft_slo_overruns: dict[str, float] = {domain: 0.0 for domain in _DOMAINS}
     transitions: dict[str, dict[str, float]] = {domain: {"arrival": 0.0, "completion": 0.0} for domain in _DOMAINS}
     resource_service: list[dict[str, Any]] = []
     resource_admission: list[dict[str, Any]] = []
+    metric_families: set[str] = set()
     try:
         families = text_string_to_metric_families(payload)
         for family in families:
+            metric_families.add(str(family.name))
             for sample in family.samples:
                 labels = dict(sample.labels)
                 if sample.name == "tracefold_worker_resource_active":
@@ -805,6 +1291,9 @@ def _parse_worker_metrics(payload: str) -> dict[str, Any]:
                 elif sample.name == "tracefold_worker_projection_deadline_misses_total":
                     domain = str(labels.get("domain") or "unknown")
                     deadline_misses[domain] = deadline_misses.get(domain, 0.0) + float(sample.value)
+                elif sample.name == "tracefold_worker_projection_soft_slo_overruns_total":
+                    domain = str(labels.get("domain") or "unknown")
+                    soft_slo_overruns[domain] = soft_slo_overruns.get(domain, 0.0) + float(sample.value)
                 elif sample.name == "tracefold_worker_projection_transitions_total":
                     domain = str(labels.get("domain") or "unknown")
                     transition = str(labels.get("transition") or "unknown")
@@ -822,8 +1311,10 @@ def _parse_worker_metrics(payload: str) -> dict[str, Any]:
     except BaseException as exc:
         raise _SampleFailure("worker_metrics_parse", exc) from exc
     return {
+        "metric_families": sorted(metric_families),
         "resource_active": resource_active,
         "projection_deadline_misses_total": deadline_misses,
+        "projection_soft_slo_overruns_total": soft_slo_overruns,
         "projection_transitions_total": transitions,
         "resource_service": resource_service,
         "resource_admission": resource_admission,
@@ -905,7 +1396,9 @@ def _collection_metadata(settings: Any, *, repository_root: Path) -> dict[str, A
                 "collector_enabled": bool(settings.upstream.channels),
                 "news_enabled": bool(settings.news.enabled),
                 "macro_enabled": bool(settings.providers.macro_sources.enabled),
-                "model_configured": bool(settings.llm.api_key or settings.llm.openrouter_api_key),
+                "model_configured": bool(
+                    settings.llm.api_key or settings.llm.openrouter_api_key or settings.llm.groq_api_key
+                ),
             },
         },
     }
@@ -1036,9 +1529,11 @@ def _mapping_or_empty(value: Any) -> dict[str, Any]:
 def _nonnegative_int(value: Any, *, stage: str) -> int:
     if isinstance(value, bool):
         raise _SampleFailure(stage)
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        raise _SampleFailure(stage)
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise _SampleFailure(stage, exc) from exc
     if parsed < 0:
         raise _SampleFailure(stage)
@@ -1095,7 +1590,6 @@ __all__ = [
     "MAX_SAMPLE_GAP_SECONDS",
     "SAMPLES_FILE",
     "SAMPLE_INTERVAL_SECONDS",
-    "CollectorDependencies",
     "collect_workers_runtime_acceptance",
     "validate_workers_runtime_collection",
 ]

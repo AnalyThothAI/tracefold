@@ -241,6 +241,23 @@ class CliTests(unittest.TestCase):
         assert "snapshot_restore" not in startup
         assert template["gates"]["real_continuous_30m"]["status"] == "pending"
 
+    def test_hard_cut_has_no_retired_snapshot_confirmation_flag(self):
+        parser = build_parser()
+        command = [
+            "db",
+            "hard-cut",
+            "--bootstrap-dsn",
+            "postgresql://tracefold_app@postgres:5432/tracefold",
+            "--execute",
+        ]
+
+        parsed = parser.parse_args(command)
+
+        assert parsed.db_command == "hard-cut"
+        assert not hasattr(parsed, "snapshot_confirmed")
+        with self.assertRaises(SystemExit):
+            parser.parse_args([*command, "--snapshot-confirmed"])
+
     def test_cli_ops_mirror_token_images_has_no_source_limit_option(self):
         parser = build_parser()
 

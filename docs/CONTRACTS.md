@@ -392,6 +392,20 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
 
+`db hard-cut --execute` is the current operator-authorized in-place migration
+path. It requires the legacy bootstrap DSN/password file, refuses active
+Tracefold runtime sessions, and has no snapshot-confirmation or restore flag.
+Failure stays inside the maintenance boundary and is repaired forward on the
+current database.
+
+`ops collect-workers-runtime-acceptance --bundle <absolute-path>` is a
+read-only production observer with a fixed 1,800-second interval, 181 samples,
+10-second cadence, and 15-second maximum gap. It accepts exactly one new
+directory outside the checkout and returns non-zero while preserving raw JSONL
+if any continuity, identity, capacity, PostgreSQL, resource, or query-plan gate
+fails. `ops seal-workers-runtime-acceptance` accepts that repository-owned
+collection only after the other typed gates and independent review are bound.
+
 `macro status` resolves the current publication session first and never selects
 the latest historical run as a substitute. Its Thesis summary exposes only the
 current v2 state and identity; a same-session v1 row is `not_published`.

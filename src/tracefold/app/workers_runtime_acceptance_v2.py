@@ -28,11 +28,34 @@ MAX_BUNDLE_BYTES = 100 * 1024 * 1024
 
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_OPERATOR_AUTHORIZATION_URL_PATTERN = re.compile(
-    r"^https://github\.com/AnalyThothAI/tracefold/issues/33#issuecomment-[1-9][0-9]*$"
+_OPERATOR_AUTHORIZATION_URL = "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965794"
+_OPERATOR_AUTHORIZED_BY = "aaurix"
+_OPERATOR_AUTHORIZED_AT_MS = 1_785_561_696_000
+_OPERATOR_AUTHORIZATION_STATEMENT = (
+    "## Authoritative production hard-cut authorization record — 2026-08-01\n"
+    "\n"
+    "This records the production operator authorization relayed in the active Codex task and "
+    "supersedes every snapshot, backup, restore-drill, and snapshot_restore acceptance clause "
+    "in this Issue for the current cutover.\n"
+    "\n"
+    "Authorized boundary:\n"
+    "\n"
+    "- deploy the verified implementation by merging directly into `main` and cutting over "
+    "the existing production PostgreSQL database in place;\n"
+    "- downtime is allowed;\n"
+    "- do not create a backup or snapshot and do not perform a restore drill;\n"
+    "- old and new Workers must never overlap;\n"
+    "- if any gate fails, stop the new Workers and fix forward on the current database before "
+    "retrying;\n"
+    "- no waiver, placeholder hash, or manually asserted boolean may represent restore or "
+    "runtime acceptance as passed.\n"
+    "\n"
+    "This comment records authorization only. It does not claim that implementation, "
+    "deployment, the continuous 30-minute gate, independent review, or Issue completion has "
+    "passed."
 )
-_CAPACITY_DOMAINS = ("news", "macro", "profile", "radar")
-_SEMANTIC_DOMAINS = ("radar", "news", "macro", "profile")
+_OPERATOR_AUTHORIZATION_STATEMENT_SHA256 = "0fcdc80cfa8e20d74c5f9fcb92bbc6cb611e807b489f2386a260a6afea022886"
+_PROJECTION_DOMAINS = ("news", "macro", "profile", "radar")
 _STARTUP_PROOFS = (
     "first_heartbeat_readiness",
     "fresh_row_collision",
@@ -102,7 +125,7 @@ def workers_runtime_evidence_template() -> dict[str, Any]:
             "bounded_time_to_clear_ms": None,
             "passes": False,
         }
-        for domain in _CAPACITY_DOMAINS
+        for domain in _PROJECTION_DOMAINS
     }
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
@@ -272,9 +295,9 @@ def _validate_evidence(root: Path, payload: Any) -> None:
 
 
 def _validate_capacity(capacity: dict[str, Any], *, duration_seconds: float) -> None:
-    if set(capacity) != set(_CAPACITY_DOMAINS):
+    if set(capacity) != set(_PROJECTION_DOMAINS):
         raise ValueError("workers_runtime_capacity_domains_invalid")
-    for domain in _CAPACITY_DOMAINS:
+    for domain in _PROJECTION_DOMAINS:
         row = _mapping(capacity, domain)
         start = _required_int(row, "actionable_count_start")
         end = _required_int(row, "actionable_count_end")
@@ -437,19 +460,28 @@ def _validate_operator_authorized_fix_forward_boundary(
         raise ValueError("workers_runtime_operator_authorization_shape_invalid")
     if authorization.get("source_kind") != "github_issue_comment":
         raise ValueError("workers_runtime_operator_authorization_source_invalid")
-    source_url = _required_text(authorization, "source_url")
-    if not _OPERATOR_AUTHORIZATION_URL_PATTERN.fullmatch(source_url):
+    if authorization.get("source_url") != _OPERATOR_AUTHORIZATION_URL:
         raise ValueError("workers_runtime_operator_authorization_source_url_invalid")
     if authorization.get("authority_role") != "production_operator":
         raise ValueError("workers_runtime_operator_authorization_role_invalid")
-    _required_text(authorization, "authorized_by")
-    authorized_at_ms = _required_int(authorization, "authorized_at_ms")
+    if authorization.get("authorized_by") != _OPERATOR_AUTHORIZED_BY:
+        raise ValueError("workers_runtime_operator_authorization_identity_invalid")
+    authorized_at_ms = authorization.get("authorized_at_ms")
     cutoff_at_ms = _required_int(_mapping(evidence, "source"), "cutoff_at_ms")
-    if authorized_at_ms <= 0 or authorized_at_ms > cutoff_at_ms:
+    if (
+        type(authorized_at_ms) is not int
+        or authorized_at_ms != _OPERATOR_AUTHORIZED_AT_MS
+        or authorized_at_ms > cutoff_at_ms
+    ):
         raise ValueError("workers_runtime_operator_authorization_time_invalid")
-    statement = _required_text(authorization, "statement")
-    statement_sha256 = _required_text(authorization, "statement_sha256")
-    if not _SHA256_PATTERN.fullmatch(statement_sha256) or statement_sha256 != _sha256_bytes(statement.encode("utf-8")):
+    statement = authorization.get("statement")
+    if statement != _OPERATOR_AUTHORIZATION_STATEMENT:
+        raise ValueError("workers_runtime_operator_authorization_statement_invalid")
+    statement_sha256 = authorization.get("statement_sha256")
+    if (
+        statement_sha256 != _OPERATOR_AUTHORIZATION_STATEMENT_SHA256
+        or _sha256_bytes(statement.encode("utf-8")) != _OPERATOR_AUTHORIZATION_STATEMENT_SHA256
+    ):
         raise ValueError("workers_runtime_operator_authorization_statement_hash_invalid")
 
     boundary = _mapping(raw, "boundary")
@@ -466,9 +498,9 @@ def _validate_operator_authorized_fix_forward_boundary(
 
 def _validate_semantic_diff(raw: dict[str, Any], *, label: str) -> None:
     domains = _mapping(raw, "domains")
-    if set(domains) != set(_SEMANTIC_DOMAINS):
+    if set(domains) != set(_PROJECTION_DOMAINS):
         raise ValueError(f"workers_runtime_{label}_domains_invalid")
-    for domain in _SEMANTIC_DOMAINS:
+    for domain in _PROJECTION_DOMAINS:
         row = _mapping(domains, domain)
         if row.get("match") is not True:
             raise ValueError(f"workers_runtime_{label}_{domain}_mismatch")

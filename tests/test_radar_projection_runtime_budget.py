@@ -5,7 +5,9 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+from tracefold.app.projection_edf import run_projection_edf
 from tracefold.market.radar.projection_worker import RadarProjectionCandidate
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.projection import ProjectionShard
 
 _COMPLETED_STAGE_SECONDS = 0.75
@@ -56,26 +58,45 @@ def test_radar_projection_allows_cumulative_in_budget_stages_to_exceed_five_seco
                 "radar_projection_hydration": {},
             }[operation_name]
 
-    async def scenario() -> tuple[bool, list[str], float]:
+    async def scenario() -> tuple[bool, list[str], float, str]:
         database = _CompletedDatabase()
         candidate = RadarProjectionCandidate(
             db=database,
             cpu=_CompletedCpu(),
             runtime_id="runtime-1",
         )
-        started = time.monotonic()
-        completed = await candidate.execute(
-            ProjectionShard(
-                domain="radar",
-                shard_key='{"venue":"all","window":"1h"}',
-                deadline_at_ms=1_000,
-                stable_order=10,
-            )
+        stop_event = asyncio.Event()
+        completed = False
+        shard = ProjectionShard(
+            domain="radar",
+            shard_key='{"venue":"all","window":"1h"}',
+            deadline_at_ms=1_000,
+            stable_order=10,
         )
-        return completed, database.calls, time.monotonic() - started
 
-    completed, calls, elapsed_seconds = asyncio.run(scenario())
+        class _OneTurnCandidate:
+            async def peek(self, *, now_ms: int) -> ProjectionShard:
+                del now_ms
+                return shard
+
+            async def execute(self, selected_shard: ProjectionShard) -> bool:
+                nonlocal completed
+                completed = await candidate.execute(selected_shard)
+                stop_event.set()
+                return completed
+
+        telemetry = TelemetryRegistry()
+        started = time.monotonic()
+        await run_projection_edf(
+            (_OneTurnCandidate(),),
+            stop_event=stop_event,
+            telemetry=telemetry,
+        )
+        return completed, database.calls, time.monotonic() - started, telemetry.render_prometheus_text()
+
+    completed, calls, elapsed_seconds, metrics = asyncio.run(scenario())
 
     assert completed is True
     assert calls[-1] == "radar_projection_publish"
     assert elapsed_seconds > 5.0
+    assert 'tracefold_worker_projection_soft_slo_overruns_total{domain="radar"} 1.0' in metrics

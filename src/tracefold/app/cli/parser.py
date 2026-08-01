@@ -54,12 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="legacy maintenance password file",
     )
     hard_cut.add_argument(
-        "--snapshot-confirmed",
-        action="store_true",
-        required=True,
-        help="confirm that a recoverable PostgreSQL snapshot was verified",
-    )
-    hard_cut.add_argument(
         "--execute",
         action="store_true",
         required=True,

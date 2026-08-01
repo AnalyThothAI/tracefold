@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,13 +12,20 @@ from tracefold.app.workers_runtime_collector import (
     COLLECTION_SCHEMA_VERSION,
     EXPECTED_SAMPLE_COUNT,
     SAMPLES_FILE,
-    CollectorDependencies,
     _collect_fixed_interval,
+    _CollectorDependencies,
     _dsn_for_compose_endpoint,
+    _parse_worker_metrics,
     _SampleFailure,
     _summarize,
     _validate_sample,
     validate_workers_runtime_collection,
+)
+from tracefold.platform.observability import TelemetryRegistry
+from tracefold.platform.postgres.postgres_audit import (
+    HOT_QUERIES,
+    PUBLIC_NO_SQL_ROUTES,
+    PUBLIC_ROUTE_QUERY_COVERAGE,
 )
 
 
@@ -45,7 +53,7 @@ def test_fixed_production_interval_collects_1800_seconds_without_real_wait(tmp_p
     result = _collect_fixed_interval(
         bundle,
         metadata=metadata,
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -71,7 +79,7 @@ def test_collection_validator_recomputes_summary_from_all_jsonl_samples(tmp_path
     result = _collect_fixed_interval(
         bundle,
         metadata=metadata,
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -120,7 +128,7 @@ def test_fixed_interval_duration_uses_monotonic_elapsed_not_wall_clock_boundary(
     result = _collect_fixed_interval(
         bundle,
         metadata=_metadata(),
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -149,7 +157,7 @@ def test_sample_failure_stops_immediately_and_preserves_raw_failure(tmp_path: Pa
     result = _collect_fixed_interval(
         bundle,
         metadata=_metadata(),
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -178,6 +186,35 @@ def test_production_dsn_uses_explicit_compose_loopback_port() -> None:
     assert parsed["port"] == "56532"
     assert parsed["user"] == "tracefold_workers"
     assert parsed["password"] == "secret"
+
+
+def test_prometheus_parser_preserves_required_families_and_separate_resource_evidence() -> None:
+    telemetry = TelemetryRegistry()
+    telemetry.record_resource_admission(
+        "database_control",
+        "runtime_heartbeat",
+        "accepted",
+        0.001,
+    )
+    telemetry.record_resource_service(
+        "database_control",
+        "runtime_heartbeat",
+        "success",
+        0.002,
+    )
+
+    parsed = _parse_worker_metrics(telemetry.render_prometheus_text())
+
+    assert set(parsed["resource_active"]) == {
+        "database_business",
+        "database_control",
+        "finite_operation",
+        "model_adapter",
+        "cpu_process",
+    }
+    assert "tracefold_worker_projection_soft_slo_overruns" in parsed["metric_families"]
+    assert parsed["resource_admission"][0]["labels"]["outcome"] == "accepted"
+    assert parsed["resource_service"][0]["labels"]["outcome"] == "success"
 
 
 def test_collector_elapsed_gap_over_15_seconds_fails_closed() -> None:
@@ -230,6 +267,132 @@ def test_projection_transition_counter_regression_fails_closed() -> None:
         _summarize(samples)
 
 
+def test_required_metric_family_missing_fails_closed() -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["telemetry"]["metric_families"].remove("tracefold_worker_resource_service_seconds")
+
+    with pytest.raises(_SampleFailure, match="worker_metric_family_missing"):
+        _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+@pytest.mark.parametrize("key", ("resource_admission", "resource_service"))
+def test_empty_resource_metric_evidence_fails_closed(key: str) -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["telemetry"][key] = []
+
+    with pytest.raises(_SampleFailure, match=f"worker_{key}_required"):
+        _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+@pytest.mark.parametrize(
+    ("path", "stage"),
+    [
+        (("projection_deadline_misses_total", "radar"), "projection_deadline_counter_regressed:radar"),
+        (("projection_soft_slo_overruns_total", "radar"), "projection_soft_slo_counter_regressed:radar"),
+        (("projection_transitions_total", "radar", "completion"), "projection_transition_counter_regressed:radar"),
+    ],
+)
+def test_cumulative_projection_metric_regression_fails_closed(path, stage) -> None:
+    clock = _VirtualClock()
+    previous = _sample(0, clock=clock)
+    _set_path(previous["telemetry"], path, 1.0)
+    clock.seconds = 10.0
+    current = _sample(1, clock=clock)
+
+    with pytest.raises(_SampleFailure, match=stage):
+        _validate_sample(current, metadata=_metadata(), previous=previous)
+
+
+def test_resource_metric_regression_fails_closed() -> None:
+    clock = _VirtualClock()
+    previous = _sample(0, clock=clock)
+    previous["telemetry"]["resource_service"] = _resource_rows("service", count=2, seconds=0.2)
+    clock.seconds = 10.0
+    current = _sample(1, clock=clock)
+
+    with pytest.raises(_SampleFailure, match="worker_resource_service_counter_regressed"):
+        _validate_sample(current, metadata=_metadata(), previous=previous)
+
+
+def test_first_sample_requires_passing_analyzed_query_audit() -> None:
+    clock = _VirtualClock()
+    missing = _sample(0, clock=clock)
+    del missing["postgres"]["query_audit"]
+    with pytest.raises(_SampleFailure, match="postgres_query_audit"):
+        _validate_sample(missing, metadata=_metadata(), previous=None)
+
+    failed = _sample(0, clock=clock)
+    failed["postgres"]["query_audit"]["queries"][0]["violations"] = ["temp_spill"]
+    failed["postgres"]["query_audit"]["queries"][0]["ok"] = False
+    with pytest.raises(_SampleFailure, match="postgres_query_audit_violation"):
+        _validate_sample(failed, metadata=_metadata(), previous=None)
+
+
+def test_postgres_wait_distribution_must_cover_every_worker_connection() -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["postgres"]["waits_by_type"] = {"Client": 3}
+
+    with pytest.raises(_SampleFailure, match="postgres_wait_count_mismatch"):
+        _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "stage"),
+    [
+        (("container", "restart_count"), -1, "workers_restart_count"),
+        (("container", "process_rss_bytes"), float("nan"), "workers_process_rss"),
+        (("postgres", "max_transaction_seconds"), float("inf"), "postgres_transaction_duration"),
+        (
+            ("telemetry", "resource_active", "cpu_process"),
+            float("nan"),
+            "worker_resource_active:cpu_process",
+        ),
+    ],
+)
+def test_invalid_or_nonfinite_raw_numbers_fail_closed(path, value, stage) -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    _set_path(sample, path, value)
+
+    with pytest.raises(_SampleFailure, match=stage):
+        _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+def test_summary_binds_waits_query_audit_resource_metrics_and_soft_slo() -> None:
+    summary = _summarize(_samples())
+
+    assert summary["postgres"]["max_waits_by_type"] == {"Client": 3, "none": 1}
+    assert summary["postgres"]["query_audit"]["ok"] is True
+    assert summary["postgres"]["query_audit"]["query_count"] == len(HOT_QUERIES)
+    assert summary["resource_metrics"]["admission"]["count_delta"] == 180
+    assert summary["resource_metrics"]["service"]["count_delta"] == 180
+    assert summary["projection_soft_slo_overruns"]["radar"]["counter_delta"] == 0.0
+
+
+def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_refreshed(tmp_path: Path) -> None:
+    bundle = _complete_collection(tmp_path)
+    samples_path = bundle / SAMPLES_FILE
+    samples = [json.loads(line) for line in samples_path.read_text().splitlines()]
+    for sample in samples:
+        sample["container"]["restart_count"] = -1
+    samples_path.write_text("".join(json.dumps(sample, sort_keys=True) + "\n" for sample in samples))
+
+    collection_path = bundle / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["samples_sha256"] = hashlib.sha256(samples_path.read_bytes()).hexdigest()
+    collection["summary"] = _summarize(samples)
+    collection_path.write_text(json.dumps(collection))
+
+    with pytest.raises(
+        ValueError,
+        match="workers_runtime_collection_sample_invalid:workers_restart_count",
+    ):
+        validate_workers_runtime_collection(bundle, expected_metadata=_metadata())
+
+
 @pytest.mark.parametrize(
     ("path", "value", "stage"),
     [
@@ -280,7 +443,7 @@ def _complete_collection(tmp_path: Path) -> Path:
     _collect_fixed_interval(
         bundle,
         metadata=_metadata(),
-        dependencies=CollectorDependencies(
+        dependencies=_CollectorDependencies(
             clock_ms=clock.clock_ms,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
@@ -363,12 +526,24 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
         "postgres": {
             "worker_connections": 4,
             "lock_wait_count": 0,
+            "waits_by_type": {"Client": 3, "none": 1},
             "max_transaction_seconds": 0.1,
             "temp_files": 7,
             "temp_bytes": 4096,
             "frontiers": frontiers,
+            **({"query_audit": _query_audit()} if sequence == 0 else {}),
         },
         "telemetry": {
+            "metric_families": sorted(
+                {
+                    "tracefold_worker_projection_deadline_misses",
+                    "tracefold_worker_projection_soft_slo_overruns",
+                    "tracefold_worker_projection_transitions",
+                    "tracefold_worker_resource_active",
+                    "tracefold_worker_resource_admission_seconds",
+                    "tracefold_worker_resource_service_seconds",
+                }
+            ),
             "resource_active": {
                 "database_business": 0.0,
                 "database_control": 0.0,
@@ -377,8 +552,69 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
                 "cpu_process": 0.0,
             },
             "projection_deadline_misses_total": {domain: 0.0 for domain in ("news", "macro", "profile", "radar")},
+            "projection_soft_slo_overruns_total": {domain: 0.0 for domain in ("news", "macro", "profile", "radar")},
             "projection_transitions_total": transitions,
-            "resource_service": [],
-            "resource_admission": [],
+            "resource_service": _resource_rows(
+                "service",
+                count=sequence + 1,
+                seconds=(sequence + 1) * 0.002,
+            ),
+            "resource_admission": _resource_rows(
+                "admission",
+                count=sequence + 1,
+                seconds=(sequence + 1) * 0.001,
+            ),
         },
+    }
+
+
+def _resource_rows(kind: str, *, count: int, seconds: float) -> list[dict]:
+    prefix = f"tracefold_worker_resource_{kind}_seconds"
+    labels = {
+        "capability": "database_control",
+        "operation": "runtime_heartbeat",
+        "outcome": "accepted" if kind == "admission" else "success",
+    }
+    return [
+        {"name": f"{prefix}_count", "labels": labels, "value": float(count)},
+        {"name": f"{prefix}_sum", "labels": labels, "value": float(seconds)},
+    ]
+
+
+def _query_audit() -> dict:
+    metrics = {
+        "plan_json_valid": True,
+        "execution_time_ms": 0.1,
+        "planning_time_ms": 0.1,
+        "returned_rows": 0,
+        "read_rows": 0,
+        "read_return_amplification": 0.0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+        "large_seq_scans": [],
+    }
+    return {
+        "ok": True,
+        "engine": "postgresql",
+        "analyze": True,
+        "thresholds": {
+            "large_seq_scan_plan_rows": 10_000,
+            "max_read_return_amplification": 100,
+            "temp_blocks": 0,
+        },
+        "route_coverage": {
+            "query_routes": json.loads(json.dumps(PUBLIC_ROUTE_QUERY_COVERAGE)),
+            "no_sql_routes": sorted(PUBLIC_NO_SQL_ROUTES),
+            "missing_query_names": [],
+        },
+        "queries": [
+            {
+                "ok": True,
+                "name": str(query["name"]),
+                "plan": [{"Plan": {"Node Type": "Result"}}],
+                "metrics": dict(metrics),
+                "violations": [],
+            }
+            for query in HOT_QUERIES
+        ],
     }

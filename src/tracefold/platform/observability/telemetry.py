@@ -71,6 +71,12 @@ class TelemetryRegistry:
             ("worker", "domain"),
             registry=self.registry,
         )
+        self.projection_soft_slo_overruns_total = Counter(
+            "tracefold_worker_projection_soft_slo_overruns_total",
+            "Projection turns exceeding a domain soft service-level objective.",
+            ("domain",),
+            registry=self.registry,
+        )
         self.projection_transitions_total = Counter(
             "tracefold_worker_projection_transitions_total",
             "Committed executable arrivals and completions for deterministic projection frontiers.",
@@ -101,6 +107,14 @@ class TelemetryRegistry:
             ("capability",),
             registry=self.registry,
         )
+        for capability in (
+            "database_business",
+            "database_control",
+            "finite_operation",
+            "model_adapter",
+            "cpu_process",
+        ):
+            self.resource_active.labels(capability=capability).set(0)
 
     def record_processing_seconds(self, worker: str, seconds: float) -> None:
         self.processing_seconds.labels(worker=_label(worker)).observe(max(0.0, float(seconds)))
@@ -151,6 +165,9 @@ class TelemetryRegistry:
             worker=_label(worker),
             domain=_label(domain),
         ).inc()
+
+    def record_projection_soft_slo_overrun(self, domain: str) -> None:
+        self.projection_soft_slo_overruns_total.labels(domain=_label(domain)).inc()
 
     def record_projection_transition(self, domain: str, transition: str, count: int = 1) -> None:
         normalized_count = int(count)

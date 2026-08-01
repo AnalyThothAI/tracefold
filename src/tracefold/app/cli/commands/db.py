@@ -26,7 +26,6 @@ def handle_db(args: object) -> tuple[int, dict[str, Any]]:
             settings=settings,
             bootstrap_dsn=args.bootstrap_dsn,
             bootstrap_password_file=password_file,
-            snapshot_confirmed=bool(args.snapshot_confirmed),
         )
         return 0, {"ok": True, "data": data}
 

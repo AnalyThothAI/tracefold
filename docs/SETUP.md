@@ -181,12 +181,13 @@ here. A snapshot lives at `generated/cli-help.md`.
 
 ## Docker Compose
 
-### First Issue #32 hard cut
+### Authorized Issue #33 in-place hard cut
 
 Normal `migrate` uses `tracefold_migrate`, so an existing deployment must
-provision the new roles through the explicit maintenance profile first.
-Do not run these steps until the old combined runtime is stopped and a
-recoverable PostgreSQL volume snapshot has been verified.
+provision the new roles through the explicit maintenance profile first. For
+the current operator-authorized Issue #33 cut, stop the old Workers before
+entering this maintenance path. The cut runs in place without a backup,
+snapshot, or restore drill and fixes forward on failure.
 
 ```bash
 uv run tracefold init
@@ -195,7 +196,6 @@ docker compose --profile maintenance run --rm cutover \
   tracefold db hard-cut \
   --bootstrap-dsn postgresql://tracefold_app@postgres:5432/tracefold \
   --bootstrap-password-file /run/secrets/postgres_password \
-  --snapshot-confirmed \
   --execute
 docker compose up -d
 ```
@@ -203,9 +203,9 @@ docker compose up -d
 The hard-cut command acquires the exclusive maintenance gate, refuses visible
 Tracefold runtime sessions, migrates to head, provisions role passwords,
 rebuilds and audits Radar/News/Macro/current Profile, and only then changes
-`tracefold_app` to `NOLOGIN`. It never takes the snapshot itself. A failure
-before finalization remains in maintenance for fix-forward or snapshot
-restore. Because the legacy bootstrap superuser login is deliberately revoked,
+`tracefold_app` to `NOLOGIN`. A failure remains in maintenance for fix-forward
+on the current database; there is no restore path for this authorized cut.
+Because the legacy bootstrap superuser login is deliberately revoked,
 cluster-owner recovery afterward requires local/container PostgreSQL
 administration rather than the old network credential.
 
