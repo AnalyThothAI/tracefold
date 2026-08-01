@@ -6,6 +6,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Any
 
 import pytest
+from psycopg import OperationalError
 from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
@@ -310,6 +311,35 @@ def test_native_transaction_timeout_is_recoverable() -> None:
                     "news_projection_claim",
                     native_transaction_timeout,
                     operation_timeout_seconds=0.01,
+                )
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def connection_lost() -> None:
+            raise OperationalError("consuming input failed: server closed the connection unexpectedly")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_connection_lost:news_brief_peek",
+            ):
+                await database.run_business(
+                    "news_brief_peek",
+                    connection_lost,
+                    operation_timeout_seconds=0.5,
+                )
+            with pytest.raises(OperationalError):
+                await database.run_control(
+                    "workers_runtime_heartbeat",
+                    connection_lost,
+                    operation_timeout_seconds=0.5,
                 )
         finally:
             database.close_executors()

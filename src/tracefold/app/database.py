@@ -11,6 +11,7 @@ from functools import partial
 from threading import BoundedSemaphore
 from typing import Any, Protocol, cast
 
+from psycopg import OperationalError
 from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolClosed, PoolTimeout
 
@@ -337,6 +338,12 @@ class WorkerDatabase:
         except TransactionTimeout as exc:
             raise ResourceAdmissionTimeout(
                 f"worker_database_transaction_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
+        except OperationalError as exc:
+            if capability != "database_business":
+                raise
+            raise ResourceAdmissionTimeout(
+                f"worker_database_connection_lost:{_normalize_operation_name(operation_name)}"
             ) from exc
 
     def close_business_admission(self) -> None:

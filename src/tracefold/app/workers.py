@@ -1100,7 +1100,8 @@ def _runtime_begin(
         return WorkersRuntimeRepository(repos.conn).begin(
             runtime_id=runtime_id,
             runtime_version=runtime_version,
-            now_ms=started_at_ms,
+            started_at_ms=started_at_ms,
+            now_ms=_now_ms(),
         )
 
 

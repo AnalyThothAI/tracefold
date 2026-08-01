@@ -215,6 +215,7 @@ def _publish_healthy_workers_runtime(worker_db: WorkerDatabase) -> None:
         assert repository.begin(
             runtime_id=runtime_id,
             runtime_version="e2e",
+            started_at_ms=now_ms,
             now_ms=now_ms,
         )
         repository.transition(runtime_id=runtime_id, lifecycle_state="running", now_ms=now_ms)

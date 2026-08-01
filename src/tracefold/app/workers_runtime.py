@@ -48,6 +48,7 @@ class WorkersRuntimeRepository:
         *,
         runtime_id: str,
         runtime_version: str,
+        started_at_ms: int,
         now_ms: int,
     ) -> bool:
         runtime_uuid = UUID(str(runtime_id))
@@ -72,7 +73,7 @@ class WorkersRuntimeRepository:
             (
                 runtime_uuid,
                 _required_text(runtime_version, "runtime_version"),
-                int(now_ms),
+                int(started_at_ms),
                 int(now_ms),
             ),
         )
