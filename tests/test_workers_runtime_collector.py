@@ -360,6 +360,7 @@ def test_postgres_wait_distribution_must_cover_every_worker_connection() -> None
     [
         (("container", "restart_count"), -1, "workers_restart_count"),
         (("container", "process_rss_bytes"), float("nan"), "workers_process_rss"),
+        (("postgres", "max_lock_wait_seconds"), float("inf"), "postgres_lock_wait_duration"),
         (("postgres", "max_transaction_seconds"), float("inf"), "postgres_transaction_duration"),
         (
             ("telemetry", "resource_active", "cpu_process"),
@@ -381,11 +382,26 @@ def test_summary_binds_waits_query_audit_resource_metrics_and_soft_slo() -> None
     summary = _summarize(_samples())
 
     assert summary["postgres"]["max_waits_by_type"] == {"Client": 3, "none": 1}
+    assert summary["postgres"]["max_lock_wait_seconds"] == 0.0
     assert summary["postgres"]["query_audit"]["ok"] is True
     assert summary["postgres"]["query_audit"]["query_count"] == len(HOT_QUERIES)
     assert summary["resource_metrics"]["admission"]["count_delta"] == 180
     assert summary["resource_metrics"]["service"]["count_delta"] == 180
     assert summary["projection_soft_slo_overruns"]["radar"]["counter_delta"] == 0.0
+
+
+def test_bounded_lock_wait_is_recorded_without_failing_the_sample() -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["postgres"].update(
+        {
+            "lock_wait_count": 1,
+            "max_lock_wait_seconds": 0.015,
+            "waits_by_type": {"Client": 2, "Lock": 1, "none": 1},
+        }
+    )
+
+    _validate_sample(sample, metadata=_metadata(), previous=None)
 
 
 def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_refreshed(tmp_path: Path) -> None:
@@ -414,7 +430,6 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
     [
         (("container", "container_memory_bytes"), 2 * 1024 * 1024 * 1024, "workers_container_memory_limit"),
         (("postgres", "worker_connections"), 5, "postgres_worker_connection_limit"),
-        (("postgres", "lock_wait_count"), 1, "postgres_lock_wait"),
         (
             ("postgres", "max_transaction_seconds"),
             NEWS_STORY_PUBLISH_TIMEOUT_SECONDS + 0.1,
@@ -429,6 +444,21 @@ def test_resource_or_postgres_cap_violation_fails_sample(path, value, stage) -> 
     _set_path(sample, path, value)
 
     with pytest.raises(_SampleFailure, match=stage):
+        _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+def test_lock_wait_over_database_budget_fails_sample() -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["postgres"].update(
+        {
+            "lock_wait_count": 1,
+            "max_lock_wait_seconds": 0.251,
+            "waits_by_type": {"Client": 2, "Lock": 1, "none": 1},
+        }
+    )
+
+    with pytest.raises(_SampleFailure, match="postgres_lock_wait_duration"):
         _validate_sample(sample, metadata=_metadata(), previous=None)
 
 
@@ -559,6 +589,7 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
         "postgres": {
             "worker_connections": 4,
             "lock_wait_count": 0,
+            "max_lock_wait_seconds": 0.0,
             "waits_by_type": {"Client": 3, "none": 1},
             "max_transaction_seconds": 0.1,
             "temp_files": 7,

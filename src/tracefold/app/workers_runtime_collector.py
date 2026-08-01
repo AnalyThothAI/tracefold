@@ -18,6 +18,7 @@ from urllib.request import ProxyHandler, build_opener
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
 
+from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
@@ -39,7 +40,7 @@ SAMPLE_INTERVAL_SECONDS = 10
 MAX_SAMPLE_GAP_SECONDS = 15
 EXPECTED_SAMPLE_COUNT = COLLECTION_DURATION_SECONDS // SAMPLE_INTERVAL_SECONDS + 1
 
-COLLECTION_SCHEMA_VERSION = "workers_runtime_acceptance_collection_v1"
+COLLECTION_SCHEMA_VERSION = "workers_runtime_acceptance_collection_v2"
 SAMPLES_FILE = "workers-runtime-samples.jsonl"
 COLLECTION_FILE = "workers-runtime-collection.json"
 
@@ -482,23 +483,41 @@ class _ProductionSampler:
         try:
             activity = self._conn.execute(
                 """
-                WITH worker_activity AS (
+                WITH worker_connections AS (
                   SELECT
+                    activity.pid,
                     COALESCE(wait_event_type, 'none') AS wait_event_type,
-                    COUNT(*) AS wait_count,
                     COALESCE(
-                      MAX(EXTRACT(EPOCH FROM (clock_timestamp() - xact_start)))
-                        FILTER (WHERE xact_start IS NOT NULL),
+                      EXTRACT(EPOCH FROM (clock_timestamp() - xact_start)),
                       0
-                    ) AS max_transaction_seconds
-                  FROM pg_stat_activity
-                  WHERE datname = current_database()
-                    AND application_name LIKE 'tracefold_workers%'
-                  GROUP BY COALESCE(wait_event_type, 'none')
+                    ) AS transaction_seconds,
+                    COALESCE(
+                      MAX(
+                        EXTRACT(EPOCH FROM (clock_timestamp() - waiting_lock.waitstart))
+                      ) FILTER (WHERE NOT waiting_lock.granted),
+                      0
+                    ) AS lock_wait_seconds
+                  FROM pg_stat_activity activity
+                  LEFT JOIN pg_locks waiting_lock
+                    ON waiting_lock.pid = activity.pid
+                   AND NOT waiting_lock.granted
+                   AND activity.wait_event_type = 'Lock'
+                  WHERE activity.datname = current_database()
+                    AND activity.application_name LIKE 'tracefold_workers%'
+                  GROUP BY activity.pid, activity.wait_event_type, activity.xact_start
+                ), worker_activity AS (
+                  SELECT
+                    wait_event_type,
+                    COUNT(*) AS wait_count,
+                    MAX(transaction_seconds) AS max_transaction_seconds,
+                    MAX(lock_wait_seconds) AS max_lock_wait_seconds
+                  FROM worker_connections
+                  GROUP BY wait_event_type
                 )
                 SELECT
                   COALESCE(SUM(wait_count), 0) AS worker_connections,
                   COALESCE(MAX(max_transaction_seconds), 0) AS max_transaction_seconds,
+                  COALESCE(MAX(max_lock_wait_seconds), 0) AS max_lock_wait_seconds,
                   COALESCE(
                     jsonb_object_agg(wait_event_type, wait_count ORDER BY wait_event_type),
                     '{}'::jsonb
@@ -553,6 +572,7 @@ class _ProductionSampler:
         payload = {
             "worker_connections": int(activity["worker_connections"]),
             "lock_wait_count": int(waits_by_type.get("Lock", 0)),
+            "max_lock_wait_seconds": float(activity["max_lock_wait_seconds"]),
             "waits_by_type": waits_by_type,
             "max_transaction_seconds": float(activity["max_transaction_seconds"]),
             "temp_files": int(database["temp_files"]),
@@ -705,8 +725,14 @@ def _validate_sample(
     )
     if lock_wait_count != normalized_waits.get("Lock", 0):
         raise _SampleFailure("postgres_lock_wait_count_mismatch")
-    if lock_wait_count != 0:
-        raise _SampleFailure("postgres_lock_wait")
+    max_lock_wait_seconds = _nonnegative_float(
+        postgres.get("max_lock_wait_seconds"),
+        stage="postgres_lock_wait_duration",
+    )
+    if lock_wait_count == 0 and max_lock_wait_seconds != 0:
+        raise _SampleFailure("postgres_lock_wait_duration_mismatch")
+    if max_lock_wait_seconds > WORKER_DATABASE_LOCK_TIMEOUT_SECONDS:
+        raise _SampleFailure("postgres_lock_wait_duration")
     if (
         _nonnegative_float(
             postgres.get("max_transaction_seconds"),
@@ -1097,7 +1123,10 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "probe_rtt_at_most_1_second": max(probe_rtts) <= 1_000,
         "container_memory_below_2_gib": max(container_memory_values) < _MAX_RSS_BYTES,
         "postgres_connections_at_most_4": max(int(row["worker_connections"]) for row in postgres_samples) <= 4,
-        "postgres_lock_wait_zero": max(int(row["lock_wait_count"]) for row in postgres_samples) == 0,
+        "postgres_lock_wait_within_budget": max(
+            float(row["max_lock_wait_seconds"]) for row in postgres_samples
+        )
+        <= WORKER_DATABASE_LOCK_TIMEOUT_SECONDS,
         "postgres_transaction_within_steady_budget": max(
             float(row["max_transaction_seconds"]) for row in postgres_samples
         )
@@ -1146,6 +1175,7 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "postgres": {
             "max_worker_connections": max(int(row["worker_connections"]) for row in postgres_samples),
             "max_lock_wait_count": max(int(row["lock_wait_count"]) for row in postgres_samples),
+            "max_lock_wait_seconds": max(float(row["max_lock_wait_seconds"]) for row in postgres_samples),
             "max_transaction_seconds": max(float(row["max_transaction_seconds"]) for row in postgres_samples),
             "temp_files_delta": temp_file_delta,
             "temp_bytes_delta": temp_byte_delta,
