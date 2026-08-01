@@ -56,6 +56,7 @@ class CollectorService:
         self.db = db
         self.snapshot_timeout = 0.5
         self._pending_snapshots: dict[str, asyncio.Task[None]] = {}
+        self._snapshot_task_group: asyncio.TaskGroup | None = None
         self._upstream_task: asyncio.Task[None] | None = None
         self._event_publish_lock = asyncio.Lock()
         self.status = CollectorStatus(started_at_ms=_now_ms())
@@ -63,33 +64,39 @@ class CollectorService:
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.upstream_client is None:
             raise RuntimeError("upstream_client is required")
-        self._upstream_task = asyncio.create_task(
-            self.upstream_client.run(),
-            name="gmgn-stream",
-        )
-        stop_task = asyncio.create_task(stop_event.wait(), name="gmgn-stop-wait")
-        graceful_stop = False
-        try:
-            done, _ = await asyncio.wait(
-                {self._upstream_task, stop_task},
-                return_when=asyncio.FIRST_COMPLETED,
+        async with asyncio.TaskGroup() as snapshot_task_group:
+            self._snapshot_task_group = snapshot_task_group
+            self._upstream_task = asyncio.create_task(
+                self.upstream_client.run(),
+                name="gmgn-stream",
             )
-            if self._upstream_task in done:
-                await self._upstream_task
-                if not stop_event.is_set():
-                    raise RuntimeError("gmgn_stream_returned")
-            else:
-                graceful_stop = True
-                self._upstream_task.cancel()
-                await asyncio.gather(self._upstream_task, return_exceptions=True)
-        finally:
-            stop_task.cancel()
-            await asyncio.gather(stop_task, return_exceptions=True)
-            self._upstream_task = None
-            if graceful_stop:
-                await self._flush_pending_snapshots()
-            else:
-                await self._clear_pending_snapshots()
+            stop_task = asyncio.create_task(stop_event.wait(), name="gmgn-stop-wait")
+            graceful_stop = False
+            try:
+                done, _ = await asyncio.wait(
+                    {self._upstream_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._upstream_task in done:
+                    await self._upstream_task
+                    if not stop_event.is_set():
+                        raise RuntimeError("gmgn_stream_returned")
+                else:
+                    graceful_stop = True
+                    self._upstream_task.cancel()
+                    await asyncio.gather(self._upstream_task, return_exceptions=True)
+            finally:
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+                if self._upstream_task is not None and not self._upstream_task.done():
+                    self._upstream_task.cancel()
+                    await asyncio.gather(self._upstream_task, return_exceptions=True)
+                self._upstream_task = None
+                if graceful_stop:
+                    await self._flush_pending_snapshots()
+                else:
+                    await self._clear_pending_snapshots()
+                self._snapshot_task_group = None
 
     async def close(self) -> None:
         if self.upstream_client is None:
@@ -175,6 +182,7 @@ class CollectorService:
             pending_task = self._pending_snapshots.pop(str(internal_id), None)
             if pending_task:
                 pending_task.cancel()
+                await asyncio.gather(pending_task, return_exceptions=True)
                 self._record_snapshot_gate_outcome("debounced_complete")
             else:
                 self._record_snapshot_gate_outcome("immediate_complete")
@@ -184,8 +192,11 @@ class CollectorService:
         if str(internal_id) not in self._pending_snapshots:
             if len(self._pending_snapshots) >= _GMGN_PENDING_SNAPSHOT_LIMIT:
                 raise GmgnStreamExpectedError("gmgn_pending_snapshot_limit_exceeded")
-            self._pending_snapshots[str(internal_id)] = asyncio.create_task(
-                self._dispatch_snapshot_after_timeout(channel, item, received_at_ms, str(internal_id))
+            if self._snapshot_task_group is None:
+                raise RuntimeError("collector_snapshot_task_group_not_running")
+            self._pending_snapshots[str(internal_id)] = self._snapshot_task_group.create_task(
+                self._dispatch_snapshot_after_timeout(channel, item, received_at_ms, str(internal_id)),
+                name=f"gmgn-snapshot:{internal_id}",
             )
 
     async def _dispatch_snapshot_after_timeout(
@@ -197,11 +208,16 @@ class CollectorService:
     ) -> None:
         try:
             await asyncio.sleep(self.snapshot_timeout)
-            self._pending_snapshots.pop(internal_id, None)
             self._record_snapshot_gate_outcome("debounced_timeout")
             await self._process_item(channel, item, received_at_ms)
+        except GmgnStreamExpectedError as exc:
+            logger.warning(f"GMGN delayed snapshot skipped after expected failure: {exc}")
         except asyncio.CancelledError:
             raise
+        finally:
+            current_task = asyncio.current_task()
+            if self._pending_snapshots.get(internal_id) is current_task:
+                self._pending_snapshots.pop(internal_id, None)
 
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
         async with self._event_publish_lock:

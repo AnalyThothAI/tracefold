@@ -490,6 +490,34 @@ def test_opennews_status_admission_pressure_restarts_only_opennews(monkeypatch) 
     assert close_calls == connect_calls
 
 
+def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def receive(self):
+            self.started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    async def scenario() -> None:
+        client = _Client()
+        task = asyncio.create_task(
+            news_runtime._receive_or_stop(client, stop_event=asyncio.Event())
+        )
+        await asyncio.wait_for(client.started.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(client.cancelled.wait(), timeout=1.0)
+
+    asyncio.run(scenario())
+
+
 def test_opennews_publish_admission_pressure_retains_gap_boundary() -> None:
     class _Database:
         async def run_business(self, operation_name, _function, /, *_args, **_kwargs):

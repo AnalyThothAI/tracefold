@@ -718,18 +718,19 @@ def _opennews_recovery_covers_boundary(
 async def _receive_or_stop(client: Any, *, stop_event: asyncio.Event) -> Any | None:
     receive_task = asyncio.create_task(client.receive())
     stop_task = asyncio.create_task(stop_event.wait())
-    done, pending = await asyncio.wait(
-        {receive_task, stop_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    if stop_task in done and stop_task.result():
-        receive_task.cancel()
-        await asyncio.gather(receive_task, return_exceptions=True)
-        return None
-    return await receive_task
+    try:
+        done, _ = await asyncio.wait(
+            {receive_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done and stop_task.result():
+            return None
+        return await receive_task
+    finally:
+        for task in (receive_task, stop_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(receive_task, stop_task, return_exceptions=True)
 
 
 async def _queue_get_or_stop(
@@ -752,14 +753,16 @@ async def _event_or_stop(
 ) -> None:
     event_task = asyncio.create_task(event.wait())
     stop_task = asyncio.create_task(stop_event.wait())
-    done, pending = await asyncio.wait(
-        {event_task, stop_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    del done
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    try:
+        await asyncio.wait(
+            {event_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        for task in (event_task, stop_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(event_task, stop_task, return_exceptions=True)
 
 
 async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:

@@ -49,7 +49,8 @@ _SERVE_LANE_CAPACITIES = {
 _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 _WORKER_CHECKOUT_TIMEOUT_SECONDS = 0.250
 _WORKER_ADMISSION_TIMEOUT_SECONDS = 1.0
-_WORKER_OPERATION_COMPLETION_GRACE_SECONDS = 2.0
+_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 5.0
+_WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 2.0
 _WORKER_POOL_MIN_SIZE = 1
 _WORKER_POOL_MAX_SIZE = 4
 _WORKER_POOL_MAX_WAITING = 3
@@ -320,7 +321,12 @@ class WorkerDatabase:
             {wrapped},
             timeout=max(
                 0.001,
-                float(operation_timeout_seconds) + _WORKER_OPERATION_COMPLETION_GRACE_SECONDS,
+                float(operation_timeout_seconds)
+                + (
+                    _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS
+                    if capability == "database_business"
+                    else _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS
+                ),
             ),
         )
         if not done:

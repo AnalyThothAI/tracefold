@@ -39,7 +39,7 @@ services:
     volumes:
       - tracefold-postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tracefold_app -d tracefold"]
+      test: ["CMD-SHELL", "pg_isready -U tracefold_workers -d tracefold"]
       interval: 10s
       timeout: 5s
       retries: 5
