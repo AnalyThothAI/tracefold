@@ -442,6 +442,207 @@ def test_recovery_admission_timeout_keeps_the_gap_scheduled(monkeypatch) -> None
     assert asyncio.run(scenario()) == (2, 1, "recovered-after-admission")
 
 
+def test_opennews_status_admission_pressure_restarts_only_opennews(monkeypatch) -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "opennews_status"
+            raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
+
+    class _WebSocketClient:
+        def __init__(self) -> None:
+            self.connect_calls = 0
+            self.close_calls = 0
+
+        async def connect(self) -> None:
+            self.connect_calls += 1
+
+        async def receive(self):
+            await asyncio.Future()
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    async def scenario() -> tuple[int, int]:
+        websocket = _WebSocketClient()
+        acquisition = NewsAcquisition(
+            db=_Database(),
+            finite_operations=object(),
+            sources=(opennews_source(),),
+            opennews_rest_client=object(),
+            opennews_ws_client=websocket,
+        )
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(acquisition.run_opennews(stop_event=stop_event))
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while websocket.connect_calls < 2:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("OpenNews did not restart after database admission pressure")
+            await asyncio.sleep(0.001)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        return websocket.connect_calls, websocket.close_calls
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
+
+    connect_calls, close_calls = asyncio.run(scenario())
+
+    assert connect_calls >= 2
+    assert close_calls == connect_calls
+
+
+def test_opennews_publish_admission_pressure_retains_gap_boundary() -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "opennews_live_publish"
+            raise ResourceAdmissionTimeout("test_opennews_publish_admission_timeout")
+
+    async def scenario() -> tuple[bool, str | None]:
+        event = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "publish-gap-boundary",
+                    "text": "Database pressure must retain the live gap boundary",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": 1_000_000_012_000,
+                },
+            }
+        )
+        assert event is not None
+        acquisition = NewsAcquisition(
+            db=_Database(),
+            finite_operations=object(),
+            sources=(opennews_source(),),
+        )
+        acquisition._opennews_queue.put_nowait(event)
+
+        with pytest.raises(ResourceAdmissionTimeout, match="test_opennews_publish_admission_timeout"):
+            await acquisition._opennews_publish_loop(asyncio.Event())
+        return acquisition._opennews_gap_unclosed, acquisition._opennews_gap_boundary_provider_record_id
+
+    assert asyncio.run(scenario()) == (True, "publish-gap-boundary")
+
+
+def test_opennews_sibling_failure_retains_dequeued_publish_boundary(monkeypatch) -> None:
+    async def scenario() -> str | None:
+        publish_started = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        class _Database:
+            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+                if operation_name == "opennews_status":
+                    await publish_started.wait()
+                    stop_event.set()
+                    raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
+                if operation_name == "opennews_live_publish":
+                    publish_started.set()
+                    await asyncio.Future()
+                raise AssertionError(operation_name)
+
+        class _WebSocketClient:
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                await asyncio.Future()
+
+            async def close(self) -> None:
+                return None
+
+        event = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "cancelled-publish-boundary",
+                    "text": "Sibling cancellation must retain the dequeued boundary",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": 1_000_000_012_000,
+                },
+            }
+        )
+        assert event is not None
+        acquisition = NewsAcquisition(
+            db=_Database(),
+            finite_operations=object(),
+            sources=(opennews_source(),),
+            opennews_rest_client=object(),
+            opennews_ws_client=_WebSocketClient(),
+        )
+        acquisition._opennews_queue.put_nowait(event)
+
+        await asyncio.wait_for(acquisition.run_opennews(stop_event=stop_event), timeout=1.0)
+        return acquisition._opennews_gap_boundary_provider_record_id
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
+
+    assert asyncio.run(scenario()) == "cancelled-publish-boundary"
+
+
+def test_opennews_restart_waits_for_persisted_gap_before_recovery(monkeypatch) -> None:
+    async def scenario() -> tuple[int, int]:
+        first_recovery_started = asyncio.Event()
+        second_status_started = asyncio.Event()
+        release_second_status = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.status_calls = 0
+                self.recovery_start_calls = 0
+
+            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    self.recovery_start_calls += 1
+                    first_recovery_started.set()
+                    await asyncio.Future()
+                if operation_name == "opennews_status":
+                    self.status_calls += 1
+                    if self.status_calls == 1:
+                        await first_recovery_started.wait()
+                        raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
+                    if self.status_calls == 2:
+                        second_status_started.set()
+                        await release_second_status.wait()
+                    return None, self.status_calls
+                raise AssertionError(operation_name)
+
+        class _WebSocketClient:
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                await asyncio.Future()
+
+            async def close(self) -> None:
+                return None
+
+        database = _Database()
+        acquisition = NewsAcquisition(
+            db=database,
+            finite_operations=object(),
+            sources=(opennews_source(),),
+            opennews_rest_client=object(),
+            opennews_ws_client=_WebSocketClient(),
+        )
+        acquisition._opennews_recovery_requested.set()
+        task = asyncio.create_task(acquisition.run_opennews(stop_event=stop_event))
+
+        await asyncio.wait_for(second_status_started.wait(), timeout=1.0)
+        await asyncio.sleep(0.01)
+        recovery_starts_before_status = database.recovery_start_calls
+        stop_event.set()
+        release_second_status.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        return recovery_starts_before_status, database.recovery_start_calls
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == (1, 1)
+
+
 def test_late_gap_status_restores_memory_after_an_older_close() -> None:
     async def scenario() -> tuple[bool, bool, int, str | None]:
         status_started = asyncio.Event()

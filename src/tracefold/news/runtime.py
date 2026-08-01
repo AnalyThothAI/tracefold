@@ -92,10 +92,18 @@ class NewsAcquisition:
         if self.opennews_rest_client is None or self.opennews_ws_client is None:
             await stop_event.wait()
             return
-        async with asyncio.TaskGroup() as group:
-            group.create_task(self._opennews_receive_loop(stop_event), name="opennews-receiver")
-            group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
-            group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
+        while not stop_event.is_set():
+            try:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(self._opennews_receive_loop(stop_event), name="opennews-receiver")
+                    group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
+                    group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
+            except* ResourceAdmissionTimeout:
+                self._opennews_connected = False
+                self._opennews_gap_unclosed = True
+                self._opennews_recovery_requested.clear()
+            if not stop_event.is_set():
+                await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
 
     async def _opennews_receive_loop(self, stop_event: asyncio.Event) -> None:
         client = self.opennews_ws_client
@@ -169,14 +177,20 @@ class NewsAcquisition:
                     events.append(self._opennews_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
-            await self.db.run_business(
-                "opennews_live_publish",
-                self._publish_opennews_sync,
-                tuple(events),
-                _now_ms(),
-                None,
-                operation_timeout_seconds=3.0,
-            )
+            try:
+                await self.db.run_business(
+                    "opennews_live_publish",
+                    self._publish_opennews_sync,
+                    tuple(events),
+                    _now_ms(),
+                    None,
+                    operation_timeout_seconds=3.0,
+                )
+            except BaseException:
+                self._opennews_gap_unclosed = True
+                if self._opennews_gap_boundary_provider_record_id is None:
+                    self._opennews_gap_boundary_provider_record_id = events[0].provider_record_id
+                raise
 
     async def _opennews_recovery_loop(self, stop_event: asyncio.Event) -> None:
         client = self.opennews_rest_client
