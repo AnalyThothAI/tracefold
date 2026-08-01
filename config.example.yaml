@@ -25,8 +25,6 @@ llm:
   news_brief_model: "deepseek-chat"
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
-  macro_thesis_enabled: false
-  macro_thesis_model: "gpt-5.4-mini"
 
 gmgn:
   api_key:
@@ -62,21 +60,9 @@ providers:
 
 news:
   enabled: true
-  # Secret for the additive OpenNews/NewsLiquid realtime source.
+  # Required by the one production News source: OpenNews WSS + REST recovery.
   opennews_token:
-  # The source catalog is code-owned; `sources` is not a configuration field.
-  # The pinned WorldMonitor full/en inventory plus Tracefold's crypto,
-  # 6551NEWS, and WallStEngine feeds are always used. RSSHub is internal to
-  # compose and its optional credentials live only in ~/.tracefold/rsshub.env.
-  # Worker topology, cadence, budgets, retries, and model reservations are
-  # code-owned. config.yaml retains only deployment/domain choices.
-  relay:
-    # WorldMonitor-compatible independent egress fallback. Direct fetch is
-    # always attempted first; only code-owned public HTTPS URLs are relayed.
-    # Internal RSSHub HTTP URLs are never sent to this external relay.
-    base_url: "https://proxy.worldmonitor.app"
-    auth_header: "x-relay-key"
-    auth_token:
+  # RSS adapters remain development utilities and have no production config.
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

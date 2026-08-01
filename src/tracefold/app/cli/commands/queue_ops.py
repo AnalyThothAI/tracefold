@@ -26,7 +26,6 @@ _QUEUE_TABLES_BY_OWNER: dict[str, tuple[str, ...]] = {
     "profile_projection": ("token_profile_projection_frontiers",),
     "macro_projection": ("macro_module_frontiers",),
     "news_brief": ("news_brief_runs",),
-    "macro_thesis": ("macro_thesis_runs",),
     "macro_document_analysis": ("macro_document_analysis_jobs",),
 }
 
@@ -341,38 +340,6 @@ def _retry_news_brief(
     return {"requeued": 1, "run": dict(row)}
 
 
-def _retry_macro_thesis(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    del reason
-    target_key = _native_target_key(event)
-    row = repos.conn.execute(
-        """
-        UPDATE macro_thesis_runs
-           SET status = 'retryable',
-               attempt_count = 0,
-               due_at_ms = %s,
-               leased_until_ms = NULL,
-               lease_owner = NULL,
-               last_error_code = NULL,
-               last_error_message = NULL,
-               last_gate_category = NULL,
-               last_candidate_hash = NULL,
-               updated_at_ms = %s
-         WHERE session_date = %s::date
-           AND status IN ('failed', 'not_published', 'config_error')
-        RETURNING session_date, due_at_ms
-        """,
-        (int(now_ms), int(now_ms), target_key),
-    ).fetchone()
-    _require_requeued(row, "macro_thesis_retry_not_requeued")
-    return {"requeued": 1, "run": dict(row)}
-
-
 def _retry_macro_document_analysis(
     repos: Any,
     event: dict[str, Any],
@@ -453,7 +420,6 @@ QUEUE_RETRY_TRANSITIONS = {
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
     ("news_brief", "news_brief_runs"): _retry_news_brief,
-    ("macro_thesis", "macro_thesis_runs"): _retry_macro_thesis,
     (
         "macro_document_analysis",
         "macro_document_analysis_jobs",

@@ -3,7 +3,7 @@
 Tracefold is one Python codebase/image with two mutually exclusive runtime
 composition roots, one CLI, one React console, and one PostgreSQL database.
 The architecture remains Kappa/CQRS: append-oriented material facts are the
-only business truth; deterministic current views and immutable research
+only business truth; deterministic current views and bounded immutable model
 publications are derived state.
 
 ## Data flow
@@ -22,8 +22,8 @@ repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model/CPU capabilities, singleton runtime
 status, one fixed-period News Story writer, and one EDF projection
 coordinator for the frontier-backed domains. Workers recover exclusively by
-re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native
-Brief/Thesis/Document model state, and queues on bounded code-owned clocks.
+re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native News
+Brief/Fed-document model state, and queues on bounded code-owned clocks.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -44,8 +44,7 @@ Material facts include:
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
 - market: `market_ticks`, `enriched_events`, `market_observations`,
   `market_settlements`, and `market_position_facts`;
-- news: immutable acquisition observations in `news_feed_observations` and
-  idempotent normalized current `news_items`;
+- news: idempotent OpenNews current facts in `news_items`;
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`.
 
@@ -56,9 +55,9 @@ Each uses stable product/window/target identity, has exactly one runtime
 writer, is rebuildable from facts, and writes zero serving rows when its
 business payload is unchanged.
 
-Source configuration/fetch health in `news_sources`, queues, leases, retries,
-fetch attempts, sync runs, terminal events, and agent checkpoints are control
-or audit state. Typed Radar, Macro, and Profile frontiers store stable
+Source connection health in `news_sources`, queues, leases, retries, native
+model runs/jobs, and terminal events are control state. Typed Radar, Macro, and
+Profile frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
@@ -67,8 +66,8 @@ before its deadline; the deadline is never a start gate. Radar source edges are
 deterministic rebuildable state, not alternate business truth. Profile refresh
 heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
-`macro_thesis_publications` and `news_brief_publications` are immutable
-derived research keyed by frozen evidence; they are not material facts.
+`news_brief_publications` and `macro_document_analyses` are immutable derived
+model outputs keyed by frozen evidence; they are not material facts.
 
 ## Package map
 
@@ -82,24 +81,23 @@ tracefold.market
   views/         persisted market read queries
 
 tracefold.news
-  sources.py        WorldMonitor-derived catalog plus code-owned RSS sources
+  sources.py        one code-owned OpenNews source identity
   classification.py deterministic keyword threat/category classifier
   identity.py       WorldMonitor-compatible 512-dimension title clustering
   ranking.py        55/20/15/10 importance and Top-8 selection
   brief.py          Chinese Brief fingerprint and citation index lock
-  repository.py     PostgreSQL observation, item, Story, and Brief state
+  repository.py     PostgreSQL current Item, Story, source-health, and Brief state
   interface.py      sole external News read interface
-  runtime.py        bounded source acquisition and native Brief candidate
+  runtime.py        bounded OpenNews live/recovery and native Brief candidate
   projection.py     complete 96-hour WorldMonitor Story calculation
   story_store.py    current-only Story compare-and-publish store
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
-  acquisition.py clock-driven claim, provider-I/O, receipt, fact and cursor flow
+  acquisition.py clock-driven claim, provider-I/O, fact and cursor flow
   calculations.py versioned calculation registry and transparent features
   projection.py  six current decision modules
-  thesis.py      sealed Evidence Pack, Thesis, Live Delta, and Outcome Replay
-  thesis_service.py one 08:50 New York immutable DeepAgents publication lifecycle
+  fed_analysis.py evidence-bound FOMC/speech analysis contract
 
 tracefold.integrations
   provider and external-system adapters, including DeepAgents
@@ -152,15 +150,14 @@ Important atomic units are:
 
 - fact persistence, identity resolution, market capture, and downstream dirty
   target creation;
-- one Macro acquisition completion: normalized fact insert, append-only source
-  receipt, cursor advance, and compare-and-set target completion;
+- one Macro acquisition completion: normalized fact insert, cursor advance, and
+  compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
-- News observation/item persistence plus deterministic Story
+- OpenNews current-item persistence plus deterministic Story
   membership/projection;
 - immutable World Brief publication plus completion of its exact
   evidence/model/version attempt;
-- immutable Macro Evidence Pack, independent review, Thesis publication, Live
-  Delta, or Outcome Replay plus the corresponding stable session transition;
+- immutable Fed document analysis plus completion of its exact native job;
 - retry or terminal transition plus mutation of its source queue row.
 
 Provider, model, subprocess, filesystem, and network I/O occurs outside
@@ -225,11 +222,10 @@ News is a direct PostgreSQL-backed adaptation of WorldMonitor commit
 `f73de5b7`, not an independent editorial ontology:
 
 ```text
-RSS/RSSHub catalog + additive OpenNews source
-  -> conditional direct fetch, then public-HTTPS-only relay fallback
-  + persistent OpenNews WSS with bounded queue and REST gap recovery
-  -> semantic immutable FeedObservation before admission
-  -> report observations materialize idempotent NewsItems
+OpenNews source
+  -> persistent WSS with bounded queue and REST gap recovery
+  -> reports materialize idempotent NewsItems
+  -> provider annotations update bounded metadata on the current item
   -> complete 96-hour WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
   -> one flat global cursor Feed; category is a facet
@@ -239,33 +235,22 @@ RSS/RSSHub catalog + additive OpenNews source
      + /api/news/brief + /api/news/sources + /api/news/status
 ```
 
-The serving inventory is deliberately US-finance and global-event focused:
-all crypto sources remain; US government/finance/politics, professional
-technology/AI/layoff coverage, event-oriented security/intelligence, energy,
-and crisis sources remain; Nikkei Asia, SCMP, Xinhua, and Al Jazeera are the
-explicit regional exceptions. General local/regional news feeds are retired
-from serving. Trump Truth Social is a tier-1 first-party source and enters the
-ordinary Story/Brief lane without a separate corroboration gate.
-
-`NewsAcquisition` is the only NewsItem writer. Its RSS lane claims one due
-source, performs bounded provider I/O outside transactions, records one fetch
-receipt, and commits each source independently. Its OpenNews lane owns one
-persistent authenticated WSS receiver, one 256-event in-memory queue, one
+`NewsAcquisition` is the only NewsItem writer. It owns one persistent
+authenticated WSS receiver, one 256-event in-memory queue, one
 publisher, and one REST recovery loop under the same structured-concurrency
-root. REST runs at startup, after reconnect or overflow, and every five
-minutes; each turn is page 1, limit 100, with a 30-minute overlap. The stream
-socket does not consume a finite-operation permit; REST does.
+root. REST is gap-driven only: one bounded page (page 1, limit 100) after a
+successful initial WSS connection, reconnect, or queue overflow. A healthy
+continuous WSS session performs no periodic REST calls. The stream socket does
+not consume a finite-operation permit; REST does.
 
-Every provider event first becomes `news_feed_observations`. Its semantic
-identity is provider/source, provider record key, observation kind, and
-normalized payload hash, so reconnect and REST/WSS overlap insert zero
-duplicates. Only `report` observations materialize NewsItems. OpenNews
-translations and `news.ai_update` are observation-only;
-`strategy.triggered` and non-news engine events are ignored. Provider AI
-ratings are evidence only and cannot affect identity, classification, score,
-Story, or Brief. Missing title or date and dates more than one hour in the
-future remain auditable rejected observations. Linkless OpenNews dispatches
-are valid evidence; RSS still requires an article URL.
+OpenNews provider record ID is the current-fact identity. Reconnect and
+REST/WSS overlap therefore update or no-op the same row. `news.ai_update`
+updates only the bounded provider-source label, `score`, `signal`, `grade`, and
+coin metadata on that row. Translations, `strategy.triggered`, non-news engine
+events, and invalid or
+stale reports are discarded rather than retained as audit history. Provider
+metadata is descriptive and cannot affect identity, classification, Story, or
+Brief. Linkless OpenNews dispatches remain valid current facts.
 
 The sole Story writer loads all enabled NewsItems in the current 96-hour
 window, computes outside the database, and compares the input fingerprint
@@ -275,19 +260,10 @@ writes zero serving rows; a stale snapshot writes nothing. There are no News
 frontiers, identity-feature rows, similarity-edge rows, aliases, or
 membership history.
 
-WallStEngine is one ordinary tier-4 English source in the Finance membership.
-Its fixed internal RSSHub user-timeline URL excludes replies and retweets,
-keeps original and quote posts, and leaves quoted text in the RSS description
-rather than the title. It uses the same five-entry cap, observations,
-classification, Story source count, ranking, health, and Brief rules as every
-other source. Internal HTTP/RSSHub URLs are direct-only; only code-owned public
-HTTPS feed URLs may be sent to the external relay.
-
-NewsItem identity is `(source_id, source_item_key)`. RSS uses GUID or canonical
-URL. OpenNews uses canonical article URL when present and otherwise
-`dispatch:opennews:<provider-id>`. Tracking parameters are removed. The whole
-winning OpenNews report is selected deterministically; translations and
-provider annotations never overwrite it.
+NewsItem identity is `(source_id, provider_record_id)`. The existing `item_id`
+is retained when this hard cut migrates an already known provider record.
+Tracking parameters are removed from article links. Provider annotations
+update only bounded metadata and never replace report content.
 
 Story identity is the Python port of WorldMonitor's
 `shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
@@ -305,8 +281,8 @@ including exclusions and historical downgrade. There is no item-level AI
 classifier or cache. Importance uses WorldMonitor's 55% severity, 20% source
 tier, 15% corroboration, and 10% recency, followed by the narrow
 diplomacy/flashpoint and entity-corroboration boosts. Corroboration and public
-`source_count` count distinct reporting origins, so one Reuters report seen
-through both RSS and OpenNews counts once. Because Tracefold persists this otherwise
+`source_count` count distinct reporting origins, so repeated OpenNews delivery
+of one provider record counts once. Because Tracefold persists this otherwise
 request-time score, recency uses the equivalent one-hour healthy-cache epoch;
 unchanged input within an epoch writes zero serving rows. The API exposes the
 scoring item and factor breakdown. Global clustering precedes filtering,
@@ -331,17 +307,15 @@ run with an unexpired lease and heartbeat. News Brief preserves the first-dirty
 waits on the fixed 250 ms bounded cadence after every completed candidate. No
 per-Story or Brief worker timer is a correctness authority.
 
-The complete live News storage boundary is exactly fourteen tables:
-`news_sources`, `news_source_memberships`, `news_source_fetches`,
-`news_feed_observations`, `news_items`, `news_stories`,
+The complete live News storage boundary is exactly twelve tables:
+`news_sources`, `news_source_memberships`, `news_items`, `news_stories`,
 `news_story_members`, `news_projection_summary`,
 `news_story_facet_counts`, `news_source_facet_counts`,
 `news_brief_selection_current`,
 `news_brief_runs`,
 `news_brief_publications`, and `news_brief_current`. The
-`20260801_0234` hard cut removes incremental identity features, similarity
-edges, aliases, input state, and Story frontiers; it has no downgrade or
-compatibility lane.
+`20260801_0234` removes incremental Story machinery. The current hard cut has
+no downgrade or compatibility lane.
 
 ### Macro
 
@@ -350,7 +324,7 @@ code-owned Dataset Registry + Coverage Manifest
   -> one of six clock families
   -> macro_acquisition_targets claim
   -> free official / exchange / disclosed proxy adapter
-  -> typed append-only Market or Macro fact + source receipt + cursor
+  -> typed append-only Market or Macro fact + target cursor/current state
   -> static dataset -> calculation -> module dependency graph
   -> typed affected-module frontier
   -> one EDF module-local reducer
@@ -361,36 +335,27 @@ official FOMC / speech body + effective-dated role fact
   -> macro_document_analysis_jobs claim
   -> immutable evidence-bound document analysis
   -> institutional stance + officials communication distribution
-
-08:50 America/New_York trading session
-  -> cutoff-bounded six-module compilation
-  -> immutable macro_evidence_pack_v3
-  -> bounded immutable macro_research_input_v1
-  -> one Thin DeepAgent graph / exactly one native structured model call
-  -> time, evidence, contract, and write gates
-  -> one immutable macro_thesis_v2 publication
-  -> immutable Macro Live Delta v2 / Outcome Replay v2 snapshots
-  -> current-only v2 reads and explicit immutable v1/v2 archive reads
 ```
 
 The acquisition clock families are `intraday_market`, `daily_settlement`,
 `scheduled_release`, `official_state`, `official_document`, and explicit
 `backfill`. The five steady families are explicit private due loops over one
-target table, not Worker objects or a uniform
-bundle poller. Claims use `SKIP LOCKED`; provider I/O occurs outside database
-transactions; completion atomically writes facts, receipt, cursor, and target
-state. Unchanged source content writes zero fact rows while every attempt
-retains a receipt. Revisions append a new fact and never overwrite history.
+target table, not Worker objects or a uniform bundle poller. Claims use
+`SKIP LOCKED`; provider I/O occurs outside database transactions; completion
+atomically writes facts, cursor, and current target success/error state.
+Unchanged source content writes zero fact rows. Revisions append a new fact and
+never overwrite history.
+
 Macro history reads, Calculation Registry execution, and all six module payload
 builds occur outside the write transaction. A short compare-and-set write phase
-publishes the stable feature/module rows and projection fingerprint; unchanged
-facts perform zero history loads and zero calculations.
+publishes the stable module row and projection fingerprint. Unchanged module
+payloads write zero serving rows.
 
 The Dataset Registry fixes ownership, concept identity, source role, clock,
 adapter, trust tier, freshness, criticality, and module membership in code.
 Every concept has one primary current source and may have an explicitly labelled
-official-history or proxy source. Source identities are reconciled with a
-persisted receipt and are never blended. The Coverage Manifest contains only
+official-history or proxy source. Dataset and source identities stay explicit
+and are never blended. The Coverage Manifest contains only
 capabilities that the supported free-data system can truthfully provide;
 missing paid or unimplementable capabilities are deleted rather than displayed
 as permanent product gaps. Operator config only enables source families;
@@ -400,20 +365,20 @@ The current nominal and real curves come from Treasury, with FRED as labelled
 history. CPI and labor release facts come from BLS, while GDP, PCE, and core PCE
 release facts come from BEA's public official release pages; the matching FRED
 series are history only. Release timestamps are parsed from the official
-release clock, never substituted with receipt time.
+release clock, never substituted with ingestion time.
 
 Coverage (`complete`, `partial`), Current Health (`current`, `degraded`,
 `unavailable`), and History Depth (`complete`, `partial`, `insufficient`,
 `not_required`) are independent descriptive axes. Optional history cannot
-degrade current-state health or reader-facing History Depth; it remains in the
-audit appendix. Dataset rows also expose market and source state;
+degrade current-state health or reader-facing History Depth. Dataset rows also
+expose market and source state;
 closed and maintenance sessions do not age the last expected market bar against
 wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed payload (`rates/economy/liquidity` v5, credit/volatility/cross
-asset v7), deterministic module-specific analysis, exact
+explicit typed payload (rates v6, economy/liquidity v5, and
+credit/volatility/cross-asset v7), deterministic module-specific analysis, exact
 market timestamps, natural publication cadence, source roles, importance
 ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
 revision, and publication time distinct. ETF daily history is the Nasdaq public
@@ -430,40 +395,21 @@ history, and funding comparisons remain deterministic. Credit exposes spread,
 funding cost, bank supply, and borrower quality concurrently and never reduces
 them to a score.
 
-The Thesis is the only product-level Macro judgment. A deterministic bounded
-ResearchInput preserves typed structures, exact cutoff-frozen facts, gaps,
-prior material delta, catalysts, all twelve asset momentum rows, and a closed
-condition-candidate registry without choosing the conclusion. The Thin model
-returns one call/no-call mainline, one to three causal edges for a call, at most
-one alternative, at most three tensions, sparse module assessments, and only
-material asset outlooks. The deterministic compiler closes citations,
-conditions, hashes, and stable IDs. Momentum and conditional outlook remain
-separate for exactly SPY, QQQ, IWM, TLT, IEF, LQD, HYG, UUP, GLD, USO, BTC,
-and VIX; non-material assets keep facts and a short deterministic no-call
-reason instead of model filler.
+Macro has no second judgment publication, daily narrative, or archive product.
+The overview is a compact index over the six current module rows; each module
+is a deterministic descriptive view over persisted facts.
+One unavailable module affects only that module, and read requests never invoke
+a provider, model, backfill, or projection.
 
-The production graph is one Thin `create_deep_agent` composition with exactly
-one provider-native structured model invocation per durable attempt. Business
-tools, subagents, filesystem, todo, task, execute, search, summarization, and
-checkpoint writes are absent. Reviewer is not a production gate or invocation;
-existing v1 review rows remain immutable archive audit. The only post-envelope
-publication gates are time identity, evidence closure, contract validity, and
-write safety.
+Fed document analysis is the only model-derived Macro state. It receives one
+bounded official body plus effective-dated role/prior-signal context, verifies
+exact excerpts against that body, and inserts one immutable analysis for the
+exact document/model/prompt identity. It feeds the descriptive `rates_fed`
+module and is never a publication gate for the other five modules.
 
-Post-publication updates never mutate the Thesis. Macro Live Delta only reports
-condition-bound strengthening, weakening, or invalidation against cited
-evidence; its public read projection preserves mainline, alternative, tension,
-and asset scopes, and only mainline bindings determine mainline validity.
-Event checkpoints never affect mainline validity. Outcome Replay emits only
-declared 1W/1M horizons and only corresponding material outlook assets.
-Current Recovery separately compares publication-time and current canonical
-fact availability without changing the Thesis hash. Current routes resolve one
-session and never inject a prior publication; older v1/v2 Thesis is available
-only by explicit archive selection. One unavailable module degrades only its
-evidence scope. Read requests never invoke providers or the graph. Missing
-evidence, no-call, partial history, confidence, report length, Reviewer
-absence, and offline score are descriptive rather than extra publication
-gates.
+Migrations `20260801_0235` and `20260801_0236` are irreversible hard cuts: they
+remove retired News acquisition and Macro derived/control history without
+adding compatibility tables or readers.
 
 ## Safety boundary
 

@@ -57,6 +57,21 @@ export type NewsStoryMember = {
   description: string;
   importance_score: number;
   item_id: string;
+  provider_record_id: string | null;
+  provider_metadata: {
+    score?: number;
+    source?: string;
+    signal?: string;
+    grade?: string;
+    coins?: Array<{
+      symbol: string;
+      market_type: string;
+      match?: string;
+      score?: number;
+      signal?: string;
+      grade?: string;
+    }>;
+  };
   lang: string;
   last_observed_at_ms: number;
   level: NewsLevel;
@@ -138,31 +153,15 @@ export type WorldBrief = {
 export type NewsSource = {
   consecutive_failures: number;
   enabled: boolean;
-  source_kind: "rss" | "opennews";
+  source_kind: "opennews";
   live_connected: boolean;
   last_live_at_ms: number | null;
   last_recovery_at_ms: number | null;
   gap_unclosed: boolean;
-  feed_url: string;
-  lang: string;
   last_error: string | null;
   last_http_status: number | null;
   last_success_at_ms: number | null;
-  latest_entries_seen: number | null;
-  latest_fetch_duration_ms: number | null;
-  latest_fetch_error_code: string | null;
-  latest_fetch_path: "direct" | "relay" | "opennews_rest" | null;
-  latest_direct_error_code: string | null;
-  latest_fetch_finished_at_ms: number | null;
-  latest_fetch_status: "success" | "not_modified" | "failed" | null;
-  latest_items_inserted: number | null;
-  latest_items_updated: number | null;
-  latest_observations_inserted: number | null;
-  latest_rejection_counts: Record<string, number> | null;
   name: string;
-  memberships: string[];
-  next_fetch_at_ms: number;
-  refresh_interval_seconds: number;
   source_id: string;
   tier: number;
 };

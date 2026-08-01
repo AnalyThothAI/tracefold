@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
     query_audit.add_argument("--analyze", action="store_true", help="run EXPLAIN ANALYZE with buffers")
 
-    macro = subcommands.add_parser("macro", help="daily Macro decision-system commands")
+    macro = subcommands.add_parser("macro", help="Macro acquisition and current-module commands")
     macro_subcommands = macro.add_subparsers(dest="macro_command", required=True)
     macro_backfill = macro_subcommands.add_parser("backfill", help="execute an explicit dataset backfill")
     macro_backfill.add_argument("--dataset", required=True, help="Dataset Registry id")
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     macro_subcommands.add_parser(
         "status",
-        help="print acquisition, module, and Macro Thesis status",
+        help="print acquisition and current-module status",
     )
 
     recent = subcommands.add_parser("recent", help="print recent stored events")

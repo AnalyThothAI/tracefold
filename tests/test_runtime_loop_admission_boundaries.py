@@ -16,7 +16,7 @@ from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileR
 from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirror
 from tracefold.market.provider_contracts import DexProfileSource
 from tracefold.market.radar.projection_worker import RadarProjectionCandidate
-from tracefold.news.runtime import NewsAcquisition, NewsBriefCandidate
+from tracefold.news.runtime import NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -128,9 +128,6 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
 
     database = _SaturatedDatabase()
 
-    news = object.__new__(NewsAcquisition)
-    news.db = database
-
     macro = object.__new__(MacroAcquisition)
     macro.db = database
     macro.service = SimpleNamespace(claim_next=lambda: None)
@@ -154,7 +151,6 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
     poll.db = database
 
     async def scenario() -> None:
-        assert await news.turn() is None
         assert await macro.turn() is None
         assert await resolution.turn(now_ms=1) is None
         assert await profile.turn(now_ms=1) is None
@@ -225,9 +221,6 @@ def test_release_prework_admission_timeout_uses_lease_recovery() -> None:
 
     database = _SaturatedDatabase()
 
-    news = object.__new__(NewsAcquisition)
-    news.db = database
-
     resolution = object.__new__(ResolutionRefresh)
     resolution.db = database
 
@@ -236,7 +229,6 @@ def test_release_prework_admission_timeout_uses_lease_recovery() -> None:
     radar.service = SimpleNamespace(release_prework=lambda: None)
 
     async def scenario() -> None:
-        assert await news._release_prework("source", "claim") is False
         assert await resolution._release_prework([{}]) is False
         assert await radar._release_prework(SimpleNamespace(targets=())) is False
 

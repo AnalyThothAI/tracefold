@@ -13,7 +13,7 @@ from tracefold.app.cli.commands.queue_ops import handle_queue_resolve
 from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 
-def test_operator_retry_requeues_all_native_model_terminal_states() -> None:
+def test_operator_retry_requeues_retained_native_model_terminal_states() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -38,9 +38,6 @@ def test_operator_retry_requeues_all_native_model_terminal_states() -> None:
         brief = conn.execute(
             "SELECT status, attempt_count, next_due_at_ms FROM news_brief_runs WHERE fingerprint = 'brief-fp'"
         ).fetchone()
-        thesis = conn.execute(
-            "SELECT status, attempt_count, due_at_ms FROM macro_thesis_runs WHERE session_date = '2026-07-30'"
-        ).fetchone()
         document = conn.execute(
             """
             SELECT status, attempt_count, next_due_at_ms
@@ -58,11 +55,9 @@ def test_operator_retry_requeues_all_native_model_terminal_states() -> None:
         conn.commit()
 
         assert brief == {"status": "retryable", "attempt_count": 0, "next_due_at_ms": 9_000}
-        assert thesis == {"status": "retryable", "attempt_count": 0, "due_at_ms": 9_000}
         assert document == {"status": "retryable", "attempt_count": 0, "next_due_at_ms": 9_000}
         assert [row["owner_key"] for row in resolved] == [
             "macro_document_analysis",
-            "macro_thesis",
             "news_brief",
         ]
         assert {row["operator_action"] for row in resolved} == {"retry"}
@@ -81,34 +76,6 @@ def _insert_native_terminal_states(conn) -> list[str]:
         )
         VALUES ('brief-run-1', 'brief-fp', 'failed', 3, 3, 2,
                 'provider exhausted', 1_000, 100, 1_000)
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO macro_evidence_packs(
-          evidence_pack_id, session_date, cutoff_ms, sealed_at_ms,
-          source_max_received_at_ms, schema_version, payload_json, payload_hash
-        )
-        VALUES ('pack-1', '2026-07-30', 100, 100, 100,
-                'macro_evidence_pack_v3', %s, 'pack-hash')
-        """,
-        (Jsonb({}),),
-    )
-    conn.execute(
-        """
-        INSERT INTO macro_thesis_runs(
-          session_date, cutoff_ms, evidence_pack_id, evidence_pack_hash,
-          status, attempt_count, max_attempts, due_at_ms, created_at_ms, updated_at_ms
-        )
-        VALUES ('2026-07-30', 100, 'pack-1', 'pack-hash',
-                'pending', 0, 3, 100, 100, 100)
-        """
-    )
-    conn.execute(
-        """
-        UPDATE macro_thesis_runs
-           SET status = 'failed', last_error_code = 'provider_exhausted', updated_at_ms = 1_000
-         WHERE session_date = '2026-07-30'
         """
     )
     conn.execute(
@@ -141,11 +108,6 @@ def _insert_native_terminal_states(conn) -> list[str]:
             "news_brief",
             "news_brief_runs",
             "brief-fp",
-        ),
-        (
-            "macro_thesis",
-            "macro_thesis_runs",
-            "2026-07-30",
         ),
         (
             "macro_document_analysis",

@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
-from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -30,7 +29,7 @@ from tracefold.market import (
     parse_gmgn_token_payload,
     rebuild_all_token_radar_for_maintenance,
 )
-from tracefold.news import NewsBriefDraft, NewsFeedEntry, NewsSourceDefinition
+from tracefold.news import NewsBriefDraft, NewsFeedEntry, OpenNewsEvent, opennews_source
 from tracefold.news.brief import brief_fingerprint
 from tracefold.platform.config.settings import Settings
 
@@ -38,22 +37,28 @@ PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 TOKEN_RADAR_TEST_REBUILD_OFFSET_MS = 60_000
 
 
-def _claim_news_source(repos, source_id: str, now_ms: int) -> str:
-    claim_token = str(uuid4())
-    row = repos.conn.execute(
-        """
-        UPDATE news_sources
-           SET claim_token = %s::uuid,
-               claim_lease_expires_at_ms = %s,
-               last_fetch_started_at_ms = %s,
-               updated_at_ms = %s
-         WHERE source_id = %s
-         RETURNING source_id
-        """,
-        (claim_token, now_ms + 45_000, now_ms, now_ms, source_id),
-    ).fetchone()
-    assert row is not None
-    return claim_token
+def _opennews_event(
+    *,
+    provider_record_id: str,
+    title: str,
+    description: str,
+    published_at_ms: int,
+    reporting_origin: str,
+) -> OpenNewsEvent:
+    return OpenNewsEvent(
+        provider_record_id=provider_record_id,
+        observation_kind="report",
+        provider_metadata={},
+        entry=NewsFeedEntry(
+            guid=provider_record_id,
+            link=f"https://example.test/{provider_record_id}",
+            title=title,
+            description=description,
+            published_at_ms=published_at_ms,
+            reporting_origin=reporting_origin,
+            raw={},
+        ),
+    )
 
 
 def test_api_json_response_encodes_decimal_payloads():
@@ -536,72 +541,37 @@ def test_api_search_rejects_malformed_cursor(tmp_path):
 def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
-    source_definition = NewsSourceDefinition(
-        source_id="source-story-test",
-        name="Example News",
-        feed_url="https://example.test/feed.xml",
-        tier=1,
-        memberships=("economic",),
-    )
-    second_source = NewsSourceDefinition(
-        source_id="source-story-second",
-        name="Second News",
-        feed_url="https://second.test/feed.xml",
-        tier=2,
-        memberships=("world",),
-    )
+    source = opennews_source()
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source_definition, second_source), now_ms=now_ms)
-            repos.news.record_fetch_success(
-                source=source_definition,
-                entries=(
-                    NewsFeedEntry(
-                        guid="story-1",
-                        link="https://example.test/story-1",
+            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="story-1",
                         title="Central bank raises interest rate after policy shock",
                         description="Officials published a detailed policy response.",
                         published_at_ms=now_ms - 60_000,
+                        reporting_origin="example-news",
                     ),
-                    NewsFeedEntry(
-                        guid="story-2",
-                        link="https://example.test/story-2",
+                    _opennews_event(
+                        provider_record_id="story-2",
                         title="Major earthquake strikes coastal region",
                         description="Emergency services reported widespread damage.",
                         published_at_ms=now_ms - 50_000,
+                        reporting_origin="example-news",
                     ),
-                ),
-                started_at_ms=now_ms,
-                finished_at_ms=now_ms,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag="etag-1",
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_news_source(repos, source_definition.source_id, now_ms),
-            )
-            repos.news.record_fetch_success(
-                source=second_source,
-                entries=(
-                    NewsFeedEntry(
-                        guid="story-3",
-                        link="https://second.test/story-3",
+                    _opennews_event(
+                        provider_record_id="story-3",
                         title="Cyber attack disrupts regional infrastructure",
                         description="Operators reported a sustained service disruption.",
                         published_at_ms=now_ms - 40_000,
+                        reporting_origin="second-news",
                     ),
                 ),
-                started_at_ms=now_ms,
-                finished_at_ms=now_ms,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag=None,
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_news_source(repos, second_source.source_id, now_ms),
+                observed_at_ms=now_ms,
             )
             repos.news.rebuild_stories(now_ms=now_ms)
             candidates = repos.news.brief_candidates()
@@ -665,13 +635,12 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         ]
 
     assert sources_response.status_code == 200
-    source = next(item for item in sources_response.json()["data"]["items"] if item["source_id"] == "source-story-test")
-    assert source["source_id"] == "source-story-test"
-    assert source["memberships"] == ["economic"]
+    source = sources_response.json()["data"]["items"][0]
+    assert source["source_id"] == "news-opennews"
+    assert source["source_kind"] == "opennews"
     assert source["last_success_at_ms"] == now_ms
-    assert source["last_http_status"] == 200
     assert sources_response.json()["data"]["page"] == {
-        "returned_count": 2,
+        "returned_count": 1,
         "has_more": False,
         "next_cursor": None,
     }
@@ -703,6 +672,8 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert "current" not in detail["members"][0]
     assert "active" not in detail
     assert detail["members"][0]["reporting_origin"]
+    assert detail["members"][0]["provider_record_id"]
+    assert detail["members"][0]["provider_metadata"] == {}
     assert detail["members_page"] == {
         "returned_count": 1,
         "has_more": False,
@@ -724,74 +695,37 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
 def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
-    sources = (
-        NewsSourceDefinition(
-            source_id="authority",
-            name="Authority News",
-            feed_url="https://authority.test/feed.xml",
-            tier=1,
-            memberships=("economic",),
-        ),
-        NewsSourceDefinition(
-            source_id="standard",
-            name="Standard News",
-            feed_url="https://standard.test/feed.xml",
-            tier=3,
-            memberships=("diplomatic",),
-        ),
-    )
+    source = opennews_source()
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources(sources, now_ms=now_ms)
-            repos.news.record_fetch_success(
-                source=sources[0],
-                entries=(
-                    NewsFeedEntry(
-                        guid="rates",
-                        link="https://authority.test/rates",
+            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="rates",
                         title="Federal Reserve changes interest rate policy",
                         description="Officials announced a new interest rate decision.",
                         published_at_ms=now_ms - 30_000,
+                        reporting_origin="authority",
                     ),
-                    NewsFeedEntry(
-                        guid="earthquake",
-                        link="https://authority.test/earthquake",
+                    _opennews_event(
+                        provider_record_id="earthquake",
                         title="Major earthquake strikes coastal region",
                         description="Emergency services reported widespread damage.",
                         published_at_ms=now_ms - 20_000,
+                        reporting_origin="authority",
                     ),
-                ),
-                started_at_ms=now_ms,
-                finished_at_ms=now_ms,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag=None,
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_news_source(repos, sources[0].source_id, now_ms),
-            )
-            repos.news.record_fetch_success(
-                source=sources[1],
-                entries=(
-                    NewsFeedEntry(
-                        guid="ceasefire",
-                        link="https://standard.test/ceasefire",
+                    _opennews_event(
+                        provider_record_id="ceasefire",
                         title="Ceasefire talks begin between regional governments",
                         description="Diplomats began formal negotiations.",
                         published_at_ms=now_ms - 10_000,
+                        reporting_origin="standard",
                     ),
                 ),
-                started_at_ms=now_ms,
-                finished_at_ms=now_ms,
-                status_code=200,
-                fetch_path="direct",
-                direct_error_code=None,
-                etag=None,
-                last_modified=None,
-                not_modified=False,
-                claim_token=_claim_news_source(repos, sources[1].source_id, now_ms),
+                observed_at_ms=now_ms,
             )
             repos.news.rebuild_stories(now_ms=now_ms)
 

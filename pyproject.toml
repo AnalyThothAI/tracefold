@@ -26,7 +26,6 @@ dependencies = [
     "pebble>=5.2,<5.3",
     "pypdf>=6.0,<7",
     "pyyaml>=6.0.3",
-    "requests>=2.32,<3",
     "solders>=0.26.0",
     "tenacity>=9.1.4",
     "uvicorn[standard]>=0.30.0",
@@ -41,7 +40,6 @@ dev = [
     "mypy==1.17.1",
     "testcontainers[postgres]>=4.8",
     "types-defusedxml>=0.7.0",
-    "types-requests>=2.32",
 ]
 
 [project.scripts]

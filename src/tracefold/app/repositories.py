@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tracefold.macro import MacroRepository, MacroThesisRepository
+from tracefold.macro import MacroRepository
 from tracefold.market import (
     AssetProfileRefreshTargetRepository,
     AssetProfileRepository,
@@ -78,7 +78,6 @@ class RepositorySession:
     news: NewsRepository
     macro: MacroRepository
     macro_market: GeneralMarketRepository
-    macro_thesis: MacroThesisRepository
     persisted_live: PersistedLiveEventRepository
     projection_frontiers: ProjectionFrontierRepository
     provider_circuits: ProviderCircuitRepository
@@ -147,7 +146,6 @@ def repositories_for_connection(
         news=NewsRepository(conn),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
-        macro_thesis=MacroThesisRepository(conn),
         persisted_live=PersistedLiveEventRepository(conn),
         projection_frontiers=ProjectionFrontierRepository(
             conn,

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, cast
-from uuid import uuid4
 
 from tracefold.platform.model_candidate import ModelCandidate
-from tracefold.platform.resource import CpuTaskTimeout, ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 from .brief import brief_fingerprint, validate_and_repair_brief
 from .models import (
@@ -15,50 +14,34 @@ from .models import (
     NewsBriefExpectedError,
     NewsBriefPublisher,
     NewsBriefStory,
-    NewsFeedExpectedError,
-    NewsFeedFetch,
-    NewsFeedReader,
     NewsSourceDefinition,
     ThreatLevel,
     source_definition,
 )
 from .opennews import OpenNewsEvent, OpenNewsExpectedError, parse_opennews_message
 
-_SOURCE_LEASE_MS = 45_000
-_NEWS_OPERATION_TIMEOUT_SECONDS = 30.0
-_NEWS_HTTP_OUTER_TIMEOUT_SECONDS = 28.0
-_NEWS_PARSE_SERVICE_TIMEOUT_SECONDS = 2.0
-_NEWS_PARSE_OUTER_TIMEOUT_SECONDS = 2.5
 _BRIEF_MODEL_TIMEOUT_SECONDS = 60.0
 _BRIEF_PREPARE_TIMEOUT_SECONDS = 7.0
 _BRIEF_MAX_ATTEMPTS = 3
 _OPENNEWS_BUFFER_CAPACITY = 256
 _OPENNEWS_RECONNECT_SECONDS = 3.0
-_OPENNEWS_RECOVERY_SECONDS = 300.0
-_OPENNEWS_RECOVERY_OVERLAP_MS = 30 * 60 * 1000
 
 
 class NewsAcquisition:
-    """One bounded durable News source turn."""
+    """One OpenNews live/recovery runtime."""
 
     def __init__(
         self,
         *,
         db: Any,
         finite_operations: Any,
-        cpu: Any,
         sources: Sequence[NewsSourceDefinition | Any],
-        feed_reader: NewsFeedReader,
-        feed_parser: Callable[[Any], NewsFeedFetch],
         opennews_rest_client: Any | None = None,
         opennews_ws_client: Any | None = None,
     ) -> None:
         self.db = db
         self.finite_operations = finite_operations
-        self.cpu = cpu
         self.sources = tuple(source_definition(source) for source in sources)
-        self.feed_reader = feed_reader
-        self.feed_parser = feed_parser
         self.opennews_rest_client = opennews_rest_client
         self.opennews_ws_client = opennews_ws_client
         self.opennews_source = next(
@@ -98,7 +81,6 @@ class NewsAcquisition:
         if self.opennews_rest_client is None or self.opennews_ws_client is None:
             await stop_event.wait()
             return
-        self._opennews_recovery_requested.set()
         async with asyncio.TaskGroup() as group:
             group.create_task(self._opennews_receive_loop(stop_event), name="opennews-receiver")
             group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
@@ -149,7 +131,6 @@ class NewsAcquisition:
                     error_code=exc.code,
                     gap_unclosed=True,
                 )
-                self._opennews_recovery_requested.set()
             finally:
                 await client.close()
             if not stop_event.is_set():
@@ -189,10 +170,9 @@ class NewsAcquisition:
         if client is None:
             raise RuntimeError("opennews_rest_client_missing")
         while not stop_event.is_set():
-            await _event_or_period(
+            await _event_or_stop(
                 self._opennews_recovery_requested,
                 stop_event=stop_event,
-                period_seconds=_OPENNEWS_RECOVERY_SECONDS,
             )
             if stop_event.is_set():
                 return
@@ -204,18 +184,10 @@ class NewsAcquisition:
                     client.fetch_latest,
                     timeout_seconds=25.0,
                 )
-                cutoff_ms = started_at_ms - _OPENNEWS_RECOVERY_OVERLAP_MS
-                overlapping = tuple(
-                    event
-                    for event in events[:100]
-                    if event.entry is None
-                    or event.entry.published_at_ms is None
-                    or int(event.entry.published_at_ms) >= cutoff_ms
-                )
                 await self.db.run_business(
                     "opennews_recovery_publish",
                     self._publish_opennews_sync,
-                    overlapping,
+                    tuple(events[:100]),
                     _now_ms(),
                     started_at_ms,
                     operation_timeout_seconds=3.0,
@@ -244,119 +216,7 @@ class NewsAcquisition:
                     gap_unclosed=True,
                 )
             except ResourceAdmissionTimeout:
-                self._opennews_recovery_requested.set()
-
-    async def turn(self) -> bool | None:
-        now_ms = _now_ms()
-        claim_token = str(uuid4())
-        try:
-            claimed = await self.db.run_business(
-                "news_source_claim",
-                self._claim_sync,
-                now_ms,
-                claim_token,
-                operation_timeout_seconds=0.5,
-            )
-        except ResourceAdmissionTimeout:
-            return None
-        if claimed is None:
-            return False
-        source = source_definition(claimed)
-        started_at_ms = int(claimed["last_fetch_started_at_ms"])
-        submitted = False
-
-        def mark_submitted() -> None:
-            nonlocal submitted
-            submitted = True
-
-        operation_started = asyncio.get_running_loop().time()
-        try:
-            wire = await self.finite_operations.run(
-                "news_source_fetch",
-                self.feed_reader.fetch_wire,
-                source=source,
-                etag=_optional_text(claimed.get("etag")),
-                last_modified=_optional_text(claimed.get("last_modified")),
-                timeout_seconds=_NEWS_HTTP_OUTER_TIMEOUT_SECONDS,
-                on_submitted=mark_submitted,
-            )
-            submitted = False
-            remaining = _NEWS_OPERATION_TIMEOUT_SECONDS - (asyncio.get_running_loop().time() - operation_started)
-            if remaining < _NEWS_PARSE_OUTER_TIMEOUT_SECONDS:
-                raise _news_parse_expected_error("news_rss_total_timeout")
-            fetched = await self.cpu.run(
-                "news_source_parse",
-                self.feed_parser,
-                wire,
-                service_timeout_seconds=_NEWS_PARSE_SERVICE_TIMEOUT_SECONDS,
-                on_submitted=mark_submitted,
-            )
-            submitted = False
-        except asyncio.CancelledError:
-            if not submitted:
-                await asyncio.shield(self._release_prework(source.source_id, claim_token))
-            raise
-        except ResourceAdmissionTimeout:
-            await self._release_prework(source.source_id, claim_token)
-            return None
-        except NewsFeedExpectedError as exc:
-            try:
-                published = await self.db.run_business(
-                    "news_source_publish_failure",
-                    self._failure_sync,
-                    source,
-                    started_at_ms,
-                    claim_token,
-                    exc,
-                    operation_timeout_seconds=3.0,
-                )
-            except ResourceAdmissionTimeout:
-                await self._release_prework(source.source_id, claim_token)
-                return None
-            return True if published else None
-        except CpuTaskTimeout:
-            error = _news_parse_expected_error("news_rss_parse_cpu_limit_exceeded")
-            try:
-                published = await self.db.run_business(
-                    "news_source_publish_parse_timeout",
-                    self._failure_sync,
-                    source,
-                    started_at_ms,
-                    claim_token,
-                    error,
-                    operation_timeout_seconds=3.0,
-                )
-            except ResourceAdmissionTimeout:
-                await self._release_prework(source.source_id, claim_token)
-                return None
-            return True if published else None
-        try:
-            published = await self.db.run_business(
-                "news_source_publish_success",
-                self._success_sync,
-                source,
-                started_at_ms,
-                claim_token,
-                fetched,
-                operation_timeout_seconds=3.0,
-            )
-        except ResourceAdmissionTimeout:
-            await self._release_prework(source.source_id, claim_token)
-            return None
-        return True if published else None
-
-    async def _release_prework(self, source_id: str, claim_token: str) -> bool:
-        try:
-            released = await self.db.run_business(
-                "news_source_release_prework",
-                self._release_sync,
-                source_id,
-                claim_token,
-                operation_timeout_seconds=0.5,
-            )
-        except ResourceAdmissionTimeout:
-            return False
-        return bool(released)
+                self._opennews_gap_unclosed = True
 
     async def close(self) -> None:
         if self.opennews_ws_client is not None:
@@ -368,12 +228,6 @@ class NewsAcquisition:
                 timeout_seconds=5.0,
                 allow_shutdown=True,
             )
-        await self.finite_operations.run(
-            "news_source_client_close",
-            self.feed_reader.close,
-            timeout_seconds=5.0,
-            allow_shutdown=True,
-        )
 
     def _reconcile_sync(self) -> None:
         with self.db.worker_session("news_source_reconcile", 3.0) as repos, repos.transaction():
@@ -455,72 +309,6 @@ class NewsAcquisition:
                 status_code=error.status_code,
             )
 
-    def _claim_sync(self, now_ms: int, claim_token: str) -> dict[str, Any] | None:
-        with self.db.worker_session("news_source_claim", 0.5) as repos, repos.transaction():
-            return cast(
-                dict[str, Any] | None,
-                repos.news.claim_due_source(
-                    now_ms=now_ms,
-                    claim_token=claim_token,
-                    lease_ms=_SOURCE_LEASE_MS,
-                ),
-            )
-
-    def _release_sync(self, source_id: str, claim_token: str) -> bool:
-        with self.db.worker_session("news_source_release", 0.5) as repos, repos.transaction():
-            return bool(
-                repos.news.release_source_claim(
-                    source_id=source_id,
-                    claim_token=claim_token,
-                )
-            )
-
-    def _failure_sync(
-        self,
-        source: NewsSourceDefinition,
-        started_at_ms: int,
-        claim_token: str,
-        error: NewsFeedExpectedError,
-    ) -> bool:
-        finished_at_ms = _now_ms()
-        with self.db.worker_session("news_source_publish_failure", 3.0) as repos, repos.transaction():
-            return bool(
-                repos.news.record_fetch_failure(
-                    source_id=source.source_id,
-                    started_at_ms=started_at_ms,
-                    finished_at_ms=finished_at_ms,
-                    error=error,
-                    status_code=getattr(error, "status_code", None),
-                    fetch_path=getattr(error, "fetch_path", None),
-                    direct_error_code=getattr(error, "direct_error_code", None),
-                    claim_token=claim_token,
-                )
-            )
-
-    def _success_sync(
-        self,
-        source: NewsSourceDefinition,
-        started_at_ms: int,
-        claim_token: str,
-        result: Any,
-    ) -> bool:
-        with self.db.worker_session("news_source_publish_success", 3.0) as repos, repos.transaction():
-            published = repos.news.record_fetch_success(
-                source=source,
-                entries=result.entries,
-                started_at_ms=started_at_ms,
-                finished_at_ms=_now_ms(),
-                status_code=int(result.status_code),
-                fetch_path=str(result.fetch_path),
-                direct_error_code=result.direct_error_code,
-                etag=result.etag,
-                last_modified=result.last_modified,
-                not_modified=bool(result.not_modified),
-                entries_seen=int(result.entries_seen),
-                gate_counts=result.gate_counts,
-                claim_token=claim_token,
-            )
-        return published is not None
 
 
 class NewsBriefCandidate:
@@ -770,15 +558,6 @@ def _now_ms() -> int:
     return int(time.time() * 1_000)
 
 
-def _optional_text(value: object) -> str | None:
-    normalized = str(value or "").strip()
-    return normalized or None
-
-
-def _news_parse_expected_error(code: str) -> NewsFeedExpectedError:
-    return NewsFeedExpectedError(str(code))
-
-
 async def _receive_or_stop(client: Any, *, stop_event: asyncio.Event) -> Any | None:
     receive_task = asyncio.create_task(client.receive())
     stop_task = asyncio.create_task(stop_event.wait())
@@ -809,17 +588,15 @@ async def _queue_get_or_stop(
         return None
 
 
-async def _event_or_period(
+async def _event_or_stop(
     event: asyncio.Event,
     *,
     stop_event: asyncio.Event,
-    period_seconds: float,
 ) -> None:
     event_task = asyncio.create_task(event.wait())
     stop_task = asyncio.create_task(stop_event.wait())
-    timer_task = asyncio.create_task(asyncio.sleep(period_seconds))
     done, pending = await asyncio.wait(
-        {event_task, stop_task, timer_task},
+        {event_task, stop_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
     del done

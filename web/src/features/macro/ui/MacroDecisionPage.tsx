@@ -4,12 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useMacroModuleQuery, useMacroOverviewQuery } from "../api/useMacroDecisionQuery";
-import {
-  formatInstant,
-  moduleLabel,
-  moduleRoleLabel,
-  runStatusLabel,
-} from "../model/macroPresentation";
+import { formatInstant, moduleLabel } from "../model/macroPresentation";
 import type {
   MacroModuleId,
   MacroModuleUnavailableReadData,
@@ -19,7 +14,6 @@ import type {
 } from "../model/macroTypes";
 
 import { MacroModuleSections, RatesDecisionSummary } from "./MacroModuleSections";
-import { MacroThesisReport } from "./MacroThesisReport";
 
 import "./MacroDecisionBrief.css";
 import "./MacroDecisionOverview.css";
@@ -65,23 +59,7 @@ export function MacroOverviewPage({
           onRefresh={() => void query.refetch()}
         />
         <MacroNavigation />
-        {data.thesis ? (
-          <>
-            <MacroThesisReport
-              compact
-              liveDelta={data.live_delta}
-              outcomeReplay={data.outcome_replay}
-              recovery={data.recovery}
-              thesis={data.thesis}
-            />
-            <ModuleOverview data={data} />
-          </>
-        ) : (
-          <>
-            <ModuleOverview data={data} />
-            <CurrentStateStrip data={data} />
-          </>
-        )}
+        <ModuleOverview data={data} />
       </section>
     </PageState.Stale>
   );
@@ -114,8 +92,7 @@ export function MacroModulePage({
             <span>MACRO EVIDENCE WORKBENCH</span>
             <h1>{module.label}</h1>
             <p>
-              确定性事实页 · 事实截止 {formatInstant(module.latest_fact_at_ms)} · Thesis{" "}
-              {moduleRoleLabel(module.thesis_context.role)}
+              确定性事实页 · 事实截止 {formatInstant(module.latest_fact_at_ms)}
             </p>
           </div>
           <Button onClick={() => void query.refetch()} size="sm" variant="outline">
@@ -145,10 +122,9 @@ function MacroHeader({
     <header className="macro-decision__header">
       <div>
         <span>ONE CURRENT SESSION · NO FALLBACK</span>
-        <h1>每日宏观主线</h1>
+        <h1>宏观事实总览</h1>
         <p>
-          Session {data.session_date} · 截止 {formatInstant(data.cutoff_ms)} ·{" "}
-          {stale ? "传输缓存可能陈旧" : "读取成功"} · Thesis {runStatusLabel(data.thesis_state)}
+          最新事实 {formatInstant(data.latest_fact_at_ms)} · {stale ? "传输缓存可能陈旧" : "读取成功"}
         </p>
       </div>
       <Button onClick={onRefresh} size="sm" variant="outline">
@@ -156,20 +132,6 @@ function MacroHeader({
         刷新
       </Button>
     </header>
-  );
-}
-
-function CurrentStateStrip({ data }: { data: MacroOverviewReadData }) {
-  return (
-    <aside className="macro-decision__thesis-strip" data-impact="blocked">
-      <div>
-        <strong>今日研究未发布 · {runStatusLabel(data.thesis_state)}</strong>
-        <span>
-          {data.thesis_reason?.message ?? "当前事实照常展示，但没有可发布主线、因果链或资产传导。"}
-        </span>
-      </div>
-      <Link to="/macro/research">运行诊断</Link>
-    </aside>
   );
 }
 
@@ -187,7 +149,7 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
             data-health={module.current_health_state ?? "unavailable"}
           >
             <header>
-              <span>{moduleRoleLabel(module.role)}</span>
+              <span>CURRENT FACTS</span>
               <h3>{module.label}</h3>
             </header>
             <p>{module.summary?.headline ?? module.reason?.message ?? "尚无模块投影。"}</p>
@@ -214,24 +176,15 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
 }
 
 function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
-  const context = module.thesis_context;
-  const messages = Array.from(
-    new Set(
-      [module.reason?.message, context.reason?.message].filter((message): message is string =>
-        Boolean(message),
-      ),
-    ),
-  );
   return (
     <aside className="macro-decision__diagnostic-strip" aria-label="模块诊断">
       <strong>
         当前事实 {healthLabel(module.status.current_health.state)} · required 历史{" "}
         {historyLabel(module.status.history_depth.state)} · 数据合同{" "}
-        {coverageLabel(module.status.coverage.state)} · Thesis {moduleRoleLabel(context.role)}
+        {coverageLabel(module.status.coverage.state)}
       </strong>
       <span>
-        {context.assessment?.analysis ??
-          (messages.length ? messages.join(" · ") : "事实与研究状态分离；诊断不阻挡当前事实。")}
+        {module.reason?.message ?? "当前模块直接读取持久化事实与确定性计算结果。"}
       </span>
     </aside>
   );
@@ -274,7 +227,6 @@ function MacroNavigation({ activeModule }: { activeModule?: MacroModuleId }) {
           {route.label}
         </Link>
       ))}
-      <Link to="/macro/research">研究档案</Link>
     </nav>
   );
 }

@@ -37,18 +37,19 @@ current OpenAI-compatible provider, and optional `openrouter_api_key` and
 `groq_api_key` for News provider fallback. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
 credential path.
-Set `news.opennews_token` to enable the additive authenticated OpenNews WSS
-and REST recovery lane. `tracefold config` reports only whether it is
-configured; it never prints the token. When it is absent, the RSS lane remains
-available and OpenNews reports a source-specific degraded state.
+Set `news.opennews_token` to enable the production News WSS and REST recovery
+lane. `tracefold config` reports only whether it is configured; it never prints
+the token. When it is absent, News reports `opennews_token_missing`.
 An enabled model candidate with no configured provider reports an explicit
 unavailable state and makes no model call.
 
-News correctness does not depend on the model. The News acquisition due loop
-and persistent OpenNews tasks share one acquisition module and sole NewsItem
-writer. A fixed 60-second writer owns the complete current 96-hour Story
-projection, and the single-capacity native-state model arbiter owns World
-Brief. There is no item-level AI path.
+News correctness does not depend on the model. The OpenNews WSS receiver, REST
+recovery, and publisher share one acquisition module and sole NewsItem writer.
+A healthy WSS connection never polls REST periodically; one bounded REST page
+is requested only after initial connection, reconnect, or queue overflow.
+A fixed 60-second writer owns the complete current 96-hour Story projection,
+and the single-capacity native-state model arbiter owns World Brief. There is
+no item-level AI path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -107,11 +108,8 @@ commands synchronously process their explicit bounded targets and then exit;
 backfill is not a steady loop or automatic clock.
 The EDF projection coordinator rebuilds only affected module-local current
 rows from the static dataset/calculation/module dependency graph. The serial
-native-state model arbiter writes immutable evidence-bound FOMC/speech analyses and seals the
-08:50 New York Evidence Pack, compiles one bounded
-`MacroResearchInputV1`, performs exactly one native structured model invocation
-per durable attempt through the Thin DeepAgent profile, and publishes at most
-one immutable v2 Thesis for the session.
+native-state model arbiter writes only immutable, exact-evidence-bound
+FOMC/speech analyses.
 
 For an operator-triggered repair of one bounded dataset window:
 
@@ -131,54 +129,40 @@ Treasury, FOMC, speech, completed BTC settlement, fixed ETF Nasdaq daily, and
 Yahoo continuous-futures daily datasets use the most recent five years.
 Yahoo intraday acquisition requests one month of five-minute bars initially
 and the rolling day thereafter. Older deep history is optional enrichment.
-No optional backfill state blocks Coverage, Current Health, projection,
-Evidence Pack, or Thesis; History Depth remains explicit and affected
-conclusions can become `no_call`. Credit and WTI retain longer reliable public history where one
-bounded source response makes that history cheap and material to percentile
-context.
+No optional backfill state blocks Coverage, Current Health, or projection;
+History Depth remains explicit. Credit and WTI retain longer reliable public
+history where one bounded source response makes that history cheap and
+material to percentile context.
 
 Rerun the explicit backfill command after a retry deadline until the desired
 targets are `current`; incomplete targets remain visible without blocking the
-workbench. Open or failed document analyses remain explicit gaps and do not
-suppress a daily publication.
+workbench. Open or failed document analyses remain explicit module-local gaps.
 
-A good macro status reports the generated Alembic head, bounded acquisition target
-states, recent source and reconciliation receipts, all six module rows, and the
-current-session v2 Thesis/Live Delta/Outcome Replay states. It also reports the
-read-only frozen-corpus readiness: nine distinct real sessions remain the
-long-horizon comparison target, while `blocks_deployment=false` makes clear that
-collection is not a schema-migration gate. Every available real v3 Evidence Pack
-must still compile into the bounded current Research Input before deployment.
-Historical v1 rows never satisfy current status. Diagnose a missing value by
-concept ID and source role through its target, receipt, fact family, and three
-module quality axes. A public-source timeout, weekend settlement lag, or
-delayed Yahoo proxy is a visible quality state; it is not a frontend defect.
+A good `macro status` reports bounded acquisition target counts/statuses, all
+six current module rows with health/history/fact-cutoff clocks, and Fed
+document-analysis job counts. Diagnose a missing value by concept ID and source
+role through its target current state/cursor, fact family, and three module
+quality axes. A public-source timeout, weekend settlement lag, or delayed Yahoo
+proxy is a visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
-typed Market/Macro fact tables, acquisition targets/receipts, six module rows,
-immutable Evidence Packs, Thesis runs/reviews/publications, Live Delta, Outcome
-Replay, append-only Research Inputs, and the retained historical review/checkpoint
-tables.
+typed Market/Macro fact tables, acquisition targets, module frontiers, six
+current module rows, official documents, document-analysis jobs, and immutable
+document analyses.
 `20260728_0210` remains the compact current-schema baseline and
 the generated Alembic head is the required hard-cut version. A new empty database applies the
 baseline and head without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
-at `20260728_0210` migrates forward once; retired Judgment/Research tables and
-paid-data placeholders are dropped rather than archived.
+at `20260728_0210` migrates forward once; paid-data placeholders are dropped
+rather than archived. Migrations `20260801_0235` and `20260801_0236`
+irreversibly delete retired News acquisition history and Macro publication,
+per-attempt, and stored intermediate history while preserving current items,
+facts, targets, document analyses, and module rows.
 Enable the Macro workers only after the migration is current.
 
-A healthy Thesis run transitions
-`pending -> running -> published`; transient provider/model failures transition to
-`retryable`, exhausted attempts to `failed`, invalid models to `config_error`,
-and one of the four publication gates may produce terminal `not_published`.
-Unsupported
-configuration reaches `config_error` with `attempt_count=0`. The overview, six typed module
-reads, and `/api/macro/research` are persisted-only and never trigger a
-provider, model, target advance, projection rebuild, or write.
-
-The Thin profile has no Reviewer invocation, tool loop, subagent, workspace, or
-checkpoint write. Historical v1 Reviewer rows remain immutable audit records;
-the migration removes only retired Macro Thesis checkpoint control rows.
+The overview and six typed module reads are persisted-only and never trigger a
+provider, model, target advance, projection rebuild, or write. Retired Macro
+routes return `404`; there is no compatibility alias.
 
 The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands
@@ -228,17 +212,8 @@ Serve receives only its SELECT credential; workers receives only its DML
 credential; the migrate credential is absent from both steady containers.
 PostgreSQL data is pinned to the `tracefold-postgres` named volume.
 
-Normal Compose starts PostgreSQL, the one-shot migration service, separate
-serve/workers runtimes, and RSSHub. PostgreSQL and RSSHub use
-version-and-digest-pinned upstream images. RSSHub has no host port, uses memory
-cache only, and is not an application-startup dependency.
-
-For the free WallStEngine transport, an operator may create
-`~/.tracefold/rsshub.env` with RSSHub's `TWITTER_AUTH_TOKEN` value and restrict
-the file to the operator account. The file is optional, sidecar-only, and must
-not be copied into `config.yaml`, repository files, templates, or shell
-wrappers. When it is absent, Compose still starts and News records
-WallStEngine as an ordinary degraded source.
+Normal Compose starts PostgreSQL, the one-shot migration service, and separate
+serve/workers runtimes. Production News is OpenNews-only.
 
 `make docker-check` verifies the Docker CLI, the Compose plugin, and daemon
 access before the build starts. If it reports that the Docker daemon is not

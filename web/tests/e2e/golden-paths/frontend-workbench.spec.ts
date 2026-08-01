@@ -16,8 +16,7 @@ const archetypes = [
 ] as const;
 
 const macroPages = [
-  ["decision", "/macro", "每日宏观主线"],
-  ["research", "/macro/research", "Macro Thesis 档案"],
+  ["facts", "/macro", "宏观事实总览"],
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -49,7 +48,7 @@ test("freezes representative scan and case archetypes", async ({ page }) => {
   await expectNoUnhandledApiRequests(page);
 });
 
-test("freezes the Macro decision dashboard and completed-session research workbench", async ({
+test("freezes the current Macro facts workbench", async ({
   page,
 }) => {
   for (const [name, path, title] of macroPages) {

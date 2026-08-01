@@ -15,11 +15,6 @@ code-owned and are not configuration fields.
 
 Repository examples, fixtures, `.env` files, and generated docs are not runtime configuration. `uv run tracefold config` reports the effective paths and redacted settings. Unknown settings or worker keys fail validation.
 
-The optional `~/.tracefold/rsshub.env` file belongs only to the Compose RSSHub
-sidecar and is never read or reported by the Tracefold application. Its
-absence is valid: Compose still starts, while the ordinary WallStEngine source
-reports acquisition failure through News health until RSSHub can fetch it.
-
 The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
@@ -36,11 +31,10 @@ consumed only by enabled AI workers. Model execution policy, timeouts, token
 budgets, cadence, leases, retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
-`news.opennews_token` is the optional operator-owned secret for the additive
-OpenNews/NewsLiquid source. It is reported only as the redacted boolean
-`news.opennews_token_configured`. When absent, RSS continues and the OpenNews
-source reports `opennews_token_missing`; no substitute credential path is
-used.
+`news.opennews_token` is the operator-owned secret for the production News
+source. It is reported only as the redacted boolean
+`news.opennews_token_configured`. When absent, News reports
+`opennews_token_missing`; no substitute credential path is used.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
@@ -78,8 +72,8 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
-| Macro | `/api/macro/overview`, six typed module routes, `/api/macro/research` | persisted six-module current rows, immutable Evidence Pack/Thesis, independent review, Live Delta, and Outcome Replay |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | deterministic Story read model, NewsItem members, immutable Chinese Brief, source fetch state, and derived News health |
+| Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | OpenNews current items and source health, deterministic Story read model, and immutable Chinese Brief |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
@@ -124,9 +118,9 @@ The News public surface is exactly five read-only routes:
   state, selected Story evidence, bounded immutable publication history, and
   latest run when present. Insufficient material makes no model call. A failed
   update preserves the last-known-good publication as `stale_fallback`.
-- `GET /api/news/sources` returns the code-owned acquisition-source registry,
-  memberships, RSS conditional-fetch/direct/relay diagnostics, and OpenNews
-  live connection, last recovery, and unclosed-gap status.
+- `GET /api/news/sources` returns the one code-owned OpenNews source, its
+  memberships, live connection, last recovery, current error, and unclosed-gap
+  status.
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, and Brief state.
 
@@ -135,12 +129,14 @@ The News public surface is exactly five read-only routes:
 Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
-NewsItem identity is acquisition-source scoped. RSS uses GUID/canonical URL;
-OpenNews uses canonical article URL or `dispatch:opennews:<id>`. Observation
-identity is source/provider record key, kind, and normalized payload hash.
-Only OpenNews `report` observations materialize NewsItems; translations and
-provider annotations remain evidence, and provider AI ratings have no product
-effect. Story identity is the full SHA-256 of the earliest normalized title in
+NewsItem identity is `(source_id, provider_record_id)`. OpenNews reports upsert
+the current title, description, link, reporting origin, publication time, and
+bounded provider metadata (provider-source label, `score`, `signal`, `grade`,
+and coin details).
+Provider annotations merge metadata into the same current row; translations
+and non-news messages are discarded. Provider metadata is descriptive and
+does not affect Story identity, classification, or importance. Story identity
+is the full SHA-256 of the earliest normalized title in
 the current WorldMonitor-compatible 96-hour cluster. Corroboration counts
 distinct reporting origins, not acquisition paths, memberships, or repeated
 observations. Keyword classification and importance are deterministic and
@@ -158,22 +154,10 @@ after a complete valid publication transaction succeeds.
 `story`, and `brief`. Deterministic Story cards remain readable while a Brief
 is running, failed, insufficient, or stale.
 
-The code-owned inventory contains the 73-source RSS/RSSHub catalog plus one
-additive OpenNews acquisition source. The RSS catalog retains every crypto
-source, the focused US finance/government/politics
-set, global event/security/energy/crisis coverage, and the explicit Nikkei
-Asia, SCMP, Xinhua, and Al Jazeera regional exceptions. General regional feeds
-are disabled and cannot remain active Stories or Brief candidates after the
-next deterministic rebuild. Trump Truth Social is a tier-1 first-party source
-under the ordinary Story and Brief rules.
-WallStEngine is an ordinary English tier-4 Finance source acquired from the
-internal RSSHub sidecar. Classification reads its RSS title only; quote text
-in the description does not affect category. Source membership does not force
-an economic category or change Story, ranking, corroboration, or Brief rules.
-External relay fallback is allowed only for code-owned public HTTPS RSS feed URLs.
-HTTP, localhost, single-label container hosts, link-local, loopback, private,
-and other non-public destinations are direct-only and never leave the Compose
-network through the relay.
+Production News uses one code-owned OpenNews WSS stream plus bounded,
+gap-triggered REST recovery after initial connection, reconnect, or queue
+overflow. A healthy WSS session makes no periodic REST call, and Workers
+schedule no second acquisition lane.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,
@@ -181,8 +165,7 @@ webhook, compatibility alias, or alternate clustering path.
 
 ### Macro
 
-Macro exposes one overview, six typed decision-module reads, and one research
-read:
+Macro exposes one overview and six typed current-module reads:
 
 ```text
 /api/macro/overview
@@ -192,21 +175,15 @@ read:
 /api/macro/credit
 /api/macro/volatility
 /api/macro/cross-asset
-/api/macro/research
 ```
 
-Overview and module reads accept no query parameters. The overview returns the
-intended 08:50 New York requested session, the immutable Thesis when available,
-server-owned twelve-asset fact/outlook/recovery rows, scoped Live Delta,
-Outcome Replay, six typed module availability summaries, three independent
-data-quality axes, backfill execution state, and typed reasons. It never
-includes a prior-publication fallback. HTTP loading, stale cache, disabled
-query, and error are frontend transport states rather than Thesis states.
-Each route returns exactly one matching schema:
+These reads accept no query parameters. The overview is
+`macro_overview_v9`: it returns read time, transport state, latest fact time,
+six module availability summaries, and aggregate data quality. It is not a
+daily narrative or historical-session product. Each module route returns its
+matching persisted schema or `macro_module_unavailable_v1` with a typed reason:
 
-- overview: `macro_overview_v8`
-- current research: `macro_thesis_detail_v4`
-- explicit archive: `macro_thesis_archive_detail_v2`
+- overview: `macro_overview_v9`
 - `macro_rates_fed_v6`
 - `macro_economy_inflation_v5`
 - `macro_liquidity_funding_v5`
@@ -230,17 +207,10 @@ is an independent `complete`, `unaligned`, or `incomplete` axis. History Depth
 is `complete`, `partial`, `insufficient`, or `not_required`. Each Dataset
 additionally exposes market state and source state. Optional history cannot
 lower Current Health. Only declared required windows affect reader-facing
-History Depth; optional maximum public history remains audit-only.
-The Macro overview read always returns the intended Thesis session and
-deterministic cutoff, even before publication. Its Thesis state is one of
-`published`, `pending`, `running`, `retryable`, `failed`, `config_error`,
-`not_published`, or `missing`. A `published` current state requires a v2
-publication whose session exactly matches the resolved session. One missing or
-schema-mismatched module produces a typed
-unavailable slot and lowers Evidence Health rather than failing the entire
-overview or dossier. These reads use `macro_module_current` and immutable
-Thesis tables only; they never call a provider/model, advance a target, rebuild
-a projection, or write fallback content.
+History Depth. One missing or schema-mismatched module produces a typed
+unavailable slot without failing the other five. All seven reads use
+`macro_module_current` only; they never call a provider/model, advance a
+target, rebuild a projection, or write fallback content.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
@@ -254,11 +224,10 @@ surface, `macro_observations`, and unclassified facts do not exist.
 Every Registry row has a stable `concept_id` and `source_role`.
 `decision_primary` is authoritative for the current decision; `release`,
 `history`, `intraday_proxy`, and `reconciliation_only` remain separately
-labelled inputs. A
-reconciliation receipt records comparisons; values from different identities
-are never averaged or silently substituted. Release facts preserve actual,
-expected, surprise, revision, reference date, optional source publication time,
-and receipt time as separate fields.
+labelled inputs. Values from different identities are never averaged or
+silently substituted. Release facts preserve actual, expected, surprise,
+revision, reference date, optional source publication time, and ingestion time
+as separate fields.
 
 Treasury owns the current nominal/real curve and FRED owns its history. BLS
 owns CPI/labor release facts; BEA public release pages own GDP, PCE, and core
@@ -293,14 +262,14 @@ guessed contract-code expiry. Cross-Asset does not duplicate this curve.
 FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
 Bank speeches retain official full body text and source hashes. SEP PDF text is
 extracted from the official PDF with bounded page/content limits. The
-The `macro_document_analysis` native candidate writes one immutable, model/prompt-versioned,
+`macro_document_analysis` native candidate writes one immutable, model/prompt-versioned,
 exact-evidence-bound analysis per source body after effective-dated role facts
 are available. Institutional FOMC stance and the 90-day officials
 communication distribution remain separate. Non-policy material is
 `not_policy_signal`; no static official label or universal hawk/dove score
 exists. The current immutable-analysis admission window is 550 days for FOMC
 materials and 120 days for speeches. Older official bodies remain durable raw
-evidence and do not block the current Thesis.
+evidence but do not block current module reads.
 
 Credit exposes IG/BBB/BB/B/CCC OAS, actual-sample history statistics, IG/HY
 effective yields, deterministic comparisons with EFFR and 10Y Treasury, SLOOS
@@ -309,59 +278,14 @@ and labelled ETF/CFTC confirmations. Four concurrent credit dimensions are
 returned; no composite score exists. Paid TRACE/NAV and unavailable historical
 ICE placeholders were deleted from the product contract.
 
-On every U.S. trading session at 08:50 `America/New_York`,
-`macro_thesis` seals one cutoff-bounded `macro_evidence_pack_v3` and projects
-one immutable `macro_research_input_v1`. Each module contributes at most three
-driver candidates, two material changes, two counter-signals, six exact refs,
-and four conditions; the global input is capped at 64 exact refs, 32
-conditions, and 64 KiB. Input compilation failure is a stable pre-model
-`failed` run.
+Macro has no second judgment, historical-session, or archive contract. Retired
+paths return the ordinary application `404`; there is no alias or fallback
+publication.
 
-The only production execution path is `macro_thesis_thin_v1`: one
-`create_deep_agent` graph invocation and exactly one provider-native structured
-model invocation per durable attempt. It has no business tools, subagents,
-filesystem, todo, task, execute, search, summarization, checkpoint write,
-Reviewer, or revision loop. Provider configuration/authentication, timeout,
-refusal, and missing structured mapping are pre-draft run errors.
-
-A provider-success envelope is publishable only through the closed four-gate
-set: time identity, evidence closure, contract validity, and write safety.
-Their parseable primary order is time, evidence, contract, then write.
-Confidence, no-call, history partial, best-effort gaps, report length, Reviewer
-absence, and offline evaluation are not additional runtime gates.
-
-The immutable `macro_thesis_v2` contains one call/no-call mainline, one to
-three causal edges for a call, at most one alternative, at most three tensions,
-sparse material module assessments, sparse material asset outlooks, compiled
-citations/conditions, and all twelve deterministic frozen asset snapshots in
-stable order. Non-material assets retain canonical momentum/current facts and
-a short read-projection no-call reason; the model does not generate 12×2
-filler. Existing `macro_thesis_v1` bytes/hashes remain available only through
-explicit archive reads.
-
-`macro_live_delta_v2` is an immutable post-publication snapshot whose ID binds
-publication and deterministic current-fact input hash. It keeps mainline,
-alternative, tension, and asset scopes separate; only mainline metric
-conditions determine mainline validity, while event checkpoints use a separate
-state. `macro_outcome_replay_v2` uses the same append-only identity rule,
-emits only declared 1W/1M horizons (`1w_to_1m` expands to both), and includes
-only assets with a corresponding material outlook. Current Recovery is an
-independent rebuildable projection. None of these changes the Thesis hash.
-
-With no query, `GET /api/macro/research` targets the current intended 08:50
-U.S. trading session and never relabels the previous publication. Optional
-`session_date=YYYY-MM-DD` selects one explicit session. This is the same Thesis
-product as the overview. Without a date it returns
-`macro_thesis_detail_v4` and only a matching current v2 Thesis. With a date it
-returns `macro_thesis_archive_detail_v2`, whose state is `historical` or
-`missing` and whose Thesis is discriminated as original v1 or v2. Archive
-payload/hash identity is unchanged; current Recovery is outside the immutable
-payload. Current history items use `macro_publication_history_item_v2`.
-
-The read endpoint does not invoke a model or provider, search facts, resume a
-graph, run a repair, or synthesize a fallback publication. Missing remains a
-typed successful state and never carries an older Thesis. Unmatched Macro API
-paths return the ordinary application `404` response.
+Migrations `20260801_0235` and `20260801_0236` are irreversible: they remove
+retired News acquisition and Macro derived/control history while preserving
+current items, material facts, acquisition targets, Fed document analysis, and
+the six module rows.
 
 ### Token images
 
@@ -418,14 +342,10 @@ if any continuity, identity, capacity, PostgreSQL, resource, or query-plan gate
 fails. `ops seal-workers-runtime-acceptance` accepts that repository-owned
 collection only after the other typed gates and independent review are bound.
 
-`macro status` resolves the current publication session first and never selects
-the latest historical run as a substitute. Its Thesis summary exposes only the
-current v2 state and identity; a same-session v1 row is `not_published`.
-`offline_evaluation` is a read-only projection over immutable Evidence Packs:
-it validates available packs, reports advisory progress toward the nine-real-
-session quality corpus or the selected 12 cases, and explicitly returns
-`blocks_deployment=false`. It never invokes a model, writes an evaluation row,
-or becomes a daily publication or schema-migration gate.
+`macro status` reports the bounded acquisition target count/statuses, each of
+the six module current rows with its health, history depth, fact cutoff, and
+update time, plus Fed document-analysis job counts. It is a PostgreSQL-only
+diagnostic: it invokes no provider/model and writes nothing.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

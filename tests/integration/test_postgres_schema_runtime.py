@@ -14,6 +14,7 @@ from tracefold.platform.postgres.postgres_migrations import (
     latest_migration_version,
     upgrade_head,
 )
+from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 RETIRED_BACKEND_TABLES = {
     "projection_runs",
@@ -78,8 +79,6 @@ RETIRED_BACKEND_TABLES = {
 PROFESSIONAL_NEWS_TABLES = {
     "news_sources",
     "news_source_memberships",
-    "news_source_fetches",
-    "news_feed_observations",
     "news_items",
     "news_stories",
     "news_story_members",
@@ -122,9 +121,21 @@ LEGACY_NEWS_TABLES = {
     "news_story_analysis_publications",
     "news_story_analysis_current",
 }
+RETIRED_MACRO_RESEARCH_TABLES = {
+    "macro_live_deltas",
+    "macro_outcome_replays",
+    "macro_thesis_publications",
+    "macro_thesis_reviews",
+    "macro_thesis_runs",
+    "macro_research_inputs",
+    "macro_evidence_packs",
+    "macro_source_receipts",
+    "macro_feature_series",
+    "macro_projection_state",
+}
 
 
-def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tmp_path) -> None:
+def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -132,28 +143,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
             row["table_name"]
             for row in conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
-            ).fetchall()
-        }
-        macro_thesis_run_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'macro_thesis_runs'
-                """
-            ).fetchall()
-        }
-        macro_research_input_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'macro_research_inputs'
-                """
             ).fetchall()
         }
         news_source_columns = {
@@ -164,17 +153,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'news_sources'
-                """
-            ).fetchall()
-        }
-        macro_thesis_publication_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'macro_thesis_publications'
                 """
             ).fetchall()
         }
@@ -314,7 +292,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
                 FROM pg_indexes
                 WHERE schemaname = 'public'
                   AND indexname IN (
-                    'ix_news_source_fetches_source_time',
                     'idx_asset_identity_evidence_profile_source',
                     'idx_asset_identity_evidence_asset_provider_lookup'
                   )
@@ -371,18 +348,13 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "macro_series_facts",
         "macro_release_facts",
         "macro_documents",
-        "macro_source_receipts",
+        "macro_fed_official_role_facts",
+        "macro_document_analyses",
+        "macro_document_analysis_jobs",
         "macro_acquisition_targets",
-        "macro_feature_series",
+        "macro_dataset_projection_states",
+        "macro_module_frontiers",
         "macro_module_current",
-        "macro_projection_state",
-        "macro_evidence_packs",
-        "macro_research_inputs",
-        "macro_thesis_runs",
-        "macro_thesis_reviews",
-        "macro_thesis_publications",
-        "macro_live_deltas",
-        "macro_outcome_replays",
         "checkpoint_migrations",
         "checkpoints",
         "checkpoint_blobs",
@@ -392,40 +364,9 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     } <= tables
     assert {"worker_runtime_status", "model_generation_frontiers", "worker_queue_terminal_events"}.isdisjoint(tables)
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
+    assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
     assert tables >= PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
-    assert macro_thesis_run_columns == {
-        "session_date",
-        "cutoff_ms",
-        "evidence_pack_id",
-        "evidence_pack_hash",
-        "research_input_id",
-        "research_input_hash",
-        "status",
-        "attempt_count",
-        "max_attempts",
-        "due_at_ms",
-        "leased_until_ms",
-        "lease_owner",
-        "publication_id",
-        "last_error_code",
-        "last_error_message",
-        "last_gate_category",
-        "last_candidate_hash",
-        "created_at_ms",
-        "updated_at_ms",
-    }
-    assert macro_research_input_columns == {
-        "research_input_id",
-        "evidence_pack_id",
-        "session_date",
-        "cutoff_ms",
-        "schema_version",
-        "profile_version",
-        "prompt_version",
-        "payload_json",
-        "input_hash",
-    }
     assert news_source_columns == {
         "source_id",
         "name",
@@ -453,18 +394,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "created_at_ms",
         "updated_at_ms",
     }
-    assert macro_thesis_publication_columns == {
-        "publication_id",
-        "session_date",
-        "cutoff_ms",
-        "evidence_pack_id",
-        "schema_version",
-        "thesis_json",
-        "thesis_hash",
-        "reviewer_invocation_id",
-        "reviewer_draft_hash",
-        "published_at_ms",
-    }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
     assert {"fact_schema_version", "contract_expiration_date"} <= market_settlement_columns
     assert {"heat_tier", "terminal_reason"} <= asset_profile_refresh_target_columns
@@ -487,7 +416,6 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
     }.isdisjoint(radar_frontier_columns)
     assert retired_projection_tables == set()
     assert performance_indexes == {
-        "ix_news_source_fetches_source_time",
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
     }
@@ -501,7 +429,7 @@ def test_current_postgres_schema_has_one_kappa_truth_and_durable_macro_thesis(tm
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260801_0234"
+    assert version == latest_migration_version() == "20260801_0236"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -1031,7 +959,7 @@ def test_macro_thin_v2_migration_appends_only_provable_cfe_revisions(
     assert [row["contract_code"] for row in served] == ["VXQ6"]
 
 
-def test_macro_thin_v2_migration_preserves_v1_and_cleans_only_macro_control_state(
+def test_macro_current_module_hard_cut_drops_research_history_and_control_state(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -1137,15 +1065,6 @@ def test_macro_thin_v2_migration_preserves_v1_and_cleans_only_macro_control_stat
             """
         )
         conn.commit()
-        before = conn.execute(
-            """
-            SELECT encode(convert_to(thesis_json::text, 'UTF8'), 'hex') AS payload_bytes,
-                   thesis_hash, reviewer_invocation_id, reviewer_draft_hash
-            FROM macro_thesis_publications
-            WHERE publication_id = 'publication-v1-fixture'
-            """
-        ).fetchone()
-
         with pytest.raises(ProgrammingError, match="macro_thesis_active_lease_blocks_v2_cutover"):
             command.upgrade(config, "head")
         conn.rollback()
@@ -1159,17 +1078,60 @@ def test_macro_thin_v2_migration_preserves_v1_and_cleans_only_macro_control_stat
             """
         )
         conn.commit()
+        command.upgrade(config, "20260801_0235")
+        for owner_key, source_table in (
+            ("macro_thesis", "macro_thesis_runs"),
+            ("news_projection", "news_projection_frontiers"),
+        ):
+            terminalize_source_row(
+                conn,
+                owner_key=owner_key,
+                source_table=source_table,
+                target_key=f"retired:{owner_key}",
+                source_row={"attempt_count": 1, "updated_at_ms": 1_500},
+                final_status="stale",
+                final_reason="retired_owner_fixture",
+                now_ms=1_500,
+            )
+        conn.commit()
         command.upgrade(config, "head")
 
-        after = conn.execute(
+        removed = conn.execute(
             """
-            SELECT encode(convert_to(thesis_json::text, 'UTF8'), 'hex') AS payload_bytes,
-                   thesis_hash, reviewer_invocation_id, reviewer_draft_hash
-            FROM macro_thesis_publications
-            WHERE publication_id = 'publication-v1-fixture'
+            SELECT to_regclass('macro_thesis_publications') AS publications,
+                   to_regclass('macro_thesis_runs') AS runs,
+                   to_regclass('macro_evidence_packs') AS evidence_packs,
+                   to_regclass('macro_research_inputs') AS research_inputs
             """
         ).fetchone()
-        assert after == before
+        assert removed == {
+            "publications": None,
+            "runs": None,
+            "evidence_packs": None,
+            "research_inputs": None,
+        }
+        assert (
+            conn.execute(
+                """
+                SELECT count(*)::int AS count
+                FROM queue_terminal_events
+                WHERE owner_key IN ('macro_thesis', 'news_projection')
+                """
+            ).fetchone()["count"]
+            == 0
+        )
+        with pytest.raises(CheckViolation):
+            terminalize_source_row(
+                conn,
+                owner_key="news_projection",
+                source_table="news_projection_frontiers",
+                target_key="retired:news_projection:after-cut",
+                source_row={"attempt_count": 1, "updated_at_ms": 2_000},
+                final_status="stale",
+                final_reason="retired_owner_fixture",
+                now_ms=2_000,
+            )
+        conn.rollback()
         assert (
             conn.execute(
                 """

@@ -26,9 +26,9 @@ results; never secret values.
 | `/api/status` | serve snapshot plus persisted worker status | bounded control read |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
-Queue backlog, optional provider degradation, and an Agent-authored Macro
-evidence gap do not make the HTTP process unready. Research run and publication
-state remain visible through their own API and operator diagnostics.
+Queue backlog, optional provider degradation, and a missing Fed document
+analysis do not make the HTTP process unready. Domain freshness and native
+model-job state remain visible through their own API and operator diagnostics.
 
 ## Worker ownership
 
@@ -185,8 +185,8 @@ projection worker or dirty queue. Repair uses bounded
 News:
 
 ```text
-RSS source claim/fetch + persistent OpenNews WSS/REST recovery
-  -> semantic observation -> report-only NewsItem materialization
+OpenNews WSS + bounded REST recovery
+  -> report/annotation merge into current NewsItem
   -> every 60 seconds load complete enabled 96-hour item window
   -> WorldMonitor clustering + classification + importance
   -> compare-and-publish current Story/member/facet/Brief selection closure
@@ -200,27 +200,14 @@ Top-8 changed Story fingerprint
   -> /api/news/brief
 ```
 
-The RSS acquisition loop claims one due source in a short transaction,
-performs provider I/O outside the database through the three-slot
-finite-operation capability, and closes the source in a short transaction.
-One source failure records a failed receipt, increments its failure count, and
-cannot block another source.
-A successful response retains ETag and Last-Modified; a `304` still permits
-the deterministic 96-hour expiry/recluster pass. Direct transport/403/429/5xx/
-HTML/non-RSS failure can use the configured relay only for a code-owned public
-HTTPS source URL; the winning path and bounded diagnostics are persisted
-without secrets. HTTP, localhost, Docker service names, link-local, loopback,
-private, and other non-public destinations never use the relay. Internal
-RSSHub sources therefore record failures directly.
-
-The same acquisition module owns OpenNews. One persistent WSS receiver runs
+News acquisition owns one persistent OpenNews WSS receiver that runs
 outside the finite-operation capability, feeds a 256-event queue, and reconnects
 after expected transport failures. REST recovery uses a finite-operation slot
-at startup, reconnect, overflow, and every five minutes, with page 1, limit
-100, and a 30-minute overlap. Recovery success/failure has an explicit fetch
-receipt. `/api/news/sources` shows live connection, last recovery, and whether
-a gap remains unclosed. Missing `news.opennews_token` degrades only OpenNews;
-RSS continues.
+only after the initial WSS connection, reconnect, or overflow, with page 1 and
+limit 100. A healthy continuous connection performs no periodic REST call.
+`/api/news/sources` shows the live connection,
+last recovery, current error, and whether a gap remains unclosed. There is no
+second polling or acquisition-history lane.
 
 The acquisition publication is the only NewsItem writer. The fixed-period
 Story projection is the only Story/member/facet/Brief-selection writer. It
@@ -238,28 +225,22 @@ failed run and keeps the last-known-good current pointer.
 
 Diagnose News in this order:
 
-1. `/api/news/sources`: enabled count, due source, last success, HTTP status,
-   failure count, conditional-fetch validators, OpenNews live/recovery/gap;
-2. `news_source_fetches`: one receipt for the source attempt, duration, parsed
-   entry count, admitted/updated/observation counts, and bounded gate counts
-   (`per_feed_cap`, `missing_title`, `missing_http_url`, `missing_date`,
-   `future_date`, `stale_age`, and `duplicate`);
-3. `news_feed_observations`: raw entry exists even when rejected;
-4. `news_items`: admitted source identity and content fingerprint;
-5. `news_story_members` and `news_stories`: current membership closure,
+1. `/api/news/sources`: OpenNews live/recovery/gap and current error;
+2. `news_items`: provider identity, bounded metadata, and content fingerprint;
+3. `news_story_members` and `news_stories`: current membership closure,
    full-SHA Story ID, state fingerprint, reporting-origin count, score factors;
-6. `/api/news/feed`: flat global keyset order, filters, facets, and cursor;
-7. `news_brief_runs`, `news_brief_current`, and
+4. `/api/news/feed`: flat global keyset order, filters, facets, and cursor;
+5. `news_brief_runs`, `news_brief_current`, and
    `news_brief_publications`: candidate fingerprint, lease/run state, current
    publication, last error, and immutable history;
-8. `/api/news/brief`: ETag and truthful public state;
-9. `/api/news/status`: warming/ready/degraded derived health.
+6. `/api/news/brief`: ETag and truthful public state;
+7. `/api/news/status`: warming/ready/degraded derived health.
 
 News health has three layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
-| ingest | every source has a terminal first attempt, no current failures, and at least 80% succeeded in the last hour | no sources, incomplete first coverage, any current source failure, low recent coverage, or material polling backlog |
+| ingest | OpenNews is connected, its recovery gap is closed, and at least one item has succeeded | source not configured, no item yet, disconnected stream, open gap, or current provider error |
 | story | current 96-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
 
@@ -291,148 +272,68 @@ directly; it must not substitute a waived or placeholder proof.
 
 Macro:
 
-The `20260728_0210` baseline plus irreversible migrations through the
-generated Alembic head contain the current Macro fact, coverage, module,
-ResearchInput, Thesis v2, Live Delta v2, Outcome Replay v2, and Fed evidence
-contracts. Current reads have one v2 path. Existing v1 publications remain
-byte-for-byte immutable and are available only through explicit archive reads.
+The current Macro runtime contains material facts, acquisition targets, six
+deterministic module rows, and immutable Fed document analyses. It has no
+second daily publication or historical product lane.
 
 ```text
-clock-specific target claim -> provider I/O -> typed fact + source receipt + cursor
+clock-specific target claim -> provider I/O -> typed fact + target cursor/state
   -> typed affected-module frontier -> EDF module-local projection
   -> stable macro_module_current row
-  -> 08:50 New York macro_evidence_pack_v3
-  -> deterministic bounded macro_research_input_v1
-  -> one Thin DeepAgent graph invocation -> exactly one model invocation
-  -> four publication gates -> immutable macro_thesis_v2
-  -> immutable macro_live_delta_v2 and macro_outcome_replay_v2 snapshots
+
+official FOMC/speech body + effective-dated role fact
+  -> macro_document_analysis_jobs
+  -> exact-excerpt-validated immutable document analysis
+  -> rates-fed module input
 ```
 
 The five explicit Macro due loops claim only their own clock family from
 `macro_acquisition_targets` with `SKIP LOCKED`. `macro backfill` and
 `macro backfill-professional` enqueue and synchronously drain only their
-explicit bounded targets before returning. The professional command applies
-the code-owned Treasury/Fed/credit/WTI/BTC/CFTC/ETF/futures history policy.
-Treasury curves, FOMC materials, policy speeches, completed BTC
-settlements, fixed ETF Nasdaq daily datasets, and Yahoo futures daily
-continuous proxies use a trailing five-year backfill window. Yahoo intraday
-targets request one month initially and one rolling day thereafter. Credit and
-WTI may retain longer reliable public history because their bounded
-single-source histories are inexpensive and materially improve regime context.
-Every loop claims one target/page per bounded turn. Daily settlements catch up
-through the fixed 250 ms productive repoll and never expand the semantic turn
-into a legacy batch.
-Declared required windows remain observable in reader-facing History Depth but
-are non-blocking outside the feature or claim that needs them. Optional maximum
-public history and its execution state remain in the audit appendix and cannot
-lower Current Health or enter Thesis prose.
-Five-year targets have a lower numeric queue priority than optional deep
-history, so a large enrichment crawl cannot sit ahead of current five-year
-coverage. Before creating a new target, the professional command
-promotes an already-current target whose durable cursor covers the requested
-window; a four-day boundary change must not trigger a duplicate multi-year
-fetch.
-Provider I/O happens after claim commit. One
-completion transaction appends normalized facts and
-`macro_source_receipts`, advances the cursor, and compare-and-set completes the
-target. An unchanged replay writes zero fact rows and a receipt; a changed
-value appends a revision. One failed source cannot head-of-line block another
-clock or target.
+explicit bounded targets before returning. Every loop claims one target/page
+per bounded turn; provider I/O happens after claim commit. Completion appends
+changed facts, advances the durable cursor, and compare-and-set updates the
+target's current success/error state. Unchanged replay writes zero fact rows.
+One failed source cannot head-of-line block another clock or target.
+
+The professional backfill applies the code-owned Treasury/Fed/credit/WTI/BTC/
+CFTC/ETF/futures history policy. Required windows remain visible through
+History Depth but do not lower Current Health. Optional deep history has lower
+urgency than current coverage and cannot block a current module.
 
 Diagnose a missing metric in this order: Registry `concept_id` and
-`source_role`, acquisition target state/lease, last receipt/error, persisted
-fact clocks (reference/published/received), reconciliation receipt, module
-Coverage/Current Health/History Depth, then current-row hash. Do not repair
-source or calculation errors with a frontend fallback. Paid-only capabilities
-are not product rows. `untrusted_proxy` Nasdaq/Yahoo rows remain explicitly
-labelled. A closed or maintenance market with its last expected bar is current,
-while a healthy source can still serve degraded data and a failed source can
-leave a current last expected bar.
+`source_role`, acquisition target state/lease/cursor/current error, persisted
+fact clocks (reference/published/received), module Coverage/Current Health/
+History Depth, then the current-row hash. Do not mask source or calculation
+errors with frontend fallback content. `untrusted_proxy` Nasdaq/Yahoo rows stay
+labelled. Closed and maintenance market sessions are judged against the last
+expected bar rather than wall time.
 
 FOMC/Board/Reserve Bank full-text facts feed
-`macro_document_analysis_jobs`. The worker waits to schedule a speech until an
-effective-dated role match exists or the completed FOMC history backfill proves
-that the speech date has roster coverage. Each claim performs model I/O outside
-the write transaction, validates exact excerpts against the frozen body, then
-atomically inserts the immutable analysis and completes the job. Open or
-exhausted jobs remain visible in the affected evidence scope; they do not
-become a global publication gate. Restart reclaims expired leases without
-duplicating analysis identity.
+`macro_document_analysis_jobs`. A speech waits for its effective-dated role
+match. Each claim performs model I/O outside the write transaction, validates
+exact excerpts against the frozen official body, then atomically inserts the
+immutable analysis and completes the job. Restart reclaims an expired lease
+without duplicating analysis identity. A failed analysis affects only the
+document-dependent module evidence; it is not a global runtime gate.
 
 The Macro projection domain maps changed datasets through the static
 dataset/calculation/module dependency graph. One EDF turn loads only the
-affected module's declared bounded history, computes outside the database,
-rechecks the input fingerprint, and publishes that module plus its feature
-frontier in one transaction. Unchanged payloads write zero serving rows.
-The native Thesis candidate becomes due after 08:50 `America/New_York` on U.S.
-trading days, creates
-or re-reads one stable session run, and claims at most one due run per
-iteration. Before model work it freezes the session, cutoff, pack identity,
-six ordered module payloads, prior material delta, catalysts, twelve-asset
-momentum, exact fact references, and the closed condition-candidate registry.
-Only facts authoritative by the cutoff may enter. `MacroResearchInputV1` is
-deterministic and capped at 64 exact refs, 32 conditions, and 64 KiB. Input
-compilation failure becomes a stable pre-model `failed` run with
-`attempt_count=0`.
+affected module's bounded history, computes outside the database, rechecks the
+input fingerprint, and publishes that module in one short transaction.
+Unchanged payloads write zero serving rows. The overview and six module routes
+read only `macro_module_current`; they never call a provider/model or repair
+state.
 
-The only production adapter is the Thin profile. Each durable attempt performs
-one `create_deep_agent` graph invocation and exactly one provider-native
-structured model invocation. The model receives no business tools, subagents,
-filesystem, todo, task, execute, search, summarization, or checkpoint surface.
-It returns one call/no-call mainline, one to three causal edges for a call, at
-most one alternative, at most three tensions, sparse material module
-assessments, and only material asset outlooks. Code owns exact citations,
-closed condition predicates, stable IDs, and the twelve-asset fact
-presentation.
+`uv run tracefold macro status` reports acquisition target counts/statuses,
+each module's current health, history depth, fact cutoff and update time, and
+Fed document-analysis job counts. The command performs no provider call and no
+write.
 
-After a provider-success envelope, rejection is exhausted by four gates:
-time/identity, evidence closure, contract validity, and write safety.
-Confidence, no-call, partial history, Reviewer absence, report length, and
-offline scores are not runtime gates. Provider configuration/authentication,
-timeout, refusal, or missing structured mapping are pre-draft run failures.
-There is no Reviewer revision loop or attempt-internal retry loop. Macro Thesis
-has no runtime workspace and the Thin profile writes no checkpoint rows.
-
-Run states are `pending`, `running`, `retryable`, `failed`, `config_error`,
-`not_published`, and `published`. Leases are owner-bound crash-recovery TTLs.
-External/runtime failures retry within the code-owned budget; invalid model
-configuration transitions before a claim and keeps `attempt_count=0`. The
-session-keyed pack, ResearchInput, publication, Live Delta, and Outcome Replay
-reject mutation. A repeated deterministic evaluation input writes zero rows;
-a changed input appends a new ID derived from publication plus input hash.
-Replaying a published session performs zero model calls and zero publication
-writes.
-
-Post-publication cycles update only deterministic Live Delta and Outcome Replay.
-Live Delta evaluates declared Thesis conditions against new persisted facts;
-event checkpoints have their own state and do not affect mainline validity.
-Outcome Replay creates only declared 1W/1M checkpoints and includes only assets
-with a corresponding material outlook. Recovery separately explains
-publication-time versus current fact availability. None of these paths edits
-or republishes the Thesis.
-
-Before applying `20260729_0216` to production, compile every available real v3
-Evidence Pack into the bounded current Research Input, then complete the normal
-backup, migration, restart, PostgreSQL/API/browser, and current-session model
-smoke checks. A pack that cannot compile is a deployment defect; the number of
-elapsed sessions is not.
-
-`macro_thin_profile_eval_v1` remains an offline quality corpus: six module
-cases, three distinct mixed sessions, and three derived gap cases. Nine
-distinct real sessions are its long-horizon selection target, not a migration
-gate, and synthetic directional cases never fill the target. Baseline and
-candidate use the same production model twice. Candidate
-factual/citation/condition errors veto a human quality disposition; its worst
-causal, counterevidence, and material-asset recall cannot regress, and at least
-one of causal sufficiency, counterevidence recall, or duplicate-claim count
-must improve.
-
-`uv run tracefold macro status` reports collection as
-`offline_evaluation.state=collecting`, the target and remaining real-session
-counts, and `blocks_deployment=false`. It validates every available pack before
-reporting collection. Once the target exists it either reports the 12 selected
-case IDs or `selection_blocked` with the failed corpus rule. This status read
-performs no provider call and no write.
+Migrations `20260801_0235` and `20260801_0236` are irreversible. They delete
+the retired News acquisition history and Macro publication, per-attempt, and
+stored intermediate history while preserving current NewsItems, Macro facts,
+targets, document analyses, and six module rows.
 
 ## Operator actions and retention
 
@@ -444,8 +345,7 @@ Supported terminal actions are:
 
 Retired queues have no retry path. Successful operational attempts may have
 short retention; failed/terminal evidence and unresolved side effects are kept
-longer. Current models retain one stable row per identity. Completed Macro
-research publications are immutable history and are not pruned as queue state.
+longer. Current models retain one stable row per identity.
 
 Destructive migrations use bounded timeouts, transform data before constraints,
 drop children before parents, avoid `CASCADE`/`IF EXISTS`, and preserve material
@@ -520,7 +420,7 @@ Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
 `work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
 This prevents two bounded background iterations from multiplying into all
 available PostgreSQL CPU workers while preserving the source-to-current
-priority of Token Radar. The News latest-fetch and asset-identity profile hot
+priority of Token Radar. The News current-item and asset-identity profile hot
 paths use ordered composite indexes; do not replace them with periodic broad
 scans.
 

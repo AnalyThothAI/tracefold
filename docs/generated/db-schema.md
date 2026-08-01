@@ -300,7 +300,6 @@
 | `lease_owner` | `TEXT` | True | `None` |
 | `attempt_count` | `INTEGER` | False | `0` |
 | `max_attempts` | `INTEGER` | False | `None` |
-| `last_receipt_id` | `TEXT` | True | `None` |
 | `last_success_at_ms` | `BIGINT` | True | `None` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
@@ -369,32 +368,6 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `metadata_json` | `JSONB` | False | `None` |
 
-## `macro_evidence_packs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `cutoff_ms` | `BIGINT` | False | `None` |
-| `sealed_at_ms` | `BIGINT` | False | `None` |
-| `source_max_received_at_ms` | `BIGINT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-
-## `macro_feature_series`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `feature_id` | `TEXT` | False | `None` |
-| `as_of_date` | `DATE` | False | `None` |
-| `formula_version` | `TEXT` | False | `None` |
-| `value_numeric` | `DOUBLE PRECISION` | False | `None` |
-| `unit` | `TEXT` | False | `None` |
-| `inputs_json` | `JSONB` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `computed_at_ms` | `BIGINT` | False | `None` |
-
 ## `macro_fed_official_role_facts`
 
 | Column | Type | Nullable | Default |
@@ -413,19 +386,6 @@
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
-
-## `macro_live_deltas`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `live_delta_id` | `TEXT` | False | `None` |
-| `publication_id` | `TEXT` | False | `None` |
-| `evaluated_at_ms` | `BIGINT` | False | `None` |
-| `module_fact_cutoff_ms` | `BIGINT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `input_hash` | `TEXT` | False | `None` |
 
 ## `macro_module_current`
 
@@ -458,27 +418,6 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `macro_outcome_replays`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `replay_id` | `TEXT` | False | `None` |
-| `publication_id` | `TEXT` | False | `None` |
-| `evaluated_at_ms` | `BIGINT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `input_hash` | `TEXT` | False | `None` |
-
-## `macro_projection_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `singleton_key` | `TEXT` | False | `None` |
-| `input_fingerprint` | `TEXT` | False | `None` |
-| `feature_count` | `INTEGER` | False | `None` |
-| `module_count` | `INTEGER` | False | `None` |
-| `projected_at_ms` | `BIGINT` | False | `None` |
-
 ## `macro_release_facts`
 
 | Column | Type | Nullable | Default |
@@ -501,20 +440,6 @@
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
 
-## `macro_research_inputs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `research_input_id` | `TEXT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `cutoff_ms` | `BIGINT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `profile_version` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `input_hash` | `TEXT` | False | `None` |
-
 ## `macro_series_facts`
 
 | Column | Type | Nullable | Default |
@@ -532,79 +457,6 @@
 | `source_url` | `TEXT` | False | `None` |
 | `fact_hash` | `TEXT` | False | `None` |
 | `raw_data_json` | `JSONB` | False | `None` |
-
-## `macro_source_receipts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `receipt_id` | `TEXT` | False | `None` |
-| `target_key` | `TEXT` | False | `None` |
-| `dataset_id` | `TEXT` | False | `None` |
-| `partition_key` | `TEXT` | False | `None` |
-| `started_at_ms` | `BIGINT` | False | `None` |
-| `completed_at_ms` | `BIGINT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `http_status` | `INTEGER` | True | `None` |
-| `rows_seen` | `INTEGER` | False | `None` |
-| `rows_inserted` | `INTEGER` | False | `None` |
-| `response_hash` | `TEXT` | True | `None` |
-| `error_code` | `TEXT` | True | `None` |
-| `error_message` | `TEXT` | True | `None` |
-| `diagnostics_json` | `JSONB` | False | `None` |
-
-## `macro_thesis_publications`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `publication_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `thesis_json` | `JSONB` | False | `None` |
-| `thesis_hash` | `TEXT` | False | `None` |
-| `reviewer_invocation_id` | `TEXT` | True | `None` |
-| `reviewer_draft_hash` | `TEXT` | True | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_thesis_reviews`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `review_id` | `TEXT` | False | `None` |
-| `session_date` | `DATE` | False | `None` |
-| `review_sequence` | `INTEGER` | False | `None` |
-| `draft_hash` | `TEXT` | False | `None` |
-| `disposition` | `TEXT` | False | `None` |
-| `review_json` | `JSONB` | False | `None` |
-| `invocation_id` | `TEXT` | False | `None` |
-| `model_name` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `macro_thesis_runs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `session_date` | `DATE` | False | `None` |
-| `cutoff_ms` | `BIGINT` | False | `None` |
-| `evidence_pack_id` | `TEXT` | False | `None` |
-| `evidence_pack_hash` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `'pending'::text` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `max_attempts` | `INTEGER` | False | `None` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `publication_id` | `TEXT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `last_error_message` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `research_input_id` | `TEXT` | True | `None` |
-| `research_input_hash` | `TEXT` | True | `None` |
-| `last_gate_category` | `TEXT` | True | `None` |
-| `last_candidate_hash` | `TEXT` | True | `None` |
 
 ## `market_instruments`
 
@@ -820,25 +672,6 @@
 | `story_id` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_feed_observations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `observation_id` | `TEXT` | False | `None` |
-| `fetch_id` | `TEXT` | True | `None` |
-| `source_id` | `TEXT` | False | `None` |
-| `source_item_key` | `TEXT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `title` | `TEXT` | True | `None` |
-| `url` | `TEXT` | True | `None` |
-| `published_at_ms` | `BIGINT` | True | `None` |
-| `raw` | `JSONB` | False | `None` |
-| `admitted` | `BOOLEAN` | False | `None` |
-| `rejection_reason` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `observation_kind` | `TEXT` | False | `None` |
-| `payload_fingerprint` | `TEXT` | False | `None` |
-
 ## `news_items`
 
 | Column | Type | Nullable | Default |
@@ -866,7 +699,8 @@
 | `active` | `BOOLEAN` | False | `true` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `winning_observation_id` | `TEXT` | True | `None` |
+| `provider_record_id` | `TEXT` | True | `None` |
+| `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
 
 ## `news_projection_summary`
 
@@ -894,26 +728,6 @@
 | `source_id` | `TEXT` | False | `None` |
 | `story_count` | `INTEGER` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_source_fetches`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `fetch_id` | `TEXT` | False | `None` |
-| `source_id` | `TEXT` | False | `None` |
-| `started_at_ms` | `BIGINT` | False | `None` |
-| `finished_at_ms` | `BIGINT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `fetch_path` | `TEXT` | True | `None` |
-| `direct_error_code` | `TEXT` | True | `None` |
-| `http_status` | `INTEGER` | True | `None` |
-| `entries_seen` | `INTEGER` | False | `0` |
-| `observations_inserted` | `INTEGER` | False | `0` |
-| `items_inserted` | `INTEGER` | False | `0` |
-| `items_updated` | `INTEGER` | False | `0` |
-| `rejection_counts` | `JSONB` | False | `'{}'::jsonb` |
-| `error_code` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_source_memberships`
 

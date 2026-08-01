@@ -2,7 +2,6 @@ import type { Page, Route } from "@playwright/test";
 import {
   macroModuleFixture,
   macroOverviewFixture,
-  macroResearchFixture,
 } from "@tests/fixtures/macroFixture";
 import { marketContextFixture, marketObservationFixture } from "@tests/fixtures/marketFixtures";
 import {
@@ -72,7 +71,6 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/macro/cross-asset") {
       return fulfill(route, macroModuleFixture("cross_asset"));
     }
-    if (path === "/api/macro/research") return fulfill(route, macroResearchFixture());
     recordUnhandledApiRequest(page, url);
     return route.fulfill({
       status: 404,

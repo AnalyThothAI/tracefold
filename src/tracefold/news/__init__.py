@@ -1,4 +1,4 @@
-"""RSS + OpenNews -> NewsItem -> WorldMonitor Story -> World Brief seam."""
+"""OpenNews -> NewsItem -> WorldMonitor Story -> World Brief seam."""
 
 from .classification import (
     SEVERITY_VALUES,

@@ -17,7 +17,6 @@ from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
-import requests
 from defusedxml import ElementTree
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -109,10 +108,6 @@ class MacroSourceClient:
             transport=transport,
         )
         self._timeout_seconds = float(timeout_seconds)
-        self._fred_session: requests.Session | None = None
-        if transport is None:
-            self._fred_session = requests.Session()
-            self._fred_session.headers.update(headers)
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
@@ -121,8 +116,6 @@ class MacroSourceClient:
 
     def close(self) -> None:
         self._client.close()
-        if self._fred_session is not None:
-            self._fred_session.close()
 
     def fetch(
         self,
@@ -223,35 +216,18 @@ class MacroSourceClient:
                     budget.observe_chunk(len(chunk))
                     body.extend(chunk)
                 budget.remaining()
+                headers = httpx.Headers(response.headers)
+                headers.pop("content-encoding", None)
+                headers.pop("content-length", None)
                 return httpx.Response(
                     status_code=response.status_code,
-                    headers=response.headers,
+                    headers=headers,
                     content=bytes(body),
                     request=response.request,
                     extensions=response.extensions,
                 )
         except httpx.HTTPError as exc:
             raise MacroSourceError(f"macro_source_transport_failed:{type(exc).__name__}") from exc
-
-    def _fred_get(self, *args: Any, **kwargs: Any) -> requests.Response:
-        if self._fred_session is None:
-            raise RuntimeError("macro_fred_session_missing")
-        budget = _required_budget()
-        remaining = min(self._timeout_seconds, budget.begin_request())
-        kwargs["timeout"] = (min(5.0, remaining), min(10.0, remaining))
-        kwargs["stream"] = True
-        try:
-            response = self._fred_session.get(*args, **kwargs)
-            body = bytearray()
-            for chunk in response.iter_content(chunk_size=64 * 1024):
-                budget.observe_chunk(len(chunk))
-                body.extend(chunk)
-            budget.remaining()
-            response._content = bytes(body)
-            response._content_consumed = True
-        except requests.RequestException as exc:
-            raise MacroSourceError(f"macro_source_transport_failed:{type(exc).__name__}") from exc
-        return response
 
     def _fetch_fred(
         self,
@@ -266,20 +242,21 @@ class MacroSourceClient:
         cursor_date = _optional_date(cursor.get("reference_date")) or start_date
         if cursor_date is not None:
             params["cosd"] = str(cursor_date if start_date else cursor_date - timedelta(days=7))
+        elif partition_key == "latest":
+            lookback_days = max(
+                14,
+                math.ceil((2 * int(spec.freshness_seconds)) / 86_400),
+            )
+            params["cosd"] = str(
+                datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
+                - timedelta(days=lookback_days)
+            )
         if end_date is not None:
             params["coed"] = str(end_date)
-        response: httpx.Response | requests.Response
-        if self._fred_session is None:
-            response = self._get(
-                "https://fred.stlouisfed.org/graph/fredgraph.csv",
-                params=params,
-            )
-        else:
-            response = self._fred_get(
-                "https://fred.stlouisfed.org/graph/fredgraph.csv",
-                params=params,
-                timeout=self._timeout_seconds,
-            )
+        response = self._get(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv",
+            params=params,
+        )
         _require_success(response, source_id=spec.source_id)
         rows = list(csv.DictReader(io.StringIO(response.text)))
         facts: list[SeriesFact] = []
@@ -1542,7 +1519,7 @@ def _batch(
         SeriesFact | ReleaseFact | DocumentFact | MarketObservationFact | MarketPositionFact | MarketSettlementFact,
         ...,
     ],
-    response: httpx.Response | requests.Response,
+    response: httpx.Response,
     *,
     cursor: dict[str, Any],
     completion: str = "complete",
@@ -1600,13 +1577,13 @@ def _series_cursor(
 
 
 def _require_success(
-    response: httpx.Response | requests.Response,
+    response: httpx.Response,
     *,
     source_id: str,
 ) -> None:
     try:
         response.raise_for_status()
-    except (httpx.HTTPError, requests.RequestException) as exc:
+    except httpx.HTTPError as exc:
         raise MacroSourceError(f"{source_id}_http_error:{response.status_code}") from exc
 
 

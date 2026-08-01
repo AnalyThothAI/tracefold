@@ -119,7 +119,7 @@ const routeCases: RouteCase[] = [
     name: "macro",
     path: "/macro",
     primary: async (page) => {
-      await expect(page.getByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1, name: "宏观事实总览" })).toBeVisible();
     },
     specific: async (page) => {
       await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();

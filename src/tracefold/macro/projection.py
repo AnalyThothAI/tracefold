@@ -7,9 +7,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from tracefold.macro.calculations import calculate_features
 from tracefold.macro.dependencies import (
-    MODULE_CALCULATION_DEPENDENCIES,
     MODULE_DATASET_DEPENDENCIES,
     module_input_fingerprint,
     module_projection_version,
@@ -265,7 +263,6 @@ class MacroProjectionService:
     ) -> dict[str, Any]:
         if output.get("module_id") != claim.module_id:
             raise ValueError("macro_projection_output_module_mismatch")
-        features = [dict(feature) for feature in output["features"]]
         module_payload = dict(output["module_payload"])
         with (
             self._session(
@@ -290,18 +287,6 @@ class MacroProjectionService:
                     "module_id": claim.module_id,
                     "rows_written": 0,
                 }
-            feature_writes = 0
-            for feature in features:
-                feature_writes += repos.macro.upsert_feature(
-                    feature_id=feature["feature_id"],
-                    as_of_date=feature["as_of_date"],
-                    formula_version=feature["formula_version"],
-                    value_numeric=feature["value_numeric"],
-                    unit=feature["unit"],
-                    inputs=feature["inputs"],
-                    payload_hash=feature["payload_hash"],
-                    computed_at_ms=now_ms,
-                )
             module_writes = repos.macro.upsert_module_current(
                 module_id=claim.module_id,
                 current_health_state=str(module_payload["status"]["current_health"]["state"]),
@@ -323,10 +308,8 @@ class MacroProjectionService:
         return {
             "projection_status": "published",
             "module_id": claim.module_id,
-            "features_computed": len(features),
-            "feature_rows_written": feature_writes,
             "module_rows_written": module_writes,
-            "rows_written": feature_writes + module_writes,
+            "rows_written": module_writes,
             "candidate_rows": int(output["candidate_rows"]),
         }
 
@@ -430,8 +413,6 @@ def compute_macro_module_projection(payload: dict[str, Any]) -> dict[str, Any]:
 
     module_id = _module_id(payload["module_id"])
     series_rows = [dict(row) for row in payload["series_rows"]]
-    calculation_ids = set(MODULE_CALCULATION_DEPENDENCIES[module_id])
-    features = [feature for feature in calculate_features(series_rows) if str(feature["feature_id"]) in calculation_ids]
     module_payload = build_typed_module_payload(
         module_id=module_id,
         now_ms=int(payload["now_ms"]),
@@ -448,7 +429,6 @@ def compute_macro_module_projection(payload: dict[str, Any]) -> dict[str, Any]:
     )
     output = {
         "module_id": module_id,
-        "features": features,
         "module_payload": module_payload,
         "candidate_rows": _input_row_count(payload),
     }
@@ -490,8 +470,6 @@ def rebuild_all_macro_modules_for_maintenance(
         "projection_status": "rebuilt",
         "dataset_state_writes": state_writes,
         "modules_computed": len(results),
-        "features_computed": sum(int(row["features_computed"]) for row in results),
-        "feature_rows_written": sum(int(row["feature_rows_written"]) for row in results),
         "module_rows_written": sum(int(row["module_rows_written"]) for row in results),
         "rows_written": sum(int(row["rows_written"]) for row in results),
         "candidate_rows": sum(int(row["candidate_rows"]) for row in results),

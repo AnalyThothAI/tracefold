@@ -187,9 +187,9 @@ function SourcesRoute({ token }: { token: string }) {
       </header>
       <header className="news-source-heading">
         <div>
-          <span className="news-eyebrow">RSS + OpenNews</span>
+          <span className="news-eyebrow">OpenNews</span>
           <h1>新闻来源状态</h1>
-          <p>RSS 独立轮询退避；OpenNews 展示 WSS 连接与 REST 缺口恢复。</p>
+          <p>一个实时连接，一条 REST 缺口恢复链路。</p>
         </div>
         <b>{sources.length} 个来源</b>
       </header>
@@ -207,28 +207,20 @@ function SourcesRoute({ token }: { token: string }) {
               <header>
                 <div>
                   <h2>{source.name}</h2>
-                  <span>
-                    Tier {source.tier} · {source.lang} · {source.memberships.join(" / ")}
-                  </span>
+                  <span>实时新闻与市场元数据</span>
                 </div>
                 <b
                   data-status={
-                    source.source_kind === "opennews"
-                      ? source.live_connected && !source.gap_unclosed
-                        ? "success"
-                        : "failed"
-                      : (source.latest_fetch_status ?? "pending")
+                    source.live_connected && !source.gap_unclosed ? "success" : "failed"
                   }
                 >
-                  {source.source_kind === "opennews"
-                    ? source.live_connected
-                      ? source.gap_unclosed
-                        ? "WSS 已连接 · 恢复中"
-                        : "WSS 已连接"
-                      : source.gap_unclosed
-                        ? "WSS 未连接 · 缺口未闭合"
-                        : "WSS 未连接"
-                    : sourceStatusLabel(source.latest_fetch_status)}
+                  {source.live_connected
+                    ? source.gap_unclosed
+                      ? "WSS 已连接 · 恢复中"
+                      : "WSS 已连接"
+                    : source.gap_unclosed
+                      ? "WSS 未连接 · 缺口未闭合"
+                      : "WSS 未连接"}
                 </b>
               </header>
               <dl>
@@ -241,56 +233,20 @@ function SourcesRoute({ token }: { token: string }) {
                   </dd>
                 </div>
                 <div>
-                  <dt>耗时</dt>
-                  <dd>
-                    {source.latest_fetch_duration_ms == null
-                      ? "—"
-                      : `${source.latest_fetch_duration_ms} ms`}
-                  </dd>
+                  <dt>上次 WSS</dt>
+                  <dd>{source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}</dd>
                 </div>
                 <div>
-                  <dt>解析 / 入库</dt>
+                  <dt>上次 REST 恢复</dt>
                   <dd>
-                    {source.latest_entries_seen ?? 0} /{" "}
-                    {(source.latest_items_inserted ?? 0) + (source.latest_items_updated ?? 0)}
+                    {source.last_recovery_at_ms ? relativeTime(source.last_recovery_at_ms) : "尚未恢复"}
                   </dd>
                 </div>
-                <div>
-                  <dt>获取路径</dt>
-                  <dd>{sourcePathLabel(source.latest_fetch_path)}</dd>
-                </div>
-                {source.source_kind === "opennews" ? (
-                  <>
-                    <div>
-                      <dt>上次 WSS</dt>
-                      <dd>
-                        {source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>上次 REST 恢复</dt>
-                      <dd>
-                        {source.last_recovery_at_ms
-                          ? relativeTime(source.last_recovery_at_ms)
-                          : "尚未恢复"}
-                      </dd>
-                    </div>
-                  </>
-                ) : null}
                 <div>
                   <dt>连续失败</dt>
                   <dd>{source.consecutive_failures}</dd>
                 </div>
               </dl>
-              {source.latest_rejection_counts &&
-              Object.keys(source.latest_rejection_counts).length ? (
-                <p>
-                  门禁：
-                  {Object.entries(source.latest_rejection_counts)
-                    .map(([reason, count]) => `${reason} ${count}`)
-                    .join(" · ")}
-                </p>
-              ) : null}
               {source.last_error ? <p className="news-source-error">{source.last_error}</p> : null}
             </article>
           ))}
@@ -477,6 +433,36 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                   </header>
                   <h3>{member.title}</h3>
                   {member.description ? <p>{member.description}</p> : null}
+                  {member.provider_metadata.score != null ||
+                  member.provider_metadata.source ||
+                  member.provider_metadata.signal ||
+                  member.provider_metadata.grade ? (
+                    <p>
+                      OpenNews：
+                      {member.provider_metadata.score != null
+                        ? `评分 ${member.provider_metadata.score}`
+                        : "未评分"}
+                      {member.provider_metadata.signal
+                        ? ` · ${member.provider_metadata.signal}`
+                        : ""}
+                      {member.provider_metadata.grade
+                        ? ` · ${member.provider_metadata.grade}`
+                        : ""}
+                      {member.provider_metadata.source
+                        ? ` · 来源 ${member.provider_metadata.source}`
+                        : ""}
+                    </p>
+                  ) : null}
+                  {member.provider_metadata.coins?.length ? (
+                    <p>
+                      代币：
+                      {member.provider_metadata.coins
+                        .map((coin) =>
+                          [coin.symbol, coin.market_type, coin.match].filter(Boolean).join(" · "),
+                        )
+                        .join("；")}
+                    </p>
+                  ) : null}
                   {member.url ? (
                     <a href={member.url} rel="noreferrer" target="_blank">
                       阅读原文
@@ -604,20 +590,6 @@ function briefStateLabel(state?: string): string {
   if (state === "insufficient_material") return "选材不足";
   if (state === "failed") return "生成失败";
   return "不可用";
-}
-
-function sourceStatusLabel(state?: string | null): string {
-  if (state === "success") return "成功";
-  if (state === "not_modified") return "无变化";
-  if (state === "failed") return "失败";
-  return "待采集";
-}
-
-function sourcePathLabel(path?: "direct" | "relay" | "opennews_rest" | null): string {
-  if (path === "opennews_rest") return "OpenNews REST 恢复";
-  if (path === "relay") return "Relay 回退";
-  if (path === "direct") return "直连";
-  return "尚未尝试";
 }
 
 function relativeTime(value: number): string {

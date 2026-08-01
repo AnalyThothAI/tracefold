@@ -10,10 +10,15 @@ import hashlib
 import json
 import time
 from collections.abc import Mapping
+from datetime import date, datetime, timedelta
+from datetime import time as clock_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from alembic import op
 from psycopg.types.json import Jsonb
+
+from tracefold.macro.market_calendar import is_us_market_session
 
 revision = "20260731_0233"
 down_revision = "20260731_0232"
@@ -51,6 +56,8 @@ _LEGACY_TERMINAL_OWNER_MAPPINGS = {
     "news_source_quality_projection": "news_projection",
     "token_radar_projection": "radar_projection",
 }
+_NEW_YORK = ZoneInfo("America/New_York")
+_THESIS_PUBLICATION_TIME = clock_time(8, 50)
 
 
 def upgrade() -> None:
@@ -543,10 +550,8 @@ def _pending_recompute_snapshot(conn: Any, *, now_ms: int) -> dict[str, Any]:
         if not bool(_brief_native_owner(conn, fingerprint=fingerprint)["owned"]):
             expected.add(f"news_brief:{fingerprint}")
 
-    from tracefold.macro.thesis_service import resolve_thesis_session, thesis_cutoff_ms
-
-    session_date = resolve_thesis_session(now_ms=int(now_ms))
-    cutoff_ms = thesis_cutoff_ms(session_date)
+    session_date = _resolve_thesis_session(now_ms=int(now_ms))
+    cutoff_ms = _thesis_cutoff_ms(session_date)
     if int(now_ms) >= cutoff_ms:
         pack = conn.exec_driver_sql(
             "SELECT 1 FROM macro_evidence_packs WHERE session_date = %s::date LIMIT 1",
@@ -614,10 +619,8 @@ def _recomputed_model_candidate_keys(conn: Any, *, now_ms: int) -> set[str]:
         if not bool(owner["owned"]):
             candidates.add(f"news_brief:{fingerprint}")
 
-    from tracefold.macro.thesis_service import resolve_thesis_session, thesis_cutoff_ms
-
-    session_date = resolve_thesis_session(now_ms=int(now_ms))
-    cutoff_ms = thesis_cutoff_ms(session_date)
+    session_date = _resolve_thesis_session(now_ms=int(now_ms))
+    cutoff_ms = _thesis_cutoff_ms(session_date)
     if int(now_ms) >= cutoff_ms:
         pack = conn.exec_driver_sql(
             "SELECT 1 FROM macro_evidence_packs WHERE session_date = %s::date LIMIT 1",
@@ -723,10 +726,8 @@ def _recompute_brief_eligibility(conn: Any, *, now_ms: int) -> None:
 
 
 def _recompute_thesis_eligibility(conn: Any, *, now_ms: int) -> None:
-    from tracefold.macro.thesis_service import resolve_thesis_session, thesis_cutoff_ms
-
-    session_date = resolve_thesis_session(now_ms=int(now_ms))
-    cutoff_ms = thesis_cutoff_ms(session_date)
+    session_date = _resolve_thesis_session(now_ms=int(now_ms))
+    cutoff_ms = _thesis_cutoff_ms(session_date)
     if int(now_ms) < cutoff_ms:
         return
     pack = conn.exec_driver_sql(
@@ -1433,6 +1434,23 @@ def _apply_runtime_grants() -> None:
           ON workers_runtime, queue_terminal_events TO tracefold_workers;
         """
     )
+
+
+def _resolve_thesis_session(*, now_ms: int) -> date:
+    instant = datetime.fromtimestamp(int(now_ms) / 1_000, tz=_NEW_YORK)
+    candidate = instant.date()
+    if is_us_market_session(candidate) and instant.timetz().replace(tzinfo=None) >= _THESIS_PUBLICATION_TIME:
+        return candidate
+    candidate -= timedelta(days=1)
+    while not is_us_market_session(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _thesis_cutoff_ms(session_date: date) -> int:
+    if not is_us_market_session(session_date):
+        raise ValueError(f"macro_thesis_market_session_required:{session_date.isoformat()}")
+    return int(datetime.combine(session_date, _THESIS_PUBLICATION_TIME, tzinfo=_NEW_YORK).timestamp() * 1_000)
 
 
 def _stable_id(namespace: str, value: str) -> str:

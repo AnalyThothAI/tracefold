@@ -3,18 +3,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from tracefold.macro import (
-    MacroCompiledCondition,
-    MacroDraftModuleAssessment,
-    MacroLiveDeltaV2,
-    MacroOutcomeReplayV2,
-    MacroReason,
-    MacroRecoveryItem,
-    MacroThesisV1,
-    MacroThesisV2,
-)
+from tracefold.macro import MacroReason
 
 JsonObject = dict[str, Any]
 
@@ -298,33 +289,6 @@ class MacroNextCheckpointData(ExactApiSchema):
     history_depth: str
     reason: MacroReason | None
     next_check_at_ms: int | None
-
-
-class MacroModuleThesisContextData(ExactApiSchema):
-    state: Literal[
-        "published",
-        "pending",
-        "running",
-        "retryable",
-        "failed",
-        "config_error",
-        "not_published",
-        "missing",
-    ]
-    session_date: date
-    cutoff_ms: int
-    role: Literal[
-        "driver",
-        "confirming",
-        "contradicting",
-        "uncertain",
-        "not_material",
-        "unassessed",
-    ]
-    assessment: MacroDraftModuleAssessment | None
-    conditions: list[MacroCompiledCondition]
-    recovery: list[MacroRecoveryItem]
-    reason: MacroReason | None
 
 
 class _MacroModulePersistedBaseData(ExactApiSchema):
@@ -881,7 +845,6 @@ class MacroRatesFedPersistedData(ExactApiSchema):
 class MacroRatesFedReadData(MacroRatesFedPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroEconomyInflationPersistedData(_MacroModulePersistedBaseData):
@@ -895,7 +858,6 @@ class MacroEconomyInflationPersistedData(_MacroModulePersistedBaseData):
 class MacroEconomyInflationReadData(MacroEconomyInflationPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroLiquidityFundingPersistedData(_MacroModulePersistedBaseData):
@@ -908,7 +870,6 @@ class MacroLiquidityFundingPersistedData(_MacroModulePersistedBaseData):
 class MacroLiquidityFundingReadData(MacroLiquidityFundingPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroCreditPersistedData(_MacroModulePersistedBaseData):
@@ -925,7 +886,6 @@ class MacroCreditPersistedData(_MacroModulePersistedBaseData):
 class MacroCreditReadData(MacroCreditPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroVolatilityPersistedData(_MacroModulePersistedBaseData):
@@ -938,7 +898,6 @@ class MacroVolatilityPersistedData(_MacroModulePersistedBaseData):
 class MacroVolatilityReadData(MacroVolatilityPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroCrossAssetPersistedData(_MacroModulePersistedBaseData):
@@ -952,7 +911,6 @@ class MacroCrossAssetPersistedData(_MacroModulePersistedBaseData):
 class MacroCrossAssetReadData(MacroCrossAssetPersistedData):
     availability: Literal["available"]
     reason: MacroReason | None
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroModuleUnavailableData(ExactApiSchema):
@@ -962,7 +920,6 @@ class MacroModuleUnavailableData(ExactApiSchema):
     availability: Literal["unavailable"] = "unavailable"
     reason: MacroReason
     href: str
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroModuleSummaryData(ExactApiSchema):
@@ -970,14 +927,6 @@ class MacroModuleSummaryData(ExactApiSchema):
     label: str
     availability: Literal["available", "unavailable"]
     reason: MacroReason | None
-    role: Literal[
-        "driver",
-        "confirming",
-        "contradicting",
-        "uncertain",
-        "not_material",
-        "unassessed",
-    ]
     coverage_state: Literal["complete", "partial"] | None
     current_health_state: Literal["current", "degraded", "unavailable"] | None
     history_depth_state: Literal["complete", "partial", "insufficient", "not_required"] | None
@@ -988,7 +937,6 @@ class MacroModuleSummaryData(ExactApiSchema):
     current_health_gap_count: int
     history_gap_count: int
     href: str
-    thesis_context: MacroModuleThesisContextData
 
 
 class MacroTransportStateData(ExactApiSchema):
@@ -1007,124 +955,12 @@ class MacroDataQualityOverviewData(ExactApiSchema):
 
 
 class MacroOverviewReadData(ExactApiSchema):
-    schema_version: Literal["macro_overview_v8"]
+    schema_version: Literal["macro_overview_v9"]
     read_at_ms: int
     transport: MacroTransportStateData
-    session_date: date
-    cutoff_ms: int
     latest_fact_at_ms: int
-    thesis_state: Literal[
-        "published",
-        "pending",
-        "running",
-        "retryable",
-        "failed",
-        "config_error",
-        "not_published",
-        "missing",
-    ]
-    thesis_reason: MacroReason | None
-    thesis: MacroThesisV2 | None
-    run: MacroThesisRunData | None
-    live_delta: MacroLiveDeltaV2 | None
-    outcome_replay: MacroOutcomeReplayV2 | None
-    recovery: list[MacroRecoveryItem]
     modules: list[MacroModuleSummaryData]
     data_quality: MacroDataQualityOverviewData
-
-    @model_validator(mode="after")
-    def validate_current_contract(self) -> MacroOverviewReadData:
-        if (self.thesis_state == "published") != (self.thesis is not None):
-            raise ValueError("macro_overview_v8_publication_state_mismatch")
-        if self.thesis is not None and self.thesis.session_date != self.session_date:
-            raise ValueError("macro_overview_v8_current_session_mismatch")
-        return self
-
-
-class MacroThesisRunData(ExactApiSchema):
-    session_date: date
-    status: str
-    evidence_pack_id: str
-    research_input_id: str | None
-    attempt_count: int
-    max_attempts: int
-    error_code: str | None
-    gate_category: (
-        Literal[
-            "time_identity",
-            "evidence_closure",
-            "contract_validity",
-            "write_safety",
-        ]
-        | None
-    )
-    candidate_hash: str | None
-    reason: MacroReason | None
-    updated_at_ms: int
-
-
-class MacroPublicationHistoryItemData(ExactApiSchema):
-    schema_version: Literal["macro_publication_history_item_v2"] = "macro_publication_history_item_v2"
-    publication_schema_version: Literal["macro_thesis_v1", "macro_thesis_v2"]
-    publication_id: str
-    session_date: date
-    cutoff_ms: int
-    published_at_ms: int
-    title: str
-    stance: Literal["call", "no_call"]
-    confidence: Literal["low", "medium", "high"] | None
-    horizon: Literal["1w", "1m", "1w_to_1m"]
-
-
-class MacroThesisDetailReadData(ExactApiSchema):
-    schema_version: Literal["macro_thesis_detail_v4"]
-    state: Literal[
-        "published",
-        "pending",
-        "running",
-        "retryable",
-        "config_error",
-        "not_published",
-        "failed",
-        "missing",
-    ]
-    session_date: date
-    cutoff_ms: int
-    reason: MacroReason | None
-    thesis: MacroThesisV2 | None
-    live_delta: MacroLiveDeltaV2 | None
-    outcome_replay: MacroOutcomeReplayV2 | None
-    recovery: list[MacroRecoveryItem]
-    run: MacroThesisRunData | None
-    history: list[MacroPublicationHistoryItemData]
-
-    @model_validator(mode="after")
-    def validate_current_contract(self) -> MacroThesisDetailReadData:
-        if (self.state == "published") != (self.thesis is not None):
-            raise ValueError("macro_thesis_detail_v4_publication_state_mismatch")
-        if self.thesis is not None and self.thesis.session_date != self.session_date:
-            raise ValueError("macro_thesis_detail_v4_current_session_mismatch")
-        return self
-
-
-class MacroThesisArchiveDetailReadData(ExactApiSchema):
-    schema_version: Literal["macro_thesis_archive_detail_v2"] = "macro_thesis_archive_detail_v2"
-    state: Literal["historical", "missing"]
-    requested_session_date: date
-    current_session_date: date
-    reason: MacroReason | None
-    thesis: MacroThesisV1 | MacroThesisV2 | None
-    recovery: list[MacroRecoveryItem]
-    run: MacroThesisRunData | None
-    history: list[MacroPublicationHistoryItemData]
-
-    @model_validator(mode="after")
-    def validate_archive_contract(self) -> MacroThesisArchiveDetailReadData:
-        if (self.state == "historical") != (self.thesis is not None):
-            raise ValueError("macro_thesis_archive_v2_state_mismatch")
-        if self.thesis is not None and self.thesis.session_date != self.requested_session_date:
-            raise ValueError("macro_thesis_archive_v2_session_mismatch")
-        return self
 
 
 class SearchPageData(ExactApiSchema):

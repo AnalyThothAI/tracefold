@@ -69,9 +69,9 @@ changed seam and report omitted evidence honestly.
 
 News identity, classification, importance, and Brief selection are frozen to
 the implementation copied from WorldMonitor commit
-`f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds persistence,
-scheduled RSS plus additive OpenNews acquisition, current-only Story rows, and
-immutable Chinese Brief publications; it does not add a second identity,
+`f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds OpenNews current
+facts, current-only Story rows, and immutable Chinese Brief publications; it
+does not add a second identity,
 scoring policy, or item-level AI lane.
 
 `tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
@@ -94,10 +94,9 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly fourteen News tables, the synchronized 73-source RSS/RSSHub catalog
-plus one OpenNews source, one acquisition module, one fixed-period Story
-writer, and the native model seam; real RSS and authenticated OpenNews
-observations and NewsItems, deterministic current Story membership, all five
+exactly twelve News tables, one OpenNews source, one acquisition module, one
+fixed-period Story writer, and the native model seam; authenticated OpenNews
+NewsItems, deterministic current Story membership, all five
 public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, measured acquisition/projection latency, and

@@ -185,7 +185,7 @@ def test_explicit_backfill_claims_only_requested_target_keys(tmp_path) -> None:
     assert states[str(unrequested["target_key"])] == "backfilling"
 
 
-def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_storage(
+def test_acquisition_replay_writes_one_fact_and_keeps_current_cursor(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -246,13 +246,13 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
             WHERE dataset_id = 'fred.dgs10'
             """
         ).fetchone()["count"]
-        receipt_count = conn.execute(
+        target = conn.execute(
             """
-            SELECT COUNT(*)::int AS count
-            FROM macro_source_receipts
-            WHERE dataset_id = 'fred.dgs10'
+            SELECT status, cursor_json, last_success_at_ms
+            FROM macro_acquisition_targets
+            WHERE target_key = 'fred.dgs10:latest'
             """
-        ).fetchone()["count"]
+        ).fetchone()
         legacy_tables = conn.execute(
             """
             SELECT table_name
@@ -269,7 +269,9 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
     assert first is not None and first["rows_inserted"] == 1
     assert second is not None and second["rows_inserted"] == 0
     assert fact_count == 1
-    assert receipt_count == 2
+    assert target["status"] == "current"
+    assert target["cursor_json"] == {"reference_date": "2026-07-25"}
+    assert target["last_success_at_ms"] is not None
     assert legacy_tables == []
     assert len(projection_states) == 1
     assert projection_states[0]["acquisition_status"] == "current"
@@ -279,7 +281,7 @@ def test_acquisition_replay_writes_one_fact_and_two_receipts_without_legacy_stor
     assert all(row["deadline_at_ms"] - row["first_dirty_at_ms"] == 60_000 for row in module_frontiers)
 
 
-def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(
+def test_yfinance_intraday_acquisition_persists_market_fact_and_cursor(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -323,13 +325,6 @@ def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(
              WHERE target_key = 'yfinance.spy.intraday:latest'
             """
         ).fetchone()
-        receipt = conn.execute(
-            """
-            SELECT status, rows_seen, rows_inserted, diagnostics_json
-              FROM macro_source_receipts
-             WHERE dataset_id = 'yfinance.spy.intraday'
-            """
-        ).fetchone()
     finally:
         conn.close()
 
@@ -344,10 +339,6 @@ def test_yfinance_intraday_acquisition_persists_market_fact_cursor_and_receipt(
     assert target["status"] == "current"
     assert target["cursor_json"]["observed_at_ms"] == observation["observed_at_ms"]
     assert target["last_success_at_ms"] >= observation["received_at_ms"]
-    assert receipt["status"] == "ok"
-    assert receipt["rows_seen"] == 1
-    assert receipt["rows_inserted"] == 1
-    assert receipt["diagnostics_json"]["provider"] == "yfinance"
 
 
 def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
@@ -425,7 +416,7 @@ def test_settlement_history_collapses_revisions_at_the_requested_cutoff(tmp_path
     assert historical[0]["received_at_ms"] == 100
 
 
-def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path) -> None:
+def test_empty_bounded_backfill_finishes_current_with_its_cursor(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -452,19 +443,11 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
         result = service.run_once()
         stored = conn.execute(
             """
-            SELECT status, priority, cursor_json, last_receipt_id
+            SELECT status, priority, cursor_json
             FROM macro_acquisition_targets
             WHERE target_key = %s
             """,
             (target["target_key"],),
-        ).fetchone()
-        receipt = conn.execute(
-            """
-            SELECT status, rows_seen, rows_inserted
-            FROM macro_source_receipts
-            WHERE receipt_id = %s
-            """,
-            (stored["last_receipt_id"],),
         ).fetchone()
         with repository_session_for_connection(conn) as repos, repos.transaction():
             promoted = repos.macro.promote_covering_backfill_target(
@@ -488,7 +471,6 @@ def test_empty_bounded_backfill_finishes_current_with_a_durable_receipt(tmp_path
     assert stored["priority"] == 75
     assert stored["cursor_json"]["backfill_complete"] is True
     assert stored["cursor_json"]["history_class"] == "optional_maximum_public_history"
-    assert dict(receipt) == {"status": "empty", "rows_seen": 0, "rows_inserted": 0}
 
     assert promoted is not None
     assert promoted["target_key"] == target["target_key"]
@@ -600,4 +582,80 @@ def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:
         "status": "stale",
         "attempt_count": 2,
         "last_error_code": "RuntimeError",
+    }
+
+
+def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        clock = _Clock()
+        spec = require_dataset("fred.dgs10")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.macro.ensure_target(spec, now_ms=clock(), max_attempts=2)
+        service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_daily_settlement",
+            clock_kind=spec.clock_kind,
+            source_client=_FailingClient(),
+            clock_ms=clock,
+        )
+
+        first = service.run_once()
+        clock.now = 1_000_000
+        second = service.run_once()
+        clock.now = 2_000_000
+        third = service.run_once()
+        stored = conn.execute(
+            """
+            SELECT status, attempt_count, last_error_code
+            FROM macro_acquisition_targets
+            WHERE target_key = %s
+            """,
+            (spec.target_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first is not None and first["status"] == "failed"
+    assert second is not None and second["status"] == "failed"
+    assert third is not None and third["status"] == "failed"
+    assert dict(stored) == {
+        "status": "delayed",
+        "attempt_count": 3,
+        "last_error_code": "RuntimeError",
+    }
+
+
+def test_ensure_target_revives_stale_steady_target(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.dgs10")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.macro.ensure_target(spec, now_ms=1_000, max_attempts=2)
+            conn.execute(
+                """
+                UPDATE macro_acquisition_targets
+                SET status = 'stale', attempt_count = 2, next_due_at_ms = 9_000
+                WHERE target_key = %s
+                """,
+                (spec.target_key,),
+            )
+            repos.macro.ensure_target(spec, now_ms=2_000, max_attempts=2)
+        stored = conn.execute(
+            """
+            SELECT status, attempt_count, next_due_at_ms
+            FROM macro_acquisition_targets
+            WHERE target_key = %s
+            """,
+            (spec.target_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert dict(stored) == {
+        "status": "delayed",
+        "attempt_count": 0,
+        "next_due_at_ms": 2_000,
     }

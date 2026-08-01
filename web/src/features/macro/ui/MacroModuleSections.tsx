@@ -218,7 +218,6 @@ export function RatesDecisionSummary({ module }: { module: MacroRatesFedReadData
           {oneDayClassification ? (
             <span data-state={oneDayClassification.state}>1D · {oneDayClassification.label}</span>
           ) : null}
-          <span>Thesis · {thesisRoleLabel(module.thesis_context.role)}</span>
         </div>
       </header>
 
@@ -957,7 +956,6 @@ function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }
   if (module.module_id === "rates_fed") {
     return <RatesDecisionAnnotationRail module={module} />;
   }
-  const thesisContext = module.thesis_context;
   const summaryInterpretation = module.summary.interpretation;
   return (
     <aside aria-label="图表决策注释" className="macro-decision__annotation-rail">
@@ -970,30 +968,6 @@ function DecisionAnnotationRail({ module }: { module: MacroTypedModuleReadData }
         <strong>{formatInstant(module.latest_fact_at_ms)}</strong>
         {module.summary.headline ? <small>{module.summary.headline}</small> : null}
         {summaryInterpretation ? <small>{summaryInterpretation}</small> : null}
-      </article>
-      <article
-        data-context-state={thesisContext.state}
-        data-state={thesisContext.role === "contradicting" ? "weakening" : undefined}
-      >
-        <span>当前 Thesis 关系</span>
-        <strong>{thesisRoleLabel(thesisContext.role)}</strong>
-        {thesisContext.assessment ? <small>{thesisContext.assessment.analysis}</small> : null}
-        {thesisContext.reason ? <small>{thesisContext.reason.message}</small> : null}
-        <small>
-          闭集条件 {thesisContext.conditions.length} · 恢复观察 {thesisContext.recovery.length}
-        </small>
-        {thesisContext.assessment?.evidence_refs.length ? (
-          <details>
-            <summary>查看实际引用证据</summary>
-            <ul>
-              {thesisContext.assessment.evidence_refs.map((id) => (
-                <li key={id}>
-                  <small>{id}</small>
-                </li>
-              ))}
-            </ul>
-          </details>
-        ) : null}
       </article>
       {module.summary.top_changes.length ? (
         <article data-state="change">
@@ -1105,13 +1079,6 @@ function RatesDecisionAnnotationRail({ module }: { module: MacroRatesFedReadData
         <span>来源权威</span>
         <strong>U.S. Treasury · decision primary</strong>
         <small>FRED · history / reconciliation only</small>
-      </article>
-      <article data-context-state={module.thesis_context.state}>
-        <span>Thesis 次级状态</span>
-        <strong>{thesisRoleLabel(module.thesis_context.role)}</strong>
-        {module.thesis_context.assessment ? (
-          <small>{module.thesis_context.assessment.analysis}</small>
-        ) : null}
       </article>
     </aside>
   );
@@ -1552,58 +1519,7 @@ function moduleChartAnnotations(
               ]
             : [],
         );
-  const cutoffInstant =
-    module.thesis_context.cutoff_ms == null
-      ? null
-      : new Date(module.thesis_context.cutoff_ms).toISOString();
-  const cutoffDate = cutoffInstant?.slice(0, 10) ?? null;
-  const cutoff =
-    cutoffDate && cutoffInstant && series[0]
-      ? [
-          {
-            id: `cutoff:${module.module_id}:${series[0].id}:${module.thesis_context.cutoff_ms}`,
-            date: cutoffDate,
-            detail: "该主线发布时可使用事实的最终截点。",
-            label: "主线证据截点",
-            seriesId: series[0].id,
-            sourceTimestamp: cutoffInstant,
-            tone: "cutoff" as const,
-          },
-        ]
-      : [];
-  const thesisConditions =
-    cutoffDate == null || cutoffInstant == null
-      ? []
-      : module.thesis_context.conditions.flatMap((condition) => {
-          if (!condition.dataset_id || !visibleDatasetIds.has(condition.dataset_id)) return [];
-          const label =
-            condition.kind === "falsifier"
-              ? "主线失效阈值"
-              : condition.kind === "checkpoint"
-                ? "下一检查点"
-                : "主线确认条件";
-          const tone =
-            condition.kind === "falsifier"
-              ? ("invalidation" as const)
-              : condition.kind === "checkpoint"
-                ? ("checkpoint" as const)
-                : condition.kind === "weakening"
-                  ? ("weakening" as const)
-                  : ("confirming" as const);
-          return [
-            {
-              id: `thesis:${condition.scope_kind}:${condition.scope_id}:${condition.kind}:${condition.condition_id}`,
-              date: cutoffDate,
-              detail: condition.rationale,
-              label,
-              seriesId: condition.dataset_id,
-              sourceTimestamp: cutoffInstant,
-              tone,
-              value: condition.threshold ?? undefined,
-            },
-          ];
-        });
-  return [...cutoff, ...changes, ...thesisConditions];
+  return changes;
 }
 
 function indicatorChangeGroups(indicators: MacroIndicatorView[]): MacroBarGroup[] {
@@ -1706,19 +1622,6 @@ function stanceLabel(value: string): string {
       neutral: "中性",
       no_call: "证据不足，暂不判断",
     }[value] ?? "立场未解释"
-  );
-}
-
-function thesisRoleLabel(value: NonNullable<MacroTypedModuleReadData["thesis_context"]["role"]>) {
-  return (
-    {
-      confirming: "确认主线",
-      contradicting: "反驳主线",
-      driver: "驱动主线",
-      not_material: "本次不重要",
-      unassessed: "未评估",
-      uncertain: "关系未定",
-    }[value] ?? "关系未解释"
   );
 }
 

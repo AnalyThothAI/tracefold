@@ -109,8 +109,8 @@ docker-status: ## show container and readiness
 	@docker compose ps
 	@curl -fsS http://127.0.0.1:8765/readyz || true
 
-docker-logs: ## tail serve, workers, PostgreSQL, and RSSHub logs
-	@docker compose logs -f --tail=100 serve workers postgres rsshub
+docker-logs: ## tail serve, workers, and PostgreSQL logs
+	@docker compose logs -f --tail=100 serve workers postgres
 
 docker-down: ## stop container service
 	@docker compose down

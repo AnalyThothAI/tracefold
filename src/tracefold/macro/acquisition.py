@@ -52,7 +52,7 @@ class MacroAcquisitionClaim:
 
 
 class MacroAcquisitionService:
-    """Coordinate target claims and atomic fact/cursor/receipt commits."""
+    """Coordinate target claims and atomic fact/cursor commits."""
 
     def __init__(
         self,
@@ -171,38 +171,17 @@ class MacroAcquisitionService:
     ) -> dict[str, Any]:
         completed_at_ms = int(self.clock_ms())
         unavailable = isinstance(error, MacroSourceUnavailable)
-        receipt_id = _receipt_id(
-            claim.target,
-            claim.started_at_ms,
-            completed_at_ms,
-            "failed",
-        )
         error_code = str(error) if unavailable else type(error).__name__
         with self._session() as repos, repos.transaction():
-            repos.macro.record_receipt(
-                target=claim.target,
-                receipt_id=receipt_id,
-                started_at_ms=claim.started_at_ms,
-                completed_at_ms=completed_at_ms,
-                status="failed",
-                http_status=None,
-                rows_seen=0,
-                rows_inserted=0,
-                response_hash=None,
-                error_code=error_code,
-                error_message=_safe_error(error),
-                diagnostics={"adapter_id": claim.spec.adapter_id},
-            )
-            completed = repos.macro.fail_target(
+            target_status = repos.macro.fail_target(
                 target=claim.target,
                 lease_owner=self.lease_owner,
-                receipt_id=receipt_id,
                 error_code=error_code,
                 next_due_at_ms=completed_at_ms + self.retry_ms,
                 completed_at_ms=completed_at_ms,
                 unavailable=unavailable,
             )
-            if not completed:
+            if target_status is None:
                 raise RuntimeError("macro_acquisition_stale_claim") from error
             _mark_dataset_state_and_modules(
                 repos,
@@ -213,6 +192,7 @@ class MacroAcquisitionService:
                         "dataset_id": claim.spec.dataset_id,
                         "status": ("unavailable" if unavailable else "failed"),
                         "error_code": error_code,
+                        "target_status": target_status,
                     }
                 ),
                 source_frontier_ms=_current_dataset_frontier(
@@ -237,12 +217,6 @@ class MacroAcquisitionService:
         completed_at_ms = int(self.clock_ms())
         target = claim.target
         spec = claim.spec
-        receipt_id = _receipt_id(
-            target,
-            claim.started_at_ms,
-            completed_at_ms,
-            batch.response_hash,
-        )
         completed_cursor = dict(batch.cursor)
         if self.clock_kind == "backfill":
             target_cursor = target.get("cursor_json")
@@ -283,21 +257,6 @@ class MacroAcquisitionService:
                     speech_lookback_days=self.document_analysis_speech_lookback_days,
                     document_ids=tuple(sorted(set(inserted_document_ids))),
                 )
-            receipt_status = "ok" if batch.facts else "empty"
-            repos.macro.record_receipt(
-                target=target,
-                receipt_id=receipt_id,
-                started_at_ms=claim.started_at_ms,
-                completed_at_ms=completed_at_ms,
-                status=receipt_status,
-                http_status=batch.http_status,
-                rows_seen=len(batch.facts),
-                rows_inserted=inserted,
-                response_hash=batch.response_hash,
-                error_code=None,
-                error_message=None,
-                diagnostics=batch.diagnostics,
-            )
             unfinished = batch.completion == "continuation"
             backfill_complete = not unfinished and (
                 self.clock_kind != "backfill"
@@ -318,7 +277,6 @@ class MacroAcquisitionService:
             completed = repos.macro.complete_target(
                 target_key=str(target["target_key"]),
                 lease_owner=self.lease_owner,
-                receipt_id=receipt_id,
                 cursor=completed_cursor,
                 next_due_at_ms=(
                     completed_at_ms
@@ -375,22 +333,6 @@ def acquisition_loop_policy(clock_kind: str) -> tuple[float, int]:
     except KeyError as exc:
         raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}") from exc
     return interval_seconds, batch_size
-
-
-def _receipt_id(
-    target: dict[str, Any],
-    started_at_ms: int,
-    completed_at_ms: int,
-    result_key: str,
-) -> str:
-    identity = f"{target['target_key']}|{started_at_ms}|{completed_at_ms}|{target['attempt_count']}|{result_key}"
-    return "macrorcpt_" + hashlib.sha256(identity.encode()).hexdigest()
-
-
-def _safe_error(exc: Exception) -> str:
-    text = str(exc).replace("\n", " ").strip()
-    return text[:500] or type(exc).__name__
-
 
 def _mark_dataset_state_and_modules(
     repos: Any,

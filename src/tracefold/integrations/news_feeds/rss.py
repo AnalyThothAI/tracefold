@@ -305,9 +305,12 @@ class RssFeedReader(NewsFeedReader):
                     )
                 body.extend(chunk)
             budget.remaining()
+            decoded_headers = httpx.Headers(response.headers)
+            decoded_headers.pop("content-encoding", None)
+            decoded_headers.pop("content-length", None)
             return httpx.Response(
                 status_code=response.status_code,
-                headers=response.headers,
+                headers=decoded_headers,
                 content=bytes(body),
                 request=response.request,
             )

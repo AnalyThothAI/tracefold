@@ -21,46 +21,25 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-test("renders one current Macro Thesis with sparse judgment and complete facts", async ({
-  page,
-}) => {
+test("renders the six current Macro fact modules", async ({ page }) => {
   await page.goto("/macro");
 
-  await expect(page.getByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "宏观页面" }).getByRole("link")).toHaveCount(8);
-  await expect(
-    page.getByRole("heading", { name: "真实利率回落正在缓和风险资产的贴现压力" }),
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "尚未闭合的反证" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "本次真正重要的模块" })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "十二资产事实固定呈现，展望只在有传导时出现" }),
-  ).toBeVisible();
-  await expect(page.locator("[data-asset-fact]")).toHaveCount(12);
-  await expect(page.locator('[data-asset-fact="SPY"]')).toContainText("1 周 · 偏多");
-  await expect(page.locator('[data-asset-fact="QQQ"]')).toContainText("—");
-  await expect(page.getByText("正在确认").first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "发布时缺口与当前事实分开看" })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "仅评估 1W / 1M material outlook" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "宏观事实总览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "当前事实摘要" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "宏观页面" }).getByRole("link")).toHaveCount(7);
   await expect(page.getByRole("region", { name: "六个宏观模块" }).locator("article")).toHaveCount(
     6,
-  );
-  await expect(page.getByRole("link", { name: "研究档案" })).toHaveAttribute(
-    "href",
-    "/macro/research",
   );
 
   await expectMacroLayout(page);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("keeps the Macro Thesis inside a 390px mobile viewport", async ({ page }) => {
+test("keeps current Macro facts inside a 390px mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/macro");
 
-  await expect(page.getByRole("heading", { level: 1, name: "每日宏观主线" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "宏观事实总览" })).toBeVisible();
   await expectMacroLayout(page);
   await expectNoUnhandledApiRequests(page);
 });
@@ -123,15 +102,8 @@ for (const [path, title] of modules) {
 
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
     await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "图表决策注释" })).toBeVisible();
-    await expect(page.locator(".macro-decision__header")).toContainText("数据合同");
-    await expect(
-      page.getByText(
-        path === "/macro/rates-fed"
-          ? "期限、窗口和来源均由持久化合同提供"
-          : "只展示当前 API 返回的判断与检查项",
-      ),
-    ).toBeVisible();
+    await expect(page.locator(".macro-decision__header")).toContainText("确定性事实页");
+    await expect(page.locator(".macro-decision__diagnostic-strip")).toContainText("当前事实");
     await expect(page.locator(".macro-decision")).not.toContainText("历史窗口");
     await expect(page.locator(".macro-decision")).not.toContainText(
       "展开 Coverage、Current Health、History Depth 与原始事实",
@@ -153,7 +125,5 @@ async function expectMacroLayout(page: Page) {
     ".macro-decision",
     ".macro-decision__header",
     { selector: ".macro-decision__nav", allowHorizontalOverflow: true },
-    { selector: ".macro-thesis-report__asset-table", allowHorizontalOverflow: true },
-    { selector: ".macro-thesis-report__recovery", allowHorizontalOverflow: true },
   ]);
 }

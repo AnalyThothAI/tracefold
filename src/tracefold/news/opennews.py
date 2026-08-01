@@ -21,17 +21,7 @@ _TRACKING_PARAMS = frozenset(
         "utm_term",
     }
 )
-_SECRET_KEYS = frozenset({"authorization", "token", "access_token", "api_key"})
-_TRANSPORT_KEYS = frozenset(
-    {
-        "connection_id",
-        "fetch_id",
-        "page",
-        "received_at",
-        "received_at_ms",
-        "session_id",
-    }
-)
+_MAX_COINS = 32
 
 
 class OpenNewsExpectedError(RuntimeError):
@@ -46,9 +36,8 @@ class OpenNewsExpectedError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OpenNewsEvent:
     provider_record_id: str
-    source_item_key: str
     observation_kind: Literal["report", "translation", "provider_annotation"]
-    raw: dict[str, Any]
+    provider_metadata: dict[str, Any]
     entry: NewsFeedEntry | None
 
 
@@ -79,39 +68,35 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     params = message.get("params")
     if not isinstance(params, Mapping):
         return None
-    raw = _sanitize_mapping(params)
     provider_record_id = _text(params.get("id"))
     if not provider_record_id:
         return None
     if method == "news.ai_update":
         return OpenNewsEvent(
             provider_record_id=provider_record_id,
-            source_item_key=f"dispatch:opennews:{provider_record_id}",
             observation_kind="provider_annotation",
-            raw=raw,
+            provider_metadata=_provider_metadata(params),
             entry=None,
         )
     if _text(params.get("engineType")).lower() != "news":
         return None
     canonical_url = _article_url(_text(params.get("link")))
-    source_item_key = f"url:{canonical_url}" if canonical_url else f"dispatch:opennews:{provider_record_id}"
     observation_kind: Literal["report", "translation"] = "translation" if _is_translation(params) else "report"
     entry = None
     if observation_kind == "report":
         entry = NewsFeedEntry(
-            guid=source_item_key,
+            guid=provider_record_id,
             link=canonical_url or None,
             title=_text(params.get("text")) or None,
-            description="",
+            description=_text(params.get("description")),
             published_at_ms=_timestamp_ms(params.get("ts")),
             reporting_origin=_reporting_origin(params, canonical_url=canonical_url),
-            raw=raw,
+            raw={},
         )
     return OpenNewsEvent(
         provider_record_id=provider_record_id,
-        source_item_key=source_item_key,
         observation_kind=observation_kind,
-        raw=raw,
+        provider_metadata=_provider_metadata(params),
         entry=entry,
     )
 
@@ -165,22 +150,61 @@ def _reporting_origin(params: Mapping[str, Any], *, canonical_url: str) -> str:
 
 
 def _is_translation(params: Mapping[str, Any]) -> bool:
-    return any(key in params for key in ("translation", "translationOf", "translatedFrom", "translatedText"))
+    return _text(params.get("newsType")).casefold() == "translation" or any(
+        key in params for key in ("translation", "translationOf", "translatedFrom", "translatedText")
+    )
 
 
-def _sanitize_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
+    ai_rating = params.get("aiRating")
+    ai = ai_rating if isinstance(ai_rating, Mapping) else {}
     result: dict[str, Any] = {}
-    for raw_key, raw_value in value.items():
-        key = str(raw_key)
-        if key.lower() in _SECRET_KEYS | _TRANSPORT_KEYS:
-            continue
-        if isinstance(raw_value, Mapping):
-            result[key] = _sanitize_mapping(raw_value)
-        elif isinstance(raw_value, list):
-            result[key] = [_sanitize_mapping(item) if isinstance(item, Mapping) else item for item in raw_value]
-        else:
-            result[key] = raw_value
+    score = _number(params.get("score"))
+    if score is None:
+        score = _number(ai.get("score"))
+    if score is not None:
+        result["score"] = score
+    source = _text(params.get("source"))
+    if source:
+        result["source"] = source[:128]
+    for key in ("signal", "grade"):
+        value = _text(ai.get(key))
+        if value:
+            result[key] = value[:32]
+    coins = params.get("coins")
+    if isinstance(coins, list):
+        normalized: list[dict[str, Any]] = []
+        for raw_coin in coins[:_MAX_COINS]:
+            if not isinstance(raw_coin, Mapping):
+                continue
+            symbol = _text(raw_coin.get("symbol"))[:32]
+            market_type = _text(raw_coin.get("market_type"))[:32]
+            if not symbol or not market_type:
+                continue
+            coin: dict[str, Any] = {
+                "symbol": symbol,
+                "market_type": market_type,
+            }
+            match = _text(raw_coin.get("match"))
+            if match:
+                coin["match"] = match[:64]
+            coin_score = _number(raw_coin.get("score"))
+            if coin_score is not None:
+                coin["score"] = coin_score
+            for key in ("signal", "grade"):
+                value = _text(raw_coin.get(key))
+                if value:
+                    coin[key] = value[:32]
+            normalized.append(coin)
+        if normalized:
+            result["coins"] = normalized
     return result
+
+
+def _number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return value
 
 
 def _text(value: object) -> str:

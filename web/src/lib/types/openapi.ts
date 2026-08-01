@@ -157,23 +157,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/macro/research": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Macro Research */
-        get: operations["macro_research_api_macro_research_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/macro/volatility": {
         parameters: {
             query?: never;
@@ -669,17 +652,6 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[Union[MacroThesisDetailReadData, MacroThesisArchiveDetailReadData]] */
-        ApiEnvelope_Union_MacroThesisDetailReadData__MacroThesisArchiveDetailReadData__: {
-            /** Data */
-            data?: components["schemas"]["MacroThesisDetailReadData"] | components["schemas"]["MacroThesisArchiveDetailReadData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[Union[MacroVolatilityReadData, MacroModuleUnavailableData]] */
         ApiEnvelope_Union_MacroVolatilityReadData__MacroModuleUnavailableData__: {
             /** Data */
@@ -757,32 +729,6 @@ export interface components {
             /** Volume 24H Usd */
             volume_24h_usd: number | null;
         };
-        /** MacroAlternative */
-        MacroAlternative: {
-            /** Causal Edges */
-            causal_edges: components["schemas"]["MacroCausalEdge"][];
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
-            /** Thesis */
-            thesis: string;
-            /** Title */
-            title: string;
-            /** Trigger Conditions */
-            trigger_conditions: components["schemas"]["MacroCondition"][];
-        };
-        /** MacroAssetView */
-        MacroAssetView: {
-            momentum: components["schemas"]["MacroMomentum"];
-            outlook_1m: components["schemas"]["MacroHorizonOutlook"];
-            outlook_1w: components["schemas"]["MacroHorizonOutlook"];
-            /** Symbol */
-            symbol: string;
-        };
         /** MacroBackfillExecutionData */
         MacroBackfillExecutionData: {
             /** Complete Targets */
@@ -801,22 +747,6 @@ export interface components {
             state: "not_required" | "complete" | "queued" | "running" | "retry_wait" | "failed";
             /** Total Targets */
             total_targets: number;
-        };
-        /** MacroCausalEdge */
-        MacroCausalEdge: {
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Mechanism */
-            mechanism: string;
-            /** Source */
-            source: string;
-            /** Target */
-            target: string;
         };
         /** MacroChangeData */
         MacroChangeData: {
@@ -851,155 +781,6 @@ export interface components {
             unit: string;
             /** Value */
             value: number;
-        };
-        /** MacroChangeFromPrior */
-        MacroChangeFromPrior: {
-            /** Change Id */
-            change_id: string;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Statement */
-            statement: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "new" | "strengthened" | "weakened" | "reversed" | "unchanged";
-        };
-        /** MacroCitation */
-        MacroCitation: {
-            /** Dataset Id */
-            dataset_id: string | null;
-            /** Evidence Ref */
-            evidence_ref: string;
-            /** Label */
-            label: string;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /** Published At Ms */
-            published_at_ms: number | null;
-            /** Received At Ms */
-            received_at_ms: number | null;
-            /** Reference */
-            reference: string | null;
-            /** Source Role */
-            source_role: string | null;
-            /** Source Url */
-            source_url: string | null;
-        };
-        /** MacroCitationV2 */
-        MacroCitationV2: {
-            /** As Of */
-            as_of: string | null;
-            /** Authoritative At Ms */
-            authoritative_at_ms: number;
-            /** Dataset Id */
-            dataset_id: string;
-            /** Evidence Ref */
-            evidence_ref: string;
-            /** Label */
-            label: string;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /** Source Id */
-            source_id: string | null;
-            /** Source Role */
-            source_role: string | null;
-            /** Source Url */
-            source_url: string | null;
-            /** Unit */
-            unit: string;
-            /** Value */
-            value: number | string | null;
-        };
-        /** MacroCompiledCondition */
-        MacroCompiledCondition: {
-            /** As Of */
-            as_of: string | null;
-            /** Candidate Id */
-            candidate_id: string;
-            /**
-             * Candidate Type
-             * @enum {string}
-             */
-            candidate_type: "metric_condition" | "event_checkpoint";
-            /** Condition Id */
-            condition_id: string;
-            /** Dataset Id */
-            dataset_id: string | null;
-            /** Event Id */
-            event_id: string | null;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Frozen Value */
-            frozen_value: number | null;
-            /** Horizon */
-            horizon: ("1w" | "1m") | null;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "confirmation" | "weakening" | "falsifier" | "checkpoint";
-            /** Metric */
-            metric: string | null;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /** Operator */
-            operator: ("gt" | "gte" | "lt" | "lte") | null;
-            /** Rationale */
-            rationale: string;
-            /** Scheduled At Ms */
-            scheduled_at_ms: number | null;
-            /** Scope Id */
-            scope_id: string;
-            /**
-             * Scope Kind
-             * @enum {string}
-             */
-            scope_kind: "mainline" | "alternative" | "tension" | "asset";
-            /** Symbol */
-            symbol: string | null;
-            /** Threshold */
-            threshold: number | null;
-            /** Unit */
-            unit: string | null;
-        };
-        /** MacroCondition */
-        MacroCondition: {
-            /** Condition Id */
-            condition_id: string;
-            /** Dataset Id */
-            dataset_id: string;
-            /**
-             * Effect
-             * @enum {string}
-             */
-            effect: "confirming" | "weakening" | "invalidation_triggered";
-            /** Metric Name */
-            metric_name: string;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /**
-             * Operator
-             * @enum {string}
-             */
-            operator: "gt" | "gte" | "lt" | "lte" | "abs_gte";
-            /** Rationale */
-            rationale: string;
-            /** Threshold */
-            threshold: number;
         };
         /** MacroCorrelationData */
         MacroCorrelationData: {
@@ -1151,7 +932,6 @@ export interface components {
             spread_ladder: components["schemas"]["MacroCreditSpreadLadderData"];
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroCreditSpreadLadderData */
         MacroCreditSpreadLadderData: {
@@ -1249,7 +1029,6 @@ export interface components {
             schema_version: "macro_cross_asset_v7";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroCrossAssetReturnMatrixRowData */
         MacroCrossAssetReturnMatrixRowData: {
@@ -1567,156 +1346,6 @@ export interface components {
              */
             trust_tier: "official" | "exchange" | "untrusted_proxy";
         };
-        /** MacroDraftAlternative */
-        MacroDraftAlternative: {
-            /** Alternative Id */
-            alternative_id: string;
-            /** Causal Edges */
-            causal_edges: components["schemas"]["MacroDraftCausalEdge"][];
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
-            /** Thesis */
-            thesis: string;
-            /** Title */
-            title: string;
-        };
-        /** MacroDraftAssetOutlook */
-        MacroDraftAssetOutlook: {
-            /** Causal Transmission */
-            causal_transmission: string;
-            /** Confidence */
-            confidence?: ("low" | "medium" | "high") | null;
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /**
-             * Direction
-             * @enum {string}
-             */
-            direction: "bullish" | "bearish" | "neutral";
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m";
-            /**
-             * Outlook Context
-             * @enum {string}
-             */
-            outlook_context: "mainline" | "alternative" | "tension" | "local";
-            /** Outlook Id */
-            outlook_id: string;
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
-            /** Symbol */
-            symbol: string;
-        };
-        /** MacroDraftCausalEdge */
-        MacroDraftCausalEdge: {
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Edge Id */
-            edge_id: string;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Mechanism */
-            mechanism: string;
-            /** Source */
-            source: string;
-            /** Target */
-            target: string;
-        };
-        /** MacroDraftMainline */
-        MacroDraftMainline: {
-            /**
-             * Causal Edges
-             * @default []
-             */
-            causal_edges: components["schemas"]["MacroDraftCausalEdge"][];
-            /** Confidence */
-            confidence?: ("low" | "medium" | "high") | null;
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m" | "1w_to_1m";
-            /** No Call Reason */
-            no_call_reason?: string | null;
-            /**
-             * Stage
-             * @enum {string}
-             */
-            stage: "emerging" | "developing" | "mature" | "reversing" | "uncertain";
-            /**
-             * Stance
-             * @enum {string}
-             */
-            stance: "call" | "no_call";
-            /**
-             * Supporting Evidence Refs
-             * @default []
-             */
-            supporting_evidence_refs: string[];
-            /** Thesis */
-            thesis: string;
-            /** Title */
-            title: string;
-        };
-        /** MacroDraftModuleAssessment */
-        MacroDraftModuleAssessment: {
-            /** Analysis */
-            analysis: string;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /**
-             * Role
-             * @enum {string}
-             */
-            role: "driver" | "confirming" | "contradicting" | "uncertain";
-        };
-        /** MacroDraftTension */
-        MacroDraftTension: {
-            /**
-             * Leading Side
-             * @enum {string}
-             */
-            leading_side: "side_a" | "side_b" | "balanced" | "uncertain";
-            side_a: components["schemas"]["MacroDraftTensionSide"];
-            side_b: components["schemas"]["MacroDraftTensionSide"];
-            /** Statement */
-            statement: string;
-            /** Tension Id */
-            tension_id: string;
-            /** Unresolved Reason */
-            unresolved_reason: string;
-        };
-        /** MacroDraftTensionSide */
-        MacroDraftTensionSide: {
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Statement */
-            statement: string;
-        };
         /** MacroEconomyInflationReadData */
         MacroEconomyInflationReadData: {
             /**
@@ -1751,7 +1380,6 @@ export interface components {
             schema_version: "macro_economy_inflation_v5";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroEconomySectionData */
         MacroEconomySectionData: {
@@ -1759,45 +1387,6 @@ export interface components {
             indicators: components["schemas"]["MacroIndicatorData"][];
             /** Official Releases */
             official_releases: components["schemas"]["MacroOfficialReleaseSummaryData"][];
-        };
-        /** MacroEventDeltaItemV2 */
-        MacroEventDeltaItemV2: {
-            /** Candidate Id */
-            candidate_id: string;
-            /** Condition Id */
-            condition_id: string;
-            /** Event Id */
-            event_id: string;
-            /**
-             * Item Type
-             * @default event_checkpoint
-             * @constant
-             */
-            item_type: "event_checkpoint";
-            /**
-             * Kind
-             * @default checkpoint
-             * @constant
-             */
-            kind: "checkpoint";
-            /** Observed At Ms */
-            observed_at_ms: number | null;
-            /** Reason Code */
-            reason_code: string;
-            /** Scheduled At Ms */
-            scheduled_at_ms: number;
-            /** Scope Id */
-            scope_id: string;
-            /**
-             * Scope Kind
-             * @enum {string}
-             */
-            scope_kind: "mainline" | "alternative" | "tension" | "asset";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "upcoming" | "due" | "observed" | "missed" | "insufficient";
         };
         /** MacroEvidenceFactData */
         MacroEvidenceFactData: {
@@ -1823,55 +1412,6 @@ export interface components {
             unit: string;
             /** Value */
             value: number | string | null;
-        };
-        /** MacroEvidenceGap */
-        MacroEvidenceGap: {
-            /**
-             * Affected Claim Ids
-             * @default []
-             */
-            affected_claim_ids: string[];
-            /**
-             * Axis
-             * @enum {string}
-             */
-            axis: "coverage" | "current_health" | "history_depth";
-            /** Dataset Id */
-            dataset_id: string;
-            /** Gap Id */
-            gap_id: string;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /** Reason */
-            reason: string;
-            /** State */
-            state: string;
-        };
-        /** MacroEvidenceGapV2 */
-        MacroEvidenceGapV2: {
-            /** Dataset Id */
-            dataset_id: string | null;
-            /** Gap Id */
-            gap_id: string;
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /** Reason */
-            reason: string;
-            /** Scope Id */
-            scope_id: string;
-            /**
-             * Scope Kind
-             * @enum {string}
-             */
-            scope_kind: "module" | "claim" | "asset" | "dataset";
-            /** State */
-            state: string;
         };
         /** MacroFedAnalysisEvidenceData */
         MacroFedAnalysisEvidenceData: {
@@ -2042,31 +1582,6 @@ export interface components {
             /** Title */
             title: string;
         };
-        /** MacroFrozenAssetSnapshotV2 */
-        MacroFrozenAssetSnapshotV2: {
-            /** As Of */
-            as_of: string | null;
-            /** Display Order */
-            display_order: number;
-            /**
-             * Momentum 1M
-             * @enum {string}
-             */
-            momentum_1m: "up" | "down" | "flat" | "insufficient";
-            /**
-             * Momentum 1W
-             * @enum {string}
-             */
-            momentum_1w: "up" | "down" | "flat" | "insufficient";
-            /** Return 1M Pct */
-            return_1m_pct: number | null;
-            /** Return 1W Pct */
-            return_1w_pct: number | null;
-            /** Source Dataset Id */
-            source_dataset_id: string | null;
-            /** Symbol */
-            symbol: string;
-        };
         /** MacroHistoryDepthData */
         MacroHistoryDepthData: {
             /** Complete Datasets */
@@ -2088,51 +1603,6 @@ export interface components {
             date: string;
             /** Value */
             value: number;
-        };
-        /** MacroHorizonOutlook */
-        MacroHorizonOutlook: {
-            /** Causal Channel */
-            causal_channel: string;
-            /**
-             * Checkpoints
-             * @default []
-             */
-            checkpoints: components["schemas"]["MacroCondition"][];
-            /**
-             * Confidence
-             * @enum {string}
-             */
-            confidence: "low" | "medium" | "high";
-            /**
-             * Confirmation Triggers
-             * @default []
-             */
-            confirmation_triggers: components["schemas"]["MacroCondition"][];
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /**
-             * Direction
-             * @enum {string}
-             */
-            direction: "bullish" | "bearish" | "neutral" | "no_call";
-            /**
-             * Falsifiers
-             * @default []
-             */
-            falsifiers: components["schemas"]["MacroCondition"][];
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m";
-            /**
-             * Supporting Evidence Refs
-             * @default []
-             */
-            supporting_evidence_refs: string[];
         };
         /** MacroImportanceFactorsData */
         MacroImportanceFactorsData: {
@@ -2235,75 +1705,6 @@ export interface components {
             schema_version: "macro_liquidity_funding_v5";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
-        };
-        /** MacroLiveDeltaV2 */
-        MacroLiveDeltaV2: {
-            /** Evaluated At Ms */
-            evaluated_at_ms: number;
-            /** Input Hash */
-            input_hash: string;
-            /** Items */
-            items: (components["schemas"]["MacroMetricDeltaItemV2"] | components["schemas"]["MacroEventDeltaItemV2"])[];
-            /** Live Delta Id */
-            live_delta_id: string;
-            /**
-             * Mainline Validity
-             * @enum {string}
-             */
-            mainline_validity: "confirming" | "weakening" | "invalidation_triggered" | "unrelated" | "insufficient";
-            /** Module Fact Cutoff Ms */
-            module_fact_cutoff_ms: number;
-            /** Publication Id */
-            publication_id: string;
-            /** Reason Codes */
-            reason_codes: string[];
-            /**
-             * Schema Version
-             * @default macro_live_delta_v2
-             * @constant
-             */
-            schema_version: "macro_live_delta_v2";
-        };
-        /** MacroMainline */
-        MacroMainline: {
-            /** Checkpoints */
-            checkpoints: components["schemas"]["MacroCondition"][];
-            /** Claims */
-            claims: components["schemas"]["MacroThesisClaim"][];
-            /**
-             * Confidence
-             * @enum {string}
-             */
-            confidence: "low" | "medium" | "high";
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Falsifiers */
-            falsifiers: components["schemas"]["MacroCondition"][];
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m" | "1w_to_1m";
-            /**
-             * Stage
-             * @enum {string}
-             */
-            stage: "emerging" | "developing" | "mature" | "reversing" | "uncertain";
-            /**
-             * Stance
-             * @enum {string}
-             */
-            stance: "call" | "no_call";
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
-            /** Thesis */
-            thesis: string;
-            /** Title */
-            title: string;
         };
         /** MacroMarketFactData */
         MacroMarketFactData: {
@@ -2329,53 +1730,6 @@ export interface components {
             /** Unit */
             unit: string;
         };
-        /** MacroMetricDeltaItemV2 */
-        MacroMetricDeltaItemV2: {
-            /** Candidate Id */
-            candidate_id: string;
-            /** Condition Id */
-            condition_id: string;
-            /** Dataset Id */
-            dataset_id: string;
-            /**
-             * Item Type
-             * @default metric_condition
-             * @constant
-             */
-            item_type: "metric_condition";
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "confirmation" | "weakening" | "falsifier";
-            /** Metric */
-            metric: string;
-            /** Observed At Ms */
-            observed_at_ms: number | null;
-            /** Observed Value */
-            observed_value: number | null;
-            /**
-             * Operator
-             * @enum {string}
-             */
-            operator: "gt" | "gte" | "lt" | "lte";
-            /** Reason Code */
-            reason_code: string;
-            /** Scope Id */
-            scope_id: string;
-            /**
-             * Scope Kind
-             * @enum {string}
-             */
-            scope_kind: "mainline" | "alternative" | "tension" | "asset";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "confirming" | "weakening" | "invalidation_triggered" | "unrelated" | "insufficient";
-            /** Threshold */
-            threshold: number;
-        };
         /** MacroModuleEvidenceData */
         MacroModuleEvidenceData: {
             /** Asset Changes */
@@ -2386,33 +1740,6 @@ export interface components {
             latest_facts: components["schemas"]["MacroEvidenceFactData"][];
             /** Reconciliation Receipts */
             reconciliation_receipts: components["schemas"]["MacroReconciliationReceiptData"][];
-        };
-        /** MacroModuleRole */
-        MacroModuleRole: {
-            /** Analysis */
-            analysis: string;
-            /**
-             * Claim Ids
-             * @default []
-             */
-            claim_ids: string[];
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /**
-             * Module Id
-             * @enum {string}
-             */
-            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
-            /**
-             * Role
-             * @enum {string}
-             */
-            role: "driver" | "confirming" | "contradicting" | "uncertain";
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
         };
         /** MacroModuleStatusData */
         MacroModuleStatusData: {
@@ -2450,13 +1777,7 @@ export interface components {
             /** Module Id */
             module_id: string;
             reason: components["schemas"]["MacroReason"] | null;
-            /**
-             * Role
-             * @enum {string}
-             */
-            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material" | "unassessed";
             summary: components["schemas"]["MacroOverviewModuleSummaryStateData"] | null;
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroModuleSummaryStateData */
         MacroModuleSummaryStateData: {
@@ -2466,32 +1787,6 @@ export interface components {
             interpretation: string | null;
             /** Top Changes */
             top_changes: components["schemas"]["MacroChangeData"][];
-        };
-        /** MacroModuleThesisContextData */
-        MacroModuleThesisContextData: {
-            assessment: components["schemas"]["MacroDraftModuleAssessment"] | null;
-            /** Conditions */
-            conditions: components["schemas"]["MacroCompiledCondition"][];
-            /** Cutoff Ms */
-            cutoff_ms: number;
-            reason: components["schemas"]["MacroReason"] | null;
-            /** Recovery */
-            recovery: components["schemas"]["MacroRecoveryItem"][];
-            /**
-             * Role
-             * @enum {string}
-             */
-            role: "driver" | "confirming" | "contradicting" | "uncertain" | "not_material" | "unassessed";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "published" | "pending" | "running" | "retryable" | "failed" | "config_error" | "not_published" | "missing";
         };
         /** MacroModuleUnavailableData */
         MacroModuleUnavailableData: {
@@ -2514,44 +1809,6 @@ export interface components {
              * @constant
              */
             schema_version: "macro_module_unavailable_v1";
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
-        };
-        /** MacroMomentum */
-        MacroMomentum: {
-            /** As Of */
-            as_of: string | null;
-            /**
-             * Momentum 1M
-             * @enum {string}
-             */
-            momentum_1m: "up" | "down" | "flat" | "insufficient";
-            /**
-             * Momentum 1W
-             * @enum {string}
-             */
-            momentum_1w: "up" | "down" | "flat" | "insufficient";
-            /** Return 1M Pct */
-            return_1m_pct: number | null;
-            /** Return 1W Pct */
-            return_1w_pct: number | null;
-            /** Source Dataset Id */
-            source_dataset_id: string | null;
-            /** Symbol */
-            symbol: string;
-        };
-        /** MacroNarrativeSection */
-        MacroNarrativeSection: {
-            /**
-             * Evidence Refs
-             * @default []
-             */
-            evidence_refs: string[];
-            /** Markdown */
-            markdown: string;
-            /** Section Id */
-            section_id: string;
-            /** Title */
-            title: string;
         };
         /** MacroNextCheckpointData */
         MacroNextCheckpointData: {
@@ -2600,72 +1857,6 @@ export interface components {
             /** Unit */
             unit: string;
         };
-        /** MacroOutcomeAssetResultV2 */
-        MacroOutcomeAssetResultV2: {
-            /** Direction Correct */
-            direction_correct: boolean | null;
-            /** Expires At Ms */
-            expires_at_ms: number;
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m";
-            /**
-             * Published Direction
-             * @enum {string}
-             */
-            published_direction: "bullish" | "bearish" | "neutral";
-            /** Realized Return Pct */
-            realized_return_pct: number | null;
-            /** Reason Code */
-            reason_code: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "pending" | "evaluated" | "insufficient";
-            /** Symbol */
-            symbol: string;
-        };
-        /** MacroOutcomeHorizonV2 */
-        MacroOutcomeHorizonV2: {
-            /** Asset Results */
-            asset_results: components["schemas"]["MacroOutcomeAssetResultV2"][];
-            /** Expires At Ms */
-            expires_at_ms: number;
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m";
-            /** Reason Code */
-            reason_code: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "pending" | "evaluated" | "insufficient";
-        };
-        /** MacroOutcomeReplayV2 */
-        MacroOutcomeReplayV2: {
-            /** Evaluated At Ms */
-            evaluated_at_ms: number;
-            /** Horizons */
-            horizons: components["schemas"]["MacroOutcomeHorizonV2"][];
-            /** Input Hash */
-            input_hash: string;
-            /** Publication Id */
-            publication_id: string;
-            /** Replay Id */
-            replay_id: string;
-            /**
-             * Schema Version
-             * @default macro_outcome_replay_v2
-             * @constant
-             */
-            schema_version: "macro_outcome_replay_v2";
-        };
         /** MacroOverviewModuleSummaryStateData */
         MacroOverviewModuleSummaryStateData: {
             /** Headline */
@@ -2675,37 +1866,18 @@ export interface components {
         };
         /** MacroOverviewReadData */
         MacroOverviewReadData: {
-            /** Cutoff Ms */
-            cutoff_ms: number;
             data_quality: components["schemas"]["MacroDataQualityOverviewData"];
             /** Latest Fact At Ms */
             latest_fact_at_ms: number;
-            live_delta: components["schemas"]["MacroLiveDeltaV2"] | null;
             /** Modules */
             modules: components["schemas"]["MacroModuleSummaryData"][];
-            outcome_replay: components["schemas"]["MacroOutcomeReplayV2"] | null;
             /** Read At Ms */
             read_at_ms: number;
-            /** Recovery */
-            recovery: components["schemas"]["MacroRecoveryItem"][];
-            run: components["schemas"]["MacroThesisRunData"] | null;
             /**
              * Schema Version
              * @constant
              */
-            schema_version: "macro_overview_v8";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            thesis: components["schemas"]["MacroThesisV2"] | null;
-            thesis_reason: components["schemas"]["MacroReason"] | null;
-            /**
-             * Thesis State
-             * @enum {string}
-             */
-            thesis_state: "published" | "pending" | "running" | "retryable" | "failed" | "config_error" | "not_published" | "missing";
+            schema_version: "macro_overview_v9";
             transport: components["schemas"]["MacroTransportStateData"];
         };
         /** MacroPolicyPricingData */
@@ -2732,59 +1904,6 @@ export interface components {
             report_date: string;
             /** Source Url */
             source_url: string;
-        };
-        /** MacroPublicationHistoryItemData */
-        MacroPublicationHistoryItemData: {
-            /** Confidence */
-            confidence: ("low" | "medium" | "high") | null;
-            /** Cutoff Ms */
-            cutoff_ms: number;
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "1w" | "1m" | "1w_to_1m";
-            /** Publication Id */
-            publication_id: string;
-            /**
-             * Publication Schema Version
-             * @enum {string}
-             */
-            publication_schema_version: "macro_thesis_v1" | "macro_thesis_v2";
-            /** Published At Ms */
-            published_at_ms: number;
-            /**
-             * Schema Version
-             * @default macro_publication_history_item_v2
-             * @constant
-             */
-            schema_version: "macro_publication_history_item_v2";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            /**
-             * Stance
-             * @enum {string}
-             */
-            stance: "call" | "no_call";
-            /** Title */
-            title: string;
-        };
-        /** MacroPublishedMaterialChange */
-        MacroPublishedMaterialChange: {
-            /** Candidate Id */
-            candidate_id: string;
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Statement */
-            statement: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "new" | "strengthened" | "weakened" | "reversed";
         };
         /** MacroRatesBoundedAssessmentData */
         MacroRatesBoundedAssessmentData: {
@@ -2899,7 +2018,6 @@ export interface components {
              */
             schema_version: "macro_rates_fed_v6";
             status: components["schemas"]["MacroModuleStatusData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroRatesLatestObservationData */
         MacroRatesLatestObservationData: {
@@ -3138,38 +2256,6 @@ export interface components {
              */
             state: "complete" | "partial" | "insufficient";
         };
-        /** MacroRecoveryItem */
-        MacroRecoveryItem: {
-            current: components["schemas"]["MacroRecoverySide"];
-            publication: components["schemas"]["MacroRecoverySide"];
-            /** Reason */
-            reason: string;
-            /** Scope Id */
-            scope_id: string;
-            /**
-             * Scope Kind
-             * @enum {string}
-             */
-            scope_kind: "module" | "claim" | "asset" | "dataset";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "unchanged" | "recovered" | "still_missing" | "degraded";
-        };
-        /** MacroRecoverySide */
-        MacroRecoverySide: {
-            /** As Of */
-            as_of: string | null;
-            /** Dataset Id */
-            dataset_id: string | null;
-            /** Source Id */
-            source_id: string | null;
-            /** Unit */
-            unit: string | null;
-            /** Value */
-            value: number | string | null;
-        };
         /** MacroReleaseObservationData */
         MacroReleaseObservationData: {
             /** Actual Value */
@@ -3224,325 +2310,6 @@ export interface components {
             /** Volume */
             volume: number | null;
         };
-        /** MacroTension */
-        MacroTension: {
-            /** Lagging Signal */
-            lagging_signal: string;
-            /**
-             * Leading Side
-             * @enum {string}
-             */
-            leading_side: "side_a" | "side_b" | "balanced" | "uncertain";
-            /** Resolution Triggers */
-            resolution_triggers: components["schemas"]["MacroCondition"][];
-            side_a: components["schemas"]["MacroTensionSide"];
-            side_b: components["schemas"]["MacroTensionSide"];
-            /** Statement */
-            statement: string;
-            /** Tension Id */
-            tension_id: string;
-            /** Unresolved Reason */
-            unresolved_reason: string;
-        };
-        /** MacroTensionSide */
-        MacroTensionSide: {
-            /** Evidence Refs */
-            evidence_refs: string[];
-            /** Label */
-            label: string;
-            /** Statement */
-            statement: string;
-        };
-        /** MacroThesisArchiveDetailReadData */
-        MacroThesisArchiveDetailReadData: {
-            /**
-             * Current Session Date
-             * Format: date
-             */
-            current_session_date: string;
-            /** History */
-            history: components["schemas"]["MacroPublicationHistoryItemData"][];
-            reason: components["schemas"]["MacroReason"] | null;
-            /** Recovery */
-            recovery: components["schemas"]["MacroRecoveryItem"][];
-            /**
-             * Requested Session Date
-             * Format: date
-             */
-            requested_session_date: string;
-            run: components["schemas"]["MacroThesisRunData"] | null;
-            /**
-             * Schema Version
-             * @default macro_thesis_archive_detail_v2
-             * @constant
-             */
-            schema_version: "macro_thesis_archive_detail_v2";
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "historical" | "missing";
-            /** Thesis */
-            thesis: components["schemas"]["MacroThesisV1"] | components["schemas"]["MacroThesisV2"] | null;
-        };
-        /** MacroThesisClaim */
-        MacroThesisClaim: {
-            /** Causal Edges */
-            causal_edges: components["schemas"]["MacroCausalEdge"][];
-            /** Claim Id */
-            claim_id: string;
-            /**
-             * Conditions
-             * @default []
-             */
-            conditions: components["schemas"]["MacroCondition"][];
-            /**
-             * Conflicting Evidence Refs
-             * @default []
-             */
-            conflicting_evidence_refs: string[];
-            /** Statement */
-            statement: string;
-            /** Supporting Evidence Refs */
-            supporting_evidence_refs: string[];
-        };
-        /** MacroThesisDetailReadData */
-        MacroThesisDetailReadData: {
-            /** Cutoff Ms */
-            cutoff_ms: number;
-            /** History */
-            history: components["schemas"]["MacroPublicationHistoryItemData"][];
-            live_delta: components["schemas"]["MacroLiveDeltaV2"] | null;
-            outcome_replay: components["schemas"]["MacroOutcomeReplayV2"] | null;
-            reason: components["schemas"]["MacroReason"] | null;
-            /** Recovery */
-            recovery: components["schemas"]["MacroRecoveryItem"][];
-            run: components["schemas"]["MacroThesisRunData"] | null;
-            /**
-             * Schema Version
-             * @constant
-             */
-            schema_version: "macro_thesis_detail_v4";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "published" | "pending" | "running" | "retryable" | "config_error" | "not_published" | "failed" | "missing";
-            thesis: components["schemas"]["MacroThesisV2"] | null;
-        };
-        /** MacroThesisProvenance */
-        MacroThesisProvenance: {
-            /** Draft Hash */
-            draft_hash: string;
-            /** Research Invocation Id */
-            research_invocation_id: string;
-            /** Research Model */
-            research_model: string;
-            /** Research Prompt Version */
-            research_prompt_version: string;
-            /** Reviewer Model */
-            reviewer_model: string;
-            /** Reviewer Prompt Version */
-            reviewer_prompt_version: string;
-            /**
-             * Workflow Version
-             * @default macro_thesis_workflow_v1
-             * @constant
-             */
-            workflow_version: "macro_thesis_workflow_v1";
-        };
-        /** MacroThesisProvenanceV2 */
-        MacroThesisProvenanceV2: {
-            /** Attempt Id */
-            attempt_id: string;
-            /** Candidate Hash */
-            candidate_hash: string;
-            /** Draft Hash */
-            draft_hash: string;
-            /** Profile Version */
-            profile_version: string;
-            /** Prompt Version */
-            prompt_version: string;
-            /** Provider Name */
-            provider_name: string;
-            /** Provider Response Id */
-            provider_response_id: string;
-            /** Research Input Hash */
-            research_input_hash: string;
-            /** Research Input Id */
-            research_input_id: string;
-            /** Research Model */
-            research_model: string;
-            /**
-             * Workflow Version
-             * @default macro_thesis_workflow_v2
-             * @constant
-             */
-            workflow_version: "macro_thesis_workflow_v2";
-        };
-        /** MacroThesisReviewV1 */
-        MacroThesisReviewV1: {
-            /**
-             * Disposition
-             * @enum {string}
-             */
-            disposition: "pass" | "revise" | "block";
-            /** Draft Hash */
-            draft_hash: string;
-            /**
-             * Findings
-             * @default []
-             */
-            findings: string[];
-            /** Invocation Id */
-            invocation_id: string;
-            /** Model Name */
-            model_name: string;
-            /** Prompt Version */
-            prompt_version: string;
-            /**
-             * Required Changes
-             * @default []
-             */
-            required_changes: string[];
-        };
-        /** MacroThesisRunData */
-        MacroThesisRunData: {
-            /** Attempt Count */
-            attempt_count: number;
-            /** Candidate Hash */
-            candidate_hash: string | null;
-            /** Error Code */
-            error_code: string | null;
-            /** Evidence Pack Id */
-            evidence_pack_id: string;
-            /** Gate Category */
-            gate_category: ("time_identity" | "evidence_closure" | "contract_validity" | "write_safety") | null;
-            /** Max Attempts */
-            max_attempts: number;
-            reason: components["schemas"]["MacroReason"] | null;
-            /** Research Input Id */
-            research_input_id: string | null;
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            /** Status */
-            status: string;
-            /** Updated At Ms */
-            updated_at_ms: number;
-        };
-        /** MacroThesisV1 */
-        MacroThesisV1: {
-            alternative_explanation?: components["schemas"]["MacroAlternative"] | null;
-            /** Assets */
-            assets: components["schemas"]["MacroAssetView"][];
-            /**
-             * Changes From Prior
-             * @default []
-             */
-            changes_from_prior: components["schemas"]["MacroChangeFromPrior"][];
-            /** Citations */
-            citations: components["schemas"]["MacroCitation"][];
-            /**
-             * Core Tensions
-             * @default []
-             */
-            core_tensions: components["schemas"]["MacroTension"][];
-            /** Cutoff Ms */
-            cutoff_ms: number;
-            /** Evidence Pack Hash */
-            evidence_pack_hash: string;
-            /** Evidence Pack Id */
-            evidence_pack_id: string;
-            /** Gaps */
-            gaps: components["schemas"]["MacroEvidenceGap"][];
-            mainline: components["schemas"]["MacroMainline"];
-            /** Module Assessments */
-            module_assessments: components["schemas"]["MacroModuleRole"][];
-            /** Narrative Sections */
-            narrative_sections: components["schemas"]["MacroNarrativeSection"][];
-            /** Prior Publication Id */
-            prior_publication_id?: string | null;
-            provenance: components["schemas"]["MacroThesisProvenance"];
-            /** Publication Id */
-            publication_id: string;
-            /** Published At Ms */
-            published_at_ms: number;
-            review: components["schemas"]["MacroThesisReviewV1"];
-            /**
-             * Schema Version
-             * @default macro_thesis_v1
-             * @constant
-             */
-            schema_version: "macro_thesis_v1";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-        };
-        /** MacroThesisV2 */
-        MacroThesisV2: {
-            alternative: components["schemas"]["MacroDraftAlternative"] | null;
-            /** Asset Outlooks */
-            asset_outlooks: components["schemas"]["MacroDraftAssetOutlook"][];
-            /** Assets */
-            assets: components["schemas"]["MacroFrozenAssetSnapshotV2"][];
-            /** Catalysts */
-            catalysts: {
-                [key: string]: unknown;
-            }[];
-            /** Citations */
-            citations: components["schemas"]["MacroCitationV2"][];
-            /** Conditions */
-            conditions: components["schemas"]["MacroCompiledCondition"][];
-            /** Cutoff Ms */
-            cutoff_ms: number;
-            /** Draft Hash */
-            draft_hash: string;
-            /** Evidence Pack Hash */
-            evidence_pack_hash: string;
-            /** Evidence Pack Id */
-            evidence_pack_id: string;
-            /** Gaps */
-            gaps: components["schemas"]["MacroEvidenceGapV2"][];
-            mainline: components["schemas"]["MacroDraftMainline"];
-            /** Material Changes */
-            material_changes: components["schemas"]["MacroPublishedMaterialChange"][];
-            /** Module Assessments */
-            module_assessments: components["schemas"]["MacroDraftModuleAssessment"][];
-            /** Prior Publication Id */
-            prior_publication_id: string | null;
-            provenance: components["schemas"]["MacroThesisProvenanceV2"];
-            /** Publication Id */
-            publication_id: string;
-            /** Published At Ms */
-            published_at_ms: number;
-            /** Research Input Hash */
-            research_input_hash: string;
-            /** Research Input Id */
-            research_input_id: string;
-            /**
-             * Schema Version
-             * @default macro_thesis_v2
-             * @constant
-             */
-            schema_version: "macro_thesis_v2";
-            /**
-             * Session Date
-             * Format: date
-             */
-            session_date: string;
-            /** Tensions */
-            tensions: components["schemas"]["MacroDraftTension"][];
-        };
         /** MacroTransportStateData */
         MacroTransportStateData: {
             /** Last Successful Read At Ms */
@@ -3594,7 +2361,6 @@ export interface components {
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
             term_structure: components["schemas"]["MacroVolatilityTermStructureData"];
-            thesis_context: components["schemas"]["MacroModuleThesisContextData"];
         };
         /** MacroVolatilityTermStructureData */
         MacroVolatilityTermStructureData: {
@@ -4547,37 +3313,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroRatesFedReadData__MacroModuleUnavailableData__"];
-                };
-            };
-        };
-    };
-    macro_research_api_macro_research_get: {
-        parameters: {
-            query?: {
-                session_date?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_Union_MacroThesisDetailReadData__MacroThesisArchiveDetailReadData__"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

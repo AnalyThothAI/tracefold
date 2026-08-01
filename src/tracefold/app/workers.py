@@ -16,7 +16,7 @@ import uvicorn
 from loguru import logger
 
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.llm import configured_chat_model, litellm_proxy_model_name, llm_is_configured
+from tracefold.app.llm import configured_chat_model, llm_is_configured
 from tracefold.app.market_providers import wire_asset_market
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
@@ -26,18 +26,9 @@ from tracefold.app.worker_cpu_prewarm import prewarm_worker_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers_runtime import WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
-from tracefold.integrations.deepagents.macro_thesis_deepagent import (
-    MacroThesisDeepAgent,
-    require_supported_macro_thesis_model,
-)
 from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
-from tracefold.integrations.news_feeds import (
-    RssFeedReader,
-    is_public_https_feed_url,
-    parse_rss_feed_wire,
-)
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -47,7 +38,6 @@ from tracefold.macro import (
     MacroAcquisitionService,
     MacroDocumentAnalysisService,
     MacroProjectionCandidate,
-    MacroThesisService,
     acquisition_loop_policy,
 )
 from tracefold.market import (
@@ -68,7 +58,6 @@ from tracefold.news import (
     NewsAcquisition,
     NewsBriefCandidate,
     NewsStoryProjection,
-    default_sources,
     opennews_source,
 )
 from tracefold.platform.config.settings import Settings
@@ -85,7 +74,6 @@ _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
 _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
-_THESIS_MODEL_TIMEOUT_SECONDS = 480.0
 _MODEL_MAX_TOKENS = 6_000
 _NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
@@ -722,7 +710,7 @@ async def _wire_components(
     news_brief: NewsBriefCandidate | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
-        sources = (*default_sources(), opennews_source())
+        sources = (opennews_source(),)
         opennews_rest = OpenNewsRestClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         opennews_ws = (
             OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
@@ -730,26 +718,11 @@ async def _wire_components(
         news = NewsAcquisition(
             db=db,
             finite_operations=finite,
-            cpu=cpu,
             sources=sources,
-            feed_reader=RssFeedReader(
-                timeout_seconds=20.0,
-                max_attempts=2,
-                relay_base_url=settings.news.relay.base_url,
-                relay_auth_header=settings.news.relay.auth_header,
-                relay_auth_token=settings.news.relay.auth_token,
-                relay_allowed_urls={
-                    source.feed_url
-                    for source in sources
-                    if source.source_kind == "rss" and is_public_https_feed_url(source.feed_url)
-                },
-            ),
-            feed_parser=parse_rss_feed_wire,
             opennews_rest_client=opennews_rest,
             opennews_ws_client=opennews_ws,
         )
         news_story = NewsStoryProjection(db=db, cpu=cpu)
-        due_turns.append((news.turn, 1.0))
         configured_base_url = settings.llm.base_url or ("https://api.deepseek.com/v1" if settings.llm.api_key else "")
         news_brief = NewsBriefCandidate(
             db=db,
@@ -828,40 +801,6 @@ async def _wire_components(
             macro_turns.append(turn)
             idle_seconds, _old_batch = acquisition_loop_policy(clock_kind)
             due_turns.append((turn.turn, idle_seconds))
-
-    if settings.llm.macro_thesis_enabled:
-        effective_model = litellm_proxy_model_name(
-            settings.llm.macro_thesis_model,
-            base_url=settings.llm.base_url,
-        )
-        configuration_error: str | None = None
-        if not llm_is_configured(settings):
-            configuration_error = "llm_not_configured"
-        else:
-            try:
-                require_supported_macro_thesis_model(effective_model)
-            except ValueError as exc:
-                configuration_error = str(exc)
-        thesis_agent = None
-        if configuration_error is None:
-            model, effective_model = configured_chat_model(
-                settings,
-                model_name=settings.llm.macro_thesis_model,
-                request_timeout_seconds=_THESIS_MODEL_TIMEOUT_SECONDS,
-                max_tokens=_MODEL_MAX_TOKENS,
-            )
-            thesis_agent = MacroThesisDeepAgent(model=model, model_name=effective_model)
-        model_candidates.append(
-            MacroThesisService(
-                db=db,
-                database=db,
-                agent=thesis_agent,
-                configuration_error=configuration_error,
-                worker_name="macro_thesis",
-                lease_owner=f"macro_thesis:{runtime_id}",
-                stable_order=10,
-            )
-        )
 
     if providers.dex_discovery_market is not None:
         resolution = ResolutionRefresh(

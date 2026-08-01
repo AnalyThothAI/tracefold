@@ -8,7 +8,6 @@ from tracefold.macro import (
     NATURAL_CHANGE_REGISTRY,
     module_payloads,
     natural_change_calculation,
-    resolve_thesis_session,
 )
 from tracefold.macro.coverage import COVERAGE_MANIFEST
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
@@ -81,18 +80,6 @@ def _module(
 
 def _dataset_state(module: dict, dataset_id: str) -> dict:
     return next(item for item in module["evidence"]["dataset_states"] if item["dataset_id"] == dataset_id)
-
-
-def test_thesis_session_rolls_at_0850_new_york_and_skips_closed_days() -> None:
-    before_due = int(datetime(2026, 7, 27, 12, 49, tzinfo=UTC).timestamp() * 1_000)
-    at_due = int(datetime(2026, 7, 27, 12, 50, tzinfo=UTC).timestamp() * 1_000)
-    sunday = int(datetime(2026, 7, 26, 16, tzinfo=UTC).timestamp() * 1_000)
-    observed_holiday = int(datetime(2026, 7, 3, 16, tzinfo=UTC).timestamp() * 1_000)
-
-    assert resolve_thesis_session(now_ms=before_due) == date(2026, 7, 24)
-    assert resolve_thesis_session(now_ms=at_due) == date(2026, 7, 27)
-    assert resolve_thesis_session(now_ms=sunday) == date(2026, 7, 24)
-    assert resolve_thesis_session(now_ms=observed_holiday) == date(2026, 7, 2)
 
 
 def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:

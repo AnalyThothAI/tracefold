@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
@@ -75,6 +76,34 @@ def test_fred_csv_uses_explicit_backfill_bounds_and_emits_typed_series_facts() -
     }
     assert requests[0].url.params["cosd"] == "2026-07-01"
     assert requests[0].url.params["coed"] == "2026-07-02"
+
+
+def test_fred_csv_accepts_valid_gzip_response() -> None:
+    payload = b"DATE,DGS10\n2026-07-01,4.20\n2026-07-02,4.25\n"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            content=gzip.compress(payload),
+            request=request,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("fred.dgs10"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert [fact.value_numeric for fact in batch.facts] == [4.20, 4.25]
+    assert requests[0].url.params["cosd"] == "2026-07-13"
 
 
 def test_bls_public_release_adapter_preserves_actual_and_prior() -> None:

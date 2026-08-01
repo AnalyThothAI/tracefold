@@ -7,10 +7,6 @@ import yaml
 from tests.postgres_test_utils import connect_postgres_test
 
 POSTGRES_IMAGE = "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
-RSSHUB_IMAGE = (
-    "diygod/rsshub:5527d18de9605e5df9112f40904596e6ae5b971e@"
-    "sha256:5730db6dead9c8e6610c92fc71900fa2e7735346d80d6be79ead3f2419d88282"
-)
 
 
 def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
@@ -21,7 +17,6 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
         "cutover",
         "migrate",
         "postgres",
-        "rsshub",
         "serve",
         "workers",
     }
@@ -57,21 +52,6 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
         "db",
         "hard-cut",
     ]
-
-    rsshub = services["rsshub"]
-    assert rsshub["image"] == RSSHUB_IMAGE
-    assert rsshub["environment"] == {
-        "NODE_ENV": "production",
-        "CACHE_TYPE": "memory",
-    }
-    assert rsshub["env_file"] == [
-        {
-            "path": "${HOME}/.tracefold/rsshub.env",
-            "required": False,
-        }
-    ]
-    assert "ports" not in rsshub
-
 
 def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())

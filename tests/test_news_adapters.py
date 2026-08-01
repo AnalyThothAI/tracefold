@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+
 import httpx
 import pytest
 
@@ -65,6 +67,35 @@ def test_rss_reader_honors_conditionals_limits_first_five_and_cleans_description
     assert fetched.entries[0].description == ("Officials published a formal and detailed policy response number 0.")
     assert not_modified.not_modified is True
     assert requests[1].headers["if-none-match"] == "etag-1"
+
+
+def test_rss_reader_accepts_valid_gzip_response() -> None:
+    payload = b"""
+    <rss version="2.0"><channel><item>
+      <guid>gzip-story</guid>
+      <link>https://feed.example.com/gzip-story</link>
+      <title>Valid compressed source remains readable</title>
+      <pubDate>Sun, 26 Jul 2026 09:00:00 GMT</pubDate>
+    </item></channel></rss>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            content=gzip.compress(payload),
+            request=request,
+        )
+
+    reader = RssFeedReader(transport=httpx.MockTransport(handler), max_attempts=1)
+    try:
+        fetched = parse_rss_feed_wire(
+            reader.fetch_wire(source=source(), etag=None, last_modified=None)
+        )
+    finally:
+        reader.close()
+
+    assert [entry.guid for entry in fetched.entries] == ["gzip-story"]
 
 
 def test_world_brief_provider_chain_calls_each_provider_at_most_once() -> None:

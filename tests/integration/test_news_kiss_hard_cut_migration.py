@@ -10,8 +10,6 @@ from tracefold.platform.postgres.postgres_migrations import alembic_config
 _NEWS_TABLES = {
     "news_sources",
     "news_source_memberships",
-    "news_source_fetches",
-    "news_feed_observations",
     "news_items",
     "news_stories",
     "news_story_members",
@@ -25,7 +23,7 @@ _NEWS_TABLES = {
 }
 
 
-def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_boundary() -> None:
+def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()
     conn = connect_postgres_test(read_only=False)
@@ -44,7 +42,9 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
             INSERT INTO news_sources(
               source_id, name, feed_url, tier, lang, enabled,
               refresh_interval_seconds, next_fetch_at_ms, created_at_ms, updated_at_ms
-            ) VALUES ('source', 'Source', 'https://example.com/rss', 2, 'en', true, 120, 0, 0, 0)
+            ) VALUES
+              ('news-opennews', 'OpenNews', 'https://example.com/news', 2, 'en', true, 120, 0, 0, 0),
+              ('rss-source', 'RSS Source', 'https://example.com/rss', 2, 'en', true, 120, 0, 0, 0)
             """
         )
         for fetch_id, started_at_ms in (("fetch-a", 1), ("fetch-b", 2)):
@@ -54,7 +54,7 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
                   fetch_id, source_id, started_at_ms, finished_at_ms, status,
                   fetch_path, entries_seen, observations_inserted, items_inserted,
                   items_updated, rejection_counts, created_at_ms
-                ) VALUES (%s, 'source', %s, %s, 'success', 'direct', 1, 1, 1, 0, '{}', %s)
+                ) VALUES (%s, 'news-opennews', %s, %s, 'success', 'direct', 1, 1, 1, 0, '{}', %s)
                 """,
                 (fetch_id, started_at_ms, started_at_ms, started_at_ms),
             )
@@ -64,10 +64,36 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
                   observation_id, fetch_id, source_id, source_item_key,
                   observed_at_ms, title, url, published_at_ms, raw,
                   admitted, rejection_reason, created_at_ms
-                ) VALUES (%s, %s, 'source', 'same-key', %s, 'same title',
+                ) VALUES (%s, %s, 'news-opennews', 'same-key', %s, 'same title',
                           'https://example.com/a', 1, %s, true, NULL, %s)
                 """,
-                (f"obs-{fetch_id}", fetch_id, started_at_ms, Jsonb({"same": True}), started_at_ms),
+                (
+                    f"obs-{fetch_id}",
+                    fetch_id,
+                    started_at_ms,
+                    Jsonb(
+                        {
+                            "id": "provider-42",
+                            "coins": [
+                                {
+                                    "symbol": "BTC",
+                                    "market_type": "spot",
+                                    "match": "Bitcoin",
+                                    "private": "drop-me",
+                                }
+                            ],
+                            "private": "drop-me",
+                        }
+                        if fetch_id == "fetch-a"
+                        else {
+                            "id": "provider-42",
+                            "source": "jin10",
+                            "aiRating": {"score": 80, "signal": "long", "grade": "A"},
+                            "private": "drop-me",
+                        }
+                    ),
+                    started_at_ms,
+                ),
             )
         conn.execute(
             """
@@ -99,7 +125,7 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
               classification_confidence, importance_score, importance_factors,
               brief_excluded, active, created_at_ms, updated_at_ms
             ) VALUES (
-              'item-before-cut', 'source', 'item-before-cut',
+              'item-before-cut', 'news-opennews', 'item-before-cut',
               'https://example.com/story', 'source', 'story before cut',
               'story before cut', '', 'en', 1, 1, 1, 'item-fingerprint',
               'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
@@ -115,7 +141,7 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
               state_fingerprint, created_at_ms, updated_at_ms
             ) VALUES (
               'story-before-cut', 'canonical-before-cut', 'story before cut',
-              'item-before-cut', 'source', 'story before cut',
+              'item-before-cut', 'news-opennews', 'story before cut',
               'https://example.com/story', '', 'item-before-cut', 'info',
               'general', 1, '{}'::jsonb, 1, 1, 1, 1, true,
               'story-fingerprint', 1, 1
@@ -128,7 +154,29 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
     finally:
         conn.close()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260801_0234")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        observation_id = conn.execute(
+            """
+            SELECT observation_id
+              FROM news_feed_observations
+             WHERE source_id='news-opennews'
+             ORDER BY observed_at_ms
+             LIMIT 1
+            """
+        ).fetchone()["observation_id"]
+        conn.execute(
+            "UPDATE news_sources SET source_kind='opennews' WHERE source_id='news-opennews'"
+        )
+        conn.execute(
+            "UPDATE news_items SET winning_observation_id=%s WHERE item_id='item-before-cut'",
+            (observation_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    command.upgrade(config, "20260801_0235")
     conn = connect_postgres_test(read_only=False)
     try:
         tables = {
@@ -138,17 +186,35 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
             ).fetchall()
         }
         assert tables == _NEWS_TABLES
-        rows = conn.execute(
+        removed = conn.execute(
             """
-            SELECT observation_id, fetch_id, observation_kind, payload_fingerprint
-              FROM news_feed_observations
+            SELECT to_regclass('news_source_fetches') AS fetches,
+                   to_regclass('news_feed_observations') AS observations
             """
+        ).fetchone()
+        assert removed == {"fetches": None, "observations": None}
+        item = conn.execute(
+            """
+            SELECT item_id, provider_record_id, provider_metadata
+              FROM news_items
+             WHERE item_id='item-before-cut'
+            """
+        ).fetchone()
+        assert item["provider_record_id"] == "provider-42"
+        assert item["provider_metadata"] == {
+            "score": 80,
+            "source": "jin10",
+            "signal": "long",
+            "grade": "A",
+            "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
+        }
+        source_states = conn.execute(
+            "SELECT source_id, enabled FROM news_sources ORDER BY source_id"
         ).fetchall()
-        assert len(rows) == 1
-        assert rows[0]["fetch_id"] == "fetch-a"
-        assert rows[0]["observation_kind"] == "report"
-        assert len(rows[0]["payload_fingerprint"]) == 64
-        assert rows[0]["observation_id"].startswith("news_observation_")
+        assert source_states == [
+            {"source_id": "news-opennews", "enabled": True},
+            {"source_id": "rss-source", "enabled": False},
+        ]
         columns = {
             row["column_name"]
             for row in conn.execute(

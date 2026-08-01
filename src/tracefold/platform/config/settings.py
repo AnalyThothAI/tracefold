@@ -73,8 +73,6 @@ class LlmConfig(BaseModel):
     news_brief_model: str = "deepseek-chat"
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
-    macro_thesis_enabled: bool = False
-    macro_thesis_model: str = "gpt-5.4-mini"
 
     @field_validator("api_key", "openrouter_api_key", "groq_api_key", mode="before")
     @classmethod
@@ -92,7 +90,6 @@ class LlmConfig(BaseModel):
     @field_validator(
         "news_brief_model",
         "macro_document_analysis_model",
-        "macro_thesis_model",
         mode="before",
     )
     @classmethod
@@ -232,31 +229,11 @@ class ProvidersConfig(BaseModel):
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
-class NewsRelaySettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    base_url: str = ""
-    auth_header: str = "x-relay-key"
-    auth_token: str | None = None
-
-    @field_validator("base_url", "auth_header", mode="before")
-    @classmethod
-    def parse_relay_text(cls, value: Any) -> str:
-        return str(value or "").strip()
-
-    @field_validator("auth_token", mode="before")
-    @classmethod
-    def parse_relay_token(cls, value: Any) -> str | None:
-        normalized = str(value or "").strip()
-        return normalized or None
-
-
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
     opennews_token: str | None = None
-    relay: NewsRelaySettings = Field(default_factory=NewsRelaySettings)
 
     @field_validator("opennews_token", mode="before")
     @classmethod
@@ -382,8 +359,6 @@ llm:
   news_brief_model: "deepseek-chat"
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
-  macro_thesis_enabled: false
-  macro_thesis_model: "gpt-5.4-mini"
 
 gmgn:
   api_key:
@@ -421,10 +396,6 @@ providers:
 news:
   enabled: true
   opennews_token:
-  relay:
-    base_url: ""
-    auth_header: "x-relay-key"
-    auth_token:
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

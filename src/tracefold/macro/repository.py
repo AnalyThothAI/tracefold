@@ -35,9 +35,35 @@ class MacroRepository:
             ON CONFLICT(target_key) DO UPDATE SET
               clock_kind = EXCLUDED.clock_kind,
               max_attempts = EXCLUDED.max_attempts,
+              status = CASE
+                WHEN macro_acquisition_targets.status = 'stale'
+                  AND macro_acquisition_targets.clock_kind <> 'backfill'
+                  AND EXCLUDED.clock_kind <> 'backfill'
+                  THEN 'delayed'
+                ELSE macro_acquisition_targets.status
+              END,
+              attempt_count = CASE
+                WHEN macro_acquisition_targets.status = 'stale'
+                  AND macro_acquisition_targets.clock_kind <> 'backfill'
+                  AND EXCLUDED.clock_kind <> 'backfill'
+                  THEN 0
+                ELSE macro_acquisition_targets.attempt_count
+              END,
+              next_due_at_ms = CASE
+                WHEN macro_acquisition_targets.status = 'stale'
+                  AND macro_acquisition_targets.clock_kind <> 'backfill'
+                  AND EXCLUDED.clock_kind <> 'backfill'
+                  THEN LEAST(macro_acquisition_targets.next_due_at_ms, EXCLUDED.next_due_at_ms)
+                ELSE macro_acquisition_targets.next_due_at_ms
+              END,
               updated_at_ms = EXCLUDED.updated_at_ms
             WHERE macro_acquisition_targets.clock_kind IS DISTINCT FROM EXCLUDED.clock_kind
                OR macro_acquisition_targets.max_attempts IS DISTINCT FROM EXCLUDED.max_attempts
+               OR (
+                 macro_acquisition_targets.status = 'stale'
+                 AND macro_acquisition_targets.clock_kind <> 'backfill'
+                 AND EXCLUDED.clock_kind <> 'backfill'
+               )
             """,
             (
                 spec.target_key,
@@ -199,13 +225,15 @@ class MacroRepository:
             WITH expired AS (
               UPDATE macro_acquisition_targets
               SET status = CASE
-                    WHEN attempt_count >= max_attempts THEN 'stale'
+                    WHEN clock_kind = 'backfill' AND attempt_count >= max_attempts
+                      THEN 'stale'
                     ELSE 'delayed'
                   END,
                   leased_until_ms = NULL,
                   lease_owner = NULL,
                   next_due_at_ms = CASE
-                    WHEN attempt_count >= max_attempts THEN next_due_at_ms
+                    WHEN clock_kind = 'backfill' AND attempt_count >= max_attempts
+                      THEN next_due_at_ms
                     ELSE %(now_ms)s
                   END,
                   last_error_code = 'acquisition_lease_expired',
@@ -472,57 +500,11 @@ class MacroRepository:
         )
         return int(cursor.rowcount)
 
-    def record_receipt(
-        self,
-        *,
-        target: dict[str, Any],
-        receipt_id: str,
-        started_at_ms: int,
-        completed_at_ms: int,
-        status: str,
-        http_status: int | None,
-        rows_seen: int,
-        rows_inserted: int,
-        response_hash: str | None,
-        error_code: str | None,
-        error_message: str | None,
-        diagnostics: dict[str, Any],
-    ) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO macro_source_receipts(
-              receipt_id, target_key, dataset_id, partition_key, started_at_ms,
-              completed_at_ms, status, http_status, rows_seen, rows_inserted,
-              response_hash, error_code, error_message, diagnostics_json
-            )
-            VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
-            )
-            """,
-            (
-                receipt_id,
-                target["target_key"],
-                target["dataset_id"],
-                target["partition_key"],
-                int(started_at_ms),
-                int(completed_at_ms),
-                status,
-                http_status,
-                int(rows_seen),
-                int(rows_inserted),
-                response_hash,
-                error_code,
-                error_message,
-                json.dumps(diagnostics, sort_keys=True),
-            ),
-        )
-
     def complete_target(
         self,
         *,
         target_key: str,
         lease_owner: str,
-        receipt_id: str,
         cursor: dict[str, Any],
         next_due_at_ms: int,
         completed_at_ms: int,
@@ -537,7 +519,6 @@ class MacroRepository:
                 leased_until_ms = NULL,
                 lease_owner = NULL,
                 attempt_count = 0,
-                last_receipt_id = %s,
                 last_success_at_ms = %s,
                 last_error_code = NULL,
                 updated_at_ms = %s
@@ -550,7 +531,6 @@ class MacroRepository:
                 json.dumps(cursor, sort_keys=True),
                 status,
                 int(next_due_at_ms),
-                receipt_id,
                 int(completed_at_ms),
                 int(completed_at_ms),
                 target_key,
@@ -564,15 +544,17 @@ class MacroRepository:
         *,
         target: dict[str, Any],
         lease_owner: str,
-        receipt_id: str,
         error_code: str,
         next_due_at_ms: int,
         completed_at_ms: int,
         unavailable: bool,
-    ) -> bool:
+    ) -> str | None:
         if unavailable:
             status = "unavailable"
-        elif int(target["attempt_count"]) >= int(target["max_attempts"]):
+        elif (
+            str(target["clock_kind"]) == "backfill"
+            and int(target["attempt_count"]) >= int(target["max_attempts"])
+        ):
             status = "stale"
         else:
             status = "delayed"
@@ -583,7 +565,6 @@ class MacroRepository:
                 next_due_at_ms = %s,
                 leased_until_ms = NULL,
                 lease_owner = NULL,
-                last_receipt_id = %s,
                 last_error_code = %s,
                 updated_at_ms = %s
             WHERE target_key = %s
@@ -594,14 +575,13 @@ class MacroRepository:
             (
                 status,
                 int(next_due_at_ms),
-                receipt_id,
                 error_code,
                 int(completed_at_ms),
                 target["target_key"],
                 lease_owner,
             ),
         ).fetchone()
-        return row is not None
+        return status if row is not None else None
 
     def target_states(self, *, dataset_ids: tuple[str, ...] = ()) -> list[dict[str, Any]]:
         if dataset_ids:
@@ -652,7 +632,7 @@ class MacroRepository:
                 SELECT
                   target_key, dataset_id, partition_key, clock_kind, status,
                   cursor_json, next_due_at_ms, priority, attempt_count,
-                  max_attempts, last_receipt_id, last_success_at_ms,
+                  max_attempts, last_success_at_ms,
                   last_error_code, updated_at_ms
                 FROM macro_acquisition_targets
                 ORDER BY target_key
@@ -776,116 +756,6 @@ class MacroRepository:
             ORDER BY dataset_id
             """,
             (list(dataset_ids),),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def projection_state(self) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT *
-            FROM macro_projection_state
-            WHERE singleton_key = 'current'
-            """
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def upsert_projection_state(
-        self,
-        *,
-        input_fingerprint: str,
-        feature_count: int,
-        module_count: int,
-        projected_at_ms: int,
-    ) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO macro_projection_state (
-              singleton_key, input_fingerprint, feature_count,
-              module_count, projected_at_ms
-            )
-            VALUES ('current', %s, %s, %s, %s)
-            ON CONFLICT (singleton_key) DO UPDATE SET
-              input_fingerprint = EXCLUDED.input_fingerprint,
-              feature_count = EXCLUDED.feature_count,
-              module_count = EXCLUDED.module_count,
-              projected_at_ms = EXCLUDED.projected_at_ms
-            """,
-            (
-                input_fingerprint,
-                int(feature_count),
-                int(module_count),
-                int(projected_at_ms),
-            ),
-        )
-
-    def receipt_states_at(
-        self,
-        *,
-        cutoff_ms: int,
-        dataset_ids: tuple[str, ...] = (),
-    ) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT DISTINCT ON (receipts.dataset_id, receipts.partition_key)
-              receipts.target_key,
-              receipts.dataset_id,
-              receipts.partition_key,
-              CASE
-                WHEN receipts.status IN ('ok', 'not_modified', 'empty') THEN 'current'
-                WHEN receipts.status = 'invalid' THEN 'invalid'
-                ELSE 'failed'
-              END AS status,
-              CASE
-                WHEN receipts.partition_key = 'latest' THEN registry.clock_kind
-                ELSE 'backfill'
-              END AS clock_kind,
-              receipts.completed_at_ms AS last_success_at_ms,
-              receipts.completed_at_ms AS updated_at_ms,
-              receipts.error_code AS last_error_code,
-              '{}'::jsonb AS cursor_json
-            FROM macro_source_receipts AS receipts
-            JOIN macro_acquisition_targets AS registry
-              ON registry.target_key = receipts.target_key
-            WHERE receipts.completed_at_ms <= %s
-              AND (
-                cardinality(%s::text[]) = 0
-                OR receipts.dataset_id = ANY(%s)
-              )
-            ORDER BY
-              receipts.dataset_id,
-              receipts.partition_key,
-              receipts.completed_at_ms DESC,
-              receipts.receipt_id DESC
-            """,
-            (
-                int(cutoff_ms),
-                list(dataset_ids),
-                list(dataset_ids),
-            ),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def recent_receipts(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT
-              receipt_id,
-              target_key,
-              dataset_id,
-              partition_key,
-              completed_at_ms,
-              status,
-              http_status,
-              rows_seen,
-              rows_inserted,
-              error_code,
-              error_message,
-              diagnostics_json
-            FROM macro_source_receipts
-            ORDER BY completed_at_ms DESC, receipt_id DESC
-            LIMIT %s
-            """,
-            (int(limit),),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1784,61 +1654,6 @@ class MacroRepository:
                 attempt_count=int(row["attempt_count"]),
             )
         return True
-
-    def upsert_feature(
-        self,
-        *,
-        feature_id: str,
-        as_of_date: date,
-        formula_version: str,
-        value_numeric: float,
-        unit: str,
-        inputs: list[dict[str, Any]],
-        payload_hash: str,
-        computed_at_ms: int,
-    ) -> int:
-        cursor = self.conn.execute(
-            """
-            INSERT INTO macro_feature_series(
-              feature_id, as_of_date, formula_version, value_numeric,
-              unit, inputs_json, payload_hash, computed_at_ms
-            )
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
-            ON CONFLICT(feature_id, as_of_date) DO UPDATE SET
-              formula_version = EXCLUDED.formula_version,
-              value_numeric = EXCLUDED.value_numeric,
-              unit = EXCLUDED.unit,
-              inputs_json = EXCLUDED.inputs_json,
-              payload_hash = EXCLUDED.payload_hash,
-              computed_at_ms = EXCLUDED.computed_at_ms
-            WHERE macro_feature_series.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
-            """,
-            (
-                feature_id,
-                as_of_date,
-                formula_version,
-                value_numeric,
-                unit,
-                json.dumps(inputs, sort_keys=True),
-                payload_hash,
-                int(computed_at_ms),
-            ),
-        )
-        return int(cursor.rowcount)
-
-    def feature_history(self, *, feature_ids: tuple[str, ...]) -> list[dict[str, Any]]:
-        if not feature_ids:
-            return []
-        rows = self.conn.execute(
-            """
-            SELECT *
-            FROM macro_feature_series
-            WHERE feature_id = ANY(%s)
-            ORDER BY feature_id, as_of_date
-            """,
-            (list(feature_ids),),
-        ).fetchall()
-        return [dict(row) for row in rows]
 
     def upsert_module_current(
         self,

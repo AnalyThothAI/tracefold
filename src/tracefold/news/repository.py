@@ -7,8 +7,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
@@ -26,9 +25,7 @@ from .models import (
     IMPORTANCE_VERSION,
     NEWS_LOCALE,
     STORY_IDENTITY_VERSION,
-    EventCategory,
     NewsBriefDraft,
-    NewsFeedEntry,
     NewsSourceDefinition,
 )
 from .opennews import OpenNewsEvent
@@ -37,14 +34,10 @@ from .ranking import (
     select_top_stories,
 )
 
-_PIPELINE_LOCK_KEY = 727_301_984
 _BRIEF_LOCK_KEY = 727_301_985
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
-_SCORING_EPOCH_MS = 60 * 60 * 1000
-_OPERATIONS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 _BRIEF_LEASE_MS = 120_000
 _PUBLIC_LIST_LIMIT = 100
-_STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:full-window-v1"
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -56,24 +49,6 @@ _TRACKING_PARAMS = frozenset(
         "fbclid",
     }
 )
-_CATEGORY_ORDER: tuple[EventCategory, ...] = (
-    "conflict",
-    "protest",
-    "disaster",
-    "diplomatic",
-    "economic",
-    "terrorism",
-    "cyber",
-    "health",
-    "environmental",
-    "military",
-    "crime",
-    "infrastructure",
-    "tech",
-    "general",
-)
-
-
 def deterministic_id(namespace: str, *parts: object) -> str:
     payload = "\x1f".join([namespace, *(str(part) for part in parts)])
     return f"{namespace}_{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
@@ -101,20 +76,6 @@ def _canonical_url(value: str) -> str:
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, query, ""))
 
 
-def _source_item_key(entry: NewsFeedEntry, canonical_url: str) -> str:
-    return str(entry.guid or "").strip() or canonical_url
-
-
-def _content_fingerprint(*, title: str, description: str, canonical_url: str) -> str:
-    return _sha256_json(
-        {
-            "title": title,
-            "description": description,
-            "canonical_url": canonical_url,
-        }
-    )
-
-
 def _opennews_content_fingerprint(
     *,
     title: str,
@@ -136,40 +97,6 @@ def _opennews_content_fingerprint(
     )
 
 
-def _opennews_report_rank(
-    *,
-    reporting_origin: str,
-    canonical_url: str | None,
-    title: str,
-    description: str,
-    published_at_ms: int,
-    observation_id: str,
-) -> tuple[int, int, int, str]:
-    origin = str(reporting_origin or "").strip().lower()
-    explicit_origin = int(bool(origin and origin != "opennews"))
-    completeness = len(str(title).strip()) + len(str(description).strip()) + (1 if canonical_url else 0)
-    return (
-        explicit_origin,
-        int(published_at_ms),
-        completeness,
-        str(observation_id),
-    )
-
-
-def _alias_key(normalized_title: str) -> str:
-    return hashlib.sha256(normalized_title.encode()).hexdigest()
-
-
-def _mode(values: Sequence[str], order: Sequence[str]) -> str:
-    counts = Counter(values)
-    highest = max(counts.values())
-    index = {value: position for position, value in enumerate(order)}
-    return min(
-        (value for value, count in counts.items() if count == highest),
-        key=lambda value: (index.get(value, len(index)), value),
-    )
-
-
 def _cursor_encode(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -184,26 +111,6 @@ def _cursor_decode(value: str) -> dict[str, Any]:
     if not isinstance(decoded, dict):
         raise ValueError("news_feed_cursor_invalid")
     return decoded
-
-
-@dataclass(frozen=True, slots=True)
-class _StoryProjectionInput:
-    fingerprint: str
-    cutoff_ms: int
-    scoring_epoch_ms: int
-    item_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class StoryProjectionPreparation:
-    input: _StoryProjectionInput
-    item_ids: tuple[str, ...]
-    temporary_clusters: tuple[tuple[int, ...], ...]
-    current_story_count: int | None = None
-
-    @property
-    def requires_rebuild(self) -> bool:
-        return self.current_story_count is None
 
 
 class NewsRepository:
@@ -300,426 +207,6 @@ class NewsRepository:
         }
         del previous_enabled, current_enabled
 
-    def claim_due_source(
-        self,
-        *,
-        now_ms: int,
-        claim_token: str,
-        lease_ms: int,
-    ) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT s.*,
-                   COALESCE(m.memberships, ARRAY[]::text[]) AS memberships
-              FROM news_sources s
-              LEFT JOIN LATERAL (
-                SELECT array_agg(membership ORDER BY membership) AS memberships
-                  FROM news_source_memberships
-                 WHERE source_id = s.source_id
-              ) m ON true
-             WHERE s.enabled
-               AND s.source_kind = 'rss'
-               AND s.next_fetch_at_ms <= %s
-               AND (
-                 s.claim_token IS NULL
-                 OR s.claim_lease_expires_at_ms <= %s
-               )
-             ORDER BY s.next_fetch_at_ms, s.source_id
-             FOR UPDATE OF s SKIP LOCKED
-             LIMIT 1
-            """,
-            (now_ms, now_ms),
-        ).fetchone()
-        if row is None:
-            return None
-        token = str(claim_token).strip()
-        if not token:
-            raise ValueError("news_source_claim_token_required")
-        lease_expires_at_ms = int(now_ms) + int(lease_ms)
-        claimed = self.conn.execute(
-            """
-            UPDATE news_sources
-               SET claim_token = %s::uuid,
-                   claim_lease_expires_at_ms = %s,
-                   last_fetch_started_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE source_id = %s
-             RETURNING *
-            """,
-            (token, lease_expires_at_ms, now_ms, now_ms, row["source_id"]),
-        ).fetchone()
-        if claimed is None:
-            return None
-        return {**dict(claimed), "memberships": list(row["memberships"])}
-
-    def release_source_claim(self, *, source_id: str, claim_token: str) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_sources
-               SET claim_token = NULL,
-                   claim_lease_expires_at_ms = NULL
-             WHERE source_id = %s
-               AND claim_token = %s::uuid
-            """,
-            (source_id, claim_token),
-        )
-        return int(cursor.rowcount or 0) == 1
-
-    def record_fetch_success(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        entries: Sequence[NewsFeedEntry],
-        started_at_ms: int,
-        finished_at_ms: int,
-        status_code: int,
-        fetch_path: str,
-        direct_error_code: str | None,
-        etag: str | None,
-        last_modified: str | None,
-        not_modified: bool,
-        entries_seen: int | None = None,
-        gate_counts: Mapping[str, int] | None = None,
-        claim_token: str,
-    ) -> dict[str, int] | None:
-        if (
-            self._lock_source_claim(
-                source_id=source.source_id,
-                claim_token=claim_token,
-                now_ms=finished_at_ms,
-            )
-            is None
-        ):
-            return None
-        fetch_id = deterministic_id("news_fetch", source.source_id, started_at_ms)
-        if not_modified:
-            self._insert_fetch(
-                fetch_id=fetch_id,
-                source_id=source.source_id,
-                started_at_ms=started_at_ms,
-                finished_at_ms=finished_at_ms,
-                status="not_modified",
-                fetch_path=fetch_path,
-                direct_error_code=direct_error_code,
-                http_status=status_code,
-                entries_seen=0,
-                observations_inserted=0,
-                items_inserted=0,
-                items_updated=0,
-                rejection_counts={},
-            )
-            self._finish_source_success(
-                source=source,
-                finished_at_ms=finished_at_ms,
-                status_code=status_code,
-                etag=etag,
-                last_modified=last_modified,
-                claim_token=claim_token,
-            )
-            return {
-                "entries_seen": 0,
-                "observations_inserted": 0,
-                "items_inserted": 0,
-                "items_updated": 0,
-                "projection_frontiers_written": 0,
-            }
-
-        inserted = 0
-        updated = 0
-        observations = 0
-        rejection_counts: Counter[str] = Counter(
-            {str(key): max(0, int(value)) for key, value in (gate_counts or {}).items() if int(value) > 0}
-        )
-        observed_entry_count = max(len(entries), int(entries_seen or 0))
-        self._insert_fetch(
-            fetch_id=fetch_id,
-            source_id=source.source_id,
-            started_at_ms=started_at_ms,
-            finished_at_ms=finished_at_ms,
-            status="success",
-            fetch_path=fetch_path,
-            direct_error_code=direct_error_code,
-            http_status=status_code,
-            entries_seen=observed_entry_count,
-            observations_inserted=0,
-            items_inserted=0,
-            items_updated=0,
-            rejection_counts={},
-        )
-
-        for position, entry in enumerate(entries):
-            title = str(entry.title or "").strip()
-            canonical_url = _canonical_url(str(entry.link or "")) or _canonical_url(str(entry.guid or ""))
-            reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
-            source_item_key = _source_item_key(entry, canonical_url) or deterministic_id(
-                "missing_item_key",
-                source.source_id,
-                position,
-                title,
-            )
-            rejection = self._rejection_reason(
-                title=title,
-                canonical_url=canonical_url,
-                published_at_ms=entry.published_at_ms,
-                now_ms=finished_at_ms,
-            )
-            stale = (
-                rejection is None
-                and entry.published_at_ms is not None
-                and entry.published_at_ms < finished_at_ms - _ACTIVE_WINDOW_MS
-            )
-            gate_reason = "stale_age" if stale else rejection
-            observation = self._insert_observation(
-                fetch_id=fetch_id,
-                source_id=source.source_id,
-                source_item_key=source_item_key,
-                observation_kind="report",
-                observed_at_ms=finished_at_ms,
-                title=title or None,
-                url=canonical_url or None,
-                published_at_ms=entry.published_at_ms,
-                raw=entry.raw,
-                admitted=rejection is None,
-                rejection_reason=gate_reason,
-            )
-            observations += int(observation["inserted"])
-            if not observation["inserted"]:
-                rejection_counts["duplicate"] += 1
-                continue
-            if rejection is not None:
-                rejection_counts[rejection] += 1
-                continue
-            if stale:
-                rejection_counts["stale_age"] += 1
-
-            published_at_ms = cast(int, entry.published_at_ms)
-            description = str(entry.description or "").strip()
-            fingerprint = _content_fingerprint(
-                title=title,
-                description=description,
-                canonical_url=canonical_url,
-            )
-            classification = classify_by_keyword(title, now_ms=finished_at_ms)
-            item_id = deterministic_id("news_item", source.source_id, source_item_key)
-            existing = self.conn.execute(
-                "SELECT content_fingerprint FROM news_items WHERE item_id = %s",
-                (item_id,),
-            ).fetchone()
-            if existing is None:
-                self.conn.execute(
-                    """
-                    INSERT INTO news_items (
-                      item_id, source_id, source_item_key, canonical_url,
-                      reporting_origin, title, normalized_title, description,
-                      lang, published_at_ms, first_observed_at_ms,
-                      last_observed_at_ms, content_fingerprint, level, category,
-                      classification_source, classification_confidence,
-                      importance_score, importance_factors, brief_excluded,
-                      active, created_at_ms, updated_at_ms
-                    )
-                    VALUES (
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, 0, '{}'::jsonb, %s, %s, %s, %s
-                    )
-                    """,
-                    (
-                        item_id,
-                        source.source_id,
-                        source_item_key,
-                        canonical_url,
-                        reporting_origin,
-                        title,
-                        normalize_story_text(title),
-                        description,
-                        entry.language or source.lang,
-                        published_at_ms,
-                        finished_at_ms,
-                        finished_at_ms,
-                        fingerprint,
-                        classification.level,
-                        classification.category,
-                        classification.source,
-                        classification.confidence,
-                        is_delayed_brief_excluded(
-                            title=title,
-                            url=canonical_url,
-                            description=description,
-                        ),
-                        not stale,
-                        finished_at_ms,
-                        finished_at_ms,
-                    ),
-                )
-                inserted += 1
-            elif str(existing["content_fingerprint"]) == fingerprint:
-                rejection_counts["duplicate"] += 1
-            else:
-                self.conn.execute(
-                    """
-                    UPDATE news_items
-                       SET canonical_url = %s,
-                           reporting_origin = %s,
-                           title = %s,
-                           normalized_title = %s,
-                           description = %s,
-                           lang = %s,
-                           published_at_ms = %s,
-                           last_observed_at_ms = %s,
-                           content_fingerprint = %s,
-                           level = %s,
-                           category = %s,
-                           classification_source = %s,
-                           classification_confidence = %s,
-                           brief_excluded = %s,
-                           active = %s,
-                           updated_at_ms = %s
-                     WHERE item_id = %s
-                    """,
-                    (
-                        canonical_url,
-                        reporting_origin,
-                        title,
-                        normalize_story_text(title),
-                        description,
-                        entry.language or source.lang,
-                        published_at_ms,
-                        finished_at_ms,
-                        fingerprint,
-                        classification.level,
-                        classification.category,
-                        classification.source,
-                        classification.confidence,
-                        is_delayed_brief_excluded(
-                            title=title,
-                            url=canonical_url,
-                            description=description,
-                        ),
-                        not stale,
-                        finished_at_ms,
-                        item_id,
-                    ),
-                )
-                updated += 1
-
-        self.conn.execute(
-            """
-            UPDATE news_source_fetches
-               SET observations_inserted = %s,
-                   items_inserted = %s,
-                   items_updated = %s,
-                   rejection_counts = %s
-             WHERE fetch_id = %s
-            """,
-            (observations, inserted, updated, Jsonb(dict(rejection_counts)), fetch_id),
-        )
-        self._finish_source_success(
-            source=source,
-            finished_at_ms=finished_at_ms,
-            status_code=status_code,
-            etag=etag,
-            last_modified=last_modified,
-            claim_token=claim_token,
-        )
-        return {
-            "entries_seen": observed_entry_count,
-            "observations_inserted": observations,
-            "items_inserted": inserted,
-            "items_updated": updated,
-            "projection_frontiers_written": 0,
-        }
-
-    def _insert_observation(
-        self,
-        *,
-        fetch_id: str | None,
-        source_id: str,
-        source_item_key: str,
-        observation_kind: str,
-        observed_at_ms: int,
-        title: str | None,
-        url: str | None,
-        published_at_ms: int | None,
-        raw: Mapping[str, Any],
-        admitted: bool,
-        rejection_reason: str | None,
-    ) -> dict[str, Any]:
-        row = self.conn.execute(
-            """
-            WITH payload AS (
-              SELECT %(raw)s::jsonb AS raw
-            ), identified AS (
-              SELECT raw,
-                     encode(sha256(convert_to(raw::text, 'UTF8')), 'hex')
-                       AS payload_fingerprint
-                FROM payload
-            ), inserted AS (
-              INSERT INTO news_feed_observations (
-                observation_id, fetch_id, source_id, source_item_key,
-                observation_kind, payload_fingerprint, observed_at_ms,
-                title, url, published_at_ms, raw, admitted,
-                rejection_reason, created_at_ms
-              )
-              SELECT
-                'news_observation_' || substr(
-                  encode(
-                    sha256(
-                      convert_to(
-                        concat_ws(
-                          chr(31), 'news_observation', %(source_id)s::text,
-                          %(source_item_key)s::text, %(observation_kind)s::text,
-                          identified.payload_fingerprint
-                        ),
-                        'UTF8'
-                      )
-                    ),
-                    'hex'
-                  ),
-                  1,
-                  32
-                ),
-                %(fetch_id)s, %(source_id)s, %(source_item_key)s,
-                %(observation_kind)s, identified.payload_fingerprint,
-                %(observed_at_ms)s, %(title)s, %(url)s, %(published_at_ms)s,
-                identified.raw, %(admitted)s, %(rejection_reason)s,
-                %(observed_at_ms)s
-              FROM identified
-              ON CONFLICT (
-                source_id, source_item_key, observation_kind,
-                payload_fingerprint
-              ) DO NOTHING
-              RETURNING observation_id, payload_fingerprint
-            )
-            SELECT observation_id, payload_fingerprint, true AS inserted
-              FROM inserted
-            UNION ALL
-            SELECT observation_id, payload_fingerprint, false AS inserted
-              FROM news_feed_observations
-             WHERE source_id = %(source_id)s
-               AND source_item_key = %(source_item_key)s
-               AND observation_kind = %(observation_kind)s
-               AND payload_fingerprint = (
-                 SELECT payload_fingerprint FROM identified
-               )
-             LIMIT 1
-            """,
-            {
-                "fetch_id": fetch_id,
-                "source_id": source_id,
-                "source_item_key": source_item_key,
-                "observation_kind": observation_kind,
-                "observed_at_ms": int(observed_at_ms),
-                "title": title,
-                "url": url,
-                "published_at_ms": published_at_ms,
-                "raw": Jsonb(dict(raw)),
-                "admitted": bool(admitted),
-                "rejection_reason": rejection_reason,
-            },
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("news_observation_semantic_identity_failed")
-        return dict(row)
-
     def record_opennews_events(
         self,
         *,
@@ -728,213 +215,176 @@ class NewsRepository:
         observed_at_ms: int,
         recovery_started_at_ms: int | None = None,
     ) -> dict[str, int]:
-        """Publish one bounded OpenNews batch through the sole NewsItem policy."""
+        """Upsert bounded OpenNews current facts without an audit-history lane."""
 
         if source.source_kind != "opennews":
             raise ValueError("opennews_source_required")
-        fetch_id = (
-            deterministic_id("news_fetch", source.source_id, recovery_started_at_ms)
-            if recovery_started_at_ms is not None
-            else None
-        )
-        if fetch_id is not None:
-            recovery_started = cast(int, recovery_started_at_ms)
-            self._insert_fetch(
-                fetch_id=fetch_id,
-                source_id=source.source_id,
-                started_at_ms=recovery_started,
-                finished_at_ms=int(observed_at_ms),
-                status="success",
-                fetch_path="opennews_rest",
-                direct_error_code=None,
-                http_status=200,
-                entries_seen=len(events),
-                observations_inserted=0,
-                items_inserted=0,
-                items_updated=0,
-                rejection_counts={},
-            )
-        observations_inserted = 0
-        items_inserted = 0
-        items_updated = 0
+        inserted = 0
+        updated = 0
+        metadata_updated = 0
         rejections: Counter[str] = Counter()
         for event in events:
-            entry = event.entry
-            title = str(entry.title or "").strip() if entry is not None else None
-            url = _canonical_url(str(entry.link or "")) or None if entry is not None else None
-            published_at_ms = entry.published_at_ms if entry is not None else None
-            rejection = None
-            if event.observation_kind == "report":
-                rejection = self._opennews_rejection_reason(
-                    title=str(title or ""),
-                    published_at_ms=published_at_ms,
-                    now_ms=observed_at_ms,
+            if event.observation_kind == "translation":
+                rejections["translation"] += 1
+                continue
+            incoming_metadata = {
+                key: value
+                for key, value in event.provider_metadata.items()
+                if value not in (None, "", [], {})
+            }
+            if event.observation_kind == "provider_annotation":
+                cursor = self.conn.execute(
+                    """
+                    UPDATE news_items
+                       SET provider_metadata = provider_metadata || %s,
+                           last_observed_at_ms = %s,
+                           updated_at_ms = %s
+                     WHERE source_id = %s
+                       AND provider_record_id = %s
+                       AND provider_metadata IS DISTINCT FROM provider_metadata || %s
+                    """,
+                    (
+                        Jsonb(incoming_metadata),
+                        int(observed_at_ms),
+                        int(observed_at_ms),
+                        source.source_id,
+                        event.provider_record_id,
+                        Jsonb(incoming_metadata),
+                    ),
                 )
-            observation = self._insert_observation(
-                fetch_id=fetch_id,
-                source_id=source.source_id,
-                source_item_key=event.provider_record_id,
-                observation_kind=event.observation_kind,
-                observed_at_ms=observed_at_ms,
+                writes = int(cursor.rowcount or 0)
+                metadata_updated += writes
+                if writes == 0:
+                    exists = self.conn.execute(
+                        """
+                        SELECT 1
+                          FROM news_items
+                         WHERE source_id = %s AND provider_record_id = %s
+                        """,
+                        (source.source_id, event.provider_record_id),
+                    ).fetchone()
+                    rejections["duplicate" if exists is not None else "annotation_before_report"] += 1
+                continue
+
+            entry = event.entry
+            title = str(entry.title or "").strip() if entry is not None else ""
+            canonical_url = _canonical_url(str(entry.link or "")) or None if entry is not None else None
+            published_at_ms = entry.published_at_ms if entry is not None else None
+            rejection = self._opennews_rejection_reason(
                 title=title,
-                url=url,
                 published_at_ms=published_at_ms,
-                raw=event.raw,
-                admitted=event.observation_kind == "report" and rejection is None,
-                rejection_reason=rejection,
+                now_ms=observed_at_ms,
             )
-            if not observation["inserted"]:
-                rejections["duplicate"] += 1
-                continue
-            observations_inserted += 1
-            if event.observation_kind != "report" or entry is None:
-                continue
             if rejection is not None:
                 rejections[rejection] += 1
                 continue
-            if published_at_ms is None:
-                raise RuntimeError("opennews_published_at_invariant")
+            if entry is None or published_at_ms is None:
+                raise RuntimeError("opennews_report_invariant")
             if published_at_ms < observed_at_ms - _ACTIVE_WINDOW_MS:
                 rejections["stale_age"] += 1
                 continue
+
             reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
             description = str(entry.description or "").strip()
             language = entry.language or source.lang
             content_fingerprint = _opennews_content_fingerprint(
-                title=str(title),
+                title=title,
                 description=description,
-                canonical_url=url,
+                canonical_url=canonical_url,
                 reporting_origin=reporting_origin,
                 published_at_ms=published_at_ms,
                 language=language,
             )
-            item_id = deterministic_id("news_item", source.source_id, event.source_item_key)
-            current = self.conn.execute(
-                """
-                SELECT content_fingerprint, winning_observation_id,
-                       reporting_origin, canonical_url, title, description,
-                       published_at_ms
-                  FROM news_items
-                 WHERE item_id = %s
-                """,
-                (item_id,),
-            ).fetchone()
-            incoming_rank = _opennews_report_rank(
-                reporting_origin=reporting_origin,
-                canonical_url=url,
-                title=str(title),
-                description=description,
-                published_at_ms=published_at_ms,
-                observation_id=str(observation["observation_id"]),
-            )
-            if current is not None:
-                current_rank = _opennews_report_rank(
-                    reporting_origin=str(current["reporting_origin"]),
-                    canonical_url=current["canonical_url"],
-                    title=str(current["title"]),
-                    description=str(current["description"]),
-                    published_at_ms=int(current["published_at_ms"]),
-                    observation_id=str(current["winning_observation_id"] or ""),
-                )
-                if incoming_rank <= current_rank:
-                    continue
-            classification = classify_by_keyword(str(title), now_ms=observed_at_ms)
+            item_id = deterministic_id("news_item", source.source_id, event.provider_record_id)
+            classification = classify_by_keyword(title, now_ms=observed_at_ms)
             values = {
-                "canonical_url": url,
+                "item_id": item_id,
+                "source_id": source.source_id,
+                "source_item_key": event.provider_record_id,
+                "provider_record_id": event.provider_record_id,
+                "provider_metadata": Jsonb(incoming_metadata),
+                "canonical_url": canonical_url,
                 "reporting_origin": reporting_origin,
-                "title": str(title),
-                "normalized_title": normalize_story_text(str(title)),
+                "title": title,
+                "normalized_title": normalize_story_text(title),
                 "description": description,
                 "lang": language,
                 "published_at_ms": published_at_ms,
-                "last_observed_at_ms": observed_at_ms,
+                "observed_at_ms": observed_at_ms,
                 "content_fingerprint": content_fingerprint,
                 "level": classification.level,
                 "category": classification.category,
                 "classification_source": classification.source,
                 "classification_confidence": classification.confidence,
                 "brief_excluded": is_delayed_brief_excluded(
-                    title=str(title),
-                    url=str(url or ""),
+                    title=title,
+                    url=str(canonical_url or ""),
                     description=description,
                 ),
-                "winning_observation_id": observation["observation_id"],
             }
-            if current is None:
-                self.conn.execute(
-                    """
-                    INSERT INTO news_items (
-                      item_id, source_id, source_item_key, canonical_url,
-                      reporting_origin, title, normalized_title, description,
-                      lang, published_at_ms, first_observed_at_ms,
-                      last_observed_at_ms, content_fingerprint, level, category,
-                      classification_source, classification_confidence,
-                      importance_score, importance_factors, brief_excluded,
-                      active, winning_observation_id, created_at_ms, updated_at_ms
-                    ) VALUES (
-                      %(item_id)s, %(source_id)s, %(source_item_key)s,
-                      %(canonical_url)s, %(reporting_origin)s, %(title)s,
-                      %(normalized_title)s, %(description)s, %(lang)s,
-                      %(published_at_ms)s, %(last_observed_at_ms)s,
-                      %(last_observed_at_ms)s, %(content_fingerprint)s,
-                      %(level)s, %(category)s, %(classification_source)s,
-                      %(classification_confidence)s, 0, '{}'::jsonb,
-                      %(brief_excluded)s, true, %(winning_observation_id)s,
-                      %(last_observed_at_ms)s, %(last_observed_at_ms)s
-                    )
-                    """,
-                    {
-                        **values,
-                        "item_id": item_id,
-                        "source_id": source.source_id,
-                        "source_item_key": event.source_item_key,
-                    },
-                )
-                items_inserted += 1
-            elif str(current["content_fingerprint"]) != content_fingerprint:
-                self.conn.execute(
-                    """
-                    UPDATE news_items
-                       SET canonical_url = %(canonical_url)s,
-                           reporting_origin = %(reporting_origin)s,
-                           title = %(title)s,
-                           normalized_title = %(normalized_title)s,
-                           description = %(description)s,
-                           lang = %(lang)s,
-                           published_at_ms = %(published_at_ms)s,
-                           last_observed_at_ms = %(last_observed_at_ms)s,
-                           content_fingerprint = %(content_fingerprint)s,
-                           level = %(level)s,
-                           category = %(category)s,
-                           classification_source = %(classification_source)s,
-                           classification_confidence = %(classification_confidence)s,
-                           brief_excluded = %(brief_excluded)s,
-                           active = true,
-                           winning_observation_id = %(winning_observation_id)s,
-                           updated_at_ms = %(last_observed_at_ms)s
-                     WHERE item_id = %(item_id)s
-                    """,
-                    {**values, "item_id": item_id},
-                )
-                items_updated += 1
-        if fetch_id is not None:
-            self.conn.execute(
+            cursor = self.conn.execute(
                 """
-                UPDATE news_source_fetches
-                   SET observations_inserted = %s,
-                       items_inserted = %s,
-                       items_updated = %s,
-                       rejection_counts = %s
-                 WHERE fetch_id = %s
+                INSERT INTO news_items AS current_item (
+                  item_id, source_id, source_item_key, provider_record_id,
+                  provider_metadata, canonical_url, reporting_origin, title,
+                  normalized_title, description, lang, published_at_ms,
+                  first_observed_at_ms, last_observed_at_ms,
+                  content_fingerprint, level, category,
+                  classification_source, classification_confidence,
+                  importance_score, importance_factors, brief_excluded,
+                  active, created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item_id)s, %(source_id)s, %(source_item_key)s,
+                  %(provider_record_id)s, %(provider_metadata)s,
+                  %(canonical_url)s, %(reporting_origin)s, %(title)s,
+                  %(normalized_title)s, %(description)s, %(lang)s,
+                  %(published_at_ms)s, %(observed_at_ms)s,
+                  %(observed_at_ms)s, %(content_fingerprint)s,
+                  %(level)s, %(category)s, %(classification_source)s,
+                  %(classification_confidence)s, 0, '{}'::jsonb,
+                  %(brief_excluded)s, true, %(observed_at_ms)s,
+                  %(observed_at_ms)s
+                )
+                ON CONFLICT (source_id, provider_record_id)
+                  WHERE provider_record_id IS NOT NULL
+                DO UPDATE SET
+                  source_item_key = EXCLUDED.source_item_key,
+                  provider_metadata = current_item.provider_metadata || EXCLUDED.provider_metadata,
+                  canonical_url = EXCLUDED.canonical_url,
+                  reporting_origin = EXCLUDED.reporting_origin,
+                  title = EXCLUDED.title,
+                  normalized_title = EXCLUDED.normalized_title,
+                  description = EXCLUDED.description,
+                  lang = EXCLUDED.lang,
+                  published_at_ms = EXCLUDED.published_at_ms,
+                  last_observed_at_ms = EXCLUDED.last_observed_at_ms,
+                  content_fingerprint = EXCLUDED.content_fingerprint,
+                  level = EXCLUDED.level,
+                  category = EXCLUDED.category,
+                  classification_source = EXCLUDED.classification_source,
+                  classification_confidence = EXCLUDED.classification_confidence,
+                  brief_excluded = EXCLUDED.brief_excluded,
+                  active = true,
+                  updated_at_ms = EXCLUDED.updated_at_ms
+                WHERE current_item.content_fingerprint IS DISTINCT FROM EXCLUDED.content_fingerprint
+                   OR current_item.provider_metadata IS DISTINCT FROM (
+                        current_item.provider_metadata || EXCLUDED.provider_metadata
+                      )
+                   OR NOT current_item.active
+                RETURNING (xmax = 0) AS inserted
                 """,
-                (
-                    observations_inserted,
-                    items_inserted,
-                    items_updated,
-                    Jsonb(dict(rejections)),
-                    fetch_id,
-                ),
+                values,
             )
+            outcome = cursor.fetchone()
+            if outcome is None:
+                rejections["duplicate"] += 1
+                continue
+            if bool(outcome["inserted"]):
+                inserted += 1
+            else:
+                updated += 1
+
+        if recovery_started_at_ms is not None:
             self.conn.execute(
                 """
                 UPDATE news_sources
@@ -946,25 +396,36 @@ class NewsRepository:
                        consecutive_failures = 0,
                        last_error = NULL,
                        gap_unclosed = false,
-                       next_fetch_at_ms = %s,
                        updated_at_ms = %s
                  WHERE source_id = %s
                 """,
                 (
-                    recovery_started_at_ms,
-                    observed_at_ms,
-                    observed_at_ms,
-                    observed_at_ms,
-                    observed_at_ms + 300_000,
-                    observed_at_ms,
+                    int(recovery_started_at_ms),
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    int(observed_at_ms),
                     source.source_id,
                 ),
             )
+        elif events:
+            self.conn.execute(
+                """
+                UPDATE news_sources
+                   SET last_live_at_ms = %s,
+                       last_success_at_ms = %s,
+                       last_error = NULL,
+                       updated_at_ms = %s
+                 WHERE source_id = %s
+                """,
+                (observed_at_ms, observed_at_ms, observed_at_ms, source.source_id),
+            )
         return {
-            "entries_seen": len(events),
-            "observations_inserted": observations_inserted,
-            "items_inserted": items_inserted,
-            "items_updated": items_updated,
+            "events_seen": len(events),
+            "items_inserted": inserted,
+            "items_updated": updated,
+            "metadata_updated": metadata_updated,
+            "rejected": sum(rejections.values()),
         }
 
     @staticmethod
@@ -1001,15 +462,7 @@ class NewsRepository:
                    updated_at_ms = %s
              WHERE source_id = %s AND source_kind = 'opennews'
             """,
-            (
-                connected,
-                connected,
-                now_ms,
-                error_code,
-                gap_unclosed,
-                now_ms,
-                source_id,
-            ),
+            (connected, connected, now_ms, error_code, gap_unclosed, now_ms, source_id),
         )
 
     def record_opennews_recovery_failure(
@@ -1021,219 +474,27 @@ class NewsRepository:
         error_code: str,
         status_code: int | None,
     ) -> None:
-        fetch_id = deterministic_id("news_fetch", source_id, started_at_ms)
-        self._insert_fetch(
-            fetch_id=fetch_id,
-            source_id=source_id,
-            started_at_ms=started_at_ms,
-            finished_at_ms=finished_at_ms,
-            status="failed",
-            fetch_path="opennews_rest",
-            direct_error_code=None,
-            http_status=status_code,
-            entries_seen=0,
-            observations_inserted=0,
-            items_inserted=0,
-            items_updated=0,
-            rejection_counts={},
-            error_code=str(error_code)[:500],
-        )
         self.conn.execute(
             """
             UPDATE news_sources
-               SET last_fetch_started_at_ms=%s,
-                   last_fetch_finished_at_ms=%s,
-                   last_http_status=%s,
-                   consecutive_failures=consecutive_failures + 1,
-                   last_error=%s,
-                   gap_unclosed=true,
-                   next_fetch_at_ms=%s,
-                   updated_at_ms=%s
-             WHERE source_id=%s AND source_kind='opennews'
+               SET last_fetch_started_at_ms = %s,
+                   last_fetch_finished_at_ms = %s,
+                   last_http_status = %s,
+                   consecutive_failures = consecutive_failures + 1,
+                   last_error = %s,
+                   gap_unclosed = true,
+                   updated_at_ms = %s
+             WHERE source_id = %s AND source_kind = 'opennews'
             """,
             (
                 started_at_ms,
                 finished_at_ms,
                 status_code,
                 str(error_code)[:500],
-                finished_at_ms + 300_000,
                 finished_at_ms,
                 source_id,
             ),
         )
-
-    def record_fetch_failure(
-        self,
-        *,
-        source_id: str,
-        started_at_ms: int,
-        finished_at_ms: int,
-        error: Exception,
-        status_code: int | None,
-        fetch_path: str | None = None,
-        direct_error_code: str | None = None,
-        claim_token: str,
-    ) -> bool:
-        claimed = self._lock_source_claim(
-            source_id=source_id,
-            claim_token=claim_token,
-            now_ms=finished_at_ms,
-        )
-        if claimed is None:
-            return False
-        fetch_id = deterministic_id("news_fetch", source_id, started_at_ms)
-        error_code = f"{type(error).__name__}:{str(error)[:500]}"
-        self._insert_fetch(
-            fetch_id=fetch_id,
-            source_id=source_id,
-            started_at_ms=started_at_ms,
-            finished_at_ms=finished_at_ms,
-            status="failed",
-            fetch_path=fetch_path,
-            direct_error_code=direct_error_code,
-            http_status=status_code,
-            entries_seen=0,
-            observations_inserted=0,
-            items_inserted=0,
-            items_updated=0,
-            rejection_counts={},
-            error_code=error_code,
-        )
-        failures = int(claimed["consecutive_failures"]) + 1
-        backoff_ms = min(
-            3_600_000,
-            int(claimed["refresh_interval_seconds"]) * 1_000 * (2**failures),
-        )
-        cursor = self.conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetch_finished_at_ms = %s,
-                   last_http_status = %s,
-                   consecutive_failures = consecutive_failures + 1,
-                   last_error = %s,
-                   next_fetch_at_ms = %s,
-                   claim_token = NULL,
-                   claim_lease_expires_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE source_id = %s AND claim_token = %s::uuid
-            """,
-            (
-                finished_at_ms,
-                status_code,
-                error_code,
-                finished_at_ms + backoff_ms,
-                finished_at_ms,
-                source_id,
-                claim_token,
-            ),
-        )
-        return int(cursor.rowcount or 0) == 1
-
-    def _insert_fetch(self, **values: Any) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO news_source_fetches (
-              fetch_id, source_id, started_at_ms, finished_at_ms, status,
-              fetch_path, direct_error_code, http_status, entries_seen,
-              observations_inserted, items_inserted, items_updated,
-              rejection_counts, error_code, created_at_ms
-            )
-            VALUES (
-              %(fetch_id)s, %(source_id)s, %(started_at_ms)s, %(finished_at_ms)s,
-              %(status)s, %(fetch_path)s, %(direct_error_code)s, %(http_status)s,
-              %(entries_seen)s, %(observations_inserted)s, %(items_inserted)s,
-              %(items_updated)s, %(rejection_counts)s, %(error_code)s,
-              %(finished_at_ms)s
-            )
-            ON CONFLICT (fetch_id) DO NOTHING
-            """,
-            {
-                **values,
-                "fetch_path": values.get("fetch_path"),
-                "direct_error_code": values.get("direct_error_code"),
-                "error_code": values.get("error_code"),
-                "rejection_counts": Jsonb(values["rejection_counts"]),
-            },
-        )
-
-    def _finish_source_success(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        finished_at_ms: int,
-        status_code: int,
-        etag: str | None,
-        last_modified: str | None,
-        claim_token: str,
-    ) -> None:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_sources
-               SET etag = %s,
-                   last_modified = %s,
-                   last_fetch_finished_at_ms = %s,
-                   last_success_at_ms = %s,
-                   last_http_status = %s,
-                   consecutive_failures = 0,
-                   last_error = NULL,
-                   next_fetch_at_ms = %s,
-                   claim_token = NULL,
-                   claim_lease_expires_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE source_id = %s AND claim_token = %s::uuid
-            """,
-            (
-                etag,
-                last_modified,
-                finished_at_ms,
-                finished_at_ms,
-                status_code,
-                finished_at_ms + source.refresh_interval_seconds * 1000,
-                finished_at_ms,
-                source.source_id,
-                claim_token,
-            ),
-        )
-        if int(cursor.rowcount or 0) != 1:
-            raise RuntimeError("news_source_claim_lost")
-
-    def _lock_source_claim(
-        self,
-        *,
-        source_id: str,
-        claim_token: str,
-        now_ms: int,
-    ) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT *
-              FROM news_sources
-             WHERE source_id = %s
-               AND claim_token = %s::uuid
-               AND claim_lease_expires_at_ms > %s
-             FOR UPDATE
-            """,
-            (source_id, claim_token, int(now_ms)),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    @staticmethod
-    def _rejection_reason(
-        *,
-        title: str,
-        canonical_url: str,
-        published_at_ms: int | None,
-        now_ms: int,
-    ) -> str | None:
-        if not title:
-            return "missing_title"
-        if not canonical_url:
-            return "missing_http_url"
-        if published_at_ms is None:
-            return "missing_date"
-        if published_at_ms > now_ms + 3_600_000:
-            return "future_date"
-        return None
 
     # Persistent Story projection ----------------------------------------------
 
@@ -1819,36 +1080,12 @@ class NewsRepository:
         params.append(limit + 1)
         rows = self.conn.execute(
             f"""
-            SELECT s.*,
-                   COALESCE(m.memberships, ARRAY[]::text[]) AS memberships,
-                   f.fetch_id AS latest_fetch_id,
-                   f.status AS latest_fetch_status,
-                   f.fetch_path AS latest_fetch_path,
-                   f.direct_error_code AS latest_direct_error_code,
-                   f.started_at_ms AS latest_fetch_started_at_ms,
-                   f.finished_at_ms AS latest_fetch_finished_at_ms,
-                   (f.finished_at_ms - f.started_at_ms)
-                     AS latest_fetch_duration_ms,
-                   f.http_status AS latest_fetch_http_status,
-                   f.entries_seen AS latest_entries_seen,
-                   f.observations_inserted AS latest_observations_inserted,
-                   f.items_inserted AS latest_items_inserted,
-                   f.items_updated AS latest_items_updated,
-                   f.rejection_counts AS latest_rejection_counts,
-                   f.error_code AS latest_fetch_error_code
+            SELECT s.source_id, s.name, s.source_kind, s.tier,
+                   s.enabled, s.live_connected, s.last_live_at_ms,
+                   s.last_recovery_at_ms, s.gap_unclosed,
+                   s.last_success_at_ms, s.last_http_status,
+                   s.consecutive_failures, s.last_error
               FROM news_sources s
-              LEFT JOIN LATERAL (
-                SELECT array_agg(membership ORDER BY membership) AS memberships
-                  FROM news_source_memberships
-                 WHERE source_id = s.source_id
-              ) m ON true
-              LEFT JOIN LATERAL (
-                SELECT *
-                  FROM news_source_fetches
-                 WHERE source_id = s.source_id
-                 ORDER BY finished_at_ms DESC, fetch_id DESC
-                 LIMIT 1
-              ) f ON true
              WHERE {" AND ".join(where)}
              ORDER BY s.tier, s.name, s.source_id
              LIMIT %s
@@ -2462,82 +1699,18 @@ class NewsRepository:
     # Health -------------------------------------------------------------------
 
     def health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        source = self.conn.execute(
-            """
-            WITH latest_fetch AS (
-              SELECT DISTINCT ON (source_id)
-                     source_id, status, fetch_path, direct_error_code,
-                     entries_seen
-                FROM news_source_fetches
-               ORDER BY source_id, finished_at_ms DESC, fetch_id DESC
-            )
-            SELECT count(*) FILTER (WHERE s.enabled) AS enabled_count,
-                   count(*) FILTER (
-                     WHERE s.enabled
-                       AND s.last_fetch_finished_at_ms IS NOT NULL
-                   ) AS attempted_count,
-                   count(*) FILTER (
-                     WHERE s.enabled AND s.last_success_at_ms IS NOT NULL
-                   ) AS successful_count,
-                   count(*) FILTER (
-                     WHERE s.enabled AND s.last_success_at_ms >= %s
-                   ) AS recent_success_count,
-                   count(*) FILTER (
-                     WHERE s.enabled
-                       AND lf.status = 'success'
-                       AND lf.entries_seen = 0
-                   ) AS empty_count,
-                   count(*) FILTER (
-                     WHERE s.enabled AND s.consecutive_failures > 0
-                   ) AS failing_count,
-                   count(*) FILTER (
-                     WHERE s.enabled AND s.next_fetch_at_ms < %s
-                   ) AS overdue_count,
-                   count(*) FILTER (
-                     WHERE s.enabled
-                       AND lf.status <> 'failed'
-                       AND lf.fetch_path = 'direct'
-                   ) AS direct_success_count,
-                   count(*) FILTER (
-                     WHERE s.enabled
-                       AND lf.status <> 'failed'
-                       AND lf.fetch_path = 'relay'
-                   ) AS relay_success_count,
-                   count(*) FILTER (
-                     WHERE s.enabled
-                       AND lf.status = 'failed'
-                       AND lf.fetch_path = 'relay'
-                       AND lf.direct_error_code IS NOT NULL
-                   ) AS both_failed_count,
-                   max(s.last_success_at_ms) AS last_success_at_ms
-              FROM news_sources s
-              LEFT JOIN latest_fetch lf ON lf.source_id = s.source_id
-             WHERE s.source_kind = 'rss'
-            """,
-            (now_ms - 3_600_000, now_ms - 300_000),
-        ).fetchone()
         opennews = self.conn.execute(
             """
-            SELECT source_id, live_connected, last_live_at_ms,
+            SELECT source_id, name, live_connected, last_live_at_ms,
                    last_recovery_at_ms, gap_unclosed, last_error,
-                   last_http_status
+                   last_http_status, last_success_at_ms,
+                   consecutive_failures
               FROM news_sources
              WHERE source_kind = 'opennews' AND enabled
              ORDER BY source_id
              LIMIT 1
             """
         ).fetchone()
-        recent_fetches = self.conn.execute(
-            """
-            SELECT rejection_counts
-              FROM news_source_fetches
-             WHERE finished_at_ms >= %s
-            """,
-            (now_ms - 3_600_000,),
-        ).fetchall()
-        gate_counts: Counter[str] = Counter()
-        for fetch in recent_fetches:
-            gate_counts.update({str(key): int(value) for key, value in dict(fetch["rejection_counts"]).items()})
         story = self.conn.execute(
             """
             SELECT active_story_count AS active_count,
@@ -2555,36 +1728,25 @@ class NewsRepository:
             """
         ).fetchone()
         brief = self.get_brief(now_ms=now_ms, history_limit=1)
-        enabled = int(source["enabled_count"] or 0)
-        attempted = int(source["attempted_count"] or 0)
-        recent = int(source["recent_success_count"] or 0)
-        coverage_ratio = recent / enabled if enabled else 0.0
         ingest_reasons: list[str] = []
-        if enabled == 0:
+        opennews_payload = dict(opennews) if opennews is not None else None
+        if opennews_payload is None:
             ingest_status = "degraded"
-            ingest_reasons.append("no_enabled_sources")
-        elif attempted < enabled:
+            ingest_reasons.append("opennews_not_configured")
+        elif opennews_payload["last_success_at_ms"] is None:
             ingest_status = "warming"
-            ingest_reasons.append("not_all_sources_attempted")
-        elif int(source["failing_count"] or 0) > 0:
+            ingest_reasons.append("opennews_no_items_yet")
+        elif not bool(opennews_payload["live_connected"]):
             ingest_status = "degraded"
-            ingest_reasons.append("source_failures_present")
-        elif coverage_ratio < 0.8:
+            ingest_reasons.append("opennews_disconnected")
+        elif bool(opennews_payload["gap_unclosed"]):
             ingest_status = "degraded"
-            ingest_reasons.append("recent_source_coverage_below_80_percent")
-        elif int(source["overdue_count"] or 0) > max(3, enabled // 5):
+            ingest_reasons.append("opennews_gap_unclosed")
+        elif opennews_payload["last_error"] is not None:
             ingest_status = "degraded"
-            ingest_reasons.append("material_source_poll_overdue")
+            ingest_reasons.append("opennews_error")
         else:
             ingest_status = "ready"
-        opennews_payload = dict(opennews) if opennews is not None else None
-        if opennews_payload is not None and (
-            not bool(opennews_payload["live_connected"])
-            or bool(opennews_payload["gap_unclosed"])
-            or opennews_payload["last_error"] is not None
-        ):
-            ingest_status = "degraded"
-            ingest_reasons.append("opennews_unavailable_or_gap_unclosed")
 
         unmaterialized = int(story["unmaterialized_item_count"] or 0)
         invalid_owners = int(story["invalid_owner_count"] or 0)
@@ -2620,21 +1782,6 @@ class NewsRepository:
             "ingest": {
                 "status": ingest_status,
                 "reasons": ingest_reasons,
-                "configured_sources": enabled,
-                "enabled_sources": enabled,
-                "attempted_sources": attempted,
-                "terminal_sources": attempted,
-                "successful_sources": int(source["successful_count"] or 0),
-                "empty_sources": int(source["empty_count"] or 0),
-                "recent_success_sources": recent,
-                "recent_coverage_ratio": round(coverage_ratio, 4),
-                "failing_sources": int(source["failing_count"] or 0),
-                "overdue_sources": int(source["overdue_count"] or 0),
-                "direct_success_sources": int(source["direct_success_count"] or 0),
-                "relay_success_sources": int(source["relay_success_count"] or 0),
-                "both_failed_sources": int(source["both_failed_count"] or 0),
-                "last_success_at_ms": source["last_success_at_ms"],
-                "gate_counts_1h": dict(gate_counts),
                 "opennews": opennews_payload,
             },
             "story": {
@@ -2698,6 +1845,12 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
 def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "item_id": str(row["item_id"]),
+        "provider_record_id": (
+            str(row["provider_record_id"])
+            if row.get("provider_record_id") is not None
+            else None
+        ),
+        "provider_metadata": dict(row.get("provider_metadata") or {}),
         "source_id": str(row["source_id"]),
         "source_name": str(row["source_name"]),
         "reporting_origin": str(row["reporting_origin"]),

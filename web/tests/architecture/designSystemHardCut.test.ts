@@ -103,7 +103,7 @@ describe("Tracefold design-system hard cut", () => {
   it("assigns every supported route family to a page archetype", () => {
     const owners = {
       case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
-      decision: ["features/macro/ui/MacroResearchPage.tsx"],
+      decision: ["features/macro/ui/MacroDecisionPage.tsx"],
       scan: [
         "features/live/ui/LivePage.tsx",
         "features/stocks/ui/StocksRadarPage.tsx",

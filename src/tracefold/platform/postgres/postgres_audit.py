@@ -307,17 +307,11 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_sources",
         "sql": """
-            SELECT sources.source_id, fetches.fetch_id
-            FROM news_sources sources
-            LEFT JOIN LATERAL (
-              SELECT fetch_id
-              FROM news_source_fetches
-              WHERE source_id = sources.source_id
-              ORDER BY finished_at_ms DESC, fetch_id DESC
-              LIMIT 1
-            ) fetches ON true
-            WHERE sources.enabled
-            ORDER BY sources.tier, sources.name, sources.source_id
+            SELECT source_id, live_connected, last_recovery_at_ms,
+                   gap_unclosed, last_error
+            FROM news_sources
+            WHERE enabled AND source_kind = 'opennews'
+            ORDER BY source_id
             LIMIT 101
         """,
         "params": (),
@@ -351,27 +345,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             LIMIT 1
         """,
         "params": ("rates_fed",),
-    },
-    {
-        "name": "macro_thesis_state",
-        "sql": """
-            SELECT runs.session_date, runs.status, publications.publication_id
-            FROM macro_thesis_runs runs
-            LEFT JOIN macro_thesis_publications publications USING (session_date)
-            ORDER BY runs.session_date DESC
-            LIMIT 1
-        """,
-        "params": (),
-    },
-    {
-        "name": "macro_thesis_history",
-        "sql": """
-            SELECT publication_id, session_date
-            FROM macro_thesis_publications
-            ORDER BY session_date DESC
-            LIMIT 30
-        """,
-        "params": (),
     },
     {
         "name": "workers_runtime",
@@ -427,44 +400,30 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/news/brief": ("news_brief",),
     "/api/news/sources": ("news_sources",),
     "/api/news/status": ("news_status", "news_brief"),
-    "/api/macro/overview": (
-        "macro_modules_current",
-        "macro_thesis_state",
-    ),
+    "/api/macro/overview": ("macro_modules_current",),
     "/api/macro/rates-fed": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
     ),
     "/api/macro/economy-inflation": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
     ),
     "/api/macro/liquidity-funding": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
     ),
     "/api/macro/credit": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
     ),
     "/api/macro/volatility": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
     ),
     "/api/macro/cross-asset": (
         "macro_module_current",
         "macro_modules_current",
-        "macro_thesis_state",
-    ),
-    "/api/macro/research": (
-        "macro_modules_current",
-        "macro_thesis_state",
-        "macro_thesis_history",
     ),
 }
 

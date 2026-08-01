@@ -131,7 +131,6 @@ def _mount_frontend(app: FastAPI, *, frontend_dist: str | Path | None) -> None:
     app.add_api_route("/macro", frontend_index, include_in_schema=False)
     for macro_path in (
         "overview",
-        "research",
         "rates-fed",
         "economy-inflation",
         "liquidity-funding",
