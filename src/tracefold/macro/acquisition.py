@@ -200,6 +200,7 @@ class MacroAcquisitionService:
                     dataset_id=claim.spec.dataset_id,
                 ),
                 updated_at_ms=completed_at_ms,
+                material_changed=False,
             )
         return {
             "dataset_id": claim.spec.dataset_id,
@@ -312,6 +313,7 @@ class MacroAcquisitionService:
                     )
                 ),
                 updated_at_ms=completed_at_ms,
+                material_changed=bool(inserted),
             )
         return {
             "dataset_id": spec.dataset_id,
@@ -335,6 +337,7 @@ def acquisition_loop_policy(clock_kind: str) -> tuple[float, int]:
         raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}") from exc
     return interval_seconds, batch_size
 
+
 def _mark_dataset_state_and_modules(
     repos: Any,
     *,
@@ -343,6 +346,7 @@ def _mark_dataset_state_and_modules(
     material_fingerprint: str,
     source_frontier_ms: int,
     updated_at_ms: int,
+    material_changed: bool = True,
 ) -> None:
     changed = repos.macro.upsert_dataset_projection_state(
         dataset_id=dataset_id,
@@ -350,6 +354,7 @@ def _mark_dataset_state_and_modules(
         acquisition_status=acquisition_status,
         source_frontier_ms=source_frontier_ms,
         updated_at_ms=updated_at_ms,
+        material_changed=material_changed,
     )
     if changed:
         _dirty_dependent_modules(

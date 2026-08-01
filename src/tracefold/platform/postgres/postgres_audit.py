@@ -43,39 +43,22 @@ PROJECTION_TABLES = (
     "news_brief_selection_current",
 )
 
-FOREIGN_KEY_CHECKS = {
-    "event_entities_missing_events": """
-        SELECT COUNT(*) AS count
-        FROM event_entities child
-        LEFT JOIN events parent ON parent.event_id = child.event_id
-        WHERE parent.event_id IS NULL
-    """,
-    "token_evidence_missing_events": """
-        SELECT COUNT(*) AS count
-        FROM token_evidence child
-        LEFT JOIN events parent ON parent.event_id = child.event_id
-        WHERE parent.event_id IS NULL
-    """,
-    "token_intents_missing_events": """
-        SELECT COUNT(*) AS count
-        FROM token_intents child
-        LEFT JOIN events parent ON parent.event_id = child.event_id
-        WHERE parent.event_id IS NULL
-    """,
-    "token_resolutions_missing_intents": """
-        SELECT COUNT(*) AS count
-        FROM token_intent_resolutions child
-        LEFT JOIN token_intents parent ON parent.intent_id = child.intent_id
-        WHERE parent.intent_id IS NULL
-    """,
-    "token_radar_current_rows_missing_intents": """
-        SELECT COUNT(*) AS count
-        FROM token_radar_current_rows child
-        LEFT JOIN token_intents parent ON parent.intent_id = child.intent_id
-        WHERE child.venue = 'all'
-          AND parent.intent_id IS NULL
-    """,
+FOREIGN_KEY_CONSTRAINTS = {
+    "event_entities_missing_events": ("event_entities", "event_entities_event_id_fkey"),
+    "token_evidence_missing_events": ("token_evidence", "token_evidence_event_id_fkey"),
+    "token_intents_missing_events": ("token_intents", "token_intents_event_id_fkey"),
+    "token_resolutions_missing_intents": (
+        "token_intent_resolutions",
+        "token_intent_resolutions_intent_id_fkey",
+    ),
 }
+TOKEN_RADAR_ORPHAN_CHECK = """
+    SELECT COUNT(*) AS count
+    FROM token_radar_current_rows child
+    LEFT JOIN token_intents parent ON parent.intent_id = child.intent_id
+    WHERE child.venue = 'all'
+      AND parent.intent_id IS NULL
+"""
 
 
 HOT_QUERIES: tuple[dict[str, Any], ...] = (
@@ -485,10 +468,31 @@ class PostgresOperationalAudit:
         return row is not None
 
     def _foreign_key_checks(self) -> dict[str, int]:
-        checks: dict[str, int] = {}
-        for name, sql in FOREIGN_KEY_CHECKS.items():
-            row = self.conn.execute(sql).fetchone()
-            checks[name] = int(row["count"] if row else 0)
+        rows = self.conn.execute(
+            """
+            SELECT child.relname AS child_table,
+                   constraints.conname,
+                   constraints.convalidated
+            FROM pg_constraint AS constraints
+            JOIN pg_class AS child ON child.oid = constraints.conrelid
+            JOIN pg_namespace AS namespace ON namespace.oid = child.relnamespace
+            WHERE constraints.contype = 'f'
+              AND namespace.nspname = 'public'
+              AND child.relname = ANY(%s)
+              AND constraints.conname = ANY(%s)
+            """,
+            (
+                [table_name for table_name, _constraint_name in FOREIGN_KEY_CONSTRAINTS.values()],
+                [constraint_name for _table_name, constraint_name in FOREIGN_KEY_CONSTRAINTS.values()],
+            ),
+        ).fetchall()
+        validated = {(str(row["child_table"]), str(row["conname"])): bool(row["convalidated"]) for row in rows}
+        checks = {
+            name: int(not validated.get(constraint_identity, False))
+            for name, constraint_identity in FOREIGN_KEY_CONSTRAINTS.items()
+        }
+        row = self.conn.execute(TOKEN_RADAR_ORPHAN_CHECK).fetchone()
+        checks["token_radar_current_rows_missing_intents"] = int(row["count"] if row else 0)
         return checks
 
     def _migration_version(self) -> str | None:

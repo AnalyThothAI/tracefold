@@ -551,10 +551,7 @@ class MacroRepository:
     ) -> str | None:
         if unavailable:
             status = "unavailable"
-        elif (
-            str(target["clock_kind"]) == "backfill"
-            and int(target["attempt_count"]) >= int(target["max_attempts"])
-        ):
+        elif str(target["clock_kind"]) == "backfill" and int(target["attempt_count"]) >= int(target["max_attempts"]):
             status = "stale"
         else:
             status = "delayed"
@@ -687,6 +684,7 @@ class MacroRepository:
         acquisition_status: str,
         source_frontier_ms: int,
         updated_at_ms: int,
+        material_changed: bool = True,
     ) -> bool:
         cursor = self.conn.execute(
             """
@@ -696,7 +694,10 @@ class MacroRepository:
             )
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT(dataset_id) DO UPDATE SET
-              material_fingerprint = excluded.material_fingerprint,
+              material_fingerprint = CASE
+                WHEN %s THEN excluded.material_fingerprint
+                ELSE macro_dataset_projection_states.material_fingerprint
+              END,
               acquisition_status = excluded.acquisition_status,
               source_frontier_ms = excluded.source_frontier_ms,
               updated_at_ms = excluded.updated_at_ms
@@ -705,7 +706,10 @@ class MacroRepository:
               macro_dataset_projection_states.acquisition_status,
               macro_dataset_projection_states.source_frontier_ms
             ) IS DISTINCT FROM (
-              excluded.material_fingerprint,
+              CASE
+                WHEN %s THEN excluded.material_fingerprint
+                ELSE macro_dataset_projection_states.material_fingerprint
+              END,
               excluded.acquisition_status,
               excluded.source_frontier_ms
             )
@@ -716,6 +720,8 @@ class MacroRepository:
                 str(acquisition_status),
                 int(source_frontier_ms),
                 int(updated_at_ms),
+                bool(material_changed),
+                bool(material_changed),
             ),
         )
         return int(cursor.rowcount or 0) == 1
@@ -845,39 +851,56 @@ class MacroRepository:
               SELECT *
               FROM unnest(%s::text[], %s::integer[])
                 AS requested(dataset_id, semantic_rows)
-            ), latest_vintage AS (
-              SELECT DISTINCT ON (facts.dataset_id, facts.series_id, facts.reference_date)
-                facts.fact_id,
-                facts.dataset_id,
-                facts.series_id,
-                facts.reference_date,
-                facts.vintage_date,
-                facts.value_numeric,
-                facts.value_text,
-                facts.unit,
-                facts.published_at_ms,
-                facts.received_at_ms,
-                facts.source_url,
-                facts.fact_hash,
-                requested.semantic_rows
-              FROM macro_series_facts AS facts
-              JOIN requested USING (dataset_id)
-              WHERE facts.received_at_ms <= COALESCE(%s::bigint, facts.received_at_ms)
-              ORDER BY
-                facts.dataset_id, facts.series_id, facts.reference_date,
-                facts.vintage_date DESC, facts.received_at_ms DESC
-            ), semantic_ranked AS (
+            ), series_keys AS (
               SELECT
-                latest_vintage.*,
-                row_number() OVER (
-                  PARTITION BY dataset_id, series_id
-                  ORDER BY reference_date DESC
-                ) AS semantic_row_number
-              FROM latest_vintage
+                requested.dataset_id,
+                requested.semantic_rows,
+                series.series_id
+              FROM requested
+              CROSS JOIN LATERAL (
+                SELECT DISTINCT facts.series_id
+                FROM macro_series_facts AS facts
+                WHERE facts.dataset_id = requested.dataset_id
+                  AND facts.received_at_ms <= COALESCE(
+                    %s::bigint,
+                    facts.received_at_ms
+                  )
+                ORDER BY facts.series_id
+              ) AS series
             ), semantic_window AS (
-              SELECT *
-              FROM semantic_ranked
-              WHERE semantic_row_number <= semantic_rows
+              SELECT latest.*
+              FROM series_keys
+              CROSS JOIN LATERAL (
+                SELECT current_vintage.*
+                FROM (
+                  SELECT DISTINCT ON (facts.reference_date)
+                    facts.fact_id,
+                    facts.dataset_id,
+                    facts.series_id,
+                    facts.reference_date,
+                    facts.vintage_date,
+                    facts.value_numeric,
+                    facts.value_text,
+                    facts.unit,
+                    facts.published_at_ms,
+                    facts.received_at_ms,
+                    facts.source_url,
+                    facts.fact_hash,
+                    series_keys.semantic_rows
+                  FROM macro_series_facts AS facts
+                  WHERE facts.dataset_id = series_keys.dataset_id
+                    AND facts.series_id = series_keys.series_id
+                    AND facts.received_at_ms <= COALESCE(
+                      %s::bigint,
+                      facts.received_at_ms
+                    )
+                  ORDER BY
+                    facts.reference_date DESC,
+                    facts.vintage_date DESC,
+                    facts.received_at_ms DESC
+                ) AS current_vintage
+                LIMIT series_keys.semantic_rows
+              ) AS latest
             ), latest_numeric AS (
               SELECT DISTINCT ON (dataset_id)
                 dataset_id,
@@ -937,6 +960,7 @@ class MacroRepository:
             (
                 list(requested),
                 list(requested.values()),
+                received_before_ms,
                 received_before_ms,
                 _row_limit(row_cap),
             ),
