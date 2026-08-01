@@ -210,7 +210,7 @@ class CollectorService:
                     "gmgn_event_publish",
                     self.store.ingest_event,
                     event,
-                    operation_timeout_seconds=3.0,
+                    operation_timeout_seconds=5.0,
                 )
             except ResourceAdmissionTimeout as exc:
                 raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc

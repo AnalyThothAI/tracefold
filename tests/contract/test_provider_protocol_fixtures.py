@@ -26,8 +26,12 @@ FIXTURES = Path(__file__).resolve().parent / "provider_frames"
 
 
 class _InlineRuntimeResources:
+    def __init__(self) -> None:
+        self.operations: list[tuple[str, float]] = []
+
     async def run_business(self, _operation_name, function, /, *args, **kwargs):
-        kwargs.pop("operation_timeout_seconds", None)
+        timeout_seconds = float(kwargs.pop("operation_timeout_seconds"))
+        self.operations.append((_operation_name, timeout_seconds))
         return function(*args, **kwargs)
 
 
@@ -70,10 +74,11 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
     async def scenario() -> None:
         raw_frames = _load_json("gmgn_public_tw_partial_then_complete.json")
         store = MemoryStore()
+        resources = _InlineRuntimeResources()
         service = CollectorService(
             store=store,
             upstream_client=None,
-            db=_InlineRuntimeResources(),
+            db=resources,
         )
         service.snapshot_timeout = 0.05
 
@@ -88,6 +93,11 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
         assert store.twitter_events[0].content.text == "complete snapshot with final token text"
         assert store.twitter_events[0].token_snapshot is not None
         assert store.twitter_events[0].token_snapshot.icon_url == "https://example.test/token.png"
+        assert resources.operations == [
+            ("gmgn_raw_frame_publish", 3.0),
+            ("gmgn_raw_frame_publish", 3.0),
+            ("gmgn_event_publish", 5.0),
+        ]
 
     asyncio.run(scenario())
 
