@@ -18,7 +18,7 @@ from urllib.request import urlopen
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
 
-from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION
+from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
     PUBLIC_NO_SQL_ROUTES,

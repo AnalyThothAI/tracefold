@@ -847,7 +847,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == "20260801_0234"
+        assert version == latest_migration_version() == "20260801_0240"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """
