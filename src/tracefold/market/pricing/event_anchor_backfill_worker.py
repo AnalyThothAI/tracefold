@@ -462,8 +462,6 @@ def _terminal_reason(row: Mapping[str, Any]) -> str:
     reason = str(row.get("last_reason") or "").strip()
     if reason:
         return reason
-    if str(row.get("status") or "") == "failed":
-        return "lease_expired_max_attempts"
     return "backfill_expired"
 
 

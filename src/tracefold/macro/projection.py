@@ -287,6 +287,19 @@ class MacroProjectionService:
                     "module_id": claim.module_id,
                     "rows_written": 0,
                 }
+            if not repos.projection_frontiers.complete(
+                MACRO_FRONTIER,
+                key={"module_id": claim.module_id},
+                runtime_id=claim.runtime_id,
+                input_fingerprint=claim.input_fingerprint,
+                version=claim.projection_version,
+                now_ms=now_ms,
+            ):
+                return {
+                    "projection_status": "stale_snapshot",
+                    "module_id": claim.module_id,
+                    "rows_written": 0,
+                }
             module_writes = repos.macro.upsert_module_current(
                 module_id=claim.module_id,
                 current_health_state=str(module_payload["status"]["current_health"]["state"]),
@@ -296,15 +309,6 @@ class MacroProjectionService:
                 payload_hash=_payload_hash(module_payload),
                 updated_at_ms=now_ms,
             )
-            if not repos.projection_frontiers.complete(
-                MACRO_FRONTIER,
-                key={"module_id": claim.module_id},
-                runtime_id=claim.runtime_id,
-                input_fingerprint=claim.input_fingerprint,
-                version=claim.projection_version,
-                now_ms=now_ms,
-            ):
-                raise RuntimeError("macro_projection_publish_frontier_cas_failed")
         return {
             "projection_status": "published",
             "module_id": claim.module_id,

@@ -74,6 +74,39 @@ class _ProviderFailureMarket:
         raise DexProviderTemporarilyUnavailable("provider unavailable")
 
 
+class _SupersedingProfileMarket:
+    def __init__(self, db: _SessionTrackingDB) -> None:
+        self.db = db
+        self.calls = 0
+
+    def token_profile(self, *, chain_id: str, address: str) -> None:
+        del chain_id, address
+        self.calls += 1
+        assert self.db.active_sessions == 0
+        with repository_session_for_connection(self.db.conn) as repos, repos.transaction():
+            repos.asset_profile_refresh_targets.enqueue_targets(
+                [
+                    {
+                        "provider": PROVIDER,
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "chain_id": "sol",
+                        "address": "address-2",
+                        "symbol": "TWO",
+                        "source_watermark_ms": NOW_MS + 1,
+                        "priority": 20,
+                        "heat_tier": "hot",
+                        "payload_hash": "sha256:evidence-v2",
+                    }
+                ],
+                reason="newer_token_radar_evidence",
+                now_ms=NOW_MS + 1,
+            )
+
+    def close(self) -> None:
+        return None
+
+
 class _ImageResponse:
     url = "https://gmgn.ai/external-res/logo.png"
     status_code = 200
@@ -91,6 +124,29 @@ class _ImageHttpClient:
         self.calls += 1
         assert self.db.active_sessions == 0
         return _ImageResponse()
+
+
+class _SupersedingImageHttpClient(_ImageHttpClient):
+    def get(self, url: str, **kwargs: Any) -> _ImageResponse:
+        response = super().get(url, **kwargs)
+        with repository_session_for_connection(self.db.conn) as repos, repos.transaction():
+            repos.token_image_source_dirty_targets.enqueue_targets(
+                [
+                    {
+                        "source_url": _ImageResponse.url,
+                        "source_provider": PROVIDER,
+                        "source_kind": "logo",
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "raw_ref_json": {"version": 2},
+                        "source_watermark_ms": NOW_MS + 1,
+                        "priority": 20,
+                    }
+                ],
+                reason="newer_profile_image_candidate",
+                now_ms=NOW_MS + 1,
+            )
+        return response
 
 
 def _enqueue_profile_target(conn: Any, *, target_id: str = "asset-1") -> None:
@@ -111,6 +167,26 @@ def _enqueue_profile_target(conn: Any, *, target_id: str = "asset-1") -> None:
                 }
             ],
             reason="token_radar_entered",
+            now_ms=NOW_MS,
+        )
+
+
+def _enqueue_image_target(conn: Any) -> None:
+    with repository_session_for_connection(conn) as repos, repos.transaction():
+        repos.token_image_source_dirty_targets.enqueue_targets(
+            [
+                {
+                    "source_url": _ImageResponse.url,
+                    "source_provider": PROVIDER,
+                    "source_kind": "logo",
+                    "target_type": "Asset",
+                    "target_id": "asset-1",
+                    "raw_ref_json": {"version": 1},
+                    "source_watermark_ms": NOW_MS,
+                    "priority": 20,
+                }
+            ],
+            reason="profile_image_candidate",
             now_ms=NOW_MS,
         )
 
@@ -176,6 +252,55 @@ def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> 
         conn.close()
 
 
+def test_superseded_profile_claim_retries_without_publishing_stale_result() -> None:
+    conn = connect_postgres_test()
+    finite = FiniteOperations()
+    try:
+        reset_postgres_schema(conn)
+        _enqueue_profile_target(conn)
+        db = _SessionTrackingDB(conn)
+        market = _SupersedingProfileMarket(db)
+        worker = AssetProfileRefresh(
+            db=db,
+            dex_profile_sources=(DexProfileSource(provider=PROVIDER, market=market),),
+            finite_operations=finite,
+            runtime_id="integration-test",
+        )
+
+        result = asyncio.run(worker.turn(now_ms=NOW_MS))
+
+        target = conn.execute(
+            """
+            SELECT payload_hash, address, attempt_count, lease_owner
+            FROM asset_profile_refresh_targets
+            WHERE provider = %s AND target_id = 'asset-1'
+            """,
+            (PROVIDER,),
+        ).fetchone()
+        profile_count = conn.execute(
+            "SELECT count(*) AS count FROM asset_profiles WHERE asset_id = 'asset-1'"
+        ).fetchone()["count"]
+        circuit_count = conn.execute(
+            "SELECT count(*) AS count FROM provider_circuit_state WHERE provider = %s",
+            (PROVIDER,),
+        ).fetchone()["count"]
+        conn.commit()
+
+        assert market.calls == 1
+        assert result is None
+        assert target == {
+            "payload_hash": "sha256:evidence-v2",
+            "address": "address-2",
+            "attempt_count": 0,
+            "lease_owner": None,
+        }
+        assert profile_count == 0
+        assert circuit_count == 0
+    finally:
+        finite.close()
+        conn.close()
+
+
 def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
     conn = connect_postgres_test()
     finite = FiniteOperations()
@@ -224,6 +349,50 @@ def test_image_fetch_holds_no_database_session(tmp_path: Any) -> None:
         assert asset["status"] == "ready"
         assert (tmp_path / "cache" / "token-images" / asset["storage_path"]).is_file()
         assert queue_depth == 0
+    finally:
+        finite.close()
+        conn.close()
+
+
+def test_superseded_image_claim_retries_without_publishing_stale_result(tmp_path: Any) -> None:
+    conn = connect_postgres_test()
+    finite = FiniteOperations()
+    try:
+        reset_postgres_schema(conn)
+        db = _SessionTrackingDB(conn)
+        http_client = _SupersedingImageHttpClient(db)
+        _enqueue_image_target(conn)
+        worker = TokenImageMirror(
+            db=db,
+            app_home=tmp_path,
+            http_client=http_client,
+            finite_operations=finite,
+            runtime_id="integration-test",
+        )
+
+        result = asyncio.run(worker.turn(now_ms=NOW_MS))
+
+        target = conn.execute(
+            """
+            SELECT source_watermark_ms, attempt_count, lease_owner
+            FROM token_image_source_dirty_targets
+            WHERE target_type = 'Asset' AND target_id = 'asset-1'
+            """
+        ).fetchone()
+        asset = conn.execute(
+            "SELECT status FROM token_image_assets WHERE source_url = %s",
+            (_ImageResponse.url,),
+        ).fetchone()
+        conn.commit()
+
+        assert http_client.calls == 1
+        assert result is None
+        assert target == {
+            "source_watermark_ms": NOW_MS + 1,
+            "attempt_count": 0,
+            "lease_owner": None,
+        }
+        assert asset == {"status": "pending"}
     finally:
         finite.close()
         conn.close()

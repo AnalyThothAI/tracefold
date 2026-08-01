@@ -66,6 +66,40 @@ class _Agent:
         )
 
 
+class _ReleaseClaimAgent(_Agent):
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+
+    async def analyze(
+        self,
+        *,
+        document: Any,
+        roster_context: Any,
+        prior_analysis: Any,
+        on_model_submitted: Any,
+    ) -> FedDocumentAnalysisDraft:
+        row = self.conn.execute(
+            """
+            SELECT analysis_job_id, lease_owner, attempt_count
+              FROM macro_document_analysis_jobs
+             WHERE status = 'claimed'
+            """
+        ).fetchone()
+        assert row is not None
+        with repository_session_for_connection(self.conn) as repos, repos.transaction():
+            assert repos.macro.release_document_analysis_claim(
+                analysis_job_id=str(row["analysis_job_id"]),
+                lease_owner=str(row["lease_owner"]),
+                claimed_attempt_count=int(row["attempt_count"]),
+            )
+        return await super().analyze(
+            document=document,
+            roster_context=roster_context,
+            prior_analysis=prior_analysis,
+            on_model_submitted=on_model_submitted,
+        )
+
+
 class _Clock:
     def __init__(self, value: int) -> None:
         self.value = value
@@ -167,6 +201,41 @@ def test_document_analysis_post_model_publication_admission_is_fatal(tmp_path) -
         assert row["lease_owner"] == "macro_document_analysis"
     finally:
         conn.close()
+
+
+def test_document_analysis_lost_claim_does_not_publish(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        _insert_analysis_document(conn)
+        service = MacroDocumentAnalysisService(
+            db=_TestDb(conn),
+            agent=_ReleaseClaimAgent(conn),
+            clock_ms=lambda: 3_603_000,
+        )
+
+        result = asyncio.run(service.run_once(now_ms=3_603_000))
+        analysis_count = conn.execute(
+            "SELECT COUNT(*)::int AS count FROM macro_document_analyses"
+        ).fetchone()["count"]
+        job = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner
+              FROM macro_document_analysis_jobs
+             WHERE document_id = 'macrodoc_admission_boundary'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result == {
+        "status": "idle",
+        "document_id": "macrodoc_admission_boundary",
+        "rows_written": 0,
+        "jobs_written": 1,
+    }
+    assert analysis_count == 0
+    assert job == {"status": "pending", "attempt_count": 0, "lease_owner": None}
 
 
 def test_document_analysis_is_immutable_idempotent_and_source_cutoff_bound(tmp_path) -> None:

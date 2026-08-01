@@ -80,6 +80,23 @@ class _UnavailableDexMarket:
         raise DexProviderTemporarilyUnavailable("provider unavailable")
 
 
+class _StaleUnavailableDexMarket:
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+        self.search_requests = 0
+
+    def search_tokens(self, *, query: str, chain_ids: tuple[str, ...]) -> list[DexTokenCandidate]:
+        del query, chain_ids
+        self.search_requests += 1
+        with self.conn.transaction():
+            repositories_for_connection(self.conn).discovery.enqueue_lookup_keys(
+                ["symbol:OUTAGE"],
+                reason="new-input",
+                now_ms=NOW_MS + 60_001,
+            )
+        raise DexProviderTemporarilyUnavailable("provider unavailable")
+
+
 def _candidate(symbol: str) -> DexTokenCandidate:
     return DexTokenCandidate(
         chain_id="eip155:1",
@@ -246,6 +263,50 @@ def test_resolution_refresh_provider_outage_does_not_spend_target_attempt(tmp_pa
         "lease_owner": None,
         "due_at_ms": NOW_MS + 90_000,
     }
+
+
+def test_resolution_refresh_provider_outage_lost_claim_retries_locally(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        _ingest_service(conn).ingest_event(make_event("event-outage", text="$OUTAGE", received_at_ms=NOW_MS))
+        market = _StaleUnavailableDexMarket(conn)
+
+        disposition = asyncio.run(_worker(conn, market).turn(now_ms=NOW_MS + 60_000))
+        row = conn.execute(
+            """
+            SELECT dirty_reason, attempt_count, lease_owner, due_at_ms
+              FROM token_discovery_dirty_lookup_keys
+             WHERE lookup_key = 'symbol:OUTAGE'
+            """
+        ).fetchone()
+        result_count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+              FROM token_discovery_results
+             WHERE provider = 'okx_dex_search' AND lookup_key = 'symbol:OUTAGE'
+            """
+        ).fetchone()["count"]
+        circuit_count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+              FROM provider_circuit_state
+             WHERE provider = 'okx_dex_search'
+            """
+        ).fetchone()["count"]
+    finally:
+        conn.close()
+
+    assert disposition is None
+    assert market.search_requests == 1
+    assert row == {
+        "dirty_reason": "new-input",
+        "attempt_count": 0,
+        "lease_owner": None,
+        "due_at_ms": NOW_MS,
+    }
+    assert result_count == 0
+    assert circuit_count == 0
 
 
 def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_without_refetch(tmp_path) -> None:

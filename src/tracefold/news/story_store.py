@@ -15,6 +15,12 @@ STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPO
 _PIPELINE_LOCK_KEY = 727_301_984
 
 
+class _StorySnapshotLost(RuntimeError):
+    def __init__(self, *, items: int) -> None:
+        super().__init__("news_story_snapshot_lost")
+        self.items = int(items)
+
+
 def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
     cutoff_ms = int(now_ms) - ACTIVE_WINDOW_MS
     scoring_epoch_ms = int(now_ms) - (int(now_ms) % SCORING_EPOCH_MS)
@@ -74,6 +80,7 @@ def publish_story_projection(
 ) -> dict[str, Any]:
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
+    snapshot_item_ids = sorted({str(row["item_id"]) for row in snapshot.rows})
     current = load_story_projection(repository, now_ms=now_ms)
     if str(current["input_fingerprint"]) != str(snapshot.input_fingerprint):
         return {
@@ -108,8 +115,13 @@ def publish_story_projection(
     story_writes = _upsert_stories(conn, stories=stories, now_ms=now_ms)
     membership_writes = _replace_memberships(conn, memberships=memberships)
     story_writes += _delete_absent_stories(conn, stories=stories)
-    invariants = repository._story_invariant_counts()
+    invariants = repository._story_invariant_counts(
+        item_ids=snapshot_item_ids,
+    )
     if invariants["total"]:
+        latest = load_story_projection(repository, now_ms=now_ms)
+        if str(latest["input_fingerprint"]) != str(snapshot.input_fingerprint):
+            raise _StorySnapshotLost(items=len(latest["rows"]))
         raise RuntimeError(
             "news_story_invariant_failed:" + json.dumps(invariants, sort_keys=True, separators=(",", ":"))
         )
