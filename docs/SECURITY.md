@@ -37,6 +37,11 @@ values.
 `macro_thesis` and the separately published `news_world_brief` are the only
 production product-model consumers. News acquisition, NewsItem classification,
 Story identity, scoring, and serving never call a model.
+`news.opennews_token` is an operator-owned secret. Configuration diagnostics
+expose only a configured boolean. OpenNews transport exceptions, observations,
+fetch receipts, logs, generated artifacts, and public source/status responses
+must never contain the token or authorization header. Provider AI ratings are
+stored only as source evidence and cannot affect a product decision.
 Macro Thesis uses DeepAgents as one Thin structured-output composition. Each
 durable attempt invokes the graph once and the provider model exactly once.
 The explicit capability boundary makes filesystem, todo, task, execute,

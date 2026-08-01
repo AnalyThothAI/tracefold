@@ -62,6 +62,8 @@ providers:
 
 news:
   enabled: true
+  # Secret for the additive OpenNews/NewsLiquid realtime source.
+  opennews_token:
   # The source catalog is code-owned; `sources` is not a configuration field.
   # The pinned WorldMonitor full/en inventory plus Tracefold's crypto,
   # 6551NEWS, and WallStEngine feeds are always used. RSSHub is internal to

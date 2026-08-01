@@ -217,7 +217,7 @@ describe("NewsPage", () => {
     );
     expect(await screen.findByText("聚类成员")).toBeInTheDocument();
     expect(screen.getByText("Story 聚合身份")).toBeInTheDocument();
-    expect(screen.getByText("活跃 Story")).toBeInTheDocument();
+    expect(screen.getByText("当前 96 小时 Story")).toBeInTheDocument();
     expect(screen.getAllByText("展示代表").length).toBeGreaterThan(0);
     expect(screen.getAllByText("评分依据").length).toBeGreaterThan(0);
     expect(screen.getByText("reuters")).toBeInTheDocument();
@@ -228,7 +228,7 @@ describe("NewsPage", () => {
     expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
   });
 
-  it("separates physical source counts from scoring points and boosts", async () => {
+  it("separates reporting-origin counts from scoring points and boosts", async () => {
     const story = newsStoryDetailFixture({
       importance_score: 124,
       item_count: 2,
@@ -239,7 +239,7 @@ describe("NewsPage", () => {
       corroboration_points: 15,
       diplomacy_flashpoint_boost: 18,
       entity_corroboration_boost: 20,
-      physical_source_count: 2,
+      reporting_origin_count: 2,
       recency_points: 9.66,
       scoring_corroboration_count: 9,
       total: 124,
@@ -256,7 +256,7 @@ describe("NewsPage", () => {
     );
 
     expect(await screen.findByText("重要度因子")).toBeInTheDocument();
-    expect(screen.getByText("Story 内物理来源").parentElement).toHaveTextContent("2");
+    expect(screen.getByText("Story 内报道来源").parentElement).toHaveTextContent("2");
     expect(screen.getByText("计分佐证来源").parentElement).toHaveTextContent("9");
     expect(screen.getByText("来源质量得分").parentElement).toHaveTextContent("20");
     expect(screen.getByText("来源质量得分").parentElement).toHaveTextContent(
@@ -281,9 +281,12 @@ describe("NewsPage", () => {
     expect(await screen.findByText("新闻来源状态")).toBeInTheDocument();
     expect(await screen.findByText("Reuters World")).toBeInTheDocument();
     expect(await screen.findByText("WallStEngine")).toBeInTheDocument();
+    expect(await screen.findByText("OpenNews")).toBeInTheDocument();
     expect(screen.getByText("Tier 4 · en · finance")).toBeInTheDocument();
-    expect(screen.getByText("2 个来源")).toBeInTheDocument();
+    expect(screen.getByText("3 个来源")).toBeInTheDocument();
     expect(screen.getByText(/duplicate 3/)).toBeInTheDocument();
+    expect(screen.getByText("WSS 已连接")).toBeInTheDocument();
+    expect(screen.getByText("OpenNews REST 恢复")).toBeInTheDocument();
     expect(screen.getAllByText("成功")).toHaveLength(2);
   });
 });

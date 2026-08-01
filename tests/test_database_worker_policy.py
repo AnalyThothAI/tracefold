@@ -24,7 +24,7 @@ from tracefold.platform.resource import ResourceAdmissionTimeout
     [
         (RadarMicroBatchService, "radar_projection"),
         (MacroProjectionService, "macro_projection"),
-        (NewsProjectionService, "news_projection"),
+        (NewsProjectionService, "news_story_projection"),
         (ProfileProjectionService, "profile_projection"),
     ],
 )
@@ -164,11 +164,6 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
             MacroProjectionService,
             {},
             "macro_maintenance_rebuild",
-        ),
-        (
-            NewsProjectionService,
-            {},
-            "news_maintenance_rebuild",
         ),
         (
             ProfileProjectionService,

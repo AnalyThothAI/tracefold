@@ -9,7 +9,6 @@ import pytest
 from tracefold.macro.projection_worker import MacroProjectionCandidate
 from tracefold.market.profiles.token_profile_current_worker import ProfileProjectionCandidate
 from tracefold.market.radar.projection_worker import RadarProjectionCandidate
-from tracefold.news.projection_worker import NewsProjectionCandidate
 from tracefold.platform.projection import ProjectionShard
 
 
@@ -69,7 +68,6 @@ class _AdmissionBlockingDb:
         RadarProjectionCandidate,
         ProfileProjectionCandidate,
         MacroProjectionCandidate,
-        NewsProjectionCandidate,
     ),
 )
 def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_type: Any) -> None:
@@ -110,13 +108,6 @@ def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_ty
             object(),
             "profile_projection_publish",
             "profile_projection_release_prework",
-        ),
-        (
-            NewsProjectionCandidate,
-            ProjectionShard("news", "score:0", 100, 40),
-            SimpleNamespace(kind="score-bucket"),
-            "news_projection_publish_score_bucket",
-            "news_projection_release_prework",
         ),
         (
             RadarProjectionCandidate,

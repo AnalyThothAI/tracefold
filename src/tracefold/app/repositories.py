@@ -144,10 +144,7 @@ def repositories_for_connection(
         ),
         token_radar=TokenRadarRepository(conn),
         token_targets=TokenTargetRepository(conn),
-        news=NewsRepository(
-            conn,
-            projection_transition_observer=projection_transition_observer,
-        ),
+        news=NewsRepository(conn),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
         macro_thesis=MacroThesisRepository(conn),

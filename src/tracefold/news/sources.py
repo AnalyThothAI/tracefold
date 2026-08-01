@@ -9,6 +9,8 @@ from typing import Final, TypedDict
 from .models import NewsSourceDefinition
 
 WORLDMONITOR_COMMIT: Final = "f73de5b7dde76ff292f800d7d06f3529d2178d43"
+OPENNEWS_SOURCE_ID: Final = "news-opennews"
+OPENNEWS_REST_URL: Final = "https://ai.6551.io/open/news_search"
 
 # category, display name, URL, WorldMonitor source tier
 _WM_FULL_EN: Final[tuple[tuple[str, str, str, int], ...]] = (
@@ -278,6 +280,47 @@ def default_sources() -> tuple[NewsSourceDefinition, ...]:
         )
         for row in physical.values()
     )
+
+
+def opennews_source() -> NewsSourceDefinition:
+    """The one code-owned acquisition source for NewsLiquid/OpenNews."""
+
+    return NewsSourceDefinition(
+        source_id=OPENNEWS_SOURCE_ID,
+        name="OpenNews",
+        feed_url=OPENNEWS_REST_URL,
+        tier=4,
+        lang="en",
+        memberships=("opennews",),
+        source_kind="opennews",
+        refresh_interval_seconds=300,
+    )
+
+
+_REPORTING_ORIGIN_TIERS: Final = {
+    str(name).strip().lower(): int(tier)
+    for _, name, _, tier in (*_WM_FULL_EN, *_WM_INTEL, *_CRYPTO, *_TRACEFOLD_RSSHUB)
+}
+_REPORTING_ORIGIN_TIERS.update(
+    {
+        "ap": 1,
+        "associated press": 1,
+        "bbc": 2,
+        "bloomberg": 1,
+        "financial times": 2,
+        "ft": 2,
+        "reuters": 1,
+        "wall street journal": 1,
+        "wsj": 1,
+    }
+)
+
+
+def reporting_origin_tier(reporting_origin: str, *, fallback_tier: int) -> int:
+    """Resolve source quality from the reporting outlet, never the wrapper."""
+
+    normalized = str(reporting_origin or "").strip().lower()
+    return int(_REPORTING_ORIGIN_TIERS.get(normalized, fallback_tier))
 
 
 __all__ = ["WORLDMONITOR_COMMIT", "default_sources"]

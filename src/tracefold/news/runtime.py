@@ -22,6 +22,7 @@ from .models import (
     ThreatLevel,
     source_definition,
 )
+from .opennews import OpenNewsEvent, OpenNewsExpectedError, parse_opennews_message
 
 _SOURCE_LEASE_MS = 45_000
 _NEWS_OPERATION_TIMEOUT_SECONDS = 30.0
@@ -31,6 +32,10 @@ _NEWS_PARSE_OUTER_TIMEOUT_SECONDS = 2.5
 _BRIEF_MODEL_TIMEOUT_SECONDS = 60.0
 _BRIEF_PREPARE_TIMEOUT_SECONDS = 7.0
 _BRIEF_MAX_ATTEMPTS = 3
+_OPENNEWS_BUFFER_CAPACITY = 256
+_OPENNEWS_RECONNECT_SECONDS = 3.0
+_OPENNEWS_RECOVERY_SECONDS = 300.0
+_OPENNEWS_RECOVERY_OVERLAP_MS = 30 * 60 * 1000
 
 
 class NewsAcquisition:
@@ -45,6 +50,8 @@ class NewsAcquisition:
         sources: Sequence[NewsSourceDefinition | Any],
         feed_reader: NewsFeedReader,
         feed_parser: Callable[[Any], NewsFeedFetch],
+        opennews_rest_client: Any | None = None,
+        opennews_ws_client: Any | None = None,
     ) -> None:
         self.db = db
         self.finite_operations = finite_operations
@@ -52,6 +59,24 @@ class NewsAcquisition:
         self.sources = tuple(source_definition(source) for source in sources)
         self.feed_reader = feed_reader
         self.feed_parser = feed_parser
+        self.opennews_rest_client = opennews_rest_client
+        self.opennews_ws_client = opennews_ws_client
+        self.opennews_source = next(
+            (source for source in self.sources if source.source_kind == "opennews"),
+            None,
+        )
+        self._opennews_queue: asyncio.Queue[OpenNewsEvent] = asyncio.Queue(maxsize=_OPENNEWS_BUFFER_CAPACITY)
+        self._opennews_recovery_requested = asyncio.Event()
+        self._opennews_connected = False
+        self._opennews_gap_unclosed = True
+
+    @property
+    def opennews_enabled(self) -> bool:
+        return (
+            self.opennews_source is not None
+            and self.opennews_rest_client is not None
+            and self.opennews_ws_client is not None
+        )
 
     async def reconcile(self) -> None:
         await self.db.run_business(
@@ -59,6 +84,167 @@ class NewsAcquisition:
             self._reconcile_sync,
             operation_timeout_seconds=3.0,
         )
+        if self.opennews_source is not None and (self.opennews_rest_client is None or self.opennews_ws_client is None):
+            await self._update_opennews_status(
+                connected=False,
+                error_code="opennews_token_missing",
+                gap_unclosed=True,
+            )
+
+    async def run_opennews(self, *, stop_event: asyncio.Event) -> None:
+        if self.opennews_source is None:
+            await stop_event.wait()
+            return
+        if self.opennews_rest_client is None or self.opennews_ws_client is None:
+            await stop_event.wait()
+            return
+        self._opennews_recovery_requested.set()
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._opennews_receive_loop(stop_event), name="opennews-receiver")
+            group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
+            group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
+
+    async def _opennews_receive_loop(self, stop_event: asyncio.Event) -> None:
+        client = self.opennews_ws_client
+        if client is None:
+            raise RuntimeError("opennews_websocket_client_missing")
+        while not stop_event.is_set():
+            try:
+                await client.connect()
+                self._opennews_connected = True
+                self._opennews_gap_unclosed = True
+                await self._update_opennews_status(
+                    connected=True,
+                    error_code=None,
+                    gap_unclosed=True,
+                )
+                self._opennews_recovery_requested.set()
+                while not stop_event.is_set():
+                    message = await _receive_or_stop(
+                        client,
+                        stop_event=stop_event,
+                    )
+                    if message is None:
+                        break
+                    event = parse_opennews_message(message)
+                    if event is None:
+                        continue
+                    try:
+                        self._opennews_queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        self._opennews_gap_unclosed = True
+                        self._opennews_recovery_requested.set()
+                        await self._update_opennews_status(
+                            connected=True,
+                            error_code="opennews_buffer_overflow",
+                            gap_unclosed=True,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except OpenNewsExpectedError as exc:
+                self._opennews_connected = False
+                self._opennews_gap_unclosed = True
+                await self._update_opennews_status(
+                    connected=False,
+                    error_code=exc.code,
+                    gap_unclosed=True,
+                )
+                self._opennews_recovery_requested.set()
+            finally:
+                await client.close()
+            if not stop_event.is_set():
+                await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
+        self._opennews_connected = False
+        await self._update_opennews_status(
+            connected=False,
+            error_code=None,
+            gap_unclosed=self._opennews_gap_unclosed,
+        )
+
+    async def _opennews_publish_loop(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set() or not self._opennews_queue.empty():
+            first = await _queue_get_or_stop(
+                self._opennews_queue,
+                stop_event=stop_event,
+            )
+            if first is None:
+                continue
+            events = [first]
+            while len(events) < 100:
+                try:
+                    events.append(self._opennews_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            await self.db.run_business(
+                "opennews_live_publish",
+                self._publish_opennews_sync,
+                tuple(events),
+                _now_ms(),
+                None,
+                operation_timeout_seconds=3.0,
+            )
+
+    async def _opennews_recovery_loop(self, stop_event: asyncio.Event) -> None:
+        client = self.opennews_rest_client
+        if client is None:
+            raise RuntimeError("opennews_rest_client_missing")
+        while not stop_event.is_set():
+            await _event_or_period(
+                self._opennews_recovery_requested,
+                stop_event=stop_event,
+                period_seconds=_OPENNEWS_RECOVERY_SECONDS,
+            )
+            if stop_event.is_set():
+                return
+            self._opennews_recovery_requested.clear()
+            started_at_ms = _now_ms()
+            try:
+                events = await self.finite_operations.run(
+                    "opennews_rest_recovery",
+                    client.fetch_latest,
+                    timeout_seconds=25.0,
+                )
+                cutoff_ms = started_at_ms - _OPENNEWS_RECOVERY_OVERLAP_MS
+                overlapping = tuple(
+                    event
+                    for event in events[:100]
+                    if event.entry is None
+                    or event.entry.published_at_ms is None
+                    or int(event.entry.published_at_ms) >= cutoff_ms
+                )
+                await self.db.run_business(
+                    "opennews_recovery_publish",
+                    self._publish_opennews_sync,
+                    overlapping,
+                    _now_ms(),
+                    started_at_ms,
+                    operation_timeout_seconds=3.0,
+                )
+                self._opennews_gap_unclosed = False
+                await self._update_opennews_status(
+                    connected=self._opennews_connected,
+                    error_code=None,
+                    gap_unclosed=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except OpenNewsExpectedError as exc:
+                self._opennews_gap_unclosed = True
+                await self.db.run_business(
+                    "opennews_recovery_failure",
+                    self._record_opennews_recovery_failure_sync,
+                    started_at_ms,
+                    _now_ms(),
+                    exc,
+                    operation_timeout_seconds=3.0,
+                )
+                await self._update_opennews_status(
+                    connected=self._opennews_connected,
+                    error_code=exc.code,
+                    gap_unclosed=True,
+                )
+            except ResourceAdmissionTimeout:
+                self._opennews_recovery_requested.set()
 
     async def turn(self) -> bool | None:
         now_ms = _now_ms()
@@ -185,6 +371,15 @@ class NewsAcquisition:
         )
 
     async def close(self) -> None:
+        if self.opennews_ws_client is not None:
+            await self.opennews_ws_client.close()
+        if self.opennews_rest_client is not None:
+            await self.finite_operations.run(
+                "opennews_rest_client_close",
+                self.opennews_rest_client.close,
+                timeout_seconds=5.0,
+                allow_shutdown=True,
+            )
         await self.finite_operations.run(
             "news_source_client_close",
             self.feed_reader.close,
@@ -195,6 +390,82 @@ class NewsAcquisition:
     def _reconcile_sync(self) -> None:
         with self.db.worker_session("news_source_reconcile", 3.0) as repos, repos.transaction():
             repos.news.sync_sources(self.sources, now_ms=_now_ms())
+
+    async def _update_opennews_status(
+        self,
+        *,
+        connected: bool,
+        error_code: str | None,
+        gap_unclosed: bool,
+    ) -> None:
+        source = self.opennews_source
+        if source is None:
+            return
+        await self.db.run_business(
+            "opennews_status",
+            self._update_opennews_status_sync,
+            source.source_id,
+            connected,
+            _now_ms(),
+            error_code,
+            gap_unclosed,
+            operation_timeout_seconds=3.0,
+        )
+
+    def _update_opennews_status_sync(
+        self,
+        source_id: str,
+        connected: bool,
+        now_ms: int,
+        error_code: str | None,
+        gap_unclosed: bool,
+    ) -> None:
+        with self.db.worker_session("opennews_status", 3.0) as repos, repos.transaction():
+            repos.news.update_opennews_live_status(
+                source_id=source_id,
+                connected=connected,
+                now_ms=now_ms,
+                error_code=error_code,
+                gap_unclosed=gap_unclosed,
+            )
+
+    def _publish_opennews_sync(
+        self,
+        events: Sequence[OpenNewsEvent],
+        observed_at_ms: int,
+        recovery_started_at_ms: int | None,
+    ) -> dict[str, int]:
+        source = self.opennews_source
+        if source is None:
+            raise RuntimeError("opennews_source_missing")
+        with self.db.worker_session("opennews_publish", 3.0) as repos, repos.transaction():
+            return cast(
+                dict[str, int],
+                repos.news.record_opennews_events(
+                    source=source,
+                    events=events,
+                    observed_at_ms=observed_at_ms,
+                    recovery_started_at_ms=recovery_started_at_ms,
+                ),
+            )
+
+    def _record_opennews_recovery_failure_sync(
+        self,
+        started_at_ms: int,
+        finished_at_ms: int,
+        error: OpenNewsExpectedError,
+    ) -> None:
+        source = self.opennews_source
+        if source is None:
+            raise RuntimeError("opennews_source_missing")
+        with self.db.worker_session("opennews_recovery_failure", 3.0) as repos, repos.transaction():
+            repos.news.record_opennews_recovery_failure(
+                source_id=source.source_id,
+                started_at_ms=started_at_ms,
+                finished_at_ms=finished_at_ms,
+                error_code=error.code,
+                status_code=error.status_code,
+            )
 
     def _claim_sync(self, now_ms: int, claim_token: str) -> dict[str, Any] | None:
         with self.db.worker_session("news_source_claim", 0.5) as repos, repos.transaction():
@@ -402,7 +673,7 @@ class NewsBriefCandidate:
         fingerprint = brief_fingerprint(candidates)
         if fingerprint != target_fingerprint:
             return None
-        source_count = len({str(row["representative_source_id"]) for row in candidates})
+        source_count = len({str(row["representative_source_name"]) for row in candidates})
         if len(candidates) < 3 or source_count < 2:
             with self.db.worker_session("news_brief_insufficient", 3.0) as repos, repos.transaction():
                 repos.news.record_brief_insufficient(
@@ -428,7 +699,7 @@ class NewsBriefCandidate:
                 story_id=str(row["story_id"]),
                 title=str(row["representative_title"]),
                 source=str(row["representative_source_name"]),
-                url=str(row["representative_url"]),
+                url=(str(row["representative_url"]) if row["representative_url"] else None),
                 source_count=int(row["source_count"]),
                 importance_score=int(row["importance_score"]),
                 level=cast(ThreatLevel, str(row["level"])),
@@ -516,6 +787,62 @@ def _optional_text(value: object) -> str | None:
 
 def _news_parse_expected_error(code: str) -> NewsFeedExpectedError:
     return NewsFeedExpectedError(str(code))
+
+
+async def _receive_or_stop(client: Any, *, stop_event: asyncio.Event) -> Any | None:
+    receive_task = asyncio.create_task(client.receive())
+    stop_task = asyncio.create_task(stop_event.wait())
+    done, pending = await asyncio.wait(
+        {receive_task, stop_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    if stop_task in done and stop_task.result():
+        receive_task.cancel()
+        await asyncio.gather(receive_task, return_exceptions=True)
+        return None
+    return await receive_task
+
+
+async def _queue_get_or_stop(
+    queue: asyncio.Queue[OpenNewsEvent],
+    *,
+    stop_event: asyncio.Event,
+) -> OpenNewsEvent | None:
+    if stop_event.is_set() and queue.empty():
+        return None
+    try:
+        return await asyncio.wait_for(queue.get(), timeout=0.250)
+    except TimeoutError:
+        return None
+
+
+async def _event_or_period(
+    event: asyncio.Event,
+    *,
+    stop_event: asyncio.Event,
+    period_seconds: float,
+) -> None:
+    event_task = asyncio.create_task(event.wait())
+    stop_task = asyncio.create_task(stop_event.wait())
+    timer_task = asyncio.create_task(asyncio.sleep(period_seconds))
+    done, pending = await asyncio.wait(
+        {event_task, stop_task, timer_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    del done
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=max(0.001, float(seconds)))
+    except TimeoutError:
+        return
 
 
 __all__ = ["NewsAcquisition", "NewsBriefCandidate"]

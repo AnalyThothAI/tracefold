@@ -187,9 +187,9 @@ function SourcesRoute({ token }: { token: string }) {
       </header>
       <header className="news-source-heading">
         <div>
-          <span className="news-eyebrow">RSS / Atom</span>
+          <span className="news-eyebrow">RSS + OpenNews</span>
           <h1>新闻来源状态</h1>
-          <p>每个来源独立轮询、独立退避；空 Feed 与采集失败分别记录。</p>
+          <p>RSS 独立轮询退避；OpenNews 展示 WSS 连接与 REST 缺口恢复。</p>
         </div>
         <b>{sources.length} 个来源</b>
       </header>
@@ -211,8 +211,24 @@ function SourcesRoute({ token }: { token: string }) {
                     Tier {source.tier} · {source.lang} · {source.memberships.join(" / ")}
                   </span>
                 </div>
-                <b data-status={source.latest_fetch_status ?? "pending"}>
-                  {sourceStatusLabel(source.latest_fetch_status)}
+                <b
+                  data-status={
+                    source.source_kind === "opennews"
+                      ? source.live_connected && !source.gap_unclosed
+                        ? "success"
+                        : "failed"
+                      : (source.latest_fetch_status ?? "pending")
+                  }
+                >
+                  {source.source_kind === "opennews"
+                    ? source.live_connected
+                      ? source.gap_unclosed
+                        ? "WSS 已连接 · 恢复中"
+                        : "WSS 已连接"
+                      : source.gap_unclosed
+                        ? "WSS 未连接 · 缺口未闭合"
+                        : "WSS 未连接"
+                    : sourceStatusLabel(source.latest_fetch_status)}
                 </b>
               </header>
               <dl>
@@ -243,6 +259,24 @@ function SourcesRoute({ token }: { token: string }) {
                   <dt>获取路径</dt>
                   <dd>{sourcePathLabel(source.latest_fetch_path)}</dd>
                 </div>
+                {source.source_kind === "opennews" ? (
+                  <>
+                    <div>
+                      <dt>上次 WSS</dt>
+                      <dd>
+                        {source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>上次 REST 恢复</dt>
+                      <dd>
+                        {source.last_recovery_at_ms
+                          ? relativeTime(source.last_recovery_at_ms)
+                          : "尚未恢复"}
+                      </dd>
+                    </div>
+                  </>
+                ) : null}
                 <div>
                   <dt>连续失败</dt>
                   <dd>{source.consecutive_failures}</dd>
@@ -336,7 +370,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
           <header className="news-story-hero">
             <div className="news-story-badges">
               <span data-level={story.level}>{LEVEL_LABELS[story.level]}</span>
-              <span data-active={story.active}>{story.active ? "活跃 Story" : "已归档 Story"}</span>
+              <span>当前 96 小时 Story</span>
             </div>
             <h1>{story.title}</h1>
             <p>{story.description || "原始来源未提供有效摘要"}</p>
@@ -375,7 +409,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
           <section className="news-detail-card">
             <h2>重要度因子</h2>
             <p>
-              来源数量与得分分开显示；计分佐证来源取 Story 内物理来源与 24
+              来源数量与得分分开显示；计分佐证来源取 Story 内报道来源与 24
               小时实体信号来源的较大值，最多按 5 个来源计入佐证得分。
             </p>
             <dl className="news-factor-grid">
@@ -393,9 +427,9 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                 </small>
               </div>
               <div>
-                <dt>Story 内物理来源</dt>
-                <dd>{story.importance_factors.physical_source_count}</dd>
-                <small>聚类成员中的不同物理来源</small>
+                <dt>Story 内报道来源</dt>
+                <dd>{story.importance_factors.reporting_origin_count}</dd>
+                <small>聚类成员中的不同 reporting origin</small>
               </div>
               <div>
                 <dt>计分佐证来源</dt>
@@ -434,22 +468,23 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
               {story.members.map((member) => (
                 <article className="news-member-card" key={member.item_id}>
                   <header>
-                    <span>{member.current ? "当前成员" : "历史成员"}</span>
-                    <span>{member.source_name}</span>
-                    <span>Tier {member.tier}</span>
+                    <span>当前成员</span>
                     <span>{member.reporting_origin}</span>
+                    <span>Tier {member.tier}</span>
                     <time>{absoluteTime(member.published_at_ms)}</time>
-                    <span>加入 {absoluteTime(member.first_joined_at_ms)}</span>
-                    <span>确认 {absoluteTime(member.last_confirmed_at_ms)}</span>
                     {member.item_id === story.representative_item_id ? <span>展示代表</span> : null}
                     {member.item_id === story.scoring_item_id ? <span>评分依据</span> : null}
                   </header>
                   <h3>{member.title}</h3>
                   {member.description ? <p>{member.description}</p> : null}
-                  <a href={member.url} rel="noreferrer" target="_blank">
-                    阅读原文
-                    <ExternalLink aria-hidden />
-                  </a>
+                  {member.url ? (
+                    <a href={member.url} rel="noreferrer" target="_blank">
+                      阅读原文
+                      <ExternalLink aria-hidden />
+                    </a>
+                  ) : (
+                    <span>线报未提供文章链接</span>
+                  )}
                 </article>
               ))}
             </div>
@@ -540,10 +575,14 @@ function BriefDocument({ publication, state }: { publication: BriefPublication; 
               {source ? (
                 <div>
                   <Link to={newsStoryPath(source.story_id)}>查看 Story</Link>
-                  <a href={source.url} rel="noreferrer" target="_blank">
-                    {source.source}
-                    <ExternalLink aria-hidden />
-                  </a>
+                  {source.url ? (
+                    <a href={source.url} rel="noreferrer" target="_blank">
+                      {source.source}
+                      <ExternalLink aria-hidden />
+                    </a>
+                  ) : (
+                    <span>{source.source} · 无文章链接</span>
+                  )}
                 </div>
               ) : null}
             </li>
@@ -574,7 +613,8 @@ function sourceStatusLabel(state?: string | null): string {
   return "待采集";
 }
 
-function sourcePathLabel(path?: "direct" | "relay" | null): string {
+function sourcePathLabel(path?: "direct" | "relay" | "opennews_rest" | null): string {
+  if (path === "opennews_rest") return "OpenNews REST 恢复";
   if (path === "relay") return "Relay 回退";
   if (path === "direct") return "直连";
   return "尚未尝试";

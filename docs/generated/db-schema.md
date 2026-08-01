@@ -825,7 +825,7 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `observation_id` | `TEXT` | False | `None` |
-| `fetch_id` | `TEXT` | False | `None` |
+| `fetch_id` | `TEXT` | True | `None` |
 | `source_id` | `TEXT` | False | `None` |
 | `source_item_key` | `TEXT` | False | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
@@ -836,19 +836,8 @@
 | `admitted` | `BOOLEAN` | False | `None` |
 | `rejection_reason` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_identity_features`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `item_id` | `TEXT` | False | `None` |
-| `normalized_title` | `TEXT` | False | `None` |
-| `candidate_tokens` | `ARRAY` | False | `None` |
-| `feature_fingerprint` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-| `active` | `BOOLEAN` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
+| `observation_kind` | `TEXT` | False | `None` |
+| `payload_fingerprint` | `TEXT` | False | `None` |
 
 ## `news_items`
 
@@ -857,7 +846,7 @@
 | `item_id` | `TEXT` | False | `None` |
 | `source_id` | `TEXT` | False | `None` |
 | `source_item_key` | `TEXT` | False | `None` |
-| `canonical_url` | `TEXT` | False | `None` |
+| `canonical_url` | `TEXT` | True | `None` |
 | `reporting_origin` | `TEXT` | False | `None` |
 | `title` | `TEXT` | False | `None` |
 | `normalized_title` | `TEXT` | False | `None` |
@@ -877,25 +866,7 @@
 | `active` | `BOOLEAN` | False | `true` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_projection_frontiers`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `bucket_id` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `deadline_at_ms` | `BIGINT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `transient_failure_count` | `INTEGER` | False | `0` |
-| `active_item_count` | `INTEGER` | False | `0` |
-| `input_fingerprint` | `TEXT` | True | `None` |
-| `projection_version` | `TEXT` | False | `None` |
-| `claimed_by` | `UUID` | True | `None` |
-| `claimed_until_ms` | `BIGINT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
+| `winning_observation_id` | `TEXT` | True | `None` |
 
 ## `news_projection_summary`
 
@@ -911,17 +882,10 @@
 | `newest_story_at_ms` | `BIGINT` | True | `None` |
 | `last_material_change_at_ms` | `BIGINT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_similarity_edges`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `left_item_id` | `TEXT` | False | `None` |
-| `right_item_id` | `TEXT` | False | `None` |
-| `similarity` | `DOUBLE PRECISION` | False | `None` |
-| `identity_version` | `TEXT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `projection_version` | `TEXT` | True | `None` |
+| `last_attempt_at_ms` | `BIGINT` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
 
 ## `news_source_facet_counts`
 
@@ -982,6 +946,11 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `claim_token` | `UUID` | True | `None` |
 | `claim_lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `source_kind` | `TEXT` | False | `'rss'::text` |
+| `live_connected` | `BOOLEAN` | False | `false` |
+| `last_live_at_ms` | `BIGINT` | True | `None` |
+| `last_recovery_at_ms` | `BIGINT` | True | `None` |
+| `gap_unclosed` | `BOOLEAN` | False | `false` |
 
 ## `news_stories`
 
@@ -993,7 +962,7 @@
 | `representative_item_id` | `TEXT` | False | `None` |
 | `representative_source_id` | `TEXT` | False | `None` |
 | `representative_title` | `TEXT` | False | `None` |
-| `representative_url` | `TEXT` | False | `None` |
+| `representative_url` | `TEXT` | True | `None` |
 | `representative_description` | `TEXT` | False | `''::text` |
 | `scoring_item_id` | `TEXT` | False | `None` |
 | `level` | `TEXT` | False | `None` |
@@ -1004,19 +973,9 @@
 | `source_count` | `INTEGER` | False | `None` |
 | `first_published_at_ms` | `BIGINT` | False | `None` |
 | `last_published_at_ms` | `BIGINT` | False | `None` |
-| `active` | `BOOLEAN` | False | `true` |
 | `state_fingerprint` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_story_aliases`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `alias_key` | `TEXT` | False | `None` |
-| `story_id` | `TEXT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_story_facet_counts`
 
@@ -1027,27 +986,12 @@
 | `story_count` | `INTEGER` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_story_input_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `singleton_key` | `TEXT` | False | `None` |
-| `input_fingerprint` | `TEXT` | False | `None` |
-| `scoring_epoch_ms` | `BIGINT` | False | `None` |
-| `item_count` | `INTEGER` | False | `None` |
-| `temporary_cluster_count` | `INTEGER` | False | `None` |
-| `story_count` | `INTEGER` | False | `None` |
-| `projected_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_story_members`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `story_id` | `TEXT` | False | `None` |
 | `item_id` | `TEXT` | False | `None` |
-| `current` | `BOOLEAN` | False | `true` |
-| `first_joined_at_ms` | `BIGINT` | False | `None` |
-| `last_confirmed_at_ms` | `BIGINT` | False | `None` |
 
 ## `persisted_live_events`
 

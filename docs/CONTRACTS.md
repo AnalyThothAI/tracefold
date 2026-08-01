@@ -36,6 +36,12 @@ consumed only by enabled AI workers. Model execution policy, timeouts, token
 budgets, cadence, leases, retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
+`news.opennews_token` is the optional operator-owned secret for the additive
+OpenNews/NewsLiquid source. It is reported only as the redacted boolean
+`news.opennews_token_configured`. When absent, RSS continues and the OpenNews
+source reports `opennews_token_missing`; no substitute credential path is
+used.
+
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
 native-state model arbiter, and all resource capacities are code-owned.
@@ -107,17 +113,20 @@ The News public surface is exactly five read-only routes:
   population. Filters run before deterministic keyset ordering and
   pagination. The response includes Stories, facets, `next_cursor`, and
   `has_more`; the browser does not cluster, score, or reorder.
-- `GET /api/news/stories/{story_id}` returns one persistent active or archived
-  Story and its NewsItem evidence. It exposes representative/scoring item
-  identity, title/source/time, classification, physical-source count,
-  importance score, and the transparent factor breakdown. It contains no
-  revisions or per-Story AI analysis.
+- `GET /api/news/stories/{story_id}` returns one current Story and its complete
+  NewsItem evidence. It exposes representative/scoring item identity,
+  title/reporting-origin/time, classification, reporting-origin count,
+  importance score, and the transparent factor breakdown. Member and
+  representative URLs are nullable for linkless dispatches. An expired Story
+  ID returns not found; there is no archived Story contract, revision timeline,
+  or per-Story AI analysis.
 - `GET /api/news/brief` returns one current Chinese World Brief, its truthful
   state, selected Story evidence, bounded immutable publication history, and
   latest run when present. Insufficient material makes no model call. A failed
   update preserves the last-known-good publication as `stale_fallback`.
-- `GET /api/news/sources` returns the frozen physical-source registry,
-  memberships, conditional-fetch health, and direct/relay diagnostics.
+- `GET /api/news/sources` returns the code-owned acquisition-source registry,
+  memberships, RSS conditional-fetch/direct/relay diagnostics, and OpenNews
+  live connection, last recovery, and unclosed-gap status.
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, and Brief state.
 
@@ -126,17 +135,19 @@ The News public surface is exactly five read-only routes:
 Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
-NewsItem identity is source scoped. A changed source `pubDate` alone is an
-acquisition observation, not a material revision. Story identity is the
-persistent result of the WorldMonitor-compatible 96-hour title cluster;
-existing memberships and aliases prevent a representative change from
-inventing a new Story. Corroboration counts distinct physical source IDs, not
-memberships, parsed publisher names, or same-source revisions. Keyword
-classification and importance are deterministic and fully sufficient without
-AI.
+NewsItem identity is acquisition-source scoped. RSS uses GUID/canonical URL;
+OpenNews uses canonical article URL or `dispatch:opennews:<id>`. Observation
+identity is source/provider record key, kind, and normalized payload hash.
+Only OpenNews `report` observations materialize NewsItems; translations and
+provider annotations remain evidence, and provider AI ratings have no product
+effect. Story identity is the full SHA-256 of the earliest normalized title in
+the current WorldMonitor-compatible 96-hour cluster. Corroboration counts
+distinct reporting origins, not acquisition paths, memberships, or repeated
+observations. Keyword classification and importance are deterministic and
+fully sufficient without AI.
 
 The native Brief candidate calls no model when fewer than three Stories or fewer than two
-physical sources are available, or when its ordered Top-8 Story fingerprint is
+reporting origins are available, or when its ordered Top-8 Story fingerprint is
 unchanged. A new fingerprint permits one attempt per configured provider,
 bounded by 60 seconds total. Publications are Chinese and citation-index
 locked: line `[n]` always refers to selected Story `n`. Invalid lines are
@@ -147,8 +158,9 @@ after a complete valid publication transaction succeeds.
 `story`, and `brief`. Deterministic Story cards remain readable while a Brief
 is running, failed, insufficient, or stale.
 
-The code-owned inventory contains 73 physical sources and 73 memberships.
-It retains every crypto source, the focused US finance/government/politics
+The code-owned inventory contains the 73-source RSS/RSSHub catalog plus one
+additive OpenNews acquisition source. The RSS catalog retains every crypto
+source, the focused US finance/government/politics
 set, global event/security/energy/crisis coverage, and the explicit Nikkei
 Asia, SCMP, Xinhua, and Al Jazeera regional exceptions. General regional feeds
 are disabled and cannot remain active Stories or Brief candidates after the
@@ -158,7 +170,7 @@ WallStEngine is an ordinary English tier-4 Finance source acquired from the
 internal RSSHub sidecar. Classification reads its RSS title only; quote text
 in the description does not affect category. Source membership does not force
 an economic category or change Story, ranking, corroboration, or Brief rules.
-External relay fallback is allowed only for code-owned public HTTPS feed URLs.
+External relay fallback is allowed only for code-owned public HTTPS RSS feed URLs.
 HTTP, localhost, single-label container hosts, link-local, loopback, private,
 and other non-public destinations are direct-only and never leave the Compose
 network through the relay.
@@ -417,10 +429,8 @@ or becomes a daily publication or schema-migration gate.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
-News steady recovery re-reads typed identity and stable hourly score-bucket
-frontiers and recomputes only affected components or score partitions. The
-system-wide maintenance hard cut rebuilds News from persisted items through
-the same incremental reducer. Token Radar
+News steady state and explicit maintenance use the same complete current
+96-hour WorldMonitor calculation from persisted NewsItems. Token Radar
 contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.
