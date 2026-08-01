@@ -10,6 +10,7 @@ from uuid import UUID
 import orjson
 
 from tracefold.market.radar.constants import (
+    RADAR_PROJECTION_DEADLINE_MS,
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
     TOKEN_RADAR_VENUES,
@@ -135,18 +136,23 @@ class RadarMicroBatchService:
                 """,
                 {"now_ms": int(now_ms)},
             ).fetchone()
-            expiry = repos.conn.execute(
+            expiries = repos.conn.execute(
                 """
-                SELECT window_key, venue, expires_at_ms AS deadline_at_ms
+                SELECT window_key, venue, min(expires_at_ms) AS expires_at_ms
                   FROM radar_source_edges
                  WHERE expires_at_ms <= %(now_ms)s
-                 ORDER BY expires_at_ms, target_type, target_id,
-                          window_key, venue, source_kind, source_id
-                 LIMIT 1
+                 GROUP BY window_key, venue
                 """,
                 {"now_ms": int(now_ms)},
-            ).fetchone()
-        candidates = [dict(row) for row in (frontier, expiry) if row is not None]
+            ).fetchall()
+        candidates = [dict(frontier)] if frontier is not None else []
+        for expiry in expiries:
+            expiry_candidate = dict(expiry)
+            window = str(expiry_candidate["window_key"])
+            expiry_candidate["deadline_at_ms"] = (
+                int(expiry_candidate.pop("expires_at_ms")) + RADAR_PROJECTION_DEADLINE_MS[window]
+            )
+            candidates.append(expiry_candidate)
         if not candidates:
             return None
         return min(
@@ -176,6 +182,8 @@ class RadarMicroBatchService:
             repos.radar_source_edges.expire_due(
                 now_ms=int(now_ms),
                 limit=_SOURCE_EXPIRY_BATCH_SIZE,
+                window=window,
+                venue=venue,
             )
             rows = repos.conn.execute(
                 """

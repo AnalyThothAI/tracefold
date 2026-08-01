@@ -87,6 +87,7 @@ _NEWS_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 _NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
+_MARKET_TICK_POLL_SECONDS = 35.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -350,7 +351,7 @@ async def run_workers(settings: Settings) -> None:
                         _guard_child(
                             _run_periodic(
                                 components.market_poll.sample,
-                                period_seconds=15.0,
+                                period_seconds=_MARKET_TICK_POLL_SECONDS,
                                 stop_event=work_stop_event,
                             ),
                             on_fatal=enter_fatal,

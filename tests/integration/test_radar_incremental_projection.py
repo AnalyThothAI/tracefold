@@ -98,6 +98,123 @@ def test_event_sync_writes_only_stable_target_frontiers() -> None:
         conn.close()
 
 
+def test_expired_edge_gets_its_window_projection_deadline() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        conn.execute("DELETE FROM radar_projection_frontiers")
+        conn.execute(
+            """
+            UPDATE radar_source_edges
+            SET expires_at_ms = CASE
+              WHEN window_key = '5m' THEN %s
+              ELSE %s
+            END
+            """,
+            (FIXED_NOW_MS - 1, FIXED_NOW_MS + 60_000),
+        )
+        conn.commit()
+
+        due = RadarMicroBatchService(db=_SingleConnectionDB(conn)).next_due(
+            now_ms=FIXED_NOW_MS,
+        )
+
+        assert due is not None
+        assert due["window_key"] == "5m"
+        assert due["deadline_at_ms"] == FIXED_NOW_MS - 1 + 10_000
+
+        with repos.transaction():
+            deleted = repos.radar_source_edges.expire_due(
+                now_ms=FIXED_NOW_MS,
+                limit=4,
+                window="5m",
+                venue="all",
+            )
+        frontier = conn.execute(
+            """
+            SELECT first_dirty_at_ms, deadline_at_ms
+            FROM radar_projection_frontiers
+            WHERE window_key = '5m'
+            """
+        ).fetchone()
+
+        assert deleted == 1
+        assert frontier == {
+            "first_dirty_at_ms": FIXED_NOW_MS - 1,
+            "deadline_at_ms": FIXED_NOW_MS - 1 + 10_000,
+        }
+    finally:
+        conn.close()
+
+
+def test_expiry_selection_uses_projection_deadline_across_windows() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        conn.execute("DELETE FROM radar_projection_frontiers")
+        conn.execute(
+            """
+            UPDATE radar_source_edges
+            SET expires_at_ms = CASE window_key
+              WHEN '24h' THEN %s
+              WHEN '5m' THEN %s
+              ELSE %s
+            END
+            """,
+            (
+                FIXED_NOW_MS - 40_000,
+                FIXED_NOW_MS - 20_000,
+                FIXED_NOW_MS + 60_000,
+            ),
+        )
+        conn.commit()
+        service = RadarMicroBatchService(db=_SingleConnectionDB(conn))
+
+        due = service.next_due(now_ms=FIXED_NOW_MS)
+
+        assert due == {
+            "window_key": "5m",
+            "venue": "all",
+            "deadline_at_ms": FIXED_NOW_MS - 10_000,
+        }
+        claim = service.claim_batch(
+            window="5m",
+            venue="all",
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS,
+        )
+        remaining = conn.execute(
+            """
+            SELECT window_key
+            FROM radar_source_edges
+            WHERE window_key IN ('5m', '24h')
+            ORDER BY window_key
+            """
+        ).fetchall()
+
+        assert claim is not None
+        assert claim.window == "5m"
+        assert remaining == [{"window_key": "24h"}]
+    finally:
+        conn.close()
+
+
 def test_claim_batch_is_one_window_venue_and_capped_at_4() -> None:
     conn = connect_postgres_test()
     try:
@@ -137,6 +254,118 @@ def test_claim_batch_is_one_window_venue_and_capped_at_4() -> None:
             WHERE status = 'dirty'
             """
         ).fetchone() == {"count": 36}
+    finally:
+        conn.close()
+
+
+def test_market_change_marks_only_windows_with_existing_features() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        service = RadarMicroBatchService(db=_SingleConnectionDB(conn))
+        claim = service.claim_batch(
+            window="1h",
+            venue="all",
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS,
+        )
+        assert claim is not None
+        _publish_claim(service, claim, now_ms=FIXED_NOW_MS + 1)
+        target = claim.targets[0]
+        conn.execute("DELETE FROM radar_projection_frontiers")
+        conn.commit()
+
+        with repos.transaction():
+            changed = repos.radar_source_edges.mark_market_targets(
+                [(target.target_type, target.target_id)],
+                now_ms=FIXED_NOW_MS + 2,
+                input_fingerprint="market-current:new",
+            )
+        windows = conn.execute(
+            """
+            SELECT window_key
+            FROM radar_projection_frontiers
+            ORDER BY window_key
+            """
+        ).fetchall()
+
+        assert changed == 1
+        assert windows == [{"window_key": "1h"}]
+    finally:
+        conn.close()
+
+
+def test_market_change_during_first_projection_replays_the_running_window() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        _seed_resolved_radar_source(conn)
+        conn.commit()
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.radar_source_edges.sync_event(
+                event_id="event-radar-idempotent",
+                now_ms=EVENT_MS,
+            )
+        conn.execute("DELETE FROM radar_projection_frontiers WHERE window_key <> '1h'")
+        conn.execute("DELETE FROM token_radar_target_features")
+        conn.commit()
+        service = RadarMicroBatchService(db=_SingleConnectionDB(conn))
+        claim = service.claim_batch(
+            window="1h",
+            venue="all",
+            runtime_id=str(uuid4()),
+            now_ms=FIXED_NOW_MS,
+        )
+        assert claim is not None
+        target = claim.targets[0]
+
+        with repos.transaction():
+            changed = repos.radar_source_edges.mark_market_targets(
+                [(target.target_type, target.target_id)],
+                now_ms=FIXED_NOW_MS + 1,
+                input_fingerprint="market-current:during-first-projection",
+            )
+        running = conn.execute(
+            """
+            SELECT status, input_fingerprint, claimed_input_fingerprint
+            FROM radar_projection_frontiers
+            WHERE target_type = %s
+              AND target_id = %s
+              AND window_key = '1h'
+              AND venue = 'all'
+            """,
+            (target.target_type, target.target_id),
+        ).fetchone()
+
+        assert changed == 1
+        assert running is not None
+        assert running["status"] == "running"
+        assert running["input_fingerprint"] != target.input_fingerprint
+        assert running["claimed_input_fingerprint"] == target.input_fingerprint
+
+        _publish_claim(service, claim, now_ms=FIXED_NOW_MS + 2)
+        replay = conn.execute(
+            """
+            SELECT status
+            FROM radar_projection_frontiers
+            WHERE target_type = %s
+              AND target_id = %s
+              AND window_key = '1h'
+              AND venue = 'all'
+            """,
+            (target.target_type, target.target_id),
+        ).fetchone()
+
+        assert replay == {"status": "dirty"}
     finally:
         conn.close()
 
