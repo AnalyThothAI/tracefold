@@ -436,6 +436,17 @@ def test_feishu_news_push_renders_title_only_v2_card() -> None:
     assert rendered["translation"] == _news_push_translation()
     assert rendered["card"] == {
         "schema": "2.0",
+        "body": {
+            "direction": "vertical",
+            "padding": "0px",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "plain_text", "content": "\u200b"},
+                    "margin": "0px",
+                }
+            ],
+        },
         "header": {
             "title": {
                 "tag": "plain_text",
@@ -467,6 +478,17 @@ def test_feishu_news_push_english_fallback_is_title_only() -> None:
 
     assert rendered["card"] == {
         "schema": "2.0",
+        "body": {
+            "direction": "vertical",
+            "padding": "0px",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "plain_text", "content": "\u200b"},
+                    "margin": "0px",
+                }
+            ],
+        },
         "header": {
             "title": {
                 "tag": "plain_text",
@@ -498,6 +520,17 @@ def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
 
     assert rendered["card"] == {
         "schema": "2.0",
+        "body": {
+            "direction": "vertical",
+            "padding": "0px",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "plain_text", "content": "\u200b"},
+                    "margin": "0px",
+                }
+            ],
+        },
         "header": {
             "title": {
                 "tag": "plain_text",

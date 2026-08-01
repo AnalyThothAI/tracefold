@@ -27,6 +27,7 @@ from .news_ai import (
 )
 
 _FEISHU_CHANNEL = "feishu"
+_FEISHU_INVISIBLE_BODY_TEXT = "\u200b"
 
 
 class DeepSeekNewsPushTranslator:
@@ -192,6 +193,20 @@ def _news_story_card(
     header_title = f"[{' · '.join(symbols)}] {headline}" if symbols else headline
     return {
         "schema": "2.0",
+        "body": {
+            "direction": "vertical",
+            "padding": "0px",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": _FEISHU_INVISIBLE_BODY_TEXT,
+                    },
+                    "margin": "0px",
+                }
+            ],
+        },
         "header": {
             "title": {"tag": "plain_text", "content": header_title},
         },

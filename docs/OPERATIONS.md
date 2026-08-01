@@ -295,10 +295,11 @@ the request deliberately carries neither. A signed request that fails is never
 retried unsigned. Missing model credentials or a translation error still
 freezes and sends the original headline. After translation, the Adapter prefixes
 valid coin symbols from the selected highest-score Item, in provider order with
-case-insensitive deduplication. The Feishu card still contains only that single
-plain-text header title; it has no subtitle, body, separate metadata, or link
-button. Status and logs expose only configured booleans and sanitized error
-codes, never the webhook or signing secret.
+case-insensitive deduplication. The Feishu card still exposes only that single
+plain-text header title; it has no visible body, subtitle, separate metadata, or
+link button. The JSON 2.0 payload retains one zero-width body element because
+Feishu rejects an empty body. Status and logs expose only configured booleans
+and sanitized error codes, never the webhook or signing secret.
 
 Diagnose News in this order:
 
