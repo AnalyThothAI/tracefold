@@ -192,9 +192,10 @@ def test_cpu_process_is_spawn_only_and_serial_across_caller_timeout() -> None:
     async def scenario() -> str:
         capability = CpuProcess()
         try:
+            await capability.prewarm()
             assert (
                 await capability.run(
-                    "prewarm",
+                    "verify_spawn",
                     _process_start_method,
                     service_timeout_seconds=2.0,
                     operation_timeout_seconds=2.0,

@@ -233,6 +233,16 @@ class CpuProcess:
         self._closed = False
         self._telemetry = telemetry
 
+    async def prewarm(self, *, timeout_seconds: float = 10.0) -> None:
+        start_method = await self.run(
+            "cpu_process_prewarm",
+            _cpu_process_start_method,
+            service_timeout_seconds=timeout_seconds,
+            operation_timeout_seconds=timeout_seconds,
+        )
+        if start_method != "spawn":
+            raise RuntimeError("cpu_process_not_spawn")
+
     async def run[T](
         self,
         operation_name: str,
@@ -410,6 +420,10 @@ def _require_spawn_safe_function(function: Callable[..., Any]) -> None:
     module = str(getattr(function, "__module__", ""))
     if not module or not qualname or "<locals>" in qualname:
         raise TypeError("cpu_task_requires_top_level_function")
+
+
+def _cpu_process_start_method() -> str:
+    return str(multiprocessing.get_start_method())
 
 
 def _operation_name(value: str) -> str:

@@ -223,6 +223,7 @@ async def run_workers(settings: Settings) -> None:
         lock_conn = db.acquire_steady_runtime_lock()
         db.check_pinned_liveness(lock_conn)
         db.prewarm_control_connection()
+        await cpu.prewarm()
         began: bool = await db.run_control(
             "workers_runtime_begin",
             _runtime_begin,
