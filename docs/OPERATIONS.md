@@ -298,8 +298,9 @@ valid coin symbols from the selected highest-score Item, in provider order with
 case-insensitive deduplication. The Feishu card still exposes only that single
 plain-text header title; it has no visible body, subtitle, separate metadata, or
 link button. The JSON 2.0 payload retains one zero-width body element because
-Feishu rejects an empty body. Status and logs expose only configured booleans
-and sanitized error codes, never the webhook or signing secret.
+the production header-only payload was rejected and Feishu's documented card
+shape includes a non-empty body. Status and logs expose only configured
+booleans and sanitized error codes, never the webhook or signing secret.
 
 Diagnose News in this order:
 

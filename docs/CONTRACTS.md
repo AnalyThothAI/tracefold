@@ -61,8 +61,9 @@ contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
 Threshold, translator model, cadence, deadlines, retries, and card policy are
 code-owned. The Feishu JSON 2.0 card's only visible content is a plain-text
-header title. A zero-width plain-text body element is retained solely because
-the Feishu card protocol rejects an empty body.
+header title. After the production header-only payload was rejected, the card
+retains a zero-width plain-text body element matching Feishu's documented
+non-empty JSON 2.0 body shape.
 When the selected highest-score Item has valid OpenNews coin symbols, the title
 prefixes their provider order after case-insensitive deduplication, for example
 `[NEAR · BTC] 中文标题`; otherwise it is only the translated headline when
