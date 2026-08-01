@@ -106,6 +106,8 @@ def upgrade() -> None:
           ADD CONSTRAINT news_items_canonical_url_check
             CHECK (canonical_url IS NULL OR canonical_url ~ '^https?://');
 
+        DROP TABLE news_story_aliases;
+
         DELETE FROM news_brief_selection_current;
         DELETE FROM news_story_facet_counts;
         DELETE FROM news_source_facet_counts;
@@ -155,7 +157,6 @@ def upgrade() -> None:
 
         DROP TABLE news_similarity_edges;
         DROP TABLE news_identity_features;
-        DROP TABLE news_story_aliases;
         DROP TABLE news_story_input_state;
         DROP TABLE news_projection_frontiers;
 

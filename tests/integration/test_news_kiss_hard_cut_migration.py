@@ -89,6 +89,41 @@ def test_news_hard_cut_consolidates_observations_and_leaves_exact_storage_bounda
              WHERE singleton_key=true
             """
         )
+        conn.execute(
+            """
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, canonical_url,
+              reporting_origin, title, normalized_title, description, lang,
+              published_at_ms, first_observed_at_ms, last_observed_at_ms,
+              content_fingerprint, level, category, classification_source,
+              classification_confidence, importance_score, importance_factors,
+              brief_excluded, active, created_at_ms, updated_at_ms
+            ) VALUES (
+              'item-before-cut', 'source', 'item-before-cut',
+              'https://example.com/story', 'source', 'story before cut',
+              'story before cut', '', 'en', 1, 1, 1, 'item-fingerprint',
+              'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
+              false, true, 1, 1
+            );
+            INSERT INTO news_stories(
+              story_id, canonical_key, canonical_title,
+              representative_item_id, representative_source_id,
+              representative_title, representative_url,
+              representative_description, scoring_item_id, level, category,
+              importance_score, importance_factors, item_count, source_count,
+              first_published_at_ms, last_published_at_ms, active,
+              state_fingerprint, created_at_ms, updated_at_ms
+            ) VALUES (
+              'story-before-cut', 'canonical-before-cut', 'story before cut',
+              'item-before-cut', 'source', 'story before cut',
+              'https://example.com/story', '', 'item-before-cut', 'info',
+              'general', 1, '{}'::jsonb, 1, 1, 1, 1, true,
+              'story-fingerprint', 1, 1
+            );
+            INSERT INTO news_story_aliases(alias_key, story_id, expires_at_ms, created_at_ms)
+            VALUES ('alias-before-cut', 'story-before-cut', 10, 1)
+            """
+        )
         conn.commit()
     finally:
         conn.close()
