@@ -95,13 +95,16 @@ class RadarProjectionCandidate:
             return False
 
     async def _release_prework(self, claim: RadarMicroBatchClaim) -> bool:
-        released = await self.db.run_business(
-            "radar_projection_release_prework",
-            self.service.release_prework,
-            claim,
-            operation_timeout_seconds=3.0,
-            now_ms=_now_ms(),
-        )
+        try:
+            released = await self.db.run_business(
+                "radar_projection_release_prework",
+                self.service.release_prework,
+                claim,
+                operation_timeout_seconds=3.0,
+                now_ms=_now_ms(),
+            )
+        except ResourceAdmissionTimeout:
+            return False
         return int(released) == len(claim.targets)
 
     async def _run_claimed(

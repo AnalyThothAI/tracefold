@@ -177,14 +177,16 @@ class ResolutionRefresh:
         return True
 
     async def _release_prework(self, claims: list[dict[str, Any]]) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "resolution_release_prework",
                 self._release_prework_sync,
                 claims,
                 operation_timeout_seconds=0.5,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     def _release_prework_sync(self, claims: list[dict[str, Any]]) -> bool:
         with self.db.worker_session(self.name, 0.5) as repos, repos.transaction():

@@ -294,24 +294,10 @@ class NewsAcquisition:
             submitted = False
         except asyncio.CancelledError:
             if not submitted:
-                await asyncio.shield(
-                    self.db.run_business(
-                        "news_source_release_cancelled_prework",
-                        self._release_sync,
-                        source.source_id,
-                        claim_token,
-                        operation_timeout_seconds=0.5,
-                    )
-                )
+                await asyncio.shield(self._release_prework(source.source_id, claim_token))
             raise
         except ResourceAdmissionTimeout:
-            await self.db.run_business(
-                "news_source_release_prework",
-                self._release_sync,
-                source.source_id,
-                claim_token,
-                operation_timeout_seconds=0.5,
-            )
+            await self._release_prework(source.source_id, claim_token)
             return None
         except NewsFeedExpectedError as exc:
             try:
@@ -360,15 +346,17 @@ class NewsAcquisition:
         return True if published else None
 
     async def _release_prework(self, source_id: str, claim_token: str) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "news_source_release_prework",
                 self._release_sync,
                 source_id,
                 claim_token,
                 operation_timeout_seconds=0.5,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     async def close(self) -> None:
         if self.opennews_ws_client is not None:
@@ -642,14 +630,16 @@ class NewsBriefCandidate:
         return published is not None
 
     async def _release_prework(self, claim: dict[str, Any]) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "news_brief_release_prework",
                 self._release_prework_sync,
                 claim,
                 operation_timeout_seconds=0.5,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     async def close(self) -> None:
         await self.model_adapter.run(

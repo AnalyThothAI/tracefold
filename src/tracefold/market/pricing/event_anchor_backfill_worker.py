@@ -179,14 +179,16 @@ class EventAnchorBackfill:
         return True
 
     async def _release_prework(self, row: Mapping[str, Any]) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "event_anchor_release_prework",
                 self._release_prework_sync,
                 row,
                 operation_timeout_seconds=0.5,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     def _release_prework_sync(self, row: Mapping[str, Any]) -> bool:
         with self._worker_session(timeout_seconds=0.5) as repos, repos.transaction():

@@ -538,13 +538,15 @@ class MacroThesisService:
         session_date: date,
         claimed_attempt_count: int,
     ) -> bool:
-        return bool(
-            await self._run_db(
+        try:
+            released = await self._run_db(
                 self._release_prework_sync,
                 session_date=session_date,
                 claimed_attempt_count=claimed_attempt_count,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     def _release_prework_sync(
         self,

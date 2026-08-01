@@ -15,6 +15,7 @@ from tracefold.market.pricing.market_tick_poll_worker import MarketTickPoll
 from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileRefresh
 from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirror
 from tracefold.market.provider_contracts import DexProfileSource
+from tracefold.market.radar.projection_worker import RadarProjectionCandidate
 from tracefold.news.runtime import NewsAcquisition, NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -214,6 +215,32 @@ def test_asset_profile_releases_claim_when_publication_admission_is_saturated() 
         "asset_profile_publish",
         "asset_profile_release_prework",
     ]
+
+
+def test_release_prework_admission_timeout_uses_lease_recovery() -> None:
+    class _SaturatedDatabase:
+        async def run_business(self, operation_name, function, /, *args, **kwargs):
+            del function, args, kwargs
+            raise ResourceAdmissionTimeout(f"saturated:{operation_name}")
+
+    database = _SaturatedDatabase()
+
+    news = object.__new__(NewsAcquisition)
+    news.db = database
+
+    resolution = object.__new__(ResolutionRefresh)
+    resolution.db = database
+
+    radar = object.__new__(RadarProjectionCandidate)
+    radar.db = database
+    radar.service = SimpleNamespace(release_prework=lambda: None)
+
+    async def scenario() -> None:
+        assert await news._release_prework("source", "claim") is False
+        assert await resolution._release_prework([{}]) is False
+        assert await radar._release_prework(SimpleNamespace(targets=())) is False
+
+    asyncio.run(scenario())
 
 
 def test_model_arbiter_propagates_post_model_admission_timeout() -> None:

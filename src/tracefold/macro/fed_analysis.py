@@ -193,7 +193,11 @@ class MacroDocumentAnalysisService:
             )
 
     async def _release_prework(self, job: Mapping[str, Any]) -> bool:
-        return bool(await self._run_db(self._release_prework_sync, job))
+        try:
+            released = await self._run_db(self._release_prework_sync, job)
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     def _release_prework_sync(self, job: Mapping[str, Any]) -> bool:
         with self._session() as repos, repos.transaction():

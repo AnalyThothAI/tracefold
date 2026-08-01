@@ -118,14 +118,16 @@ class MacroAcquisition:
         return True if published is not None else None
 
     async def _release(self, claim: Any) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "macro_release_prework",
                 self.service.release_claim,
                 claim,
                 operation_timeout_seconds=_CLAIM_TIMEOUT_SECONDS,
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
 
 def _validate_batch(batch: FetchBatch) -> None:

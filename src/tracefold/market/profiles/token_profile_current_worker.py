@@ -92,15 +92,17 @@ class ProfileProjectionCandidate:
             return False
 
     async def _release_prework(self, claim: Any) -> bool:
-        return bool(
-            await self.db.run_business(
+        try:
+            released = await self.db.run_business(
                 "profile_projection_release_prework",
                 self.service.release_prework,
                 claim,
                 operation_timeout_seconds=3.0,
                 now_ms=_now_ms(),
             )
-        )
+        except ResourceAdmissionTimeout:
+            return False
+        return bool(released)
 
     async def _run_claimed(
         self,
