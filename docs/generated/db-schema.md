@@ -765,6 +765,8 @@
 | `last_live_at_ms` | `BIGINT` | True | `None` |
 | `last_recovery_at_ms` | `BIGINT` | True | `None` |
 | `gap_unclosed` | `BOOLEAN` | False | `false` |
+| `gap_boundary_provider_record_id` | `TEXT` | True | `None` |
+| `gap_version` | `BIGINT` | False | `0` |
 
 ## `news_stories`
 

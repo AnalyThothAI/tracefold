@@ -46,7 +46,8 @@ unavailable state and makes no model call.
 News correctness does not depend on the model. The OpenNews WSS receiver, REST
 recovery, and publisher share one acquisition module and sole NewsItem writer.
 A healthy WSS connection never polls REST periodically; one bounded REST page
-is requested only after initial connection, reconnect, or queue overflow.
+is requested only after initial connection, reconnect, or queue overflow, with
+a persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 96-hour Story projection,
 and the single-capacity native-state model arbiter owns World Brief. There is
 no item-level AI path.

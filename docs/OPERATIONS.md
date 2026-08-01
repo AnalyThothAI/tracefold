@@ -205,6 +205,12 @@ outside the finite-operation capability, feeds a 256-event queue, and reconnects
 after expected transport failures. REST recovery uses a finite-operation slot
 only after the initial WSS connection, reconnect, or overflow, with page 1 and
 limit 100. A healthy continuous connection performs no periodic REST call.
+Persisted source state enforces a five-minute minimum interval between attempts;
+reconnects during that interval coalesce behind one delayed recovery. This caps
+the 30-day reconnect-storm maximum at 8,640 requests. A page that does not
+contain the persisted provider-record boundary leaves `gap_unclosed=true`.
+Gap closure uses the persisted gap version as a compare-and-set fence, so a
+concurrent disconnect or buffer overflow cannot be overwritten as healthy.
 `/api/news/sources` shows the live connection,
 last recovery, current error, and whether a gap remains unclosed. There is no
 second polling or acquisition-history lane.

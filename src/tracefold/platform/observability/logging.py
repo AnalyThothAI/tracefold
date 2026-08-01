@@ -20,6 +20,7 @@ def setup_logging(log_file: Path | str = "twitter_monitor.log") -> Any:
         level="INFO",
         format=FILE_FORMAT,
         colorize=False,
+        diagnose=False,
     )
 
     logger.add(
@@ -27,6 +28,7 @@ def setup_logging(log_file: Path | str = "twitter_monitor.log") -> Any:
         level="INFO",
         format=LOG_FORMAT,
         colorize=True,
+        diagnose=False,
     )
 
     return logger

@@ -124,10 +124,6 @@ class NewsRepository:
     # Source inventory and acquisition -----------------------------------------
 
     def sync_sources(self, sources: Sequence[NewsSourceDefinition], *, now_ms: int) -> None:
-        previous_enabled = {
-            str(row["source_id"]): bool(row["enabled"])
-            for row in self.conn.execute("SELECT source_id, enabled FROM news_sources").fetchall()
-        }
         source_ids = [source.source_id for source in sources]
         for source in sources:
             self.conn.execute(
@@ -201,11 +197,52 @@ class NewsRepository:
                 "UPDATE news_sources SET enabled = false, updated_at_ms = %s WHERE enabled",
                 (now_ms,),
             )
-        current_enabled = {
-            str(row["source_id"]): bool(row["enabled"])
-            for row in self.conn.execute("SELECT source_id, enabled FROM news_sources").fetchall()
-        }
-        del previous_enabled, current_enabled
+
+    def opennews_recovery_state(self, *, source_id: str) -> tuple[int | None, str | None, int]:
+        row = self.conn.execute(
+            """
+            SELECT GREATEST(
+                     COALESCE(source.last_fetch_started_at_ms, 0),
+                     COALESCE(source.last_fetch_finished_at_ms, 0),
+                     COALESCE(source.last_recovery_at_ms, 0)
+                   ) AS last_attempt_at_ms,
+                   COALESCE(
+                     source.gap_boundary_provider_record_id,
+                     (
+                       SELECT item.provider_record_id
+                         FROM news_items item
+                        WHERE item.source_id = source.source_id
+                        ORDER BY item.last_observed_at_ms DESC, item.item_id DESC
+                        LIMIT 1
+                     )
+                   ) AS recovery_boundary_provider_record_id,
+                   source.gap_version
+              FROM news_sources source
+             WHERE source.source_id = %s AND source.source_kind = 'opennews'
+            """,
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            return None, None, 0
+        last_attempt_at_ms = int(row["last_attempt_at_ms"] or 0)
+        boundary_provider_record_id = row["recovery_boundary_provider_record_id"]
+        return (
+            last_attempt_at_ms if last_attempt_at_ms > 0 else None,
+            str(boundary_provider_record_id) if boundary_provider_record_id is not None else None,
+            int(row["gap_version"]),
+        )
+
+    def mark_opennews_recovery_attempt(self, *, source_id: str, started_at_ms: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_sources
+               SET last_fetch_started_at_ms = %s,
+                   gap_unclosed = true,
+                   updated_at_ms = %s
+             WHERE source_id = %s AND source_kind = 'opennews'
+            """,
+            (started_at_ms, started_at_ms, source_id),
+        )
 
     def record_opennews_events(
         self,
@@ -395,7 +432,6 @@ class NewsRepository:
                        last_http_status = 200,
                        consecutive_failures = 0,
                        last_error = NULL,
-                       gap_unclosed = false,
                        updated_at_ms = %s
                  WHERE source_id = %s
                 """,
@@ -451,18 +487,59 @@ class NewsRepository:
         now_ms: int,
         error_code: str | None,
         gap_unclosed: bool,
-    ) -> None:
-        self.conn.execute(
+        gap_boundary_provider_record_id: str | None,
+        expected_gap_version: int | None,
+    ) -> tuple[str | None, int] | None:
+        row = self.conn.execute(
             """
-            UPDATE news_sources
-               SET live_connected = %s,
-                   last_live_at_ms = CASE WHEN %s THEN %s ELSE last_live_at_ms END,
-                   last_error = %s,
-                   gap_unclosed = %s,
-                   updated_at_ms = %s
-             WHERE source_id = %s AND source_kind = 'opennews'
+            UPDATE news_sources AS source
+               SET live_connected = %(connected)s,
+                   last_live_at_ms = CASE
+                     WHEN %(connected)s THEN %(now_ms)s
+                     ELSE last_live_at_ms
+                   END,
+                   last_error = %(error_code)s,
+                   gap_unclosed = %(gap_unclosed)s,
+                   gap_boundary_provider_record_id = CASE
+                     WHEN %(gap_unclosed)s THEN COALESCE(
+                       source.gap_boundary_provider_record_id,
+                       %(gap_boundary_provider_record_id)s,
+                       (
+                         SELECT item.provider_record_id
+                           FROM news_items item
+                          WHERE item.source_id = source.source_id
+                          ORDER BY item.last_observed_at_ms DESC, item.item_id DESC
+                          LIMIT 1
+                       )
+                     )
+                     ELSE NULL
+                   END,
+                   gap_version = source.gap_version + CASE WHEN %(gap_unclosed)s THEN 1 ELSE 0 END,
+                   updated_at_ms = %(now_ms)s
+             WHERE source.source_id = %(source_id)s
+               AND source.source_kind = 'opennews'
+               AND (
+                 %(gap_unclosed)s
+                 OR source.gap_version = %(expected_gap_version)s
+               )
+             RETURNING source.gap_boundary_provider_record_id, source.gap_version
             """,
-            (connected, connected, now_ms, error_code, gap_unclosed, now_ms, source_id),
+            {
+                "connected": connected,
+                "now_ms": now_ms,
+                "error_code": error_code,
+                "gap_unclosed": gap_unclosed,
+                "gap_boundary_provider_record_id": gap_boundary_provider_record_id,
+                "expected_gap_version": expected_gap_version,
+                "source_id": source_id,
+            },
+        ).fetchone()
+        if row is None:
+            return None
+        boundary = row["gap_boundary_provider_record_id"]
+        return (
+            str(boundary) if boundary is not None else None,
+            int(row["gap_version"]),
         )
 
     def record_opennews_recovery_failure(

@@ -147,6 +147,47 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert len(sources) == 1
         assert sources[0]["source_kind"] == "opennews"
         assert "latest_fetch_status" not in sources[0]
+
+        with conn.transaction():
+            first_gap = repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 5,
+                error_code="opennews_buffer_overflow",
+                gap_unclosed=True,
+                gap_boundary_provider_record_id=None,
+                expected_gap_version=None,
+            )
+            second_gap = repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 6,
+                error_code="opennews_buffer_overflow",
+                gap_unclosed=True,
+                gap_boundary_provider_record_id="later-dropped-record",
+                expected_gap_version=None,
+            )
+            stale_close = repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 7,
+                error_code=None,
+                gap_unclosed=False,
+                gap_boundary_provider_record_id="wire-1",
+                expected_gap_version=1,
+            )
+            repository.mark_opennews_recovery_attempt(
+                source_id=source.source_id,
+                started_at_ms=NOW_MS + 8,
+            )
+        assert first_gap == ("wire-1", 1)
+        assert second_gap == ("wire-1", 2)
+        assert stale_close is None
+        assert repository.opennews_recovery_state(source_id=source.source_id) == (
+            NOW_MS + 8,
+            "wire-1",
+            2,
+        )
     finally:
         conn.close()
 

@@ -116,15 +116,15 @@ class OpenNewsWebSocketClient:
 async def _bounded_recv(websocket: Any) -> Any:
     import asyncio
 
-    try:
-        return await asyncio.wait_for(websocket.recv(), timeout=OPENNEWS_WS_IDLE_SECONDS)
-    except TimeoutError:
+    while True:
         try:
-            pong = await websocket.ping()
-            await asyncio.wait_for(pong, timeout=5.0)
             return await asyncio.wait_for(websocket.recv(), timeout=OPENNEWS_WS_IDLE_SECONDS)
-        except Exception:
-            raise OpenNewsExpectedError("opennews_idle_timeout") from None
+        except TimeoutError:
+            try:
+                pong = await websocket.ping()
+                await asyncio.wait_for(pong, timeout=5.0)
+            except Exception:
+                raise OpenNewsExpectedError("opennews_idle_timeout") from None
 
 
 def _json_object(raw: object) -> Mapping[str, Any]:

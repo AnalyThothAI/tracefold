@@ -140,6 +140,8 @@ class GmgnOpenApiClient:
                 )
             if _is_transient_status(response["status_code"]):
                 raise GmgnOpenApiTransientError(f"{method} {path} transient HTTP {response['status_code']}: {message}")
+            if path == "/v1/token/info" and str(message).strip().casefold() == "invalid argument":
+                return None
             raise GmgnOpenApiError(f"{method} {path} failed: {message}")
         return payload.get("data")
 

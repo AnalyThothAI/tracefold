@@ -157,7 +157,10 @@ is running, failed, insufficient, or stale.
 Production News uses one code-owned OpenNews WSS stream plus bounded,
 gap-triggered REST recovery after initial connection, reconnect, or queue
 overflow. A healthy WSS session makes no periodic REST call, and Workers
-schedule no second acquisition lane.
+schedule no second acquisition lane. Persisted source state enforces a five-minute
+minimum interval between recovery attempts; an insufficient page keeps the gap
+open instead of claiming complete recovery. Gap closure is fenced by the
+persisted gap version.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,

@@ -254,5 +254,31 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
             ]
             == "publication-before-cut"
         )
+        conn.execute(
+            """
+            UPDATE news_sources
+               SET gap_unclosed=true, last_live_at_ms=123
+             WHERE source_id='news-opennews'
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(config, "head")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        source = conn.execute(
+            """
+            SELECT gap_unclosed, gap_boundary_provider_record_id, gap_version
+              FROM news_sources
+             WHERE source_id='news-opennews'
+            """
+        ).fetchone()
+        assert source == {
+            "gap_unclosed": True,
+            "gap_boundary_provider_record_id": "provider-42",
+            "gap_version": 1,
+        }
     finally:
         conn.close()
