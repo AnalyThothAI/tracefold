@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+import tracefold.market.radar.output_envelope as output_envelope_module
 import tracefold.market.radar.token_radar_projector as projector_module
 from tracefold.market.radar.microbatch import (
     RadarMicroBatchClaim,
@@ -114,6 +115,28 @@ def test_radar_output_cap_splits_one_stable_venue_lane_deterministically() -> No
             context={"window_venue_lane": ["all", "resolved"]},
             byte_cap=1024 * 1024,
         )
+
+
+def test_radar_output_sizing_serializes_each_row_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_dumps = output_envelope_module.json.dumps
+    calls = 0
+
+    def counted_dumps(*args: Any, **kwargs: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return original_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(output_envelope_module.json, "dumps", counted_dumps)
+    rows = [{"lane": "resolved", "payload": str(index)} for index in range(100)]
+
+    assert split_bounded_rows(
+        rows,
+        context={"window_venue_lane": ["all", "resolved"]},
+        byte_cap=1024 * 1024,
+    ) == [rows]
+    assert calls == len(rows) + 1
 
 
 def test_radar_microbatch_retains_input_and_output_byte_envelopes() -> None:

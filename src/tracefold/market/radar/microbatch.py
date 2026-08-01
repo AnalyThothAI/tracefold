@@ -44,6 +44,7 @@ _STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0
 _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
 _MAINTENANCE_TRANSACTION_TIMEOUT_SECONDS = 120.0
 _TARGET_BATCH_SIZE = 4
+_SOURCE_EXPIRY_BATCH_SIZE = 4
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
@@ -172,7 +173,7 @@ class RadarMicroBatchService:
         ):
             repos.radar_source_edges.expire_due(
                 now_ms=int(now_ms),
-                limit=100,
+                limit=_SOURCE_EXPIRY_BATCH_SIZE,
             )
             rows = repos.conn.execute(
                 """
@@ -524,6 +525,21 @@ class RadarMicroBatchService:
         stock_projection = ranked.get("stock_projection")
         if isinstance(stock_projection, dict):
             _require_bounded_output(stock_projection)
+        publication_inputs: list[tuple[str, list[dict[str, Any]], str]] = []
+        for venue, rows_value in sorted(dict(closure.get("rows_by_venue") or {}).items()):
+            rows = [dict(row) for row in rows_value]
+            publication_inputs.append(
+                (
+                    str(venue),
+                    rows,
+                    stable_generation_id(
+                        projection_version=TOKEN_RADAR_PROJECTION_VERSION,
+                        window=claim.window,
+                        venue=str(venue),
+                        rows=rows,
+                    ),
+                )
+            )
         with (
             self._session(
                 transaction_timeout_seconds=self._publish_transaction_timeout_seconds(),
@@ -561,18 +577,11 @@ class RadarMicroBatchService:
                     )
             publication_writes = 0
             publication_statuses: list[str] = []
-            for venue, rows_value in sorted(dict(closure.get("rows_by_venue") or {}).items()):
-                rows = [dict(row) for row in rows_value]
-                generation_id = stable_generation_id(
-                    projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-                    window=claim.window,
-                    venue=str(venue),
-                    rows=rows,
-                )
+            for venue, rows, generation_id in publication_inputs:
                 result = repos.token_radar.publish_current_generation(
                     projection_version=TOKEN_RADAR_PROJECTION_VERSION,
                     window=claim.window,
-                    venue=str(venue),
+                    venue=venue,
                     generation_id=generation_id,
                     published_at_ms=int(now_ms),
                     source_frontier_ms=max(

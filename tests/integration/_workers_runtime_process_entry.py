@@ -5,11 +5,6 @@ import asyncio
 import threading
 from typing import Any
 
-from tracefold.app import workers
-from tracefold.app.provider_types import AssetMarketProviders
-from tracefold.platform.config.settings import Settings
-from tracefold.platform.model_candidate import ModelCandidate
-
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -31,9 +26,14 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _components(*, due_turns: tuple[tuple[Any, float], ...]) -> workers._Components:
-    return workers._Components(
-        providers=AssetMarketProviders(),
+def _components(
+    workers_module: Any,
+    provider_types_module: Any,
+    *,
+    due_turns: tuple[tuple[Any, float], ...],
+) -> Any:
+    return workers_module._Components(
+        providers=provider_types_module.AssetMarketProviders(),
         collector=None,
         news=None,
         news_brief=None,
@@ -49,6 +49,11 @@ def _components(*, due_turns: tuple[tuple[Any, float], ...]) -> workers._Compone
 
 
 async def _main() -> None:
+    from tracefold.app import provider_types as provider_types_module
+    from tracefold.app import workers
+    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.model_candidate import ModelCandidate
+
     arguments = _arguments()
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
@@ -64,7 +69,7 @@ async def _main() -> None:
 
     async def wire_components(**kwargs: Any) -> workers._Components:
         if arguments.mode == "inert":
-            return _components(due_turns=())
+            return _components(workers, provider_types_module, due_turns=())
 
         if arguments.mode == "child_failure":
 
@@ -74,7 +79,7 @@ async def _main() -> None:
                 await asyncio.sleep(0.1)
                 raise RuntimeError("test_child_failure")
 
-            return _components(due_turns=((fail, 1.0),))
+            return _components(workers, provider_types_module, due_turns=((fail, 1.0),))
 
         finite = kwargs["finite"]
         if arguments.mode in {"finite_overrun", "finite_never_returns"}:
@@ -92,7 +97,7 @@ async def _main() -> None:
                 )
                 return True
 
-            return _components(due_turns=((overrun, 1.0),))
+            return _components(workers, provider_types_module, due_turns=((overrun, 1.0),))
 
         if arguments.mode == "model_overrun":
             model_adapter = kwargs["model_adapter"]
@@ -119,12 +124,12 @@ async def _main() -> None:
                     )
                     return True
 
-            components = _components(due_turns=())
+            components = _components(workers, provider_types_module, due_turns=())
             components.models = (NeverReturningModelCandidate(),)
             return components
 
         if arguments.mode == "control_overrun":
-            return _components(due_turns=())
+            return _components(workers, provider_types_module, due_turns=())
 
         db = kwargs["db"]
         published = False
@@ -152,7 +157,7 @@ async def _main() -> None:
             published = True
             return True
 
-        return _components(due_turns=((provider_publication, 1.0),))
+        return _components(workers, provider_types_module, due_turns=((provider_publication, 1.0),))
 
     workers._wire_components = wire_components
     settings = Settings(

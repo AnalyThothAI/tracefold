@@ -21,17 +21,22 @@ def split_bounded_rows(
         raise ValueError("output_envelope_byte_cap_required")
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
+    empty_size = _serialized_size({**dict(context), "rows": []})
+    current_size = empty_size
     for source_row in rows:
         row = dict(source_row)
-        candidate = [*current, row]
-        if _serialized_size({**dict(context), "rows": candidate}) <= byte_cap:
-            current = candidate
+        row_size = _serialized_size(row)
+        candidate_size = current_size + row_size + (1 if current else 0)
+        if candidate_size <= byte_cap:
+            current.append(row)
+            current_size = candidate_size
             continue
         if not current:
             raise OutputRowOversized("output_envelope_single_row_oversized")
         batches.append(current)
         current = [row]
-        if _serialized_size({**dict(context), "rows": current}) > byte_cap:
+        current_size = empty_size + row_size
+        if current_size > byte_cap:
             raise OutputRowOversized("output_envelope_single_row_oversized")
     if current:
         batches.append(current)

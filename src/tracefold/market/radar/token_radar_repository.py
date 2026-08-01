@@ -64,6 +64,39 @@ RADAR_ROW_INSERT_COLUMNS_SQL = """
   data_health_json, source_event_ids_json, payload_hash,
   listed_at_ms, created_at_ms
 """
+RADAR_ROW_RECORD_COLUMNS_SQL = """
+  row_id text,
+  projection_version text,
+  "window" text,
+  venue text,
+  computed_at_ms bigint,
+  source_max_received_at_ms bigint,
+  generation_id text,
+  published_at_ms bigint,
+  source_frontier_ms bigint,
+  lane text,
+  target_type_key text,
+  identity_id text,
+  rank bigint,
+  rank_score double precision,
+  intent_id text,
+  event_id text,
+  target_type text,
+  target_id text,
+  pricefeed_id text,
+  intent_json jsonb,
+  resolution_json jsonb,
+  factor_snapshot_json jsonb,
+  factor_version text,
+  decision text,
+  quality_status text,
+  degraded_reasons_json jsonb,
+  data_health_json jsonb,
+  source_event_ids_json jsonb,
+  payload_hash text,
+  listed_at_ms bigint,
+  created_at_ms bigint
+"""
 _PUBLICATION_BATCH_BYTE_CAP = 1 * 1024 * 1024
 
 
@@ -120,13 +153,38 @@ class TokenRadarRepository:
         if latest_published_at_ms is not None and latest_published_at_ms > int(published_at_ms):
             return {"status": "stale_skipped", "generation_id": str(generation_id), "rows_written": 0}
 
+        existing_current: list[dict[str, Any]] | None = None
+        existing_generation_id = latest_current_generation_id
+        if existing_generation_id is None:
+            existing_current = self._current_rows_for_projection_set(
+                projection_version=projection_version,
+                window=window,
+                venue=venue,
+            )
+            existing_generation_id = _first_generation_id(existing_current)
+        if existing_generation_id == generation_id:
+            self._upsert_ready_publication_state(
+                projection_version=projection_version,
+                window=window,
+                venue=venue,
+                generation_id=existing_generation_id,
+                published_at_ms=published_at_ms,
+                source_frontier_ms=source_frontier_ms,
+                row_count=len(rows),
+                source_rows=source_rows,
+                started_at_ms=started_at_ms,
+                finished_at_ms=finished_at_ms,
+            )
+            return {"status": "unchanged", "generation_id": existing_generation_id, "rows_written": 0}
+
         for row in rows:
             _validate_factor_contract(row)
-        existing_current = self._current_rows_for_projection_set(
-            projection_version=projection_version,
-            window=window,
-            venue=venue,
-        )
+        if existing_current is None:
+            existing_current = self._current_rows_for_projection_set(
+                projection_version=projection_version,
+                window=window,
+                venue=venue,
+            )
         listed_at_by_key = self.first_seen_by_identity(
             projection_version=projection_version,
             window=window,
@@ -146,33 +204,6 @@ class TokenRadarRepository:
             )
             for row in rows
         ]
-        existing_generation_id = latest_current_generation_id or _first_generation_id(existing_current)
-        existing_signature = stable_generation_id(
-            projection_version=projection_version,
-            window=window,
-            venue=venue,
-            rows=existing_current,
-        )
-        incoming_signature = stable_generation_id(
-            projection_version=projection_version,
-            window=window,
-            venue=venue,
-            rows=rows_to_insert,
-        )
-        if existing_generation_id is not None and existing_signature == incoming_signature:
-            self._upsert_ready_publication_state(
-                projection_version=projection_version,
-                window=window,
-                venue=venue,
-                generation_id=existing_generation_id,
-                published_at_ms=published_at_ms,
-                source_frontier_ms=source_frontier_ms,
-                row_count=len(rows_to_insert),
-                source_rows=source_rows,
-                started_at_ms=started_at_ms,
-                finished_at_ms=finished_at_ms,
-            )
-            return {"status": "unchanged", "generation_id": existing_generation_id, "rows_written": 0}
 
         existing_by_key = {_current_key(row): row for row in existing_current}
         current_keys = {_current_key(row) for row in rows_to_insert}
@@ -263,14 +294,16 @@ class TokenRadarRepository:
             context={"output_kind": "token_radar_current_rows"},
             byte_cap=_PUBLICATION_BATCH_BYTE_CAP,
         ):
-            payloads = [_json_payload(row) for row in batch]
-            row_placeholders = f"({', '.join(['%s'] * len(RADAR_ROW_COLUMNS))})"
-            values_sql = ", ".join([row_placeholders] * len(payloads))
-            params = [payload[column] for payload in payloads for column in RADAR_ROW_COLUMNS]
+            payloads = [_json_record_payload(row) for row in batch]
             cursor = self.conn.execute(
                 f"""
+                WITH incoming AS (
+                  SELECT *
+                  FROM jsonb_to_recordset(%s) AS row({RADAR_ROW_RECORD_COLUMNS_SQL})
+                )
                 INSERT INTO token_radar_current_rows({RADAR_ROW_INSERT_COLUMNS_SQL})
-                VALUES {values_sql}
+                SELECT {RADAR_ROW_INSERT_COLUMNS_SQL}
+                FROM incoming
                 ON CONFLICT(projection_version, "window", venue, lane, target_type_key, identity_id)
                 DO UPDATE SET
                   row_id = excluded.row_id,
@@ -302,7 +335,7 @@ class TokenRadarRepository:
                    OR token_radar_current_rows.rank IS DISTINCT FROM excluded.rank
                    OR token_radar_current_rows.decision IS DISTINCT FROM excluded.decision
                 """,
-                params,
+                (Jsonb(payloads),),
             )
             rows_written += mutation_count(
                 cursor,
@@ -815,15 +848,29 @@ class TokenRadarRepository:
             )
         if not records:
             return 0
-        values_sql = ",".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(records))
-        params = [value for record in records for value in record]
+        columns = tuple(list(column) for column in zip(*records, strict=True))
         cursor = self.conn.execute(
-            f"""
+            """
+            WITH incoming(
+              projection_version, "window", venue, target_type_key, identity_id,
+              first_seen_ms, last_seen_ms, first_row_id, latest_row_id,
+              created_at_ms, updated_at_ms
+            ) AS (
+              SELECT *
+              FROM unnest(
+                %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],
+                %s::bigint[], %s::bigint[], %s::text[], %s::text[],
+                %s::bigint[], %s::bigint[]
+              )
+            )
             INSERT INTO token_radar_target_first_seen(
               projection_version, "window", venue, target_type_key, identity_id,
               first_seen_ms, last_seen_ms, first_row_id, latest_row_id, created_at_ms, updated_at_ms
             )
-            VALUES {values_sql}
+            SELECT
+              projection_version, "window", venue, target_type_key, identity_id,
+              first_seen_ms, last_seen_ms, first_row_id, latest_row_id, created_at_ms, updated_at_ms
+            FROM incoming
             ON CONFLICT(projection_version, "window", venue, target_type_key, identity_id)
             DO UPDATE SET
               first_seen_ms = LEAST(token_radar_target_first_seen.first_seen_ms, excluded.first_seen_ms),
@@ -840,7 +887,7 @@ class TokenRadarRepository:
               END,
               updated_at_ms = excluded.updated_at_ms
             """,
-            params,
+            columns,
         )
         return mutation_count(cursor, error_code="token_radar_repository_rowcount_invalid")
 
@@ -1210,6 +1257,12 @@ def _json_payload(row: dict[str, Any]) -> dict[str, Any]:
     out["source_event_ids_json"] = Jsonb(_json_ready(source_event_ids))
     out["degraded_reasons_json"] = Jsonb(_json_ready(degraded_reasons))
     return out
+
+
+def _json_record_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _json_ready(value.obj if isinstance(value, Jsonb) else value) for key, value in _json_payload(row).items()
+    }
 
 
 def _required_current_mapping(row: Mapping[str, Any], field: str) -> dict[str, Any]:
