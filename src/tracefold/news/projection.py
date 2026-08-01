@@ -16,6 +16,7 @@ from tracefold.news.ranking import (
     promote_diplomacy_severity,
 )
 from tracefold.news.sources import reporting_origin_tier
+from tracefold.news.story_store import _StorySnapshotLost
 
 NEWS_STORY_LOAD_TIMEOUT_SECONDS = 3.0
 NEWS_STORY_COMPUTE_TIMEOUT_SECONDS = 20.0
@@ -91,22 +92,30 @@ class NewsProjectionService:
         *,
         now_ms: int,
     ) -> dict[str, Any]:
-        with (
-            self.db.worker_session(
-                self.worker_name,
-                statement_timeout_seconds=5.0,
-                transaction_timeout_seconds=NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
-            ) as repos,
-            repos.transaction(),
-        ):
-            return cast(
-                dict[str, Any],
-                repos.news.publish_story_projection(
-                    snapshot=snapshot,
-                    projection=projection,
-                    now_ms=now_ms,
-                ),
-            )
+        try:
+            with (
+                self.db.worker_session(
+                    self.worker_name,
+                    statement_timeout_seconds=5.0,
+                    transaction_timeout_seconds=NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
+                ) as repos,
+                repos.transaction(),
+            ):
+                return cast(
+                    dict[str, Any],
+                    repos.news.publish_story_projection(
+                        snapshot=snapshot,
+                        projection=projection,
+                        now_ms=now_ms,
+                    ),
+                )
+        except _StorySnapshotLost as exc:
+            return {
+                "projection_status": "stale_snapshot",
+                "items": exc.items,
+                "stories": 0,
+                "rows_written": 0,
+            }
 
     def mark_failed(self, *, now_ms: int, error_code: str) -> None:
         with (

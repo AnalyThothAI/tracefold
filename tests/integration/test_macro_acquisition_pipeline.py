@@ -281,6 +281,46 @@ def test_acquisition_replay_writes_one_fact_and_keeps_current_cursor(
     assert all(row["deadline_at_ms"] - row["first_dirty_at_ms"] == 60_000 for row in module_frontiers)
 
 
+def test_acquisition_lost_claim_does_not_publish_facts(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_official_state",
+            clock_kind="official_state",
+            source_client=_FixedFredClient(),
+            clock_ms=lambda: 3_000,
+            target_keys=("fred.dgs10:latest",),
+        )
+        service.ensure_targets(now_ms=1_000)
+        claim = service.claim_next(now_ms=2_000)
+        assert claim is not None
+        batch = service.fetch_claim(claim)
+        conn.execute(
+            """
+            UPDATE macro_acquisition_targets
+               SET status = 'current', lease_owner = NULL, leased_until_ms = NULL
+             WHERE target_key = 'fred.dgs10:latest'
+            """
+        )
+        conn.commit()
+
+        result = service.publish_success(claim, batch)
+        fact_count = conn.execute(
+            """
+            SELECT COUNT(*)::int AS count
+              FROM macro_series_facts
+             WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchone()["count"]
+    finally:
+        conn.close()
+
+    assert result is None
+    assert fact_count == 0
+
+
 def test_yfinance_intraday_acquisition_persists_market_fact_and_cursor(
     tmp_path,
 ) -> None:

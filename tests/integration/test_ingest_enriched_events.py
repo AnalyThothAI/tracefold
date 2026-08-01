@@ -16,6 +16,7 @@ from tracefold.market import (
     MarketTickPersistenceService,
     market_tick_id,
 )
+from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
 
 
 def test_ingest_chain_event_writes_pending_backfill_without_inline_provider_call(tmp_path) -> None:
@@ -113,6 +114,61 @@ def test_ingest_chain_event_with_provider_no_quote_still_writes_pending_backfill
     assert enriched_rows[0]["capture_method"] == "unavailable"
     assert enriched_rows[0]["capture_reason"] == "pending_backfill"
     assert enriched_rows[0]["tick_id"] is None
+
+
+def test_exhausted_event_anchor_uses_canonical_terminal_reason(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    migrate(conn)
+    event = make_event(
+        "event-exhausted-backfill",
+        text="https://gmgn.ai/eth/token/0x6982508145454ce325ddbe47a25d4ec3d2311933 exhausted",
+        received_at_ms=1_700_000_015_000,
+    )
+    store = _PooledIngestStore(
+        _SingleConnectionDB(conn),
+        providers=AssetMarketProviders(dex_quote_market=_DexQuoteProvider([])),
+        event_anchor_active_window_ms=300_000,
+    )
+    try:
+        store.ingest_event(event)
+        conn.execute(
+            """
+            UPDATE event_anchor_backfill_jobs
+               SET status = 'running', lease_owner = 'expired-worker',
+                   leased_until_ms = %s, attempt_count = 3
+             WHERE event_id = %s
+            """,
+            (event.received_at_ms + 500, event.event_id),
+        )
+        conn.commit()
+        worker = EventAnchorBackfill(
+            db=_SingleConnectionDB(conn),
+            capture_service=object(),
+            finite_operations=object(),
+            runtime_id="test",
+        )
+
+        result = worker._expire_stale_jobs(now_ms=event.received_at_ms + 1_000)
+        job = conn.execute(
+            """
+            SELECT status, last_reason FROM event_anchor_backfill_jobs
+             WHERE event_id = %s
+            """,
+            (event.event_id,),
+        ).fetchone()
+        enriched = conn.execute(
+            """
+            SELECT capture_method, capture_reason FROM enriched_events
+             WHERE event_id = %s
+            """,
+            (event.event_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result == {"expired": 0, "failed": 1, "rescheduled": 0}
+    assert job == {"status": "failed", "last_reason": "backfill_expired"}
+    assert enriched == {"capture_method": "unavailable", "capture_reason": "backfill_expired"}
 
 
 def test_ingest_chain_event_with_existing_tick_writes_composite_tick_capture(tmp_path) -> None:

@@ -84,7 +84,7 @@ class AssetProfileRefresh:
             return None
         except MarketProviderExpectedError as exc:
             try:
-                await self.db.run_business(
+                published = await self.db.run_business(
                     "asset_profile_publish_unavailable",
                     self._publish_provider_failure,
                     claim,
@@ -94,6 +94,8 @@ class AssetProfileRefresh:
                 )
             except ResourceAdmissionTimeout:
                 await self._release_prework(claim)
+                return None
+            if published is None:
                 return None
             return "failed"
 
@@ -108,6 +110,8 @@ class AssetProfileRefresh:
             )
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
+            return None
+        if published is None:
             return None
         return "terminal" if int(published["terminal"]) else "processed"
 
@@ -181,7 +185,7 @@ class AssetProfileRefresh:
         claim: dict[str, Any],
         exc: Exception,
         now_ms: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         due_at_ms = int(now_ms) + _PROVIDER_RETRY_MS
         with (
             self.db.worker_session(
@@ -190,19 +194,21 @@ class AssetProfileRefresh:
             ) as repos,
             repos.transaction(),
         ):
+            released = repos.asset_profile_refresh_targets.release_provider_failure(
+                claim,
+                due_at_ms=due_at_ms,
+                now_ms=now_ms,
+            )
+            if released == 0:
+                return None
+            if released != 1:
+                raise RuntimeError("asset_profile_provider_failure_claim_stale")
             repos.provider_circuits.open(
                 provider=str(claim["provider"]),
                 error=str(exc),
                 now_ms=now_ms,
                 retry_ms=_PROVIDER_RETRY_MS,
             )
-            released = repos.asset_profile_refresh_targets.release_provider_failure(
-                claim,
-                due_at_ms=due_at_ms,
-                now_ms=now_ms,
-            )
-            if released != 1:
-                raise RuntimeError("asset_profile_provider_failure_claim_stale")
         return {
             "rows_written": 0,
             "terminal": 0,
@@ -215,7 +221,7 @@ class AssetProfileRefresh:
         claim: dict[str, Any],
         profile: DexTokenProfile | None,
         now_ms: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         attempt_count = int(claim["attempt_count"])
         with (
             self.db.worker_session(
@@ -224,20 +230,8 @@ class AssetProfileRefresh:
             ) as repos,
             repos.transaction(),
         ):
-            repos.provider_circuits.close(
-                provider=str(claim["provider"]),
-                now_ms=now_ms,
-            )
             if isinstance(profile, DexTokenProfile):
                 next_refresh_at_ms = int(now_ms) + _READY_REFRESH_MS
-                write_ready_asset_profile(
-                    repos=repos,
-                    provider=str(claim["provider"]),
-                    row=claim,
-                    profile=profile,
-                    now_ms=now_ms,
-                    next_refresh_at_ms=next_refresh_at_ms,
-                )
                 changed = repos.asset_profile_refresh_targets.reschedule(
                     [claim],
                     due_at_ms=next_refresh_at_ms,
@@ -249,13 +243,6 @@ class AssetProfileRefresh:
             else:
                 retry_delay_ms = _missing_retry_delay_ms(attempt_count)
                 next_refresh_at_ms = int(now_ms) + retry_delay_ms
-                write_missing_asset_profile(
-                    repos=repos,
-                    provider=str(claim["provider"]),
-                    row=claim,
-                    now_ms=now_ms,
-                    next_refresh_at_ms=next_refresh_at_ms,
-                )
                 terminal = attempt_count >= len(_MISSING_RETRY_MS)
                 if terminal:
                     changed = repos.asset_profile_refresh_targets.mark_terminal(
@@ -270,8 +257,31 @@ class AssetProfileRefresh:
                         now_ms=now_ms,
                         reason="profile_missing_written",
                     )
+            if changed == 0:
+                return None
             if changed != 1:
                 raise RuntimeError("asset_profile_publish_claim_stale")
+            repos.provider_circuits.close(
+                provider=str(claim["provider"]),
+                now_ms=now_ms,
+            )
+            if isinstance(profile, DexTokenProfile):
+                write_ready_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    profile=profile,
+                    now_ms=now_ms,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                )
+            else:
+                write_missing_asset_profile(
+                    repos=repos,
+                    provider=str(claim["provider"]),
+                    row=claim,
+                    now_ms=now_ms,
+                    next_refresh_at_ms=next_refresh_at_ms,
+                )
             _enqueue_profile_current(repos=repos, row=claim, now_ms=now_ms)
         return {
             "rows_written": 1,

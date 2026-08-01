@@ -168,7 +168,7 @@ class MacroAcquisitionService:
         self,
         claim: MacroAcquisitionClaim,
         error: Exception,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         completed_at_ms = int(self.clock_ms())
         unavailable = isinstance(error, MacroSourceUnavailable)
         error_code = str(error) if unavailable else type(error).__name__
@@ -182,7 +182,7 @@ class MacroAcquisitionService:
                 unavailable=unavailable,
             )
             if target_status is None:
-                raise RuntimeError("macro_acquisition_stale_claim") from error
+                return None
             _mark_dataset_state_and_modules(
                 repos,
                 dataset_id=claim.spec.dataset_id,
@@ -213,7 +213,7 @@ class MacroAcquisitionService:
         self,
         claim: MacroAcquisitionClaim,
         batch: FetchBatch,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         completed_at_ms = int(self.clock_ms())
         target = claim.target
         spec = claim.spec
@@ -224,9 +224,43 @@ class MacroAcquisitionService:
                 for key in ("history_class",):
                     if key in target_cursor:
                         completed_cursor[key] = target_cursor[key]
+        unfinished = batch.completion == "continuation"
+        backfill_complete = not unfinished and (
+            self.clock_kind != "backfill"
+            or _backfill_complete(
+                completed_cursor,
+                has_facts=bool(batch.facts),
+            )
+        )
+        target_status = (
+            "backfilling"
+            if unfinished
+            else "current"
+            if backfill_complete and (bool(batch.facts) or self.clock_kind == "backfill")
+            else "delayed"
+            if not batch.facts and self.clock_kind != "backfill"
+            else "backfilling"
+        )
+        next_due_at_ms = (
+            completed_at_ms
+            if unfinished
+            else completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else self.retry_ms)
+            if self.clock_kind != "backfill"
+            else (253_402_300_799_000 if backfill_complete else completed_at_ms)
+        )
         inserted = 0
         inserted_document_ids: list[str] = []
         with self._session() as repos, repos.transaction():
+            completed = repos.macro.complete_target(
+                target_key=str(target["target_key"]),
+                lease_owner=self.lease_owner,
+                cursor=completed_cursor,
+                next_due_at_ms=next_due_at_ms,
+                completed_at_ms=completed_at_ms,
+                status=target_status,
+            )
+            if not completed:
+                return None
             for fact in batch.facts:
                 if isinstance(fact, SeriesFact):
                     inserted += repos.macro.insert_series_fact(fact)
@@ -257,39 +291,6 @@ class MacroAcquisitionService:
                     speech_lookback_days=self.document_analysis_speech_lookback_days,
                     document_ids=tuple(sorted(set(inserted_document_ids))),
                 )
-            unfinished = batch.completion == "continuation"
-            backfill_complete = not unfinished and (
-                self.clock_kind != "backfill"
-                or _backfill_complete(
-                    completed_cursor,
-                    has_facts=bool(batch.facts),
-                )
-            )
-            target_status = (
-                "backfilling"
-                if unfinished
-                else "current"
-                if backfill_complete and (bool(batch.facts) or self.clock_kind == "backfill")
-                else "delayed"
-                if not batch.facts and self.clock_kind != "backfill"
-                else "backfilling"
-            )
-            completed = repos.macro.complete_target(
-                target_key=str(target["target_key"]),
-                lease_owner=self.lease_owner,
-                cursor=completed_cursor,
-                next_due_at_ms=(
-                    completed_at_ms
-                    if unfinished
-                    else completed_at_ms + (spec.refresh_seconds * 1_000 if batch.facts else self.retry_ms)
-                    if self.clock_kind != "backfill"
-                    else (253_402_300_799_000 if backfill_complete else completed_at_ms)
-                ),
-                completed_at_ms=completed_at_ms,
-                status=target_status,
-            )
-            if not completed:
-                raise RuntimeError("macro_acquisition_stale_claim")
             _mark_dataset_state_and_modules(
                 repos,
                 dataset_id=spec.dataset_id,

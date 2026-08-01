@@ -5,8 +5,16 @@ from typing import cast
 import pytest
 
 from tracefold.app.market_providers import FallbackDexQuoteProvider
+from tracefold.integrations.gmgn.openapi_client import GmgnOpenApiError
+from tracefold.integrations.gmgn.openapi_gateway import GmgnOpenApiGateway
+from tracefold.integrations.gmgn.providers import GmgnDexMarketProvider
 from tracefold.integrations.okx import providers as okx_providers
-from tracefold.market.provider_contracts import DexTokenQuote, DexTokenQuoteRequest, MarketCapability
+from tracefold.market.provider_contracts import (
+    DexProviderTemporarilyUnavailable,
+    DexTokenQuote,
+    DexTokenQuoteRequest,
+    MarketCapability,
+)
 from tracefold.platform.config.settings import OkxProviderConfig, ProvidersConfig, Settings
 
 
@@ -21,6 +29,19 @@ class _QuoteProvider:
 
     def close(self) -> None:
         return None
+
+
+class _FailedGmgnGateway:
+    def lookup_token_info(self, *, chain: str, address: str) -> None:
+        del chain, address
+        raise GmgnOpenApiError("provider response failed")
+
+
+def test_gmgn_provider_failure_is_a_local_expected_failure() -> None:
+    provider = GmgnDexMarketProvider(cast(GmgnOpenApiGateway, _FailedGmgnGateway()))
+
+    with pytest.raises(DexProviderTemporarilyUnavailable, match="provider response failed"):
+        provider.token_profile(chain_id="solana", address="token")
 
 
 def test_multi_target_quotes_use_the_bounded_bulk_provider_only() -> None:

@@ -637,7 +637,18 @@ class NewsRepository:
             now_ms=now_ms,
         )
 
-    def _story_invariant_counts(self) -> dict[str, int]:
+    def _story_invariant_counts(
+        self,
+        *,
+        item_ids: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Check one published item snapshot while retaining global Story checks."""
+
+        scoped_item_ids = (
+            sorted({str(item_id) for item_id in item_ids})
+            if item_ids is not None
+            else None
+        )
         row = self.conn.execute(
             """
             WITH current_owners AS (
@@ -646,6 +657,10 @@ class NewsRepository:
                 LEFT JOIN news_story_members m
                   ON m.item_id = i.item_id
                WHERE i.active
+                 AND (
+                   %(item_ids)s::text[] IS NULL
+                   OR i.item_id = ANY(%(item_ids)s::text[])
+                 )
                GROUP BY i.item_id
             ),
             story_aggregates AS (
@@ -683,7 +698,8 @@ class NewsRepository:
                    (SELECT count(*) FROM invalid_stories)
                      AS invalid_story_aggregate_count
               FROM current_owners
-            """
+            """,
+            {"item_ids": scoped_item_ids},
         ).fetchone()
         invalid_owners = int(row["invalid_owner_count"] or 0)
         invalid_aggregates = int(row["invalid_story_aggregate_count"] or 0)

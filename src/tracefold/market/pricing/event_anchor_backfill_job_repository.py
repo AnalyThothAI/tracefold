@@ -186,7 +186,7 @@ class EventAnchorBackfillJobRepository:
                 self._conn,
                 row,
                 status="failed",
-                reason="lease_expired_max_attempts",
+                reason="backfill_expired",
                 now_ms=now_ms,
             )
         terminal_rows = expired_rows + failed_rows
@@ -527,7 +527,7 @@ class EventAnchorBackfillJobRepository:
             )
             UPDATE event_anchor_backfill_jobs AS jobs
             SET status = 'failed',
-                last_reason = 'lease_expired_max_attempts',
+                last_reason = 'backfill_expired',
                 lease_owner = NULL,
                 leased_until_ms = NULL,
                 updated_at_ms = %(now_ms)s

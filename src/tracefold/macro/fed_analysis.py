@@ -297,6 +297,18 @@ class MacroDocumentAnalysisService:
         analysis_id = "macroan_" + hashlib.sha256(identity.encode()).hexdigest()
         completed_at_ms = int(self.clock_ms())
         with self._session() as repos, repos.transaction():
+            completed = repos.macro.complete_document_analysis_job(
+                analysis_job_id=str(job["analysis_job_id"]),
+                lease_owner=self.lease_owner,
+                completed_at_ms=completed_at_ms,
+            )
+            if not completed:
+                return {
+                    "status": "idle",
+                    "document_id": document["document_id"],
+                    "rows_written": 0,
+                    "jobs_written": jobs_written,
+                }
             written = repos.macro.insert_document_analysis(
                 analysis_id=analysis_id,
                 document_id=str(document["document_id"]),
@@ -314,13 +326,6 @@ class MacroDocumentAnalysisService:
             )
             if written != 1:
                 raise RuntimeError("macro_document_analysis_insert_conflict")
-            completed = repos.macro.complete_document_analysis_job(
-                analysis_job_id=str(job["analysis_job_id"]),
-                lease_owner=self.lease_owner,
-                completed_at_ms=completed_at_ms,
-            )
-            if not completed:
-                raise RuntimeError("macro_document_analysis_stale_claim")
         return {
             "status": "published",
             "analysis_id": analysis_id,
@@ -349,7 +354,11 @@ class MacroDocumentAnalysisService:
                 completed_at_ms=completed_at_ms,
             )
             if not failed:
-                raise RuntimeError("macro_document_analysis_stale_claim") from error
+                return {
+                    "status": "idle",
+                    "document_id": job["document_id"],
+                    "jobs_written": jobs_written,
+                }
         return {
             "status": "failed",
             "document_id": job["document_id"],

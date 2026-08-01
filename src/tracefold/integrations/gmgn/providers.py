@@ -8,7 +8,7 @@ from tracefold.app.provider_types import UpstreamClientFactory
 from tracefold.integrations.gmgn.direct_ws import DirectGmgnWebSocketClient
 from tracefold.integrations.gmgn.openapi_client import (
     GmgnOpenApiClient,
-    GmgnOpenApiProviderUnavailableError,
+    GmgnOpenApiError,
     GmgnTokenInfoLookup,
 )
 from tracefold.integrations.gmgn.openapi_gateway import GmgnOpenApiGateway
@@ -83,7 +83,7 @@ class GmgnDexMarketProvider:
     def _lookup_token_info(self, *, chain_id: str, address: str) -> GmgnTokenInfoLookup:
         try:
             return self._gateway.lookup_token_info(chain=chain_id, address=address)
-        except GmgnOpenApiProviderUnavailableError as exc:
+        except GmgnOpenApiError as exc:
             raise DexProviderTemporarilyUnavailable(str(exc)) from exc
 
     def close(self) -> None:

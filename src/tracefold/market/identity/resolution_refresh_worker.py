@@ -145,7 +145,7 @@ class ResolutionRefresh:
                 return None if index == 0 else True
             except DexProviderTemporarilyUnavailable as exc:
                 try:
-                    await self.db.run_business(
+                    published = await self.db.run_business(
                         "resolution_publish_unavailable",
                         self._publish_provider_unavailable,
                         lookups[index:],
@@ -157,6 +157,8 @@ class ResolutionRefresh:
                     )
                 except ResourceAdmissionTimeout:
                     await self._release_prework(lookups[index:])
+                    return None if index == 0 else True
+                if not published:
                     return None if index == 0 else True
                 break
 
@@ -332,40 +334,40 @@ class ResolutionRefresh:
         lookup_type: str,
         now_ms: int,
         error: Exception,
-    ) -> dict[str, Any]:
+    ) -> bool:
         retry_due_at_ms = now_ms + _refresh_ms(
             lookup_key=lookup_key,
             status="error",
             error_count=_claim_error_count(claims[0]),
         )
         last_error = _provider_unavailable_error(error)
-        with self.db.worker_session(self.name) as repos, repos.transaction():
-            repos.discovery.fail_lookup(
-                provider=DISCOVERY_PROVIDER,
-                lookup_key=lookup_key,
-                lookup_type=lookup_type or _lookup_type(lookup_key),
-                last_error=last_error,
-                next_refresh_at_ms=retry_due_at_ms,
-                now_ms=now_ms,
-            )
-            released = repos.discovery.reschedule_lookup_claims_without_attempt(
-                claims,
-                due_at_ms=retry_due_at_ms,
-                now_ms=now_ms,
-                last_error=last_error,
-            )
-            if released != len(claims):
-                raise RuntimeError("resolution_refresh_provider_release_cas_mismatch")
-            repos.provider_circuits.open(
-                provider=DISCOVERY_PROVIDER,
-                error=last_error,
-                now_ms=now_ms,
-                retry_ms=retry_due_at_ms - now_ms,
-            )
-        return {
-            "claims": len(claims),
-            "last_error": last_error,
-        }
+        try:
+            with self.db.worker_session(self.name) as repos, repos.transaction():
+                released = repos.discovery.reschedule_lookup_claims_without_attempt(
+                    claims,
+                    due_at_ms=retry_due_at_ms,
+                    now_ms=now_ms,
+                    last_error=last_error,
+                )
+                if released != len(claims):
+                    raise _LookupClaimLost
+                repos.discovery.fail_lookup(
+                    provider=DISCOVERY_PROVIDER,
+                    lookup_key=lookup_key,
+                    lookup_type=lookup_type or _lookup_type(lookup_key),
+                    last_error=last_error,
+                    next_refresh_at_ms=retry_due_at_ms,
+                    now_ms=now_ms,
+                )
+                repos.provider_circuits.open(
+                    provider=DISCOVERY_PROVIDER,
+                    error=last_error,
+                    now_ms=now_ms,
+                    retry_ms=retry_due_at_ms - now_ms,
+                )
+        except _LookupClaimLost:
+            return False
+        return True
 
 
 def _fetch_lookup_provider_result(

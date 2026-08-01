@@ -57,7 +57,7 @@ class TokenImageMirror:
                 submitted = True
 
             try:
-                await self.db.run_business(
+                published = await self.db.run_business(
                     "token_image_publish_existing",
                     self._publish_existing,
                     claim,
@@ -71,6 +71,8 @@ class TokenImageMirror:
                 raise
             except ResourceAdmissionTimeout:
                 await self._release_prework(claim)
+                return None
+            if published is None:
                 return None
             return "processed"
 
@@ -98,7 +100,7 @@ class TokenImageMirror:
             await self._release_prework(claim)
             return None
         try:
-            await self.db.run_business(
+            published = await self.db.run_business(
                 "token_image_publish",
                 self._publish_result,
                 claim,
@@ -108,6 +110,8 @@ class TokenImageMirror:
             )
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
+            return None
+        if published is None:
             return None
         status = str(mirror_result.get("status") or "")
         if status == "error":
@@ -167,7 +171,7 @@ class TokenImageMirror:
         self,
         claim: dict[str, Any],
         now_ms: int,
-    ) -> dict[str, int]:
+    ) -> dict[str, int] | None:
         with (
             self.db.worker_session(
                 self.name,
@@ -179,6 +183,8 @@ class TokenImageMirror:
                 [claim],
                 now_ms=now_ms,
             )
+            if changed == 0:
+                return None
             if changed != 1:
                 raise RuntimeError("token_image_existing_claim_stale")
             _enqueue_profile_current_for_claims(
@@ -193,7 +199,7 @@ class TokenImageMirror:
         claim: dict[str, Any],
         mirror_result: dict[str, Any],
         now_ms: int,
-    ) -> dict[str, int]:
+    ) -> dict[str, int] | None:
         status = str(mirror_result.get("status") or "")
         source_url = str(claim["source_url"])
         error = str(mirror_result.get("error") or "token_image_mirror_failed")
@@ -206,6 +212,29 @@ class TokenImageMirror:
         ):
             if status == "ready":
                 artifact = dict(mirror_result.get("asset") or {})
+                changed = repos.token_image_source_dirty_targets.mark_done(
+                    [claim],
+                    now_ms=now_ms,
+                )
+            elif status == "unsupported":
+                changed = repos.token_image_source_dirty_targets.mark_done(
+                    [claim],
+                    now_ms=now_ms,
+                )
+            else:
+                changed = repos.token_image_source_dirty_targets.mark_error(
+                    [claim],
+                    error=error,
+                    retry_ms=_RETRY_MS,
+                    max_attempts=_MAX_ATTEMPTS,
+                    owner_key=self.name,
+                    now_ms=now_ms,
+                )
+            if changed == 0:
+                return None
+            if changed != 1:
+                raise RuntimeError("token_image_publish_claim_stale")
+            if status == "ready":
                 repos.token_image_assets.mark_ready(
                     source_url=source_url,
                     media_type=str(artifact["media_type"]),
@@ -215,18 +244,10 @@ class TokenImageMirror:
                     storage_path=str(artifact["storage_path"]),
                     now_ms=now_ms,
                 )
-                changed = repos.token_image_source_dirty_targets.mark_done(
-                    [claim],
-                    now_ms=now_ms,
-                )
             elif status == "unsupported":
                 repos.token_image_assets.mark_unsupported(
                     source_url=source_url,
                     error=error,
-                    now_ms=now_ms,
-                )
-                changed = repos.token_image_source_dirty_targets.mark_done(
-                    [claim],
                     now_ms=now_ms,
                 )
             else:
@@ -236,16 +257,6 @@ class TokenImageMirror:
                     now_ms=now_ms,
                     retry_ms=_RETRY_MS,
                 )
-                changed = repos.token_image_source_dirty_targets.mark_error(
-                    [claim],
-                    error=error,
-                    retry_ms=_RETRY_MS,
-                    max_attempts=_MAX_ATTEMPTS,
-                    owner_key=self.name,
-                    now_ms=now_ms,
-                )
-            if changed != 1:
-                raise RuntimeError("token_image_publish_claim_stale")
             if status in {"ready", "unsupported"}:
                 _enqueue_profile_current_for_claims(
                     repos=repos,
