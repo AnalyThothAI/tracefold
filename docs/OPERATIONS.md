@@ -547,13 +547,15 @@ cannot replace it.
 
 Every sample records the complete observed Worker `wait_event_type`
 distribution and requires its counts to reconcile to the Worker connection
-count. `Lock` must remain zero. Other wait types are not interpreted as a
-blanket failure; their interval maxima are sealed for operator and independent
-review. The collector also requires all six Prometheus families for projection
-deadline misses, projection soft-SLO overruns, projection transitions,
-resource-active gauges, resource-admission duration, and resource-service
-duration. A missing required family fails closed instead of becoming an
-implicit zero.
+count. A sampled `Lock` wait is measured from PostgreSQL's ungranted-lock
+`waitstart`, must remain within the code-owned 250 ms database lock budget, and
+is sealed with its count and maximum duration for review. Other wait types are
+not interpreted as a blanket failure; their interval maxima are sealed for
+operator and independent review. The collector also requires all six
+Prometheus families for projection deadline misses, projection soft-SLO
+overruns, projection transitions, resource-active gauges, resource-admission
+duration, and resource-service duration. A missing required family fails
+closed instead of becoming an implicit zero.
 
 Admission and service evidence are independent. Each requires complete
 `capability`, `operation`, and `outcome` labels plus matching cumulative

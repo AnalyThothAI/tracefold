@@ -48,6 +48,7 @@ _SERVE_LANE_CAPACITIES = {
 }
 _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 _WORKER_CHECKOUT_TIMEOUT_SECONDS = 0.250
+WORKER_DATABASE_LOCK_TIMEOUT_SECONDS = 0.250
 _WORKER_ADMISSION_TIMEOUT_SECONDS = 1.0
 _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 5.0
 _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 2.0
@@ -182,7 +183,7 @@ class WorkerDatabase:
                 connect_timeout_seconds=postgres.connect_timeout_seconds,
                 application_name="tracefold_workers",
                 statement_timeout_seconds=_WORKER_CONNECTION_BASE_STATEMENT_TIMEOUT_SECONDS,
-                lock_timeout_seconds=0.250,
+                lock_timeout_seconds=WORKER_DATABASE_LOCK_TIMEOUT_SECONDS,
                 idle_in_transaction_session_timeout_seconds=_WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS,
             )
             worker_pool.wait(timeout=float(postgres.connect_timeout_seconds))

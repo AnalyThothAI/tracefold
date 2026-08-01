@@ -594,6 +594,7 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
         "postgres": {
             "worker_connections": 4,
             "lock_wait_count": 0,
+            "max_lock_wait_seconds": 0.0,
             "waits_by_type": {"Client": 3, "none": 1},
             "max_transaction_seconds": 0.1,
             "temp_files": 7,
