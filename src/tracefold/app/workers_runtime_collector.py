@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
@@ -85,6 +85,8 @@ _RESOURCE_OUTCOMES = {
     "resource_admission": {"accepted", "timeout"},
     "resource_service": {"cancelled", "error", "success"},
 }
+_LOOPBACK_PROXY = ProxyHandler({})
+_LOOPBACK_HTTP = build_opener(_LOOPBACK_PROXY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,7 +395,7 @@ class _ProductionSampler:
     @staticmethod
     def _read_http_text(url: str, *, max_bytes: int, stage: str) -> str:
         try:
-            with urlopen(url, timeout=_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310 -- fixed loopback URLs only
+            with _LOOPBACK_HTTP.open(url, timeout=_HTTP_TIMEOUT_SECONDS) as response:
                 payload = response.read(max_bytes + 1)
         except BaseException as exc:
             raise _SampleFailure(stage, exc) from exc

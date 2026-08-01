@@ -9,6 +9,7 @@ from psycopg import conninfo
 
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.app.workers_runtime_collector import (
+    _LOOPBACK_PROXY,
     COLLECTION_FILE,
     COLLECTION_SCHEMA_VERSION,
     EXPECTED_SAMPLE_COUNT,
@@ -37,6 +38,10 @@ _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
 def test_runtime_and_frontier_contract_follow_news_hard_cut() -> None:
     assert WORKERS_RUNTIME_VERSION == "2"
     assert _FRONTIER_DOMAINS == ("radar", "profile", "macro")
+
+
+def test_loopback_probe_never_uses_operator_system_proxy() -> None:
+    assert _LOOPBACK_PROXY.proxies == {}
 
 
 class _VirtualClock:
