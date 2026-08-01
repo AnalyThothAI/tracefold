@@ -16,6 +16,7 @@ from tracefold.app.workers_runtime_collector import (
     validate_workers_runtime_collection,
 )
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 EVIDENCE_SCHEMA_VERSION = "workers_runtime_acceptance_v2"
 SEAL_SCHEMA_VERSION = "workers_runtime_acceptance_v2_seal_v1"
@@ -55,7 +56,8 @@ _OPERATOR_AUTHORIZATION_STATEMENT = (
     "passed."
 )
 _OPERATOR_AUTHORIZATION_STATEMENT_SHA256 = "0fcdc80cfa8e20d74c5f9fcb92bbc6cb611e807b489f2386a260a6afea022886"
-_PROJECTION_DOMAINS = ("news", "macro", "profile", "radar")
+_FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
+_SEMANTIC_DOMAINS = ("news", "macro", "profile", "radar")
 _STARTUP_PROOFS = (
     "first_heartbeat_readiness",
     "fresh_row_collision",
@@ -125,7 +127,7 @@ def workers_runtime_evidence_template() -> dict[str, Any]:
             "bounded_time_to_clear_ms": None,
             "passes": False,
         }
-        for domain in _PROJECTION_DOMAINS
+        for domain in _FRONTIER_DOMAINS
     }
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
@@ -295,9 +297,9 @@ def _validate_evidence(root: Path, payload: Any) -> None:
 
 
 def _validate_capacity(capacity: dict[str, Any], *, duration_seconds: float) -> None:
-    if set(capacity) != set(_PROJECTION_DOMAINS):
+    if set(capacity) != set(_FRONTIER_DOMAINS):
         raise ValueError("workers_runtime_capacity_domains_invalid")
-    for domain in _PROJECTION_DOMAINS:
+    for domain in _FRONTIER_DOMAINS:
         row = _mapping(capacity, domain)
         start = _required_int(row, "actionable_count_start")
         end = _required_int(row, "actionable_count_end")
@@ -498,9 +500,9 @@ def _validate_operator_authorized_fix_forward_boundary(
 
 def _validate_semantic_diff(raw: dict[str, Any], *, label: str) -> None:
     domains = _mapping(raw, "domains")
-    if set(domains) != set(_PROJECTION_DOMAINS):
+    if set(domains) != set(_SEMANTIC_DOMAINS):
         raise ValueError(f"workers_runtime_{label}_domains_invalid")
-    for domain in _PROJECTION_DOMAINS:
+    for domain in _SEMANTIC_DOMAINS:
         row = _mapping(domains, domain)
         if row.get("match") is not True:
             raise ValueError(f"workers_runtime_{label}_{domain}_mismatch")

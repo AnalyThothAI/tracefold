@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from psycopg import conninfo
 
+from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.app.workers_runtime_collector import (
     COLLECTION_FILE,
     COLLECTION_SCHEMA_VERSION,
@@ -27,6 +28,9 @@ from tracefold.platform.postgres.postgres_audit import (
     PUBLIC_NO_SQL_ROUTES,
     PUBLIC_ROUTE_QUERY_COVERAGE,
 )
+from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
+
+_FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
 
 
 class _VirtualClock:
@@ -260,10 +264,11 @@ def test_runtime_identity_or_restart_change_fails_summary(path, value, failed_ch
 
 def test_projection_transition_counter_regression_fails_closed() -> None:
     samples = _samples()
-    samples[0]["telemetry"]["projection_transitions_total"]["news"]["arrival"] = 2.0
-    samples[-1]["telemetry"]["projection_transitions_total"]["news"]["arrival"] = 1.0
+    domain = _FRONTIER_DOMAINS[0]
+    samples[0]["telemetry"]["projection_transitions_total"][domain]["arrival"] = 2.0
+    samples[-1]["telemetry"]["projection_transitions_total"][domain]["arrival"] = 1.0
 
-    with pytest.raises(_SampleFailure, match="projection_transition_counter_regressed:news"):
+    with pytest.raises(_SampleFailure, match=f"projection_transition_counter_regressed:{domain}"):
         _summarize(samples)
 
 
@@ -414,17 +419,18 @@ def test_resource_or_postgres_cap_violation_fails_sample(path, value, stage) -> 
 
 def test_nonconverging_nonempty_domain_backlog_fails_summary() -> None:
     samples = _samples()
-    start = samples[0]["postgres"]["frontiers"]["news"]
-    end = samples[-1]["postgres"]["frontiers"]["news"]
+    domain = _FRONTIER_DOMAINS[0]
+    start = samples[0]["postgres"]["frontiers"][domain]
+    end = samples[-1]["postgres"]["frontiers"][domain]
     start.update({"actionable_count": 10, "oldest_age_ms": 1_000})
     end.update({"actionable_count": 10, "oldest_age_ms": 2_000})
     end["counts_by_status"] = {"dirty": 10}
-    samples[-1]["telemetry"]["projection_transitions_total"]["news"].update({"arrival": 5.0, "completion": 5.0})
+    samples[-1]["telemetry"]["projection_transitions_total"][domain].update({"arrival": 5.0, "completion": 5.0})
 
     summary = _summarize(samples)
 
-    assert summary["capacity"]["news"]["passes"] is False
-    assert "four_domain_capacity_converges" in summary["failed_checks"]
+    assert summary["capacity"][domain]["passes"] is False
+    assert "frontier_capacity_converges" in summary["failed_checks"]
 
 
 def _samples() -> list[dict]:
@@ -488,9 +494,9 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
             "unresolved_quarantine": 0,
             "counts_by_status": {},
         }
-        for domain in ("news", "macro", "profile", "radar")
+        for domain in _FRONTIER_DOMAINS
     }
-    transitions = {domain: {"arrival": 0.0, "completion": 0.0} for domain in ("news", "macro", "profile", "radar")}
+    transitions = {domain: {"arrival": 0.0, "completion": 0.0} for domain in _FRONTIER_DOMAINS}
     return {
         "schema_version": COLLECTION_SCHEMA_VERSION,
         "sequence": sequence,
@@ -503,7 +509,7 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
             "ok": True,
             "ready": True,
             "runtime_id": "runtime-1",
-            "runtime_version": "2",
+            "runtime_version": WORKERS_RUNTIME_VERSION,
             "runtime_revision": "a" * 40,
             "process_id": 123,
             "lifecycle_state": "running",
@@ -551,8 +557,8 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
                 "model_adapter": 0.0,
                 "cpu_process": 0.0,
             },
-            "projection_deadline_misses_total": {domain: 0.0 for domain in ("news", "macro", "profile", "radar")},
-            "projection_soft_slo_overruns_total": {domain: 0.0 for domain in ("news", "macro", "profile", "radar")},
+            "projection_deadline_misses_total": {domain: 0.0 for domain in _FRONTIER_DOMAINS},
+            "projection_soft_slo_overruns_total": {domain: 0.0 for domain in _FRONTIER_DOMAINS},
             "projection_transitions_total": transitions,
             "resource_service": _resource_rows(
                 "service",
