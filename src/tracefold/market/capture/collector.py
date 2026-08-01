@@ -57,6 +57,7 @@ class CollectorService:
         self.snapshot_timeout = 0.5
         self._pending_snapshots: dict[str, asyncio.Task[None]] = {}
         self._upstream_task: asyncio.Task[None] | None = None
+        self._event_publish_lock = asyncio.Lock()
         self.status = CollectorStatus(started_at_ms=_now_ms())
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -203,22 +204,23 @@ class CollectorService:
             raise
 
     async def _process_item(self, channel: str, item: dict[str, Any], received_at_ms: int) -> None:
-        payload = {"channel": channel, "data": [item]}
-        for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
-            try:
-                ingested = await self.db.run_business(
-                    "gmgn_event_publish",
-                    self.store.ingest_event,
-                    event,
-                    operation_timeout_seconds=5.0,
-                )
-            except ResourceAdmissionTimeout as exc:
-                raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
-            if ingested.inserted:
-                self.status.twitter_events += 1
-                self.status.last_event_at_ms = received_at_ms
-            else:
-                self.status.duplicate_twitter_events += 1
+        async with self._event_publish_lock:
+            payload = {"channel": channel, "data": [item]}
+            for event in normalize_gmgn_payload(payload, received_at_ms=received_at_ms):
+                try:
+                    ingested = await self.db.run_business(
+                        "gmgn_event_publish",
+                        self.store.ingest_event,
+                        event,
+                        operation_timeout_seconds=5.0,
+                    )
+                except ResourceAdmissionTimeout as exc:
+                    raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
+                if ingested.inserted:
+                    self.status.twitter_events += 1
+                    self.status.last_event_at_ms = received_at_ms
+                else:
+                    self.status.duplicate_twitter_events += 1
 
     def _record_snapshot_gate_outcome(self, outcome: str) -> None:
         self.status.snapshot_gate_outcomes[outcome] = self.status.snapshot_gate_outcomes.get(outcome, 0) + 1

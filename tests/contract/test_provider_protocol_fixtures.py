@@ -102,6 +102,43 @@ def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_
     asyncio.run(scenario())
 
 
+def test_gmgn_event_publications_are_serial() -> None:
+    class _ConcurrentRuntimeResources:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def run_business(self, _operation_name, function, /, *args, **kwargs):
+            kwargs.pop("operation_timeout_seconds")
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return function(*args, **kwargs)
+            finally:
+                self.active -= 1
+
+    async def scenario() -> int:
+        raw_frame = _load_json("gmgn_public_tw_complete.json")
+        parsed = parse_gmgn_frame(raw_frame)
+        assert parsed is not None
+        item = parsed["data"][0]
+        resources = _ConcurrentRuntimeResources()
+        service = CollectorService(
+            store=MemoryStore(),
+            upstream_client=None,
+            db=resources,
+        )
+
+        await asyncio.gather(
+            service._process_item(parsed["channel"], item, 1_777_729_877_581),
+            service._process_item(parsed["channel"], item, 1_777_729_877_582),
+        )
+        return resources.max_active
+
+    assert asyncio.run(scenario()) == 1
+
+
 def test_okx_dex_ws_price_info_fixture_maps_provider_fields_to_domain_fact() -> None:
     message = _load_json("okx_dex_price_info.json")
 
