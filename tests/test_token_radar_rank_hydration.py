@@ -159,7 +159,15 @@ def test_radar_microbatch_retains_input_and_output_byte_envelopes() -> None:
         )
 
 
-def test_radar_input_sizing_does_not_use_the_gil_holding_stdlib_encoder(
+def test_radar_input_sizing_accepts_jsonb_integer_beyond_64_bits() -> None:
+    market_cap_usd = 24_484_178_400_000_004_000_000
+
+    assert microbatch_module._serialized_size({"rows": [{"market_cap_usd": market_cap_usd}]}) == len(
+        f'{{"rows":[{{"market_cap_usd":{market_cap_usd}}}]}}'.encode()
+    )
+
+
+def test_radar_input_sizing_keeps_orjson_fast_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden_dumps(*args: Any, **kwargs: Any) -> str:
@@ -171,6 +179,11 @@ def test_radar_input_sizing_does_not_use_the_gil_holding_stdlib_encoder(
     assert microbatch_module._serialized_size({"rows": [{"identity_id": "资产-1", "score": 1.5}]}) == len(
         '{"rows":[{"identity_id":"资产-1","score":1.5}]}'.encode()
     )
+
+
+def test_radar_input_sizing_does_not_hide_other_encoding_errors() -> None:
+    with pytest.raises(TypeError, match="Dict key must be str"):
+        microbatch_module._serialized_size({("unsupported",): 1})
 
 
 def test_radar_microbatch_removes_expired_target_from_same_publication() -> None:

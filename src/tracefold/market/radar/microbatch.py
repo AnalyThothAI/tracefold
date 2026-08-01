@@ -1214,18 +1214,31 @@ def _fingerprint(value: Any) -> str:
 
 
 def _serialized_size(value: Any) -> int:
-    return len(
-        orjson.dumps(
-            value,
-            option=(
-                orjson.OPT_SORT_KEYS
-                | orjson.OPT_PASSTHROUGH_DATACLASS
-                | orjson.OPT_PASSTHROUGH_DATETIME
-                | orjson.OPT_PASSTHROUGH_SUBCLASS
-            ),
-            default=str,
+    try:
+        return len(
+            orjson.dumps(
+                value,
+                option=(
+                    orjson.OPT_SORT_KEYS
+                    | orjson.OPT_PASSTHROUGH_DATACLASS
+                    | orjson.OPT_PASSTHROUGH_DATETIME
+                    | orjson.OPT_PASSTHROUGH_SUBCLASS
+                ),
+                default=str,
+            )
         )
-    )
+    except TypeError as exc:
+        if exc.args != ("Integer exceeds 64-bit range",):
+            raise
+        return len(
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        )
 
 
 def _require_bounded_input(payload: dict[str, Any]) -> None:
