@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID
 
+import orjson
+
 from tracefold.market.radar.constants import (
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
@@ -1213,13 +1215,16 @@ def _fingerprint(value: Any) -> str:
 
 def _serialized_size(value: Any) -> int:
     return len(
-        json.dumps(
+        orjson.dumps(
             value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
+            option=(
+                orjson.OPT_SORT_KEYS
+                | orjson.OPT_PASSTHROUGH_DATACLASS
+                | orjson.OPT_PASSTHROUGH_DATETIME
+                | orjson.OPT_PASSTHROUGH_SUBCLASS
+            ),
             default=str,
-        ).encode("utf-8")
+        )
     )
 
 

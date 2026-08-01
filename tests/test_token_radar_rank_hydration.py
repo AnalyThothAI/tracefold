@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+import tracefold.market.radar.microbatch as microbatch_module
 import tracefold.market.radar.output_envelope as output_envelope_module
 import tracefold.market.radar.token_radar_projector as projector_module
 from tracefold.market.radar.microbatch import (
@@ -156,6 +157,20 @@ def test_radar_microbatch_retains_input_and_output_byte_envelopes() -> None:
                 }
             }
         )
+
+
+def test_radar_input_sizing_does_not_use_the_gil_holding_stdlib_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_dumps(*args: Any, **kwargs: Any) -> str:
+        del args, kwargs
+        raise AssertionError("stdlib_json_encoder_used_for_radar_input_sizing")
+
+    monkeypatch.setattr(microbatch_module.json, "dumps", forbidden_dumps)
+
+    assert microbatch_module._serialized_size({"rows": [{"identity_id": "资产-1", "score": 1.5}]}) == len(
+        '{"rows":[{"identity_id":"资产-1","score":1.5}]}'.encode()
+    )
 
 
 def test_radar_microbatch_removes_expired_target_from_same_publication() -> None:
