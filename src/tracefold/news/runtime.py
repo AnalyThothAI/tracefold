@@ -128,38 +128,61 @@ class NewsAcquisition:
             )
             return None
         except NewsFeedExpectedError as exc:
-            published = await self.db.run_business(
-                "news_source_publish_failure",
-                self._failure_sync,
-                source,
-                started_at_ms,
-                claim_token,
-                exc,
-                operation_timeout_seconds=3.0,
-            )
+            try:
+                published = await self.db.run_business(
+                    "news_source_publish_failure",
+                    self._failure_sync,
+                    source,
+                    started_at_ms,
+                    claim_token,
+                    exc,
+                    operation_timeout_seconds=3.0,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release_prework(source.source_id, claim_token)
+                return None
             return True if published else None
         except CpuTaskTimeout:
             error = _news_parse_expected_error("news_rss_parse_cpu_limit_exceeded")
+            try:
+                published = await self.db.run_business(
+                    "news_source_publish_parse_timeout",
+                    self._failure_sync,
+                    source,
+                    started_at_ms,
+                    claim_token,
+                    error,
+                    operation_timeout_seconds=3.0,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release_prework(source.source_id, claim_token)
+                return None
+            return True if published else None
+        try:
             published = await self.db.run_business(
-                "news_source_publish_parse_timeout",
-                self._failure_sync,
+                "news_source_publish_success",
+                self._success_sync,
                 source,
                 started_at_ms,
                 claim_token,
-                error,
+                fetched,
                 operation_timeout_seconds=3.0,
             )
-            return True if published else None
-        published = await self.db.run_business(
-            "news_source_publish_success",
-            self._success_sync,
-            source,
-            started_at_ms,
-            claim_token,
-            fetched,
-            operation_timeout_seconds=3.0,
-        )
+        except ResourceAdmissionTimeout:
+            await self._release_prework(source.source_id, claim_token)
+            return None
         return True if published else None
+
+    async def _release_prework(self, source_id: str, claim_token: str) -> bool:
+        return bool(
+            await self.db.run_business(
+                "news_source_release_prework",
+                self._release_sync,
+                source_id,
+                claim_token,
+                operation_timeout_seconds=0.5,
+            )
+        )
 
     async def close(self) -> None:
         await self.finite_operations.run(

@@ -88,24 +88,32 @@ class AssetProfileRefresh:
             await self._release_prework(claim)
             return None
         except MarketProviderExpectedError as exc:
-            await self.db.run_business(
-                "asset_profile_publish_unavailable",
-                self._publish_provider_failure,
+            try:
+                await self.db.run_business(
+                    "asset_profile_publish_unavailable",
+                    self._publish_provider_failure,
+                    claim,
+                    exc,
+                    observed_at_ms,
+                    operation_timeout_seconds=3.0,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release_prework(claim)
+                return None
+            return "failed"
+
+        try:
+            published = await self.db.run_business(
+                "asset_profile_publish",
+                self._publish_profile,
                 claim,
-                exc,
+                profile,
                 observed_at_ms,
                 operation_timeout_seconds=3.0,
             )
-            return "failed"
-
-        published = await self.db.run_business(
-            "asset_profile_publish",
-            self._publish_profile,
-            claim,
-            profile,
-            observed_at_ms,
-            operation_timeout_seconds=3.0,
-        )
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return None
         return "terminal" if int(published["terminal"]) else "processed"
 
     async def _release_prework(self, claim: dict[str, Any]) -> bool:

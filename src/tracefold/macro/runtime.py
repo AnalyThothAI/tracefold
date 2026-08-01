@@ -74,33 +74,45 @@ class MacroAcquisition:
             await self._release(claim)
             return None
         except MacroSourceError as exc:
-            published = await self.db.run_business(
-                "macro_publish_failure",
-                self.service.publish_failure,
-                claim,
-                exc,
-                operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
-            )
+            try:
+                published = await self.db.run_business(
+                    "macro_publish_failure",
+                    self.service.publish_failure,
+                    claim,
+                    exc,
+                    operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release(claim)
+                return None
             return True if published is not None else None
 
         try:
             _validate_batch(batch)
         except MacroSourceError as exc:
+            try:
+                published = await self.db.run_business(
+                    "macro_publish_envelope_failure",
+                    self.service.publish_failure,
+                    claim,
+                    exc,
+                    operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release(claim)
+                return None
+            return True if published is not None else None
+        try:
             published = await self.db.run_business(
-                "macro_publish_envelope_failure",
-                self.service.publish_failure,
+                "macro_publish_success",
+                self.service.publish_success,
                 claim,
-                exc,
+                batch,
                 operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
             )
-            return True if published is not None else None
-        published = await self.db.run_business(
-            "macro_publish_success",
-            self.service.publish_success,
-            claim,
-            batch,
-            operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
-        )
+        except ResourceAdmissionTimeout:
+            await self._release(claim)
+            return None
         return True if published is not None else None
 
     async def _release(self, claim: Any) -> bool:

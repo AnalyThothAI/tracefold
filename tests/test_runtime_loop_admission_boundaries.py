@@ -13,6 +13,7 @@ from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBac
 from tracefold.market.pricing.market_tick_poll_worker import MarketTickPoll
 from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileRefresh
 from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirror
+from tracefold.market.provider_contracts import DexProfileSource
 from tracefold.news.runtime import NewsAcquisition
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -77,6 +78,58 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
         assert await poll.sample() is None
 
     asyncio.run(scenario())
+
+
+def test_asset_profile_releases_claim_when_publication_admission_is_saturated() -> None:
+    claim = {"provider": "gmgn_dex_profile", "target_id": "asset:one"}
+
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run_business(self, operation_name, function, /, *args, **kwargs):
+            del function, args, kwargs
+            self.operations.append(operation_name)
+            if operation_name == "asset_profile_claim":
+                return claim, {"due": 1}
+            if operation_name == "asset_profile_publish":
+                raise ResourceAdmissionTimeout("publication_db_saturated")
+            if operation_name == "asset_profile_release_prework":
+                return True
+            raise AssertionError(operation_name)
+
+    class _FiniteOperations:
+        async def run(self, operation_name, function, /, *args, **kwargs):
+            del operation_name, function, args
+            kwargs["on_submitted"]()
+            return object()
+
+    class _ProfileMarket:
+        def token_profile(self, *, chain_id: str, address: str):
+            del chain_id, address
+
+        def close(self) -> None:
+            return None
+
+    database = _Database()
+    profile = AssetProfileRefresh(
+        db=database,
+        finite_operations=_FiniteOperations(),
+        runtime_id="runtime",
+        dex_profile_sources=(
+            DexProfileSource(
+                provider="gmgn_dex_profile",
+                market=_ProfileMarket(),
+            ),
+        ),
+    )
+
+    assert asyncio.run(profile.turn(now_ms=1)) is None
+    assert database.operations == [
+        "asset_profile_claim",
+        "asset_profile_publish",
+        "asset_profile_release_prework",
+    ]
 
 
 def test_model_arbiter_propagates_post_model_admission_timeout() -> None:

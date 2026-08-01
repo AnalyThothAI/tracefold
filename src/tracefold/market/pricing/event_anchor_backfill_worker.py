@@ -163,15 +163,19 @@ class EventAnchorBackfill:
             terminals.append(outcome)
             skipped_reasons[outcome.reason] += 1
 
-        await self.db.run_business(
-            "event_anchor_publish",
-            self._persist,
-            attaches=attaches,
-            terminals=terminals,
-            reschedules=reschedules,
-            now_ms=now_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            await self.db.run_business(
+                "event_anchor_publish",
+                self._persist,
+                attaches=attaches,
+                terminals=terminals,
+                reschedules=reschedules,
+                now_ms=now_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            await self._release_prework(rows[0])
+            return None
         return True
 
     async def _release_prework(self, row: Mapping[str, Any]) -> bool:

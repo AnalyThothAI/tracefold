@@ -143,26 +143,34 @@ class ResolutionRefresh:
                 await self._release_prework(lookups[index:])
                 return None if index == 0 else True
             except DexProviderTemporarilyUnavailable as exc:
-                await self.db.run_business(
-                    "resolution_publish_unavailable",
-                    self._publish_provider_unavailable,
-                    lookups[index:],
-                    lookup_key,
-                    lookup_type,
-                    observed_at_ms,
-                    exc,
-                    operation_timeout_seconds=3.0,
-                )
+                try:
+                    await self.db.run_business(
+                        "resolution_publish_unavailable",
+                        self._publish_provider_unavailable,
+                        lookups[index:],
+                        lookup_key,
+                        lookup_type,
+                        observed_at_ms,
+                        exc,
+                        operation_timeout_seconds=3.0,
+                    )
+                except ResourceAdmissionTimeout:
+                    await self._release_prework(lookups[index:])
+                    return None if index == 0 else True
                 break
 
-            published = await self.db.run_business(
-                "resolution_publish_success",
-                self._publish_lookup_success_and_reprocess,
-                lookup,
-                lookup_result,
-                observed_at_ms,
-                operation_timeout_seconds=5.0,
-            )
+            try:
+                published = await self.db.run_business(
+                    "resolution_publish_success",
+                    self._publish_lookup_success_and_reprocess,
+                    lookup,
+                    lookup_result,
+                    observed_at_ms,
+                    operation_timeout_seconds=5.0,
+                )
+            except ResourceAdmissionTimeout:
+                await self._release_prework(lookups[index:])
+                return None if index == 0 else True
             if not published:
                 return None if index == 0 else True
         return True

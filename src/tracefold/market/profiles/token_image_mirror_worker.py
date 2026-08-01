@@ -97,14 +97,18 @@ class TokenImageMirror:
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
             return None
-        await self.db.run_business(
-            "token_image_publish",
-            self._publish_result,
-            claim,
-            mirror_result,
-            observed_at_ms,
-            operation_timeout_seconds=3.0,
-        )
+        try:
+            await self.db.run_business(
+                "token_image_publish",
+                self._publish_result,
+                claim,
+                mirror_result,
+                observed_at_ms,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            await self._release_prework(claim)
+            return None
         status = str(mirror_result.get("status") or "")
         if status == "error":
             return "terminal" if int(claim["attempt_count"]) >= _MAX_ATTEMPTS else "failed"

@@ -33,6 +33,8 @@ class FallbackDexQuoteProvider:
 
     def token_quotes(self, tokens: list[DexTokenQuoteRequest]) -> list[DexTokenQuote]:
         requests = list(tokens)
+        if len(requests) > 1 and self._fallback is not None:
+            return self._fallback.token_quotes(requests)
         try:
             primary_quotes = self._primary.token_quotes(requests)
         except MarketProviderExpectedError:
