@@ -312,54 +312,69 @@ class GeneralMarketRepository:
               SELECT *
               FROM unnest(%s::text[], %s::integer[])
                 AS requested(dataset_id, max_days)
-            ), daily_last AS (
-              SELECT DISTINCT ON (
-                observations.dataset_id,
-                (to_timestamp(observations.observed_at_ms / 1000.0)
-                  AT TIME ZONE 'UTC')::date
-              )
-                observations.observation_id,
-                observations.dataset_id,
-                observations.instrument_id,
-                observations.source_id,
-                observations.field_name,
-                observations.value_numeric,
-                observations.unit,
-                observations.observed_at_ms,
-                observations.published_at_ms,
-                observations.received_at_ms,
-                observations.trust_tier,
-                observations.source_url,
-                observations.fact_hash,
-                requested.max_days
-              FROM market_observations AS observations
-              JOIN requested USING (dataset_id)
-              WHERE observations.received_at_ms <= COALESCE(
-                  %s::bigint,
-                  observations.received_at_ms
-                )
-              ORDER BY
-                observations.dataset_id,
-                (to_timestamp(observations.observed_at_ms / 1000.0)
-                  AT TIME ZONE 'UTC')::date,
-                observations.observed_at_ms DESC,
-                observations.received_at_ms DESC,
-                observations.observation_id DESC
+            ), selected AS (
+              SELECT
+                daily.observation_id,
+                daily.dataset_id,
+                daily.instrument_id,
+                daily.source_id,
+                daily.field_name,
+                daily.value_numeric,
+                daily.unit,
+                daily.observed_at_ms,
+                daily.published_at_ms,
+                daily.received_at_ms,
+                daily.trust_tier,
+                daily.source_url,
+                daily.fact_hash
+              FROM requested
+              CROSS JOIN LATERAL (
+                SELECT latest.*
+                FROM (
+                  SELECT DISTINCT ON (
+                    observations.observed_at_ms / 86400000
+                  )
+                    observations.observation_id,
+                    observations.dataset_id,
+                    observations.instrument_id,
+                    observations.source_id,
+                    observations.field_name,
+                    observations.value_numeric,
+                    observations.unit,
+                    observations.observed_at_ms,
+                    observations.published_at_ms,
+                    observations.received_at_ms,
+                    observations.trust_tier,
+                    observations.source_url,
+                    observations.fact_hash
+                  FROM market_observations AS observations
+                  WHERE observations.dataset_id = requested.dataset_id
+                    AND observations.received_at_ms <= COALESCE(
+                      %s::bigint,
+                      observations.received_at_ms
+                    )
+                  ORDER BY
+                    observations.observed_at_ms / 86400000 DESC,
+                    observations.observed_at_ms DESC,
+                    observations.received_at_ms DESC,
+                    observations.observation_id DESC
+                ) AS latest
+                LIMIT requested.max_days
+              ) AS daily
             ), ranked AS (
               SELECT
-                daily_last.*,
+                selected.*,
                 row_number() OVER (
                   PARTITION BY dataset_id
                   ORDER BY observed_at_ms DESC, received_at_ms DESC
                 ) AS row_number
-              FROM daily_last
+              FROM selected
             )
             SELECT
               observation_id, dataset_id, instrument_id, source_id, field_name,
               value_numeric, unit, observed_at_ms, published_at_ms,
               received_at_ms, trust_tier, source_url, fact_hash, row_number
             FROM ranked
-            WHERE row_number <= max_days
             ORDER BY dataset_id, observed_at_ms
             LIMIT %s
             """,

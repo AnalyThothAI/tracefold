@@ -24,6 +24,7 @@ from tracefold.macro.projection import (
     MacroProjectionService,
     compute_macro_module_projection,
 )
+from tracefold.market import MarketObservationFact
 from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 NOW_MS = 1_779_000_000_000
@@ -223,6 +224,46 @@ def test_macro_series_reducer_preserves_capped_history_percentile_semantics() ->
         assert statistics[0]["history_start"] == str(first_date)
         assert statistics[0]["percentile"] == 0.17
         assert len(statistics[0]["history"]) == 500
+    finally:
+        conn.close()
+
+
+def test_macro_market_history_keeps_the_last_fact_for_the_latest_actual_days() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("yfinance.spy.intraday")
+        day_ms = 86_400_000
+        first_day_ms = 1_778_112_000_000
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.macro_market.ensure_instrument(spec, now_ms=first_day_ms)
+            for day in range(3):
+                for observation in range(2):
+                    observed_at_ms = first_day_ms + day * day_ms + observation * 3_600_000
+                    repos.macro_market.insert_observation(
+                        MarketObservationFact(
+                            dataset_id=spec.dataset_id,
+                            instrument_id=str(spec.instrument_id),
+                            source_id=spec.source_id,
+                            field_name="close",
+                            value_numeric=float(day * 10 + observation),
+                            unit=spec.unit,
+                            observed_at_ms=observed_at_ms,
+                            published_at_ms=None,
+                            received_at_ms=observed_at_ms + 1_000,
+                            trust_tier=spec.trust_tier,
+                            source_url=spec.source_url,
+                            raw_data={"day": day, "observation": observation},
+                        )
+                    )
+        with repository_session_for_connection(conn) as repos:
+            rows = repos.macro_market.market_projection_history(
+                history_limits={spec.dataset_id: 2},
+                row_cap=10,
+            )
+
+        assert [float(row["value_numeric"]) for row in rows] == [11.0, 21.0]
+        assert [int(row["row_number"]) for row in rows] == [2, 1]
     finally:
         conn.close()
 

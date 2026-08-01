@@ -26,6 +26,9 @@ class _TestDb:
 
 
 class _FixedFredClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def fetch(
         self,
         spec: Any,
@@ -34,6 +37,7 @@ class _FixedFredClient:
         cursor: dict[str, Any],
         now_ms: int | None = None,
     ) -> FetchBatch:
+        self.calls += 1
         received_at_ms = int(now_ms or 0)
         return FetchBatch(
             dataset_id=spec.dataset_id,
@@ -54,7 +58,7 @@ class _FixedFredClient:
                 ),
             ),
             cursor={"reference_date": "2026-07-25"},
-            response_hash="sha256:fixed",
+            response_hash=f"sha256:fixed:{self.calls}",
             source_url=spec.source_url,
             http_status=200,
         )
@@ -212,6 +216,13 @@ def test_acquisition_replay_writes_one_fact_and_keeps_current_cursor(
         )
         conn.commit()
         first = service.run_once()
+        first_material_fingerprint = conn.execute(
+            """
+            SELECT material_fingerprint
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchone()["material_fingerprint"]
         conn.execute(
             """
             UPDATE macro_acquisition_targets
@@ -276,9 +287,88 @@ def test_acquisition_replay_writes_one_fact_and_keeps_current_cursor(
     assert len(projection_states) == 1
     assert projection_states[0]["acquisition_status"] == "current"
     assert projection_states[0]["source_frontier_ms"] == 3_000
+    assert projection_states[0]["material_fingerprint"] == first_material_fingerprint
     assert [row["module_id"] for row in module_frontiers] == ["credit", "rates_fed"]
     assert all(row["status"] == "dirty" for row in module_frontiers)
     assert all(row["deadline_at_ms"] - row["first_dirty_at_ms"] == 60_000 for row in module_frontiers)
+
+
+def test_acquisition_failure_does_not_replace_the_material_fingerprint(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        clock = _Clock()
+        fixed_service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_official_state",
+            clock_kind="official_state",
+            source_client=_FixedFredClient(),
+            clock_ms=clock,
+            target_keys=("fred.dgs10:latest",),
+        )
+        failing_service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_official_state",
+            clock_kind="official_state",
+            source_client=_FailingClient(),
+            clock_ms=clock,
+            target_keys=("fred.dgs10:latest",),
+        )
+        fixed_service.ensure_targets(now_ms=1_000)
+
+        first = fixed_service.run_once()
+        first_fingerprint = conn.execute(
+            """
+            SELECT material_fingerprint
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchone()["material_fingerprint"]
+
+        conn.execute(
+            """
+            UPDATE macro_acquisition_targets
+            SET next_due_at_ms = 0
+            WHERE target_key = 'fred.dgs10:latest'
+            """
+        )
+        conn.commit()
+        failed = failing_service.run_once()
+        failure_fingerprint = conn.execute(
+            """
+            SELECT material_fingerprint
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchone()["material_fingerprint"]
+
+        conn.execute(
+            """
+            UPDATE macro_acquisition_targets
+            SET next_due_at_ms = 0
+            WHERE target_key = 'fred.dgs10:latest'
+            """
+        )
+        conn.commit()
+        replay = fixed_service.run_once()
+        final_state = conn.execute(
+            """
+            SELECT material_fingerprint, acquisition_status
+            FROM macro_dataset_projection_states
+            WHERE dataset_id = 'fred.dgs10'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first is not None and first["rows_inserted"] == 1
+    assert failed is not None and failed["status"] == "failed"
+    assert replay is not None and replay["rows_inserted"] == 0
+    assert failure_fingerprint == first_fingerprint
+    assert final_state["material_fingerprint"] == first_fingerprint
+    assert final_state["acquisition_status"] == "current"
 
 
 def test_acquisition_lost_claim_does_not_publish_facts(tmp_path) -> None:
