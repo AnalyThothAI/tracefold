@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import ExitStack, contextmanager
 from typing import Any
 
 import pytest
+from psycopg.errors import LockNotAvailable
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
@@ -12,6 +14,7 @@ from tracefold.macro.projection import MacroProjectionService
 from tracefold.market.profiles.profile_projection import ProfileProjectionService
 from tracefold.market.radar.microbatch import RadarMicroBatchService
 from tracefold.news.projection import NewsProjectionService
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 @pytest.mark.parametrize(
@@ -117,6 +120,37 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
                 "transaction_timeout_seconds": None,
             }
         ]
+
+
+def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def lock_timeout() -> None:
+            raise LockNotAvailable("canceling statement due to lock timeout")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_lock_timeout:gmgn_event_publish",
+            ):
+                await database.run_business(
+                    "gmgn_event_publish",
+                    lock_timeout,
+                    operation_timeout_seconds=1.0,
+                )
+            assert (
+                await database.run_business(
+                    "after_lock_timeout",
+                    lambda: 1,
+                    operation_timeout_seconds=1.0,
+                )
+                == 1
+            )
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
 
 
 def test_serve_admission_reserves_search_and_control_lanes() -> None:

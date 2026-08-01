@@ -10,6 +10,7 @@ from functools import partial
 from threading import BoundedSemaphore
 from typing import Any, Protocol, cast
 
+from psycopg.errors import LockNotAvailable
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
@@ -316,7 +317,12 @@ class WorkerDatabase:
         )
         if not done:
             raise ResourceOperationOverrun(f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}")
-        return await wrapped
+        try:
+            return await wrapped
+        except LockNotAvailable as exc:
+            raise ResourceAdmissionTimeout(
+                f"worker_database_lock_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
 
     def close_business_admission(self) -> None:
         self._accepting_business = False

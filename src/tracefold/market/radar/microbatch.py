@@ -608,7 +608,6 @@ class RadarMicroBatchService:
                 )
                 publication_writes += stock_writes
                 publication_statuses.append("published" if stock_writes else "unchanged")
-            remaining_dirty = 0
             for target in claim.targets:
                 if not repos.projection_frontiers.complete(
                     RADAR_FRONTIER,
@@ -619,18 +618,6 @@ class RadarMicroBatchService:
                     now_ms=int(now_ms),
                 ):
                     raise RuntimeError("radar_microbatch_completion_cas_mismatch")
-            remaining_dirty = int(
-                repos.conn.execute(
-                    """
-                    SELECT count(*) AS count
-                    FROM radar_projection_frontiers
-                    WHERE window_key = %s
-                      AND venue = %s
-                      AND status IN ('dirty', 'retry_wait')
-                    """,
-                    (claim.window, claim.venue),
-                ).fetchone()["count"]
-            )
         rows_written = feature_writes + publication_writes
         return {
             "projection_status": (
@@ -642,7 +629,6 @@ class RadarMicroBatchService:
             "targets_loaded": len(claim.targets),
             "window": claim.window,
             "venue": claim.venue,
-            "remaining_dirty_targets": remaining_dirty,
         }
 
     def fail_transient(

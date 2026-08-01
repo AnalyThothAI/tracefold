@@ -290,8 +290,8 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
     assert continuation["reprocess_resolved"] is True
     assert continuation["attempt_count"] == 1
     assert continuation["lease_owner"] is None
-    assert first_resolved == 20
-    assert 26 <= turns <= 100
+    assert first_resolved == 10
+    assert 51 <= turns <= 100
     assert market.search_requests == 1
     assert final_queue == 0
     assert final_resolved == 501
