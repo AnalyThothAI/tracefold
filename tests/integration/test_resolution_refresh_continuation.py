@@ -268,7 +268,7 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
             "SELECT EXISTS (SELECT 1 FROM token_discovery_dirty_lookup_keys WHERE lookup_key = 'symbol:BULK') AS open"
         ).fetchone()["open"]:
             turns += 1
-            assert turns <= 20
+            assert turns <= 100
             assert asyncio.run(worker.turn(now_ms=NOW_MS + 60_000 + turns)) is True
         final_queue = conn.execute(
             "SELECT COUNT(*) AS count FROM token_discovery_dirty_lookup_keys WHERE lookup_key = 'symbol:BULK'"
@@ -290,8 +290,8 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
     assert continuation["reprocess_resolved"] is True
     assert continuation["attempt_count"] == 1
     assert continuation["lease_owner"] is None
-    assert first_resolved == 100
-    assert 6 <= turns <= 20
+    assert first_resolved == 20
+    assert 26 <= turns <= 100
     assert market.search_requests == 1
     assert final_queue == 0
     assert final_resolved == 501

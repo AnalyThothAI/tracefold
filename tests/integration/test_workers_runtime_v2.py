@@ -158,6 +158,43 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
     assert {route.path for route in app.routes} >= {"/healthz", "/readyz", "/metrics"}
 
 
+def test_workers_metrics_render_does_not_block_readiness() -> None:
+    metrics_entered = threading.Event()
+    release_metrics = threading.Event()
+
+    def render_metrics() -> str:
+        metrics_entered.set()
+        assert release_metrics.wait(timeout=2.0)
+        return "metric 1\n"
+
+    app = _create_workers_probe_app(
+        readiness=lambda: {"ok": True},
+        render_metrics=render_metrics,
+    )
+    with TestClient(app) as client:
+        metrics_response: list[object] = []
+        metrics_thread = threading.Thread(
+            target=lambda: metrics_response.append(client.get("/metrics")),
+        )
+        release_timer = threading.Timer(0.5, release_metrics.set)
+        try:
+            metrics_thread.start()
+            assert metrics_entered.wait(timeout=1.0)
+            release_timer.start()
+            started = time.monotonic()
+            ready = client.get("/readyz")
+            ready_elapsed = time.monotonic() - started
+        finally:
+            release_metrics.set()
+            release_timer.cancel()
+            metrics_thread.join(timeout=2.0)
+
+    assert ready.status_code == 200
+    assert ready_elapsed < 0.2
+    assert len(metrics_response) == 1
+    assert metrics_response[0].status_code == 200
+
+
 def test_workers_probe_fails_closed_when_persisted_heartbeat_is_stale() -> None:
     state = _ProbeState(
         runtime_id=RUNTIME_ID,

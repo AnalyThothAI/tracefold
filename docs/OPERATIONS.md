@@ -69,7 +69,7 @@ generic scheduler, database wake plane, startup rebuild, phased load shifting,
 or configurable concurrency.
 
 Resolution performs one external lookup per durable turn and reprocesses at
-most 100 affected intents in each publication transaction. Larger closures use
+most 20 affected intents in each publication transaction. Larger closures use
 the persisted keyset continuation and immediately repoll without refetching the
 provider result.
 

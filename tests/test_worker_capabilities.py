@@ -9,6 +9,10 @@ import pytest
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
+from tracefold.app.worker_cpu_prewarm import (
+    prewarm_worker_cpu_modules,
+    worker_cpu_modules_loaded,
+)
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import ResourceOperationOverrun
 
@@ -228,3 +232,28 @@ def test_cpu_process_is_spawn_only_and_serial_across_caller_timeout() -> None:
             capability.close()
 
     assert asyncio.run(scenario()) == "spawn"
+
+
+def test_cpu_process_preloads_all_worker_compute_modules() -> None:
+    async def scenario() -> tuple[str, ...]:
+        capability = CpuProcess()
+        try:
+            await capability.prewarm()
+            expected = await capability.run(
+                "workers_cpu_modules_prewarm",
+                prewarm_worker_cpu_modules,
+                service_timeout_seconds=20.0,
+                operation_timeout_seconds=20.0,
+            )
+            loaded = await capability.run(
+                "workers_cpu_modules_loaded",
+                worker_cpu_modules_loaded,
+                service_timeout_seconds=2.0,
+                operation_timeout_seconds=2.0,
+            )
+            assert loaded == expected
+            return loaded
+        finally:
+            capability.close()
+
+    assert asyncio.run(scenario())

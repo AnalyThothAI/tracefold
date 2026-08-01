@@ -31,7 +31,7 @@ def _create_workers_probe_app(
         return JSONResponse(payload, status_code=200 if payload["ok"] else 503)
 
     @app.get("/metrics")
-    async def metrics() -> Response:
+    def metrics() -> Response:
         return Response(
             render_metrics(),
             media_type=PROMETHEUS_CONTENT_TYPE,

@@ -22,6 +22,7 @@ from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
 from tracefold.app.provider_types import AssetMarketProviders
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
+from tracefold.app.worker_cpu_prewarm import prewarm_worker_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers_runtime import WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
@@ -224,6 +225,12 @@ async def run_workers(settings: Settings) -> None:
         db.check_pinned_liveness(lock_conn)
         db.prewarm_control_connection()
         await cpu.prewarm()
+        await cpu.run(
+            "workers_cpu_modules_prewarm",
+            prewarm_worker_cpu_modules,
+            service_timeout_seconds=20.0,
+            operation_timeout_seconds=20.0,
+        )
         began: bool = await db.run_control(
             "workers_runtime_begin",
             _runtime_begin,
