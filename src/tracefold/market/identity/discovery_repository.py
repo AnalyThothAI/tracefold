@@ -114,6 +114,26 @@ class DiscoveryRepository:
                 ELSE token_discovery_dirty_lookup_keys.attempt_count
               END,
               last_error = NULL,
+              reprocess_lookup_keys = CASE
+                WHEN token_discovery_dirty_lookup_keys.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN NULL
+                ELSE token_discovery_dirty_lookup_keys.reprocess_lookup_keys
+              END,
+              reprocess_after_intent_id = CASE
+                WHEN token_discovery_dirty_lookup_keys.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN NULL
+                ELSE token_discovery_dirty_lookup_keys.reprocess_after_intent_id
+              END,
+              reprocess_resolved = CASE
+                WHEN token_discovery_dirty_lookup_keys.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN false
+                ELSE token_discovery_dirty_lookup_keys.reprocess_resolved
+              END,
+              reprocess_queue_due_at_ms = CASE
+                WHEN token_discovery_dirty_lookup_keys.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
+                THEN NULL
+                ELSE token_discovery_dirty_lookup_keys.reprocess_queue_due_at_ms
+              END,
               first_dirty_at_ms = token_discovery_dirty_lookup_keys.first_dirty_at_ms,
               updated_at_ms = EXCLUDED.updated_at_ms
             WHERE token_discovery_dirty_lookup_keys.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash
@@ -205,10 +225,26 @@ class DiscoveryRepository:
             SET leased_until_ms = %(leased_until_ms)s,
                 lease_owner = %(lease_owner)s,
                 attempt_count = queue.attempt_count + CASE
-                  WHEN queue.reprocess_lookup_keys IS NULL THEN 1
+                  WHEN queue.reprocess_lookup_keys IS NULL OR queue.attempt_count = 0 THEN 1
                   ELSE 0
                 END,
                 last_error = NULL,
+                reprocess_lookup_keys = CASE
+                  WHEN queue.attempt_count = 0 THEN NULL
+                  ELSE queue.reprocess_lookup_keys
+                END,
+                reprocess_after_intent_id = CASE
+                  WHEN queue.attempt_count = 0 THEN NULL
+                  ELSE queue.reprocess_after_intent_id
+                END,
+                reprocess_resolved = CASE
+                  WHEN queue.attempt_count = 0 THEN false
+                  ELSE queue.reprocess_resolved
+                END,
+                reprocess_queue_due_at_ms = CASE
+                  WHEN queue.attempt_count = 0 THEN NULL
+                  ELSE queue.reprocess_queue_due_at_ms
+                END,
                 updated_at_ms = %(now_ms)s
             FROM due
             LEFT JOIN token_discovery_results AS results

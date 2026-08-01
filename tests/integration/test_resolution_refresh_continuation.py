@@ -295,3 +295,84 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
     assert market.search_requests == 1
     assert final_queue == 0
     assert final_resolved == 501
+
+
+def test_new_lookup_payload_discards_stale_reprocess_continuation(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repos = repositories_for_connection(conn)
+        with conn.transaction():
+            repos.discovery.enqueue_lookup_keys(
+                ["symbol:FRESH"],
+                reason="initial",
+                now_ms=NOW_MS,
+                latest_seen_ms=NOW_MS,
+            )
+            claim = repos.discovery.claim_due_lookup_keys(
+                now_ms=NOW_MS,
+                limit=1,
+                lease_ms=60_000,
+                running_timeout_ms=60_000,
+                lease_owner="test-continuation",
+            )[0]
+            assert repos.discovery.save_reprocess_continuation(
+                claim,
+                lookup_keys=["symbol:FRESH"],
+                after_intent_id="intent:old-cursor",
+                resolved=False,
+                queue_due_at_ms=NOW_MS,
+                now_ms=NOW_MS,
+            )
+
+        with conn.transaction():
+            repos.discovery.enqueue_lookup_keys(
+                ["symbol:FRESH"],
+                reason="new-input",
+                now_ms=NOW_MS + 1,
+                latest_seen_ms=NOW_MS + 1,
+            )
+        reset = conn.execute(
+            """
+            SELECT attempt_count, reprocess_lookup_keys,
+                   reprocess_after_intent_id, reprocess_resolved,
+                   reprocess_queue_due_at_ms
+              FROM token_discovery_dirty_lookup_keys
+             WHERE lookup_key = 'symbol:FRESH'
+            """
+        ).fetchone()
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE token_discovery_dirty_lookup_keys
+                   SET reprocess_lookup_keys = ARRAY['symbol:FRESH'],
+                       reprocess_after_intent_id = 'intent:stale-cursor',
+                       reprocess_resolved = true,
+                       reprocess_queue_due_at_ms = %s
+                 WHERE lookup_key = 'symbol:FRESH'
+                """,
+                (NOW_MS,),
+            )
+            reclaimed = repos.discovery.claim_due_lookup_keys(
+                now_ms=NOW_MS + 1,
+                limit=1,
+                lease_ms=60_000,
+                running_timeout_ms=60_000,
+                lease_owner="test-reclaim",
+            )[0]
+    finally:
+        conn.close()
+
+    assert reset == {
+        "attempt_count": 0,
+        "reprocess_lookup_keys": None,
+        "reprocess_after_intent_id": None,
+        "reprocess_resolved": False,
+        "reprocess_queue_due_at_ms": None,
+    }
+    assert reclaimed["attempt_count"] == 1
+    assert reclaimed["reprocess_lookup_keys"] is None
+    assert reclaimed["reprocess_after_intent_id"] is None
+    assert reclaimed["reprocess_resolved"] is False
+    assert reclaimed["reprocess_queue_due_at_ms"] is None
