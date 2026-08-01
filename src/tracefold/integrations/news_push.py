@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import isfinite
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -27,7 +29,6 @@ from .news_ai import (
 )
 
 _FEISHU_CHANNEL = "feishu"
-_FEISHU_INVISIBLE_BODY_TEXT = "\u200b"
 
 
 class DeepSeekNewsPushTranslator:
@@ -190,25 +191,45 @@ def _news_story_card(
     title_zh = _optional_text(translation.get("title_zh"))
     headline = title_zh or original_title
     symbols = _provider_coin_symbols(evidence_value)
-    header_title = f"[{' · '.join(symbols)}] {headline}" if symbols else headline
+    score = _provider_score_text(evidence_value)
+    coins_text = " · ".join(symbols) if symbols else "未提供"
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "plain_text",
+                "content": f"代币：{coins_text}\nOpenNews 评分：{score}",
+            },
+            "margin": "0px 0px 0px 0px",
+        }
+    ]
+    source_url = _optional_http_url(evidence_value.get("url"))
+    if source_url is not None:
+        elements.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "查看原文"},
+                "type": "default",
+                "width": "default",
+                "size": "medium",
+                "behaviors": [
+                    {
+                        "type": "open_url",
+                        "default_url": source_url,
+                    }
+                ],
+                "margin": "8px 0px 0px 0px",
+            }
+        )
     return {
         "schema": "2.0",
         "body": {
             "direction": "vertical",
-            "padding": "0px",
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": _FEISHU_INVISIBLE_BODY_TEXT,
-                    },
-                    "margin": "0px",
-                }
-            ],
+            "padding": "12px 12px 12px 12px",
+            "elements": elements,
         },
         "header": {
-            "title": {"tag": "plain_text", "content": header_title},
+            "title": {"tag": "plain_text", "content": headline},
         },
     }
 
@@ -235,6 +256,26 @@ def _provider_coin_symbols(evidence: Mapping[str, Any]) -> tuple[str, ...]:
         seen.add(identity)
         symbols.append(symbol)
     return tuple(symbols)
+
+
+def _provider_score_text(evidence: Mapping[str, Any]) -> str:
+    value = evidence.get("provider_score")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("news_push_provider_score_invalid")
+    score = float(value)
+    if not isfinite(score) or score < 0 or score > 100:
+        raise ValueError("news_push_provider_score_invalid")
+    return f"{score:g}"
+
+
+def _optional_http_url(value: Any) -> str | None:
+    url = _optional_text(value)
+    if url is None:
+        return None
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("news_push_source_url_invalid")
+    return url
 
 
 def _required_text(payload: Mapping[str, Any], key: str) -> str:

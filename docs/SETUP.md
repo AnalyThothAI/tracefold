@@ -80,8 +80,9 @@ lanes report explicit degradation or unavailable evidence:
   independent behavior;
 - absent model credentials leaves the corresponding Brief/analysis capability
   unavailable; specifically, absent `llm.api_key` makes News push use its
-  original headline instead of blocking delivery, while the card remains one
-  coin-prefixed plain-text title when the selected Item has valid coin symbols;
+  original headline instead of blocking delivery, while the card body still
+  shows the selected Item's coin symbols, provider score, and optional original
+  link;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
@@ -89,7 +90,7 @@ lanes report explicit degradation or unavailable evidence:
 it never prints provider tokens, webhook URLs, signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
-the Feishu timestamp and signature. When absent, it sends the same single-title
+the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. The translator reuses the DeepSeek-compatible
@@ -129,12 +130,13 @@ is requested only after initial connection, reconnect, or queue overflow, with
 a persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 96-hour Story projection,
 and the single-capacity native-state model arbiter owns World Brief and the
-title-only push translator. Push is a separate News-owned delivery state
+push title translator. Push is a separate News-owned delivery state
 machine with a code-owned 10-second persisted-evidence reconcile: initial
 enablement suppresses the current eligible baseline, later strict
 score-greater-than-70 crossings freeze one highest-scored Item and send one
-optionally signed Feishu card whose only visible field is the selected Item's
-coin-symbol-prefixed title, with durable at-least-once retries. It is not a
+optionally signed Feishu card containing the selected Item's headline plus a
+compact body with its coins, provider score, and optional
+original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.

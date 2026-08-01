@@ -235,7 +235,7 @@ Every 10 seconds, current Story with max persisted OpenNews provider score > 70
   -> News-owned durable push candidate
   -> first-enable baseline suppression or one frozen highest-score Item
   -> optional deepseek-v4-flash headline translation through model adapter
-  -> selected Item coin-symbol prefix added after translation
+  -> compact selected-Item coin/score body + optional original-link button
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
 ```
@@ -293,14 +293,15 @@ Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
 retried unsigned. Missing model credentials or a translation error still
-freezes and sends the original headline. After translation, the Adapter prefixes
-valid coin symbols from the selected highest-score Item, in provider order with
-case-insensitive deduplication. The Feishu card still exposes only that single
-plain-text header title; it has no visible body, subtitle, separate metadata, or
-link button. The JSON 2.0 payload retains one zero-width body element because
-the production header-only payload was rejected and Feishu's documented card
-shape includes a non-empty body. Status and logs expose only configured
-booleans and sanitized error codes, never the webhook or signing secret.
+freezes and sends the original headline. After translation, the Adapter renders
+the selected highest-score Item's translated or original headline as the
+plain-text header title. The compact body shows its provider-order,
+case-insensitively deduplicated coin symbols and provider score, plus one
+`查看原文` button when a canonical HTTP(S) Item URL exists. Missing symbols are
+shown as `未提供`; a missing URL omits the button. No summary, signal, grade,
+Story score, source, or publication time is rendered. Status and logs expose
+only configured booleans and sanitized error codes, never the webhook or
+signing secret.
 
 Diagnose News in this order:
 

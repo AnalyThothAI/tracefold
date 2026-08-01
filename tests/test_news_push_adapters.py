@@ -415,7 +415,7 @@ def test_deepseek_news_push_translator_maps_sanitized_raw_failure() -> None:
     assert raised.value.code == "news_push_translation_failed"
 
 
-def test_feishu_news_push_renders_title_only_v2_card() -> None:
+def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
@@ -438,25 +438,42 @@ def test_feishu_news_push_renders_title_only_v2_card() -> None:
         "schema": "2.0",
         "body": {
             "direction": "vertical",
-            "padding": "0px",
+            "padding": "12px 12px 12px 12px",
             "elements": [
                 {
                     "tag": "div",
-                    "text": {"tag": "plain_text", "content": "\u200b"},
-                    "margin": "0px",
-                }
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "代币：BTC · ETH\nOpenNews 评分：91",
+                    },
+                    "margin": "0px 0px 0px 0px",
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "查看原文"},
+                    "type": "default",
+                    "width": "default",
+                    "size": "medium",
+                    "behaviors": [
+                        {
+                            "type": "open_url",
+                            "default_url": "https://example.com/story/1",
+                        }
+                    ],
+                    "margin": "8px 0px 0px 0px",
+                },
             ],
         },
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": "[BTC · ETH] 比特币 ETF 录得资金流入",
+                "content": "比特币 ETF 录得资金流入",
             }
         },
     }
 
 
-def test_feishu_news_push_english_fallback_is_title_only() -> None:
+def test_feishu_news_push_english_fallback_keeps_compact_evidence() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
@@ -476,26 +493,18 @@ def test_feishu_news_push_english_fallback_is_title_only() -> None:
     finally:
         delivery.close()
 
-    assert rendered["card"] == {
-        "schema": "2.0",
-        "body": {
-            "direction": "vertical",
-            "padding": "0px",
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "plain_text", "content": "\u200b"},
-                    "margin": "0px",
-                }
-            ],
-        },
-        "header": {
-            "title": {
+    card = rendered["card"]
+    assert card["header"]["title"]["content"] == "Fed holds rates steady"
+    assert card["body"]["elements"] == [
+        {
+            "tag": "div",
+            "text": {
                 "tag": "plain_text",
-                "content": "[BTC · ETH] Fed holds rates steady",
-            }
-        },
-    }
+                "content": "代币：BTC · ETH\nOpenNews 评分：91",
+            },
+            "margin": "0px 0px 0px 0px",
+        }
+    ]
 
 
 def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
@@ -518,29 +527,12 @@ def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
     finally:
         delivery.close()
 
-    assert rendered["card"] == {
-        "schema": "2.0",
-        "body": {
-            "direction": "vertical",
-            "padding": "0px",
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "plain_text", "content": "\u200b"},
-                    "margin": "0px",
-                }
-            ],
-        },
-        "header": {
-            "title": {
-                "tag": "plain_text",
-                "content": "[BTC · ETH] 比特币 ETF 录得资金流入",
-            }
-        },
-    }
+    card = rendered["card"]
+    assert card["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert card["body"]["elements"][0]["text"]["content"] == ("代币：BTC · ETH\nOpenNews 评分：91")
 
 
-def test_feishu_news_push_coin_prefix_preserves_order_and_deduplicates() -> None:
+def test_feishu_news_push_coin_body_preserves_order_and_deduplicates() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
@@ -560,11 +552,12 @@ def test_feishu_news_push_coin_prefix_preserves_order_and_deduplicates() -> None
     finally:
         delivery.close()
 
-    assert rendered["card"]["header"]["title"]["content"] == ("[NEAR · BTC] 比特币 ETF 录得资金流入")
+    assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：NEAR · BTC\nOpenNews 评分：91")
 
 
 @pytest.mark.parametrize("coins", (None, [], "BTC", [{"market_type": "spot"}]))
-def test_feishu_news_push_without_valid_coins_keeps_plain_headline(coins: object) -> None:
+def test_feishu_news_push_without_valid_coins_marks_them_unavailable(coins: object) -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
@@ -577,6 +570,45 @@ def test_feishu_news_push_without_valid_coins_keeps_plain_headline(coins: object
         delivery.close()
 
     assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：未提供\nOpenNews 评分：91")
+
+
+@pytest.mark.parametrize(
+    "score",
+    (None, True, "91", -1, 101, float("nan"), float("inf")),
+)
+def test_feishu_news_push_rejects_invalid_provider_score(score: object) -> None:
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+    source = _news_push_source_payload()
+    source["provider_evidence"]["provider_score"] = score
+    try:
+        with pytest.raises(
+            NewsPushDeliveryError,
+            match="news_push_feishu_render_payload_invalid",
+        ):
+            delivery.render(source, _news_push_translation())
+    finally:
+        delivery.close()
+
+
+@pytest.mark.parametrize("url", ("javascript:alert(1)", "//example.com/story", "not-a-url"))
+def test_feishu_news_push_rejects_non_http_source_url(url: str) -> None:
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+    source = _news_push_source_payload(url=url)
+    try:
+        with pytest.raises(
+            NewsPushDeliveryError,
+            match="news_push_feishu_render_payload_invalid",
+        ):
+            delivery.render(source, _news_push_translation())
+    finally:
+        delivery.close()
 
 
 def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None:
@@ -609,7 +641,10 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
     sent_cards = [json.loads(request.content)["card"] for request in requests]
     assert sent_cards == [frozen["card"], frozen["card"]]
-    assert all(card["header"]["title"]["content"] == "[BTC · ETH] 比特币 ETF 录得资金流入" for card in sent_cards)
+    assert all(card["header"]["title"]["content"] == "比特币 ETF 录得资金流入" for card in sent_cards)
+    assert all(
+        card["body"]["elements"][0]["text"]["content"] == "代币：BTC · ETH\nOpenNews 评分：91" for card in sent_cards
+    )
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
     assert all("已变更翻译" not in json.dumps(card, ensure_ascii=False) for card in sent_cards)
 

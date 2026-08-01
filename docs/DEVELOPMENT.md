@@ -131,11 +131,12 @@ browser verification of Feed, Story, Brief, and Sources. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, independent 10-second candidate reconciliation
 after a later provider annotation on an existing Story, frozen at-least-once
-retry behavior, title-only card rendering with a selected-Item coin prefix and
-original-headline fallback, exact signed and unsigned Feishu request shapes,
-response classification, and no model or network I/O inside a database
-transaction. Absence of a signing secret is an explicit unsigned mode, never a
-fallback after a signed attempt fails.
+retry behavior, translated-title/original-headline fallback, compact body
+rendering from the selected Item's coins and provider score, optional canonical
+original-link button, exact signed and unsigned Feishu request shapes, response
+classification, and no model or network I/O inside a database transaction.
+Absence of a signing secret is an explicit unsigned mode, never a fallback
+after a signed attempt fails.
 
 ## Generated contracts
 

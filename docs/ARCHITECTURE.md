@@ -89,8 +89,9 @@ likewise queue policy, not profile facts.
 model outputs keyed by frozen evidence; they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze no-backfill baselines, selected Story evidence, translated or
-original-headline coin-prefixed title-only cards, claims, retries, and explicit
-delivery receipts. They
+original-headline compact cards with provider coins, provider score, and an
+optional original-link button, plus claims, retries, and explicit delivery
+receipts. They
 do not become a second Story read model or notification product.
 
 ## Package map
@@ -355,12 +356,14 @@ Stories nor adds another acquisition path. A Chinese headline bypasses
 translation; otherwise the serial model adapter calls code-owned
 `deepseek-v4-flash` in non-thinking mode. Translation failure freezes the
 original headline and still progresses
-to delivery. The Adapter prefixes the selected Item's valid OpenNews coin
-symbols after translation, preserving provider order and deduplicating by
-case. The visible card remains one plain-text header title; Items without valid
-coins retain the translated or original headline alone.
+to delivery. The Adapter renders the translated or original headline as the
+plain-text header title. Its compact body renders the selected Item's valid
+OpenNews coin symbols, preserving provider order and deduplicating by case,
+plus the provider score and one original-link button when a canonical HTTP(S)
+Item URL exists. Items without valid coins show `未提供`; a missing URL omits
+the button.
 
-The Feishu Adapter receives only the frozen title-only card and sends outside
+The Feishu Adapter receives only the frozen compact card and sends outside
 the database transaction through the finite-operation capability. When the
 optional signing secret is present, it adds the Feishu timestamp/signature
 pair; otherwise it sends an explicitly unsigned request with neither field. It
