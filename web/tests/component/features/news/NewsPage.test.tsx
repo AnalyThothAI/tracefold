@@ -1,6 +1,6 @@
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import {
   newsFeedFixture,
   newsGlobalBriefFixture,
@@ -41,7 +41,31 @@ describe("NewsPage", () => {
     expect(screen.getByText(/严重度得分 41.3/)).toBeInTheDocument();
     expect(screen.getByText(/佐证得分 12（计分来源 4）/)).toBeInTheDocument();
     expect(screen.getAllByText("4", { selector: ".news-story-counts b" })).toHaveLength(2);
+    expect(screen.getByText("Tracefold 重要度")).toBeInTheDocument();
+    expect(screen.getByText("最高评分 Item")).toBeInTheDocument();
+    expect(screen.getByText("提供方评分").parentElement).toHaveTextContent("88");
+    expect(screen.getByText("信号").parentElement).toHaveTextContent("long");
+    expect(screen.getByText("等级").parentElement).toHaveTextContent("A");
+    expect(screen.getByText("关联代币").parentElement).toHaveTextContent("BTC · spot · Bitcoin");
+    expect(screen.getByRole("link", { name: /最高评分 Item 原文/ })).toHaveAttribute(
+      "href",
+      "https://www.reuters.com/world/story",
+    );
     expect(screen.queryByText(/AI 分析/)).not.toBeInTheDocument();
+  });
+
+  it("shows a linkless state for the server-selected provider evidence", async () => {
+    const feed = newsFeedFixture();
+    feed.stories[0].provider_evidence = {
+      ...feed.stories[0].provider_evidence!,
+      url: null,
+    };
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" />);
+
+    expect(await screen.findByText("该 Item 未提供文章链接")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /最高评分 Item 原文/ })).not.toBeInTheDocument();
   });
 
   it("keeps category as URL state and sends it to the Feed endpoint", async () => {
@@ -147,13 +171,46 @@ describe("NewsPage", () => {
     expect(screen.getAllByText("展示代表").length).toBeGreaterThan(0);
     expect(screen.getAllByText("评分依据").length).toBeGreaterThan(0);
     expect(screen.getByText("reuters")).toBeInTheDocument();
-    expect(screen.getByText(/OpenNews：评分 88 · long · A · 来源 jin10/)).toBeInTheDocument();
-    expect(screen.getByText(/代币：BTC · spot · Bitcoin/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /阅读原文/ })).toHaveAttribute(
+    const providerPanel = screen.getByRole("region", { name: "OpenNews 提供方元数据" });
+    expect(within(providerPanel).getByText("提供方评分").parentElement).toHaveTextContent("88");
+    expect(within(providerPanel).getByText("信号").parentElement).toHaveTextContent("long");
+    expect(within(providerPanel).getByText("等级").parentElement).toHaveTextContent("A");
+    expect(within(providerPanel).getByText("提供方来源").parentElement).toHaveTextContent("jin10");
+    expect(within(providerPanel).getByText("关联代币").parentElement).toHaveTextContent(
+      "BTC · spot · Bitcoin",
+    );
+    expect(screen.getByText(/不参与 Tracefold Story 重要度/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /阅读该 NewsItem 原文/ })).toHaveAttribute(
       "href",
       "https://www.reuters.com/world/story",
     );
     expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
+  });
+
+  it("renders explicit missing OpenNews metadata and member link states", async () => {
+    const story = newsStoryDetailFixture();
+    story.members[0] = {
+      ...story.members[0],
+      provider_metadata: {},
+      url: null,
+    };
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: story }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
+    );
+
+    const providerPanel = await screen.findByRole("region", {
+      name: "OpenNews 提供方元数据",
+    });
+    expect(within(providerPanel).getByText("提供方评分").parentElement).toHaveTextContent("未提供");
+    expect(within(providerPanel).getByText("关联代币").parentElement).toHaveTextContent("未提供");
+    expect(within(providerPanel).getByText("该 NewsItem 未提供文章链接")).toBeInTheDocument();
   });
 
   it("separates reporting-origin counts from scoring points and boosts", async () => {
@@ -183,7 +240,7 @@ describe("NewsPage", () => {
       "/news/stories/story-global-policy",
     );
 
-    expect(await screen.findByText("重要度因子")).toBeInTheDocument();
+    expect(await screen.findByText("Tracefold Story 重要度")).toBeInTheDocument();
     expect(screen.getByText("Story 内报道来源").parentElement).toHaveTextContent("2");
     expect(screen.getByText("计分佐证来源").parentElement).toHaveTextContent("9");
     expect(screen.getByText("来源质量得分").parentElement).toHaveTextContent("20");

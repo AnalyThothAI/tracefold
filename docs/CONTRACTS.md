@@ -36,6 +36,14 @@ source. It is reported only as the redacted boolean
 `news.opennews_token_configured`. When absent, News reports
 `opennews_token_missing`; no substitute credential path is used.
 
+`news.push` contains `enabled`, `feishu_webhook_url`, and
+`feishu_signing_secret`. Enabling push requires both secrets; the webhook must
+be the supported Feishu HTTPS custom-bot v2 boundary. Diagnostics expose only
+`feishu_webhook_url_configured` and `feishu_signing_secret_configured`. Threshold,
+translator model, cadence, deadlines, retries, and card policy are code-owned.
+Translation reuses `llm.api_key` and `llm.base_url`; there is no second model
+credential or Google-translation fallback.
+
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
 native-state model arbiter, and all resource capacities are code-owned.
@@ -106,7 +114,11 @@ The News public surface is exactly five read-only routes:
   defaults to 50 and is capped at 100. Both sorts use the same eligible Story
   population. Filters run before deterministic keyset ordering and
   pagination. The response includes Stories, facets, `next_cursor`, and
-  `has_more`; the browser does not cluster, score, or reorder.
+  `has_more`. Each Story carries nullable `provider_evidence`, selected by the
+  backend from the member with the maximum numeric OpenNews provider score and
+  deterministic publication-time/Item-ID ties. It binds that Item ID, URL, and
+  bounded provider metadata together; the browser does not cluster, score,
+  select the maximum, or reorder.
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,
@@ -122,7 +134,7 @@ The News public surface is exactly five read-only routes:
   memberships, live connection, last recovery, current error, and unclosed-gap
   status.
 - `GET /api/news/status` derives warming/ready/degraded News health from
-  PostgreSQL source, Story-invariant, and Brief state.
+  PostgreSQL source, Story-invariant, Brief, and outbound push state.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
@@ -135,8 +147,10 @@ bounded provider metadata (provider-source label, `score`, `signal`, `grade`,
 and coin details).
 Provider annotations merge metadata into the same current row; translations
 and non-news messages are discarded. Provider metadata is descriptive and
-does not affect Story identity, classification, or importance. Story identity
-is the full SHA-256 of the earliest normalized title in
+does not affect Story identity, classification, importance, Feed ordering, or
+Brief. A numeric provider score may qualify the already projected Story for
+the separate outbound push state machine. Story identity is the full SHA-256
+of the earliest normalized title in
 the current WorldMonitor-compatible 96-hour cluster. Corroboration counts
 distinct reporting origins, not acquisition paths, memberships, or repeated
 observations. Keyword classification and importance are deterministic and
@@ -150,9 +164,11 @@ locked: line `[n]` always refers to selected Story `n`. Invalid lines are
 repaired locally without shifting indexes. The current pointer changes only
 after a complete valid publication transaction succeeds.
 
-`/api/news/status` exposes three independent News health layers: `ingest`,
-`story`, and `brief`. Deterministic Story cards remain readable while a Brief
-is running, failed, insufficient, or stale.
+`/api/news/status` exposes four independent News health layers: `ingest`,
+`story`, `brief`, and `push`. Push reports disabled/configured, baseline,
+pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
+error evidence without exposing secrets or card content. Deterministic Story
+cards remain readable while Brief or push is unavailable.
 
 Production News uses one code-owned OpenNews WSS stream plus bounded,
 gap-triggered REST recovery after initial connection, reconnect, or queue
@@ -164,7 +180,8 @@ persisted gap version.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,
-webhook, compatibility alias, or alternate clustering path.
+inbound/public webhook route, compatibility alias, or alternate clustering
+path. Feishu is a Workers-only outbound Adapter.
 
 ### Macro
 
@@ -289,6 +306,10 @@ Migrations `20260801_0235` and `20260801_0236` are irreversible: they remove
 retired News acquisition and Macro derived/control history while preserving
 current items, material facts, acquisition targets, Fed document analysis, and
 the six module rows.
+`20260801_0237` adds the durable OpenNews recovery boundary, and
+`20260801_0238` adds the News push baseline and delivery ledger. Applying either
+migration does not send a message; delivery begins only after explicit signed
+push configuration and the first enabled reconcile establishes its baseline.
 
 ### Token images
 

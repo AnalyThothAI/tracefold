@@ -721,6 +721,39 @@
 | `last_attempt_at_ms` | `BIGINT` | True | `None` |
 | `last_error` | `TEXT` | True | `None` |
 
+## `news_push_deliveries`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `story_id` | `TEXT` | False | `None` |
+| `selected_item_id` | `TEXT` | False | `None` |
+| `provider_score` | `DOUBLE PRECISION` | False | `None` |
+| `threshold_observed_at_ms` | `BIGINT` | False | `None` |
+| `source_payload` | `JSONB` | False | `None` |
+| `delivery_payload` | `JSONB` | True | `None` |
+| `payload_fingerprint` | `TEXT` | True | `None` |
+| `translation_status` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `delivery_attempts` | `INTEGER` | False | `0` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
+| `lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `receipt` | `JSONB` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
+| `sent_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_push_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton_key` | `TEXT` | False | `None` |
+| `baseline_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_source_facet_counts`
 
 | Column | Type | Nullable | Default |

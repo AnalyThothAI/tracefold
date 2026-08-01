@@ -29,6 +29,10 @@ from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentA
 from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
+from tracefold.integrations.news_push import (
+    DeepSeekNewsPushTranslator,
+    FeishuNewsPushDelivery,
+)
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -58,6 +62,7 @@ from tracefold.news import (
     NewsAcquisition,
     NewsBriefCandidate,
     NewsStoryProjection,
+    NewsStoryPush,
     opennews_source,
 )
 from tracefold.platform.config.settings import Settings
@@ -147,6 +152,7 @@ class _Components:
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
+    news_push: NewsStoryPush | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
@@ -358,7 +364,10 @@ async def run_workers(settings: Settings) -> None:
                     group.create_task(
                         _guard_child(
                             _run_periodic(
-                                components.news_story.sample,
+                                lambda: _sample_news_story(
+                                    news_story=components.news_story,
+                                    news_push=components.news_push,
+                                ),
                                 period_seconds=60.0,
                                 stop_event=work_stop_event,
                             ),
@@ -578,6 +587,18 @@ async def _run_periodic(
         await _wait_or_stop(stop_event, deadline - loop.time())
 
 
+async def _sample_news_story(
+    *,
+    news_story: NewsStoryProjection,
+    news_push: NewsStoryPush | None,
+) -> None:
+    """Project the complete Story closure, then discover newly eligible pushes."""
+
+    await news_story.sample()
+    if news_push is not None:
+        await news_push.reconcile(now_ms=_now_ms())
+
+
 async def _run_control(
     *,
     db: WorkerDatabase,
@@ -708,6 +729,7 @@ async def _wire_components(
     news: NewsAcquisition | None = None
     news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
+    news_push: NewsStoryPush | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
         sources = (opennews_source(),)
@@ -745,6 +767,27 @@ async def _wire_components(
             stable_order=20,
         )
         model_candidates.append(news_brief)
+        if settings.news.push.enabled:
+            webhook_url = settings.news.push.feishu_webhook_url
+            signing_secret = settings.news.push.feishu_signing_secret
+            if not webhook_url or not signing_secret:
+                raise RuntimeError("news_push_credentials_missing_after_validation")
+            news_push = NewsStoryPush(
+                db=db,
+                model_adapter=model_adapter,
+                finite_operations=finite,
+                translator=DeepSeekNewsPushTranslator(
+                    api_key=settings.llm.api_key,
+                    base_url=settings.llm.base_url or "",
+                ),
+                delivery=FeishuNewsPushDelivery(
+                    webhook_url=webhook_url,
+                    signing_secret=signing_secret,
+                ),
+                runtime_id=runtime_id,
+                stable_order=10,
+            )
+            model_candidates.append(news_push)
 
     document_model: MacroDocumentAnalysisService | None = None
     document_analysis_model_name: str | None = None
@@ -855,6 +898,7 @@ async def _wire_components(
         news=news,
         news_story=news_story,
         news_brief=news_brief,
+        news_push=news_push,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
@@ -869,6 +913,8 @@ async def _wire_components(
 async def _reconcile_once(components: _Components) -> None:
     if components.news is not None:
         await components.news.reconcile()
+    if components.news_push is not None:
+        await components.news_push.reconcile(now_ms=_now_ms())
     for turn in components.macro_turns:
         await turn.reconcile()
     if components.document_model is not None:
@@ -895,6 +941,8 @@ async def _graceful_cleanup(
             await _within(components.news.close(), started_at)
         if components.news_brief is not None:
             await _within(components.news_brief.close(), started_at)
+        if components.news_push is not None:
+            await _within(components.news_push.close(), started_at)
         if components.macro_source is not None:
             await _within(
                 finite.run(

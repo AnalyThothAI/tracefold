@@ -64,8 +64,20 @@ class NewsInterface:
             cursor=str(cursor or "").strip() or None,
         )
 
-    def health(self, *, now_ms: int) -> dict[str, Any]:
-        return self._repository.health_snapshot(now_ms=now_ms)
+    def health(
+        self,
+        *,
+        now_ms: int,
+        push_enabled: bool = False,
+        feishu_webhook_url_configured: bool = False,
+        feishu_signing_secret_configured: bool = False,
+    ) -> dict[str, Any]:
+        return self._repository.health_snapshot(
+            now_ms=now_ms,
+            push_enabled=push_enabled,
+            feishu_webhook_url_configured=feishu_webhook_url_configured,
+            feishu_signing_secret_configured=feishu_signing_secret_configured,
+        )
 
 
 __all__ = ["NewsInterface"]

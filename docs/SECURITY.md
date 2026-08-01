@@ -28,10 +28,13 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_world_brief` and `macro_document_analysis` are the only production
-product-model consumers. News acquisition, NewsItem classification, Story
-identity, importance scoring, and serving are deterministic and never call a
-model. The six Macro modules are also deterministic views over persisted facts.
+`news_world_brief`, `news_story_push_translation`, and
+`macro_document_analysis` are the only production product-model consumers.
+News acquisition, NewsItem classification, Story identity, importance
+scoring, and serving are deterministic and never call a model. Push
+translation receives only one frozen selected headline and cannot modify a
+NewsItem or Story. The six Macro modules are also deterministic views over
+persisted facts.
 
 `news.opennews_token` is an operator-owned secret. Configuration diagnostics
 expose only a configured boolean. OpenNews transport exceptions, current
@@ -39,6 +42,20 @@ metadata, logs, generated artifacts, and public source/status responses must
 never contain the token or authorization header. Provider AI ratings are
 descriptive NewsItem metadata and cannot change identity, Story membership, or
 importance.
+
+`news.push.feishu_webhook_url` and `news.push.feishu_signing_secret` are
+operator-owned secrets. They must be configured together, are reported only
+as configured booleans, and never appear in logs, errors, status payloads,
+generated artifacts, or persisted delivery rows. A webhook disclosed outside
+the operator config is treated as compromised and rotated before live use.
+Signing is mandatory when push is enabled. The Adapter accepts only the
+configured Feishu HTTPS webhook boundary and never follows redirects.
+
+The push translator reuses the existing `llm.api_key` and `llm.base_url`; it
+does not introduce another credential path. It calls code-owned
+`deepseek-v4-flash` with thinking explicitly disabled and a bounded title-only
+prompt/output. Translation failure cannot expose provider text or credentials
+through an error and cannot block the frozen English fallback delivery.
 
 The News Brief model receives only the bounded selected Story evidence. It has
 no source credential, provider fetch, filesystem, shell, or arbitrary database

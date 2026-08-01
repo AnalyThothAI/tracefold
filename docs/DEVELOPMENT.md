@@ -70,9 +70,11 @@ changed seam and report omitted evidence honestly.
 News identity, classification, importance, and Brief selection are frozen to
 the implementation copied from WorldMonitor commit
 `f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds OpenNews current
-facts, current-only Story rows, and immutable Chinese Brief publications; it
-does not add a second identity,
-scoring policy, or item-level AI lane.
+facts, current-only Story rows, immutable Chinese Brief publications, and one
+News-owned outbound Story-push state machine. Push provider score is a
+delivery-eligibility policy only; it does not add a second Story identity,
+ranking policy, or item-level analysis product. Its optional model work is
+limited to translating one frozen selected headline.
 
 `tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
 covers positive and negative title pairs, exact-title and containment merges,
@@ -94,13 +96,17 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly twelve News tables, one OpenNews source, one acquisition module, one
+exactly fourteen News tables, one OpenNews source, one acquisition module, one
 fixed-period Story writer, and the native model seam; authenticated OpenNews
 NewsItems, deterministic current Story membership, all five
 public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, measured acquisition/projection latency, and
-browser verification of Feed, Story, Brief, and Sources.
+browser verification of Feed, Story, Brief, and Sources. When push is enabled,
+acceptance additionally proves first-enable zero-send baseline suppression,
+strict score greater than 70, frozen at-least-once retry behavior, title-only
+translation with English fallback, signed Feishu response classification, and
+no model or network I/O inside a database transaction.
 
 ## Generated contracts
 

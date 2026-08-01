@@ -1,174 +1,22 @@
 import { getApi } from "@lib/api/client";
+import type { components } from "@lib/types/openapi";
 import { queryKeys } from "@shared/query/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
-export type NewsLevel = "critical" | "high" | "medium" | "low" | "info";
+type NewsSchemas = components["schemas"];
 
-export type NewsStory = {
-  category: string;
-  description: string;
-  first_published_at_ms: number;
-  importance_score: number;
-  importance_factors: {
-    corroboration_points: number;
-    diplomacy_flashpoint_boost: number;
-    entity_corroboration_boost: number;
-    recency_points: number;
-    reporting_origin_count: number;
-    scoring_corroboration_count: number;
-    severity_level: NewsLevel;
-    severity_points: number;
-    source_points: number;
-    source_tier: number;
-    total: number;
-  };
-  item_count: number;
-  last_published_at_ms: number;
-  level: NewsLevel;
-  source_count: number;
-  source_id: string;
-  source_name: string;
-  representative_item_id: string;
-  scoring_item_id: string;
-  story_id: string;
-  title: string;
-  url: string | null;
-};
-
-export type NewsFeed = {
-  facets: {
-    categories: Array<{ count: number; value: string }>;
-    levels: Array<{ count: number; value: string }>;
-    sources: Array<{ count: number; label: string; value: string }>;
-  };
-  filters: {
-    category: string | null;
-    level: string | null;
-    source_id: string | null;
-  };
-  has_more: boolean;
-  next_cursor: string | null;
-  sort: "importance" | "latest";
-  stories: NewsStory[];
-};
-
-export type NewsStoryMember = {
-  category: string;
-  description: string;
-  importance_score: number;
-  item_id: string;
-  provider_record_id: string | null;
-  provider_metadata: {
-    score?: number;
-    source?: string;
-    signal?: string;
-    grade?: string;
-    coins?: Array<{
-      symbol: string;
-      market_type: string;
-      match?: string;
-      score?: number;
-      signal?: string;
-      grade?: string;
-    }>;
-  };
-  lang: string;
-  last_observed_at_ms: number;
-  level: NewsLevel;
-  published_at_ms: number;
-  reporting_origin: string;
-  source_id: string;
-  source_name: string;
-  tier: number;
-  title: string;
-  url: string | null;
-};
-
-export type NewsStoryDetail = NewsStory & {
-  canonical_title: string;
-  members: NewsStoryMember[];
-};
-
-export type BriefPublication = {
-  evidence_cutoff_at_ms: number;
-  fingerprint: string;
-  lead: string;
-  lines: string[];
-  locale: string;
-  model: string;
-  provider: string;
-  publication_id: string;
-  published_at_ms: number;
-  selected_story_ids: string[];
-  sources: Array<{
-    n: number;
-    source: string;
-    story_id: string;
-    title: string;
-    url: string | null;
-  }>;
-  validation: {
-    citation_index_lock: boolean;
-    citation_closure: boolean;
-    final_story_coverage: number;
-    grounding_failures: number[];
-    lead_fallback: boolean;
-    line_fallbacks: number[];
-    model_line_coverage: number;
-    no_cross_story_stitching: boolean;
-    proper_noun_grounding: boolean;
-    story_count: number;
-  };
-};
-
-export type WorldBrief = {
-  candidate_source_count: number;
-  candidate_story_count: number;
-  history: BriefPublication[];
-  latest_run: {
-    attempt_count: number;
-    candidate_source_count: number;
-    candidate_story_count: number;
-    completed_at_ms: number | null;
-    created_at_ms: number;
-    fingerprint: string;
-    heartbeat_at_ms: number | null;
-    last_error: string | null;
-    lease_expires_at_ms: number | null;
-    run_id: string;
-    status: "running" | "ready" | "insufficient_material" | "failed";
-    updated_at_ms: number;
-  } | null;
-  publication: BriefPublication | null;
-  state:
-    | "unavailable"
-    | "insufficient_material"
-    | "running"
-    | "ready"
-    | "stale_fallback"
-    | "failed";
-  target_fingerprint: string;
-};
-
-export type NewsSource = {
-  consecutive_failures: number;
-  enabled: boolean;
-  source_kind: "opennews";
-  live_connected: boolean;
-  last_live_at_ms: number | null;
-  last_recovery_at_ms: number | null;
-  gap_unclosed: boolean;
-  last_error: string | null;
-  last_http_status: number | null;
-  last_success_at_ms: number | null;
-  name: string;
-  source_id: string;
-  tier: number;
-};
-
-export type NewsSources = {
-  items: NewsSource[];
-};
+export type NewsLevel = NewsSchemas["NewsStoryData"]["level"];
+export type NewsProviderCoin = NewsSchemas["NewsProviderCoinData"];
+export type NewsProviderMetadata = NewsSchemas["NewsProviderMetadataData"];
+export type NewsProviderEvidence = NewsSchemas["NewsProviderEvidenceData"];
+export type NewsStory = NewsSchemas["NewsStoryData"];
+export type NewsFeed = NewsSchemas["NewsFeedData"];
+export type NewsStoryMember = NewsSchemas["NewsStoryMemberData"];
+export type NewsStoryDetail = NewsSchemas["NewsStoryDetailData"];
+export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
+export type WorldBrief = NewsSchemas["NewsBriefData"];
+export type NewsSource = NewsSchemas["NewsSourceData"];
+export type NewsSources = NewsSchemas["NewsSourcesData"];
 
 export const useNewsFeedWithToken = (
   token: string,

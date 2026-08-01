@@ -298,8 +298,11 @@ class NewsAcquisition:
             repos.news.sync_sources(self.sources, now_ms=_now_ms())
             if self.opennews_source is None:
                 return None, None, 0
-            return repos.news.opennews_recovery_state(
-                source_id=self.opennews_source.source_id,
+            return cast(
+                tuple[int | None, str | None, int],
+                repos.news.opennews_recovery_state(
+                    source_id=self.opennews_source.source_id,
+                ),
             )
 
     async def _update_opennews_status(
@@ -348,14 +351,17 @@ class NewsAcquisition:
         expected_gap_version: int | None,
     ) -> tuple[str | None, int] | None:
         with self.db.worker_session("opennews_status", 3.0) as repos, repos.transaction():
-            return repos.news.update_opennews_live_status(
-                source_id=source_id,
-                connected=connected,
-                now_ms=now_ms,
-                error_code=error_code,
-                gap_unclosed=gap_unclosed,
-                gap_boundary_provider_record_id=gap_boundary_provider_record_id,
-                expected_gap_version=expected_gap_version,
+            return cast(
+                tuple[str | None, int] | None,
+                repos.news.update_opennews_live_status(
+                    source_id=source_id,
+                    connected=connected,
+                    now_ms=now_ms,
+                    error_code=error_code,
+                    gap_unclosed=gap_unclosed,
+                    gap_boundary_provider_record_id=gap_boundary_provider_record_id,
+                    expected_gap_version=expected_gap_version,
+                ),
             )
 
     def _publish_opennews_sync(

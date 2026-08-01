@@ -7,6 +7,8 @@ import "./news.css";
 import "./newsDetail.css";
 import {
   type BriefPublication,
+  type NewsProviderCoin,
+  type NewsProviderMetadata,
   type NewsStory,
   useNewsBriefWithToken,
   useNewsFeedWithToken,
@@ -210,9 +212,7 @@ function SourcesRoute({ token }: { token: string }) {
                   <span>实时新闻与市场元数据</span>
                 </div>
                 <b
-                  data-status={
-                    source.live_connected && !source.gap_unclosed ? "success" : "failed"
-                  }
+                  data-status={source.live_connected && !source.gap_unclosed ? "success" : "failed"}
                 >
                   {source.live_connected
                     ? source.gap_unclosed
@@ -234,12 +234,16 @@ function SourcesRoute({ token }: { token: string }) {
                 </div>
                 <div>
                   <dt>上次 WSS</dt>
-                  <dd>{source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}</dd>
+                  <dd>
+                    {source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}
+                  </dd>
                 </div>
                 <div>
                   <dt>上次 REST 恢复</dt>
                   <dd>
-                    {source.last_recovery_at_ms ? relativeTime(source.last_recovery_at_ms) : "尚未恢复"}
+                    {source.last_recovery_at_ms
+                      ? relativeTime(source.last_recovery_at_ms)
+                      : "尚未恢复"}
                   </dd>
                 </div>
                 <div>
@@ -258,42 +262,51 @@ function SourcesRoute({ token }: { token: string }) {
 
 function StoryCard({ story }: { story: NewsStory }) {
   const factors = story.importance_factors;
+  const providerEvidence = story.provider_evidence;
   return (
-    <Link className="news-story-row" to={newsStoryPath(story.story_id)}>
-      <span className="news-importance" data-level={story.level}>
-        <b>{story.importance_score}</b>
-        <small>重要度</small>
-      </span>
-      <span className="news-story-copy">
-        <span className="news-story-meta">
-          <b data-level={story.level}>{LEVEL_LABELS[story.level]}</b>
-          <span>{story.source_name}</span>
-          <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
-            {relativeTime(story.last_published_at_ms)}
-          </time>
+    <article className="news-story-row">
+      <Link className="news-story-main" to={newsStoryPath(story.story_id)}>
+        <span className="news-importance" data-level={story.level}>
+          <b>{story.importance_score}</b>
+          <small>Tracefold 重要度</small>
         </span>
-        <strong>{story.title}</strong>
-        <small>{story.description || "原始来源未提供有效摘要"}</small>
-        <span className="news-factor-line">
-          严重度得分 {formatPoints(factors.severity_points)} · 来源质量得分{" "}
-          {formatPoints(factors.source_points)}（Tier {factors.source_tier}） · 佐证得分{" "}
-          {formatPoints(factors.corroboration_points)}（计分来源{" "}
-          {factors.scoring_corroboration_count}） · 时效得分 {formatPoints(factors.recency_points)}
-          {factors.diplomacy_flashpoint_boost
-            ? ` · 外交热点 +${factors.diplomacy_flashpoint_boost}`
-            : ""}
-          {factors.entity_corroboration_boost
-            ? ` · 实体佐证 +${factors.entity_corroboration_boost}`
-            : ""}
+        <span className="news-story-copy">
+          <span className="news-story-meta">
+            <b data-level={story.level}>{LEVEL_LABELS[story.level]}</b>
+            <span>{story.source_name}</span>
+            <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
+              {relativeTime(story.last_published_at_ms)}
+            </time>
+          </span>
+          <strong>{story.title}</strong>
+          <small>{story.description || "原始来源未提供有效摘要"}</small>
+          <span className="news-factor-line">
+            Tracefold 因子：严重度得分 {formatPoints(factors.severity_points)} · 来源质量得分{" "}
+            {formatPoints(factors.source_points)}（Tier {factors.source_tier}） · 佐证得分{" "}
+            {formatPoints(factors.corroboration_points)}（计分来源{" "}
+            {factors.scoring_corroboration_count}） · 时效得分{" "}
+            {formatPoints(factors.recency_points)}
+            {factors.diplomacy_flashpoint_boost
+              ? ` · 外交热点 +${factors.diplomacy_flashpoint_boost}`
+              : ""}
+            {factors.entity_corroboration_boost
+              ? ` · 实体佐证 +${factors.entity_corroboration_boost}`
+              : ""}
+          </span>
         </span>
-      </span>
-      <span className="news-story-counts">
-        <b>{story.item_count}</b>
-        <small>NewsItem</small>
-        <b>{story.source_count}</b>
-        <small>独立报道源</small>
-      </span>
-    </Link>
+        <span className="news-story-counts">
+          <b>{story.item_count}</b>
+          <small>NewsItem</small>
+          <b>{story.source_count}</b>
+          <small>独立报道源</small>
+        </span>
+      </Link>
+      <ProviderEvidenceStrip
+        metadata={providerEvidence?.provider_metadata ?? {}}
+        url={providerEvidence?.url ?? null}
+        hasProviderEvidence={providerEvidence != null}
+      />
+    </article>
   );
 }
 
@@ -332,7 +345,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
             <p>{story.description || "原始来源未提供有效摘要"}</p>
             <div className="news-evidence-metrics">
               <span>
-                <b>{story.importance_score}</b>重要度
+                <b>{story.importance_score}</b>Tracefold 重要度
               </span>
               <span>
                 <b>{story.item_count}</b>NewsItem
@@ -363,9 +376,10 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
           </section>
 
           <section className="news-detail-card">
-            <h2>重要度因子</h2>
+            <h2>Tracefold Story 重要度</h2>
             <p>
-              来源数量与得分分开显示；计分佐证来源取 Story 内报道来源与 24
+              这是 Tracefold 的确定性 Story 排序事实，与下方 OpenNews
+              提供方评分分开。来源数量与得分分开显示；计分佐证来源取 Story 内报道来源与 24
               小时实体信号来源的较大值，最多按 5 个来源计入佐证得分。
             </p>
             <dl className="news-factor-grid">
@@ -433,44 +447,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                   </header>
                   <h3>{member.title}</h3>
                   {member.description ? <p>{member.description}</p> : null}
-                  {member.provider_metadata.score != null ||
-                  member.provider_metadata.source ||
-                  member.provider_metadata.signal ||
-                  member.provider_metadata.grade ? (
-                    <p>
-                      OpenNews：
-                      {member.provider_metadata.score != null
-                        ? `评分 ${member.provider_metadata.score}`
-                        : "未评分"}
-                      {member.provider_metadata.signal
-                        ? ` · ${member.provider_metadata.signal}`
-                        : ""}
-                      {member.provider_metadata.grade
-                        ? ` · ${member.provider_metadata.grade}`
-                        : ""}
-                      {member.provider_metadata.source
-                        ? ` · 来源 ${member.provider_metadata.source}`
-                        : ""}
-                    </p>
-                  ) : null}
-                  {member.provider_metadata.coins?.length ? (
-                    <p>
-                      代币：
-                      {member.provider_metadata.coins
-                        .map((coin) =>
-                          [coin.symbol, coin.market_type, coin.match].filter(Boolean).join(" · "),
-                        )
-                        .join("；")}
-                    </p>
-                  ) : null}
-                  {member.url ? (
-                    <a href={member.url} rel="noreferrer" target="_blank">
-                      阅读原文
-                      <ExternalLink aria-hidden />
-                    </a>
-                  ) : (
-                    <span>线报未提供文章链接</span>
-                  )}
+                  <ProviderEvidencePanel metadata={member.provider_metadata} url={member.url} />
                 </article>
               ))}
             </div>
@@ -478,6 +455,115 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
         </article>
       ) : null}
     </section>
+  );
+}
+
+function ProviderEvidenceStrip({
+  hasProviderEvidence,
+  metadata,
+  url,
+}: {
+  hasProviderEvidence: boolean;
+  metadata: NewsProviderMetadata;
+  url: string | null;
+}) {
+  return (
+    <aside aria-label="OpenNews 提供方证据" className="news-provider-strip">
+      <span className="news-provider-strip-heading">
+        <b>OpenNews</b>
+        <small>{hasProviderEvidence ? "最高评分 Item" : "未提供评分元数据"}</small>
+      </span>
+      <ProviderFacts metadata={metadata} />
+      <ProviderCoins compact metadata={metadata} />
+      {hasProviderEvidence && url ? (
+        <a href={url} rel="noreferrer" target="_blank">
+          最高评分 Item 原文
+          <ExternalLink aria-hidden />
+        </a>
+      ) : (
+        <span className="news-provider-linkless">
+          {hasProviderEvidence ? "该 Item 未提供文章链接" : "无最高评分 Item 链接"}
+        </span>
+      )}
+    </aside>
+  );
+}
+
+function ProviderEvidencePanel({
+  metadata,
+  url,
+}: {
+  metadata: NewsProviderMetadata;
+  url: string | null;
+}) {
+  return (
+    <section aria-label="OpenNews 提供方元数据" className="news-provider-panel">
+      <header>
+        <div>
+          <b>OpenNews 提供方元数据</b>
+          <small>描述性来源事实，不参与 Tracefold Story 重要度</small>
+        </div>
+        {url ? (
+          <a href={url} rel="noreferrer" target="_blank">
+            阅读该 NewsItem 原文
+            <ExternalLink aria-hidden />
+          </a>
+        ) : (
+          <span className="news-provider-linkless">该 NewsItem 未提供文章链接</span>
+        )}
+      </header>
+      <ProviderFacts metadata={metadata} />
+      <ProviderCoins metadata={metadata} />
+    </section>
+  );
+}
+
+function ProviderFacts({ metadata }: { metadata: NewsProviderMetadata }) {
+  return (
+    <dl className="news-provider-facts">
+      <div>
+        <dt>提供方评分</dt>
+        <dd>{metadata.score ?? "未提供"}</dd>
+      </div>
+      <div>
+        <dt>信号</dt>
+        <dd>{metadata.signal || "未提供"}</dd>
+      </div>
+      <div>
+        <dt>等级</dt>
+        <dd>{metadata.grade || "未提供"}</dd>
+      </div>
+      <div>
+        <dt>提供方来源</dt>
+        <dd>{metadata.source || "未提供"}</dd>
+      </div>
+    </dl>
+  );
+}
+
+function ProviderCoins({
+  compact = false,
+  metadata,
+}: {
+  compact?: boolean;
+  metadata: NewsProviderMetadata;
+}) {
+  const coins = metadata.coins ?? [];
+  return (
+    <div className="news-provider-coins">
+      <b>关联代币</b>
+      {coins.length ? (
+        <ul aria-label="OpenNews 关联代币">
+          {coins.map((coin, index) => (
+            <li key={`${coin.symbol}:${coin.market_type}:${index}`}>
+              {formatProviderCoin(coin, compact)}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span>未提供</span>
+      )}
+    </div>
   );
 }
 
@@ -606,4 +692,15 @@ function absoluteTime(value: number): string {
 
 function formatPoints(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatProviderCoin(coin: NewsProviderCoin, compact: boolean): string {
+  const identity = [coin.symbol, coin.market_type, coin.match].filter(Boolean).join(" · ");
+  if (compact) return identity;
+  const annotations = [
+    coin.score != null ? `评分 ${coin.score}` : "",
+    coin.signal ? `信号 ${coin.signal}` : "",
+    coin.grade ? `等级 ${coin.grade}` : "",
+  ].filter(Boolean);
+  return annotations.length ? `${identity} · ${annotations.join(" · ")}` : identity;
 }

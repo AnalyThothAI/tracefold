@@ -80,6 +80,36 @@ def test_openapi_ts_matches_committed_artefact(tmp_path: Path) -> None:
 
 
 @pytest.mark.contract
+def test_news_routes_publish_exact_named_data_contracts() -> None:
+    from tracefold.app.http.app import create_app
+    from tracefold.platform.config.settings import Settings
+
+    schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
+    expected = {
+        "/api/news/feed": "ApiEnvelope_NewsFeedData_",
+        "/api/news/stories/{story_id}": "ApiEnvelope_NewsStoryDetailData_",
+        "/api/news/brief": "ApiEnvelope_NewsBriefData_",
+        "/api/news/sources": "ApiEnvelope_NewsSourcesData_",
+        "/api/news/status": "ApiEnvelope_NewsStatusData_",
+    }
+
+    for path, envelope in expected.items():
+        response_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
+
+    for name in (
+        "NewsFeedData",
+        "NewsStoryData",
+        "NewsStoryDetailData",
+        "NewsProviderMetadataData",
+        "NewsBriefData",
+        "NewsSourcesData",
+        "NewsStatusData",
+    ):
+        assert schema["components"]["schemas"][name]["additionalProperties"] is False
+
+
+@pytest.mark.contract
 def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
     openapi_text = OPENAPI_PATH.read_text(encoding="utf-8")
     openapi_ts_text = OPENAPI_TS_PATH.read_text(encoding="utf-8")

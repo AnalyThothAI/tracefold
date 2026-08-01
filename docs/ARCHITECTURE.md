@@ -23,7 +23,8 @@ acquisition, the bounded external/model/CPU capabilities, singleton runtime
 status, one fixed-period News Story writer, and one EDF projection
 coordinator for the frontier-backed domains. Workers recover exclusively by
 re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native News
-Brief/Fed-document model state, and queues on bounded code-owned clocks.
+Brief/Fed-document model state, the News Story-push state machine, and queues
+on bounded code-owned clocks.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -68,6 +69,10 @@ heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
 `news_brief_publications` and `macro_document_analyses` are immutable derived
 model outputs keyed by frozen evidence; they are not material facts.
+`news_push_state` and `news_push_deliveries` are durable outbound control state:
+they freeze no-backfill baselines, selected Story evidence, translated or
+English-fallback cards, claims, retries, and explicit delivery receipts. They
+do not become a second Story read model or notification product.
 
 ## Package map
 
@@ -91,6 +96,7 @@ tracefold.news
   runtime.py        bounded OpenNews live/recovery and native Brief candidate
   projection.py     complete 96-hour WorldMonitor Story calculation
   story_store.py    current-only Story compare-and-publish store
+  push.py           Story-qualified translation and durable Feishu delivery
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -228,6 +234,8 @@ OpenNews source
   -> provider annotations update bounded metadata on the current item
   -> complete 96-hour WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
+  -> News-owned strict score>70 push state -> optional title translation
+     -> signed Feishu card
   -> one flat global cursor Feed; category is a facet
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
@@ -254,8 +262,10 @@ updates only the bounded provider-source label, `score`, `signal`, `grade`, and
 coin metadata on that row. Translations, `strategy.triggered`, non-news engine
 events, and invalid or
 stale reports are discarded rather than retained as audit history. Provider
-metadata is descriptive and cannot affect identity, classification, Story, or
-Brief. Linkless OpenNews dispatches remain valid current facts.
+metadata is descriptive and cannot affect identity, classification, Story,
+importance, ordering, or Brief. It may qualify an already projected Story for
+the separate outbound push state machine. Linkless OpenNews dispatches remain
+valid current facts.
 
 The sole Story writer loads all enabled NewsItems in the current 96-hour
 window, computes outside the database, and compares the input fingerprint
@@ -278,8 +288,9 @@ buckets, and deterministic union-find. A Story ID is the full SHA-256 of the
 earliest normalized title in that current cluster. It may change when the
 earliest item expires; the previous Story is removed and its detail route
 returns not found. There is no archived Story product, embedding,
-translation, full-article extraction, browser clustering, revision product, or
-per-Story AI analysis.
+full-article extraction, browser clustering, revision product, or per-Story AI
+analysis. The outbound push may translate only one frozen selected headline;
+that translation is delivery content, never Story state.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
 including exclusions and historical downgrade. There is no item-level AI
@@ -312,15 +323,38 @@ run with an unexpired lease and heartbeat. News Brief preserves the first-dirty
 waits on the fixed 250 ms bounded cadence after every completed candidate. No
 per-Story or Brief worker timer is a correctness authority.
 
-The complete live News storage boundary is exactly twelve tables:
+`NewsStoryPush` is a News-owned native candidate, not a generic Notifications
+service. On first enablement it atomically suppresses every currently eligible
+Story and records the initialized baseline without network work. Later it
+qualifies a Story only when the maximum numeric OpenNews provider score among
+its current members is strictly greater than 70, chooses the highest-scored
+member with deterministic publication-time and Item-ID ties, and freezes that
+Story/Item evidence once. A Chinese headline bypasses translation; otherwise
+the serial model adapter calls code-owned `deepseek-v4-flash` in non-thinking
+mode. Translation failure freezes a marked English fallback and still
+progresses to delivery.
+
+The Feishu Adapter receives only the frozen card. It signs and sends outside
+the database transaction through the finite-operation capability. Explicit
+Feishu `code == 0` is the only success. Transport failures, timeouts, HTTP 429,
+and 5xx are bounded retries; deterministic configuration, signing,
+authentication, and card errors are terminal. The semantics are durable
+at-least-once: an ambiguous response loss may duplicate externally, while a
+confirmed success is never resent. Dedupe follows current `story_id`; no
+historical Story alias or membership-overlap identity is introduced.
+
+The complete live News storage boundary is exactly fourteen tables:
 `news_sources`, `news_source_memberships`, `news_items`, `news_stories`,
 `news_story_members`, `news_projection_summary`,
 `news_story_facet_counts`, `news_source_facet_counts`,
 `news_brief_selection_current`,
 `news_brief_runs`,
-`news_brief_publications`, and `news_brief_current`. The
-`20260801_0234` removes incremental Story machinery. The current hard cut has
-no downgrade or compatibility lane.
+`news_brief_publications`, `news_brief_current`, `news_push_state`, and
+`news_push_deliveries`. The
+`20260801_0234` migration removes incremental Story machinery,
+`20260801_0237` persists the bounded OpenNews recovery boundary, and
+`20260801_0238` adds the durable push baseline and delivery ledger. The current
+hard cut has no downgrade or compatibility lane.
 
 ### Macro
 
@@ -415,6 +449,10 @@ module and is never a publication gate for the other five modules.
 Migrations `20260801_0235` and `20260801_0236` are irreversible hard cuts: they
 remove retired News acquisition and Macro derived/control history without
 adding compatibility tables or readers.
+Migration `20260801_0237` makes OpenNews recovery bounded and durable;
+`20260801_0238` adds the two News-owned push-control tables with an
+uninitialized baseline, so the first enabled reconcile suppresses the current
+eligible set without a network call.
 
 ## Safety boundary
 

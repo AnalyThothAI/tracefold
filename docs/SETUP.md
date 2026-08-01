@@ -40,8 +40,13 @@ credential path.
 Set `news.opennews_token` to enable the production News WSS and REST recovery
 lane. `tracefold config` reports only whether it is configured; it never prints
 the token. When it is absent, News reports `opennews_token_missing`.
-An enabled model candidate with no configured provider reports an explicit
-unavailable state and makes no model call.
+Set `news.push.enabled: true` only after adding a newly rotated Feishu webhook
+URL and signing secret under `news.push`; both are required and diagnostics
+report configured booleans only. The push translator reuses the existing
+DeepSeek-compatible `llm.api_key` and `llm.base_url` and fixes the translation
+model to `deepseek-v4-flash`; no second model credential is configured.
+If that credential is absent, title translation is marked unavailable without
+a model call and the frozen card still carries the original headline.
 
 News correctness does not depend on the model. The OpenNews WSS receiver, REST
 recovery, and publisher share one acquisition module and sole NewsItem writer.
@@ -49,8 +54,12 @@ A healthy WSS connection never polls REST periodically; one bounded REST page
 is requested only after initial connection, reconnect, or queue overflow, with
 a persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 96-hour Story projection,
-and the single-capacity native-state model arbiter owns World Brief. There is
-no item-level AI path.
+and the single-capacity native-state model arbiter owns World Brief and the
+title-only push translator. Push is a separate News-owned delivery state
+machine: initial enablement suppresses the current eligible baseline, later
+strict score-greater-than-70 crossings freeze one highest-scored Item and send
+one signed Feishu card with durable at-least-once retries. It is not a generic
+Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -159,6 +168,10 @@ rather than archived. Migrations `20260801_0235` and `20260801_0236`
 irreversibly delete retired News acquisition history and Macro publication,
 per-attempt, and stored intermediate history while preserving current items,
 facts, targets, document analyses, and module rows.
+Migration `20260801_0237` adds the persisted OpenNews recovery boundary and
+`20260801_0238` adds the News push baseline/delivery ledger. Push remains
+disabled after migration until the signed Feishu settings are explicitly
+enabled; the first enabled reconcile records a no-backfill baseline.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a

@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
@@ -15,10 +16,14 @@ from tracefold.app.http.responses import _validated_json
 from tracefold.news import NewsInterface
 
 router = APIRouter()
-_Envelope = api_schemas.ApiEnvelope[api_schemas.JsonObject]
+_FeedEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsFeedData]
+_StoryEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData]
+_BriefEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsBriefData]
+_SourcesEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsSourcesData]
+_StatusEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsStatusData]
 
 
-@router.get("/news/feed", response_model=_Envelope)
+@router.get("/news/feed", response_model=_FeedEnvelope)
 def get_news_feed(
     request: Request,
     category: Annotated[str, Query()] = "",
@@ -53,10 +58,10 @@ def get_news_feed(
             )
     except ValueError as exc:
         raise ApiBadRequest(str(exc), field="cursor") from exc
-    return _etagged(data, request)
+    return _etagged(data, request, envelope=_FeedEnvelope)
 
 
-@router.get("/news/stories/{story_id}", response_model=_Envelope)
+@router.get("/news/stories/{story_id}", response_model=_StoryEnvelope)
 def get_news_story(
     request: Request,
     story_id: str,
@@ -79,23 +84,23 @@ def get_news_story(
         raise ApiBadRequest(str(exc), field="members_cursor") from exc
     if data is None:
         return _validated_json(
-            _Envelope,
+            _StoryEnvelope,
             {"ok": False, "error": "news_story_not_found"},
             status_code=404,
         )
-    return _validated_json(_Envelope, {"ok": True, "data": data})
+    return _validated_json(_StoryEnvelope, {"ok": True, "data": data})
 
 
-@router.get("/news/brief", response_model=_Envelope)
+@router.get("/news/brief", response_model=_BriefEnvelope)
 def get_news_world_brief(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = _news_interface(repos).get_world_brief(now_ms=int(time.time() * 1000))
-    return _etagged(data, request)
+    return _etagged(data, request, envelope=_BriefEnvelope)
 
 
-@router.get("/news/sources", response_model=_Envelope)
+@router.get("/news/sources", response_model=_SourcesEnvelope)
 def get_news_sources(
     request: Request,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
@@ -111,29 +116,40 @@ def get_news_sources(
             )
     except ValueError as exc:
         raise ApiBadRequest(str(exc), field="cursor") from exc
-    return _validated_json(_Envelope, {"ok": True, "data": data})
+    return _validated_json(_SourcesEnvelope, {"ok": True, "data": data})
 
 
-@router.get("/news/status", response_model=_Envelope)
+@router.get("/news/status", response_model=_StatusEnvelope)
 def get_news_status(request: Request) -> JSONResponse:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
+    push_settings = runtime.settings.news.push
     with runtime.repositories() as repos:
-        data = _news_interface(repos).health(now_ms=int(time.time() * 1000))
-    return _validated_json(_Envelope, {"ok": True, "data": data})
+        data = _news_interface(repos).health(
+            now_ms=int(time.time() * 1000),
+            push_enabled=push_settings.enabled,
+            feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
+            feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
+        )
+    return _validated_json(_StatusEnvelope, {"ok": True, "data": data})
 
 
 def _news_interface(repos: Any) -> NewsInterface:
     return NewsInterface(repos.news)
 
 
-def _etagged(data: dict[str, Any], request: Request) -> JSONResponse | Response:
+def _etagged(
+    data: dict[str, Any],
+    request: Request,
+    *,
+    envelope: type[BaseModel],
+) -> JSONResponse | Response:
     encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     etag = f'"{hashlib.sha256(encoded).hexdigest()}"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
-    response = _validated_json(_Envelope, {"ok": True, "data": data})
+    response = _validated_json(envelope, {"ok": True, "data": data})
     response.headers.update(headers)
     return response
 

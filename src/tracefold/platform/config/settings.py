@@ -4,9 +4,10 @@ import secrets
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from tracefold.platform.paths import app_home, app_log_path, config_path
 
@@ -229,11 +230,61 @@ class ProvidersConfig(BaseModel):
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
+class NewsPushSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    feishu_webhook_url: str | None = None
+    feishu_signing_secret: str | None = None
+
+    @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
+    @classmethod
+    def parse_optional_secret(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @field_validator("feishu_webhook_url")
+    @classmethod
+    def validate_feishu_webhook_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValueError("news_push_feishu_webhook_url_invalid") from None
+        valid_path = parsed.path.startswith("/open-apis/bot/v2/hook/") and bool(
+            parsed.path.removeprefix("/open-apis/bot/v2/hook/")
+        )
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "open.feishu.cn"
+            or port not in {None, 443}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or not valid_path
+            or "/" in parsed.path.removeprefix("/open-apis/bot/v2/hook/")
+        ):
+            raise ValueError("news_push_feishu_webhook_url_invalid")
+        return value
+
+    @model_validator(mode="after")
+    def require_enabled_credentials(self) -> NewsPushSettings:
+        if self.enabled and not self.feishu_webhook_url:
+            raise ValueError("news_push_feishu_webhook_url_required")
+        if self.enabled and not self.feishu_signing_secret:
+            raise ValueError("news_push_feishu_signing_secret_required")
+        return self
+
+
 class NewsSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = True
     opennews_token: str | None = None
+    push: NewsPushSettings = Field(default_factory=NewsPushSettings)
 
     @field_validator("opennews_token", mode="before")
     @classmethod
@@ -241,9 +292,15 @@ class NewsSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
+    @model_validator(mode="after")
+    def require_news_for_push(self) -> NewsSettings:
+        if not self.enabled and self.push.enabled:
+            raise ValueError("news_push_requires_news_enabled")
+        return self
+
 
 class Settings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     _config_dir: Path = PrivateAttr(default_factory=app_home)
 
@@ -396,6 +453,10 @@ providers:
 news:
   enabled: true
   opennews_token:
+  push:
+    enabled: false
+    feishu_webhook_url:
+    feishu_signing_secret:
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

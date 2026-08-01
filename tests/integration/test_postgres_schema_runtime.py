@@ -89,6 +89,8 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_brief_runs",
     "news_brief_publications",
     "news_brief_current",
+    "news_push_state",
+    "news_push_deliveries",
 }
 LEGACY_NEWS_TABLES = {
     "news_fetch_runs",
@@ -365,7 +367,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert {"worker_runtime_status", "model_generation_frontiers", "worker_queue_terminal_events"}.isdisjoint(tables)
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
-    assert tables >= PROFESSIONAL_NEWS_TABLES
+    assert {table for table in tables if table.startswith("news_")} == PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
     assert news_source_columns == {
         "source_id",
@@ -388,6 +390,8 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "last_live_at_ms",
         "last_recovery_at_ms",
         "gap_unclosed",
+        "gap_boundary_provider_record_id",
+        "gap_version",
         "next_fetch_at_ms",
         "claim_token",
         "claim_lease_expires_at_ms",
@@ -429,7 +433,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260801_0236"
+    assert version == latest_migration_version() == "20260801_0238"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -454,7 +458,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260801_0234"
+    assert version == latest_migration_version() == "20260801_0238"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(

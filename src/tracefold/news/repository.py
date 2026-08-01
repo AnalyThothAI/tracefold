@@ -976,6 +976,9 @@ class NewsRepository:
         ).fetchall()
         has_more = len(rows) > limit
         page = rows[:limit]
+        provider_evidence = self.story_provider_evidence(
+            story_ids=[str(row["story_id"]) for row in page]
+        )
         next_cursor = None
         if has_more and page:
             last = page[-1]
@@ -989,10 +992,17 @@ class NewsRepository:
                     "story_id": str(last["story_id"]),
                 }
             )
+        stories = []
+        for row in page:
+            story = _story_summary(row)
+            story["provider_evidence"] = _public_provider_evidence(
+                provider_evidence.get(str(row["story_id"]))
+            )
+            stories.append(story)
         return {
             "sort": sort,
             "filters": filters,
-            "stories": [_story_summary(row) for row in page],
+            "stories": stories,
             "next_cursor": next_cursor,
             "has_more": has_more,
             "facets": self._feed_facets(),
@@ -1063,6 +1073,9 @@ class NewsRepository:
         ).fetchone()
         if row is None:
             return None
+        provider_evidence = _public_provider_evidence(
+            self.story_provider_evidence(story_ids=(story_id,)).get(story_id)
+        )
         member_where = ["m.story_id = %s"]
         member_params: list[Any] = [story_id]
         if members_cursor:
@@ -1123,6 +1136,7 @@ class NewsRepository:
             )
         return {
             **_story_summary(row),
+            "provider_evidence": provider_evidence,
             "canonical_title": str(row["canonical_title"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
@@ -1773,9 +1787,521 @@ class NewsRepository:
             "history": [_brief_payload(row) for row in history],
         }
 
+    # News Story push ----------------------------------------------------------
+
+    def story_provider_evidence(
+        self,
+        *,
+        story_ids: Sequence[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return each Story's highest numeric provider-score item.
+
+        Selection is deterministic: numeric score descending, then newest
+        publication, then item identity. The returned ``provider_evidence``
+        shape is also the reusable public Feed seam; this method does not
+        mutate the Feed contract itself.
+        """
+
+        if story_ids is not None and not story_ids:
+            return {}
+        story_filter = ""
+        params: tuple[Any, ...] = ()
+        if story_ids is not None:
+            story_filter = "AND member.story_id = ANY(%s)"
+            params = (list(story_ids),)
+        rows = self.conn.execute(
+            f"""
+            SELECT DISTINCT ON (member.story_id)
+                   member.story_id,
+                   story.importance_score,
+                   story.item_count,
+                   story.source_count,
+                   story.first_published_at_ms,
+                   story.last_published_at_ms,
+                   item.item_id,
+                   item.canonical_url,
+                   item.provider_metadata,
+                   item.reporting_origin,
+                   item.title,
+                   item.description,
+                   item.lang,
+                   item.published_at_ms,
+                   item.updated_at_ms AS threshold_observed_at_ms,
+                   (item.provider_metadata ->> 'score')::numeric
+                     AS provider_score
+              FROM news_story_members member
+              JOIN news_stories story ON story.story_id = member.story_id
+              JOIN news_items item ON item.item_id = member.item_id
+             WHERE jsonb_typeof(item.provider_metadata -> 'score') = 'number'
+                   {story_filter}
+             ORDER BY member.story_id,
+                      (item.provider_metadata ->> 'score')::numeric DESC,
+                      item.published_at_ms DESC,
+                      item.item_id
+            """,
+            params,
+        ).fetchall()
+        return {
+            str(row["story_id"]): {
+                "story_id": str(row["story_id"]),
+                "importance_score": int(row["importance_score"]),
+                "item_count": int(row["item_count"]),
+                "source_count": int(row["source_count"]),
+                "first_published_at_ms": int(row["first_published_at_ms"]),
+                "last_published_at_ms": int(row["last_published_at_ms"]),
+                "provider_evidence": {
+                    "item_id": str(row["item_id"]),
+                    "url": str(row["canonical_url"]) if row["canonical_url"] else None,
+                    "provider_metadata": dict(row["provider_metadata"] or {}),
+                    "reporting_origin": str(row["reporting_origin"]),
+                    "title": str(row["title"]),
+                    "description": str(row["description"]),
+                    "lang": str(row["lang"]),
+                    "published_at_ms": int(row["published_at_ms"]),
+                    "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
+                    "provider_score": float(row["provider_score"]),
+                },
+            }
+            for row in rows
+        }
+
+    def initialize_push_baseline(self, *, now_ms: int) -> tuple[int, bool]:
+        row = self.conn.execute(
+            """
+            SELECT baseline_at_ms
+              FROM news_push_state
+             WHERE singleton_key = 'current'
+             FOR UPDATE
+            """
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("news_push_state_missing")
+        baseline_at_ms = row["baseline_at_ms"]
+        if baseline_at_ms is not None:
+            return int(baseline_at_ms), False
+        self.conn.execute(
+            """
+            UPDATE news_push_state
+               SET baseline_at_ms = %s, updated_at_ms = %s
+             WHERE singleton_key = 'current' AND baseline_at_ms IS NULL
+            """,
+            (int(now_ms), int(now_ms)),
+        )
+        return int(now_ms), True
+
+    def insert_push_candidate(
+        self,
+        *,
+        story_id: str,
+        selected_item_id: str,
+        provider_score: float,
+        threshold_observed_at_ms: int,
+        source_payload: Mapping[str, Any],
+        suppressed: bool,
+        now_ms: int,
+    ) -> bool:
+        status = "suppressed" if suppressed else "pending_translation"
+        translation_status = "not_requested" if suppressed else "pending"
+        cursor = self.conn.execute(
+            """
+            INSERT INTO news_push_deliveries (
+              story_id, selected_item_id, provider_score,
+              threshold_observed_at_ms, source_payload, delivery_payload,
+              payload_fingerprint, translation_status, status,
+              delivery_attempts, next_attempt_at_ms, lease_owner,
+              lease_token, lease_expires_at_ms, receipt, last_error,
+              sent_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (
+              %s, %s, %s, %s, %s, NULL, NULL, %s, %s,
+              0, %s, NULL, NULL, NULL, NULL, NULL, NULL, %s, %s
+            )
+            ON CONFLICT (story_id) DO NOTHING
+            """,
+            (
+                story_id,
+                selected_item_id,
+                float(provider_score),
+                int(threshold_observed_at_ms),
+                Jsonb(dict(source_payload)),
+                translation_status,
+                status,
+                None if suppressed else int(now_ms),
+                int(now_ms),
+                int(now_ms),
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def terminalize_exhausted_push_deliveries(
+        self,
+        *,
+        now_ms: int,
+        max_attempts: int,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET status = 'terminal',
+                   next_attempt_at_ms = NULL,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   last_error = COALESCE(last_error, 'delivery_attempt_limit_exhausted'),
+                   updated_at_ms = %s
+             WHERE status IN ('pending_delivery', 'retry_wait')
+               AND delivery_attempts >= %s
+               AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
+            """,
+            (int(now_ms), int(max_attempts), int(now_ms)),
+        )
+        return int(cursor.rowcount or 0)
+
+    def peek_push_delivery(
+        self,
+        *,
+        now_ms: int,
+        max_attempts: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT story_id, next_attempt_at_ms
+              FROM news_push_deliveries
+             WHERE status IN (
+                     'pending_translation', 'pending_delivery', 'retry_wait'
+                   )
+               AND next_attempt_at_ms <= %s
+               AND delivery_attempts < %s
+               AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
+             ORDER BY next_attempt_at_ms, threshold_observed_at_ms, story_id
+             LIMIT 1
+            """,
+            (int(now_ms), int(max_attempts), int(now_ms)),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def claim_push_delivery(
+        self,
+        *,
+        story_id: str,
+        now_ms: int,
+        max_attempts: int,
+        lease_owner: str,
+        lease_token: str,
+        lease_expires_at_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET lease_owner = %s,
+                   lease_token = %s,
+                   lease_expires_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND status IN (
+                     'pending_translation', 'pending_delivery', 'retry_wait'
+                   )
+               AND next_attempt_at_ms <= %s
+               AND delivery_attempts < %s
+               AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
+            RETURNING *
+            """,
+            (
+                lease_owner,
+                lease_token,
+                int(lease_expires_at_ms),
+                int(now_ms),
+                story_id,
+                int(now_ms),
+                int(max_attempts),
+                int(now_ms),
+            ),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_push_translation(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        translation_status: str,
+        delivery_payload: Mapping[str, Any],
+        payload_fingerprint: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET translation_status = %s,
+                   delivery_payload = %s,
+                   payload_fingerprint = %s,
+                   status = 'pending_delivery',
+                   next_attempt_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_translation'
+               AND delivery_payload IS NULL
+            RETURNING *
+            """,
+            (
+                translation_status,
+                Jsonb(dict(delivery_payload)),
+                payload_fingerprint,
+                int(now_ms),
+                int(now_ms),
+                story_id,
+                lease_token,
+            ),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_push_render_failure(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        translation_status: str,
+        delivery_payload: Mapping[str, Any],
+        payload_fingerprint: str,
+        error_code: str,
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET translation_status = %s,
+                   delivery_payload = %s,
+                   payload_fingerprint = %s,
+                   status = 'terminal',
+                   next_attempt_at_ms = NULL,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   last_error = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_translation'
+               AND delivery_payload IS NULL
+            """,
+            (
+                translation_status,
+                Jsonb(dict(delivery_payload)),
+                payload_fingerprint,
+                str(error_code)[:500],
+                int(now_ms),
+                story_id,
+                lease_token,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def start_push_delivery_attempt(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET status = 'pending_delivery',
+                   delivery_attempts = delivery_attempts + 1,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status IN ('pending_delivery', 'retry_wait')
+               AND delivery_payload IS NOT NULL
+               AND payload_fingerprint IS NOT NULL
+            RETURNING *
+            """,
+            (int(now_ms), story_id, lease_token),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def complete_push_delivery(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET status = 'sent',
+                   next_attempt_at_ms = NULL,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   receipt = %s,
+                   last_error = NULL,
+                   sent_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_delivery'
+            """,
+            (Jsonb(dict(receipt)), int(now_ms), int(now_ms), story_id, lease_token),
+        )
+        return bool(cursor.rowcount)
+
+    def fail_push_delivery(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        error_code: str,
+        retryable: bool,
+        next_attempt_at_ms: int,
+        max_attempts: int,
+        now_ms: int,
+    ) -> str | None:
+        row = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET status = CASE
+                     WHEN %s AND delivery_attempts < %s
+                       THEN 'retry_wait'
+                     ELSE 'terminal'
+                   END,
+                   next_attempt_at_ms = CASE
+                     WHEN %s AND delivery_attempts < %s
+                       THEN %s
+                     ELSE NULL
+                   END,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   last_error = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_delivery'
+            RETURNING status
+            """,
+            (
+                bool(retryable),
+                int(max_attempts),
+                bool(retryable),
+                int(max_attempts),
+                int(next_attempt_at_ms),
+                str(error_code)[:500],
+                int(now_ms),
+                story_id,
+                lease_token,
+            ),
+        ).fetchone()
+        return str(row["status"]) if row is not None else None
+
+    def release_push_delivery_claim(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   delivery_attempts = greatest(delivery_attempts - 1, 0),
+                   next_attempt_at_ms = %s,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_delivery'
+            """,
+            (int(now_ms), int(now_ms), story_id, lease_token),
+        )
+        return bool(cursor.rowcount)
+
+    def push_health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
+        state = self.conn.execute(
+            """
+            SELECT baseline_at_ms, updated_at_ms
+              FROM news_push_state
+             WHERE singleton_key = 'current'
+            """
+        ).fetchone()
+        if state is None:
+            raise RuntimeError("news_push_state_missing")
+        aggregate = self.conn.execute(
+            """
+            SELECT count(*) AS total_count,
+                   count(*) FILTER (WHERE status = 'suppressed')
+                     AS suppressed_count,
+                   count(*) FILTER (
+                     WHERE status IN ('pending_translation', 'pending_delivery')
+                   ) AS pending_count,
+                   count(*) FILTER (WHERE status = 'retry_wait')
+                     AS retry_count,
+                   count(*) FILTER (WHERE status = 'sent') AS sent_count,
+                   count(*) FILTER (WHERE status = 'terminal')
+                     AS terminal_count,
+                   min(next_attempt_at_ms) FILTER (
+                     WHERE status IN (
+                       'pending_translation', 'pending_delivery', 'retry_wait'
+                     )
+                   ) AS oldest_due_at_ms,
+                   max(sent_at_ms) AS latest_sent_at_ms
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        latest_error = self.conn.execute(
+            """
+            SELECT last_error, updated_at_ms
+              FROM news_push_deliveries
+             WHERE last_error IS NOT NULL
+             ORDER BY updated_at_ms DESC, story_id
+             LIMIT 1
+            """
+        ).fetchone()
+        baseline_at_ms = state["baseline_at_ms"]
+        retry_count = int(aggregate["retry_count"] or 0)
+        terminal_count = int(aggregate["terminal_count"] or 0)
+        status = (
+            "warming"
+            if baseline_at_ms is None
+            else "degraded"
+            if retry_count or terminal_count
+            else "ready"
+        )
+        return {
+            "status": status,
+            "initialized": baseline_at_ms is not None,
+            "baseline_at_ms": int(baseline_at_ms) if baseline_at_ms is not None else None,
+            "total_count": int(aggregate["total_count"] or 0),
+            "suppressed_count": int(aggregate["suppressed_count"] or 0),
+            "pending_count": int(aggregate["pending_count"] or 0),
+            "retry_count": retry_count,
+            "sent_count": int(aggregate["sent_count"] or 0),
+            "terminal_count": terminal_count,
+            "oldest_due_at_ms": aggregate["oldest_due_at_ms"],
+            "latest_sent_at_ms": aggregate["latest_sent_at_ms"],
+            "latest_error": (
+                _public_push_error(str(latest_error["last_error"]))
+                if latest_error is not None
+                else None
+            ),
+            "latest_error_at_ms": latest_error["updated_at_ms"] if latest_error is not None else None,
+            "measured_at_ms": int(now_ms),
+        }
+
     # Health -------------------------------------------------------------------
 
-    def health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
+    def health_snapshot(
+        self,
+        *,
+        now_ms: int,
+        push_enabled: bool = False,
+        feishu_webhook_url_configured: bool = False,
+        feishu_signing_secret_configured: bool = False,
+    ) -> dict[str, Any]:
         opennews = self.conn.execute(
             """
             SELECT source_id, name, live_connected, last_live_at_ms,
@@ -1855,6 +2381,48 @@ class NewsRepository:
             else "warming"
         )
         brief_reasons = [] if brief_status == "ready" else [f"public_brief_{brief['state']}"]
+        push_snapshot = self.push_health_snapshot(now_ms=now_ms)
+        if push_enabled:
+            push_reasons: list[str] = []
+            if not feishu_webhook_url_configured:
+                push_reasons.append("feishu_webhook_url_not_configured")
+            if not feishu_signing_secret_configured:
+                push_reasons.append("feishu_signing_secret_not_configured")
+            if not push_snapshot["initialized"]:
+                push_reasons.append("push_baseline_uninitialized")
+            if push_snapshot["retry_count"]:
+                push_reasons.append("push_delivery_retry_wait")
+            if push_snapshot["terminal_count"]:
+                push_reasons.append("push_delivery_terminal")
+            push_status = (
+                "degraded"
+                if (
+                    not feishu_webhook_url_configured
+                    or not feishu_signing_secret_configured
+                    or push_snapshot["retry_count"]
+                    or push_snapshot["terminal_count"]
+                )
+                else str(push_snapshot["status"])
+            )
+            push_payload = {
+                **push_snapshot,
+                "status": push_status,
+                "reasons": push_reasons,
+                "enabled": True,
+                "feishu_webhook_url_configured": feishu_webhook_url_configured,
+                "feishu_signing_secret_configured": feishu_signing_secret_configured,
+            }
+        else:
+            push_status = "disabled"
+            push_payload = {
+                **push_snapshot,
+                "status": push_status,
+                "reasons": [],
+                "enabled": False,
+                "feishu_webhook_url_configured": feishu_webhook_url_configured,
+                "feishu_signing_secret_configured": feishu_signing_secret_configured,
+            }
+
         layers = {
             "ingest": {
                 "status": ingest_status,
@@ -1887,8 +2455,11 @@ class NewsRepository:
                 "publication_id": (brief["publication"]["publication_id"] if brief["publication"] else None),
                 "latest_run": brief["latest_run"],
             },
+            "push": push_payload,
         }
         statuses = [ingest_status, story_status, brief_status]
+        if push_enabled:
+            statuses.append(push_status)
         overall = "degraded" if "degraded" in statuses else "warming" if "warming" in statuses else "ready"
         return {
             "status": overall,
@@ -1917,6 +2488,26 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "first_published_at_ms": int(row["first_published_at_ms"]),
         "last_published_at_ms": int(row["last_published_at_ms"]),
     }
+
+
+def _public_provider_evidence(selected: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if selected is None:
+        return None
+    evidence = selected.get("provider_evidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    return {
+        "item_id": str(evidence["item_id"]),
+        "url": str(evidence["url"]) if evidence.get("url") else None,
+        "provider_metadata": dict(evidence.get("provider_metadata") or {}),
+    }
+
+
+def _public_push_error(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if re.fullmatch(r"[a-z0-9_]{1,120}", normalized):
+        return normalized
+    return "news_story_push_delivery_error"
 
 
 def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:

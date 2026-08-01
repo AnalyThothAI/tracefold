@@ -44,11 +44,12 @@ def _opennews_event(
     description: str,
     published_at_ms: int,
     reporting_origin: str,
+    provider_metadata: dict[str, object] | None = None,
 ) -> OpenNewsEvent:
     return OpenNewsEvent(
         provider_record_id=provider_record_id,
         observation_kind="report",
-        provider_metadata={},
+        provider_metadata=dict(provider_metadata or {}),
         entry=NewsFeedEntry(
             guid=provider_record_id,
             link=f"https://example.test/{provider_record_id}",
@@ -555,6 +556,12 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                         description="Officials published a detailed policy response.",
                         published_at_ms=now_ms - 60_000,
                         reporting_origin="example-news",
+                        provider_metadata={
+                            "score": 76,
+                            "signal": "long",
+                            "grade": "A",
+                            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                        },
                     ),
                     _opennews_event(
                         provider_record_id="story-2",
@@ -600,7 +607,18 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                     model="fixture-model",
                     raw_response="{}",
                 ),
-                validation={"citation_index_lock": True},
+                validation={
+                    "citation_index_lock": True,
+                    "citation_closure": True,
+                    "proper_noun_grounding": True,
+                    "no_cross_story_stitching": True,
+                    "story_count": len(candidates),
+                    "lead_fallback": False,
+                    "line_fallbacks": [],
+                    "grounding_failures": [],
+                    "model_line_coverage": len(candidates),
+                    "final_story_coverage": len(candidates),
+                },
                 now_ms=now_ms,
             )
 
@@ -617,10 +635,14 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
             "/api/news/feed",
             headers={**headers, "If-None-Match": feed_etag},
         )
-        story = feed_response.json()["data"]["stories"][0]
+        stories = feed_response.json()["data"]["stories"]
+        story = next(
+            item for item in stories if item["title"] == "Central bank raises interest rate after policy shock"
+        )
         story_id = story["story_id"]
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
         brief_response = client.get("/api/news/brief", headers=headers)
+        status_response = client.get("/api/news/status", headers=headers)
         unchanged_brief = client.get(
             "/api/news/brief",
             headers={**headers, "If-None-Match": brief_response.headers["etag"]},
@@ -656,6 +678,27 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "Cyber attack disrupts regional infrastructure",
     }
     assert story["source_count"] == 1
+    assert story["provider_evidence"] == {
+        "item_id": story["representative_item_id"],
+        "url": "https://example.test/story-1",
+        "provider_metadata": {
+            "score": 76,
+            "signal": "long",
+            "grade": "A",
+            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+        },
+    }
+    assert set(story["provider_evidence"]) == {
+        "item_id",
+        "url",
+        "provider_metadata",
+    }
+    assert (
+        next(item for item in stories if item["title"] == "Major earthquake strikes coastal region")[
+            "provider_evidence"
+        ]
+        is None
+    )
     assert set(story["importance_factors"]) >= {
         "severity_points",
         "source_points",
@@ -669,11 +712,12 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail["story_id"] == story_id
     assert detail["representative_item_id"]
     assert detail["scoring_item_id"]
+    assert detail["provider_evidence"] == story["provider_evidence"]
     assert "current" not in detail["members"][0]
     assert "active" not in detail
     assert detail["members"][0]["reporting_origin"]
     assert detail["members"][0]["provider_record_id"]
-    assert detail["members"][0]["provider_metadata"] == {}
+    assert detail["members"][0]["provider_metadata"] == story["provider_evidence"]["provider_metadata"]
     assert detail["members_page"] == {
         "returned_count": 1,
         "has_more": False,
@@ -689,7 +733,198 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert brief["publication"]["locale"] == "zh-CN"
     assert brief["publication"]["validation"]["citation_index_lock"] is True
     assert unchanged_brief.status_code == 304
+    assert status_response.status_code == 200
+    disabled_push = status_response.json()["data"]["layers"]["push"]
+    assert {
+        key: disabled_push[key]
+        for key in (
+            "status",
+            "reasons",
+            "enabled",
+            "feishu_webhook_url_configured",
+            "feishu_signing_secret_configured",
+            "initialized",
+            "baseline_at_ms",
+            "pending_count",
+            "retry_count",
+            "terminal_count",
+            "sent_count",
+            "latest_sent_at_ms",
+        )
+    } == {
+        "status": "disabled",
+        "reasons": [],
+        "enabled": False,
+        "feishu_webhook_url_configured": False,
+        "feishu_signing_secret_configured": False,
+        "initialized": False,
+        "baseline_at_ms": None,
+        "pending_count": 0,
+        "retry_count": 0,
+        "terminal_count": 0,
+        "sent_count": 0,
+        "latest_sent_at_ms": None,
+    }
     assert [response.status_code for response in retired_responses] == [404] * 6
+
+
+def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.news.push = type(settings.news.push)(
+        enabled=True,
+        feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook"),
+        feishu_signing_secret="status-test-signing-secret",
+    )
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="status-story",
+                        title="Central bank announces a policy decision",
+                        description="Officials published the decision.",
+                        published_at_ms=now_ms - 1_000,
+                        reporting_origin="authority",
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+            repos.news.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=now_ms,
+                error_code=None,
+                gap_unclosed=False,
+                gap_boundary_provider_record_id=None,
+                expected_gap_version=0,
+            )
+
+        headers = {"Authorization": "Bearer secret"}
+        warming_response = client.get("/api/news/status", headers=headers)
+
+        with write_repositories() as repos, repos.transaction():
+            repos.news.initialize_push_baseline(now_ms=now_ms + 1)
+            for story_id in ("a" * 64, "b" * 64, "c" * 64, "d" * 64):
+                assert repos.news.insert_push_candidate(
+                    story_id=story_id,
+                    selected_item_id=f"selected-{story_id[0]}",
+                    provider_score=90,
+                    threshold_observed_at_ms=now_ms,
+                    source_payload={
+                        "card": "leaked-card",
+                        "webhook": ("https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook"),
+                    },
+                    suppressed=False,
+                    now_ms=now_ms + 2,
+                )
+            repos.conn.execute(
+                """
+                UPDATE news_push_deliveries
+                   SET status = CASE story_id
+                         WHEN %s THEN 'retry_wait'
+                         WHEN %s THEN 'terminal'
+                         WHEN %s THEN 'sent'
+                         ELSE status
+                       END,
+                       delivery_attempts = CASE
+                         WHEN story_id IN (%s, %s, %s) THEN 1
+                         ELSE delivery_attempts
+                       END,
+                       next_attempt_at_ms = CASE
+                         WHEN story_id = %s THEN %s
+                         WHEN story_id IN (%s, %s) THEN NULL
+                         ELSE next_attempt_at_ms
+                       END,
+                       last_error = CASE
+                         WHEN story_id = %s THEN %s
+                         WHEN story_id = %s THEN 'feishu_business_rejected'
+                         ELSE NULL
+                       END,
+                       sent_at_ms = CASE WHEN story_id = %s THEN %s ELSE NULL END,
+                       updated_at_ms = CASE WHEN story_id = %s THEN %s ELSE %s END
+                """,
+                (
+                    "b" * 64,
+                    "c" * 64,
+                    "d" * 64,
+                    "b" * 64,
+                    "c" * 64,
+                    "d" * 64,
+                    "b" * 64,
+                    now_ms + 60_000,
+                    "c" * 64,
+                    "d" * 64,
+                    "b" * 64,
+                    "status-test-signing-secret https://example.test leaked-card",
+                    "c" * 64,
+                    "d" * 64,
+                    now_ms + 3,
+                    "b" * 64,
+                    now_ms + 5,
+                    now_ms + 4,
+                ),
+            )
+
+        degraded_response = client.get("/api/news/status", headers=headers)
+        settings.news.push.enabled = False
+        disabled_history_response = client.get("/api/news/status", headers=headers)
+
+    assert warming_response.status_code == 200
+    warming = warming_response.json()["data"]
+    assert warming["status"] == "warming"
+    assert {name: layer["status"] for name, layer in warming["layers"].items()} == {
+        "ingest": "ready",
+        "story": "ready",
+        "brief": "ready",
+        "push": "warming",
+    }
+    assert warming["layers"]["push"]["initialized"] is False
+
+    assert degraded_response.status_code == 200
+    degraded = degraded_response.json()["data"]
+    push = degraded["layers"]["push"]
+    assert degraded["status"] == "degraded"
+    assert push["status"] == "degraded"
+    assert push["enabled"] is True
+    assert push["feishu_webhook_url_configured"] is True
+    assert push["feishu_signing_secret_configured"] is True
+    assert push["initialized"] is True
+    assert push["baseline_at_ms"] == now_ms + 1
+    assert push["pending_count"] == 1
+    assert push["retry_count"] == 1
+    assert push["terminal_count"] == 1
+    assert push["sent_count"] == 1
+    assert push["latest_sent_at_ms"] == now_ms + 3
+    assert push["latest_error"] == "news_story_push_delivery_error"
+    assert push["reasons"] == [
+        "push_delivery_retry_wait",
+        "push_delivery_terminal",
+    ]
+    rendered = json.dumps(degraded)
+    assert "status-test-signing-secret" not in rendered
+    assert "status-test-hook" not in rendered
+    assert "leaked-card" not in rendered
+
+    assert disabled_history_response.status_code == 200
+    disabled_history = disabled_history_response.json()["data"]
+    disabled_push = disabled_history["layers"]["push"]
+    assert disabled_history["status"] == "ready"
+    assert disabled_push["status"] == "disabled"
+    assert disabled_push["enabled"] is False
+    assert disabled_push["initialized"] is True
+    assert disabled_push["baseline_at_ms"] == now_ms + 1
+    assert disabled_push["pending_count"] == 1
+    assert disabled_push["retry_count"] == 1
+    assert disabled_push["terminal_count"] == 1
+    assert disabled_push["sent_count"] == 1
+    assert disabled_push["latest_sent_at_ms"] == now_ms + 3
 
 
 def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):

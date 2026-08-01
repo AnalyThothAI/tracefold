@@ -31,6 +31,17 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
     item_count: 4,
     last_published_at_ms: NEWS_NOW_MS - 30_000,
     level: "high",
+    provider_evidence: {
+      item_id: "news-item-reuters",
+      provider_metadata: {
+        score: 88,
+        source: "jin10",
+        signal: "long",
+        grade: "A",
+        coins: [{ symbol: "BTC", market_type: "spot", match: "Bitcoin" }],
+      },
+      url: "https://www.reuters.com/world/story",
+    },
     source_count: 4,
     source_id: "wm-politics-reuters",
     source_name: "Reuters World",
@@ -48,6 +59,11 @@ export function newsFeedFixture(): NewsFeed {
     facets: {
       categories: [{ count: 1, value: "economic" }],
       levels: [{ count: 1, value: "high" }],
+      page: {
+        categories_has_more: false,
+        levels_has_more: false,
+        sources_has_more: false,
+      },
       sources: [{ count: 1, label: "Reuters World", value: "wm-politics-reuters" }],
     },
     filters: { category: null, level: null, source_id: null },
@@ -66,6 +82,7 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
       {
         category: "economic",
         description: "Central banks respond as the policy outlook changes.",
+        importance_factors: newsStoryFixture().importance_factors,
         importance_score: 83,
         item_id: "news-item-reuters",
         provider_record_id: "wire-reuters-1",
@@ -88,6 +105,7 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
         url: "https://www.reuters.com/world/story",
       },
     ],
+    members_page: { has_more: false, next_cursor: null, returned_count: 1 },
     ...overrides,
   };
 }
@@ -102,9 +120,11 @@ export function newsBriefPublicationFixture(
     lines: ["主要央行回应新的全球政策冲击 [1]"],
     locale: "zh-CN",
     model: "deepseek-v4-flash",
+    prompt_version: "news-world-brief-v1",
     provider: "openrouter",
     publication_id: "brief-publication",
     published_at_ms: NEWS_NOW_MS,
+    schema_version: "news-world-brief-v1",
     selected_story_ids: ["story-global-policy"],
     sources: [
       {
@@ -127,6 +147,7 @@ export function newsBriefPublicationFixture(
       proper_noun_grounding: true,
       story_count: 1,
     },
+    workflow_version: "news-world-brief-v1",
     ...overrides,
   };
 }
@@ -177,5 +198,6 @@ export function newsSourcesFixture(): NewsSources {
         tier: 4,
       },
     ],
+    page: { has_more: false, next_cursor: null, returned_count: 1 },
   };
 }

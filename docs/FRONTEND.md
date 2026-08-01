@@ -94,9 +94,14 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   reporting-origin count,
   importance, and its factor breakdown. `/news/stories/:storyId` reads
   `/api/news/stories/{story_id}` and shows the complete evidence membership,
-  representative item and scoring item. Linkless dispatch evidence renders an
-  explicit no-link state. There is no archive, revision timeline, or per-Story
-  AI panel. `/news/brief` renders the single
+  representative item and scoring item. Feed rows render the backend-selected
+  highest-score `provider_evidence`, and Story members render bounded OpenNews
+  score/signal/grade/coin metadata beside the matching Item URL. Provider
+  metadata is visibly separate from Tracefold importance; the browser never
+  selects the maximum or derives push eligibility. Linkless dispatch evidence
+  renders an explicit no-link state. There is no archive, revision timeline,
+  per-Story AI panel, push inbox, or notification-settings UI. `/news/brief`
+  renders the single
   Chinese World Brief, selected Story evidence, truthful publication/run
   state, and immutable publication history from `/api/news/brief`.
   `/news/sources` renders the OpenNews membership, live/recovery/gap state, and

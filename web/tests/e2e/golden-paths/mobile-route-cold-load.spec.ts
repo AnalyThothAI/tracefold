@@ -84,7 +84,7 @@ const routeCases: RouteCase[] = [
     specific: async (page) => {
       await expect(page.getByRole("link", { name: "返回 Story 流" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "Story 聚合身份" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "重要度因子" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Tracefold Story 重要度" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "聚类成员" })).toBeVisible();
       await expect(
         page.getByRole("heading", {

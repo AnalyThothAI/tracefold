@@ -62,6 +62,11 @@ news:
   enabled: true
   # Required by the one production News source: OpenNews WSS + REST recovery.
   opennews_token:
+  # Optional signed Feishu delivery for newly eligible high-score Stories.
+  push:
+    enabled: false
+    feishu_webhook_url:
+    feishu_signing_secret:
   # RSS adapters remain development utilities and have no production config.
 
 upstream:

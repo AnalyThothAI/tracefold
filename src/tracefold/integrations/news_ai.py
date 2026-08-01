@@ -9,6 +9,107 @@ import httpx
 
 from tracefold.news import NewsBriefDraft, NewsBriefExpectedError, NewsBriefStory
 
+DEEPSEEK_TITLE_TRANSLATION_MODEL = "deepseek-v4-flash"
+_DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_TITLE_MAX_CHARS = 1_000
+_DEEPSEEK_TRANSLATION_MAX_CHARS = 500
+_DEEPSEEK_TRANSLATION_MAX_TOKENS = 128
+_DEEPSEEK_TRANSLATION_TIMEOUT_SECONDS = 15.0
+
+
+class DeepSeekTitleTranslationError(RuntimeError):
+    """A sanitized expected translation failure; callers may fall back to English."""
+
+
+class DeepSeekTitleTranslator:
+    """Translate exactly one NewsItem title with the code-owned lightweight model."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = "",
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        normalized_api_key = str(api_key or "").strip()
+        if not normalized_api_key:
+            raise ValueError("news_push_deepseek_api_key_required")
+        normalized_base_url = str(base_url or "").strip().rstrip("/") or _DEEPSEEK_DEFAULT_BASE_URL
+        self._url = f"{normalized_base_url}/chat/completions"
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(_DEEPSEEK_TRANSLATION_TIMEOUT_SECONDS),
+            headers={
+                "Authorization": f"Bearer {normalized_api_key}",
+                "Content-Type": "application/json",
+            },
+            follow_redirects=False,
+            transport=transport,
+        )
+
+    def translate(self, title: str) -> str:
+        normalized_title = str(title or "").strip()
+        if not normalized_title:
+            raise DeepSeekTitleTranslationError("news_push_translation_title_required")
+        if len(normalized_title) > _DEEPSEEK_TITLE_MAX_CHARS:
+            raise DeepSeekTitleTranslationError("news_push_translation_title_too_long")
+        try:
+            response = self._client.post(
+                self._url,
+                json={
+                    "model": DEEPSEEK_TITLE_TRANSLATION_MODEL,
+                    "thinking": {"type": "disabled"},
+                    "temperature": 0,
+                    "max_tokens": _DEEPSEEK_TRANSLATION_MAX_TOKENS,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是金融新闻标题翻译器。只把输入标题忠实翻译为简体中文，不补充背景、因果、评价或事实。"
+                                "保留代币符号、股票代码、数字和专有名词。只输出 JSON："
+                                '{"translated_title":"翻译后的单行标题"}'
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                {"source_title": normalized_title},
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        },
+                    ],
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            choice = payload["choices"][0]
+            if choice.get("finish_reason") != "stop":
+                raise ValueError("news_push_translation_incomplete")
+            raw_content = choice["message"]["content"]
+            if not isinstance(raw_content, str) or not raw_content.strip():
+                raise ValueError("news_push_translation_empty")
+            translated_payload = json.loads(raw_content)
+            if not isinstance(translated_payload, dict):
+                raise ValueError("news_push_translation_shape_invalid")
+            translated_title = translated_payload.get("translated_title")
+            if not isinstance(translated_title, str):
+                raise ValueError("news_push_translation_shape_invalid")
+            translated_title = translated_title.strip()
+            if (
+                not translated_title
+                or len(translated_title) > _DEEPSEEK_TRANSLATION_MAX_CHARS
+                or "\n" in translated_title
+                or "\r" in translated_title
+            ):
+                raise ValueError("news_push_translation_title_invalid")
+            return translated_title
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            raise DeepSeekTitleTranslationError("news_push_translation_failed") from None
+
+    def close(self) -> None:
+        self._client.close()
+
 
 @dataclass(frozen=True, slots=True)
 class OpenAiCompatibleProvider:
@@ -197,4 +298,9 @@ def _parse(raw: str, *, expected_count: int) -> tuple[str, list[str]]:
     return lead, [by_index.get(index, "") for index in range(1, expected_count + 1)]
 
 
-__all__ = ["ProviderChainNewsBriefPublisher"]
+__all__ = [
+    "DEEPSEEK_TITLE_TRANSLATION_MODEL",
+    "DeepSeekTitleTranslationError",
+    "DeepSeekTitleTranslator",
+    "ProviderChainNewsBriefPublisher",
+]

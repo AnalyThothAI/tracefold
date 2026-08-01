@@ -108,6 +108,339 @@ class ReadinessData(ExactApiSchema):
     composition: JsonObject
 
 
+NewsLevel = Literal["critical", "high", "medium", "low", "info"]
+NewsCategory = Literal[
+    "conflict",
+    "protest",
+    "disaster",
+    "diplomatic",
+    "economic",
+    "terrorism",
+    "cyber",
+    "health",
+    "environmental",
+    "military",
+    "crime",
+    "infrastructure",
+    "tech",
+    "general",
+]
+NewsHealthStatus = Literal["ready", "warming", "degraded"]
+
+
+class NewsProviderCoinData(ExactApiSchema):
+    symbol: str
+    market_type: str
+    match: str | None = None
+    score: int | float | None = None
+    signal: str | None = None
+    grade: str | None = None
+
+
+class NewsProviderMetadataData(ExactApiSchema):
+    score: int | float | None = None
+    source: str | None = None
+    signal: str | None = None
+    grade: str | None = None
+    coins: list[NewsProviderCoinData] | None = None
+
+
+class NewsProviderEvidenceData(ExactApiSchema):
+    item_id: str
+    url: str | None
+    provider_metadata: NewsProviderMetadataData
+
+
+class NewsImportanceFactorsData(ExactApiSchema):
+    severity_level: NewsLevel
+    severity_points: int | float
+    source_tier: int
+    source_points: int | float
+    reporting_origin_count: int
+    scoring_corroboration_count: int
+    corroboration_points: int | float
+    recency_points: int | float
+    diplomacy_flashpoint_boost: int
+    entity_corroboration_boost: int
+    total: int
+
+
+class NewsStoryData(ExactApiSchema):
+    story_id: str
+    title: str
+    description: str
+    url: str | None
+    source_id: str
+    source_name: str
+    representative_item_id: str
+    scoring_item_id: str
+    level: NewsLevel
+    category: NewsCategory
+    importance_score: int
+    importance_factors: NewsImportanceFactorsData
+    item_count: int
+    source_count: int
+    first_published_at_ms: int
+    last_published_at_ms: int
+    provider_evidence: NewsProviderEvidenceData | None
+
+
+class NewsFeedFacetData(ExactApiSchema):
+    value: str
+    count: int
+
+
+class NewsFeedSourceFacetData(NewsFeedFacetData):
+    label: str
+
+
+class NewsFeedFacetsPageData(ExactApiSchema):
+    categories_has_more: bool
+    levels_has_more: bool
+    sources_has_more: bool
+
+
+class NewsFeedFacetsData(ExactApiSchema):
+    categories: list[NewsFeedFacetData]
+    levels: list[NewsFeedFacetData]
+    sources: list[NewsFeedSourceFacetData]
+    page: NewsFeedFacetsPageData
+
+
+class NewsFeedFiltersData(ExactApiSchema):
+    category: str | None
+    level: str | None
+    source_id: str | None
+
+
+class NewsFeedData(ExactApiSchema):
+    sort: Literal["importance", "latest"]
+    filters: NewsFeedFiltersData
+    stories: list[NewsStoryData]
+    next_cursor: str | None
+    has_more: bool
+    facets: NewsFeedFacetsData
+
+
+class NewsStoryMemberData(ExactApiSchema):
+    item_id: str
+    provider_record_id: str | None
+    provider_metadata: NewsProviderMetadataData
+    source_id: str
+    source_name: str
+    reporting_origin: str
+    tier: int
+    title: str
+    description: str
+    url: str | None
+    lang: str
+    published_at_ms: int
+    last_observed_at_ms: int
+    level: NewsLevel
+    category: NewsCategory
+    importance_score: int
+    importance_factors: NewsImportanceFactorsData
+
+
+class NewsStoryMembersPageData(ExactApiSchema):
+    returned_count: int
+    has_more: bool
+    next_cursor: str | None
+
+
+class NewsStoryDetailData(NewsStoryData):
+    canonical_title: str
+    members: list[NewsStoryMemberData]
+    members_page: NewsStoryMembersPageData
+
+
+class NewsBriefSourceData(ExactApiSchema):
+    n: int
+    story_id: str
+    title: str
+    source: str
+    url: str | None
+
+
+class NewsBriefValidationData(ExactApiSchema):
+    citation_index_lock: bool
+    citation_closure: bool
+    proper_noun_grounding: bool
+    no_cross_story_stitching: bool
+    story_count: int
+    lead_fallback: bool
+    line_fallbacks: list[int]
+    grounding_failures: list[int]
+    model_line_coverage: int
+    final_story_coverage: int
+
+
+class NewsBriefPublicationData(ExactApiSchema):
+    publication_id: str
+    fingerprint: str
+    evidence_cutoff_at_ms: int
+    published_at_ms: int
+    provider: str
+    model: str
+    prompt_version: str
+    workflow_version: str
+    schema_version: str
+    locale: str
+    selected_story_ids: list[str]
+    lead: str
+    lines: list[str]
+    sources: list[NewsBriefSourceData]
+    validation: NewsBriefValidationData
+
+
+class NewsBriefRunData(ExactApiSchema):
+    run_id: str
+    fingerprint: str
+    status: Literal["running", "retryable", "ready", "insufficient_material", "failed"]
+    attempt_count: int
+    candidate_story_count: int
+    candidate_source_count: int
+    heartbeat_at_ms: int | None
+    lease_expires_at_ms: int | None
+    last_error: str | None
+    created_at_ms: int
+    updated_at_ms: int
+    completed_at_ms: int | None
+
+
+class NewsBriefData(ExactApiSchema):
+    state: Literal[
+        "unavailable",
+        "insufficient_material",
+        "running",
+        "ready",
+        "stale_fallback",
+        "failed",
+    ]
+    target_fingerprint: str
+    candidate_story_count: int
+    candidate_source_count: int
+    publication: NewsBriefPublicationData | None
+    latest_run: NewsBriefRunData | None
+    history: list[NewsBriefPublicationData]
+
+
+class NewsSourceData(ExactApiSchema):
+    source_id: str
+    name: str
+    source_kind: Literal["opennews"]
+    tier: int
+    enabled: bool
+    live_connected: bool
+    last_live_at_ms: int | None
+    last_recovery_at_ms: int | None
+    gap_unclosed: bool
+    last_success_at_ms: int | None
+    last_http_status: int | None
+    consecutive_failures: int
+    last_error: str | None
+
+
+class NewsSourcesPageData(ExactApiSchema):
+    returned_count: int
+    has_more: bool
+    next_cursor: str | None
+
+
+class NewsSourcesData(ExactApiSchema):
+    items: list[NewsSourceData]
+    page: NewsSourcesPageData
+
+
+class NewsOpenNewsStatusData(ExactApiSchema):
+    source_id: str
+    name: str
+    live_connected: bool
+    last_live_at_ms: int | None
+    last_recovery_at_ms: int | None
+    gap_unclosed: bool
+    last_error: str | None
+    last_http_status: int | None
+    last_success_at_ms: int | None
+    consecutive_failures: int
+
+
+class NewsIngestStatusData(ExactApiSchema):
+    status: NewsHealthStatus
+    reasons: list[str]
+    opennews: NewsOpenNewsStatusData | None
+
+
+class NewsStoryStatusData(ExactApiSchema):
+    status: NewsHealthStatus
+    reasons: list[str]
+    active_items: int
+    active_stories: int
+    newest_item_at_ms: int | None
+    newest_story_at_ms: int | None
+    last_material_change_at_ms: int | None
+    unmaterialized_item_count: int
+    invalid_owner_count: int
+    invalid_story_aggregate_count: int
+    invariant_error_count: int
+    identity_version: str
+    classifier_version: str
+    importance_version: str
+    last_attempt_at_ms: int | None
+    last_error: str | None
+
+
+class NewsBriefStatusData(ExactApiSchema):
+    status: NewsHealthStatus
+    reasons: list[str]
+    public_state: Literal[
+        "unavailable",
+        "insufficient_material",
+        "running",
+        "ready",
+        "stale_fallback",
+        "failed",
+    ]
+    target_fingerprint: str
+    publication_id: str | None
+    latest_run: NewsBriefRunData | None
+
+
+class NewsPushStatusData(ExactApiSchema):
+    status: Literal["disabled", "ready", "warming", "degraded"]
+    reasons: list[str]
+    enabled: bool
+    feishu_webhook_url_configured: bool
+    feishu_signing_secret_configured: bool
+    initialized: bool
+    baseline_at_ms: int | None
+    total_count: int
+    suppressed_count: int
+    pending_count: int
+    retry_count: int
+    sent_count: int
+    terminal_count: int
+    oldest_due_at_ms: int | None
+    latest_sent_at_ms: int | None
+    latest_error: str | None
+    latest_error_at_ms: int | None
+    measured_at_ms: int
+
+
+class NewsStatusLayersData(ExactApiSchema):
+    ingest: NewsIngestStatusData
+    story: NewsStoryStatusData
+    brief: NewsBriefStatusData
+    push: NewsPushStatusData
+
+
+class NewsStatusData(ExactApiSchema):
+    status: NewsHealthStatus
+    reasons: list[str]
+    layers: NewsStatusLayersData
+    measured_at_ms: int
+
+
 class MacroCoverageCapabilityData(ExactApiSchema):
     capability_id: str
     label: str

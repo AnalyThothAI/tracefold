@@ -198,6 +198,13 @@ Top-8 changed Story fingerprint
   -> one serial model adapter
   -> validated Chinese immutable publication + current pointer
   -> /api/news/brief
+
+New current Story with max OpenNews provider score > 70
+  -> News-owned durable push candidate
+  -> first-enable baseline suppression or one frozen highest-score Item
+  -> optional deepseek-v4-flash headline translation through model adapter
+  -> signed Feishu card through finite-operation adapter
+  -> explicit success or bounded durable retry/terminal state
 ```
 
 News acquisition owns one persistent OpenNews WSS receiver that runs
@@ -240,19 +247,22 @@ Diagnose News in this order:
    `news_brief_publications`: candidate fingerprint, lease/run state, current
    publication, last error, and immutable history;
 6. `/api/news/brief`: ETag and truthful public state;
-7. `/api/news/status`: warming/ready/degraded derived health.
+7. `news_push_state` and `news_push_deliveries`: baseline, frozen evidence,
+   lease, attempt, retry/terminal state, and explicit receipt;
+8. `/api/news/status`: warming/ready/degraded derived health.
 
-News health has three layers:
+News health has four layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | OpenNews is connected, its recovery gap is closed, and at least one item has succeeded | source not configured, no item yet, disconnected stream, open gap, or current provider error |
 | story | current 96-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
+| push | disabled, or configured with initialized baseline and no terminal delivery | missing required secrets, uninitialized enabled state, retry backlog beyond policy, or terminal delivery error |
 
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
-the model.
+the model or outbound delivery.
 
 #### Operator-authorized Issue #33 maintenance hard cut
 
@@ -340,6 +350,9 @@ Migrations `20260801_0235` and `20260801_0236` are irreversible. They delete
 the retired News acquisition history and Macro publication, per-attempt, and
 stored intermediate history while preserving current NewsItems, Macro facts,
 targets, document analyses, and six module rows.
+Migration `20260801_0237` persists the bounded OpenNews recovery boundary.
+Migration `20260801_0238` creates only `news_push_state` and
+`news_push_deliveries`; it performs no backfill and no outbound send.
 
 ## Operator actions and retention
 
