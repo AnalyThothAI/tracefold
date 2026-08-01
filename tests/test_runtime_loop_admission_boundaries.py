@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +15,92 @@ from tracefold.market.pricing.market_tick_poll_worker import MarketTickPoll
 from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileRefresh
 from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirror
 from tracefold.market.provider_contracts import DexProfileSource
-from tracefold.news.runtime import NewsAcquisition
+from tracefold.news.runtime import NewsAcquisition, NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
+
+
+def test_productive_due_loop_has_a_minimum_repoll_cadence() -> None:
+    async def scenario() -> list[float]:
+        stop_event = asyncio.Event()
+        started_at: list[float] = []
+
+        async def turn() -> bool:
+            started_at.append(time.monotonic())
+            if len(started_at) == 2:
+                stop_event.set()
+            return True
+
+        await _run_due(turn, idle_seconds=1.0, stop_event=stop_event)
+        return started_at
+
+    started_at = asyncio.run(scenario())
+
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.20
+
+
+def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:
+    class _BackloggedCandidate:
+        def __init__(self, stop_event: asyncio.Event) -> None:
+            self.stop_event = stop_event
+            self.started_at: list[float] = []
+
+        async def peek(self, *, now_ms: int) -> ModelCandidate:
+            return ModelCandidate(
+                kind="news_brief",
+                target_key="fingerprint",
+                due_at_ms=now_ms,
+                stable_order=1,
+            )
+
+        async def execute(self, candidate: ModelCandidate) -> bool:
+            del candidate
+            self.started_at.append(time.monotonic())
+            if len(self.started_at) == 2:
+                self.stop_event.set()
+            return True
+
+    async def scenario() -> list[float]:
+        stop_event = asyncio.Event()
+        candidate = _BackloggedCandidate(stop_event)
+        await run_model_arbiter((candidate,), stop_event=stop_event)
+        return candidate.started_at
+
+    started_at = asyncio.run(scenario())
+
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.20
+
+
+def test_news_brief_prepare_watchdog_covers_both_bounded_database_sessions() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, float]] = []
+
+        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
+            self.calls.append((operation_name, float(kwargs["operation_timeout_seconds"])))
+
+    async def scenario() -> list[tuple[str, float]]:
+        database = _Database()
+        candidate = NewsBriefCandidate(
+            db=database,
+            model_adapter=object(),
+            publisher=object(),
+            runtime_id="runtime-1",
+        )
+        completed = await candidate.execute(
+            ModelCandidate(
+                kind="news_brief",
+                target_key="fingerprint",
+                due_at_ms=1_000,
+                stable_order=20,
+            )
+        )
+        assert completed is False
+        return database.calls
+
+    assert asyncio.run(scenario()) == [("news_brief_prepare", 7.0)]
 
 
 def test_due_loop_propagates_post_work_admission_timeout() -> None:

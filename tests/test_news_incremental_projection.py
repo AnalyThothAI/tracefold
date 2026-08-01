@@ -7,6 +7,7 @@ from tracefold.news.projection import (
     compute_news_component_projection,
     compute_news_edge_block,
     compute_news_identity_feature,
+    plan_news_edge_pairs,
 )
 
 
@@ -40,6 +41,24 @@ def test_news_candidate_pair_compute_block_is_hard_capped_at_4096():
     }
     with pytest.raises(NewsShardOversized, match="pair_block_overflow"):
         compute_news_edge_block([pair] * 4_097)
+
+
+def test_news_candidate_pair_plan_fails_before_a_fifth_compute_block() -> None:
+    rows = [_projection_row(index) for index in range(182)]
+    target_id = str(rows[0]["item_id"])
+
+    with pytest.raises(NewsShardOversized, match="pair_total_overflow"):
+        plan_news_edge_pairs(
+            {
+                "now_ms": 1_000_000,
+                "target_item_id": target_id,
+                "target_feature": _target_feature(rows[0]),
+                "rows": rows,
+                "existing_edges": [],
+                "crossing_tokens": ["shared"],
+                "token_counts": {"shared": len(rows)},
+            }
+        )
 
 
 def test_news_component_output_excludes_unrelated_candidate_components():

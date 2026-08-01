@@ -14,12 +14,10 @@ from tracefold.platform.projection import ProjectionShard
 from tracefold.platform.resource import (
     CpuTaskTimeout,
     ResourceAdmissionTimeout,
-    ResourceOperationOverrun,
     ResourceSubmissionTracker,
 )
 
 _CPU_TIMEOUT_SECONDS = 2.0
-_SHARD_TIMEOUT_SECONDS = 5.0
 
 
 class ProfileProjectionCandidate:
@@ -45,7 +43,7 @@ class ProfileProjectionCandidate:
         row = await self.db.run_business(
             "profile_projection_peek",
             self.service.next_due,
-            operation_timeout_seconds=0.5,
+            operation_timeout_seconds=3.0,
             now_ms=now_ms,
         )
         if row is None:
@@ -80,12 +78,11 @@ class ProfileProjectionCandidate:
         submission = ResourceSubmissionTracker()
 
         try:
-            async with asyncio.timeout(_SHARD_TIMEOUT_SECONDS):
-                return await self._run_claimed(
-                    claim,
-                    now_ms=now_ms,
-                    submission=submission,
-                )
+            return await self._run_claimed(
+                claim,
+                now_ms=now_ms,
+                submission=submission,
+            )
         except asyncio.CancelledError:
             if not submission.submitted:
                 await asyncio.shield(self._release_prework(claim))
@@ -93,18 +90,6 @@ class ProfileProjectionCandidate:
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
             return False
-        except TimeoutError as exc:
-            if submission.submitted:
-                raise ResourceOperationOverrun("resource_operation_overrun:profile_projection_turn") from exc
-            await self.db.run_business(
-                "profile_projection_timeout",
-                self.service.fail_deterministic,
-                claim,
-                operation_timeout_seconds=3.0,
-                error_code="full_shard_timeout",
-                now_ms=_now_ms(),
-            )
-            return True
 
     async def _release_prework(self, claim: Any) -> bool:
         return bool(
@@ -141,7 +126,6 @@ class ProfileProjectionCandidate:
                     compute_profile_current_projection,
                     loaded,
                     service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
                     on_submitted=on_submitted,
                 )
             )

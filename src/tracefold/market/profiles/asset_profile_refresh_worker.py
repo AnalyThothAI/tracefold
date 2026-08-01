@@ -6,10 +6,8 @@ from typing import Any
 
 from tracefold.market.profiles.asset_profile_refresh import (
     fetch_asset_profile,
-    write_error_asset_profile,
     write_missing_asset_profile,
     write_ready_asset_profile,
-    write_unsupported_asset_profile,
 )
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.provider_contracts import (
@@ -24,9 +22,6 @@ _CLAIM_LEASE_MS = 120_000
 _PROVIDER_RETRY_MS = 300_000
 _READY_REFRESH_MS = 6 * 60 * 60_000
 _MISSING_RETRY_MS = (15 * 60_000, 30 * 60_000, 60 * 60_000, 120 * 60_000)
-_ERROR_RETRY_BASE_MS = 15 * 60_000
-_ERROR_RETRY_CAP_MS = 24 * 60 * 60_000
-_ERROR_MAX_ATTEMPTS = 5
 _STATEMENT_TIMEOUT_SECONDS = 3.0
 _PROFILE_PROVIDERS = frozenset({"gmgn_dex_profile", "binance_web3_profile"})
 
@@ -213,75 +208,6 @@ class AssetProfileRefresh:
             "target_attempt_consumed": False,
         }
 
-    def _publish_target_error(
-        self,
-        claim: dict[str, Any],
-        exc: Exception,
-        now_ms: int,
-    ) -> dict[str, Any]:
-        attempt_count = int(claim["attempt_count"])
-        terminal_reason = _terminal_error_reason(
-            exc,
-            attempt_count=attempt_count,
-            max_attempts=_ERROR_MAX_ATTEMPTS,
-        )
-        retry_delay_ms = _retry_delay_ms(
-            base_ms=_ERROR_RETRY_BASE_MS,
-            attempt_count=attempt_count,
-            cap_ms=_ERROR_RETRY_CAP_MS,
-        )
-        next_refresh_at_ms = int(now_ms) + retry_delay_ms
-        with (
-            self.db.worker_session(
-                self.name,
-                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
-            ) as repos,
-            repos.transaction(),
-        ):
-            repos.provider_circuits.close(
-                provider=str(claim["provider"]),
-                now_ms=now_ms,
-            )
-            if terminal_reason == "profile_unsupported":
-                write_unsupported_asset_profile(
-                    repos=repos,
-                    provider=str(claim["provider"]),
-                    row=claim,
-                    exc=exc,
-                    now_ms=now_ms,
-                )
-            else:
-                write_error_asset_profile(
-                    repos=repos,
-                    provider=str(claim["provider"]),
-                    row=claim,
-                    exc=exc,
-                    now_ms=now_ms,
-                    next_refresh_at_ms=next_refresh_at_ms,
-                )
-            if terminal_reason is not None:
-                changed = repos.asset_profile_refresh_targets.mark_terminal(
-                    [claim],
-                    reason=terminal_reason,
-                    now_ms=now_ms,
-                )
-            else:
-                changed = repos.asset_profile_refresh_targets.reschedule(
-                    [claim],
-                    due_at_ms=next_refresh_at_ms,
-                    now_ms=now_ms,
-                    reason="profile_error_written",
-                )
-            if changed != 1:
-                raise RuntimeError("asset_profile_target_error_claim_stale")
-            _enqueue_profile_current(repos=repos, row=claim, now_ms=now_ms)
-        return {
-            "rows_written": 1,
-            "terminal": int(terminal_reason is not None),
-            "next_attempt_at_ms": next_refresh_at_ms,
-            "target_attempt_consumed": True,
-        }
-
     def _publish_profile(
         self,
         claim: dict[str, Any],
@@ -386,26 +312,6 @@ def _required_source_watermark_ms(row: dict[str, Any], *, error: str) -> int:
 def _missing_retry_delay_ms(attempt_count: int) -> int:
     index = min(max(1, int(attempt_count)), len(_MISSING_RETRY_MS)) - 1
     return _MISSING_RETRY_MS[index]
-
-
-def _retry_delay_ms(*, base_ms: int, attempt_count: int, cap_ms: int) -> int:
-    exponent = max(0, int(attempt_count) - 1)
-    multiplier = int(2**exponent)
-    return min(int(cap_ms), int(base_ms) * multiplier)
-
-
-def _terminal_error_reason(
-    exc: Exception,
-    *,
-    attempt_count: int,
-    max_attempts: int,
-) -> str | None:
-    error = str(exc).strip().lower()
-    if error.startswith("unsupported_") or "unsupported chain" in error:
-        return "profile_unsupported"
-    if int(attempt_count) >= int(max_attempts):
-        return "profile_error_after_max_attempts"
-    return None
 
 
 __all__ = ["AssetProfileRefresh"]

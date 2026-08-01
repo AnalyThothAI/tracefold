@@ -29,6 +29,7 @@ _NEWS_HTTP_OUTER_TIMEOUT_SECONDS = 28.0
 _NEWS_PARSE_SERVICE_TIMEOUT_SECONDS = 2.0
 _NEWS_PARSE_OUTER_TIMEOUT_SECONDS = 2.5
 _BRIEF_MODEL_TIMEOUT_SECONDS = 60.0
+_BRIEF_PREPARE_TIMEOUT_SECONDS = 7.0
 _BRIEF_MAX_ATTEMPTS = 3
 
 
@@ -102,7 +103,6 @@ class NewsAcquisition:
                 self.feed_parser,
                 wire,
                 service_timeout_seconds=_NEWS_PARSE_SERVICE_TIMEOUT_SECONDS,
-                operation_timeout_seconds=_NEWS_PARSE_OUTER_TIMEOUT_SECONDS,
                 on_submitted=mark_submitted,
             )
             submitted = False
@@ -305,7 +305,7 @@ class NewsBriefCandidate:
                 "news_brief_prepare",
                 self._prepare_sync,
                 candidate.target_key,
-                operation_timeout_seconds=3.0,
+                operation_timeout_seconds=_BRIEF_PREPARE_TIMEOUT_SECONDS,
             )
         except ResourceAdmissionTimeout:
             return False

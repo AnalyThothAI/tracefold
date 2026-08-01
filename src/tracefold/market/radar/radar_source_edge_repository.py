@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -35,9 +35,17 @@ _DEADLINE_MS = {
 class RadarSourceEdgeRepository:
     """Incremental source-edge ownership for Token Radar material facts."""
 
-    def __init__(self, conn: Any) -> None:
+    def __init__(
+        self,
+        conn: Any,
+        *,
+        projection_transition_observer: Callable[[tuple[str, str]], None] | None = None,
+    ) -> None:
         self.conn = conn
-        self.frontiers = ProjectionFrontierRepository(conn)
+        self.frontiers = ProjectionFrontierRepository(
+            conn,
+            transition_observer=projection_transition_observer,
+        )
 
     def sync_event(self, *, event_id: str, now_ms: int) -> int:
         """Synchronize only one material event's current resolution edges."""

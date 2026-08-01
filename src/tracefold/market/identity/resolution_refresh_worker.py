@@ -211,21 +211,6 @@ class ResolutionRefresh:
             )
         return [dict(row) for row in lookups], False
 
-    def _start_lookup(
-        self,
-        lookup_key: str,
-        lookup_type: str,
-        now_ms: int,
-    ) -> None:
-        with self.db.worker_session(self.name) as repos, repos.transaction():
-            repos.discovery.start_lookup(
-                provider=DISCOVERY_PROVIDER,
-                lookup_key=lookup_key,
-                lookup_type=lookup_type,
-                now_ms=now_ms,
-                running_timeout_ms=self.lease_ms,
-            )
-
     def _publish_lookup_success_and_reprocess(
         self,
         lookup: dict[str, Any],

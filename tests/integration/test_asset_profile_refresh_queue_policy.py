@@ -15,10 +15,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.app.worker_capabilities import FiniteOperations
 from tracefold.market import AssetProfileRefresh, TokenImageMirror
-from tracefold.market.profiles.asset_profile_refresh_worker import (
-    _missing_retry_delay_ms,
-    _retry_delay_ms,
-)
+from tracefold.market.profiles.asset_profile_refresh_worker import _missing_retry_delay_ms
 from tracefold.market.provider_contracts import (
     DexProfileSource,
     DexProviderTemporarilyUnavailable,
@@ -116,12 +113,6 @@ def _enqueue_profile_target(conn: Any, *, target_id: str = "asset-1") -> None:
             reason="token_radar_entered",
             now_ms=NOW_MS,
         )
-
-
-def test_profile_retry_delay_is_exponential_and_bounded() -> None:
-    assert _retry_delay_ms(base_ms=900_000, attempt_count=1, cap_ms=86_400_000) == 900_000
-    assert _retry_delay_ms(base_ms=900_000, attempt_count=3, cap_ms=86_400_000) == 3_600_000
-    assert _retry_delay_ms(base_ms=900_000, attempt_count=20, cap_ms=86_400_000) == 86_400_000
 
 
 def test_missing_profile_retry_schedule_is_code_owned_and_exact() -> None:

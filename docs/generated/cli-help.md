@@ -52,14 +52,17 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {hard-cut-rebuild,seal-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
+                     {hard-cut-rebuild,seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
 
 positional arguments:
-  {hard-cut-rebuild,seal-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
+  {hard-cut-rebuild,seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
     hard-cut-rebuild    rebuild and audit all hard-cut current read models
     seal-workers-runtime-acceptance
                         validate and seal a complete Workers Runtime V2
                         acceptance bundle
+    collect-workers-runtime-acceptance
+                        collect the fixed 30-minute production Workers Runtime
+                        V2 interval
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts

@@ -8,6 +8,7 @@ from tracefold.platform.model_candidate import NativeModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _MODEL_IDLE_SECONDS = 5.0
+_MODEL_PRODUCTIVE_REPOLL_SECONDS = 0.250
 
 
 async def run_model_arbiter(
@@ -42,7 +43,7 @@ async def run_model_arbiter(
         )
         progressed = await adapter.execute(candidate)
         if progressed:
-            await asyncio.sleep(0)
+            await _wait_or_stop(stop_event, _MODEL_PRODUCTIVE_REPOLL_SECONDS)
         else:
             await _wait_or_stop(stop_event, _MODEL_IDLE_SECONDS)
 

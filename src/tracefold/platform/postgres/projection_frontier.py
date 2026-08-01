@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -60,8 +61,14 @@ FRONTIER_SPECS = (
 class ProjectionFrontierRepository:
     """Typed PostgreSQL frontier state; callers own short transactions."""
 
-    def __init__(self, conn: Any) -> None:
+    def __init__(
+        self,
+        conn: Any,
+        *,
+        transition_observer: Callable[[tuple[str, str]], None] | None = None,
+    ) -> None:
         self.conn = conn
+        self._transition_observer = transition_observer
 
     def next_due(self, spec: FrontierSpec, *, now_ms: int) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -136,7 +143,7 @@ class ProjectionFrontierRepository:
             f"({spec.table}.input_fingerprint IS DISTINCT FROM EXCLUDED.input_fingerprint "
             f"OR {spec.table}.{spec.version_column} IS DISTINCT FROM EXCLUDED.{spec.version_column})"
         )
-        cursor = self.conn.execute(
+        row = self.conn.execute(
             f"""
             INSERT INTO {spec.table}({", ".join(columns)})
             VALUES ({", ".join(f"%({column})s" for column in columns)})
@@ -203,10 +210,22 @@ class ProjectionFrontierRepository:
                 ELSE {spec.table}.last_error_code
               END,
               updated_at_ms = EXCLUDED.updated_at_ms
+            RETURNING WITH (OLD AS previous, NEW AS current)
+              CASE
+                WHEN current.status = 'dirty' AND previous.status IS NULL THEN true
+                WHEN current.status = 'dirty'
+                  AND previous.status IN ('clean', 'quarantined', 'running')
+                THEN true
+                ELSE false
+              END AS executable_arrival
             """,
             values,
-        )
-        return int(cursor.rowcount or 0)
+        ).fetchone()
+        if row is None:
+            return 0
+        if bool(row["executable_arrival"]):
+            self._observe(spec.domain, "arrival")
+        return 1
 
     def _mark_radar_dirty(
         self,
@@ -226,7 +245,7 @@ class ProjectionFrontierRepository:
             "input_fingerprint": _required_text(input_fingerprint, "input_fingerprint"),
             "projection_version": _required_text(version, "projection_version"),
         }
-        cursor = self.conn.execute(
+        row = self.conn.execute(
             """
             INSERT INTO radar_projection_frontiers(
               target_type, target_id, window_key, venue, status,
@@ -314,10 +333,29 @@ class ProjectionFrontierRepository:
               EXCLUDED.input_fingerprint,
               EXCLUDED.projection_version
             )
+            RETURNING WITH (OLD AS previous, NEW AS current)
+              CASE
+                WHEN previous.status IS NULL THEN true
+                WHEN previous.status IN ('clean', 'quarantined') THEN true
+                WHEN previous.status = 'running'
+                  AND (
+                    previous.input_fingerprint,
+                    previous.projection_version
+                  ) IS NOT DISTINCT FROM (
+                    previous.claimed_input_fingerprint,
+                    previous.claimed_projection_version
+                  )
+                THEN true
+                ELSE false
+              END AS executable_arrival
             """,
             values,
-        )
-        return int(cursor.rowcount or 0)
+        ).fetchone()
+        if row is None:
+            return 0
+        if bool(row["executable_arrival"]):
+            self._observe(RADAR_FRONTIER.domain, "arrival")
+        return 1
 
     def claim(
         self,
@@ -452,7 +490,10 @@ class ProjectionFrontierRepository:
                     "now_ms": int(now_ms),
                 },
             )
-            return int(cursor.rowcount or 0) == 1
+            completed = int(cursor.rowcount or 0) == 1
+            if completed:
+                self._observe(spec.domain, "completion")
+            return completed
         cursor = self.conn.execute(
             f"""
             UPDATE {spec.table}
@@ -480,7 +521,14 @@ class ProjectionFrontierRepository:
                 "now_ms": int(now_ms),
             },
         )
-        return int(cursor.rowcount or 0) == 1
+        completed = int(cursor.rowcount or 0) == 1
+        if completed:
+            self._observe(spec.domain, "completion")
+        return completed
+
+    def _observe(self, domain: str, transition: str) -> None:
+        if self._transition_observer is not None:
+            self._transition_observer((str(domain), str(transition)))
 
     def release_stale(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -10,7 +11,7 @@ from functools import partial
 from threading import BoundedSemaphore
 from typing import Any, Protocol, cast
 
-from psycopg.errors import LockNotAvailable
+from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
@@ -22,7 +23,9 @@ from tracefold.platform.resource import (
 )
 from tracefold.platform.validation import require_nonnegative_float
 
-_WORKER_STATEMENT_TIMEOUT_SECONDS = 30.0
+_WORKER_STATEMENT_TIMEOUT_SECONDS = 3.0
+_WORKER_CONNECTION_BASE_STATEMENT_TIMEOUT_SECONDS = 0.5
+_WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS = 0.1
 _WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS = 5.0
 _BOUNDED_QUERY_CONFIG = {
     "max_parallel_workers_per_gather": "0",
@@ -45,6 +48,7 @@ _SERVE_LANE_CAPACITIES = {
 _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 _WORKER_CHECKOUT_TIMEOUT_SECONDS = 0.250
 _WORKER_ADMISSION_TIMEOUT_SECONDS = 1.0
+_WORKER_OPERATION_COMPLETION_GRACE_SECONDS = 0.500
 _WORKER_POOL_MIN_SIZE = 1
 _WORKER_POOL_MAX_SIZE = 4
 _WORKER_POOL_MAX_WAITING = 3
@@ -175,7 +179,7 @@ class WorkerDatabase:
                 max_waiting=_WORKER_POOL_MAX_WAITING,
                 connect_timeout_seconds=postgres.connect_timeout_seconds,
                 application_name="tracefold_workers",
-                statement_timeout_seconds=_WORKER_STATEMENT_TIMEOUT_SECONDS,
+                statement_timeout_seconds=_WORKER_CONNECTION_BASE_STATEMENT_TIMEOUT_SECONDS,
                 lock_timeout_seconds=0.250,
                 idle_in_transaction_session_timeout_seconds=_WORKER_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS,
             )
@@ -313,7 +317,10 @@ class WorkerDatabase:
             on_submitted()
         done, _ = await asyncio.wait(
             {wrapped},
-            timeout=max(0.001, float(operation_timeout_seconds)),
+            timeout=max(
+                0.001,
+                float(operation_timeout_seconds) + _WORKER_OPERATION_COMPLETION_GRACE_SECONDS,
+            ),
         )
         if not done:
             raise ResourceOperationOverrun(f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}")
@@ -322,6 +329,14 @@ class WorkerDatabase:
         except LockNotAvailable as exc:
             raise ResourceAdmissionTimeout(
                 f"worker_database_lock_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
+        except QueryCanceled as exc:
+            raise ResourceAdmissionTimeout(
+                f"worker_database_statement_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
+        except TransactionTimeout as exc:
+            raise ResourceAdmissionTimeout(
+                f"worker_database_transaction_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
 
     def close_business_admission(self) -> None:
@@ -373,24 +388,15 @@ class WorkerDatabase:
         started = time.perf_counter()
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
-        returned = False
-        bounded_query_policy = True
+        projection_transitions: list[tuple[str, str]] = []
         try:
-            _set_config(
-                conn,
-                "application_name",
-                f"tracefold_workers:{_normalize_operation_name(name)}",
-            )
-            _set_worker_query_policy(conn)
-            if statement_timeout_seconds is not None:
-                _set_config(conn, "statement_timeout", _statement_timeout_value(statement_timeout_seconds))
-            if transaction_timeout_seconds is not None:
-                _set_config(
+            with conn.transaction():
+                _set_worker_operation_config(
                     conn,
-                    "transaction_timeout",
-                    _transaction_timeout_value(transaction_timeout_seconds),
+                    operation_name=name,
+                    statement_timeout_seconds=statement_timeout_seconds,
+                    transaction_timeout_seconds=transaction_timeout_seconds,
                 )
-            try:
                 yield repositories_for_connection(
                     conn,
                     transaction_observer=(
@@ -401,34 +407,19 @@ class WorkerDatabase:
                             seconds,
                         )
                     ),
+                    projection_transitions=projection_transitions,
                 )
-            except BaseException:
-                try:
-                    _reset_worker_connection(
-                        conn,
-                        statement_timeout_seconds=statement_timeout_seconds,
-                        transaction_timeout_seconds=transaction_timeout_seconds,
-                        bounded_query_policy=bounded_query_policy,
-                    )
-                except Exception:
-                    _discard_connection(self.worker_pool, conn)
-                    returned = True
-                else:
-                    self.worker_pool.putconn(conn)
-                    returned = True
-                raise
-            _reset_worker_connection(
-                conn,
-                statement_timeout_seconds=statement_timeout_seconds,
-                transaction_timeout_seconds=transaction_timeout_seconds,
-                bounded_query_policy=bounded_query_policy,
-            )
-            self.worker_pool.putconn(conn)
-            returned = True
-        except Exception:
-            if not returned:
+        except BaseException:
+            if bool(getattr(conn, "closed", False)):
                 _discard_connection(self.worker_pool, conn)
+            else:
+                self.worker_pool.putconn(conn)
             raise
+        else:
+            self.worker_pool.putconn(conn)
+            if self.telemetry is not None:
+                for (domain, transition), count in Counter(projection_transitions).items():
+                    self.telemetry.record_projection_transition(domain, transition, count)
 
     async def aclose(self) -> None:
         await _close_pool(self.worker_pool)
@@ -592,32 +583,40 @@ def _set_config(conn: Any, name: str, value: str) -> None:
     conn.execute("SELECT set_config(%s, %s, false)", (str(name), str(value)))
 
 
-def _set_worker_query_policy(conn: Any) -> None:
-    for name, value in _BOUNDED_QUERY_CONFIG.items():
-        _set_config(conn, name, value)
+def _set_configs(conn: Any, values: dict[str, str], *, local: bool = False) -> None:
+    if not values:
+        return
+    scope = "true" if local else "false"
+    expressions = ", ".join(f"set_config(%s, %s, {scope})" for _ in values)
+    params = tuple(part for item in values.items() for part in item)
+    conn.execute(f"SELECT {expressions}", params)
 
 
-def _reset_worker_connection(
+def _set_worker_operation_config(
     conn: Any,
     *,
+    operation_name: str,
     statement_timeout_seconds: float | None,
     transaction_timeout_seconds: float | None,
-    bounded_query_policy: bool,
 ) -> None:
-    if statement_timeout_seconds is not None:
-        _set_config(conn, "statement_timeout", _statement_timeout_value(_WORKER_STATEMENT_TIMEOUT_SECONDS))
-    if transaction_timeout_seconds is not None:
-        _set_config(conn, "transaction_timeout", "0ms")
-    if bounded_query_policy:
-        for name in _BOUNDED_QUERY_CONFIG:
-            _reset_config(conn, name)
-    _set_config(conn, "application_name", "tracefold_workers")
-
-
-def _reset_config(conn: Any, name: str) -> None:
-    if name not in _BOUNDED_QUERY_CONFIG:
-        raise ValueError("db_reset_config_name_invalid")
-    conn.execute(f"RESET {name}")
+    effective_statement_timeout_seconds = (
+        _WORKER_STATEMENT_TIMEOUT_SECONDS if statement_timeout_seconds is None else statement_timeout_seconds
+    )
+    effective_transaction_timeout_seconds = (
+        effective_statement_timeout_seconds + _WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS
+        if transaction_timeout_seconds is None
+        else transaction_timeout_seconds
+    )
+    _set_configs(
+        conn,
+        {
+            **_BOUNDED_QUERY_CONFIG,
+            "application_name": f"tracefold_workers:{_normalize_operation_name(operation_name)}",
+            "statement_timeout": _statement_timeout_value(effective_statement_timeout_seconds),
+            "transaction_timeout": _transaction_timeout_value(effective_transaction_timeout_seconds),
+        },
+        local=True,
+    )
 
 
 def _discard_connection(pool: Any, conn: Any) -> None:

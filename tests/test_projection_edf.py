@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -47,6 +48,39 @@ def test_projection_edf_runs_one_earliest_deadline_with_stable_order(monkeypatch
 
     metrics = asyncio.run(scenario())
     assert 'tracefold_worker_projection_deadline_misses_total{domain="radar",worker="projection_edf"} 1.0' in metrics
+
+
+def test_productive_projection_has_a_minimum_repoll_cadence() -> None:
+    class _BackloggedCandidate:
+        def __init__(self, stop_event: asyncio.Event) -> None:
+            self.stop_event = stop_event
+            self.started_at: list[float] = []
+
+        async def peek(self, *, now_ms: int) -> ProjectionShard:
+            del now_ms
+            return ProjectionShard("radar", "1h:all", 100, 1)
+
+        async def execute(self, shard: ProjectionShard) -> bool:
+            del shard
+            self.started_at.append(time.monotonic())
+            if len(self.started_at) == 2:
+                self.stop_event.set()
+            return True
+
+    async def scenario() -> list[float]:
+        stop_event = asyncio.Event()
+        candidate = _BackloggedCandidate(stop_event)
+        await run_projection_edf(
+            (candidate,),
+            stop_event=stop_event,
+            telemetry=TelemetryRegistry(),
+        )
+        return candidate.started_at
+
+    started_at = asyncio.run(scenario())
+
+    assert len(started_at) == 2
+    assert started_at[1] - started_at[0] >= 0.20
 
 
 def test_retained_worker_metric_names_and_labels_have_no_framework_dependency() -> None:

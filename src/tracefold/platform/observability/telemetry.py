@@ -71,6 +71,12 @@ class TelemetryRegistry:
             ("worker", "domain"),
             registry=self.registry,
         )
+        self.projection_transitions_total = Counter(
+            "tracefold_worker_projection_transitions_total",
+            "Committed executable arrivals and completions for deterministic projection frontiers.",
+            ("domain", "transition"),
+            registry=self.registry,
+        )
         self.queue_oldest_delay_seconds = Gauge(
             "tracefold_worker_queue_oldest_delay_seconds",
             "Age of the oldest due queue item.",
@@ -145,6 +151,15 @@ class TelemetryRegistry:
             worker=_label(worker),
             domain=_label(domain),
         ).inc()
+
+    def record_projection_transition(self, domain: str, transition: str, count: int = 1) -> None:
+        normalized_count = int(count)
+        if normalized_count <= 0:
+            return
+        self.projection_transitions_total.labels(
+            domain=_label(domain),
+            transition=_label(transition),
+        ).inc(normalized_count)
 
     def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
         self.queue_oldest_delay_seconds.labels(

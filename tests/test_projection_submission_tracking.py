@@ -6,6 +6,10 @@ from typing import Any
 
 import pytest
 
+import tracefold.macro.projection_worker as macro_projection_worker
+import tracefold.market.profiles.token_profile_current_worker as profile_projection_worker
+import tracefold.market.radar.projection_worker as radar_projection_worker
+import tracefold.news.projection_worker as news_projection_worker
 from tracefold.macro.projection_worker import MacroProjectionCandidate
 from tracefold.market.profiles.token_profile_current_worker import ProfileProjectionCandidate
 from tracefold.market.radar.projection_worker import RadarProjectionCandidate
@@ -61,6 +65,118 @@ class _AdmissionBlockingDb:
         if operation_name.endswith("_release_prework"):
             return len(getattr(self.claim, "targets", (True,)))
         return {}
+
+
+@pytest.mark.parametrize(
+    "candidate_type",
+    (
+        RadarProjectionCandidate,
+        ProfileProjectionCandidate,
+        MacroProjectionCandidate,
+        NewsProjectionCandidate,
+    ),
+)
+def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_type: Any) -> None:
+    class _RecordingDb:
+        def __init__(self) -> None:
+            self.timeout_seconds: float | None = None
+
+        async def run_business(self, _operation_name: str, *_args: Any, **kwargs: Any) -> None:
+            self.timeout_seconds = float(kwargs["operation_timeout_seconds"])
+
+    async def scenario() -> float | None:
+        database = _RecordingDb()
+        candidate = candidate_type(db=database, cpu=_Cpu(), runtime_id="runtime-1")
+        assert await candidate.peek(now_ms=1_000) is None
+        return database.timeout_seconds
+
+    assert asyncio.run(scenario()) == 3.0
+
+
+@pytest.mark.parametrize(
+    ("projection_module", "candidate_type", "shard", "claim"),
+    (
+        (
+            radar_projection_worker,
+            RadarProjectionCandidate,
+            ProjectionShard("radar", '{"venue":"all","window":"1h"}', 100, 10),
+            SimpleNamespace(targets=(object(),)),
+        ),
+        (
+            profile_projection_worker,
+            ProfileProjectionCandidate,
+            ProjectionShard(
+                "profile",
+                '{"target_id":"BTC-USDT-SWAP","target_type":"cex_symbol"}',
+                100,
+                20,
+            ),
+            object(),
+        ),
+        (
+            macro_projection_worker,
+            MacroProjectionCandidate,
+            ProjectionShard("macro", "rates_fed", 100, 30),
+            object(),
+        ),
+        (
+            news_projection_worker,
+            NewsProjectionCandidate,
+            ProjectionShard("news", "score:0", 100, 40),
+            SimpleNamespace(kind="score-bucket"),
+        ),
+    ),
+)
+def test_completed_projection_phases_may_exceed_the_soft_turn_slo(
+    projection_module: Any,
+    candidate_type: Any,
+    shard: ProjectionShard,
+    claim: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SlowCompletedCpu(_Cpu):
+        async def run(self, operation_name: str, *args: Any, on_submitted=None, **kwargs: Any) -> Any:
+            if on_submitted is not None:
+                on_submitted()
+            await asyncio.sleep(0.01)
+            return await super().run(operation_name, *args, on_submitted=None, **kwargs)
+
+    class _SlowCompletedDb(_AdmissionBlockingDb):
+        async def run_business(
+            self,
+            operation_name: str,
+            *args: Any,
+            on_submitted=None,
+            **kwargs: Any,
+        ) -> Any:
+            if not operation_name.endswith("_claim") and on_submitted is not None:
+                on_submitted()
+            if not operation_name.endswith("_claim"):
+                await asyncio.sleep(0.01)
+            return await super().run_business(
+                operation_name,
+                *args,
+                on_submitted=None,
+                **kwargs,
+            )
+
+    async def scenario() -> bool:
+        database = _SlowCompletedDb(block_operation="never", claim=claim)
+        candidate = candidate_type(
+            db=database,
+            cpu=_SlowCompletedCpu(),
+            runtime_id="runtime-1",
+        )
+        return await candidate.execute(shard)
+
+    monkeypatch.setattr(
+        projection_module,
+        "_SHARD_TIMEOUT_SECONDS",
+        0.001,
+        raising=False,
+    )
+
+    assert asyncio.run(scenario()) is True
 
 
 @pytest.mark.parametrize(

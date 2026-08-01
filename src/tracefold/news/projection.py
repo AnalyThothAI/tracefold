@@ -37,7 +37,7 @@ from .repository import deterministic_id
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _ALIAS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 _SCORING_EPOCH_MS = 60 * 60 * 1000
-_CLAIM_LEASE_MS = 5_000
+_CLAIM_LEASE_MS = 60_000
 _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
 _PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 _STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0
@@ -45,7 +45,8 @@ _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
-_PAIR_BLOCK_CAP = 4_096
+NEWS_PAIR_BLOCK_CAP = 4_096
+NEWS_PAIR_BLOCK_COUNT_CAP = 4
 _ENTITY_PREFIX = "__entity__:"
 _PUBLIC_STORY_DEADLINE_MS = 60_000
 _SCORE_BUCKET_COUNT = 64
@@ -1436,8 +1437,8 @@ def rebuild_all_news_for_maintenance(
         edge_plan = plan_news_edge_pairs(context)
         new_edges: list[dict[str, Any]] = []
         pairs = list(edge_plan["recompute_pairs"])
-        for offset in range(0, len(pairs), _PAIR_BLOCK_CAP):
-            new_edges.extend(compute_news_edge_block(pairs[offset : offset + _PAIR_BLOCK_CAP]))
+        for offset in range(0, len(pairs), NEWS_PAIR_BLOCK_CAP):
+            new_edges.extend(compute_news_edge_block(pairs[offset : offset + NEWS_PAIR_BLOCK_CAP]))
         edge_plan["new_edges"] = new_edges
         final_edges = merge_final_edges(
             existing_edges=context["existing_edges"],
@@ -1659,17 +1660,29 @@ def plan_news_edge_pairs(context: dict[str, Any]) -> dict[str, Any]:
         for edge in context["existing_edges"]
         if target_id in {str(edge["left_item_id"]), str(edge["right_item_id"])}
     }
-    recompute: set[tuple[str, str]] = {
-        _ordered_pair(target_id, other) for other in active_ids if other != target_id and is_candidate(target_id, other)
-    }
+    pair_limit = NEWS_PAIR_BLOCK_CAP * NEWS_PAIR_BLOCK_COUNT_CAP
+    planned_pairs = set(affected)
+    if len(planned_pairs) > pair_limit:
+        raise NewsShardOversized("news_candidate_pair_total_overflow")
+
+    def add_pair(target: set[tuple[str, str]], pair: tuple[str, str]) -> None:
+        target.add(pair)
+        planned_pairs.add(pair)
+        if len(planned_pairs) > pair_limit:
+            raise NewsShardOversized("news_candidate_pair_total_overflow")
+
+    recompute: set[tuple[str, str]] = set()
+    for other in sorted(active_ids):
+        if other != target_id and is_candidate(target_id, other):
+            add_pair(recompute, _ordered_pair(target_id, other))
     crossing_tokens = {str(token) for token in context["crossing_tokens"]}
     for token in crossing_tokens:
         members = sorted(item_id for item_id in active_ids if token in lexical_by_id[item_id])
         for left, right in combinations(members, 2):
             pair = _ordered_pair(left, right)
-            affected.add(pair)
+            add_pair(affected, pair)
             if is_candidate(left, right):
-                recompute.add(pair)
+                add_pair(recompute, pair)
 
     pair_rows = [
         {
@@ -1684,15 +1697,17 @@ def plan_news_edge_pairs(context: dict[str, Any]) -> dict[str, Any]:
         }
         for left, right in sorted(recompute)
     ]
-    return {
-        "affected_pairs": [list(pair) for pair in sorted(affected | recompute)],
+    plan = {
+        "affected_pairs": [list(pair) for pair in sorted(planned_pairs)],
         "recompute_pairs": pair_rows,
-        "pair_blocks": (len(pair_rows) + _PAIR_BLOCK_CAP - 1) // _PAIR_BLOCK_CAP,
+        "pair_blocks": (len(pair_rows) + NEWS_PAIR_BLOCK_CAP - 1) // NEWS_PAIR_BLOCK_CAP,
     }
+    _require_bounded_output(plan)
+    return plan
 
 
 def compute_news_edge_block(pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if len(pairs) > _PAIR_BLOCK_CAP:
+    if len(pairs) > NEWS_PAIR_BLOCK_CAP:
         raise NewsShardOversized("news_candidate_pair_block_overflow")
     edges: list[dict[str, Any]] = []
     for pair in pairs:

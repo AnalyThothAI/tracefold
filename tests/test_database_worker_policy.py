@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Any
 
 import pytest
-from psycopg.errors import LockNotAvailable
+from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
+from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.macro.projection import MacroProjectionService
+from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
 from tracefold.market.profiles.profile_projection import ProfileProjectionService
 from tracefold.market.radar.microbatch import RadarMicroBatchService
 from tracefold.news.projection import NewsProjectionService
@@ -43,13 +45,10 @@ def test_background_projection_session_bounds_postgres_parallelism() -> None:
     with bundle.worker_session("profile_projection"):
         pass
 
-    configured = [params for sql, params in conn.executed if sql.startswith("SELECT set_config")]
-    assert ("max_parallel_workers_per_gather", "0") in configured
-    assert ("jit", "off") in configured
-    assert ("work_mem", "16MB") in configured
-    assert "RESET max_parallel_workers_per_gather" in [sql for sql, _params in conn.executed]
-    assert "RESET jit" in [sql for sql, _params in conn.executed]
-    assert "RESET work_mem" in [sql for sql, _params in conn.executed]
+    configured = _combined_config(conn.executed[0])
+    assert configured["max_parallel_workers_per_gather"] == "0"
+    assert configured["jit"] == "off"
+    assert configured["work_mem"] == "16MB"
 
 
 def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
@@ -60,11 +59,24 @@ def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
     with bundle.worker_session("collector"):
         pass
 
-    configured_names = {str(params[0]) for sql, params in conn.executed if sql.startswith("SELECT set_config")}
-    assert configured_names >= {"max_parallel_workers_per_gather", "jit", "work_mem"}
+    configured = _combined_config(conn.executed[0])
+    assert configured.keys() >= {"max_parallel_workers_per_gather", "jit", "work_mem"}
 
 
-def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
+def test_steady_worker_session_default_sql_budget_is_three_seconds() -> None:
+    conn = _FakeConnection()
+    bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=None)
+
+    with bundle.worker_session("market_tick_poll"):
+        pass
+
+    assert len(conn.executed) == 1
+    assert _combined_config(conn.executed[0])["statement_timeout"] == "3000ms"
+    assert _combined_config(conn.executed[0])["transaction_timeout"] == "3100ms"
+    assert "true" in conn.executed[0][0]
+
+
+def test_worker_session_enforces_transaction_local_timeout() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
@@ -75,9 +87,70 @@ def test_worker_session_enforces_and_resets_transaction_timeout() -> None:
     ):
         pass
 
-    configured = [params for sql, params in conn.executed if sql.startswith("SELECT set_config")]
-    assert ("transaction_timeout", "500ms") in configured
-    assert ("transaction_timeout", "0ms") in configured
+    assert _combined_config(conn.executed[0])["transaction_timeout"] == "500ms"
+    assert len(conn.executed) == 1
+    assert "true" in conn.executed[0][0]
+
+
+def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None:
+    conn = _FakeConnection()
+    pool = _FakePool(conn)
+    bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
+
+    with bundle.worker_session(
+        "news_projection",
+        statement_timeout_seconds=0.5,
+        transaction_timeout_seconds=0.5,
+    ):
+        pass
+
+    assert len(conn.executed) == 1
+    assert _combined_config(conn.executed[0]) == {
+        "max_parallel_workers_per_gather": "0",
+        "jit": "off",
+        "work_mem": "16MB",
+        "application_name": "tracefold_workers:news_projection",
+        "statement_timeout": "500ms",
+        "transaction_timeout": "500ms",
+    }
+
+
+def test_projection_transitions_flush_only_after_outer_worker_transaction_commits() -> None:
+    telemetry = _RecordingTelemetry()
+    bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
+
+    with bundle.worker_session("profile_projection") as repos:
+        repos.projection_frontiers._observe("profile", "arrival")
+        repos.projection_frontiers._observe("profile", "arrival")
+        repos.projection_frontiers._observe("profile", "completion")
+        assert telemetry.transitions == []
+
+    assert telemetry.transitions == [
+        ("profile", "arrival", 2),
+        ("profile", "completion", 1),
+    ]
+
+
+def test_projection_transitions_are_discarded_on_outer_or_nested_rollback() -> None:
+    telemetry = _RecordingTelemetry()
+    bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
+
+    with pytest.raises(ValueError, match="outer"), bundle.worker_session("profile_projection") as repos:
+        repos.projection_frontiers._observe("profile", "arrival")
+        raise ValueError("outer")
+
+    with (
+        bundle.worker_session("profile_projection") as repos,
+        pytest.raises(
+            ValueError,
+            match="nested",
+        ),
+        repos.transaction(),
+    ):
+        repos.projection_frontiers._observe("profile", "arrival")
+        raise ValueError("nested")
+
+    assert telemetry.transitions == []
 
 
 def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() -> None:
@@ -122,6 +195,54 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
         ]
 
 
+def test_macro_acquisition_uses_one_native_budget_for_statement_and_transaction() -> None:
+    database = _RecordingSessionDatabase()
+    service = object.__new__(MacroAcquisitionService)
+    service.db = database
+    service.worker_name = "macro_acquisition"
+
+    service._session()
+    service._session(timeout_seconds=0.5)
+
+    assert database.calls == [
+        {
+            "name": "macro_acquisition",
+            "statement_timeout_seconds": 5.0,
+            "transaction_timeout_seconds": 5.0,
+        },
+        {
+            "name": "macro_acquisition",
+            "statement_timeout_seconds": 0.5,
+            "transaction_timeout_seconds": 0.5,
+        },
+    ]
+
+
+def test_event_anchor_uses_one_native_budget_for_statement_and_transaction() -> None:
+    database = _RecordingSessionDatabase()
+    worker = object.__new__(EventAnchorBackfill)
+    worker.db = database
+    worker.name = "event_anchor_backfill"
+
+    with worker._worker_session():
+        pass
+    with worker._worker_session(timeout_seconds=0.5):
+        pass
+
+    assert database.calls == [
+        {
+            "name": "event_anchor_backfill",
+            "statement_timeout_seconds": 3.0,
+            "transaction_timeout_seconds": 3.0,
+        },
+        {
+            "name": "event_anchor_backfill",
+            "statement_timeout_seconds": 0.5,
+            "transaction_timeout_seconds": 0.5,
+        },
+    ]
+
+
 def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
@@ -147,6 +268,54 @@ def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
                 )
                 == 1
             )
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def native_statement_timeout() -> None:
+            time.sleep(0.05)
+            raise QueryCanceled("canceling statement due to statement timeout")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_statement_timeout:news_projection_peek",
+            ):
+                await database.run_business(
+                    "news_projection_peek",
+                    native_statement_timeout,
+                    operation_timeout_seconds=0.01,
+                )
+            assert await database.drain_business(timeout_seconds=1.0)
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_native_transaction_timeout_is_recoverable() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def native_transaction_timeout() -> None:
+            raise TransactionTimeout("terminating transaction due to timeout")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_transaction_timeout:news_projection_claim",
+            ):
+                await database.run_business(
+                    "news_projection_claim",
+                    native_transaction_timeout,
+                    operation_timeout_seconds=0.01,
+                )
         finally:
             database.close_executors()
 
@@ -204,8 +373,19 @@ class _FakeConnection:
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self.executed.append((sql, params))
 
+    @contextmanager
+    def transaction(self):
+        yield
+
     def close(self) -> None:
         return None
+
+
+def _combined_config(executed: tuple[str, tuple[Any, ...]]) -> dict[str, str]:
+    sql, params = executed
+    assert sql.startswith("SELECT set_config")
+    assert len(params) % 2 == 0
+    return {str(params[index]): str(params[index + 1]) for index in range(0, len(params), 2)}
 
 
 class _FakePool:
@@ -253,4 +433,18 @@ class _RecordingSessionDatabase:
                 "transaction_timeout_seconds": transaction_timeout_seconds,
             }
         )
-        return object()
+        return nullcontext()
+
+
+class _RecordingTelemetry:
+    def __init__(self) -> None:
+        self.transitions: list[tuple[str, str, int]] = []
+
+    def record_pool_wait(self, pool: str, wait_ms: float) -> None:
+        return None
+
+    def record_transaction_seconds(self, worker: str, seconds: float) -> None:
+        return None
+
+    def record_projection_transition(self, domain: str, transition: str, count: int) -> None:
+        self.transitions.append((domain, transition, count))

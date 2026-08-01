@@ -40,7 +40,8 @@ _ACQUISITION_POLICY = {
 }
 _LEASE_MS = 45_000
 _MAX_ATTEMPTS = 5
-_STATEMENT_TIMEOUT_SECONDS = 30.0
+_CLAIM_TIMEOUT_SECONDS = 0.5
+_PUBLISH_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +127,7 @@ class MacroAcquisitionService:
         now_ms: int | None = None,
     ) -> MacroAcquisitionClaim | None:
         started_at_ms = int(now_ms if now_ms is not None else self.clock_ms())
-        with self._session() as repos, repos.transaction():
+        with self._session(timeout_seconds=_CLAIM_TIMEOUT_SECONDS) as repos, repos.transaction():
             target = repos.macro.claim_target(
                 clock_kind=self.clock_kind,
                 lease_owner=self.lease_owner,
@@ -153,7 +154,7 @@ class MacroAcquisitionService:
         )
 
     def release_claim(self, claim: MacroAcquisitionClaim) -> bool:
-        with self._session() as repos, repos.transaction():
+        with self._session(timeout_seconds=_CLAIM_TIMEOUT_SECONDS) as repos, repos.transaction():
             return bool(
                 repos.macro.release_target_claim(
                     target_key=str(claim.target["target_key"]),
@@ -360,10 +361,11 @@ class MacroAcquisitionService:
             "rows_inserted": inserted,
         }
 
-    def _session(self) -> Any:
+    def _session(self, *, timeout_seconds: float = _PUBLISH_TIMEOUT_SECONDS) -> Any:
         return self.db.worker_session(
             self.worker_name,
-            statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            statement_timeout_seconds=timeout_seconds,
+            transaction_timeout_seconds=timeout_seconds,
         )
 
 

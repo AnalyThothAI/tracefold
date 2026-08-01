@@ -73,6 +73,7 @@ from tracefold.platform.resource import ResourceOperationOverrun
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
 _WORKER_INTERNAL_PORT = 8766
+_RUNTIME_REVISION_ENV = "TRACEFOLD_RUNTIME_REVISION"
 _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
@@ -86,6 +87,7 @@ _NEWS_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _NEWS_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
 _NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
+_PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -115,6 +117,7 @@ class _ProbeState:
     runtime_version: str
     started_at_ms: int
     clock_ms: Callable[[], int]
+    runtime_revision: str = "unversioned"
     lifecycle_state: str = "starting"
     heartbeat_at_ms: int | None = None
     ready: bool = False
@@ -132,6 +135,8 @@ class _ProbeState:
             "ok": ready,
             "runtime_id": self.runtime_id,
             "runtime_version": self.runtime_version,
+            "runtime_revision": self.runtime_revision,
+            "process_id": os.getpid(),
             "lifecycle_state": self.lifecycle_state,
             "started_at_ms": self.started_at_ms,
             "heartbeat_at_ms": self.heartbeat_at_ms,
@@ -168,6 +173,7 @@ async def run_workers(settings: Settings) -> None:
         runtime_version=runtime_version,
         started_at_ms=started_at_ms,
         clock_ms=_now_ms,
+        runtime_revision=os.environ.get(_RUNTIME_REVISION_ENV, "").strip() or "unversioned",
     )
     work_stop_event = asyncio.Event()
     control_stop_event = asyncio.Event()
@@ -229,7 +235,6 @@ async def run_workers(settings: Settings) -> None:
             "workers_cpu_modules_prewarm",
             prewarm_worker_cpu_modules,
             service_timeout_seconds=20.0,
-            operation_timeout_seconds=20.0,
         )
         began: bool = await db.run_control(
             "workers_runtime_begin",
@@ -530,7 +535,7 @@ async def _run_due(
             else _Disposition.RETRY_SOON
         )
         if disposition is _Disposition.PROGRESSED:
-            await asyncio.sleep(0)
+            await _wait_or_stop(stop_event, _PRODUCTIVE_REPOLL_SECONDS)
         elif disposition is _Disposition.RETRY_SOON:
             await _wait_or_stop(stop_event, min(float(idle_seconds), 0.250))
         else:
@@ -639,7 +644,7 @@ def _probe_server(
             readiness=probe_state.payload,
             render_metrics=telemetry.render_prometheus_text,
         ),
-        host="127.0.0.1",
+        host="0.0.0.0",  # noqa: S104 -- published only on the host loopback by compose
         port=_WORKER_INTERNAL_PORT,
         log_config=None,
         lifespan="off",

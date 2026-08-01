@@ -83,6 +83,7 @@ class RepositorySession:
     projection_frontiers: ProjectionFrontierRepository
     provider_circuits: ProviderCircuitRepository
     transaction_observer: Callable[[float], None] | None = None
+    projection_transitions: list[tuple[str, str]] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
         return self._observed_transaction()
@@ -90,9 +91,14 @@ class RepositorySession:
     @contextmanager
     def _observed_transaction(self) -> Iterator[None]:
         started = time.perf_counter()
+        transition_marker = len(self.projection_transitions or ())
         try:
             with transaction(self.conn):
                 yield
+        except BaseException:
+            if self.projection_transitions is not None:
+                del self.projection_transitions[transition_marker:]
+            raise
         finally:
             if self.transaction_observer is not None:
                 self.transaction_observer(max(0.0, time.perf_counter() - started))
@@ -105,7 +111,9 @@ def repositories_for_connection(
     conn: Any,
     *,
     transaction_observer: Callable[[float], None] | None = None,
+    projection_transitions: list[tuple[str, str]] | None = None,
 ) -> RepositorySession:
+    projection_transition_observer = projection_transitions.append if projection_transitions is not None else None
     return RepositorySession(
         conn=conn,
         evidence=EvidenceRepository(conn),
@@ -130,17 +138,27 @@ def repositories_for_connection(
         token_intent_lookup=TokenIntentLookupRepository(conn),
         event_tokens=EventTokenProjectionQuery(conn),
         radar_projection_sources=RadarProjectionSourceRepository(conn),
-        radar_source_edges=RadarSourceEdgeRepository(conn),
+        radar_source_edges=RadarSourceEdgeRepository(
+            conn,
+            projection_transition_observer=projection_transition_observer,
+        ),
         token_radar=TokenRadarRepository(conn),
         token_targets=TokenTargetRepository(conn),
-        news=NewsRepository(conn),
+        news=NewsRepository(
+            conn,
+            projection_transition_observer=projection_transition_observer,
+        ),
         macro=MacroRepository(conn),
         macro_market=GeneralMarketRepository(conn),
         macro_thesis=MacroThesisRepository(conn),
         persisted_live=PersistedLiveEventRepository(conn),
-        projection_frontiers=ProjectionFrontierRepository(conn),
+        projection_frontiers=ProjectionFrontierRepository(
+            conn,
+            transition_observer=projection_transition_observer,
+        ),
         provider_circuits=ProviderCircuitRepository(conn),
         transaction_observer=transaction_observer,
+        projection_transitions=projection_transitions,
     )
 
 

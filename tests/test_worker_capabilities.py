@@ -4,6 +4,7 @@ import asyncio
 import time
 from contextlib import suppress
 from threading import Event, Lock
+from typing import Any
 
 import pytest
 
@@ -14,7 +15,7 @@ from tracefold.app.worker_cpu_prewarm import (
     worker_cpu_modules_loaded,
 )
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.resource import ResourceOperationOverrun
+from tracefold.platform.resource import CpuTaskTimeout, ResourceOperationOverrun
 
 
 def _sleep_and_return(delay_seconds: float, value: int) -> int:
@@ -26,6 +27,33 @@ def _process_start_method() -> str:
     import multiprocessing
 
     return multiprocessing.get_start_method()
+
+
+class _ExpectedNativeFailure(RuntimeError):
+    pass
+
+
+def _delayed_native_failure(delay_seconds: float) -> None:
+    time.sleep(delay_seconds)
+    raise _ExpectedNativeFailure("native_failure")
+
+
+@pytest.mark.parametrize("capability_type", [FiniteOperations, ModelAdapter])
+def test_native_completion_finishes_before_thread_wrapper_watchdog(capability_type: type[Any]) -> None:
+    async def scenario() -> None:
+        capability = capability_type()
+        try:
+            with pytest.raises(_ExpectedNativeFailure, match="native_failure"):
+                await capability.run(
+                    "native_failure",
+                    _delayed_native_failure,
+                    0.05,
+                    timeout_seconds=0.01,
+                )
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
 
 
 def test_finite_permits_follow_underlying_futures_after_callers_time_out() -> None:
@@ -192,7 +220,7 @@ def test_database_has_two_business_slots_and_an_independent_control_slot() -> No
     asyncio.run(scenario())
 
 
-def test_cpu_process_is_spawn_only_and_serial_across_caller_timeout() -> None:
+def test_cpu_process_is_spawn_only_and_serial_across_caller_cancellation() -> None:
     async def scenario() -> str:
         capability = CpuProcess()
         try:
@@ -202,25 +230,29 @@ def test_cpu_process_is_spawn_only_and_serial_across_caller_timeout() -> None:
                     "verify_spawn",
                     _process_start_method,
                     service_timeout_seconds=2.0,
-                    operation_timeout_seconds=2.0,
                 )
                 == "spawn"
             )
-            with pytest.raises(ResourceOperationOverrun):
-                await capability.run(
+            submitted = asyncio.Event()
+            slow = asyncio.create_task(
+                capability.run(
                     "slow",
                     _sleep_and_return,
                     0.2,
                     1,
                     service_timeout_seconds=1.0,
-                    operation_timeout_seconds=0.01,
+                    on_submitted=submitted.set,
                 )
+            )
+            await asyncio.wait_for(submitted.wait(), timeout=1.0)
+            slow.cancel()
+            with suppress(asyncio.CancelledError):
+                await slow
             second = asyncio.create_task(
                 capability.run(
                     "second",
                     _process_start_method,
                     service_timeout_seconds=1.0,
-                    operation_timeout_seconds=1.0,
                 )
             )
             await asyncio.sleep(0.05)
@@ -234,6 +266,25 @@ def test_cpu_process_is_spawn_only_and_serial_across_caller_timeout() -> None:
     assert asyncio.run(scenario()) == "spawn"
 
 
+def test_cpu_native_timeout_finishes_before_the_wrapper_watchdog() -> None:
+    async def scenario() -> None:
+        capability = CpuProcess()
+        try:
+            await capability.prewarm()
+            with pytest.raises(CpuTaskTimeout, match="cpu_task_timeout:native_timeout"):
+                await capability.run(
+                    "native_timeout",
+                    _sleep_and_return,
+                    0.2,
+                    1,
+                    service_timeout_seconds=0.05,
+                )
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
 def test_cpu_process_preloads_all_worker_compute_modules() -> None:
     async def scenario() -> tuple[str, ...]:
         capability = CpuProcess()
@@ -243,13 +294,11 @@ def test_cpu_process_preloads_all_worker_compute_modules() -> None:
                 "workers_cpu_modules_prewarm",
                 prewarm_worker_cpu_modules,
                 service_timeout_seconds=20.0,
-                operation_timeout_seconds=20.0,
             )
             loaded = await capability.run(
                 "workers_cpu_modules_loaded",
                 worker_cpu_modules_loaded,
                 service_timeout_seconds=2.0,
-                operation_timeout_seconds=2.0,
             )
             assert loaded == expected
             return loaded

@@ -154,6 +154,8 @@ services:
   workers:
     build:
       context: .
+      args:
+        TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
       secrets:
         - github_token
     init: true
@@ -165,6 +167,8 @@ services:
         condition: service_completed_successfully
     environment:
       FINANCE_FRED_API_KEY: ${FINANCE_FRED_API_KEY:-}
+    ports:
+      - "127.0.0.1:8766:8766"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro

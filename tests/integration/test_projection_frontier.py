@@ -323,6 +323,162 @@ def test_dirty_frontier_uses_next_attempt_only_as_eligibility_not_as_deadline():
         conn.close()
 
 
+def test_projection_transition_observer_counts_only_new_executable_arrivals_and_completed_cas():
+    prepare_postgres_database()
+    conn = connect_postgres_test(read_only=False)
+    key = {"target_type": "Asset", "target_id": "asset:test:transition-observer"}
+    runtime_id = str(uuid4())
+    transitions: list[tuple[str, str]] = []
+    repo = ProjectionFrontierRepository(conn, transition_observer=transitions.append)
+    try:
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=1_000,
+                deadline_at_ms=31_000,
+                input_fingerprint="sha256:base",
+                version="profile-v1",
+            )
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=2_000,
+                deadline_at_ms=32_000,
+                input_fingerprint="sha256:base",
+                version="profile-v1",
+            )
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=3_000,
+                deadline_at_ms=33_000,
+                input_fingerprint="sha256:coalesced",
+                version="profile-v1",
+            )
+        assert transitions == [("profile", "arrival")]
+
+        with conn.transaction():
+            assert repo.claim(
+                PROFILE_FRONTIER,
+                key=key,
+                runtime_id=runtime_id,
+                now_ms=4_000,
+                lease_ms=30_000,
+            )
+            assert repo.complete(
+                PROFILE_FRONTIER,
+                key=key,
+                runtime_id=runtime_id,
+                input_fingerprint="sha256:coalesced",
+                version="profile-v1",
+                now_ms=4_100,
+            )
+        assert transitions[-1] == ("profile", "completion")
+
+        transitions.clear()
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=5_000,
+                deadline_at_ms=35_000,
+                input_fingerprint="sha256:coalesced",
+                version="profile-v1",
+            )
+        assert transitions == []
+
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=6_000,
+                deadline_at_ms=36_000,
+                input_fingerprint="sha256:clean-change",
+                version="profile-v1",
+            )
+        assert transitions == [("profile", "arrival")]
+
+        with conn.transaction():
+            assert repo.claim(
+                PROFILE_FRONTIER,
+                key=key,
+                runtime_id=runtime_id,
+                now_ms=7_000,
+                lease_ms=30_000,
+            )
+        transitions.clear()
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=8_000,
+                deadline_at_ms=38_000,
+                input_fingerprint="sha256:clean-change",
+                version="profile-v1",
+            )
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=9_000,
+                deadline_at_ms=39_000,
+                input_fingerprint="sha256:running-change",
+                version="profile-v1",
+            )
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=10_000,
+                deadline_at_ms=40_000,
+                input_fingerprint="sha256:running-coalesced",
+                version="profile-v1",
+            )
+        assert transitions == [("profile", "arrival")]
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE token_profile_projection_frontiers
+                SET status = 'quarantined',
+                    claimed_by = NULL,
+                    claimed_until_ms = NULL
+                WHERE target_type = %(target_type)s AND target_id = %(target_id)s
+                """,
+                key,
+            )
+        transitions.clear()
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=11_000,
+                deadline_at_ms=41_000,
+                input_fingerprint="sha256:running-coalesced",
+                version="profile-v1",
+            )
+        assert transitions == []
+        with conn.transaction():
+            assert repo.mark_dirty(
+                PROFILE_FRONTIER,
+                key=key,
+                dirty_at_ms=12_000,
+                deadline_at_ms=42_000,
+                input_fingerprint="sha256:quarantine-change",
+                version="profile-v1",
+            )
+        assert transitions == [("profile", "arrival")]
+    finally:
+        conn.execute(
+            """
+            DELETE FROM token_profile_projection_frontiers
+            WHERE target_type = %s AND target_id = %s
+            """,
+            (key["target_type"], key["target_id"]),
+        )
+        conn.commit()
+        conn.close()
+
+
 def _frontier_row(conn, key):
     row = conn.execute(
         """

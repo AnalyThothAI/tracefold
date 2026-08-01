@@ -4,13 +4,15 @@ import asyncio
 import time
 from typing import Any
 
-from tracefold.macro.acquisition import MacroAcquisitionService
+from tracefold.macro.acquisition import (
+    _CLAIM_TIMEOUT_SECONDS,
+    _PUBLISH_TIMEOUT_SECONDS,
+    MacroAcquisitionService,
+)
 from tracefold.macro.domain import FetchBatch, MacroSourceError
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _FETCH_TIMEOUT_SECONDS = 30.0
-_CLAIM_TIMEOUT_SECONDS = 0.5
-_PUBLISH_TIMEOUT_SECONDS = 5.0
 _MAX_REQUESTS = 4
 _MAX_DECODED_BYTES = 25_000_000
 _MAX_FACTS = 5_000

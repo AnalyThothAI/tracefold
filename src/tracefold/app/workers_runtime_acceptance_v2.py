@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tracefold.app.workers_runtime_collector import (
+    COLLECTION_FILE,
+    SAMPLES_FILE,
+    validate_workers_runtime_collection,
+)
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 
 EVIDENCE_SCHEMA_VERSION = "workers_runtime_acceptance_v2"
@@ -23,9 +28,11 @@ MAX_BUNDLE_BYTES = 100 * 1024 * 1024
 
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_OPERATOR_AUTHORIZATION_URL_PATTERN = re.compile(
+    r"^https://github\.com/AnalyThothAI/tracefold/issues/33#issuecomment-[1-9][0-9]*$"
+)
 _CAPACITY_DOMAINS = ("news", "macro", "profile", "radar")
 _SEMANTIC_DOMAINS = ("radar", "news", "macro", "profile")
-_MAX_RUNTIME_SAMPLE_GAP_MS = 15_000
 _STARTUP_PROOFS = (
     "first_heartbeat_readiness",
     "fresh_row_collision",
@@ -34,7 +41,7 @@ _STARTUP_PROOFS = (
     "crash_restart",
     "native_model_recovery",
     "stale_claimant_rejection",
-    "snapshot_restore",
+    "operator_authorized_fix_forward_boundary",
 )
 
 
@@ -93,6 +100,7 @@ def workers_runtime_evidence_template() -> dict[str, Any]:
             "completion_rate_per_minute": 0.0,
             "freshness_ok": False,
             "bounded_time_to_clear_ms": None,
+            "passes": False,
         }
         for domain in _CAPACITY_DOMAINS
     }
@@ -132,11 +140,7 @@ def workers_runtime_evidence_template() -> dict[str, Any]:
                 },
                 "unresolved_projection_quarantine": 0,
                 "capacity": capacity,
-                "capacity_interval": _proof_template(),
-                "runtime": _proof_template(),
-                "process_resources": _proof_template(),
-                "postgres": _proof_template(),
-                "resource_admission_service": _proof_template(),
+                "production_collection": _proof_template(),
                 "public_semantic_diff": _proof_template(),
             },
         },
@@ -196,6 +200,8 @@ def _validate_evidence(root: Path, payload: Any) -> None:
         )
 
     startup = _passed_gate(gates, "startup_recovery")
+    if set(startup) != {"status", *_STARTUP_PROOFS}:
+        raise ValueError("workers_runtime_startup_recovery_proof_set_invalid")
     for name in _STARTUP_PROOFS:
         _require_proof(
             root,
@@ -205,64 +211,50 @@ def _validate_evidence(root: Path, payload: Any) -> None:
             evidence=payload,
             referenced_artifacts=referenced_artifacts,
         )
-    restore = _mapping(startup, "snapshot_restore")
-    if restore.get("executed") is not True or restore.get("verified") is not True:
-        raise ValueError("workers_runtime_startup_recovery_snapshot_restore_failed")
-
     real = _passed_gate(gates, "real_continuous_30m")
-    duration_seconds = _required_int(real, "duration_seconds")
+    expected_real_fields = {
+        "status",
+        "duration_seconds",
+        "deadline_misses",
+        "unresolved_projection_quarantine",
+        "capacity",
+        "production_collection",
+        "public_semantic_diff",
+    }
+    if set(real) != expected_real_fields:
+        raise ValueError("workers_runtime_real_continuous_30m_proof_set_invalid")
+    duration_seconds = _required_float(real, "duration_seconds")
     if duration_seconds < MINIMUM_REAL_RUN_SECONDS:
         raise ValueError("workers_runtime_real_run_too_short")
+    collection_summary = _require_production_collection(
+        root,
+        real,
+        evidence=payload,
+        referenced_artifacts=referenced_artifacts,
+    )
+    if collection_summary.get("duration_seconds") != duration_seconds:
+        raise ValueError("workers_runtime_collection_duration_mismatch")
     misses = _mapping(real, "deadline_misses")
     if any(_required_int(misses, name) != 0 for name in ("unresolved_start", "counter_delta", "unresolved_end")):
         raise ValueError("workers_runtime_deadline_miss_gate_failed")
+    if collection_summary.get("deadline_misses") != misses:
+        raise ValueError("workers_runtime_collection_deadline_miss_mismatch")
     if _required_int(real, "unresolved_projection_quarantine") != 0:
         raise ValueError("workers_runtime_projection_quarantine_gate_failed")
-    capacity_raw = _require_proof(
+    if collection_summary.get("unresolved_projection_quarantine") != real["unresolved_projection_quarantine"]:
+        raise ValueError("workers_runtime_collection_projection_quarantine_mismatch")
+    capacity = _mapping(real, "capacity")
+    if collection_summary.get("capacity") != capacity:
+        raise ValueError("workers_runtime_collection_capacity_mismatch")
+    _validate_capacity(capacity, duration_seconds=duration_seconds)
+    _require_proof(
         root,
         real,
-        "capacity_interval",
+        "public_semantic_diff",
         gate="real_continuous_30m",
         evidence=payload,
         referenced_artifacts=referenced_artifacts,
     )
-    if _required_int(capacity_raw, "duration_seconds") != duration_seconds:
-        raise ValueError("workers_runtime_capacity_duration_mismatch")
-    raw_misses = _mapping(capacity_raw, "deadline_misses")
-    if raw_misses != misses:
-        raise ValueError("workers_runtime_deadline_miss_raw_mismatch")
-    if _required_int(capacity_raw, "unresolved_projection_quarantine") != _required_int(
-        real, "unresolved_projection_quarantine"
-    ):
-        raise ValueError("workers_runtime_projection_quarantine_raw_mismatch")
-    raw_capacity = _mapping(capacity_raw, "capacity")
-    if raw_capacity != _mapping(real, "capacity"):
-        raise ValueError("workers_runtime_capacity_raw_mismatch")
-    _validate_capacity(raw_capacity, duration_seconds=duration_seconds)
-    for name in (
-        "runtime",
-        "process_resources",
-        "postgres",
-        "resource_admission_service",
-        "public_semantic_diff",
-    ):
-        raw = _require_proof(
-            root,
-            real,
-            name,
-            gate="real_continuous_30m",
-            evidence=payload,
-            referenced_artifacts=referenced_artifacts,
-        )
-        if name == "runtime":
-            _validate_runtime_samples(raw, duration_seconds=duration_seconds)
-    runtime = _mapping(real, "runtime")
-    if (
-        runtime.get("continuous_readiness") is not True
-        or runtime.get("continuous_heartbeat") is not True
-        or _required_int(runtime, "restart_count") != 0
-    ):
-        raise ValueError("workers_runtime_continuity_gate_failed")
 
     review = _mapping(payload, "review")
     if review.get("disposition") != "pass":
@@ -279,7 +271,7 @@ def _validate_evidence(root: Path, payload: Any) -> None:
     )
 
 
-def _validate_capacity(capacity: dict[str, Any], *, duration_seconds: int) -> None:
+def _validate_capacity(capacity: dict[str, Any], *, duration_seconds: float) -> None:
     if set(capacity) != set(_CAPACITY_DOMAINS):
         raise ValueError("workers_runtime_capacity_domains_invalid")
     for domain in _CAPACITY_DOMAINS:
@@ -299,6 +291,8 @@ def _validate_capacity(capacity: dict[str, Any], *, duration_seconds: int) -> No
             raise ValueError(f"workers_runtime_capacity_arrival_rate_invalid:{domain}")
         if not _same_rate(reported_completion_rate, completion_rate):
             raise ValueError(f"workers_runtime_capacity_completion_rate_invalid:{domain}")
+        if row.get("passes") is not True:
+            raise ValueError(f"workers_runtime_capacity_not_converging:{domain}")
         if start == 0 and end == 0:
             continue
         converging = completion_rate > arrival_rate and oldest_end < oldest_start
@@ -333,6 +327,34 @@ def _require_proof(
     artifact, relative, artifact_hash = _validate_artifact(root, proof, label=label)
     referenced_artifacts[relative] = artifact_hash
     return _validate_raw_proof(artifact, label=label, evidence=evidence)
+
+
+def _require_production_collection(
+    root: Path,
+    payload: dict[str, Any],
+    *,
+    evidence: dict[str, Any],
+    referenced_artifacts: dict[str, str],
+) -> dict[str, Any]:
+    proof = _mapping(payload, "production_collection")
+    if proof.get("ok") is not True:
+        raise ValueError("workers_runtime_real_continuous_30m_production_collection_failed")
+    artifact, relative, artifact_hash = _validate_artifact(
+        root,
+        proof,
+        label="real_continuous_30m_production_collection",
+    )
+    if relative != COLLECTION_FILE:
+        raise ValueError("workers_runtime_production_collection_artifact_path_invalid")
+    summary = validate_workers_runtime_collection(root, expected_metadata=evidence)
+    if not isinstance(artifact, dict):
+        raise ValueError("workers_runtime_production_collection_artifact_invalid")
+    samples_hash = _required_text(artifact, "samples_sha256")
+    if not _SHA256_PATTERN.fullmatch(samples_hash):
+        raise ValueError("workers_runtime_production_collection_samples_hash_invalid")
+    referenced_artifacts[relative] = artifact_hash
+    referenced_artifacts[SAMPLES_FILE] = samples_hash
+    return summary
 
 
 def _validate_artifact(
@@ -386,25 +408,60 @@ def _validate_raw_proof(
             raise ValueError("workers_runtime_migration_matrix_states_invalid")
         if raw.get("native_retry_verified") is not True or raw.get("unknown_owner_abort_verified") is not True:
             raise ValueError("workers_runtime_migration_matrix_closure_invalid")
-    elif label.endswith("snapshot_restore"):
-        if (
-            raw.get("executed") is not True
-            or raw.get("verified") is not True
-            or _required_int(raw, "restore_exit_code") != 0
-            or not _SHA256_PATTERN.fullmatch(_required_text(raw, "backup_sha256"))
-            or _required_int(raw, "restored_table_count") <= 0
-        ):
-            raise ValueError("workers_runtime_snapshot_restore_raw_invalid")
-    elif label.endswith("capacity_interval"):
-        _mapping(raw, "deadline_misses")
-        _mapping(raw, "capacity")
-    elif label.endswith("runtime"):
-        _required_list(raw, "samples")
+    elif label.endswith("operator_authorized_fix_forward_boundary"):
+        _validate_operator_authorized_fix_forward_boundary(raw, evidence=evidence)
     else:
         checks = _mapping(raw, "checks")
         if not checks or not all(value is True for value in checks.values()):
             raise ValueError(f"workers_runtime_{label}_raw_checks_invalid")
     return raw
+
+
+def _validate_operator_authorized_fix_forward_boundary(
+    raw: dict[str, Any],
+    *,
+    evidence: dict[str, Any],
+) -> None:
+    if set(raw) != {"status", "authorization", "boundary"}:
+        raise ValueError("workers_runtime_operator_authorized_fix_forward_boundary_shape_invalid")
+    authorization = _mapping(raw, "authorization")
+    if set(authorization) != {
+        "source_kind",
+        "source_url",
+        "authority_role",
+        "authorized_by",
+        "authorized_at_ms",
+        "statement",
+        "statement_sha256",
+    }:
+        raise ValueError("workers_runtime_operator_authorization_shape_invalid")
+    if authorization.get("source_kind") != "github_issue_comment":
+        raise ValueError("workers_runtime_operator_authorization_source_invalid")
+    source_url = _required_text(authorization, "source_url")
+    if not _OPERATOR_AUTHORIZATION_URL_PATTERN.fullmatch(source_url):
+        raise ValueError("workers_runtime_operator_authorization_source_url_invalid")
+    if authorization.get("authority_role") != "production_operator":
+        raise ValueError("workers_runtime_operator_authorization_role_invalid")
+    _required_text(authorization, "authorized_by")
+    authorized_at_ms = _required_int(authorization, "authorized_at_ms")
+    cutoff_at_ms = _required_int(_mapping(evidence, "source"), "cutoff_at_ms")
+    if authorized_at_ms <= 0 or authorized_at_ms > cutoff_at_ms:
+        raise ValueError("workers_runtime_operator_authorization_time_invalid")
+    statement = _required_text(authorization, "statement")
+    statement_sha256 = _required_text(authorization, "statement_sha256")
+    if not _SHA256_PATTERN.fullmatch(statement_sha256) or statement_sha256 != _sha256_bytes(statement.encode("utf-8")):
+        raise ValueError("workers_runtime_operator_authorization_statement_hash_invalid")
+
+    boundary = _mapping(raw, "boundary")
+    expected_boundary = {
+        "deployment_target": "main_production",
+        "database_migration": "in_place",
+        "backup_policy": "no_backup",
+        "recovery_policy": "fix_forward",
+        "downtime_allowed": True,
+    }
+    if boundary != expected_boundary:
+        raise ValueError("workers_runtime_operator_authorized_fix_forward_boundary_invalid")
 
 
 def _validate_semantic_diff(raw: dict[str, Any], *, label: str) -> None:
@@ -420,41 +477,6 @@ def _validate_semantic_diff(raw: dict[str, Any], *, label: str) -> None:
                 raise ValueError(f"workers_runtime_{label}_{domain}_hash_invalid")
         if row["baseline_sha256"] != row["candidate_sha256"]:
             raise ValueError(f"workers_runtime_{label}_{domain}_hash_mismatch")
-
-
-def _validate_runtime_samples(raw: dict[str, Any], *, duration_seconds: int) -> None:
-    start_at_ms = _required_int(raw, "start_at_ms")
-    end_at_ms = _required_int(raw, "end_at_ms")
-    if end_at_ms - start_at_ms < duration_seconds * 1_000:
-        raise ValueError("workers_runtime_runtime_sample_duration_invalid")
-    samples = _required_list(raw, "samples")
-    if len(samples) < 2:
-        raise ValueError("workers_runtime_runtime_samples_insufficient")
-    runtime_ids: set[str] = set()
-    process_ids: set[int] = set()
-    prior_at: int | None = None
-    prior_heartbeat: int | None = None
-    for value in samples:
-        if not isinstance(value, dict):
-            raise ValueError("workers_runtime_runtime_sample_invalid")
-        at_ms = _required_int(value, "at_ms")
-        heartbeat_at_ms = _required_int(value, "heartbeat_at_ms")
-        if value.get("state") != "running" or value.get("ready") is not True:
-            raise ValueError("workers_runtime_runtime_continuity_raw_failed")
-        if not 0 <= at_ms - heartbeat_at_ms <= _MAX_RUNTIME_SAMPLE_GAP_MS:
-            raise ValueError("workers_runtime_runtime_heartbeat_stale")
-        if prior_at is not None and not 0 < at_ms - prior_at <= _MAX_RUNTIME_SAMPLE_GAP_MS:
-            raise ValueError("workers_runtime_runtime_sample_gap_invalid")
-        if prior_heartbeat is not None and heartbeat_at_ms < prior_heartbeat:
-            raise ValueError("workers_runtime_runtime_heartbeat_regressed")
-        runtime_ids.add(_required_text(value, "runtime_id"))
-        process_ids.add(_required_int(value, "process_id"))
-        prior_at = at_ms
-        prior_heartbeat = heartbeat_at_ms
-    if _required_int(samples[0], "at_ms") != start_at_ms or _required_int(samples[-1], "at_ms") != end_at_ms:
-        raise ValueError("workers_runtime_runtime_sample_boundary_invalid")
-    if len(runtime_ids) != 1 or len(process_ids) != 1:
-        raise ValueError("workers_runtime_runtime_restart_detected")
 
 
 def _validate_review_artifact(
@@ -523,13 +545,6 @@ def _mapping(payload: dict[str, Any], name: str) -> dict[str, Any]:
     value = payload.get(name)
     if not isinstance(value, dict):
         raise ValueError(f"workers_runtime_evidence_{name}_object_required")
-    return value
-
-
-def _required_list(payload: dict[str, Any], name: str) -> list[Any]:
-    value = payload.get(name)
-    if not isinstance(value, list):
-        raise ValueError(f"workers_runtime_evidence_{name}_array_required")
     return value
 
 

@@ -44,7 +44,8 @@ _PUBLICATION_TIME = clock_time(8, 50)
 _LEASE_MS = 900_000
 _RETRY_MS = 900_000
 _MAX_ATTEMPTS = 3
-_STATEMENT_TIMEOUT_SECONDS = 120.0
+_DATABASE_OPERATION_TIMEOUT_SECONDS = 120.0
+_SESSION_TIMEOUT_SECONDS = 15.0
 
 
 class _ResearchInputCompilationPersisted(RuntimeError):
@@ -578,7 +579,7 @@ class MacroThesisService:
             "macro_thesis_db",
             function,
             *args,
-            operation_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            operation_timeout_seconds=_DATABASE_OPERATION_TIMEOUT_SECONDS,
             **kwargs,
         )
 
@@ -677,7 +678,7 @@ class MacroThesisService:
     def _session(self) -> Any:
         return self._db.worker_session(
             self._worker_name,
-            statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            statement_timeout_seconds=_SESSION_TIMEOUT_SECONDS,
         )
 
     def _lease_ms(self) -> int:

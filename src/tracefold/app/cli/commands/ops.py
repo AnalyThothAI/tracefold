@@ -23,6 +23,7 @@ from tracefold.app.workers_runtime_acceptance_v2 import (
     seal_workers_runtime_evidence,
     workers_runtime_evidence_template,
 )
+from tracefold.app.workers_runtime_collector import collect_workers_runtime_acceptance
 from tracefold.market import (
     TOKEN_RADAR_DEFAULT_VENUE,
     TOKEN_RADAR_PROJECTION_VERSION,
@@ -46,6 +47,11 @@ def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
             }
         seal = seal_workers_runtime_evidence(Path(args.bundle))
         return 0, {"ok": True, "data": seal}
+    if args.ops_command == "collect-workers-runtime-acceptance":
+        settings = load_settings(require_ws_token=False)
+        collection = collect_workers_runtime_acceptance(Path(args.bundle), settings)
+        passed = collection.get("status") == "passed"
+        return (0 if passed else 1), {"ok": passed, "data": collection}
     settings = load_settings(require_ws_token=False)
     lock_db = WorkerDatabase.create(settings)
     lock_conn = None

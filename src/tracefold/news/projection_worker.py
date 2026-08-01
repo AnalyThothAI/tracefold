@@ -9,11 +9,11 @@ from tracefold.platform.projection import ProjectionShard
 from tracefold.platform.resource import (
     CpuTaskTimeout,
     ResourceAdmissionTimeout,
-    ResourceOperationOverrun,
     ResourceSubmissionTracker,
 )
 
 from .projection import (
+    NEWS_PAIR_BLOCK_CAP,
     NewsProjectionService,
     NewsShardOversized,
     compute_news_component_projection,
@@ -25,8 +25,6 @@ from .projection import (
 )
 
 _CPU_TIMEOUT_SECONDS = 2.0
-_SHARD_TIMEOUT_SECONDS = 5.0
-_PAIR_BLOCK_CAP = 4_096
 
 
 class NewsProjectionCandidate:
@@ -48,7 +46,7 @@ class NewsProjectionCandidate:
         row = await self.db.run_business(
             "news_projection_peek",
             self.service.next_due,
-            operation_timeout_seconds=0.5,
+            operation_timeout_seconds=3.0,
             now_ms=now_ms,
         )
         if row is None:
@@ -78,12 +76,11 @@ class NewsProjectionCandidate:
         submission = ResourceSubmissionTracker()
 
         try:
-            async with asyncio.timeout(_SHARD_TIMEOUT_SECONDS):
-                return await self._run_claimed(
-                    claim,
-                    now_ms=now_ms,
-                    submission=submission,
-                )
+            return await self._run_claimed(
+                claim,
+                now_ms=now_ms,
+                submission=submission,
+            )
         except asyncio.CancelledError:
             if not submission.submitted:
                 await asyncio.shield(self._release_prework(claim))
@@ -91,18 +88,6 @@ class NewsProjectionCandidate:
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
             return False
-        except TimeoutError as exc:
-            if submission.submitted:
-                raise ResourceOperationOverrun("resource_operation_overrun:news_projection_turn") from exc
-            await self.db.run_business(
-                "news_projection_timeout",
-                self.service.fail_deterministic,
-                claim,
-                operation_timeout_seconds=3.0,
-                error_code="full_shard_timeout",
-                now_ms=_now_ms(),
-            )
-            return True
 
     async def _release_prework(self, claim: Any) -> bool:
         return bool(
@@ -140,7 +125,6 @@ class NewsProjectionCandidate:
                         compute_news_score_bucket,
                         loaded_score_bucket,
                         service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                        operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
                         on_submitted=on_submitted,
                     )
                 )
@@ -184,7 +168,6 @@ class NewsProjectionCandidate:
                     compute_news_identity_feature,
                     target,
                     service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
                     on_submitted=on_submitted,
                 )
             )
@@ -217,31 +200,24 @@ class NewsProjectionCandidate:
                     plan_news_edge_pairs,
                     context,
                     service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
                     on_submitted=on_submitted,
                 )
             )
             new_edges: list[dict[str, Any]] = []
             pairs = list(edge_plan["recompute_pairs"])
-            for offset in range(0, len(pairs), _PAIR_BLOCK_CAP):
-                block = pairs[offset : offset + _PAIR_BLOCK_CAP]
+            for offset in range(0, len(pairs), NEWS_PAIR_BLOCK_CAP):
+                block = pairs[offset : offset + NEWS_PAIR_BLOCK_CAP]
                 new_edges.extend(await submission.run(partial(_compute_edge_block, self.cpu, block)))
             edge_plan["new_edges"] = new_edges
-            final_edges = merge_final_edges(
-                existing_edges=context["existing_edges"],
-                affected_pairs=edge_plan["affected_pairs"],
-                new_edges=new_edges,
-            )
             projection = await submission.run(
                 lambda on_submitted: self.cpu.run(
                     "news_projection_component",
-                    compute_news_component_projection,
+                    _compute_component_projection,
                     {
-                        **context,
-                        "final_edges": final_edges,
+                        "context": context,
+                        "edge_plan": edge_plan,
                     },
                     service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-                    operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
                     on_submitted=on_submitted,
                 )
             )
@@ -294,8 +270,23 @@ async def _compute_edge_block(
         compute_news_edge_block,
         block,
         service_timeout_seconds=_CPU_TIMEOUT_SECONDS,
-        operation_timeout_seconds=_CPU_TIMEOUT_SECONDS,
         on_submitted=on_submitted,
+    )
+
+
+def _compute_component_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    context = dict(payload["context"])
+    edge_plan = dict(payload["edge_plan"])
+    final_edges = merge_final_edges(
+        existing_edges=context["existing_edges"],
+        affected_pairs=edge_plan["affected_pairs"],
+        new_edges=edge_plan["new_edges"],
+    )
+    return compute_news_component_projection(
+        {
+            **context,
+            "final_edges": final_edges,
+        }
     )
 
 

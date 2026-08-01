@@ -15,6 +15,14 @@ from tracefold.app.workers_runtime_acceptance_v2 import (
     seal_workers_runtime_evidence,
     workers_runtime_evidence_template,
 )
+from tracefold.app.workers_runtime_collector import (
+    COLLECTION_FILE,
+    COLLECTION_SCHEMA_VERSION,
+    SAMPLES_FILE,
+    CollectorDependencies,
+    _collect_fixed_interval,
+    _summarize,
+)
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 
 
@@ -39,6 +47,8 @@ def test_complete_workers_runtime_v2_bundle_seals_once_and_detects_mutation(tmp_
         "operator-config.yaml",
         "raw-evidence.json",
         "review.json",
+        COLLECTION_FILE,
+        SAMPLES_FILE,
     }
 
     supporting.write_text('{"cpu":2}\n')
@@ -46,64 +56,177 @@ def test_complete_workers_runtime_v2_bundle_seals_once_and_detects_mutation(tmp_
         seal_workers_runtime_evidence(tmp_path)
 
 
-def test_bundle_refuses_short_real_run_and_unverified_restore(tmp_path: Path) -> None:
+def test_bundle_refuses_short_real_run(tmp_path: Path) -> None:
     evidence = _complete_evidence(tmp_path)
     evidence["gates"]["real_continuous_30m"]["duration_seconds"] = 1_799
-    evidence["gates"]["startup_recovery"]["snapshot_restore"]["verified"] = False
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_real_run_too_short"):
+        seal_workers_runtime_evidence(tmp_path)
+    assert not (tmp_path / SEAL_FILE).exists()
+
+
+def test_bundle_rejects_historical_snapshot_restore_startup_schema(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    startup = evidence["gates"]["startup_recovery"]
+    old_proof = startup.pop("operator_authorized_fix_forward_boundary")
+    startup["snapshot_restore"] = old_proof
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_startup_recovery_proof_set_invalid"):
+        seal_workers_runtime_evidence(tmp_path)
+    assert not (tmp_path / SEAL_FILE).exists()
+
+
+def test_operator_authorized_fix_forward_boundary_rejects_bare_checks(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    raw = json.loads((tmp_path / "raw-evidence.json").read_text())
+    raw["proofs"]["startup_recovery_operator_authorized_fix_forward_boundary"] = {
+        "status": "passed",
+        "checks": {"operator_authorized": True, "fix_forward": True},
+    }
+    (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
+    _refresh_artifact_hashes(tmp_path, evidence)
     (tmp_path / "evidence.json").write_text(json.dumps(evidence))
 
     with pytest.raises(
         ValueError,
-        match=r"workers_runtime_startup_recovery_snapshot_restore_failed|workers_runtime_real_run_too_short",
+        match="workers_runtime_operator_authorized_fix_forward_boundary_shape_invalid",
     ):
         seal_workers_runtime_evidence(tmp_path)
     assert not (tmp_path / SEAL_FILE).exists()
 
 
-def test_bundle_computes_raw_capacity_convergence(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        ("backup_policy", "snapshot_first", "workers_runtime_operator_authorized_fix_forward_boundary_invalid"),
+        ("recovery_policy", "restore", "workers_runtime_operator_authorized_fix_forward_boundary_invalid"),
+    ),
+)
+def test_operator_authorized_fix_forward_boundary_is_exact(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    error: str,
+) -> None:
     evidence = _complete_evidence(tmp_path)
-    news = evidence["gates"]["real_continuous_30m"]["capacity"]["news"]
-    news.update(
-        {
-            "actionable_count_start": 10,
-            "actionable_count_end": 10,
-            "oldest_age_ms_start": 1_000,
-            "oldest_age_ms_end": 2_000,
-            "arrival_count": 5,
-            "arrival_rate_per_minute": 1.0 / 6.0,
-            "completion_count": 5,
-            "completion_rate_per_minute": 1.0 / 6.0,
-            "freshness_ok": False,
-        }
-    )
     raw = json.loads((tmp_path / "raw-evidence.json").read_text())
-    raw["proofs"]["real_continuous_30m_capacity_interval"]["capacity"]["news"] = dict(news)
+    raw["proofs"]["startup_recovery_operator_authorized_fix_forward_boundary"]["boundary"][field] = value
     (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
     _refresh_artifact_hashes(tmp_path, evidence)
     (tmp_path / "evidence.json").write_text(json.dumps(evidence))
 
-    with pytest.raises(ValueError, match="workers_runtime_capacity_not_converging:news"):
+    with pytest.raises(ValueError, match=error):
+        seal_workers_runtime_evidence(tmp_path)
+    assert not (tmp_path / SEAL_FILE).exists()
+
+
+def test_operator_authorization_statement_is_bound_to_issue_comment(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    raw = json.loads((tmp_path / "raw-evidence.json").read_text())
+    authorization = raw["proofs"]["startup_recovery_operator_authorized_fix_forward_boundary"]["authorization"]
+    authorization["statement"] = "different instruction"
+    (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_operator_authorization_statement_hash_invalid"):
+        seal_workers_runtime_evidence(tmp_path)
+    assert not (tmp_path / SEAL_FILE).exists()
+
+
+def test_bundle_rejects_collection_summary_mutation_even_when_hashes_are_refreshed(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    collection_path = tmp_path / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["summary"]["postgres"]["max_worker_connections"] += 1
+    collection_path.write_text(json.dumps(collection))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_collection_summary_mismatch"):
         seal_workers_runtime_evidence(tmp_path)
 
 
-def test_empty_start_and_end_backlog_passes_with_interval_traffic(tmp_path: Path) -> None:
+def test_bundle_rejects_jsonl_mutation_even_when_all_declared_hashes_are_refreshed(tmp_path: Path) -> None:
     evidence = _complete_evidence(tmp_path)
-    news = evidence["gates"]["real_continuous_30m"]["capacity"]["news"]
-    news.update(
-        {
-            "arrival_count": 5,
-            "arrival_rate_per_minute": 1.0 / 6.0,
-            "completion_count": 5,
-            "completion_rate_per_minute": 1.0 / 6.0,
-        }
-    )
-    raw = json.loads((tmp_path / "raw-evidence.json").read_text())
-    raw["proofs"]["real_continuous_30m_capacity_interval"]["capacity"]["news"] = dict(news)
-    (tmp_path / "raw-evidence.json").write_text(json.dumps(raw))
+    samples_path = tmp_path / SAMPLES_FILE
+    lines = samples_path.read_text().splitlines()
+    sample = json.loads(lines[90])
+    sample["container"]["process_rss_bytes"] += 1
+    lines[90] = json.dumps(sample)
+    samples_path.write_text("\n".join(lines) + "\n")
+    collection_path = tmp_path / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["samples_sha256"] = hashlib.sha256(samples_path.read_bytes()).hexdigest()
+    collection_path.write_text(json.dumps(collection))
     _refresh_artifact_hashes(tmp_path, evidence)
     (tmp_path / "evidence.json").write_text(json.dumps(evidence))
 
-    seal_workers_runtime_evidence(tmp_path)
+    with pytest.raises(ValueError, match="workers_runtime_collection_summary_mismatch"):
+        seal_workers_runtime_evidence(tmp_path)
+
+
+def test_bundle_rejects_collection_metadata_not_bound_to_evidence(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    collection_path = tmp_path / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["source"]["session"] = "different-production-session"
+    collection_path.write_text(json.dumps(collection))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_collection_source_mismatch"):
+        seal_workers_runtime_evidence(tmp_path)
+
+
+def test_bundle_revalidates_runtime_identity_from_jsonl(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    samples_path = tmp_path / SAMPLES_FILE
+    samples = [json.loads(line) for line in samples_path.read_text().splitlines()]
+    samples[90]["probe"]["runtime_id"] = "replacement-runtime"
+    samples_path.write_text("".join(f"{json.dumps(sample)}\n" for sample in samples))
+    collection_path = tmp_path / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["samples_sha256"] = hashlib.sha256(samples_path.read_bytes()).hexdigest()
+    collection["summary"] = _summarize(samples)
+    collection_path.write_text(json.dumps(collection))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_collection_checks_failed"):
+        seal_workers_runtime_evidence(tmp_path)
+
+
+def test_bundle_revalidates_heartbeat_freshness_from_jsonl(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    samples_path = tmp_path / SAMPLES_FILE
+    samples = [json.loads(line) for line in samples_path.read_text().splitlines()]
+    samples[90]["probe"]["heartbeat_at_ms"] = samples[90]["at_ms"] - 15_001
+    samples_path.write_text("".join(f"{json.dumps(sample)}\n" for sample in samples))
+    collection_path = tmp_path / COLLECTION_FILE
+    collection = json.loads(collection_path.read_text())
+    collection["samples_sha256"] = hashlib.sha256(samples_path.read_bytes()).hexdigest()
+    collection_path.write_text(json.dumps(collection))
+    _refresh_artifact_hashes(tmp_path, evidence)
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_collection_sample_invalid:worker_heartbeat_stale"):
+        seal_workers_runtime_evidence(tmp_path)
+
+
+def test_bundle_rejects_retired_hand_fillable_real_proof(tmp_path: Path) -> None:
+    evidence = _complete_evidence(tmp_path)
+    evidence["gates"]["real_continuous_30m"]["runtime"] = {
+        "ok": True,
+        "artifact_path": "raw-evidence.json",
+        "artifact_sha256": hashlib.sha256((tmp_path / "raw-evidence.json").read_bytes()).hexdigest(),
+    }
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence))
+
+    with pytest.raises(ValueError, match="workers_runtime_real_continuous_30m_proof_set_invalid"):
+        seal_workers_runtime_evidence(tmp_path)
 
 
 def test_bundle_rejects_bare_ok_and_unbound_reviewer_hash(tmp_path: Path) -> None:
@@ -155,7 +278,19 @@ def test_template_is_current_and_cannot_seal(tmp_path: Path) -> None:
     assert template["versions"]["migration_version"] == latest_migration_version()
     assert template["gates"]["offline_semantic_determinism"]["status"] == "pending"
     assert template["gates"]["startup_recovery"]["status"] == "pending"
-    assert template["gates"]["real_continuous_30m"]["status"] == "pending"
+    assert "operator_authorized_fix_forward_boundary" in template["gates"]["startup_recovery"]
+    assert "snapshot_restore" not in template["gates"]["startup_recovery"]
+    real = template["gates"]["real_continuous_30m"]
+    assert real["status"] == "pending"
+    assert set(real) == {
+        "status",
+        "duration_seconds",
+        "deadline_misses",
+        "unresolved_projection_quarantine",
+        "capacity",
+        "production_collection",
+        "public_semantic_diff",
+    }
     assert template["review"]["disposition"] == "pending"
 
     with pytest.raises(ValueError, match="workers_runtime_evidence_session_required"):
@@ -163,6 +298,8 @@ def test_template_is_current_and_cannot_seal(tmp_path: Path) -> None:
 
 
 def _complete_evidence(root: Path) -> dict:
+    (root / COLLECTION_FILE).unlink(missing_ok=True)
+    (root / SAMPLES_FILE).unlink(missing_ok=True)
     evidence = workers_runtime_evidence_template()
     evidence["source"].update(
         {
@@ -225,60 +362,55 @@ def _complete_evidence(root: Path) -> dict:
             "status": "passed",
             "checks": {name: True},
         }
-    startup["snapshot_restore"] = {
-        "executed": True,
-        "verified": True,
-    }
-    raw_proofs["startup_recovery_snapshot_restore"] = {
+    authorization_statement = (
+        "The production operator authorized an in-place main production cutover without backup, "
+        "with downtime allowed and fix-forward recovery."
+    )
+    raw_proofs["startup_recovery_operator_authorized_fix_forward_boundary"] = {
         "status": "passed",
-        "executed": True,
-        "verified": True,
-        "restore_exit_code": 0,
-        "backup_sha256": "1" * 64,
-        "restored_table_count": 91,
+        "authorization": {
+            "source_kind": "github_issue_comment",
+            "source_url": "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-1234567890",
+            "authority_role": "production_operator",
+            "authorized_by": "test-owner",
+            "authorized_at_ms": 1_799_999_000_000,
+            "statement": authorization_statement,
+            "statement_sha256": hashlib.sha256(authorization_statement.encode()).hexdigest(),
+        },
+        "boundary": {
+            "deployment_target": "main_production",
+            "database_migration": "in_place",
+            "backup_policy": "no_backup",
+            "recovery_policy": "fix_forward",
+            "downtime_allowed": True,
+        },
     }
     real = evidence["gates"]["real_continuous_30m"]
     real["status"] = "passed"
-    real["duration_seconds"] = 1_800
-    real["runtime"] = {
-        "continuous_readiness": True,
-        "continuous_heartbeat": True,
-        "restart_count": 0,
-    }
-    start_at_ms = 1_800_000_000_000
-    end_at_ms = start_at_ms + 1_800_000
-    raw_proofs["real_continuous_30m_runtime"] = {
-        "status": "passed",
-        "start_at_ms": start_at_ms,
-        "end_at_ms": end_at_ms,
-        "samples": [
-            {
-                "at_ms": at_ms,
-                "heartbeat_at_ms": at_ms,
-                "state": "running",
-                "ready": True,
-                "runtime_id": "runtime-test",
-                "process_id": 1234,
-            }
-            for at_ms in range(start_at_ms, end_at_ms + 1, 15_000)
-        ],
-    }
-    raw_proofs["real_continuous_30m_capacity_interval"] = {
-        "status": "passed",
-        "duration_seconds": 1_800,
-        "deadline_misses": dict(real["deadline_misses"]),
-        "unresolved_projection_quarantine": 0,
-        "capacity": json.loads(json.dumps(real["capacity"])),
-    }
-    for name in (
-        "process_resources",
-        "postgres",
-        "resource_admission_service",
-    ):
-        raw_proofs[f"real_continuous_30m_{name}"] = {
-            "status": "passed",
-            "checks": {f"{name}_bounded": True},
-        }
+    clock = _AcceptanceClock()
+    collection = _collect_fixed_interval(
+        root,
+        metadata={
+            "source": evidence["source"],
+            "versions": evidence["versions"],
+            "configuration": evidence["configuration"],
+        },
+        dependencies=CollectorDependencies(
+            clock_ms=clock.clock_ms,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            read_sample=lambda sequence: _collection_sample(
+                sequence,
+                clock=clock,
+                commit=evidence["versions"]["commit_sha"],
+            ),
+        ),
+    )
+    summary = collection["summary"]
+    real["duration_seconds"] = summary["duration_seconds"]
+    real["deadline_misses"] = summary["deadline_misses"]
+    real["unresolved_projection_quarantine"] = summary["unresolved_projection_quarantine"]
+    real["capacity"] = summary["capacity"]
     raw_proofs["real_continuous_30m_public_semantic_diff"] = semantic
     raw_artifact = {
         "schema_version": RAW_EVIDENCE_SCHEMA_VERSION,
@@ -289,15 +421,15 @@ def _complete_evidence(root: Path) -> dict:
     }
     raw_path.write_text(json.dumps(raw_artifact))
 
-    def proof() -> dict:
+    def proof(path: Path) -> dict:
         return {
             "ok": True,
-            "artifact_path": raw_path.name,
-            "artifact_sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            "artifact_path": path.name,
+            "artifact_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
 
     for name in ("public_semantic_diff", "zero_write_replay", "migration_matrix"):
-        offline[name] = proof()
+        offline[name] = proof(raw_path)
     for name in (
         "first_heartbeat_readiness",
         "fresh_row_collision",
@@ -306,18 +438,11 @@ def _complete_evidence(root: Path) -> dict:
         "crash_restart",
         "native_model_recovery",
         "stale_claimant_rejection",
+        "operator_authorized_fix_forward_boundary",
     ):
-        startup[name] = proof()
-    startup["snapshot_restore"].update(proof())
-    for name in (
-        "capacity_interval",
-        "runtime",
-        "process_resources",
-        "postgres",
-        "resource_admission_service",
-        "public_semantic_diff",
-    ):
-        real[name].update(proof())
+        startup[name] = proof(raw_path)
+    real["production_collection"] = proof(root / COLLECTION_FILE)
+    real["public_semantic_diff"] = proof(raw_path)
 
     review_path = root / "review.json"
     reviewed_at_ms = 1_800_001_800_000
@@ -331,6 +456,8 @@ def _complete_evidence(root: Path) -> dict:
         "reviewed_at_ms": reviewed_at_ms,
         "reviewed_artifacts": {
             raw_path.name: hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            COLLECTION_FILE: hashlib.sha256((root / COLLECTION_FILE).read_bytes()).hexdigest(),
+            SAMPLES_FILE: hashlib.sha256((root / SAMPLES_FILE).read_bytes()).hexdigest(),
         },
     }
     review_path.write_text(json.dumps(review_artifact))
@@ -344,15 +471,101 @@ def _complete_evidence(root: Path) -> dict:
     return evidence
 
 
+class _AcceptanceClock:
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self.base_ms = 1_800_000_000_000
+
+    def monotonic(self) -> float:
+        return self.seconds
+
+    def clock_ms(self) -> int:
+        return self.base_ms + int(self.seconds * 1_000)
+
+    def sleep(self, seconds: float) -> None:
+        self.seconds += max(0.0, float(seconds))
+
+
+def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -> dict:
+    at_ms = clock.clock_ms()
+    domains = ("news", "macro", "profile", "radar")
+    return {
+        "schema_version": COLLECTION_SCHEMA_VERSION,
+        "sequence": sequence,
+        "scheduled_offset_seconds": sequence * 10,
+        "at_ms": at_ms,
+        "status": "passed",
+        "checkout": {"commit_sha": commit, "clean": True},
+        "probe": {
+            "ok": True,
+            "ready": True,
+            "runtime_id": "runtime-test",
+            "runtime_version": "2",
+            "runtime_revision": commit,
+            "process_id": 1234,
+            "lifecycle_state": "running",
+            "heartbeat_at_ms": at_ms,
+            "heartbeat_stale_after_ms": 15_000,
+            "unavailable_reason": None,
+            "probe_rtt_ms": 1.0,
+        },
+        "container": {
+            "container_id": "container-test",
+            "image_id": "image-test",
+            "image_revision": commit,
+            "restart_count": 0,
+            "running": True,
+            "oom_killed": False,
+            "host_process_id": 5678,
+            "process_rss_bytes": 256 * 1024 * 1024,
+            "container_memory_bytes": 512 * 1024 * 1024,
+        },
+        "postgres": {
+            "worker_connections": 4,
+            "lock_wait_count": 0,
+            "max_transaction_seconds": 0.1,
+            "temp_files": 7,
+            "temp_bytes": 4096,
+            "frontiers": {
+                domain: {
+                    "actionable_count": 0,
+                    "oldest_age_ms": 0,
+                    "unresolved_deadline_misses": 0,
+                    "unresolved_quarantine": 0,
+                    "counts_by_status": {},
+                }
+                for domain in domains
+            },
+        },
+        "telemetry": {
+            "resource_active": {
+                "database_business": 0.0,
+                "database_control": 0.0,
+                "finite_operation": 0.0,
+                "model_adapter": 0.0,
+                "cpu_process": 0.0,
+            },
+            "projection_deadline_misses_total": {domain: 0.0 for domain in domains},
+            "projection_transitions_total": {domain: {"arrival": 0.0, "completion": 0.0} for domain in domains},
+            "resource_service": [],
+            "resource_admission": [],
+        },
+    }
+
+
 def _refresh_artifact_hashes(root: Path, evidence: dict) -> None:
-    raw_path = root / "raw-evidence.json"
-    raw_hash = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    reviewed_artifacts: dict[str, str] = {}
     for gate in evidence["gates"].values():
         for value in gate.values():
-            if isinstance(value, dict) and value.get("artifact_path") == raw_path.name:
-                value["artifact_sha256"] = raw_hash
+            if isinstance(value, dict) and value.get("artifact_path"):
+                artifact_path = root / value["artifact_path"]
+                artifact_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+                value["artifact_sha256"] = artifact_hash
+                reviewed_artifacts[value["artifact_path"]] = artifact_hash
+    samples_path = root / SAMPLES_FILE
+    reviewed_artifacts[SAMPLES_FILE] = hashlib.sha256(samples_path.read_bytes()).hexdigest()
     review_path = root / "review.json"
     review = json.loads(review_path.read_text())
-    review["reviewed_artifacts"] = {raw_path.name: raw_hash}
+    review["reviewed_artifacts"] = reviewed_artifacts
     review_path.write_text(json.dumps(review))
     evidence["review"]["artifact_sha256"] = hashlib.sha256(review_path.read_bytes()).hexdigest()

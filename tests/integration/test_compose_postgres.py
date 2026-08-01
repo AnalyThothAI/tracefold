@@ -47,7 +47,10 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
-    assert "ports" not in services["workers"]
+    assert services["workers"]["ports"] == ["127.0.0.1:8766:8766"]
+    assert services["workers"]["build"]["args"] == {
+        "TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}",
+    }
     assert services["cutover"]["profiles"] == ["maintenance"]
     assert services["cutover"]["command"] == [
         "tracefold",

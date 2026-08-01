@@ -189,7 +189,7 @@ class EventAnchorBackfill:
         )
 
     def _release_prework_sync(self, row: Mapping[str, Any]) -> bool:
-        with self._worker_session() as repos, repos.transaction():
+        with self._worker_session(timeout_seconds=0.5) as repos, repos.transaction():
             return bool(
                 repos.event_anchor_jobs.release_prework(
                     event_id=str(row["event_id"]),
@@ -418,10 +418,11 @@ class EventAnchorBackfill:
         return inserted, attached_ticks, terminal_count, rescheduled_count
 
     @contextmanager
-    def _worker_session(self) -> Iterator[Any]:
+    def _worker_session(self, *, timeout_seconds: float = 3.0) -> Iterator[Any]:
         with self.db.worker_session(
             self.name,
-            statement_timeout_seconds=30.0,
+            statement_timeout_seconds=timeout_seconds,
+            transaction_timeout_seconds=timeout_seconds,
         ) as repos:
             yield repos
 

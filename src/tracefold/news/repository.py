@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -176,8 +176,14 @@ class StoryProjectionPreparation:
 
 
 class NewsRepository:
-    def __init__(self, conn: Any) -> None:
+    def __init__(
+        self,
+        conn: Any,
+        *,
+        projection_transition_observer: Callable[[tuple[str, str]], None] | None = None,
+    ) -> None:
         self.conn = conn
+        self._projection_transition_observer = projection_transition_observer
 
     # Source inventory and acquisition -----------------------------------------
 
@@ -658,7 +664,10 @@ class NewsRepository:
                 "active": bool(active),
             }
         )
-        return ProjectionFrontierRepository(self.conn).mark_dirty(
+        return ProjectionFrontierRepository(
+            self.conn,
+            transition_observer=self._projection_transition_observer,
+        ).mark_dirty(
             NEWS_FRONTIER,
             key={"bucket_id": f"identity:{item_id}"},
             dirty_at_ms=now_ms,

@@ -18,6 +18,9 @@ from tracefold.platform.resource import (
     ResourceOperationOverrun,
 )
 
+_THREAD_FUTURE_COMPLETION_GRACE_SECONDS = 0.500
+_CPU_FUTURE_COMPLETION_GRACE_SECONDS = 2.000
+
 
 class FiniteOperations:
     """The one process-wide capability for bounded synchronous external work."""
@@ -117,7 +120,7 @@ class FiniteOperations:
             on_submitted()
         done, _ = await asyncio.wait(
             {wrapped},
-            timeout=max(0.001, float(timeout_seconds)),
+            timeout=max(0.001, float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS),
         )
         if not done:
             raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")
@@ -199,7 +202,7 @@ class ModelAdapter:
             await after_submit()
         done, _ = await asyncio.wait(
             {wrapped},
-            timeout=max(0.001, float(timeout_seconds)),
+            timeout=max(0.001, float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS),
         )
         if not done:
             raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")
@@ -238,7 +241,6 @@ class CpuProcess:
             "cpu_process_prewarm",
             _cpu_process_start_method,
             service_timeout_seconds=timeout_seconds,
-            operation_timeout_seconds=timeout_seconds,
         )
         if start_method != "spawn":
             raise RuntimeError("cpu_process_not_spawn")
@@ -250,7 +252,6 @@ class CpuProcess:
         /,
         *args: Any,
         service_timeout_seconds: float,
-        operation_timeout_seconds: float,
         on_submitted: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> T:
@@ -309,7 +310,10 @@ class CpuProcess:
             on_submitted()
         done, _ = await asyncio.wait(
             {wrapped},
-            timeout=max(0.001, float(operation_timeout_seconds)),
+            timeout=max(
+                0.001,
+                float(service_timeout_seconds) + _CPU_FUTURE_COMPLETION_GRACE_SECONDS,
+            ),
         )
         if not done:
             raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")

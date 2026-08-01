@@ -128,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print a deliberately non-passing evidence.json template",
     )
+    collect_acceptance = ops_subcommands.add_parser(
+        "collect-workers-runtime-acceptance",
+        help="collect the fixed 30-minute production Workers Runtime V2 interval",
+    )
+    collect_acceptance.add_argument(
+        "--bundle",
+        required=True,
+        help="new absolute evidence directory outside the repository checkout",
+    )
     rebuild_market_current = ops_subcommands.add_parser(
         "rebuild-market-current",
         help="rebuild current market rows from persisted market tick facts",

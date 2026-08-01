@@ -152,6 +152,20 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
 
+    def test_workers_runtime_collector_requires_one_bundle_path(self):
+        bundle = str(Path.cwd().parent / "runtime-acceptance")
+        parsed = build_parser().parse_args(
+            [
+                "ops",
+                "collect-workers-runtime-acceptance",
+                "--bundle",
+                bundle,
+            ]
+        )
+
+        assert parsed.ops_command == "collect-workers-runtime-acceptance"
+        assert parsed.bundle == bundle
+
     def test_audit_and_token_radar_projection_commands_are_registered(self):
         parser = build_parser()
 
@@ -222,6 +236,9 @@ class CliTests(unittest.TestCase):
         assert payload["ok"] is True
         template = payload["data"]["template"]
         assert template["schema_version"] == "workers_runtime_acceptance_v2"
+        startup = template["gates"]["startup_recovery"]
+        assert "operator_authorized_fix_forward_boundary" in startup
+        assert "snapshot_restore" not in startup
         assert template["gates"]["real_continuous_30m"]["status"] == "pending"
 
     def test_cli_ops_mirror_token_images_has_no_source_limit_option(self):
@@ -478,6 +495,43 @@ def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkey
     }
     assert payload["ok"] is True
     assert payload["data"]["row_count"] == 1
+
+
+def test_cli_runtime_collector_bypasses_maintenance_lock_and_fails_closed(monkeypatch, tmp_path):
+    from tracefold.app.cli.commands import ops as ops_module
+
+    write_runtime_config(tmp_path, db_path=tmp_path / ".tracefold" / "postgres_test_db")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        ops_module,
+        "collect_workers_runtime_acceptance",
+        lambda bundle, settings: {
+            "status": "failed",
+            "bundle": str(bundle),
+            "config_home": str(settings.app_home),
+        },
+    )
+
+    def maintenance_lock_forbidden(*args, **kwargs):
+        raise AssertionError("collector_must_bypass_maintenance_lock")
+
+    monkeypatch.setattr(ops_module.WorkerDatabase, "create", maintenance_lock_forbidden)
+    stdout = io.StringIO()
+
+    code = main(
+        [
+            "ops",
+            "collect-workers-runtime-acceptance",
+            "--bundle",
+            str(tmp_path / "runtime-evidence"),
+        ],
+        stdout=stdout,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["data"]["status"] == "failed"
 
 
 if __name__ == "__main__":

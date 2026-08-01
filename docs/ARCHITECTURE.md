@@ -29,9 +29,10 @@ database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
 
 The projection coordinator executes exactly one semantic shard at a time.
-Productive turns repoll the typed frontier heads immediately, while an idle
-turn waits on the bounded polling cadence; backlog throughput therefore does
-not depend on an artificial per-shard sleep.
+Every productive or failed turn waits on the fixed 250 ms bounded repoll
+cadence before reading the typed frontier heads again. Idle polling is likewise
+bounded by a code-owned cadence. These waits prevent a successful backlog from
+becoming a hot loop; they are scheduling policy, not a correctness authority.
 
 ## Truth, control state, and derived state
 
@@ -165,6 +166,18 @@ Important atomic units are:
 Provider, model, subprocess, filesystem, and network I/O occurs outside
 database transactions.
 
+Each Worker database session owns exactly one bounded PostgreSQL transaction.
+It installs its statement and transaction limits as transaction-local settings
+in one setup round trip, so PostgreSQL is the native deadline authority for all
+SQL in that session. Transaction exit restores the connection automatically;
+there is no session reset round trip. Awaiting DB, CPU, finite-operation, and
+model work adds only a bounded completion grace so the native result wins at
+its deadline; a future that remains alive beyond that grace is fatal. Projection
+turns therefore have phase-native deadlines and no aggregate fatal watchdog.
+
+Projection claim leases cover the complete legal phase envelope: Radar uses
+45 seconds, Profile and Macro use 30 seconds each, and News uses 60 seconds.
+
 ## Product flows
 
 ### Market and Token Radar
@@ -187,8 +200,10 @@ events + intents + resolutions + market facts
 The public Radar row is a transparent `factor_snapshot` built only from
 persisted identity, social, and market facts. One bounded `window × venue`
 micro-batch claims at most four target frontiers, within 10,000 source rows,
-4 MiB materialized input, 1 MiB compact output, and a five-second whole turn.
-It computes feature updates
+4 MiB materialized input, and 1 MiB compact output. Five seconds is a soft
+whole-turn latency observation, never a fatal aggregate timeout; each DB and
+CPU phase is governed by its native deadline plus the bounded completion grace.
+The turn computes feature updates
 and the complete compact-population rank outside write transactions, then
 atomically publishes the closure and completes the exact claimed snapshots.
 Each frontier retains its latest input fingerprint/version and earliest
@@ -245,11 +260,12 @@ active-cluster eligibility.
 
 The EDF News projection domain is the only Story/member/alias/feature/edge
 writer. It runs ordered identity work before scoring, keeps candidate-pair
-blocks at or below 4,096 and buckets at or below 250, and recomputes only
-affected components and expiry closures. Pure calculation occurs outside the
-write transaction. The CAS publication compares the input fingerprint again
-and writes the complete affected component closure; unchanged input performs
-zero serving writes.
+work to at most four blocks of at most 4,096 pairs each and buckets at or below
+250, and recomputes only affected components and expiry closures. Edge-block
+calculation and the final component merge run under the bounded CPU capability,
+outside the write transaction. The CAS publication compares the input
+fingerprint again and writes the complete affected component closure; unchanged
+input performs zero serving writes.
 
 The persisted one-hour scoring epoch is a single global clock expressed as at
 most 64 stable `score-bucket` frontiers. Story IDs deterministically select a
@@ -312,9 +328,10 @@ exposes `unavailable`, `insufficient_material`, `running`, `ready`,
 `stale_fallback`, or `failed` honestly. `running` requires a current database
 run with an unexpired lease and heartbeat.
 Typed Story frontiers are polled by the single EDF and productive work repolls
-immediately. News Brief preserves the first-dirty 600-second debounce in native
-domain state; once due, the serial model arbiter repolls after every completed
-candidate. No per-Story or Brief worker timer is a correctness authority.
+after the fixed 250 ms bounded cadence. News Brief preserves the first-dirty
+600-second debounce in native domain state; once due, the serial model arbiter
+uses the same 250 ms productive cadence after every completed candidate. No
+per-Story or Brief worker timer is a correctness authority.
 
 The complete live News storage boundary is exactly twelve tables:
 `news_sources`, `news_source_memberships`, `news_source_fetches`,

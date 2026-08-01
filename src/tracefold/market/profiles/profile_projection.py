@@ -25,7 +25,7 @@ from tracefold.market.radar.constants import (
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 
 PROFILE_PROJECTION_VERSION = "token-profile-current-serving-v1"
-_CLAIM_LEASE_MS = 5_000
+_CLAIM_LEASE_MS = 30_000
 _CLAIM_TRANSACTION_TIMEOUT_SECONDS = 0.5
 _PUBLISH_TRANSACTION_TIMEOUT_SECONDS = 1.0
 _STEADY_STATEMENT_TIMEOUT_SECONDS = 3.0

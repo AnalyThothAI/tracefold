@@ -57,10 +57,11 @@ bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
 coordinator polls typed Radar, Macro, News, and Profile candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
-After a productive or failed shard turn it repolls immediately; only an idle
-turn waits on the 250 ms polling cadence. This preserves single-shard resource
-ownership without spending a fixed sleep budget while a typed frontier is
-backlogged.
+After every productive, failed, or idle shard turn it waits on the fixed 250 ms
+bounded polling cadence. Other due loops and the model arbiter also wait 250 ms
+after productive work and retain their bounded code-owned idle cadence. This
+preserves single-shard resource ownership and prevents a productive backlog
+from becoming a hot poll loop.
 `deadline_at_ms` is not a not-before time. Material changes are eligible
 immediately; `next_attempt_at_ms` delays only a scheduled recheck or retry.
 The eligibility expression has a bounded partial index on every projection
@@ -70,8 +71,8 @@ or configurable concurrency.
 
 Resolution performs one external lookup per durable turn and reprocesses at
 most 10 affected intents in each publication transaction. Larger closures use
-the persisted keyset continuation and immediately repoll without refetching the
-provider result.
+the persisted keyset continuation and repoll after the fixed 250 ms cadence
+without refetching the provider result.
 
 Serve owns a read-only pool of eight with ordinary/search/control admission
 `6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
@@ -82,13 +83,24 @@ children outside it. A provider-wide failure opens durable circuit state and
 consumes no target attempt. A caller timeout never releases a resource permit
 before the underlying future actually completes.
 
+Each Worker DB session is exactly one bounded transaction. One transaction-local
+setup statement installs the application name, statement/transaction deadlines,
+JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
+restores those settings when the transaction exits, so pooling needs no reset
+round trip. Every SQL statement and multi-statement repository operation is
+therefore covered by the native database deadline; the async caller adds only a
+bounded completion grace before treating an unfinished future as fatal.
+
 One Radar semantic shard claims at most four targets and is capped at 10,000
-input rows/4 MiB and 1 MiB output. Claim, each CPU call, publish, and full-turn
-hard timeouts are respectively 500 ms, 2 s, 3 s, and 5 s. Overflow is split
-deterministically or quarantined as
-`shard_oversized`; it is never sampled or truncated.
+input rows/4 MiB and 1 MiB output. Claim, load, CPU, and publication phases use
+their native DB or CPU deadlines plus bounded completion grace. There is no
+aggregate fatal projection-turn watchdog: five seconds is a soft Radar latency
+observation only. Overflow is split deterministically or quarantined as
+`shard_oversized`; it is never sampled or truncated. Projection claim leases
+cover their legal phase envelopes: Radar is 45 seconds, Profile and Macro are
+30 seconds each, and News is 60 seconds.
 The explicit maintenance rebuild keeps the existing 120-second maintenance
-transaction budget; it does not relax the one-second steady publish limit.
+transaction budget; it does not relax steady phase deadlines.
 
 Radar is one stable `window × venue` shard inside the EDF coordinator. One turn
 claims at most four due target frontiers for that shard, recomputes their compact
@@ -202,12 +214,15 @@ private, and other non-public destinations never use the relay. The internal
 The News acquisition publication is the only NewsItem writer. The EDF projection domain is the
 only Story, membership, alias, feature, and edge writer. Restart re-reads typed
 frontiers; it never performs a full-window steady rebuild. Unchanged
-component closures write zero serving rows. The one-hour scoring epoch is one
-global clock partitioned into at most 64 stable score buckets, not one timer
-per Story. A bucket loads only its current members, computes outside the
-database, and publishes changed item/Story score fields with set-based writes
-inside one short transaction. This prevents an hourly Story-count fanout while
-preserving the 60-second public Story deadline.
+component closures write zero serving rows. Identity work admits at most four
+candidate-pair blocks of at most 4,096 pairs each; edge calculation and the
+final component merge run under the bounded CPU capability, not on the event
+loop. The one-hour scoring epoch is one global clock partitioned into at most
+64 stable score buckets, not one timer per Story. A bucket loads only its
+current members, computes outside the database, and publishes changed
+item/Story score fields with set-based writes inside one short transaction.
+This prevents an hourly Story-count fanout while preserving the 60-second
+public Story deadline.
 
 The native Brief candidate exits before any model call when fewer than three
 Stories, fewer than two physical sources, or an unchanged ordered Story
@@ -245,22 +260,27 @@ The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
 the model.
 
-#### Issue #32 maintenance hard cut
+#### Operator-authorized Issue #33 maintenance hard cut
 
-The authoritative hard cut is system-wide, not a separate News migration:
+The active production cut is system-wide, not a separate News migration. The
+owner explicitly authorized a no-backup, no-snapshot hard cut and fix-forward
+recovery boundary:
 
 1. stop the old combined runtime;
-2. take and verify a recoverable PostgreSQL volume snapshot;
+2. record the exact pre-cut revision/schema/count boundary without copying or
+   snapshotting production data;
 3. run the explicit maintenance-profile `tracefold db hard-cut` command from
    `SETUP.md`;
 4. require the role, semantic, queue, history-cleanup, and invariant audits to
    pass before the legacy login is revoked;
 5. start serve and workers only after the command reports `cutover_ready`;
-6. restore the snapshot or repair forward while still in maintenance if any
+6. keep writers stopped and repair forward while still in maintenance if any
    gate fails.
 
 Old and new writers never coexist. There is no dual read/write, compatibility
-alias, automatic fallback, or rolling mixed version.
+alias, automatic fallback, rolling mixed version, restore proof, or waiver. An
+acceptance bundle must record the operator-authorized fix-forward boundary
+directly; it must not substitute a waived or placeholder proof.
 
 Macro:
 
@@ -293,8 +313,8 @@ targets request one month initially and one rolling day thereafter. Credit and
 WTI may retain longer reliable public history because their bounded
 single-source histories are inexpensive and materially improve regime context.
 Every loop claims one target/page per bounded turn. Daily settlements catch up
-through immediate productive repoll and never expand the semantic turn into a
-legacy batch.
+through the fixed 250 ms productive repoll and never expand the semantic turn
+into a legacy batch.
 Declared required windows remain observable in reader-facing History Depth but
 are non-blocking outside the feature or claim that needs them. Optional maximum
 public history and its execution state remain in the audit appendix and cannot
@@ -507,7 +527,8 @@ The runtime hard-cut migration also resets the retired `powa.coalesce` and
 `powa.frequency` `ALTER SYSTEM` entries before the official image takes over
 the existing PostgreSQL volume.
 
-For a migration or production cutover:
+For an ordinary future migration or production cutover without a separately
+recorded operator hard-cut authorization:
 
 1. stop writers or establish a maintenance boundary;
 2. take and verify a PostgreSQL backup;
@@ -522,8 +543,11 @@ For a migration or production cutover:
 
 Controlled offline workload, isolated startup/recovery, and the real continuous
 30-minute run are independent gates. Tests or a healthy Compose stack cannot
-substitute for the real run. Print the deliberately non-passing
-`evidence.json` template from the current code:
+substitute for the real run. This operator-authorized cut uses no backup, volume
+snapshot, or restore path: a failed gate keeps writers stopped and is repaired
+forward in maintenance. That is the declared cutover contract, not a waivable
+proof. Print the deliberately non-passing `evidence.json` template from the
+current code:
 
 ```bash
 uv run tracefold ops seal-workers-runtime-acceptance --template
@@ -537,30 +561,63 @@ candidate-specific migration rules. No runtime alias or dual read remains after
 the migration. Any other non-canonical owner aborts the whole migration;
 operators must resolve that provenance instead of guessing an alias. After the
 operator-approved production cutover, fill a new external bundle with measured
-evidence and an independent reviewer disposition. Seal only a complete bundle:
+evidence. The production collector bypasses the maintenance lock because it is
+read-only and must observe the running singleton. It uses a fixed 1,800-second
+interval with 181 samples at 10-second cadence, rejects any sample gap over 15
+seconds, and writes only to a new absolute directory outside the checkout:
+
+```bash
+uv run tracefold ops collect-workers-runtime-acceptance \
+  --bundle /absolute/path/to/issue-33-runtime-evidence
+```
+
+The collector fails closed on a dirty or changing checkout, revision/runtime/
+PID/container changes, restart or OOM, stale readiness, container memory at or
+above 2 GiB, PostgreSQL connection/lock/transaction violations, resource-cap
+violations, deadline/quarantine evidence, transition-counter regression, or a
+non-converging four-domain backlog. Arrival and completion counters are emitted
+only after the PostgreSQL transaction containing the frontier transition
+commits; rollback emits nothing. The 30-minute duration is the final
+`collector_elapsed_seconds` from the collector's monotonic clock, while wall
+clock timestamps continue to prove heartbeat freshness and the maximum sample
+gap. A failed collection retains its raw samples and returns non-zero.
+
+Add the measured collection, the offline/startup artifacts, the operator
+authorization record, and an independent reviewer disposition to the complete
+bundle. Seal only that complete bundle:
 
 ```bash
 uv run tracefold ops seal-workers-runtime-acceptance \
   --bundle /absolute/path/to/issue-33-evidence
 ```
 
-The sealer requires the complete V2 domain/capacity evidence set, at least
-1,800 seconds of real continuous evidence, production query analysis without
-route gaps or plan violations, resource/latency/shard/lane/queue/PostgreSQL
-evidence, semantic and permission passes, runtime/model-reservation evidence,
+The real gate accepts one `production_collection` proof plus the separate
+`public_semantic_diff`; it has no hand-filled runtime, process, PostgreSQL,
+resource, or capacity proofs. The production proof must point exactly at
+`workers-runtime-collection.json`, whose `samples_sha256` binds the accompanying
+`workers-runtime-samples.jsonl`. The sealer rereads all 181 JSONL rows,
+revalidates every sample, and recomputes duration, deadline misses, quarantine,
+capacity, runtime/process/container identity, restart/readiness, PostgreSQL,
+and resource limits. The real gate's declared duration, miss/quarantine counts,
+and capacity rows must equal that recomputed summary exactly; editing either
+the collection summary or any raw sample fails sealing.
+
+The sealer also requires production query analysis without route gaps or plan
+violations, semantic and permission passes, runtime/model-reservation evidence,
 and reviewer pass. The declared commit must equal the current checkout HEAD,
-the checkout must have no tracked or untracked changes,
-the absolute operator config path must exist, and every raw artifact must bind
-the same repository/session/cutoff, commit/migration, and redacted enablement.
-Every passing proof and the independent review must bind an `artifact_path`
-plus its actual SHA-256 to a regular JSON file inside the bundle. Raw proof
-files use `workers_runtime_raw_evidence_v1`; they contain typed per-proof
-records rather than bare `{ "ok": true }` assertions. The sealer independently
-checks all four semantic-domain hash pairs, zero serving writes, all five
-migration states, snapshot restore facts, and continuous runtime samples with
-no gap over 15 seconds or runtime/process identity change. The capacity proof
-owns the raw interval counters; declared duration, miss/quarantine counts,
-capacity rows, and computed arrival/completion rates must match it exactly.
+the checkout must have no tracked or untracked changes, the absolute operator
+config path must exist, and every raw artifact must bind the same
+repository/session/cutoff, commit/migration, and redacted enablement. Every
+passing proof and the independent review must bind an `artifact_path` plus its
+actual SHA-256 to a regular JSON file inside the bundle. Raw proof files use
+`workers_runtime_raw_evidence_v1`; they contain typed per-proof records rather
+than bare `{ "ok": true }` assertions. The sealer independently checks all four
+semantic-domain hash pairs, zero serving writes, all five migration states, the
+operator-authorized no-backup/fix-forward boundary, and continuous runtime
+samples with no gap over 15 seconds or runtime/process identity change. It
+rejects restore, waiver, placeholder, and retired hand-filled production proof
+records.
 The `workers_runtime_independent_review_v1` artifact must identify the reviewer
-and bind the exact path/hash set of every raw proof artifact. The sealer hashes
-every bundle file and refuses post-seal changes.
+and bind the exact path/hash set of every raw proof artifact, including both
+production collection files. The sealer hashes every bundle file and refuses
+post-seal changes.
