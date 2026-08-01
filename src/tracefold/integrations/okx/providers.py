@@ -150,9 +150,6 @@ def wire_okx_provider_bundle(settings: Settings) -> OkxProviderBundle:
             dex_quote_market = okx_dex_quote_market(settings)
             capabilities.add(MarketCapability.SEARCH_DEX)
             capabilities.add(MarketCapability.QUOTE_DEX_EXACT)
-        if settings.okx_dex_ws_configured:
-            stream_dex_market = okx_dex_ws_market(settings)
-            capabilities.add(MarketCapability.STREAM_DEX)
         return OkxProviderBundle(
             dex_discovery_market=dex_discovery_market,
             dex_quote_market=dex_quote_market,

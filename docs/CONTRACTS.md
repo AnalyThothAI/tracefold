@@ -208,9 +208,11 @@ Production News uses one code-owned OpenNews WSS stream plus bounded,
 gap-triggered REST recovery after initial connection, reconnect, or queue
 overflow. A healthy WSS session makes no periodic REST call, and Workers
 schedule no second acquisition lane. Persisted source state enforces a five-minute
-minimum interval between recovery attempts; an insufficient page keeps the gap
-open instead of claiming complete recovery. Gap closure is fenced by the
-persisted gap version.
+minimum interval between recovery attempts. One recovery reads sequential
+100-item pages from page 1, stops when it finds the persisted boundary, and is
+capped at 11 pages; the 31-day theoretical ceiling is 98,208 REST calls. An
+exhausted page budget keeps the gap open instead of claiming complete recovery.
+Gap closure is fenced by the persisted gap version.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,

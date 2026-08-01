@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
+
 from tracefold.app.market_providers import FallbackDexQuoteProvider
-from tracefold.market.provider_contracts import DexTokenQuote, DexTokenQuoteRequest
+from tracefold.integrations.okx import providers as okx_providers
+from tracefold.market.provider_contracts import DexTokenQuote, DexTokenQuoteRequest, MarketCapability
+from tracefold.platform.config.settings import OkxProviderConfig, ProvidersConfig, Settings
 
 
 class _QuoteProvider:
@@ -32,3 +36,38 @@ def test_multi_target_quotes_use_the_bounded_bulk_provider_only() -> None:
     assert provider.token_quotes(requests) == expected
     assert primary.calls == []
     assert bulk_fallback.calls == [requests]
+
+
+def test_okx_production_wiring_keeps_rest_without_constructing_the_unavailable_ws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        providers=ProvidersConfig(
+            okx=OkxProviderConfig(
+                dex_api_key="configured-key",
+                dex_secret_key="configured-secret",
+                dex_passphrase="configured-passphrase",
+            )
+        )
+    )
+    discovery = _QuoteProvider([])
+    quotes = _QuoteProvider([])
+    monkeypatch.setattr(okx_providers, "okx_dex_discovery_market", lambda _settings: discovery)
+    monkeypatch.setattr(okx_providers, "okx_dex_quote_market", lambda _settings: quotes)
+
+    def fail_if_ws_is_constructed(_settings: Settings) -> None:
+        raise AssertionError("OKX DEX WS must not be wired without provider whitelist access")
+
+    monkeypatch.setattr(okx_providers, "okx_dex_ws_market", fail_if_ws_is_constructed)
+
+    bundle = okx_providers.wire_okx_provider_bundle(settings)
+
+    assert bundle.dex_discovery_market is not None
+    assert bundle.dex_quote_market is quotes
+    assert bundle.stream_dex_market is None
+    assert bundle.health.capabilities == frozenset(
+        {
+            MarketCapability.SEARCH_DEX,
+            MarketCapability.QUOTE_DEX_EXACT,
+        }
+    )

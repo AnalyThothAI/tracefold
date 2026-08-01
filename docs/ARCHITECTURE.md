@@ -264,14 +264,15 @@ OpenNews source
 `NewsAcquisition` is the only NewsItem writer. It owns one persistent
 authenticated WSS receiver, one 256-event in-memory queue, one
 publisher, and one REST recovery loop under the same structured-concurrency
-root. REST is gap-driven only: one bounded page (page 1, limit 100) after a
-successful initial WSS connection, reconnect, or queue overflow. A healthy
-continuous WSS session performs no periodic REST calls, and persisted source
-state enforces at least five minutes between attempts. Even a continuous
-reconnect storm is therefore bounded to 8,640 calls in 30 days, while a healthy
-socket makes none. One page closes a gap only when it contains the persisted
-provider-record boundary and the persisted gap version is unchanged; otherwise
-News remains honestly degraded.
+root. REST is gap-driven only: recovery reads sequential 100-item pages from
+page 1, stops when it finds the persisted provider-record boundary, and never
+reads more than 11 pages per attempt. A healthy continuous WSS session performs
+no periodic REST calls, and persisted source state enforces at least five
+minutes between attempts. Even a continuous 31-day reconnect storm is therefore
+bounded to 98,208 calls, below the operator's 100,000-call monthly limit, while
+a healthy socket makes none. Recovery closes a gap only when a page contains
+the boundary and the persisted gap version is unchanged; exhausting the page
+budget leaves News honestly degraded.
 The stream socket does not consume a finite-operation permit; REST does.
 
 OpenNews provider record ID is the current-fact identity. Reconnect and

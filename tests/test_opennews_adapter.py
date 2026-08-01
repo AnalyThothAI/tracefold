@@ -188,6 +188,46 @@ def test_rest_page_uses_the_same_message_normalizer_and_is_bounded() -> None:
     assert events[0].provider_record_id == "wire-0"
 
 
+def test_rest_client_requests_the_selected_recovery_page() -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "wire-page-7",
+                        "text": "Page seven recovery item",
+                        "newsType": "Reuters",
+                        "engineType": "news",
+                        "ts": 1_775_195_200_000,
+                    }
+                ]
+            }
+
+    class _HttpClient:
+        def __init__(self) -> None:
+            self.request_json = None
+
+        def post(self, _url, *, json):
+            self.request_json = json
+            return _Response()
+
+    http_client = _HttpClient()
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = http_client
+
+    events = client.fetch_page(7)
+
+    assert [event.provider_record_id for event in events] == ["wire-page-7"]
+    assert http_client.request_json == {
+        "engineTypes": {"news": []},
+        "limit": 100,
+        "page": 7,
+    }
+
+
 def test_invalid_rest_shape_fails_closed() -> None:
     with pytest.raises(OpenNewsExpectedError, match="opennews_rest_payload_invalid"):
         parse_opennews_rest_response({"data": "not-a-list"})
@@ -221,7 +261,8 @@ def test_recovery_is_event_driven_and_keeps_a_three_hour_disconnect_gap(monkeypa
             self.event = event
             self.calls = 0
 
-        async def fetch_latest(self):
+        async def fetch_page(self, page):
+            assert page == 1
             self.calls += 1
             return (self.event,)
 
@@ -345,6 +386,176 @@ def test_recovery_only_closes_a_gap_when_the_page_contains_its_provider_boundary
     )
 
 
+def test_recovery_paginates_until_the_persisted_boundary(monkeypatch) -> None:
+    def report(provider_record_id: str):
+        event = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": provider_record_id,
+                    "text": provider_record_id,
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": 1_000_000_012_000,
+                },
+            }
+        )
+        assert event is not None
+        return event
+
+    async def scenario() -> tuple[list[int], list[list[str]], bool, str | None]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.published: list[list[str]] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    return None
+                if operation_name == "opennews_recovery_publish":
+                    self.published.append([event.provider_record_id for event in args[0]])
+                    return {}
+                if operation_name == "opennews_status":
+                    assert args[4] is False
+                    assert args[6] == 7
+                    stop_event.set()
+                    return None, 7
+                raise AssertionError(operation_name)
+
+        class _FiniteOperations:
+            async def run(self, _operation_name, function, /, *args, **_kwargs):
+                return await function(*args)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            async def fetch_page(self, page):
+                self.pages.append(page)
+                provider_record_id = "gap-boundary" if page == 4 else f"page-{page}"
+                return (report(provider_record_id),)
+
+        database = _Database()
+        rest = _RestClient()
+        acquisition = NewsAcquisition(
+            db=database,
+            finite_operations=_FiniteOperations(),
+            sources=(opennews_source(),),
+            opennews_rest_client=rest,
+            opennews_ws_client=object(),
+        )
+        acquisition._opennews_gap_boundary_provider_record_id = "gap-boundary"
+        acquisition._opennews_gap_version = 7
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return (
+            rest.pages,
+            database.published,
+            acquisition._opennews_gap_unclosed,
+            acquisition._opennews_gap_boundary_provider_record_id,
+        )
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == (
+        [1, 2, 3, 4],
+        [["page-1"], ["page-2"], ["page-3"], ["gap-boundary"]],
+        False,
+        None,
+    )
+
+
+def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) -> None:
+    def report(provider_record_id: str):
+        event = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": provider_record_id,
+                    "text": provider_record_id,
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": 1_000_000_012_000,
+                },
+            }
+        )
+        assert event is not None
+        return event
+
+    async def scenario() -> tuple[list[int], int, list[str], bool, str | None]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.publish_count = 0
+                self.status_errors: list[str] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    return None
+                if operation_name == "opennews_recovery_publish":
+                    self.publish_count += 1
+                    return {}
+                if operation_name == "opennews_status":
+                    assert args[4] is True
+                    self.status_errors.append(args[3])
+                    stop_event.set()
+                    return args[5], 8
+                raise AssertionError(operation_name)
+
+        class _FiniteOperations:
+            async def run(self, _operation_name, function, /, *args, **_kwargs):
+                return await function(*args)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            async def fetch_page(self, page):
+                self.pages.append(page)
+                return (report(f"page-{page}"),)
+
+        database = _Database()
+        rest = _RestClient()
+        acquisition = NewsAcquisition(
+            db=database,
+            finite_operations=_FiniteOperations(),
+            sources=(opennews_source(),),
+            opennews_rest_client=rest,
+            opennews_ws_client=object(),
+        )
+        acquisition._opennews_gap_boundary_provider_record_id = "missing-boundary"
+        acquisition._opennews_gap_version = 7
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return (
+            rest.pages,
+            database.publish_count,
+            database.status_errors,
+            acquisition._opennews_gap_unclosed,
+            acquisition._opennews_gap_boundary_provider_record_id,
+        )
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == (
+        list(range(1, 12)),
+        11,
+        ["opennews_recovery_window_incomplete"],
+        True,
+        "missing-boundary",
+    )
+
+
+def test_recovery_page_budget_stays_below_one_hundred_thousand_calls_per_month() -> None:
+    attempts_in_31_days = (31 * 24 * 60 * 60) // news_runtime._OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS
+
+    assert attempts_in_31_days * news_runtime._OPENNEWS_RECOVERY_MAX_PAGES == 98_208
+
+
 def test_healthy_opennews_idle_keeps_the_same_websocket(monkeypatch) -> None:
     class _WebSocket:
         def __init__(self) -> None:
@@ -394,7 +605,8 @@ def test_recovery_admission_timeout_keeps_the_gap_scheduled(monkeypatch) -> None
             self.stop_event = stop_event
             self.calls = 0
 
-        async def fetch_latest(self):
+        async def fetch_page(self, page):
+            assert page == 1
             self.calls += 1
             self.stop_event.set()
             return (self.event,)

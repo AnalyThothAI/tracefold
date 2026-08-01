@@ -22,7 +22,7 @@ OPENNEWS_WS_IDLE_SECONDS = 45.0
 
 
 class OpenNewsRestClient:
-    """One bounded synchronous recovery call; Runtime owns retry cadence."""
+    """One bounded synchronous recovery page; Runtime owns pagination and cadence."""
 
     def __init__(self, *, token: str, timeout_seconds: float = 20.0) -> None:
         self._client = httpx.Client(
@@ -33,11 +33,15 @@ class OpenNewsRestClient:
             },
         )
 
-    def fetch_latest(self) -> tuple[OpenNewsEvent, ...]:
+    def fetch_page(self, page: int) -> tuple[OpenNewsEvent, ...]:
         try:
             response = self._client.post(
                 OPENNEWS_REST_URL,
-                json={"engineTypes": {"news": []}, "limit": OPENNEWS_REST_LIMIT, "page": 1},
+                json={
+                    "engineTypes": {"news": []},
+                    "limit": OPENNEWS_REST_LIMIT,
+                    "page": int(page),
+                },
             )
             response.raise_for_status()
             payload = response.json()
