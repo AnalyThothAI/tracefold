@@ -115,7 +115,7 @@ tracefold.news
   repository.py     PostgreSQL current Item, Story, source-health, and Brief state
   interface.py      sole external News read interface
   runtime.py        bounded OpenNews live/recovery and native Brief candidate
-  projection.py     complete 96-hour WorldMonitor Story calculation
+  projection.py     complete 12-hour current WorldMonitor Story calculation
   story_store.py    current-only Story compare-and-publish store
   push.py           Story-qualified durable Feishu delivery
 
@@ -253,7 +253,7 @@ OpenNews source
   -> persistent WSS with bounded queue and REST gap recovery
   -> reports materialize idempotent NewsItems
   -> provider annotations update bounded metadata on the current item
-  -> complete 96-hour WorldMonitor title clustering every 60 seconds
+  -> complete 12-hour current WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
   -> News-owned strict score>70 push state
      -> one bounded Chinese-title attempt or immediate original fallback
@@ -288,16 +288,23 @@ stale reports are discarded rather than retained as audit history. Provider
 metadata is descriptive and cannot affect identity, classification, Story,
 importance, ordering, or Brief. It may qualify an already projected Story for
 the separate outbound push state machine. Linkless OpenNews dispatches remain
-valid current facts.
+valid current facts. Article admission retains valid OpenNews facts for up to
+96 hours; the current Story closure uses the newest complete 12-hour window
+only.
 
-The sole Story writer loads all enabled NewsItems in the current 96-hour
+The sole Story writer loads all enabled NewsItems in the current 12-hour
 window, carries only fields consumed by the calculation, recomputes normalized
 titles deterministically in the CPU phase, and compares the input fingerprint
 again under the publication lock. It runs every 60 seconds and is bounded by
-10,000 rows, 8 MiB input, and a 25-second operation budget. An unchanged input
+10,000 rows, 8 MiB input, and a 25-second runtime CPU budget. A narrow SQL
+count/byte preflight rejects an oversized corpus before wide rows are fetched;
+the exact encoded guard is checked again before calculation and publication. An unchanged input
 writes zero serving rows; a stale snapshot writes nothing. There are no News
 frontiers, identity-feature rows, similarity-edge rows, aliases, or
-membership history.
+membership history. WorldMonitor's 96-hour freshness floor is safe behind its
+per-feed item bound; applying it unchanged to the aggregated OpenNews firehose
+is not. The fixed 12-hour closure is a measured capacity boundary, not sampling
+or adaptive truncation: every admitted Item inside it participates.
 
 NewsItem identity is `(source_id, provider_record_id)`. The existing `item_id`
 is retained when this hard cut migrates an already known provider record.
@@ -386,8 +393,12 @@ failures, timeouts, HTTP 429, and 5xx are bounded
 retries; deterministic configuration, signing, authentication, and card errors
 are terminal. The semantics are durable at-least-once: an ambiguous response
 loss may duplicate externally, while a confirmed success is never resent.
-Dedupe follows current `story_id`; no historical Story alias or
-membership-overlap identity is introduced.
+The delivery key remains current `story_id`, while a selected Item already
+present anywhere in the durable ledger cannot qualify again after cluster
+membership changes produce a new Story ID. No historical Story alias or
+membership-overlap identity is introduced. A non-unique selected-Item lookup
+index keeps that permanent-ledger check bounded while retaining existing audit
+rows.
 The existing ledger column/status names `translation_status` and
 `pending_translation` encode payload preparation without adding another queue:
 new candidates use `pending`, then freeze as `translated`, `not_needed`, or

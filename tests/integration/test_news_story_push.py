@@ -510,7 +510,7 @@ def test_cancelled_prepare_releases_unfrozen_claim(
         conn.close()
 
 
-def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
+def test_story_identity_change_does_not_requalify_the_same_selected_item() -> None:
     conn = connect_postgres_test(read_only=False)
     hour_ms = 60 * 60 * 1000
     try:
@@ -526,13 +526,13 @@ def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
                         "expiring-earliest",
                         title=earliest_title,
                         score=60,
-                        published_at_ms=BASE_MS - (95 * hour_ms),
+                        published_at_ms=BASE_MS - (11 * hour_ms),
                     ),
                     _event(
                         "retained-highest",
                         title=selected_title,
                         score=91,
-                        published_at_ms=BASE_MS - (94 * hour_ms),
+                        published_at_ms=BASE_MS - (10 * hour_ms),
                     ),
                 ),
                 observed_at_ms=BASE_MS,
@@ -552,7 +552,7 @@ def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
             "terminalized": 0,
         }
 
-        # The 96-hour window drops only the canonical earliest member. The
+        # The 12-hour window drops only the canonical earliest member. The
         # already-selected high-score Item stays current under a new Story ID.
         after_expiry_ms = BASE_MS + (2 * hour_ms)
         with conn.transaction():
@@ -565,8 +565,8 @@ def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
         assert current["provider_evidence"]["title"] == selected_title
 
         assert asyncio.run(runtime.reconcile(now_ms=after_expiry_ms)) == {
-            "inserted": 1,
-            "suppressed": 1,
+            "inserted": 0,
+            "suppressed": 0,
             "terminalized": 0,
         }
         rows = conn.execute(
@@ -576,12 +576,104 @@ def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
              ORDER BY story_id
             """
         ).fetchall()
-        assert {row["story_id"]: row["status"] for row in rows} == {
-            original_story_id: "suppressed",
-            new_story_id: "suppressed",
-        }
-        assert next(row for row in rows if row["story_id"] == new_story_id)["translation_status"] == "not_requested"
+        assert [dict(row) for row in rows] == [
+            {
+                "story_id": original_story_id,
+                "status": "suppressed",
+                "translation_status": "not_requested",
+            }
+        ]
         assert asyncio.run(runtime.turn()) is False
+    finally:
+        conn.close()
+
+
+def test_sent_item_is_not_resent_when_its_story_identity_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    hour_ms = 60 * 60 * 1000
+    clock = {"now_ms": BASE_MS}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery()
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+
+        first_projection_ms = BASE_MS + 60_000
+        earliest_published_ms = BASE_MS - (12 * hour_ms) + 90_000
+        selected_title = "Fed holds rates steady as inflation concerns persist"
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "soon-expiring-earliest",
+                        title="Fed holds interest rates steady amid inflation concerns",
+                        score=60,
+                        published_at_ms=earliest_published_ms,
+                    ),
+                    _event(
+                        "fresh-selected",
+                        title=selected_title,
+                        score=91,
+                        published_at_ms=first_projection_ms,
+                    ),
+                ),
+                observed_at_ms=first_projection_ms,
+            )
+            repository.rebuild_stories(now_ms=first_projection_ms)
+
+        initial_evidence = repository.story_provider_evidence()
+        assert len(initial_evidence) == 1
+        original_story_id, original = next(iter(initial_evidence.items()))
+        selected_item_id = original["provider_evidence"]["item_id"]
+
+        clock["now_ms"] = first_projection_ms
+        assert asyncio.run(runtime.reconcile(now_ms=clock["now_ms"])) == {
+            "inserted": 1,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert asyncio.run(runtime.turn()) is True
+        assert len(delivery.payloads) == 1
+
+        # Sixty-one seconds later only the canonical member crosses the exact
+        # 12-hour boundary. The fresh selected Article acquires a new Story ID.
+        clock["now_ms"] = BASE_MS + 121_000
+        with conn.transaction():
+            repository.rebuild_stories(now_ms=clock["now_ms"])
+        current_evidence = repository.story_provider_evidence()
+        assert len(current_evidence) == 1
+        new_story_id, current = next(iter(current_evidence.items()))
+        assert new_story_id != original_story_id
+        assert current["provider_evidence"]["item_id"] == selected_item_id
+
+        assert asyncio.run(runtime.reconcile(now_ms=clock["now_ms"])) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert asyncio.run(runtime.turn()) is False
+        assert len(delivery.payloads) == 1
+        row = conn.execute(
+            """
+            SELECT story_id, selected_item_id, status, delivery_attempts
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row == {
+            "story_id": original_story_id,
+            "selected_item_id": selected_item_id,
+            "status": "sent",
+            "delivery_attempts": 1,
+        }
     finally:
         conn.close()
 

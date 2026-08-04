@@ -10,19 +10,25 @@ from tracefold.news import NewsInterface, NewsRepository, opennews_source, parse
 NOW_MS = 1_785_560_400_000
 
 
-def _event(*, title: str, score: int | None):
+def _event(
+    *,
+    title: str,
+    score: int | None,
+    record_id: str = "wire-1",
+    published_at_ms: int = NOW_MS,
+):
     ai_rating = {"score": score, "grade": "A"} if score is not None else None
     event = parse_opennews_message(
         {
             "method": "news.update",
             "params": {
-                "id": "wire-1",
+                "id": record_id,
                 "text": title,
                 "description": "Policy decision and market response",
                 "newsType": "Reuters",
                 "engineType": "news",
                 "link": "https://example.com/fed?utm_source=opennews",
-                "ts": NOW_MS,
+                "ts": published_at_ms,
                 **({"aiRating": ai_rating} if ai_rating is not None else {}),
                 "coins": [
                     {
@@ -36,6 +42,62 @@ def _event(*, title: str, score: int | None):
     )
     assert event is not None
     return event
+
+
+def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts() -> None:
+    conn = connect_postgres_test(read_only=False)
+    hour_ms = 60 * 60 * 1000
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        events = (
+            _event(
+                record_id="outside-story-window",
+                title="Older policy background remains Article evidence",
+                score=40,
+                published_at_ms=NOW_MS - (12 * hour_ms) - 1,
+            ),
+            _event(
+                record_id="story-window-boundary",
+                title="Policy meeting begins at the Story window boundary",
+                score=60,
+                published_at_ms=NOW_MS - (12 * hour_ms),
+            ),
+            _event(
+                record_id="current-story-item",
+                title="Markets react to the current policy announcement",
+                score=80,
+                published_at_ms=NOW_MS - hour_ms,
+            ),
+        )
+
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            result = repository.record_opennews_events(
+                source=source,
+                events=events,
+                observed_at_ms=NOW_MS,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+
+        assert result["items_inserted"] == 3
+        rows = conn.execute(
+            """
+            SELECT item.provider_record_id, item.active,
+                   member.story_id IS NOT NULL AS has_story
+              FROM news_items item
+              LEFT JOIN news_story_members member ON member.item_id = item.item_id
+             ORDER BY item.provider_record_id
+            """
+        ).fetchall()
+        assert {row["provider_record_id"]: (row["active"], row["has_story"]) for row in rows} == {
+            "current-story-item": (True, True),
+            "outside-story-window": (False, False),
+            "story-window-boundary": (True, True),
+        }
+    finally:
+        conn.close()
 
 
 def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -> None:

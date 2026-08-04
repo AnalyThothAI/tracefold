@@ -9,9 +9,15 @@ from psycopg.types.json import Jsonb
 
 from .models import CLASSIFIER_VERSION, IMPORTANCE_VERSION, STORY_IDENTITY_VERSION
 
-ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
+# OpenNews is a high-volume aggregate, unlike WorldMonitor's per-feed input
+# (which is capped before clustering).  Keep the live Story closure within a
+# fixed, complete window that the 25-second CPU budget can actually sustain;
+# the acquisition repository still retains valid Article facts for 96 hours.
+ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
 SCORING_EPOCH_MS = 60 * 60 * 1000
-STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:full-window-v2"
+NEWS_STORY_INPUT_ROW_CAP = 10_000
+NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
+STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:12h-full-window-v3"
 _PIPELINE_LOCK_KEY = 727_301_984
 
 
@@ -21,9 +27,46 @@ class _StorySnapshotLost(RuntimeError):
         self.items = int(items)
 
 
+class NewsProjectionInputExceeded(RuntimeError):
+    pass
+
+
+def _require_bounded_story_rows(rows: Sequence[Mapping[str, Any]]) -> None:
+    if len(rows) > NEWS_STORY_INPUT_ROW_CAP:
+        raise NewsProjectionInputExceeded("news_story_input_row_cap")
+    encoded = json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str).encode()
+    if len(encoded) > NEWS_STORY_INPUT_BYTES_CAP:
+        raise NewsProjectionInputExceeded("news_story_input_byte_cap")
+
+
 def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
     cutoff_ms = int(now_ms) - ACTIVE_WINDOW_MS
     scoring_epoch_ms = int(now_ms) - (int(now_ms) % SCORING_EPOCH_MS)
+    bounds = repository.conn.execute(
+        """
+        SELECT count(*) AS item_count,
+               coalesce(sum(
+                 octet_length(item.item_id)
+                 + octet_length(item.source_id)
+                 + coalesce(octet_length(item.canonical_url), 0)
+                 + octet_length(item.reporting_origin)
+                 + octet_length(item.title)
+                 + octet_length(item.description)
+                 + octet_length(item.content_fingerprint)
+                 + 12
+               ), 0) AS minimum_input_bytes
+          FROM news_items item
+          JOIN news_sources source ON source.source_id = item.source_id
+         WHERE source.enabled
+           AND item.published_at_ms >= %s
+        """,
+        (cutoff_ms,),
+    ).fetchone()
+    item_count = int(bounds["item_count"] or 0)
+    if item_count > NEWS_STORY_INPUT_ROW_CAP:
+        raise NewsProjectionInputExceeded("news_story_input_row_cap")
+    if int(bounds["minimum_input_bytes"] or 0) > NEWS_STORY_INPUT_BYTES_CAP:
+        raise NewsProjectionInputExceeded("news_story_input_byte_cap")
     loaded_rows = [
         dict(row)
         for row in repository.conn.execute(
@@ -37,26 +80,11 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
              WHERE source.enabled
                AND item.published_at_ms >= %s
              ORDER BY item.published_at_ms, item.item_id
+             LIMIT %s
             """,
-            (cutoff_ms,),
+            (cutoff_ms, NEWS_STORY_INPUT_ROW_CAP + 1),
         ).fetchall()
     ]
-    input_fingerprint = repository.stable_json_hash(
-        {
-            "projection_version": STORY_PROJECTION_VERSION,
-            "scoring_epoch_ms": scoring_epoch_ms,
-            "items": [
-                [
-                    str(row["item_id"]),
-                    str(row["content_fingerprint"]),
-                    int(row["published_at_ms"]),
-                    str(row["reporting_origin"]),
-                    int(row["tier"]),
-                ]
-                for row in loaded_rows
-            ],
-        }
-    )
     rows = [
         {
             key: row[key]
@@ -73,6 +101,23 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
         }
         for row in loaded_rows
     ]
+    _require_bounded_story_rows(rows)
+    input_fingerprint = repository.stable_json_hash(
+        {
+            "projection_version": STORY_PROJECTION_VERSION,
+            "scoring_epoch_ms": scoring_epoch_ms,
+            "items": [
+                [
+                    str(row["item_id"]),
+                    str(row["content_fingerprint"]),
+                    int(row["published_at_ms"]),
+                    str(row["reporting_origin"]),
+                    int(row["tier"]),
+                ]
+                for row in loaded_rows
+            ],
+        }
+    )
     summary = repository.conn.execute(
         "SELECT input_fingerprint FROM news_projection_summary WHERE singleton_key='current'"
     ).fetchone()
@@ -92,6 +137,7 @@ def publish_story_projection(
     projection: Mapping[str, Any],
     now_ms: int,
 ) -> dict[str, Any]:
+    _require_bounded_story_rows(snapshot.rows)
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
     snapshot_item_ids = sorted({str(row["item_id"]) for row in snapshot.rows})

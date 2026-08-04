@@ -16,15 +16,16 @@ from tracefold.news.ranking import (
     promote_diplomacy_severity,
 )
 from tracefold.news.sources import reporting_origin_tier
-from tracefold.news.story_store import _StorySnapshotLost
+from tracefold.news.story_store import (
+    NewsProjectionInputExceeded,
+    _require_bounded_story_rows,
+    _StorySnapshotLost,
+)
 
 NEWS_STORY_LOAD_TIMEOUT_SECONDS = 3.0
 NEWS_STORY_COMPUTE_TIMEOUT_SECONDS = 25.0
 NEWS_STORY_PUBLISH_TIMEOUT_SECONDS = 8.0
 NEWS_STORY_FAILURE_TIMEOUT_SECONDS = 3.0
-NEWS_STORY_INPUT_ROW_CAP = 10_000
-NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
-
 _CATEGORY_ORDER: tuple[EventCategory, ...] = (
     "conflict",
     "protest",
@@ -41,10 +42,6 @@ _CATEGORY_ORDER: tuple[EventCategory, ...] = (
     "tech",
     "general",
 )
-
-
-class NewsProjectionInputExceeded(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +129,7 @@ class NewsProjectionService:
 
 
 def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str, Any]:
+    _require_bounded_snapshot(snapshot)
     rows = [dict(row) for row in snapshot.rows]
     for row in rows:
         row["normalized_title"] = normalize_story_text(str(row["title"]))
@@ -317,11 +315,7 @@ def rebuild_all_news_for_maintenance(*, db: Any, now_ms: int) -> dict[str, Any]:
 
 
 def _require_bounded_snapshot(snapshot: NewsProjectionSnapshot) -> None:
-    if len(snapshot.rows) > NEWS_STORY_INPUT_ROW_CAP:
-        raise NewsProjectionInputExceeded("news_story_input_row_cap")
-    encoded = json.dumps(snapshot.rows, ensure_ascii=False, sort_keys=True, default=str).encode()
-    if len(encoded) > NEWS_STORY_INPUT_BYTES_CAP:
-        raise NewsProjectionInputExceeded("news_story_input_byte_cap")
+    _require_bounded_story_rows(snapshot.rows)
 
 
 def _stable_hash(value: object) -> str:

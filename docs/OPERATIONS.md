@@ -226,7 +226,7 @@ News:
 ```text
 OpenNews WSS + bounded REST recovery
   -> report/annotation merge into current NewsItem
-  -> every 60 seconds load complete enabled 96-hour item window
+  -> every 60 seconds load complete enabled 12-hour item window
   -> WorldMonitor clustering + classification + importance
   -> compare-and-publish current Story/member/facet/Brief selection closure
   -> /api/news/feed + /api/news/stories/{story_id}
@@ -267,23 +267,34 @@ second polling or acquisition-history lane.
 
 The acquisition publication is the only NewsItem writer. The fixed-period
 Story projection is the only Story/member/facet/Brief-selection writer. It
-re-reads the complete current 96-hour window every 60 seconds, carries only the
+re-reads the complete current 12-hour window every 60 seconds, carries only the
 calculation fields and recomputes normalized titles in the CPU phase, calculates
 outside the database, rejects stale snapshots, and atomically publishes the
 current closure. Unchanged inputs write zero serving rows. The operation is
-bounded by 10,000 rows, 8 MiB, and 25 seconds. There are no News frontiers,
+bounded by 10,000 rows and 8 MiB, with a 25-second CPU deadline in the runtime
+projection path. A narrow SQL preflight rejects an oversized corpus before the
+wide-row query, followed by the exact encoded guard. There are no News frontiers,
 identity features, similarity edges, aliases, archive rows, or membership
-history.
+history. Article facts remain independently admissible for up to 96 hours.
+The 12-hour window must remain complete; do not repair capacity failures with
+top-N sampling, dynamic windows, or a larger unmeasured cap. Diagnose
+`news_story_input_row_cap`, `news_story_input_byte_cap`, or
+`news_story_operation_timeout` against the observed 12-hour corpus before
+changing this boundary.
 
 The push reconciler independently scans persisted current Story evidence every
 10 seconds. It performs no clustering or provider call and writes zero delivery
-rows for already-seen Stories. A newly ingested report must still
+rows for already-seen Stories or already-ledgered selected Items, including
+when cluster membership changes the current Story ID. A newly ingested report must still
 enter a Story through the 60-second projection before it can qualify; a later
 `news.ai_update` on an existing Story no longer waits for another Story rebuild.
 Push is a live alert rather than a recovery replay: the selected Item must be
 newer than the enablement baseline and at most 15 minutes old. A stale Item that
 only becomes scored through REST recovery is frozen as suppressed and performs
 no outbound request.
+The selected-Item ledger lookup is index-backed. It is intentionally non-unique
+so historical duplicate audit rows remain intact; candidate insertion still
+writes zero new rows for any already-ledgered selected Item.
 
 `published_at_ms` is the provider's article clock, not the score-eligibility
 clock. OpenNews can publish a report first and later attach `aiRating` and
@@ -345,7 +356,7 @@ News health has four layers:
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | OpenNews is connected, its recovery gap is closed, and at least one item has succeeded | source not configured, no item yet, disconnected stream, open gap, or current provider error |
-| story | current 96-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
+| story | complete current 12-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
 | push | disabled, or webhook-configured with initialized baseline and no terminal delivery | missing required webhook, uninitialized enabled state, retry backlog beyond policy, or terminal delivery error |
 

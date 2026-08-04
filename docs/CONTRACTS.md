@@ -202,7 +202,9 @@ does not affect Story identity, classification, importance, Feed ordering, or
 Brief. A numeric provider score may qualify the already projected Story for
 the separate outbound push state machine. Story identity is the full SHA-256
 of the earliest normalized title in
-the current WorldMonitor-compatible 96-hour cluster. Corroboration counts
+the complete current 12-hour cluster using WorldMonitor-compatible identity.
+Valid Article facts can remain admitted for up to 96 hours independently of
+current Story membership. Corroboration counts
 distinct reporting origins, not acquisition paths, memberships, or repeated
 observations. Keyword classification and importance are deterministic and
 fully sufficient without AI.
@@ -428,7 +430,7 @@ diagnostic: it invokes no provider/model and writes nothing.
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
 News steady state and explicit maintenance use the same complete current
-96-hour WorldMonitor calculation from persisted NewsItems. Token Radar
+12-hour WorldMonitor calculation from persisted NewsItems. Token Radar
 contract and distribution checks use `projection-status`,
 `validate-projections`, and `factor-diagnostics`; the CLI does not carry a
 second copy of the factor contract.

@@ -135,7 +135,8 @@ recovery, and publisher share one acquisition module and sole NewsItem writer.
 A healthy WSS connection never polls REST periodically; one bounded REST page
 is requested only after initial connection, reconnect, or queue overflow, with
 a persisted five-minute minimum interval between attempts.
-A fixed 60-second writer owns the complete current 96-hour Story projection,
+A fixed 60-second writer owns the complete current 12-hour Story projection
+(while valid Article facts remain admissible for up to 96 hours),
 and the single-capacity native-state model arbiter owns World Brief. Push is a
 separate News-owned delivery state machine with a code-owned 10-second
 persisted-evidence reconcile: initial

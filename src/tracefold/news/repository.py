@@ -616,7 +616,11 @@ class NewsRepository:
         )
 
     def rebuild_stories(self, *, now_ms: int) -> dict[str, Any]:
-        from .projection import NewsProjectionSnapshot, compute_news_story_projection
+        from .projection import (
+            NewsProjectionSnapshot,
+            _require_bounded_snapshot,
+            compute_news_story_projection,
+        )
 
         payload = self.load_story_projection(now_ms=now_ms)
         snapshot = NewsProjectionSnapshot(
@@ -628,6 +632,7 @@ class NewsRepository:
             ),
             rows=tuple(dict(row) for row in payload["rows"]),
         )
+        _require_bounded_snapshot(snapshot)
         if snapshot.unchanged:
             return {
                 "projection_status": "unchanged_input",
@@ -1922,10 +1927,14 @@ class NewsRepository:
               delivery_attempts, next_attempt_at_ms, lease_owner,
               lease_token, lease_expires_at_ms, receipt, last_error,
               sent_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (
+            ) SELECT
               %s, %s, %s, %s, %s, NULL, NULL, %s, %s,
               0, %s, NULL, NULL, NULL, NULL, NULL, NULL, %s, %s
-            )
+             WHERE NOT EXISTS (
+               SELECT 1
+                 FROM news_push_deliveries existing
+                WHERE existing.selected_item_id = %s
+             )
             ON CONFLICT (story_id) DO NOTHING
             """,
             (
@@ -1939,6 +1948,7 @@ class NewsRepository:
                 None if suppressed else int(now_ms),
                 int(now_ms),
                 int(now_ms),
+                selected_item_id,
             ),
         )
         return bool(cursor.rowcount)

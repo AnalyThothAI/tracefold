@@ -125,7 +125,9 @@ requires a new shared-corpus specification, never a private production patch.
 Cutover acceptance requires a destructive empty-News-schema cold start,
 exactly fourteen News tables, one OpenNews source, one acquisition module, one
 fixed-period Story writer, and the native model seam; authenticated OpenNews
-NewsItems, deterministic current Story membership, all five
+NewsItems, deterministic complete 12-hour Story membership with the exact
+cutoff included and older retained Article facts excluded only from Story,
+fail-closed row and byte input caps, all five
 public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, measured acquisition/projection latency, and
@@ -134,7 +136,8 @@ acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, suppression of pre-baseline or more-than-15-minute
 old recovery evidence, independent 10-second candidate reconciliation after a
 later provider annotation on an existing Story, frozen at-least-once
-retry behavior, exact preservation of the original headline, compact body rendering from
+retry behavior, exactly-once ledger qualification of a selected Item even when
+its current Story ID changes, exact preservation of the original headline, compact body rendering from
 the selected Item's coins and provider score, optional bilingual rendering with
 the original visibly preserved, immediate original fallback for translation
 timeout/invalid/overlong output, optional canonical
