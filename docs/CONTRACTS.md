@@ -50,26 +50,35 @@ source. It is reported only as the redacted boolean
 `news.opennews_token_configured`. When absent, News reports
 `opennews_token_missing`; no substitute credential path is used.
 
-`news.push` contains `enabled`, `feishu_webhook_url`, and
-optional `feishu_signing_secret`. Enabling push requires the webhook, which
+`news.push` contains `enabled`, `feishu_webhook_url`, optional
+`feishu_signing_secret`, and an isolated `translation` block with `enabled`,
+`base_url`, `api_key`, and `engine`. Enabling push requires the webhook, which
 must be the supported Feishu HTTPS custom-bot v2 boundary. If a non-empty
 signing secret is present, delivery includes the computed `timestamp` and
 `sign`; if absent, delivery is unsigned and includes neither field.
-Diagnostics expose only `feishu_webhook_url_configured` and
-`feishu_signing_secret_configured`. Each frozen internal delivery envelope
+Enabling translation requires all three endpoint fields; it never falls back to
+global `llm` credentials. CLI diagnostics expose only configured booleans for
+Feishu and translation. Each frozen internal delivery envelope
 contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
-Threshold, translator model, cadence, deadlines, retries, and card policy are
-code-owned. The Feishu JSON 2.0 card uses the translated headline when
-available, or the original headline, as its plain-text header title. Its compact
-body shows only the selected highest-score Item's OpenNews coin symbols and
-provider score. Coin symbols preserve provider order after case-insensitive
-deduplication; missing symbols render as `未提供`. A canonical HTTP(S) Item URL
-adds one `查看原文` button; a missing URL omits the button. The card has no
-subtitle, summary, signal, grade, Story score, source, or publication time.
-Translation reuses
-`llm.api_key` and `llm.base_url`; there is no second model credential or
-Google-translation fallback.
+Threshold, cadence, deadlines, retries, translation target, 1.5-second total
+translation budget, 500-grapheme input ceiling, validation, and card policy are
+code-owned. Push does not consume `llm` configuration or enter the serial model
+arbiter. For one fresh non-Chinese title it makes at most one request to the
+configured translation endpoint and never switches providers or retries. The
+Feishu JSON 2.0 card uses a valid Chinese translation as its plain-text header
+and shows the original visibly in the body. Chinese input bypasses translation;
+failure or overlong input uses the original header and a visible fallback note. Its
+live-alert admission requires the selected Item to be newer than the
+first-enable baseline and no more than 15 minutes old; stale recovery data is
+recorded as suppressed and is never sent. Its
+compact body shows only the selected highest-score Item's OpenNews coin symbols
+and provider score. Coin symbols preserve provider order after
+case-insensitive deduplication; missing symbols render as `未提供`. A canonical
+HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
+card has no subtitle, summary, signal, grade, Story score, source, or publication
+time. Translation is presentation-only: Article, Story, provider score, and
+public News read models remain unchanged.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial

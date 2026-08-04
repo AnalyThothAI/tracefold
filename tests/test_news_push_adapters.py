@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -8,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from tracefold.app.cli.commands import config as config_command
+from tracefold.integrations import news_push as news_push_integration
 from tracefold.integrations.feishu import (
     FEISHU_WEBHOOK_REQUEST_MAX_BYTES,
     FeishuRetryableError,
@@ -15,19 +17,13 @@ from tracefold.integrations.feishu import (
     FeishuWebhookClient,
     generate_feishu_signature,
 )
-from tracefold.integrations.news_ai import (
-    DEEPSEEK_TITLE_TRANSLATION_MODEL,
-    DeepSeekTitleTranslationError,
-    DeepSeekTitleTranslator,
-)
-from tracefold.integrations.news_push import (
-    DeepSeekNewsPushTranslator,
-    FeishuNewsPushDelivery,
-)
-from tracefold.news import NewsPushDeliveryError, NewsPushTranslationError
+from tracefold.integrations.news_push import FeishuNewsPushDelivery
+from tracefold.news import NewsPushDeliveryError
 from tracefold.platform.config.settings import NewsPushSettings, Settings, default_config_yaml
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
+_PREPARE_DEADLINE_MS = 4_102_444_800_000
 
 
 def test_news_push_settings_require_only_feishu_webhook_when_enabled() -> None:
@@ -47,6 +43,31 @@ def test_news_push_settings_require_only_feishu_webhook_when_enabled() -> None:
 
     assert configured.feishu_webhook_url == _FEISHU_TEST_URL
     assert configured.feishu_signing_secret == "signing-secret"
+
+
+def test_news_push_translation_settings_are_independent_and_complete() -> None:
+    settings = NewsPushSettings(
+        enabled=True,
+        feishu_webhook_url=_FEISHU_TEST_URL,
+        translation={
+            "enabled": True,
+            "base_url": "https://translator.test/v1",
+            "api_key": "translation-secret",
+            "engine": "fast-title-translator",
+        },
+    )
+
+    assert settings.translation.enabled is True
+    assert settings.translation.base_url == "https://translator.test/v1"
+    assert settings.translation.api_key == "translation-secret"
+    assert settings.translation.engine == "fast-title-translator"
+
+    with pytest.raises(ValidationError, match="news_push_translation_configuration_required"):
+        NewsPushSettings(
+            enabled=True,
+            feishu_webhook_url=_FEISHU_TEST_URL,
+            translation={"enabled": True},
+        )
 
 
 def test_news_settings_reject_push_when_news_is_disabled_without_leaking_secrets() -> None:
@@ -91,6 +112,12 @@ def test_default_config_keeps_news_push_disabled_and_credentials_empty() -> None
         "enabled": False,
         "feishu_webhook_url": None,
         "feishu_signing_secret": None,
+        "translation": {
+            "enabled": False,
+            "base_url": None,
+            "api_key": None,
+            "engine": None,
+        },
     }
 
 
@@ -101,6 +128,12 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
                 "enabled": True,
                 "feishu_webhook_url": _FEISHU_TEST_URL,
                 "feishu_signing_secret": "test-signing-secret",
+                "translation": {
+                    "enabled": True,
+                    "base_url": "https://translator.test/v1",
+                    "api_key": "translation-secret",
+                    "engine": "fast-title-translator",
+                },
             }
         }
     )
@@ -114,10 +147,14 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
         "enabled": True,
         "feishu_webhook_url_configured": True,
         "feishu_signing_secret_configured": True,
+        "translation_enabled": True,
+        "translation_configured": True,
     }
     rendered = json.dumps(payload)
     assert _FEISHU_TEST_URL not in rendered
     assert "test-signing-secret" not in rendered
+    assert "translator.test" not in rendered
+    assert "translation-secret" not in rendered
 
 
 def test_feishu_signature_matches_official_empty_message_hmac_shape() -> None:
@@ -298,123 +335,6 @@ def test_feishu_webhook_rejects_card_over_official_request_limit_without_network
     assert called is False
 
 
-def test_deepseek_title_translator_uses_v4_flash_non_thinking_and_bounded_json_output() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"content": '{"translated_title":"美联储维持利率不变"}'},
-                    }
-                ]
-            },
-        )
-
-    translator = DeepSeekTitleTranslator(
-        api_key="test-api-key",
-        transport=httpx.MockTransport(handler),
-    )
-    try:
-        translated = translator.translate("Fed holds rates steady")
-    finally:
-        translator.close()
-
-    assert translated == "美联储维持利率不变"
-    assert len(requests) == 1
-    assert str(requests[0].url) == "https://api.deepseek.com/chat/completions"
-    assert requests[0].headers["authorization"] == "Bearer test-api-key"
-    payload = json.loads(requests[0].content)
-    assert payload["model"] == DEEPSEEK_TITLE_TRANSLATION_MODEL == "deepseek-v4-flash"
-    assert payload["thinking"] == {"type": "disabled"}
-    assert payload["max_tokens"] == 128
-    assert payload["response_format"] == {"type": "json_object"}
-    assert json.loads(payload["messages"][1]["content"]) == {"source_title": "Fed holds rates steady"}
-
-
-@pytest.mark.parametrize(
-    "choice",
-    [
-        {"finish_reason": "length", "message": {"content": '{"translated_title":"截断"}'}},
-        {"finish_reason": "stop", "message": {"content": "not-json"}},
-        {"finish_reason": "stop", "message": {"content": '{"translated_title":"line 1\\nline 2"}'}},
-    ],
-)
-def test_deepseek_title_translator_fails_closed_on_invalid_model_output(choice: dict[str, object]) -> None:
-    translator = DeepSeekTitleTranslator(
-        api_key="test-api-key",
-        base_url="https://deepseek.test/v1",
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"choices": [choice]})),
-    )
-    try:
-        with pytest.raises(DeepSeekTitleTranslationError, match="news_push_translation_failed"):
-            translator.translate("Fed holds rates steady")
-    finally:
-        translator.close()
-
-
-def test_deepseek_news_push_translator_returns_domain_translation() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"content": '{"translated_title":"比特币 ETF 录得资金流入"}'},
-                    }
-                ]
-            },
-        )
-
-    translator = DeepSeekNewsPushTranslator(
-        "test-api-key",
-        transport=httpx.MockTransport(handler),
-    )
-    try:
-        result = translator.translate_title("Bitcoin ETF records inflows")
-    finally:
-        translator.close()
-
-    assert result.title_zh == "比特币 ETF 录得资金流入"
-    assert result.provider == "deepseek"
-    assert result.model == "deepseek-v4-flash"
-    assert len(requests) == 1
-
-
-def test_deepseek_news_push_translator_without_key_defers_to_english_fallback() -> None:
-    translator = DeepSeekNewsPushTranslator(None)
-    try:
-        with pytest.raises(
-            NewsPushTranslationError,
-            match="news_push_translation_api_key_unavailable",
-        ):
-            translator.translate_title("Bitcoin ETF records inflows")
-    finally:
-        translator.close()
-
-
-def test_deepseek_news_push_translator_maps_sanitized_raw_failure() -> None:
-    translator = DeepSeekNewsPushTranslator(
-        "test-api-key",
-        transport=httpx.MockTransport(lambda _request: httpx.Response(503)),
-    )
-    try:
-        with pytest.raises(NewsPushTranslationError) as raised:
-            translator.translate_title("Bitcoin ETF records inflows")
-    finally:
-        translator.close()
-
-    assert raised.value.code == "news_push_translation_failed"
-
-
 def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
@@ -422,18 +342,33 @@ def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
     )
     try:
-        rendered = delivery.render(
+        rendered = _prepare_payload(
+            delivery,
             _news_push_source_payload(
                 title="Original [alert](https://evil.test) <at id=all></at>",
                 url="https://example.com/story/1",
             ),
-            _news_push_translation(),
         )
     finally:
         delivery.close()
 
     assert rendered["channel"] == "feishu"
-    assert rendered["translation"] == _news_push_translation()
+    assert set(rendered) == {
+        "schema_version",
+        "channel",
+        "auth_mode",
+        "presentation",
+        "card",
+    }
+    assert rendered["schema_version"] == "news_feishu_delivery_v2"
+    assert rendered["presentation"] == {
+        "headline_mode": "source",
+        "target_language": "zh-CN",
+        "provider": None,
+        "engine": None,
+        "prompt_version": "title_zh_v1",
+        "fallback_code": None,
+    }
     assert rendered["card"] == {
         "schema": "2.0",
         "body": {
@@ -467,29 +402,237 @@ def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": "比特币 ETF 录得资金流入",
+                "content": "Original [alert](https://evil.test) <at id=all></at>",
             }
         },
     }
 
 
-def test_feishu_news_push_english_fallback_keeps_compact_evidence() -> None:
+def test_feishu_news_push_translates_once_and_keeps_original_visible() -> None:
+    translation_requests: list[httpx.Request] = []
+
+    def translation_handler(request: httpx.Request) -> httpx.Response:
+        translation_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {"translated_title": "比特币 ETF 录得 10% 资金流入"},
+                                ensure_ascii=False,
+                            )
+                        },
+                    }
+                ]
+            },
+        )
+
+    delivery = FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        "test-secret",
+        finite_operations=_InlineFiniteOperations(),
+        translation_enabled=True,
+        translation_base_url="https://translator.test/v1",
+        translation_api_key="translation-secret",
+        translation_engine="fast-title-translator",
+        translation_transport=httpx.MockTransport(translation_handler),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="Bitcoin ETF records 10% inflows"),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "translated"
+    assert prepared.payload["schema_version"] == "news_feishu_delivery_v2"
+    assert prepared.payload["presentation"] == {
+        "headline_mode": "translated",
+        "target_language": "zh-CN",
+        "provider": "openai_compatible",
+        "engine": "fast-title-translator",
+        "prompt_version": "title_zh_v1",
+        "fallback_code": None,
+    }
+    card = prepared.payload["card"]
+    assert card["header"]["title"]["content"] == "比特币 ETF 录得 10% 资金流入"
+    body_text = [element["text"]["content"] for element in card["body"]["elements"] if element.get("tag") == "div"]
+    assert body_text == [
+        "自动翻译，仅供参考\n原文：Bitcoin ETF records 10% inflows",
+        "代币：BTC · ETH\nOpenNews 评分：91",
+    ]
+    assert len(translation_requests) == 1
+    request_payload = json.loads(translation_requests[0].content)
+    assert request_payload["model"] == "fast-title-translator"
+    assert "thinking" not in request_payload
+    frozen_json = json.dumps(prepared.payload, ensure_ascii=False)
+    assert "translation-secret" not in frozen_json
+    assert "translator.test" not in frozen_json
+
+
+def test_translation_enabled_skips_chinese_and_translates_japanese() -> None:
+    translation_requests: list[httpx.Request] = []
+
+    def translation_handler(request: httpx.Request) -> httpx.Response:
+        translation_requests.append(request)
+        return _translation_response("日本银行加息")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        chinese = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="央行维持利率不变"),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+        japanese = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="日本銀行が金利を引き上げる"),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert chinese.translation_status == "not_needed"
+    assert chinese.payload["presentation"]["headline_mode"] == "source"
+    assert japanese.translation_status == "translated"
+    assert japanese.payload["card"]["header"]["title"]["content"] == "日本银行加息"
+    assert len(translation_requests) == 1
+
+
+def test_overlong_title_skips_translation_and_marks_the_visible_excerpt() -> None:
+    called = False
+
+    def translation_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        raise AssertionError("overlong title must not call translation")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="x" * 501),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert called is False
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == "news_push_translation_title_too_long"
+    assert prepared.payload["card"]["header"]["title"]["content"].endswith("…")
+    assert prepared.payload["card"]["body"]["elements"][0]["text"]["content"].startswith(
+        "标题过长，未自动翻译\n原文节选："
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_code"),
+    (
+        (httpx.Response(429), "news_push_translation_rate_limited"),
+        (httpx.Response(200, json={"choices": []}), "news_push_translation_response_invalid"),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": '{"translated_title":"比特币上涨"}',
+                            },
+                        }
+                    ]
+                },
+            ),
+            "news_push_translation_anchors_changed",
+        ),
+    ),
+)
+def test_translation_failure_freezes_original_fallback(
+    response: httpx.Response,
+    expected_code: str,
+) -> None:
+    delivery = _translation_delivery(lambda _request: response)
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="BTC rises 10%"),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["headline_mode"] == "fallback_original"
+    assert prepared.payload["presentation"]["fallback_code"] == expected_code
+    assert prepared.payload["card"]["header"]["title"]["content"] == "BTC rises 10%"
+
+
+def test_translation_admission_timeout_immediately_freezes_original_fallback() -> None:
+    delivery = _translation_delivery(
+        lambda _request: _translation_response("比特币 ETF 录得资金流入"),
+        finite_operations=_UnavailableFiniteOperations(),
+    )
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_admission_timeout")
+
+
+def test_translation_total_budget_includes_resource_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        news_push_integration,
+        "_TRANSLATION_TOTAL_TIMEOUT_SECONDS",
+        0.01,
+    )
+    delivery = _translation_delivery(
+        lambda _request: _translation_response("比特币 ETF 录得资金流入"),
+        finite_operations=_BlockingFiniteOperations(),
+    )
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_total_timeout")
+
+
+def test_feishu_news_push_uses_english_original_without_model_work() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
     )
     try:
-        rendered = delivery.render(
-            _news_push_source_payload(title="Fed holds rates steady", url=None),
-            {
-                "status": "unavailable",
-                "title_zh": None,
-                "provider": None,
-                "model": None,
-                "error_code": "news_push_translation_failed",
-            },
-        )
+        rendered = _prepare_payload(delivery, _news_push_source_payload(title="Fed holds rates steady", url=None))
     finally:
         delivery.close()
 
@@ -507,23 +650,14 @@ def test_feishu_news_push_english_fallback_keeps_compact_evidence() -> None:
     ]
 
 
-def test_feishu_news_push_chinese_original_needs_no_translation() -> None:
+def test_feishu_news_push_uses_chinese_original_unchanged() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
     )
     try:
-        rendered = delivery.render(
-            _news_push_source_payload(title="比特币 ETF 录得资金流入", url=None),
-            {
-                "status": "not_needed",
-                "title_zh": "比特币 ETF 录得资金流入",
-                "provider": None,
-                "model": None,
-                "error_code": None,
-            },
-        )
+        rendered = _prepare_payload(delivery, _news_push_source_payload(title="比特币 ETF 录得资金流入", url=None))
     finally:
         delivery.close()
 
@@ -548,11 +682,11 @@ def test_feishu_news_push_coin_body_preserves_order_and_deduplicates() -> None:
         None,
     ]
     try:
-        rendered = delivery.render(source, _news_push_translation())
+        rendered = _prepare_payload(delivery, source)
     finally:
         delivery.close()
 
-    assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
     assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：NEAR · BTC\nOpenNews 评分：91")
 
 
@@ -565,11 +699,11 @@ def test_feishu_news_push_without_valid_coins_marks_them_unavailable(coins: obje
     source = _news_push_source_payload()
     source["provider_evidence"]["provider_metadata"]["coins"] = coins
     try:
-        rendered = delivery.render(source, _news_push_translation())
+        rendered = _prepare_payload(delivery, source)
     finally:
         delivery.close()
 
-    assert rendered["card"]["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
+    assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
     assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：未提供\nOpenNews 评分：91")
 
 
@@ -589,7 +723,7 @@ def test_feishu_news_push_rejects_invalid_provider_score(score: object) -> None:
             NewsPushDeliveryError,
             match="news_push_feishu_render_payload_invalid",
         ):
-            delivery.render(source, _news_push_translation())
+            _prepare_payload(delivery, source)
     finally:
         delivery.close()
 
@@ -606,7 +740,7 @@ def test_feishu_news_push_rejects_non_http_source_url(url: str) -> None:
             NewsPushDeliveryError,
             match="news_push_feishu_render_payload_invalid",
         ):
-            delivery.render(source, _news_push_translation())
+            _prepare_payload(delivery, source)
     finally:
         delivery.close()
 
@@ -624,11 +758,9 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
         transport=httpx.MockTransport(handler),
     )
     source = _news_push_source_payload(title="Bitcoin ETF records inflows")
-    translation = _news_push_translation()
-    frozen = delivery.render(source, translation)
+    frozen = _prepare_payload(delivery, source)
     source["provider_evidence"]["title"] = "MUTATED SOURCE"
     source["provider_evidence"]["provider_metadata"]["coins"][0]["symbol"] = "SOL"
-    translation["title_zh"] = "已变更翻译"
     try:
         first = delivery.deliver(frozen, idempotency_key="story-1")
         second = delivery.deliver(frozen, idempotency_key="story-1")
@@ -638,15 +770,20 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert first.provider == second.provider == "feishu"
     assert first.details == {"status_code": 200, "code": 0}
     assert frozen["auth_mode"] == "signed"
-    assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
+    assert set(frozen) == {
+        "schema_version",
+        "channel",
+        "auth_mode",
+        "presentation",
+        "card",
+    }
     sent_cards = [json.loads(request.content)["card"] for request in requests]
     assert sent_cards == [frozen["card"], frozen["card"]]
-    assert all(card["header"]["title"]["content"] == "比特币 ETF 录得资金流入" for card in sent_cards)
+    assert all(card["header"]["title"]["content"] == "Bitcoin ETF records inflows" for card in sent_cards)
     assert all(
         card["body"]["elements"][0]["text"]["content"] == "代币：BTC · ETH\nOpenNews 评分：91" for card in sent_cards
     )
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
-    assert all("已变更翻译" not in json.dumps(card, ensure_ascii=False) for card in sent_cards)
 
 
 def test_feishu_news_push_delivers_legacy_frozen_v2_card_unchanged() -> None:
@@ -677,7 +814,7 @@ def test_feishu_news_push_delivers_legacy_frozen_v2_card_unchanged() -> None:
     frozen = {
         "channel": "feishu",
         "auth_mode": "signed",
-        "translation": _news_push_translation(),
+        "translation": _legacy_news_push_translation(),
         "card": legacy_card,
     }
     delivery = FeishuNewsPushDelivery(
@@ -708,7 +845,7 @@ def test_feishu_news_push_rejects_cross_restart_auth_mode_change_without_network
         render_secret,
         transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
     )
-    frozen = rendered_by.render(_news_push_source_payload(), _news_push_translation())
+    frozen = _prepare_payload(rendered_by, _news_push_source_payload())
     rendered_by.close()
     requests: list[httpx.Request] = []
 
@@ -752,7 +889,7 @@ def test_feishu_news_push_cross_restart_same_auth_mode_retries_frozen_card(
         signing_secret,
         transport=httpx.MockTransport(first_handler),
     )
-    frozen = first_runtime.render(_news_push_source_payload(), _news_push_translation())
+    frozen = _prepare_payload(first_runtime, _news_push_source_payload())
     try:
         with pytest.raises(NewsPushDeliveryError) as first_failure:
             first_runtime.deliver(frozen, idempotency_key="story-1")
@@ -777,7 +914,13 @@ def test_feishu_news_push_cross_restart_same_auth_mode_retries_frozen_card(
 
     assert first_failure.value.retryable is True
     assert frozen["auth_mode"] == expected_auth_mode
-    assert set(frozen) == {"channel", "auth_mode", "translation", "card"}
+    assert set(frozen) == {
+        "schema_version",
+        "channel",
+        "auth_mode",
+        "presentation",
+        "card",
+    }
     assert signing_secret is None or signing_secret not in json.dumps(frozen)
     assert receipt.provider == "feishu"
     assert len(first_requests) == len(retry_requests) == 1
@@ -806,7 +949,7 @@ def test_feishu_news_push_maps_raw_failures_to_domain_retry_policy(
         "test-secret",
         transport=httpx.MockTransport(lambda _request: response),
     )
-    frozen = delivery.render(_news_push_source_payload(), _news_push_translation())
+    frozen = _prepare_payload(delivery, _news_push_source_payload())
     try:
         with pytest.raises(NewsPushDeliveryError) as raised:
             delivery.deliver(frozen, idempotency_key="story-1")
@@ -915,7 +1058,7 @@ def _news_push_source_payload(
     }
 
 
-def _news_push_translation() -> dict[str, object]:
+def _legacy_news_push_translation() -> dict[str, object]:
     return {
         "status": "translated",
         "title_zh": "比特币 ETF 录得资金流入",
@@ -923,3 +1066,70 @@ def _news_push_translation() -> dict[str, object]:
         "model": "deepseek-v4-flash",
         "error_code": None,
     }
+
+
+def _translation_response(title: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": json.dumps(
+                            {"translated_title": title},
+                            ensure_ascii=False,
+                        )
+                    },
+                }
+            ]
+        },
+    )
+
+
+def _translation_delivery(
+    handler,
+    *,
+    finite_operations=None,
+) -> FeishuNewsPushDelivery:
+    return FeishuNewsPushDelivery(
+        _FEISHU_TEST_URL,
+        "test-secret",
+        finite_operations=finite_operations or _InlineFiniteOperations(),
+        translation_enabled=True,
+        translation_base_url="https://translator.test/v1",
+        translation_api_key="translation-secret",
+        translation_engine="fast-title-translator",
+        translation_transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
+    )
+
+
+def _prepare_payload(
+    delivery: FeishuNewsPushDelivery,
+    source_payload: dict[str, object],
+) -> dict[str, object]:
+    prepared = asyncio.run(
+        delivery.prepare(
+            source_payload,
+            deadline_ms=_PREPARE_DEADLINE_MS,
+        )
+    )
+    return dict(prepared.payload)
+
+
+class _InlineFiniteOperations:
+    async def run(self, _operation_name, function, /, *args, **kwargs):
+        kwargs.pop("timeout_seconds")
+        kwargs.pop("on_submitted", None)
+        return function(*args, **kwargs)
+
+
+class _UnavailableFiniteOperations:
+    async def run(self, *_args, **_kwargs):
+        raise ResourceAdmissionTimeout("test_translation_admission_timeout")
+
+
+class _BlockingFiniteOperations:
+    async def run(self, *_args, **_kwargs):
+        await asyncio.Event().wait()

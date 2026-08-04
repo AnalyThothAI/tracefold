@@ -14,10 +14,9 @@ from tracefold.news import (
     NewsInterface,
     NewsPushDeliveryError,
     NewsPushReceipt,
-    NewsPushTranslation,
-    NewsPushTranslationError,
     NewsRepository,
     NewsStoryPush,
+    PreparedNewsPush,
     opennews_source,
     parse_opennews_message,
 )
@@ -63,8 +62,11 @@ def _annotation(record_id: str, *, score: float):
         {
             "method": "news.ai_update",
             "params": {
-                "id": record_id,
-                "aiRating": {"score": score, "signal": "long", "grade": "A+"},
+                "newsId": record_id,
+                "engineType": "news",
+                "score": score,
+                "signal": "long",
+                "grade": "A+",
             },
         }
     )
@@ -178,17 +180,17 @@ def test_first_reconcile_suppresses_existing_eligible_story() -> None:
                 observed_at_ms=BASE_MS + 2,
             )
             repository.rebuild_stories(now_ms=BASE_MS + 2)
-        runtime = _runtime(conn, translator=_Translator(), delivery=_Delivery())
+        runtime = _runtime(conn, delivery=_Delivery())
 
         result = asyncio.run(runtime.reconcile(now_ms=BASE_MS + 10))
-        candidate = asyncio.run(runtime.peek(now_ms=BASE_MS + 10))
+        progressed = asyncio.run(runtime.turn())
 
         state = conn.execute("SELECT baseline_at_ms FROM news_push_state WHERE singleton_key='current'").fetchone()
         delivery = conn.execute("SELECT status, translation_status FROM news_push_deliveries").fetchone()
         assert result == {"inserted": 1, "suppressed": 1, "terminalized": 0}
         assert state["baseline_at_ms"] == BASE_MS + 10
         assert delivery == {"status": "suppressed", "translation_status": "not_requested"}
-        assert candidate is None
+        assert progressed is False
         health = asyncio.run(runtime.health_snapshot(now_ms=BASE_MS + 10))
         assert health["status"] == "ready"
         assert health["initialized"] is True
@@ -197,18 +199,118 @@ def test_first_reconcile_suppresses_existing_eligible_story() -> None:
         conn.close()
 
 
-def test_push_retries_frozen_english_fallback_outside_transactions(
+def test_late_recovery_score_does_not_push_a_stale_article() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=_Delivery())
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "late-recovery-score",
+                        title="Issuer files for a spot exchange product",
+                        score=70,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+
+        recovered_at_ms = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_annotation("late-recovery-score", score=88),),
+                observed_at_ms=recovered_at_ms,
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=recovered_at_ms)) == {
+            "inserted": 1,
+            "suppressed": 1,
+            "terminalized": 0,
+        }
+        row = conn.execute("SELECT status, translation_status FROM news_push_deliveries").fetchone()
+        assert row == {"status": "suppressed", "translation_status": "not_requested"}
+        assert asyncio.run(runtime.turn()) is False
+    finally:
+        conn.close()
+
+
+def test_unfrozen_candidate_that_ages_out_is_suppressed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     clock = {"now_ms": BASE_MS + 100}
     monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
-    translator = _Translator(fail=True)
-    delivery = _Delivery(fail_first=True)
+    delivery = _Delivery()
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
-        runtime = _runtime(conn, translator=translator, delivery=delivery)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "candidate-ages-out",
+                        title="Regulator approves a spot exchange product",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        assert asyncio.run(runtime.reconcile(now_ms=clock["now_ms"])) == {
+            "inserted": 1,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+
+        clock["now_ms"] = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
+        assert asyncio.run(runtime.turn())
+
+        row = conn.execute(
+            """
+            SELECT status, translation_status, delivery_attempts,
+                   delivery_payload, payload_fingerprint
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row == {
+            "status": "suppressed",
+            "translation_status": "not_requested",
+            "delivery_attempts": 0,
+            "delivery_payload": None,
+            "payload_fingerprint": None,
+        }
+        assert delivery.prepare_calls == 0
+        assert delivery.payloads == []
+    finally:
+        conn.close()
+
+
+def test_push_retries_frozen_prepared_payload_outside_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery(fail_first=True, translation_status="translated")
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
 
         # A zero-candidate baseline is still durable. The exact boundary score
         # remains ineligible until a later provider update crosses it.
@@ -233,7 +335,7 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
             )
             repository.rebuild_stories(now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))
-        assert asyncio.run(runtime.peek(now_ms=BASE_MS + 2)) is None
+        assert asyncio.run(runtime.turn()) is False
         assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 0
 
         with conn.transaction():
@@ -243,9 +345,7 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
                 observed_at_ms=BASE_MS + 3,
             )
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
-        candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert candidate is not None
-        assert asyncio.run(runtime.execute(candidate))
+        assert asyncio.run(runtime.turn())
 
         first = conn.execute(
             """
@@ -255,10 +355,8 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
             """
         ).fetchone()
         assert first["status"] == "retry_wait"
-        assert first["translation_status"] == "unavailable"
+        assert first["translation_status"] == "translated"
         assert first["delivery_attempts"] == 1
-        assert first["delivery_payload"]["translation"]["status"] == "unavailable"
-        assert first["delivery_payload"]["card"]["title_zh"] is None
         assert first["delivery_payload"]["card"]["original_title"] == ("Issuer files for a new exchange product")
         assert first["delivery_payload"]["card"]["url"] is None
         assert first["delivery_payload"]["card"]["provider_evidence"]["score"] == 71
@@ -269,10 +367,7 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
         frozen_fingerprint = first["payload_fingerprint"]
 
         clock["now_ms"] = int(first["next_attempt_at_ms"]) + 1
-        retry_candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert retry_candidate is not None
-        assert retry_candidate.target_key == candidate.target_key
-        assert asyncio.run(runtime.execute(retry_candidate))
+        assert asyncio.run(runtime.turn())
 
         completed = conn.execute(
             """
@@ -287,8 +382,7 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
         assert completed["payload_fingerprint"] == frozen_fingerprint
         assert completed["receipt"]["provider"] == "feishu"
         assert completed["sent_at_ms"] == clock["now_ms"]
-        assert translator.calls == 1
-        assert delivery.render_calls == 1
+        assert delivery.prepare_calls == 1
         assert delivery.payloads == [frozen_payload, frozen_payload]
         assert delivery.idempotency_keys == [first["story_id"], first["story_id"]]
         completed_health = asyncio.run(runtime.health_snapshot(now_ms=clock["now_ms"]))
@@ -303,13 +397,120 @@ def test_push_retries_frozen_english_fallback_outside_transactions(
                 observed_at_ms=clock["now_ms"] + 1,
             )
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"] + 1))
-        assert asyncio.run(runtime.peek(now_ms=clock["now_ms"] + 1)) is None
+        assert asyncio.run(runtime.turn()) is False
         assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 1
     finally:
         conn.close()
 
 
-def test_story_identity_change_after_baseline_does_not_suppress_retained_high_score_item() -> None:
+def test_candidate_that_ages_out_during_prepare_is_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+
+    def cross_freshness_boundary() -> None:
+        clock["now_ms"] = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
+
+    delivery = _Delivery(
+        on_prepare=cross_freshness_boundary,
+        translation_status="translated",
+    )
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "prepare-ages-out",
+                        title="Issuer files for a spot exchange product",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS + 100))
+
+        assert asyncio.run(runtime.turn())
+
+        row = conn.execute(
+            """
+            SELECT status, translation_status, delivery_payload,
+                   payload_fingerprint, delivery_attempts
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row == {
+            "status": "suppressed",
+            "translation_status": "not_requested",
+            "delivery_payload": None,
+            "payload_fingerprint": None,
+            "delivery_attempts": 0,
+        }
+        assert delivery.prepare_calls == 1
+        assert delivery.payloads == []
+    finally:
+        conn.close()
+
+
+def test_cancelled_prepare_releases_unfrozen_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery(prepare_error=asyncio.CancelledError())
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "cancelled-prepare",
+                        title="Exchange lists a new spot asset",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(runtime.turn())
+
+        row = conn.execute(
+            """
+            SELECT status, translation_status, delivery_payload,
+                   lease_owner, lease_token, lease_expires_at_ms
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row == {
+            "status": "pending_translation",
+            "translation_status": "pending",
+            "delivery_payload": None,
+            "lease_owner": None,
+            "lease_token": None,
+            "lease_expires_at_ms": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_story_identity_change_does_not_backfill_a_prebaseline_item() -> None:
     conn = connect_postgres_test(read_only=False)
     hour_ms = 60 * 60 * 1000
     try:
@@ -344,7 +545,7 @@ def test_story_identity_change_after_baseline_does_not_suppress_retained_high_sc
         selected_item_id = original["provider_evidence"]["item_id"]
         assert original["provider_evidence"]["title"] == selected_title
 
-        runtime = _runtime(conn, translator=_Translator(), delivery=_Delivery())
+        runtime = _runtime(conn, delivery=_Delivery())
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
             "inserted": 1,
             "suppressed": 1,
@@ -365,7 +566,7 @@ def test_story_identity_change_after_baseline_does_not_suppress_retained_high_sc
 
         assert asyncio.run(runtime.reconcile(now_ms=after_expiry_ms)) == {
             "inserted": 1,
-            "suppressed": 0,
+            "suppressed": 1,
             "terminalized": 0,
         }
         rows = conn.execute(
@@ -377,30 +578,26 @@ def test_story_identity_change_after_baseline_does_not_suppress_retained_high_sc
         ).fetchall()
         assert {row["story_id"]: row["status"] for row in rows} == {
             original_story_id: "suppressed",
-            new_story_id: "pending_translation",
+            new_story_id: "suppressed",
         }
-        assert next(row for row in rows if row["story_id"] == new_story_id)["translation_status"] == "pending"
-        candidate = asyncio.run(runtime.peek(now_ms=after_expiry_ms))
-        assert candidate is not None
-        assert candidate.target_key == new_story_id
+        assert next(row for row in rows if row["story_id"] == new_story_id)["translation_status"] == "not_requested"
+        assert asyncio.run(runtime.turn()) is False
     finally:
         conn.close()
 
 
-def test_restarts_catch_up_persisted_pending_and_frozen_retry_without_retranslation(
+def test_restarts_catch_up_persisted_render_and_frozen_retry_without_rerendering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     clock = {"now_ms": BASE_MS + 100}
     monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
-    initial_translator = _Translator(fail=True)
     initial_delivery = _Delivery()
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
         initial_runtime = _runtime(
             conn,
-            translator=initial_translator,
             delivery=initial_delivery,
             runtime_id="before-restart",
         )
@@ -432,23 +629,17 @@ def test_restarts_catch_up_persisted_pending_and_frozen_retry_without_retranslat
         ).fetchone()
         assert persisted_pending["status"] == "pending_translation"
         assert persisted_pending["translation_status"] == "pending"
-        assert initial_translator.calls == 0
-        assert initial_delivery.render_calls == 0
+        assert initial_delivery.prepare_calls == 0
 
         # The runtime that established the candidate can disappear before it
-        # executes. A fresh instance discovers and translates that durable row.
-        pending_translator = _Translator()
+        # executes. A fresh instance discovers and renders that durable row.
         pending_delivery = _Delivery(fail_first=True)
         pending_runtime = _runtime(
             conn,
-            translator=pending_translator,
             delivery=pending_delivery,
             runtime_id="pending-catch-up",
         )
-        pending_candidate = asyncio.run(pending_runtime.peek(now_ms=clock["now_ms"]))
-        assert pending_candidate is not None
-        assert pending_candidate.target_key == persisted_pending["story_id"]
-        assert asyncio.run(pending_runtime.execute(pending_candidate))
+        assert asyncio.run(pending_runtime.turn())
 
         retry = conn.execute(
             """
@@ -458,28 +649,22 @@ def test_restarts_catch_up_persisted_pending_and_frozen_retry_without_retranslat
             """
         ).fetchone()
         assert retry["status"] == "retry_wait"
-        assert retry["translation_status"] == "translated"
-        assert retry["delivery_payload"]["translation"]["title_zh"] == ("发行人提交新的交易所产品申请")
+        assert retry["translation_status"] == "not_needed"
+        assert retry["delivery_payload"]["card"]["original_title"] == ("Regulator approves a new spot exchange product")
         frozen_payload = retry["delivery_payload"]
         frozen_fingerprint = retry["payload_fingerprint"]
-        assert pending_translator.calls == 1
-        assert pending_delivery.render_calls == 1
+        assert pending_delivery.prepare_calls == 1
 
         # A fresh runtime has no in-memory state from the first attempt. It
         # discovers the durable retry and delivers the already-rendered card.
-        restarted_translator = _Translator(fail=True)
         restarted_delivery = _Delivery()
         restarted_runtime = _runtime(
             conn,
-            translator=restarted_translator,
             delivery=restarted_delivery,
             runtime_id="after-restart",
         )
         clock["now_ms"] = int(retry["next_attempt_at_ms"]) + 1
-        retry_candidate = asyncio.run(restarted_runtime.peek(now_ms=clock["now_ms"]))
-        assert retry_candidate is not None
-        assert retry_candidate.target_key == retry["story_id"]
-        assert asyncio.run(restarted_runtime.execute(retry_candidate))
+        assert asyncio.run(restarted_runtime.turn())
 
         sent = conn.execute(
             """
@@ -489,31 +674,29 @@ def test_restarts_catch_up_persisted_pending_and_frozen_retry_without_retranslat
             """
         ).fetchone()
         assert sent["status"] == "sent"
-        assert sent["translation_status"] == "translated"
+        assert sent["translation_status"] == "not_needed"
         assert sent["delivery_attempts"] == 2
         assert sent["delivery_payload"] == frozen_payload
         assert sent["payload_fingerprint"] == frozen_fingerprint
         assert sent["receipt"]["provider"] == "feishu"
-        assert restarted_translator.calls == 0
-        assert restarted_delivery.render_calls == 0
+        assert restarted_delivery.prepare_calls == 0
         assert restarted_delivery.payloads == [frozen_payload]
     finally:
         conn.close()
 
 
-def test_chinese_title_bypasses_translator_and_is_delivered_unchanged(
+def test_chinese_title_is_delivered_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     clock = {"now_ms": BASE_MS + 10}
     monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
-    translator = _Translator(fail=True)
     delivery = _Delivery()
     title = "央行维持利率不变"
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
-        runtime = _runtime(conn, translator=translator, delivery=delivery)
+        runtime = _runtime(conn, delivery=delivery)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS))
         with conn.transaction():
             repository.record_opennews_events(
@@ -530,9 +713,7 @@ def test_chinese_title_bypasses_translator_and_is_delivered_unchanged(
             )
             repository.rebuild_stories(now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
-        candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert candidate is not None
-        assert asyncio.run(runtime.execute(candidate))
+        assert asyncio.run(runtime.turn())
 
         row = conn.execute(
             """
@@ -542,34 +723,24 @@ def test_chinese_title_bypasses_translator_and_is_delivered_unchanged(
         ).fetchone()
         assert row["status"] == "sent"
         assert row["translation_status"] == "not_needed"
-        assert row["delivery_payload"]["translation"] == {
-            "status": "not_needed",
-            "title_zh": title,
-            "provider": None,
-            "model": None,
-            "error_code": None,
-        }
-        assert row["delivery_payload"]["card"]["title_zh"] == title
         assert row["delivery_payload"]["card"]["original_title"] == title
-        assert translator.calls == 0
-        assert delivery.render_calls == 1
+        assert delivery.prepare_calls == 1
     finally:
         conn.close()
 
 
-def test_japanese_title_with_kana_is_translated_instead_of_bypassed(
+def test_japanese_title_is_delivered_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = connect_postgres_test(read_only=False)
     clock = {"now_ms": BASE_MS + 10}
     monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
-    translator = _Translator()
     delivery = _Delivery()
     title = "日本銀行が金利を引き上げる"
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
-        runtime = _runtime(conn, translator=translator, delivery=delivery)
+        runtime = _runtime(conn, delivery=delivery)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS))
         with conn.transaction():
             repository.record_opennews_events(
@@ -586,9 +757,7 @@ def test_japanese_title_with_kana_is_translated_instead_of_bypassed(
             )
             repository.rebuild_stories(now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
-        candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert candidate is not None
-        assert asyncio.run(runtime.execute(candidate))
+        assert asyncio.run(runtime.turn())
 
         row = conn.execute(
             """
@@ -597,11 +766,9 @@ def test_japanese_title_with_kana_is_translated_instead_of_bypassed(
             """
         ).fetchone()
         assert row["status"] == "sent"
-        assert row["translation_status"] == "translated"
-        assert row["delivery_payload"]["translation"]["title_zh"] == "发行人提交新的交易所产品申请"
+        assert row["translation_status"] == "not_needed"
         assert row["delivery_payload"]["card"]["original_title"] == title
-        assert translator.calls == 1
-        assert delivery.render_calls == 1
+        assert delivery.prepare_calls == 1
     finally:
         conn.close()
 
@@ -612,12 +779,11 @@ def test_non_retryable_delivery_failure_is_terminal(
     conn = connect_postgres_test(read_only=False)
     clock = {"now_ms": BASE_MS + 10}
     monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
-    translator = _Translator()
     delivery = _Delivery(error=NewsPushDeliveryError("feishu_signature_rejected", retryable=False))
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
-        runtime = _runtime(conn, translator=translator, delivery=delivery)
+        runtime = _runtime(conn, delivery=delivery)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS))
         with conn.transaction():
             repository.record_opennews_events(
@@ -634,9 +800,7 @@ def test_non_retryable_delivery_failure_is_terminal(
             )
             repository.rebuild_stories(now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
-        candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert candidate is not None
-        assert asyncio.run(runtime.execute(candidate))
+        assert asyncio.run(runtime.turn())
 
         row = conn.execute(
             """
@@ -657,7 +821,7 @@ def test_non_retryable_delivery_failure_is_terminal(
             "lease_expires_at_ms": None,
             "last_error": "feishu_signature_rejected",
         }
-        assert asyncio.run(runtime.peek(now_ms=clock["now_ms"] + 1)) is None
+        assert asyncio.run(runtime.turn()) is False
         health = asyncio.run(runtime.health_snapshot(now_ms=clock["now_ms"] + 1))
         assert health["status"] == "degraded"
         assert health["terminal_count"] == 1
@@ -699,14 +863,12 @@ def test_stale_claim_cannot_mark_delivery_sent_after_lease_is_replaced(
         )
         conn.commit()
 
-    translator = _Translator()
     delivery = _Delivery(on_deliver=replace_lease_before_stale_completion)
     try:
         reset_postgres_schema(conn)
         repository = _seed_source(conn)
         runtime = _runtime(
             conn,
-            translator=translator,
             delivery=delivery,
             runtime_id="stale-runtime",
         )
@@ -726,12 +888,9 @@ def test_stale_claim_cannot_mark_delivery_sent_after_lease_is_replaced(
             )
             repository.rebuild_stories(now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
-        candidate = asyncio.run(runtime.peek(now_ms=clock["now_ms"]))
-        assert candidate is not None
-
         # The external provider returned success, but another owner replaced
         # the lease before completion. The stale completion must be fenced.
-        assert asyncio.run(runtime.execute(candidate)) is False
+        assert asyncio.run(runtime.turn()) is False
         row = conn.execute(
             """
             SELECT status, delivery_attempts, receipt, sent_at_ms,
@@ -749,8 +908,7 @@ def test_stale_claim_cannot_mark_delivery_sent_after_lease_is_replaced(
             "lease_expires_at_ms": clock["now_ms"] + 60_000,
         }
         assert stolen["original_lease_token"] != row["lease_token"]
-        assert translator.calls == 1
-        assert delivery.render_calls == 1
+        assert delivery.prepare_calls == 1
         assert len(delivery.payloads) == 1
     finally:
         conn.close()
@@ -800,22 +958,6 @@ class _InlineCapability:
         return function(*args, **kwargs)
 
 
-class _Translator:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-        self.calls = 0
-
-    def translate_title(self, _title: str) -> NewsPushTranslation:
-        self.calls += 1
-        if self.fail:
-            raise NewsPushTranslationError("translator_unavailable")
-        return NewsPushTranslation(
-            title_zh="发行人提交新的交易所产品申请",
-            provider="deepseek",
-            model="deepseek-v4-flash",
-        )
-
-
 class _Delivery:
     def __init__(
         self,
@@ -823,40 +965,53 @@ class _Delivery:
         fail_first: bool = False,
         error: NewsPushDeliveryError | None = None,
         on_deliver: Callable[[], None] | None = None,
+        on_prepare: Callable[[], None] | None = None,
+        translation_status: str = "not_needed",
+        prepare_error: BaseException | None = None,
     ) -> None:
         self.fail_first = fail_first
         self.error = error
         self.on_deliver = on_deliver
-        self.render_calls = 0
+        self.on_prepare = on_prepare
+        self.translation_status = translation_status
+        self.prepare_error = prepare_error
+        self.prepare_calls = 0
         self.payloads: list[dict[str, Any]] = []
         self.idempotency_keys: list[str] = []
 
-    def render(
+    async def prepare(
         self,
         source_payload: Mapping[str, Any],
-        translation: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        self.render_calls += 1
+        *,
+        deadline_ms: int,
+    ) -> PreparedNewsPush:
+        assert deadline_ms > int(source_payload["provider_evidence"]["published_at_ms"])
+        self.prepare_calls += 1
+        if self.prepare_error is not None:
+            raise self.prepare_error
+        if self.on_prepare is not None:
+            self.on_prepare()
         evidence = dict(source_payload["provider_evidence"])
         metadata = dict(evidence["provider_metadata"])
-        return {
-            "channel": "feishu",
-            "translation": dict(translation),
-            "card": {
-                "title_zh": translation["title_zh"],
-                "original_title": evidence["title"],
-                "url": evidence["url"],
-                "provider_evidence": {
-                    "item_id": evidence["item_id"],
-                    "score": evidence["provider_score"],
-                    "source": metadata.get("source"),
-                    "signal": metadata.get("signal"),
-                    "grade": metadata.get("grade"),
-                    "coins": list(metadata.get("coins") or []),
+        return PreparedNewsPush(
+            payload={
+                "channel": "feishu",
+                "card": {
+                    "original_title": evidence["title"],
+                    "url": evidence["url"],
+                    "provider_evidence": {
+                        "item_id": evidence["item_id"],
+                        "score": evidence["provider_score"],
+                        "source": metadata.get("source"),
+                        "signal": metadata.get("signal"),
+                        "grade": metadata.get("grade"),
+                        "coins": list(metadata.get("coins") or []),
+                    },
+                    "tracefold_story": dict(source_payload["tracefold_story"]),
                 },
-                "tracefold_story": dict(source_payload["tracefold_story"]),
             },
-        }
+            translation_status=self.translation_status,
+        )
 
     def deliver(
         self,
@@ -881,16 +1036,13 @@ class _Delivery:
 def _runtime(
     conn: Any,
     *,
-    translator: _Translator,
     delivery: _Delivery,
     runtime_id: str = "test-runtime",
 ) -> NewsStoryPush:
     capability = _InlineCapability(conn)
     return NewsStoryPush(
         db=_DirectDatabase(conn),
-        model_adapter=capability,
         finite_operations=capability,
-        translator=translator,
         delivery=delivery,
         runtime_id=runtime_id,
     )

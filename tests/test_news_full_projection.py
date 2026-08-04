@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
+from tracefold.news import projection as projection_module
 from tracefold.news.identity import normalize_story_text
 from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
 
@@ -18,17 +19,11 @@ def _row(
     return {
         "item_id": item_id,
         "source_id": source_id,
-        "source_item_key": item_id,
         "canonical_url": None,
         "reporting_origin": reporting_origin,
         "title": title,
-        "normalized_title": normalize_story_text(title),
         "description": "",
-        "lang": "en",
         "published_at_ms": published_at_ms,
-        "content_fingerprint": item_id,
-        "brief_excluded": False,
-        "source_name": source_id,
         "tier": tier,
     }
 
@@ -118,3 +113,17 @@ def test_absent_historical_bridge_cannot_union_current_components() -> None:
 
     assert len(current["stories"]) == 2
     assert len(with_bridge["stories"]) == 1
+
+
+def test_bounded_story_snapshot_accepts_current_full_window_shape() -> None:
+    rows = tuple(
+        _row(
+            f"item-{index:04d}",
+            f"Market update {index} " + ("x" * 380),
+            published_at_ms=1_000 + index,
+            reporting_origin=f"origin-{index % 9}",
+        )
+        for index in range(8_000)
+    )
+
+    projection_module._require_bounded_snapshot(_snapshot(*rows))

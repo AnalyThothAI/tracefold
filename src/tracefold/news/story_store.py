@@ -11,7 +11,7 @@ from .models import CLASSIFIER_VERSION, IMPORTANCE_VERSION, STORY_IDENTITY_VERSI
 
 ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 SCORING_EPOCH_MS = 60 * 60 * 1000
-STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:full-window-v1"
+STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:full-window-v2"
 _PIPELINE_LOCK_KEY = 727_301_984
 
 
@@ -24,15 +24,13 @@ class _StorySnapshotLost(RuntimeError):
 def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
     cutoff_ms = int(now_ms) - ACTIVE_WINDOW_MS
     scoring_epoch_ms = int(now_ms) - (int(now_ms) % SCORING_EPOCH_MS)
-    rows = [
+    loaded_rows = [
         dict(row)
         for row in repository.conn.execute(
             """
-            SELECT item.item_id, item.source_id, item.source_item_key,
-                   item.canonical_url, item.reporting_origin, item.title,
-                   item.normalized_title, item.description, item.lang,
+            SELECT item.item_id, item.source_id, item.canonical_url,
+                   item.reporting_origin, item.title, item.description,
                    item.published_at_ms, item.content_fingerprint,
-                   item.brief_excluded, source.name AS source_name,
                    source.tier
               FROM news_items item
               JOIN news_sources source ON source.source_id = item.source_id
@@ -55,10 +53,26 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
                     str(row["reporting_origin"]),
                     int(row["tier"]),
                 ]
-                for row in rows
+                for row in loaded_rows
             ],
         }
     )
+    rows = [
+        {
+            key: row[key]
+            for key in (
+                "item_id",
+                "source_id",
+                "canonical_url",
+                "reporting_origin",
+                "title",
+                "description",
+                "published_at_ms",
+                "tier",
+            )
+        }
+        for row in loaded_rows
+    ]
     summary = repository.conn.execute(
         "SELECT input_fingerprint FROM news_projection_summary WHERE singleton_key='current'"
     ).fetchone()

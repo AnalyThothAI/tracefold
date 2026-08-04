@@ -79,10 +79,9 @@ lanes report explicit degradation or unavailable evidence:
   market lanes unavailable, while configured keyless sources keep their own
   independent behavior;
 - absent model credentials leaves the corresponding Brief/analysis capability
-  unavailable; specifically, absent `llm.api_key` makes News push use its
-  original headline instead of blocking delivery, while the card body still
-  shows the selected Item's coin symbols, provider score, and optional original
-  link;
+  unavailable; News push is unaffected because it never reads `llm`. Its
+  independent optional translation remains disabled or falls back to the
+  selected Item's original OpenNews headline;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
@@ -93,9 +92,9 @@ it never prints provider tokens, webhook URLs, signing secrets, or model keys.
 the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
-configured booleans. The translator reuses the DeepSeek-compatible
-`llm.api_key` and `llm.base_url`, fixes the model to `deepseek-v4-flash`, and
-has no second credential or Google-translation fallback.
+configured booleans. Push has no dependency on global model credentials or a
+provider fallback chain. Optional translation has its own endpoint/key/engine,
+makes one bounded attempt, and sends the frozen original immediately on failure.
 
 An unsigned operator configuration uses the existing generated fields; do not
 add another secrets file or environment variable:
@@ -108,10 +107,18 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
+    translation:
+      enabled: false
+      base_url:
+      api_key:
+      engine:
 ```
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config.
+not commit the populated operator config. To enable translation, populate all
+three translation endpoint fields and set its switch to `true`; do not reuse or
+copy the global `llm` block implicitly. Target language, timeouts, retries, and
+title limits are code-owned.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
@@ -119,9 +126,9 @@ lane, including GMGN OpenAPI for exact token profiles and OKX provider settings
 for discovery, market data, or DEX WebSocket paths.
 The `llm` block owns operator credentials: `api_key` plus `base_url` for the
 current OpenAI-compatible provider, and optional `openrouter_api_key` and
-`groq_api_key` for News provider fallback. Worker timeouts, token budgets,
-cadence, and resource limits are code-owned; there is no environment-variable
-credential path.
+`groq_api_key` for the News Brief provider fallback. Worker timeouts, token
+budgets, cadence, and resource limits are code-owned; there is no
+environment-variable credential path. Story push does not consume this block.
 
 News correctness does not depend on the model. The OpenNews WSS receiver, REST
 recovery, and publisher share one acquisition module and sole NewsItem writer.
@@ -129,13 +136,13 @@ A healthy WSS connection never polls REST periodically; one bounded REST page
 is requested only after initial connection, reconnect, or queue overflow, with
 a persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 96-hour Story projection,
-and the single-capacity native-state model arbiter owns World Brief and the
-push title translator. Push is a separate News-owned delivery state
-machine with a code-owned 10-second persisted-evidence reconcile: initial
+and the single-capacity native-state model arbiter owns World Brief. Push is a
+separate News-owned delivery state machine with a code-owned 10-second
+persisted-evidence reconcile: initial
 enablement suppresses the current eligible baseline, later strict
 score-greater-than-70 crossings freeze one highest-scored Item and send one
-optionally signed Feishu card containing the selected Item's headline plus a
-compact body with its coins, provider score, and optional
+optionally signed Feishu card containing the selected Item's original OpenNews
+headline plus a compact body with its coins, provider score, and optional
 original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
@@ -250,7 +257,8 @@ Migration `20260801_0237` adds the persisted OpenNews recovery boundary and
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
-records a no-backfill baseline.
+records a no-backfill baseline; the code-owned 15-minute live-alert window also
+prevents later REST recovery from sending stale articles.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a

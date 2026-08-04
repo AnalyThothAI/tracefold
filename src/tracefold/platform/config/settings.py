@@ -230,12 +230,62 @@ class ProvidersConfig(BaseModel):
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
+class NewsPushTranslationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    base_url: str | None = None
+    api_key: str | None = None
+    engine: str | None = None
+
+    @field_validator("api_key", "engine", mode="before")
+    @classmethod
+    def parse_optional_value(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def parse_optional_base_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().rstrip("/")
+        return normalized or None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValueError("news_push_translation_base_url_invalid") from None
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or port not in {None, 443}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("news_push_translation_base_url_invalid")
+        return value
+
+    @model_validator(mode="after")
+    def require_enabled_configuration(self) -> NewsPushTranslationSettings:
+        if self.enabled and not (self.base_url and self.api_key and self.engine):
+            raise ValueError("news_push_translation_configuration_required")
+        return self
+
+
 class NewsPushSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
+    translation: NewsPushTranslationSettings = Field(default_factory=NewsPushTranslationSettings)
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
     @classmethod
@@ -460,6 +510,11 @@ news:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
+    translation:
+      enabled: false
+      base_url:
+      api_key:
+      engine:
 
 upstream:
   chains: ["sol", "eth", "base", "bsc"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -68,7 +69,10 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     params = message.get("params")
     if not isinstance(params, Mapping):
         return None
-    provider_record_id = _text(params.get("id"))
+    # Live rating frames use ``newsId``; reports and REST recovery rows use ``id``.
+    provider_record_id = _text(params.get("newsId")) if method == "news.ai_update" else ""
+    if not provider_record_id:
+        provider_record_id = _text(params.get("id"))
     if not provider_record_id:
         return None
     if method == "news.ai_update":
@@ -105,7 +109,12 @@ def _timestamp_ms(value: object) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int | float):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            return None
+        if not isfinite(number):
+            return None
         return int(number * 1_000) if abs(number) < 100_000_000_000 else int(number)
     text = str(value).strip()
     if not text:
@@ -115,14 +124,20 @@ def _timestamp_ms(value: object) -> int | None:
     except ValueError:
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
+            number = parsed.timestamp()
+        except (ValueError, OverflowError, OSError):
             return None
-        return int(parsed.timestamp() * 1_000)
+        return int(number * 1_000) if isfinite(number) else None
+    if not isfinite(number):
+        return None
     return int(number * 1_000) if abs(number) < 100_000_000_000 else int(number)
 
 
 def _article_url(value: str) -> str:
-    parsed = urlsplit(value.strip())
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return ""
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return ""
     query = urlencode(
@@ -156,6 +171,8 @@ def _is_translation(params: Mapping[str, Any]) -> bool:
 
 
 def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
+    # REST rows nest ratings in ``aiRating`` while live rating frames carry
+    # score/signal/grade at the top level.
     ai_rating = params.get("aiRating")
     ai = ai_rating if isinstance(ai_rating, Mapping) else {}
     result: dict[str, Any] = {}
@@ -168,7 +185,7 @@ def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
     if source:
         result["source"] = source[:128]
     for key in ("signal", "grade"):
-        value = _text(ai.get(key))
+        value = _text(params.get(key)) or _text(ai.get(key))
         if value:
             result[key] = value[:32]
     coins = params.get("coins")
@@ -204,11 +221,24 @@ def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
 def _number(value: object) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not isfinite(number) or number < 0 or number > 100:
+        return None
     return value
 
 
 def _text(value: object) -> str:
-    return str(value or "").strip()
+    text = str(value or "").strip()
+    if not text or "\x00" in text:
+        return ""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return text
 
 
 __all__ = [

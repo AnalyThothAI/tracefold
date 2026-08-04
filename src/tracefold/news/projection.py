@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from tracefold.news.classification import SEVERITY_VALUES, classify_by_keyword
-from tracefold.news.identity import cluster_texts
+from tracefold.news.identity import cluster_texts, normalize_story_text
 from tracefold.news.models import EventCategory, ThreatLevel
 from tracefold.news.ranking import (
     diplomacy_entity_keys,
@@ -19,11 +19,11 @@ from tracefold.news.sources import reporting_origin_tier
 from tracefold.news.story_store import _StorySnapshotLost
 
 NEWS_STORY_LOAD_TIMEOUT_SECONDS = 3.0
-NEWS_STORY_COMPUTE_TIMEOUT_SECONDS = 20.0
+NEWS_STORY_COMPUTE_TIMEOUT_SECONDS = 25.0
 NEWS_STORY_PUBLISH_TIMEOUT_SECONDS = 8.0
 NEWS_STORY_FAILURE_TIMEOUT_SECONDS = 3.0
 NEWS_STORY_INPUT_ROW_CAP = 10_000
-NEWS_STORY_INPUT_BYTES_CAP = 4 * 1024 * 1024
+NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
 
 _CATEGORY_ORDER: tuple[EventCategory, ...] = (
     "conflict",
@@ -133,6 +133,8 @@ class NewsProjectionService:
 
 def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str, Any]:
     rows = [dict(row) for row in snapshot.rows]
+    for row in rows:
+        row["normalized_title"] = normalize_story_text(str(row["title"]))
     clusters = cluster_texts([str(row["title"]) for row in rows])
     cluster_by_item: dict[str, int] = {}
     for cluster_index, indices in enumerate(clusters):

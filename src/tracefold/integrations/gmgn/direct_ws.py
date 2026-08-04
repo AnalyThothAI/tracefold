@@ -16,6 +16,7 @@ GMGN_WS_ENDPOINT = "wss://gmgn.ai/ws"
 GMGN_WS_MAX_MESSAGE_BYTES = 1 * 1024 * 1024
 GMGN_WS_RECV_QUEUE_SIZE = 8
 GMGN_WS_SEND_QUEUE_SIZE = 4
+GMGN_WS_MAX_RECONNECT_DELAY_SECONDS = 60.0
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -118,6 +119,9 @@ class DirectGmgnWebSocketClient:
         self._session_factory = session_factory or curl_requests.AsyncSession
         self.connection_state = "disconnected"
         self.last_state_change_at_ms = _now_ms()
+        self._consecutive_failures = 0
+        self._last_failure_key: tuple[str, str] | None = None
+        self._same_failure_count = 0
 
     def connection_state_payload(self) -> dict[str, Any]:
         return {
@@ -131,24 +135,34 @@ class DirectGmgnWebSocketClient:
 
     async def run(self) -> None:
         reconnect_count = 0
-        while True:
-            try:
-                await self._run_once(reconnect_count=reconnect_count)
-                reconnect_count += 1
-            except asyncio.CancelledError:
-                self._set_connection_state("disconnected")
-                raise
-            except (
-                GmgnStreamExpectedError,
-                UpstreamIdleTimeoutError,
-                CurlError,
-                OSError,
-            ) as exc:
-                reconnect_count += 1
-                self._set_connection_state("failed")
-                logger.error(f"❌ GMGN 直连 WS 断开: {exc}")
+        self._reset_retry_state()
+        try:
+            while True:
+                retry_delay = self.reconnect_delay
+                try:
+                    await self._run_once(reconnect_count=reconnect_count)
+                    reconnect_count += 1
+                    self._reset_retry_state()
+                except asyncio.CancelledError:
+                    raise
+                except (
+                    GmgnStreamExpectedError,
+                    UpstreamIdleTimeoutError,
+                    CurlError,
+                    OSError,
+                ) as exc:
+                    reconnect_count += 1
+                    self._consecutive_failures += 1
+                    retry_delay = _bounded_reconnect_delay(
+                        self.reconnect_delay,
+                        consecutive_failures=self._consecutive_failures,
+                    )
+                    self._set_connection_state("failed")
+                    self._log_retry_failure(exc, retry_delay=retry_delay)
 
-            await asyncio.sleep(self.reconnect_delay)
+                await asyncio.sleep(retry_delay)
+        finally:
+            self._set_connection_state("disconnected")
 
     async def _run_once(self, *, reconnect_count: int = 0) -> None:
         ws_url = build_gmgn_ws_url(
@@ -215,6 +229,7 @@ class DirectGmgnWebSocketClient:
                 raise UpstreamIdleTimeoutError(f"no upstream frame received for {self.idle_timeout:g}s") from exc
             if len(frame.encode("utf-8")) > GMGN_WS_MAX_MESSAGE_BYTES:
                 raise GmgnStreamExpectedError("gmgn_frame_byte_limit_exceeded")
+            self._reset_retry_state()
             self._set_connection_state("streaming")
             await self.on_frame(frame)
             await asyncio.sleep(0)
@@ -239,11 +254,56 @@ class DirectGmgnWebSocketClient:
             return
         self.connection_state = state
         self.last_state_change_at_ms = _now_ms()
-        logger.info(
+        log = logger.info if state in {"disconnected", "subscribed", "streaming"} else logger.debug
+        log(
             "GMGN direct WS connection state changed | state={} last_state_change_at_ms={}",
             self.connection_state,
             self.last_state_change_at_ms,
         )
+
+    def _reset_retry_state(self) -> None:
+        self._consecutive_failures = 0
+        self._last_failure_key = None
+        self._same_failure_count = 0
+
+    def _log_retry_failure(self, exc: BaseException, *, retry_delay: float) -> None:
+        failure_key = (type(exc).__name__, str(exc))
+        if failure_key != self._last_failure_key:
+            self._last_failure_key = failure_key
+            self._same_failure_count = 1
+            logger.error(
+                "GMGN direct WS unavailable | error_type={} error={} retry_in_seconds={} failures={}",
+                failure_key[0],
+                failure_key[1],
+                retry_delay,
+                self._consecutive_failures,
+            )
+            return
+
+        self._same_failure_count += 1
+        log = logger.warning if _is_power_of_two(self._same_failure_count) else logger.debug
+        log(
+            "GMGN direct WS still unavailable | error_type={} error={} retry_in_seconds={} failures={}",
+            failure_key[0],
+            failure_key[1],
+            retry_delay,
+            self._consecutive_failures,
+        )
+
+
+def _bounded_reconnect_delay(initial_delay: float, *, consecutive_failures: int) -> float:
+    delay = min(GMGN_WS_MAX_RECONNECT_DELAY_SECONDS, max(0.0, initial_delay))
+    if delay == 0:
+        return 0
+    remaining_doublings = max(0, consecutive_failures - 1)
+    while remaining_doublings and delay < GMGN_WS_MAX_RECONNECT_DELAY_SECONDS:
+        delay = min(GMGN_WS_MAX_RECONNECT_DELAY_SECONDS, delay * 2)
+        remaining_doublings -= 1
+    return delay
+
+
+def _is_power_of_two(value: int) -> bool:
+    return value > 0 and value & (value - 1) == 0
 
 
 def _now_ms() -> int:

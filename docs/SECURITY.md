@@ -36,13 +36,15 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_world_brief`, `news_story_push_translation`, and
-`macro_document_analysis` are the only production product-model consumers.
+`news_world_brief` and `macro_document_analysis` are the only production
+product-model consumers. Optional News Push title translation is an outbound
+presentation adapter, not a product model: it cannot write a NewsItem, Story,
+score, or read model.
 News acquisition, NewsItem classification, Story identity, importance
-scoring, and serving are deterministic and never call a model. Push
-translation receives only one frozen selected headline and cannot modify a
-NewsItem or Story. The six Macro modules are also deterministic views over
-persisted facts.
+scoring, and serving remain deterministic. Push preserves the selected
+OpenNews original headline and freezes any translation only inside its delivery
+envelope. The six Macro modules are also deterministic views
+over persisted facts.
 
 `news.opennews_token` is an operator-owned secret. Configuration diagnostics
 expose only a configured boolean. OpenNews transport exceptions, current
@@ -67,13 +69,15 @@ redirects. The frozen delivery payload records only the non-secret `auth_mode`
 signature. A retry whose frozen mode differs from current configuration is
 terminal before network submission.
 
-The push translator reuses the existing `llm.api_key` and `llm.base_url`; it
-does not introduce another credential path. It calls code-owned
-`deepseek-v4-flash` with thinking explicitly disabled and a bounded title-only
-prompt/output. Translation failure cannot expose provider text or credentials
-through an error and cannot block delivery of the frozen original headline.
-Coin symbols, provider score, and original URL are not sent to the model; the
-deterministic Adapter adds them to the compact body only after translation.
+`news.push.translation.api_key` is a separate operator-owned secret. When
+translation is enabled, only the selected title is sent to the configured HTTPS
+endpoint; coins, score, URL, description, Story data, Feishu webhook, and
+signing secret are never included. Push never reads or copies global `llm`
+credentials. Configuration diagnostics expose only `translation_enabled` and
+`translation_configured`; the endpoint and key never enter logs, public status,
+generated artifacts, or frozen payloads. Frozen presentation metadata contains
+only the non-secret adapter kind, engine, prompt version, outcome, and sanitized
+fallback code.
 
 The News Brief model receives only the bounded selected Story evidence. It has
 no source credential, provider fetch, filesystem, shell, or arbitrary database

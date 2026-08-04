@@ -28,10 +28,7 @@ from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentA
 from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
-from tracefold.integrations.news_push import (
-    DeepSeekNewsPushTranslator,
-    FeishuNewsPushDelivery,
-)
+from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -68,7 +65,7 @@ from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
-from tracefold.platform.resource import ResourceOperationOverrun
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
@@ -88,6 +85,7 @@ _NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
+_NEWS_PUSH_IDLE_SECONDS = 5.0
 _NEWS_PUSH_RECONCILE_SECONDS = 10.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
@@ -611,7 +609,10 @@ async def _sample_news_story(
 async def _sample_news_push(*, news_push: NewsStoryPush) -> None:
     """Discover score-qualified Stories without rebuilding the Story closure."""
 
-    await news_push.reconcile(now_ms=_now_ms())
+    try:
+        await news_push.reconcile(now_ms=_now_ms())
+    except ResourceAdmissionTimeout:
+        return
 
 
 async def _run_control(
@@ -785,24 +786,24 @@ async def _wire_components(
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
             signing_secret = settings.news.push.feishu_signing_secret
+            translation = settings.news.push.translation
             if not webhook_url:
                 raise RuntimeError("news_push_webhook_missing_after_validation")
             news_push = NewsStoryPush(
                 db=db,
-                model_adapter=model_adapter,
                 finite_operations=finite,
-                translator=DeepSeekNewsPushTranslator(
-                    api_key=settings.llm.api_key,
-                    base_url=settings.llm.base_url or "",
-                ),
                 delivery=FeishuNewsPushDelivery(
                     webhook_url=webhook_url,
                     signing_secret=signing_secret,
+                    finite_operations=finite,
+                    translation_enabled=translation.enabled,
+                    translation_base_url=translation.base_url,
+                    translation_api_key=translation.api_key,
+                    translation_engine=translation.engine,
                 ),
                 runtime_id=runtime_id,
-                stable_order=10,
             )
-            model_candidates.append(news_push)
+            due_turns.append((news_push.turn, _NEWS_PUSH_IDLE_SECONDS))
 
     document_model: MacroDocumentAnalysisService | None = None
     document_analysis_model_name: str | None = None

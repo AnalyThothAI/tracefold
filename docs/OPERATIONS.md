@@ -116,6 +116,13 @@ children outside it. A provider-wide failure opens durable circuit state and
 consumes no target attempt. A caller timeout never releases a resource permit
 before the underlying future actually completes.
 
+The anonymous GMGN direct WebSocket treats `upstream.reconnect_delay` as its
+initial retry delay and doubles consecutive connection failures to a code-owned
+60-second cap. The first distinct failure logs at error level; repeated
+identical failures log only at power-of-two checkpoints, while the first live
+frame resets the backoff. This limits local retry and log pressure but does not
+claim to repair an upstream TLS or network-path outage.
+
 Each Worker DB session is exactly one bounded transaction. One transaction-local
 setup statement installs the application name, statement/transaction deadlines,
 JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
@@ -233,8 +240,10 @@ Top-8 changed Story fingerprint
 
 Every 10 seconds, current Story with max persisted OpenNews provider score > 70
   -> News-owned durable push candidate
-  -> first-enable baseline suppression or one frozen highest-score Item
-  -> optional deepseek-v4-flash headline translation through model adapter
+  -> suppress first-enable/pre-baseline/stale (>15 minute) evidence
+  -> otherwise freeze one highest-score Item
+  -> one <=1.5 second Chinese-title attempt or immediate original fallback
+  -> freeze bilingual/original presentation exactly once
   -> compact selected-Item coin/score body + optional original-link button
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
@@ -247,7 +256,8 @@ only after the initial WSS connection, reconnect, or overflow, with page 1 and
 limit 100. A healthy continuous connection performs no periodic REST call.
 Persisted source state enforces a five-minute minimum interval between attempts;
 reconnects during that interval coalesce behind one delayed recovery. This caps
-the 30-day reconnect-storm maximum at 8,640 requests. A page that does not
+the 30-day reconnect-storm maximum at 8,640 recovery attempts and 95,040 REST
+requests. A page that does not
 contain the persisted provider-record boundary leaves `gap_unclosed=true`.
 Gap closure uses the persisted gap version as a compare-and-set fence, so a
 concurrent disconnect or buffer overflow cannot be overwritten as healthy.
@@ -257,18 +267,23 @@ second polling or acquisition-history lane.
 
 The acquisition publication is the only NewsItem writer. The fixed-period
 Story projection is the only Story/member/facet/Brief-selection writer. It
-re-reads the complete current 96-hour window every 60 seconds, calculates
+re-reads the complete current 96-hour window every 60 seconds, carries only the
+calculation fields and recomputes normalized titles in the CPU phase, calculates
 outside the database, rejects stale snapshots, and atomically publishes the
 current closure. Unchanged inputs write zero serving rows. The operation is
-bounded by 10,000 rows, 4 MiB, and 25 seconds. There are no News frontiers,
+bounded by 10,000 rows, 8 MiB, and 25 seconds. There are no News frontiers,
 identity features, similarity edges, aliases, archive rows, or membership
 history.
 
 The push reconciler independently scans persisted current Story evidence every
-10 seconds. It performs no clustering, provider call, or model call and writes
-zero delivery rows for already-seen Stories. A newly ingested report must still
+10 seconds. It performs no clustering or provider call and writes zero delivery
+rows for already-seen Stories. A newly ingested report must still
 enter a Story through the 60-second projection before it can qualify; a later
 `news.ai_update` on an existing Story no longer waits for another Story rebuild.
+Push is a live alert rather than a recovery replay: the selected Item must be
+newer than the enablement baseline and at most 15 minutes old. A stale Item that
+only becomes scored through REST recovery is frozen as suppressed and performs
+no outbound request.
 
 `published_at_ms` is the provider's article clock, not the score-eligibility
 clock. OpenNews can publish a report first and later attach `aiRating` and
@@ -292,16 +307,23 @@ failed run and keeps the last-known-good current pointer.
 Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
-retried unsigned. Missing model credentials or a translation error still
-freezes and sends the original headline. After translation, the Adapter renders
-the selected highest-score Item's translated or original headline as the
-plain-text header title. The compact body shows its provider-order,
-case-insensitively deduplicated coin symbols and provider score, plus one
+retried unsigned. Push does not read `llm` configuration or occupy the model
+arbiter. Optional translation uses only `news.push.translation`: one provider,
+one attempt, a code-owned 1.5-second total budget, and no durable translation
+retry. A valid Chinese result becomes the header and the original stays visible;
+Chinese input bypasses the endpoint. Timeout, invalid output, changed numeric or
+token anchors, and titles over 500 graphemes immediately freeze the original
+fallback and continue delivery. The compact body shows its
+provider-order, case-insensitively deduplicated coin symbols and provider score,
+plus one
 `查看原文` button when a canonical HTTP(S) Item URL exists. Missing symbols are
 shown as `未提供`; a missing URL omits the button. No summary, signal, grade,
 Story score, source, or publication time is rendered. Status and logs expose
 only configured booleans and sanitized error codes, never the webhook or
 signing secret.
+The ledger names `pending_translation` and `translation_status` also encode the
+one-time preparation phase. New rows move from `pending` to `translated`,
+`not_needed`, or `unavailable`; frozen retries never re-enter preparation.
 
 Diagnose News in this order:
 

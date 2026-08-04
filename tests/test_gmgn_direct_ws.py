@@ -5,7 +5,26 @@ import asyncio
 import pytest
 from curl_cffi.curl import CurlError
 
+from tracefold.integrations.gmgn import direct_ws
 from tracefold.integrations.gmgn.direct_ws import DirectGmgnWebSocketClient
+
+
+class _LogSink:
+    def __init__(self) -> None:
+        self.errors: list[tuple[object, ...]] = []
+        self.warnings: list[tuple[object, ...]] = []
+
+    def debug(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def error(self, *args: object, **_kwargs: object) -> None:
+        self.errors.append(args)
+
+    def info(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def warning(self, *args: object, **_kwargs: object) -> None:
+        self.warnings.append(args)
 
 
 def test_connect_curl_error_is_retried_instead_of_stopping_client() -> None:
@@ -46,6 +65,82 @@ def test_connect_curl_error_is_retried_instead_of_stopping_client() -> None:
 
     attempts = 0
     retried = asyncio.Event()
+    asyncio.run(scenario())
+
+
+def test_repeated_connect_failures_back_off_cap_and_reduce_error_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def ws_connect(self, *_args, **_kwargs):
+            raise CurlError("TLS connect failed")
+
+    async def on_frame(_frame: str) -> None:
+        return None
+
+    async def scenario() -> None:
+        client = DirectGmgnWebSocketClient(
+            app_version="test",
+            channels=["public_broadcast"],
+            chains=["sol"],
+            on_frame=on_frame,
+            reconnect_delay=3,
+            session_factory=_Session,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await client.run()
+
+        assert delays == [3, 6, 12, 24, 48, 60]
+        assert len(log_sink.errors) == 1
+        assert len(log_sink.warnings) == 2
+        assert client.connection_state == "disconnected"
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+        if len(delays) == 6:
+            raise asyncio.CancelledError
+
+    delays: list[float] = []
+    log_sink = _LogSink()
+    monkeypatch.setattr(direct_ws.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(direct_ws, "logger", log_sink)
+    asyncio.run(scenario())
+
+
+def test_receiving_a_frame_resets_reconnect_backoff() -> None:
+    class _WebSocket:
+        async def recv_str(self) -> str:
+            return "{}"
+
+    async def scenario() -> None:
+        client = DirectGmgnWebSocketClient(
+            app_version="test",
+            channels=["public_broadcast"],
+            chains=["sol"],
+            on_frame=on_frame,
+        )
+        client._consecutive_failures = 5
+        client._last_failure_key = ("CurlError", "TLS connect failed")
+        client._same_failure_count = 5
+
+        with pytest.raises(RuntimeError, match="stop after first frame"):
+            await client._receive_frames(_WebSocket())
+
+        assert client._consecutive_failures == 0
+        assert client._last_failure_key is None
+        assert client._same_failure_count == 0
+        assert client.connection_state == "streaming"
+
+    async def on_frame(_frame: str) -> None:
+        raise RuntimeError("stop after first frame")
+
     asyncio.run(scenario())
 
 

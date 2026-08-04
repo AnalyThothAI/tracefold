@@ -57,10 +57,8 @@ from .push import (
     NewsPushDelivery,
     NewsPushDeliveryError,
     NewsPushReceipt,
-    NewsPushTranslation,
-    NewsPushTranslationError,
-    NewsPushTranslator,
     NewsStoryPush,
+    PreparedNewsPush,
 )
 from .ranking import importance_score, is_delayed_brief_excluded, select_top_stories
 from .repository import NewsRepository
@@ -100,15 +98,13 @@ __all__ = [
     "NewsPushDelivery",
     "NewsPushDeliveryError",
     "NewsPushReceipt",
-    "NewsPushTranslation",
-    "NewsPushTranslationError",
-    "NewsPushTranslator",
     "NewsRepository",
     "NewsSourceDefinition",
     "NewsStoryProjection",
     "NewsStoryPush",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
+    "PreparedNewsPush",
     "candidate_tokens",
     "classify_by_keyword",
     "cluster_texts",

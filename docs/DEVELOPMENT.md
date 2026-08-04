@@ -98,8 +98,10 @@ the implementation copied from WorldMonitor commit
 facts, current-only Story rows, immutable Chinese Brief publications, and one
 News-owned outbound Story-push state machine. Push provider score is a
 delivery-eligibility policy only; it does not add a second Story identity,
-ranking policy, or item-level analysis product. Its optional model work is
-limited to translating one frozen selected headline.
+ranking policy, or item-level analysis product. Story qualification and scoring
+perform no model work and remain deterministic. Optional title
+translation is confined to the outbound Feishu presentation envelope and can
+never change NewsItem, Story, score, or public read-model state.
 
 `tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
 covers positive and negative title pairs, exact-title and containment merges,
@@ -129,12 +131,17 @@ Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, measured acquisition/projection latency, and
 browser verification of Feed, Story, Brief, and Sources. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
-strict score greater than 70, independent 10-second candidate reconciliation
-after a later provider annotation on an existing Story, frozen at-least-once
-retry behavior, translated-title/original-headline fallback, compact body
-rendering from the selected Item's coins and provider score, optional canonical
+strict score greater than 70, suppression of pre-baseline or more-than-15-minute
+old recovery evidence, independent 10-second candidate reconciliation after a
+later provider annotation on an existing Story, frozen at-least-once
+retry behavior, exact preservation of the original headline, compact body rendering from
+the selected Item's coins and provider score, optional bilingual rendering with
+the original visibly preserved, immediate original fallback for translation
+timeout/invalid/overlong output, optional canonical
 original-link button, exact signed and unsigned Feishu request shapes, response
-classification, and no model or network I/O inside a database transaction.
+classification, frozen retries that never retranslate, no Push dependency on
+`llm` configuration or the serial model arbiter, and no network I/O inside a
+database transaction.
 Absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
 

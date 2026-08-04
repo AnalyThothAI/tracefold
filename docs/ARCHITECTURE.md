@@ -88,8 +88,9 @@ likewise queue policy, not profile facts.
 `news_brief_publications` and `macro_document_analyses` are immutable derived
 model outputs keyed by frozen evidence; they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
-they freeze no-backfill baselines, selected Story evidence, translated or
-original-headline compact cards with provider coins, provider score, and an
+they freeze no-backfill baselines, selected Story evidence, one optional
+presentation-only Chinese title translation or explicit original fallback,
+compact cards with provider coins, provider score, and an
 optional original-link button, plus claims, retries, and explicit delivery
 receipts. They
 do not become a second Story read model or notification product.
@@ -116,7 +117,7 @@ tracefold.news
   runtime.py        bounded OpenNews live/recovery and native Brief candidate
   projection.py     complete 96-hour WorldMonitor Story calculation
   story_store.py    current-only Story compare-and-publish store
-  push.py           Story-qualified translation and durable Feishu delivery
+  push.py           Story-qualified durable Feishu delivery
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -254,8 +255,9 @@ OpenNews source
   -> provider annotations update bounded metadata on the current item
   -> complete 96-hour WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
-  -> News-owned strict score>70 push state -> optional title translation
-     -> signed or explicitly unsigned Feishu card
+  -> News-owned strict score>70 push state
+     -> one bounded Chinese-title attempt or immediate original fallback
+     -> signed or explicitly unsigned frozen Feishu card
   -> one flat global cursor Feed; category is a facet
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
@@ -289,9 +291,10 @@ the separate outbound push state machine. Linkless OpenNews dispatches remain
 valid current facts.
 
 The sole Story writer loads all enabled NewsItems in the current 96-hour
-window, computes outside the database, and compares the input fingerprint
+window, carries only fields consumed by the calculation, recomputes normalized
+titles deterministically in the CPU phase, and compares the input fingerprint
 again under the publication lock. It runs every 60 seconds and is bounded by
-10,000 rows, 4 MiB input, and a 25-second operation budget. An unchanged input
+10,000 rows, 8 MiB input, and a 25-second operation budget. An unchanged input
 writes zero serving rows; a stale snapshot writes nothing. There are no News
 frontiers, identity-feature rows, similarity-edge rows, aliases, or
 membership history.
@@ -310,8 +313,9 @@ earliest normalized title in that current cluster. It may change when the
 earliest item expires; the previous Story is removed and its detail route
 returns not found. There is no archived Story product, embedding,
 full-article extraction, browser clustering, revision product, or per-Story AI
-analysis. The outbound push may translate only one frozen selected headline;
-that translation is delivery content, never Story state.
+analysis. The outbound push preserves the selected OpenNews original headline
+as evidence and may freeze a Chinese presentation copy; it never adds
+model-derived NewsItem or Story state.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
 including exclusions and historical downgrade. There is no item-level AI
@@ -344,27 +348,33 @@ run with an unexpired lease and heartbeat. News Brief preserves the first-dirty
 waits on the fixed 250 ms bounded cadence after every completed candidate. No
 per-Story or Brief worker timer is a correctness authority.
 
-`NewsStoryPush` is a News-owned native candidate, not a generic Notifications
-service. On first enablement it atomically suppresses every currently eligible
-Story and records the initialized baseline without network work. Later it
+`NewsStoryPush` is a News-owned durable outbound worker, not a model candidate
+or generic Notifications service. On first enablement it atomically suppresses
+every currently eligible Story and records the initialized baseline without
+network work. Later it
 qualifies a Story only when the maximum numeric OpenNews provider score among
-its current members is strictly greater than 70, chooses the highest-scored
-member with deterministic publication-time and Item-ID ties, and freezes that
-Story/Item evidence once. Its code-owned 10-second reconcile reads only
-persisted current Story membership and NewsItem metadata; it neither rebuilds
-Stories nor adds another acquisition path. A Chinese headline bypasses
-translation; otherwise the serial model adapter calls code-owned
-`deepseek-v4-flash` in non-thinking mode. Translation failure freezes the
-original headline and still progresses
-to delivery. The Adapter renders the translated or original headline as the
-plain-text header title. Its compact body renders the selected Item's valid
+its current members is strictly greater than 70 and the selected Item was
+published after the baseline and within the code-owned 15-minute live-alert
+window. Older Items discovered through REST recovery or a later Story identity
+are durably suppressed, never backfilled to Feishu. It chooses the
+highest-scored member with deterministic publication-time and Item-ID ties, and
+freezes that Story/Item evidence once. Its code-owned 10-second reconcile reads
+only persisted current Story membership and NewsItem metadata; it neither rebuilds
+Stories nor adds another acquisition path. A private durable-due loop claims
+and delivers without occupying the serial model arbiter. For an unfrozen,
+non-Chinese title, the Feishu Adapter makes at most one request to its isolated
+translation endpoint under a 1.5-second total budget. Success freezes a Chinese
+header plus visible original; any provider, validation, length, or timeout
+failure freezes and sends the original in the same turn. Its compact body renders the selected Item's valid
 OpenNews coin symbols, preserving provider order and deduplicating by case,
 plus the provider score and one original-link button when a canonical HTTP(S)
 Item URL exists. Items without valid coins show `未提供`; a missing URL omits
 the button.
 
-The Feishu Adapter receives only the frozen compact card and sends outside
-the database transaction through the finite-operation capability. When the
+Translation preparation and Feishu delivery both run outside the database
+transaction through the finite-operation capability. After preparation, the
+worker rechecks the 15-minute source window before freezing. Every later retry
+receives only the frozen compact card and never retranslates. When the
 optional signing secret is present, it adds the Feishu timestamp/signature
 pair; otherwise it sends an explicitly unsigned request with neither field. It
 never downgrades a failed signed request into an unsigned retry. The frozen
@@ -378,6 +388,11 @@ are terminal. The semantics are durable at-least-once: an ambiguous response
 loss may duplicate externally, while a confirmed success is never resent.
 Dedupe follows current `story_id`; no historical Story alias or
 membership-overlap identity is introduced.
+The existing ledger column/status names `translation_status` and
+`pending_translation` encode payload preparation without adding another queue:
+new candidates use `pending`, then freeze as `translated`, `not_needed`, or
+`unavailable`; stale rows use `not_requested`. Provider failure never creates a
+durable translation retry.
 
 The complete live News storage boundary is exactly fourteen tables:
 `news_sources`, `news_source_memberships`, `news_items`, `news_stories`,

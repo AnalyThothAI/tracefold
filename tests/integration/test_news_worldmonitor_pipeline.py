@@ -44,13 +44,17 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         reset_postgres_schema(conn)
         repository = NewsRepository(conn)
         source = opennews_source()
-        report = _event(title="Fed holds rates steady", score=70)
+        report = _event(title="Fed holds rates steady", score=None)
         annotation = parse_opennews_message(
             {
                 "method": "news.ai_update",
                 "params": {
-                    "id": "wire-1",
-                    "aiRating": {"score": 80, "signal": "long", "grade": "A+"},
+                    "newsId": "wire-1",
+                    "engineType": "news",
+                    "newsType": "Reuters",
+                    "score": 80,
+                    "signal": "long",
+                    "grade": "A+",
                 },
             }
         )
@@ -131,9 +135,7 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
                 observed_at_ms=NOW_MS + 4,
             )
             repository.rebuild_stories(now_ms=NOW_MS + 4)
-        after = conn.execute(
-            "SELECT item_id FROM news_items WHERE provider_record_id='wire-1'"
-        ).fetchone()
+        after = conn.execute("SELECT item_id FROM news_items WHERE provider_record_id='wire-1'").fetchone()
         assert result["items_updated"] == 1
         assert after["item_id"] == before["item_id"]
 
@@ -188,6 +190,102 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
             "wire-1",
             2,
         )
+    finally:
+        conn.close()
+
+
+def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        unusable = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "3442019",
+                    "text": "👑👑👑",
+                    "newsType": "Twitter",
+                    "engineType": "news",
+                    "link": "https://example.com/emoji-only",
+                    "ts": NOW_MS,
+                    "source": "aeyakovenko",
+                    "score": 5,
+                    "aiRating": {"score": 5, "signal": "neutral", "grade": "C"},
+                    "coins": [{"symbol": "SOL", "market_type": "cex"}],
+                },
+            }
+        )
+        invalid_text_events = tuple(
+            parse_opennews_message(
+                {
+                    "method": "news.update",
+                    "params": {
+                        "id": record_id,
+                        "text": invalid_text,
+                        "description": invalid_text,
+                        "newsType": "Reuters",
+                        "engineType": "news",
+                        "link": f"https://example.com/{invalid_text}",
+                        "ts": NOW_MS,
+                    },
+                }
+            )
+            for record_id, invalid_text in (
+                ("wire-nul-title", "bad\x00title"),
+                ("wire-surrogate-title", "bad\ud800title"),
+            )
+        )
+        valid = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "wire-valid",
+                    "text": "Solana validators approve network upgrade",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": NOW_MS,
+                    "aiRating": {"score": 75, "signal": "long", "grade": "A"},
+                },
+            }
+        )
+        assert unusable is not None and valid is not None
+        assert all(event is not None for event in invalid_text_events)
+
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            result = repository.record_opennews_events(
+                source=source,
+                events=(valid, unusable, *invalid_text_events),
+                observed_at_ms=NOW_MS,
+            )
+
+        assert result == {
+            "events_seen": 4,
+            "items_inserted": 1,
+            "items_updated": 0,
+            "metadata_updated": 0,
+            "rejected": 3,
+        }
+        rows = conn.execute(
+            """
+            SELECT provider_record_id, normalized_title, provider_metadata
+              FROM news_items
+             ORDER BY provider_record_id
+            """
+        ).fetchall()
+        assert rows == [
+            {
+                "provider_record_id": "wire-valid",
+                "normalized_title": "solana validators approve network upgrade",
+                "provider_metadata": {
+                    "score": 75,
+                    "signal": "long",
+                    "grade": "A",
+                },
+            }
+        ]
     finally:
         conn.close()
 

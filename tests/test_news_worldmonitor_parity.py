@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import tracefold.news.identity as news_identity
 from tracefold.news import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
@@ -193,6 +194,29 @@ def test_union_find_is_deterministic_and_uses_connected_components() -> None:
     ]
     assert cluster_texts(titles) == [[0, 1], [2], [3]]
     assert cluster_texts(titles) == cluster_texts(titles)
+
+
+def test_cluster_threshold_short_circuits_the_second_dense_dot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
+
+    def below_threshold(
+        left: tuple[float, ...],
+        right: tuple[float, ...],
+    ) -> float:
+        calls.append((left, right))
+        return 0.0
+
+    monkeypatch.setattr(news_identity, "_dot", below_threshold)
+
+    assert cluster_texts(
+        [
+            "Alpha launches satellite",
+            "Alpha reports quarterly earnings",
+        ]
+    ) == [[0], [1]]
+    assert len(calls) == 1
 
 
 def test_worldmonitor_positive_and_negative_sets_keep_margin() -> None:

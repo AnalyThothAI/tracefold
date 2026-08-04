@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Final
@@ -160,7 +161,12 @@ def story_vector(text: str) -> StoryVector | None:
 def _dot(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if len(left) != len(right):
         return 0.0
-    return sum(a * b for a, b in zip(left, right, strict=True))
+    return float(math.sumprod(left, right))
+
+
+def _has_containment_rescue(left: StoryVector, right: StoryVector) -> bool:
+    small, large = (left.tokens, right.tokens) if len(left.tokens) <= len(right.tokens) else (right.tokens, left.tokens)
+    return len(small) >= CONTAINMENT_RESCUE_MIN_TOKENS and len(small & large) / len(small) >= CONTAINMENT_RESCUE_RATIO
 
 
 def cosine_similarity(left: StoryVector | None, right: StoryVector | None) -> float:
@@ -170,15 +176,37 @@ def cosine_similarity(left: StoryVector | None, right: StoryVector | None) -> fl
         _dot(left.uniform, right.uniform),
         _dot(left.boosted, right.boosted),
     )
-    if score < CONTAINMENT_RESCUE_SCORE:
-        small, large = (
-            (left.tokens, right.tokens) if len(left.tokens) <= len(right.tokens) else (right.tokens, left.tokens)
-        )
-        if len(small) >= CONTAINMENT_RESCUE_MIN_TOKENS:
-            shared = sum(token in large for token in small)
-            if shared / len(small) >= CONTAINMENT_RESCUE_RATIO:
-                return CONTAINMENT_RESCUE_SCORE
+    if score < CONTAINMENT_RESCUE_SCORE and _has_containment_rescue(left, right):
+        return CONTAINMENT_RESCUE_SCORE
     return max(0.0, min(1.0, score))
+
+
+def _meets_similarity_threshold(
+    left: StoryVector | None,
+    right: StoryVector | None,
+    *,
+    threshold: float,
+) -> bool:
+    """Compare one candidate without calculating a second losing dense dot."""
+
+    if math.isnan(threshold):
+        return False
+    if threshold <= 0.0:
+        return True
+    if threshold > 1.0 or left is None or right is None:
+        return False
+    uniform_score = _dot(left.uniform, right.uniform)
+    if uniform_score < threshold:
+        return threshold <= CONTAINMENT_RESCUE_SCORE and _has_containment_rescue(left, right)
+    boosted_score = _dot(left.boosted, right.boosted)
+    score = min(uniform_score, boosted_score)
+    if score >= threshold:
+        return True
+    return (
+        score < CONTAINMENT_RESCUE_SCORE
+        and threshold <= CONTAINMENT_RESCUE_SCORE
+        and _has_containment_rescue(left, right)
+    )
 
 
 def story_similarity(left: str, right: str) -> float:
@@ -247,11 +275,15 @@ def cluster_texts(
             bucket = inverted.get(token, ())
             if len(bucket) > MAX_CANDIDATE_BUCKET:
                 continue
-            candidates.update(candidate for candidate in bucket if candidate > index)
+            candidates.update(bucket[bisect_right(bucket, index) :])
         for candidate in sorted(candidates):
             if find(index) == find(candidate):
                 continue
-            if cosine_similarity(vector, vectors[candidate]) >= threshold:
+            if _meets_similarity_threshold(
+                vector,
+                vectors[candidate],
+                threshold=threshold,
+            ):
                 union(index, candidate)
 
     grouped: dict[int, list[int]] = {}

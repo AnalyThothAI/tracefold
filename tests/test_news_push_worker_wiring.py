@@ -9,8 +9,9 @@ import pytest
 
 from tracefold.app import workers
 from tracefold.app.provider_types import AssetMarketProviders
-from tracefold.news import NewsPushReceipt, NewsPushTranslation, NewsStoryPush
+from tracefold.news import NewsPushReceipt, NewsStoryPush
 from tracefold.platform.config.settings import Settings
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 def test_story_projection_and_push_reconcile_have_independent_periodic_samples() -> None:
@@ -33,6 +34,40 @@ def test_story_projection_and_push_reconcile_have_independent_periodic_samples()
     assert workers._NEWS_PUSH_RECONCILE_SECONDS == 10.0
 
 
+def test_push_periodic_sample_retries_after_database_admission_timeout() -> None:
+    class _Push:
+        async def reconcile(self, *, now_ms: int) -> dict[str, int]:
+            assert now_ms > 0
+            raise ResourceAdmissionTimeout("test_news_push_reconcile_admission_timeout")
+
+    asyncio.run(workers._sample_news_push(news_push=_Push()))  # type: ignore[arg-type]
+
+
+def test_push_due_turn_retries_after_database_admission_timeout() -> None:
+    class _Database:
+        async def run_business(self, *_args: Any, **_kwargs: Any) -> object:
+            raise ResourceAdmissionTimeout("test_news_push_turn_admission_timeout")
+
+    class _Delivery:
+        def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("not called")
+
+        def deliver(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+            raise AssertionError("not called")
+
+        def close(self) -> None:
+            raise AssertionError("not called")
+
+    push = NewsStoryPush(
+        db=_Database(),
+        finite_operations=object(),
+        delivery=_Delivery(),
+        runtime_id="runtime-1",
+    )
+
+    assert asyncio.run(push.turn()) is None
+
+
 def test_worker_root_wires_exactly_one_dedicated_push_reconcile_task() -> None:
     source = inspect.getsource(workers.run_workers)
 
@@ -41,6 +76,15 @@ def test_worker_root_wires_exactly_one_dedicated_push_reconcile_task() -> None:
     assert "if components.news_push is not None:" in source
     assert "period_seconds=_NEWS_PUSH_RECONCILE_SECONDS" in source
     assert "news_push" not in inspect.getsource(workers._sample_news_story)
+
+
+def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> None:
+    wiring = inspect.getsource(workers._wire_components)
+    parameters = inspect.signature(NewsStoryPush).parameters
+
+    assert "DeepSeekNewsPushTranslator" not in wiring
+    assert "model_adapter" not in parameters
+    assert "translator" not in parameters
 
 
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
@@ -69,30 +113,22 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
 
 
 @pytest.mark.parametrize(
-    ("news_enabled", "push_enabled", "expected_push"),
+    ("news_enabled", "push_enabled", "translation_enabled", "expected_push"),
     (
-        (False, False, False),
-        (True, False, False),
-        (True, True, True),
+        (False, False, False, False),
+        (True, False, False, False),
+        (True, True, False, True),
+        (True, True, True, True),
     ),
 )
 def test_push_wiring_requires_both_news_and_push_enabled(
     monkeypatch: pytest.MonkeyPatch,
     news_enabled: bool,
     push_enabled: bool,
+    translation_enabled: bool,
     expected_push: bool,
 ) -> None:
     constructed: list[tuple[str, dict[str, Any]]] = []
-
-    class _Translator:
-        def __init__(self, **kwargs: Any) -> None:
-            constructed.append(("translator", kwargs))
-
-        def translate_title(self, _title: str) -> NewsPushTranslation:
-            return NewsPushTranslation(title_zh="标题", provider="deepseek", model="model")
-
-        def close(self) -> None:
-            return None
 
     class _Delivery:
         def __init__(self, **kwargs: Any) -> None:
@@ -116,28 +152,37 @@ def test_push_wiring_requires_both_news_and_push_enabled(
 
     monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
     monkeypatch.setattr(workers, "gmgn_upstream_factory", lambda _settings: None)
-    monkeypatch.setattr(workers, "DeepSeekNewsPushTranslator", _Translator)
     monkeypatch.setattr(workers, "FeishuNewsPushDelivery", _Delivery)
     monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
 
     settings = Settings(
-        llm={"api_key": "test-key", "base_url": "https://deepseek.test/v1"},
         news={
             "enabled": news_enabled,
             "push": {
                 "enabled": push_enabled,
                 "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
+                "translation": (
+                    {
+                        "enabled": True,
+                        "base_url": "https://translator.test/v1",
+                        "api_key": "translation-secret",
+                        "engine": "fast-title-translator",
+                    }
+                    if translation_enabled
+                    else {"enabled": False}
+                ),
             },
         },
         providers={"macro_sources": {"enabled": False}},
     )
 
+    finite = object()
     components = asyncio.run(
         workers._wire_components(
             settings=settings,
             db=object(),  # type: ignore[arg-type]
             telemetry=object(),  # type: ignore[arg-type]
-            finite=object(),  # type: ignore[arg-type]
+            finite=finite,  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
             cpu=object(),  # type: ignore[arg-type]
             runtime_id="runtime-1",
@@ -146,23 +191,24 @@ def test_push_wiring_requires_both_news_and_push_enabled(
 
     assert (components.news_push is not None) is expected_push
     if expected_push:
-        assert [name for name, _kwargs in constructed] == ["translator", "delivery"]
+        assert [name for name, _kwargs in constructed] == ["delivery"]
         assert components.news_push is not None
-        assert components.news_push.stable_order == 10
-        assert components.news_push in components.models
+        assert components.news_push not in components.models
+        assert components.news_push in {getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns}
         assert constructed[0][1] == {
-            "api_key": "test-key",
-            "base_url": "https://deepseek.test/v1",
-        }
-        assert constructed[1][1] == {
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
             "signing_secret": None,
+            "finite_operations": finite,
+            "translation_enabled": translation_enabled,
+            "translation_base_url": ("https://translator.test/v1" if translation_enabled else None),
+            "translation_api_key": "translation-secret" if translation_enabled else None,
+            "translation_engine": "fast-title-translator" if translation_enabled else None,
         }
     else:
         assert constructed == []
 
 
-def test_news_story_push_closes_clients_through_shutdown_capabilities() -> None:
+def test_news_story_push_closes_delivery_through_finite_capability() -> None:
     calls: list[tuple[str, bool]] = []
     closed: list[str] = []
 
@@ -171,13 +217,6 @@ def test_news_story_push_closes_clients_through_shutdown_capabilities() -> None:
             calls.append((operation_name, bool(kwargs["allow_shutdown"])))
             function()
 
-    class _Translator:
-        def translate_title(self, _title: str) -> NewsPushTranslation:
-            raise AssertionError("not called")
-
-        def close(self) -> None:
-            closed.append("translator")
-
     class _Delivery:
         def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise AssertionError("not called")
@@ -190,60 +229,15 @@ def test_news_story_push_closes_clients_through_shutdown_capabilities() -> None:
 
     push = NewsStoryPush(
         db=object(),
-        model_adapter=_Capability(),
         finite_operations=_Capability(),
-        translator=_Translator(),
         delivery=_Delivery(),
         runtime_id="runtime-1",
     )
 
     asyncio.run(push.close())
 
-    assert calls == [
-        ("news_story_push_translator_close", True),
-        ("news_story_push_delivery_close", True),
-    ]
-    assert closed == ["translator", "delivery"]
-
-
-def test_news_story_push_still_closes_delivery_when_translator_close_fails() -> None:
-    closed: list[str] = []
-
-    class _Capability:
-        async def run(self, _operation_name: str, function, /, *_args: Any, **_kwargs: Any) -> None:
-            function()
-
-    class _Translator:
-        def translate_title(self, _title: str) -> NewsPushTranslation:
-            raise AssertionError("not called")
-
-        def close(self) -> None:
-            closed.append("translator")
-            raise RuntimeError("translator_close_failed")
-
-    class _Delivery:
-        def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise AssertionError("not called")
-
-        def deliver(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
-            raise AssertionError("not called")
-
-        def close(self) -> None:
-            closed.append("delivery")
-
-    push = NewsStoryPush(
-        db=object(),
-        model_adapter=_Capability(),
-        finite_operations=_Capability(),
-        translator=_Translator(),
-        delivery=_Delivery(),
-        runtime_id="runtime-1",
-    )
-
-    with pytest.raises(RuntimeError, match="translator_close_failed"):
-        asyncio.run(push.close())
-
-    assert closed == ["translator", "delivery"]
+    assert calls == [("news_story_push_delivery_close", True)]
+    assert closed == ["delivery"]
 
 
 def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:

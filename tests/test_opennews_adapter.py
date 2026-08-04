@@ -122,6 +122,132 @@ def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
     assert event.entry.raw == {}
 
 
+def test_rest_report_keeps_observed_top_level_numeric_score() -> None:
+    events = parse_opennews_rest_response(
+        {
+            "success": True,
+            "data": [
+                {
+                    "id": "wire-rest-score",
+                    "text": "Rated recovery report",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": "2026-08-03T05:34:47.635316+08:00",
+                    "score": 75,
+                    "aiRating": {
+                        "score": 75,
+                        "signal": "long",
+                        "grade": "A",
+                        "status": "done",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert len(events) == 1
+    assert events[0].provider_metadata == {
+        "score": 75,
+        "signal": "long",
+        "grade": "A",
+    }
+
+
+def test_malformed_article_url_keeps_report_as_linkless() -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-malformed-url",
+                "text": "Provider supplied an invalid URL",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "link": "https://[broken",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.link is None
+
+
+@pytest.mark.parametrize("invalid_text", ["bad\x00text", "bad\ud800text"])
+def test_non_postgres_text_is_discarded_at_provider_boundary(invalid_text: str) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-invalid-text",
+                "text": invalid_text,
+                "description": invalid_text,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "link": f"https://example.com/{invalid_text}",
+                "ts": 1_775_195_200_000,
+                "score": 75,
+                "source": invalid_text,
+                "signal": invalid_text,
+                "grade": invalid_text,
+                "coins": [{"symbol": invalid_text, "market_type": "spot"}],
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.title is None
+    assert event.entry.description == ""
+    assert event.entry.link is None
+    assert event.provider_metadata == {"score": 75}
+
+
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_timestamp_becomes_missing_date(timestamp: float) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-invalid-time",
+                "text": "Provider supplied an invalid timestamp",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": timestamp,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.published_at_ms is None
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf"), -1, 101])
+def test_non_finite_or_out_of_range_scores_are_discarded(score: float) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-invalid-score",
+                "text": "Provider supplied an invalid score",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+                "score": score,
+                "coins": [
+                    {
+                        "symbol": "BTC",
+                        "market_type": "spot",
+                        "score": score,
+                    }
+                ],
+            },
+        }
+    )
+
+    assert event is not None
+    assert "score" not in event.provider_metadata
+    assert event.provider_metadata["coins"] == [{"symbol": "BTC", "market_type": "spot"}]
+
+
 @pytest.mark.parametrize("link", [None, "#fragment", "https://reuters.com", "https://reuters.com/"])
 def test_linkless_or_homepage_wire_keeps_provider_identity(link: str | None) -> None:
     event = parse_opennews_message(
@@ -160,15 +286,45 @@ def test_translation_is_discardable_and_ai_update_carries_current_metadata() -> 
     annotation = parse_opennews_message(
         {
             "method": "news.ai_update",
-            "params": {"id": "wire-1", "aiRating": {"score": 90}},
+            "params": {
+                "newsId": 3_442_202,
+                "engineType": "news",
+                "newsType": "Reuters",
+                "score": 90,
+                "signal": "long",
+                "grade": "A+",
+                "coins": [
+                    {
+                        "symbol": "BTC",
+                        "market_type": "spot",
+                        "score": 90,
+                        "signal": "long",
+                        "grade": "A+",
+                    }
+                ],
+            },
         }
     )
 
     assert translation is not None and translation.observation_kind == "translation"
     assert translation.entry is None
     assert annotation is not None and annotation.observation_kind == "provider_annotation"
+    assert annotation.provider_record_id == "3442202"
     assert annotation.entry is None
-    assert annotation.provider_metadata == {"score": 90}
+    assert annotation.provider_metadata == {
+        "score": 90,
+        "signal": "long",
+        "grade": "A+",
+        "coins": [
+            {
+                "symbol": "BTC",
+                "market_type": "spot",
+                "score": 90,
+                "signal": "long",
+                "grade": "A+",
+            }
+        ],
+    }
 
 
 def test_empty_provider_coins_do_not_erase_current_metadata() -> None:
@@ -379,10 +535,13 @@ def test_recovery_has_a_five_minute_persisted_cooldown() -> None:
         last_attempt_at_ms=1_000,
         now_ms=1_001,
     ) == pytest.approx((five_minutes_ms - 1) / 1_000)
-    assert news_runtime._opennews_recovery_delay_seconds(
-        last_attempt_at_ms=1_000,
-        now_ms=1_000 + five_minutes_ms,
-    ) == 0.0
+    assert (
+        news_runtime._opennews_recovery_delay_seconds(
+            last_attempt_at_ms=1_000,
+            now_ms=1_000 + five_minutes_ms,
+        )
+        == 0.0
+    )
 
 
 def test_recovery_only_closes_a_gap_when_the_page_contains_its_provider_boundary() -> None:
@@ -751,9 +910,7 @@ def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
 
     async def scenario() -> None:
         client = _Client()
-        task = asyncio.create_task(
-            news_runtime._receive_or_stop(client, stop_event=asyncio.Event())
-        )
+        task = asyncio.create_task(news_runtime._receive_or_stop(client, stop_event=asyncio.Event()))
         await asyncio.wait_for(client.started.wait(), timeout=1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

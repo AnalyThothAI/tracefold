@@ -49,6 +49,8 @@ _TRACKING_PARAMS = frozenset(
         "fbclid",
     }
 )
+
+
 def deterministic_id(namespace: str, *parts: object) -> str:
     payload = "\x1f".join([namespace, *(str(part) for part in parts)])
     return f"{namespace}_{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
@@ -265,9 +267,7 @@ class NewsRepository:
                 rejections["translation"] += 1
                 continue
             incoming_metadata = {
-                key: value
-                for key, value in event.provider_metadata.items()
-                if value not in (None, "", [], {})
+                key: value for key, value in event.provider_metadata.items() if value not in (None, "", [], {})
             }
             if event.observation_kind == "provider_annotation":
                 cursor = self.conn.execute(
@@ -307,8 +307,10 @@ class NewsRepository:
             title = str(entry.title or "").strip() if entry is not None else ""
             canonical_url = _canonical_url(str(entry.link or "")) or None if entry is not None else None
             published_at_ms = entry.published_at_ms if entry is not None else None
+            normalized_title = normalize_story_text(title)
             rejection = self._opennews_rejection_reason(
                 title=title,
+                normalized_title=normalized_title,
                 published_at_ms=published_at_ms,
                 now_ms=observed_at_ms,
             )
@@ -343,7 +345,7 @@ class NewsRepository:
                 "canonical_url": canonical_url,
                 "reporting_origin": reporting_origin,
                 "title": title,
-                "normalized_title": normalize_story_text(title),
+                "normalized_title": normalized_title,
                 "description": description,
                 "lang": language,
                 "published_at_ms": published_at_ms,
@@ -468,11 +470,14 @@ class NewsRepository:
     def _opennews_rejection_reason(
         *,
         title: str,
+        normalized_title: str,
         published_at_ms: int | None,
         now_ms: int,
     ) -> str | None:
         if not title:
             return "missing_title"
+        if not normalized_title:
+            return "unusable_title"
         if published_at_ms is None:
             return "missing_date"
         if published_at_ms > now_ms + 3_600_000:
@@ -644,11 +649,7 @@ class NewsRepository:
     ) -> dict[str, int]:
         """Check one published item snapshot while retaining global Story checks."""
 
-        scoped_item_ids = (
-            sorted({str(item_id) for item_id in item_ids})
-            if item_ids is not None
-            else None
-        )
+        scoped_item_ids = sorted({str(item_id) for item_id in item_ids}) if item_ids is not None else None
         row = self.conn.execute(
             """
             WITH current_owners AS (
@@ -992,9 +993,7 @@ class NewsRepository:
         ).fetchall()
         has_more = len(rows) > limit
         page = rows[:limit]
-        provider_evidence = self.story_provider_evidence(
-            story_ids=[str(row["story_id"]) for row in page]
-        )
+        provider_evidence = self.story_provider_evidence(story_ids=[str(row["story_id"]) for row in page])
         next_cursor = None
         if has_more and page:
             last = page[-1]
@@ -1011,9 +1010,7 @@ class NewsRepository:
         stories = []
         for row in page:
             story = _story_summary(row)
-            story["provider_evidence"] = _public_provider_evidence(
-                provider_evidence.get(str(row["story_id"]))
-            )
+            story["provider_evidence"] = _public_provider_evidence(provider_evidence.get(str(row["story_id"])))
             stories.append(story)
         return {
             "sort": sort,
@@ -1089,9 +1086,7 @@ class NewsRepository:
         ).fetchone()
         if row is None:
             return None
-        provider_evidence = _public_provider_evidence(
-            self.story_provider_evidence(story_ids=(story_id,)).get(story_id)
-        )
+        provider_evidence = _public_provider_evidence(self.story_provider_evidence(story_ids=(story_id,)).get(story_id))
         member_where = ["m.story_id = %s"]
         member_params: list[Any] = [story_id]
         if members_cursor:
@@ -2034,7 +2029,7 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row is not None else None
 
-    def record_push_translation(
+    def freeze_push_delivery_payload(
         self,
         *,
         story_id: str,
@@ -2044,6 +2039,8 @@ class NewsRepository:
         payload_fingerprint: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
+        if translation_status not in {"translated", "not_needed", "unavailable"}:
+            raise ValueError("news_push_translation_status_invalid")
         row = self.conn.execute(
             """
             UPDATE news_push_deliveries
@@ -2071,6 +2068,61 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def suppress_claimed_push_delivery(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET translation_status = 'not_requested',
+                   status = 'suppressed',
+                   next_attempt_at_ms = NULL,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_translation'
+               AND delivery_attempts = 0
+               AND delivery_payload IS NULL
+               AND payload_fingerprint IS NULL
+            """,
+            (int(now_ms), story_id, lease_token),
+        )
+        return bool(cursor.rowcount)
+
+    def release_push_preparation_claim(
+        self,
+        *,
+        story_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET next_attempt_at_ms = %s,
+                   lease_owner = NULL,
+                   lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE story_id = %s
+               AND lease_token = %s
+               AND status = 'pending_translation'
+               AND translation_status = 'pending'
+               AND delivery_attempts = 0
+               AND delivery_payload IS NULL
+               AND payload_fingerprint IS NULL
+            """,
+            (int(now_ms), int(now_ms), story_id, lease_token),
+        )
+        return bool(cursor.rowcount)
+
     def record_push_render_failure(
         self,
         *,
@@ -2082,6 +2134,8 @@ class NewsRepository:
         error_code: str,
         now_ms: int,
     ) -> bool:
+        if translation_status not in {"translated", "not_needed", "unavailable"}:
+            raise ValueError("news_push_translation_status_invalid")
         cursor = self.conn.execute(
             """
             UPDATE news_push_deliveries
@@ -2280,13 +2334,7 @@ class NewsRepository:
         baseline_at_ms = state["baseline_at_ms"]
         retry_count = int(aggregate["retry_count"] or 0)
         terminal_count = int(aggregate["terminal_count"] or 0)
-        status = (
-            "warming"
-            if baseline_at_ms is None
-            else "degraded"
-            if retry_count or terminal_count
-            else "ready"
-        )
+        status = "warming" if baseline_at_ms is None else "degraded" if retry_count or terminal_count else "ready"
         return {
             "status": status,
             "initialized": baseline_at_ms is not None,
@@ -2299,11 +2347,7 @@ class NewsRepository:
             "terminal_count": terminal_count,
             "oldest_due_at_ms": aggregate["oldest_due_at_ms"],
             "latest_sent_at_ms": aggregate["latest_sent_at_ms"],
-            "latest_error": (
-                _public_push_error(str(latest_error["last_error"]))
-                if latest_error is not None
-                else None
-            ),
+            "latest_error": (_public_push_error(str(latest_error["last_error"])) if latest_error is not None else None),
             "latest_error_at_ms": latest_error["updated_at_ms"] if latest_error is not None else None,
             "measured_at_ms": int(now_ms),
         }
@@ -2524,11 +2568,7 @@ def _public_push_error(value: str) -> str:
 def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "item_id": str(row["item_id"]),
-        "provider_record_id": (
-            str(row["provider_record_id"])
-            if row.get("provider_record_id") is not None
-            else None
-        ),
+        "provider_record_id": (str(row["provider_record_id"]) if row.get("provider_record_id") is not None else None),
         "provider_metadata": dict(row.get("provider_metadata") or {}),
         "source_id": str(row["source_id"]),
         "source_name": str(row["source_name"]),
