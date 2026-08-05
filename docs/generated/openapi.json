@@ -7475,6 +7475,49 @@
         "title": "NewsProviderMetadataData",
         "type": "object"
       },
+      "NewsPushDelivery24hData": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P95 Ms"
+          },
+          "over_120s": {
+            "title": "Over 120S",
+            "type": "integer"
+          },
+          "slo_met": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slo Met"
+          }
+        },
+        "required": [
+          "completed",
+          "latency_p95_ms",
+          "over_120s",
+          "slo_met"
+        ],
+        "title": "NewsPushDelivery24hData",
+        "type": "object"
+      },
       "NewsPushStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -7488,6 +7531,9 @@
               }
             ],
             "title": "Baseline At Ms"
+          },
+          "delivery_24h": {
+            "$ref": "#/components/schemas/NewsPushDelivery24hData"
           },
           "enabled": {
             "title": "Enabled",
@@ -7593,6 +7639,9 @@
           "total_count": {
             "title": "Total Count",
             "type": "integer"
+          },
+          "translation_24h": {
+            "$ref": "#/components/schemas/NewsPushTranslation24hData"
           }
         },
         "required": [
@@ -7613,9 +7662,74 @@
           "latest_sent_at_ms",
           "latest_error",
           "latest_error_at_ms",
+          "translation_24h",
+          "delivery_24h",
           "measured_at_ms"
         ],
         "title": "NewsPushStatusData",
+        "type": "object"
+      },
+      "NewsPushTranslation24hData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "integer"
+          },
+          "failure_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Failure Counts",
+            "type": "object"
+          },
+          "latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P95 Ms"
+          },
+          "slo_met": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slo Met"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          },
+          "success_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Ratio"
+          }
+        },
+        "required": [
+          "attempted",
+          "succeeded",
+          "success_ratio",
+          "latency_p95_ms",
+          "failure_counts",
+          "slo_met"
+        ],
+        "title": "NewsPushTranslation24hData",
         "type": "object"
       },
       "NewsSourceData": {
@@ -7783,12 +7897,32 @@
       "NewsStatusData": {
         "additionalProperties": false,
         "properties": {
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
           "layers": {
             "$ref": "#/components/schemas/NewsStatusLayersData"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
+          },
+          "operating_state": {
+            "enum": [
+              "live",
+              "recovering",
+              "stalled"
+            ],
+            "title": "Operating State",
+            "type": "string"
           },
           "reasons": {
             "items": {
@@ -7809,6 +7943,8 @@
         },
         "required": [
           "status",
+          "operating_state",
+          "last_success_at_ms",
           "reasons",
           "layers",
           "measured_at_ms"
@@ -7908,6 +8044,23 @@
               }
             ]
           },
+          "push_delivery_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "sent",
+                  "suppressed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Push Delivery State"
+          },
           "representative_item_id": {
             "title": "Representative Item Id",
             "type": "string"
@@ -7965,7 +8118,8 @@
           "source_count",
           "first_published_at_ms",
           "last_published_at_ms",
-          "provider_evidence"
+          "provider_evidence",
+          "push_delivery_state"
         ],
         "title": "NewsStoryData",
         "type": "object"
@@ -8051,6 +8205,23 @@
               }
             ]
           },
+          "push_delivery_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "sent",
+                  "suppressed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Push Delivery State"
+          },
           "representative_item_id": {
             "title": "Representative Item Id",
             "type": "string"
@@ -8109,6 +8280,7 @@
           "first_published_at_ms",
           "last_published_at_ms",
           "provider_evidence",
+          "push_delivery_state",
           "canonical_title",
           "members",
           "members_page"
@@ -8344,6 +8516,17 @@
             ],
             "title": "Last Material Change At Ms"
           },
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
           "newest_item_at_ms": {
             "anyOf": [
               {
@@ -8365,6 +8548,17 @@
               }
             ],
             "title": "Newest Story At Ms"
+          },
+          "oldest_unmaterialized_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Unmaterialized At Ms"
           },
           "reasons": {
             "items": {
@@ -8396,6 +8590,7 @@
           "newest_story_at_ms",
           "last_material_change_at_ms",
           "unmaterialized_item_count",
+          "oldest_unmaterialized_at_ms",
           "invalid_owner_count",
           "invalid_story_aggregate_count",
           "invariant_error_count",
@@ -8403,6 +8598,7 @@
           "classifier_version",
           "importance_version",
           "last_attempt_at_ms",
+          "last_success_at_ms",
           "last_error"
         ],
         "title": "NewsStoryStatusData",

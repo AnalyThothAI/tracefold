@@ -45,29 +45,12 @@ def test_news_push_settings_require_only_feishu_webhook_when_enabled() -> None:
     assert configured.feishu_signing_secret == "signing-secret"
 
 
-def test_news_push_translation_settings_are_independent_and_complete() -> None:
-    settings = NewsPushSettings(
-        enabled=True,
-        feishu_webhook_url=_FEISHU_TEST_URL,
-        translation={
-            "enabled": True,
-            "base_url": "https://translator.test/v1",
-            "api_key": "translation-secret",
-            "engine": "fast-title-translator",
-        },
-    )
-
-    assert settings.translation.enabled is True
-    assert settings.translation.base_url == "https://translator.test/v1"
-    assert settings.translation.api_key == "translation-secret"
-    assert settings.translation.engine == "fast-title-translator"
-
-    with pytest.raises(ValidationError, match="news_push_translation_configuration_required"):
-        NewsPushSettings(
-            enabled=True,
-            feishu_webhook_url=_FEISHU_TEST_URL,
-            translation={"enabled": True},
-        )
+def test_news_push_configuration_has_no_duplicate_model_credentials() -> None:
+    assert set(NewsPushSettings.model_fields) == {
+        "enabled",
+        "feishu_webhook_url",
+        "feishu_signing_secret",
+    }
 
 
 def test_news_settings_reject_push_when_news_is_disabled_without_leaking_secrets() -> None:
@@ -112,30 +95,23 @@ def test_default_config_keeps_news_push_disabled_and_credentials_empty() -> None
         "enabled": False,
         "feishu_webhook_url": None,
         "feishu_signing_secret": None,
-        "translation": {
-            "enabled": False,
-            "base_url": None,
-            "api_key": None,
-            "engine": None,
-        },
     }
 
 
 def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatch, tmp_path) -> None:
     settings = Settings(
+        llm={
+            "api_key": "translation-secret",
+            "base_url": "https://translator.test/v1",
+            "news_brief_model": "fast-title-translator",
+        },
         news={
             "push": {
                 "enabled": True,
                 "feishu_webhook_url": _FEISHU_TEST_URL,
                 "feishu_signing_secret": "test-signing-secret",
-                "translation": {
-                    "enabled": True,
-                    "base_url": "https://translator.test/v1",
-                    "api_key": "translation-secret",
-                    "engine": "fast-title-translator",
-                },
             }
-        }
+        },
     )
     settings.set_config_dir(tmp_path)
     monkeypatch.setattr(config_command, "load_settings", lambda **_kwargs: settings)
@@ -366,7 +342,7 @@ def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
         "target_language": "zh-CN",
         "provider": None,
         "engine": None,
-        "prompt_version": "title_zh_v1",
+        "prompt_version": "title_zh_v2",
         "fallback_code": None,
     }
     assert rendered["card"] == {
@@ -453,14 +429,19 @@ def test_feishu_news_push_translates_once_and_keeps_original_visible() -> None:
 
     assert prepared.translation_status == "translated"
     assert prepared.payload["schema_version"] == "news_feishu_delivery_v2"
-    assert prepared.payload["presentation"] == {
+    presentation = dict(prepared.payload["presentation"])
+    attempted_at_ms = presentation.pop("translation_attempted_at_ms")
+    duration_ms = presentation.pop("translation_duration_ms")
+    assert presentation == {
         "headline_mode": "translated",
         "target_language": "zh-CN",
         "provider": "openai_compatible",
         "engine": "fast-title-translator",
-        "prompt_version": "title_zh_v1",
+        "prompt_version": "title_zh_v2",
         "fallback_code": None,
     }
+    assert isinstance(attempted_at_ms, int) and attempted_at_ms > 0
+    assert isinstance(duration_ms, int) and duration_ms >= 0
     card = prepared.payload["card"]
     assert card["header"]["title"]["content"] == "比特币 ETF 录得 10% 资金流入"
     body_text = [element["text"]["content"] for element in card["body"]["elements"] if element.get("tag") == "div"]
@@ -475,6 +456,38 @@ def test_feishu_news_push_translates_once_and_keeps_original_visible() -> None:
     frozen_json = json.dumps(prepared.payload, ensure_ascii=False)
     assert "translation-secret" not in frozen_json
     assert "translator.test" not in frozen_json
+
+
+def test_translation_request_lists_unique_required_anchors_in_source_order() -> None:
+    translation_requests: list[httpx.Request] = []
+    title = "BTC leads $ETH after BTC gains 10% and $ETH gains 10%"
+
+    def translation_handler(request: httpx.Request) -> httpx.Response:
+        translation_requests.append(request)
+        return _translation_response("BTC 领先 $ETH，随后 BTC 上涨 10%")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(
+                    title=title,
+                    symbols=("ETH", "BTC", "BTC"),
+                ),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "translated"
+    assert prepared.payload["presentation"]["prompt_version"] == "title_zh_v2"
+    request_payload = json.loads(translation_requests[0].content)
+    user_payload = json.loads(request_payload["messages"][1]["content"])
+    assert user_payload == {
+        "source_title": title,
+        "required_verbatim": ["BTC", "$ETH", "10%"],
+    }
 
 
 def test_translation_enabled_skips_chinese_and_translates_japanese() -> None:
@@ -508,6 +521,61 @@ def test_translation_enabled_skips_chinese_and_translates_japanese() -> None:
     assert len(translation_requests) == 1
 
 
+@pytest.mark.parametrize(
+    ("symbol", "title", "translated_title"),
+    (
+        ("ON", "Markets move on policy news", "市场因政策消息而波动"),
+        ("NEAR", "Bitcoin trades near record high", "比特币交易价格接近历史高点"),
+        ("LINK", "Funds link custody to settlement", "基金将托管与结算联系起来"),
+    ),
+)
+def test_translation_does_not_treat_lowercase_words_as_provider_symbol_anchors(
+    symbol: str,
+    title: str,
+    translated_title: str,
+) -> None:
+    delivery = _translation_delivery(lambda _request: _translation_response(translated_title))
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title=title, symbols=(symbol,)),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "translated"
+    assert prepared.payload["card"]["header"]["title"]["content"] == translated_title
+
+
+@pytest.mark.parametrize(
+    ("title", "symbols"),
+    (
+        ("LINK rallies", ("LINK",)),
+        ("$link rallies", ()),
+    ),
+)
+def test_translation_falls_back_when_an_explicit_ticker_is_missing(
+    title: str,
+    symbols: tuple[str, ...],
+) -> None:
+    delivery = _translation_delivery(lambda _request: _translation_response("代币上涨"))
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title=title, symbols=symbols),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_anchors_changed")
+    assert prepared.payload["card"]["header"]["title"]["content"] == title
+
+
 def test_overlong_title_skips_translation_and_marks_the_visible_excerpt() -> None:
     called = False
 
@@ -530,6 +598,8 @@ def test_overlong_title_skips_translation_and_marks_the_visible_excerpt() -> Non
     assert called is False
     assert prepared.translation_status == "unavailable"
     assert prepared.payload["presentation"]["fallback_code"] == "news_push_translation_title_too_long"
+    assert "translation_attempted_at_ms" not in prepared.payload["presentation"]
+    assert "translation_duration_ms" not in prepared.payload["presentation"]
     assert prepared.payload["card"]["header"]["title"]["content"].endswith("…")
     assert prepared.payload["card"]["body"]["elements"][0]["text"]["content"].startswith(
         "标题过长，未自动翻译\n原文节选："
@@ -541,6 +611,7 @@ def test_overlong_title_skips_translation_and_marks_the_visible_excerpt() -> Non
     (
         (httpx.Response(429), "news_push_translation_rate_limited"),
         (httpx.Response(200, json={"choices": []}), "news_push_translation_response_invalid"),
+        (httpx.Response(200, json={"choices": [[]]}), "news_push_translation_response_invalid"),
         (
             httpx.Response(
                 200,
@@ -577,10 +648,57 @@ def test_translation_failure_freezes_original_fallback(
     assert prepared.translation_status == "unavailable"
     assert prepared.payload["presentation"]["headline_mode"] == "fallback_original"
     assert prepared.payload["presentation"]["fallback_code"] == expected_code
+    assert isinstance(prepared.payload["presentation"]["translation_attempted_at_ms"], int)
+    assert isinstance(prepared.payload["presentation"]["translation_duration_ms"], int)
     assert prepared.payload["card"]["header"]["title"]["content"] == "BTC rises 10%"
 
 
+def test_recursive_translation_json_is_an_invalid_provider_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def recursive_json(_response: httpx.Response, **_kwargs: object) -> object:
+        raise RecursionError("provider_json_too_deep")
+
+    monkeypatch.setattr(httpx.Response, "json", recursive_json)
+    delivery = _translation_delivery(lambda _request: httpx.Response(200, content=b"{}"))
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(title="BTC rises 10%"),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_response_invalid")
+
+
+def test_translation_propagates_unexpected_runtime_errors() -> None:
+    def translation_handler(_request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("translation_programming_error")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        with pytest.raises(RuntimeError, match="translation_programming_error"):
+            asyncio.run(
+                delivery.prepare(
+                    _news_push_source_payload(),
+                    deadline_ms=_PREPARE_DEADLINE_MS,
+                )
+            )
+    finally:
+        delivery.close()
+
+
 def test_translation_admission_timeout_immediately_freezes_original_fallback() -> None:
+    fenced = False
+
+    async def persist_fence() -> None:
+        nonlocal fenced
+        fenced = True
+
     delivery = _translation_delivery(
         lambda _request: _translation_response("比特币 ETF 录得资金流入"),
         finite_operations=_UnavailableFiniteOperations(),
@@ -590,6 +708,7 @@ def test_translation_admission_timeout_immediately_freezes_original_fallback() -
             delivery.prepare(
                 _news_push_source_payload(),
                 deadline_ms=_PREPARE_DEADLINE_MS,
+                before_translation_submit=persist_fence,
             )
         )
     finally:
@@ -597,6 +716,44 @@ def test_translation_admission_timeout_immediately_freezes_original_fallback() -
 
     assert prepared.translation_status == "unavailable"
     assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_admission_timeout")
+    assert "translation_attempted_at_ms" not in prepared.payload["presentation"]
+    assert "translation_duration_ms" not in prepared.payload["presentation"]
+    assert fenced is False
+
+
+def test_interrupted_translation_fallback_never_calls_the_provider_again() -> None:
+    provider_called = False
+
+    def translation_handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("interrupted translation must not be resubmitted")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+                interrupted_translation_attempted_at_ms=1_785_560_400_123,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert provider_called is False
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"] == {
+        "headline_mode": "fallback_original",
+        "target_language": "zh-CN",
+        "provider": None,
+        "engine": None,
+        "prompt_version": "title_zh_v2",
+        "fallback_code": "news_push_translation_interrupted_after_dispatch",
+        "translation_attempted_at_ms": 1_785_560_400_123,
+        "translation_duration_ms": None,
+    }
+    assert prepared.payload["card"]["header"]["title"]["content"] == ("Bitcoin ETF records inflows")
 
 
 def test_translation_total_budget_includes_resource_admission(
@@ -625,6 +782,55 @@ def test_translation_total_budget_includes_resource_admission(
     assert prepared.payload["presentation"]["fallback_code"] == ("news_push_translation_total_timeout")
 
 
+def test_translation_budget_allows_observed_provider_latency() -> None:
+    delivery = _translation_delivery(
+        lambda _request: _translation_response("比特币 ETF 录得资金流入"),
+        finite_operations=_ObservedLatencyFiniteOperations(),
+    )
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "translated"
+    assert prepared.payload["card"]["header"]["title"]["content"] == ("比特币 ETF 录得资金流入")
+
+
+def test_translation_request_and_total_timeouts_stay_within_the_push_budget() -> None:
+    request_timeouts: list[dict[str, float]] = []
+
+    def translation_handler(request: httpx.Request) -> httpx.Response:
+        request_timeouts.append(request.extensions["timeout"])
+        return _translation_response("比特币 ETF 录得资金流入")
+
+    delivery = _translation_delivery(translation_handler)
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "translated"
+    assert request_timeouts == [
+        {
+            "connect": 7.5,
+            "read": 7.5,
+            "write": 7.5,
+            "pool": 7.5,
+        }
+    ]
+    assert news_push_integration._TRANSLATION_TOTAL_TIMEOUT_SECONDS == 8.0
+
+
 def test_feishu_news_push_uses_english_original_without_model_work() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
@@ -646,7 +852,7 @@ def test_feishu_news_push_uses_english_original_without_model_work() -> None:
                 "content": "代币：BTC · ETH\nOpenNews 评分：91",
             },
             "margin": "0px 0px 0px 0px",
-        }
+        },
     ]
 
 
@@ -1024,6 +1230,7 @@ def _news_push_source_payload(
     *,
     title: str = "Bitcoin ETF records inflows",
     url: str | None = "https://example.com/story/1",
+    symbols: tuple[str, ...] = ("BTC", "ETH"),
 ) -> dict[str, object]:
     return {
         "schema_version": "news_story_push_v1",
@@ -1036,10 +1243,7 @@ def _news_push_source_payload(
                 "score": 91,
                 "signal": "long",
                 "grade": "A+",
-                "coins": [
-                    {"symbol": "BTC", "market_type": "spot"},
-                    {"symbol": "ETH", "market_type": "spot"},
-                ],
+                "coins": [{"symbol": symbol, "market_type": "spot"} for symbol in symbols],
             },
             "reporting_origin": "reuters",
             "title": title,
@@ -1121,7 +1325,12 @@ def _prepare_payload(
 class _InlineFiniteOperations:
     async def run(self, _operation_name, function, /, *args, **kwargs):
         kwargs.pop("timeout_seconds")
-        kwargs.pop("on_submitted", None)
+        before_submit = kwargs.pop("before_submit", None)
+        on_submitted = kwargs.pop("on_submitted", None)
+        if before_submit is not None:
+            await before_submit()
+        if on_submitted is not None:
+            on_submitted()
         return function(*args, **kwargs)
 
 
@@ -1131,5 +1340,24 @@ class _UnavailableFiniteOperations:
 
 
 class _BlockingFiniteOperations:
-    async def run(self, *_args, **_kwargs):
+    async def run(self, *_args, **kwargs):
+        before_submit = kwargs.get("before_submit")
+        on_submitted = kwargs.get("on_submitted")
+        if before_submit is not None:
+            await before_submit()
+        if on_submitted is not None:
+            on_submitted()
         await asyncio.Event().wait()
+
+
+class _ObservedLatencyFiniteOperations:
+    async def run(self, _operation_name, function, /, *args, **kwargs):
+        kwargs.pop("timeout_seconds")
+        before_submit = kwargs.pop("before_submit", None)
+        on_submitted = kwargs.pop("on_submitted", None)
+        if before_submit is not None:
+            await before_submit()
+        if on_submitted is not None:
+            on_submitted()
+        await asyncio.sleep(1.6)
+        return function(*args, **kwargs)

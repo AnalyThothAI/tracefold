@@ -748,7 +748,7 @@ async def _wire_components(
     news_push: NewsStoryPush | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
-        sources = (opennews_source(),)
+        source = opennews_source()
         opennews_rest = OpenNewsRestClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         opennews_ws = (
             OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
@@ -756,7 +756,7 @@ async def _wire_components(
         news = NewsAcquisition(
             db=db,
             finite_operations=finite,
-            sources=sources,
+            opennews_source=source,
             opennews_rest_client=opennews_rest,
             opennews_ws_client=opennews_ws,
         )
@@ -786,7 +786,8 @@ async def _wire_components(
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
             signing_secret = settings.news.push.feishu_signing_secret
-            translation = settings.news.push.translation
+            translation_api_key = settings.llm.api_key
+            translation_enabled = bool(translation_api_key)
             if not webhook_url:
                 raise RuntimeError("news_push_webhook_missing_after_validation")
             news_push = NewsStoryPush(
@@ -796,10 +797,10 @@ async def _wire_components(
                     webhook_url=webhook_url,
                     signing_secret=signing_secret,
                     finite_operations=finite,
-                    translation_enabled=translation.enabled,
-                    translation_base_url=translation.base_url,
-                    translation_api_key=translation.api_key,
-                    translation_engine=translation.engine,
+                    translation_enabled=translation_enabled,
+                    translation_base_url=configured_base_url or None,
+                    translation_api_key=translation_api_key,
+                    translation_engine=(settings.llm.news_brief_model if translation_enabled else None),
                 ),
                 runtime_id=runtime_id,
             )

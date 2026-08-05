@@ -8,7 +8,7 @@ from typing import Any
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
 from tracefold.market.profiles.token_image_mirror import mirror_token_image_source
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 _CLAIM_LEASE_MS = 120_000
 _RETRY_MS = 300_000
@@ -99,6 +99,11 @@ class TokenImageMirror:
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
             return None
+        except ResourceOperationOverrun:
+            mirror_result = {
+                "status": "error",
+                "error": "token_image_fetch_timeout",
+            }
         try:
             published = await self.db.run_business(
                 "token_image_publish",

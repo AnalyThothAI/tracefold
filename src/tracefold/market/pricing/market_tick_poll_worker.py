@@ -28,7 +28,7 @@ from tracefold.market.provider_contracts import (
     MarketProviderExpectedError,
 )
 from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
 DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_rest"
@@ -140,7 +140,7 @@ class MarketTickPoll:
                 requests,
                 timeout_seconds=10.0,
             )
-        except MarketProviderExpectedError as exc:
+        except (MarketProviderExpectedError, ResourceOperationOverrun) as exc:
             reason = _provider_error_reason(exc)
             logger.bind(
                 reason=reason,
@@ -195,7 +195,7 @@ class MarketTickPoll:
                 inst_type="SWAP",
                 timeout_seconds=10.0,
             )
-        except MarketProviderExpectedError as exc:
+        except (MarketProviderExpectedError, ResourceOperationOverrun) as exc:
             reason = _provider_error_reason(exc)
             return _PollProviderResult(
                 ticks=[],
@@ -487,7 +487,7 @@ def _dex_source_provider(quote: DexTokenQuote) -> MarketTickSourceProvider:
 
 
 def _provider_error_reason(exc: Exception) -> str:
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, (TimeoutError, ResourceOperationOverrun)):
         return "provider_timeout"
     text = f"{type(exc).__name__} {exc}".lower()
     if "429" in text or ("rate" in text and "limit" in text):

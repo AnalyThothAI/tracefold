@@ -113,19 +113,19 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
 
 
 @pytest.mark.parametrize(
-    ("news_enabled", "push_enabled", "translation_enabled", "expected_push"),
+    ("news_enabled", "push_enabled", "llm_configured", "expected_push"),
     (
         (False, False, False, False),
-        (True, False, False, False),
+        (True, False, True, False),
         (True, True, False, True),
         (True, True, True, True),
     ),
 )
-def test_push_wiring_requires_both_news_and_push_enabled(
+def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     monkeypatch: pytest.MonkeyPatch,
     news_enabled: bool,
     push_enabled: bool,
-    translation_enabled: bool,
+    llm_configured: bool,
     expected_push: bool,
 ) -> None:
     constructed: list[tuple[str, dict[str, Any]]] = []
@@ -156,21 +156,20 @@ def test_push_wiring_requires_both_news_and_push_enabled(
     monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
 
     settings = Settings(
+        llm=(
+            {
+                "api_key": "translation-secret",
+                "base_url": "https://translator.test/v1",
+                "news_brief_model": "fast-title-translator",
+            }
+            if llm_configured
+            else {}
+        ),
         news={
             "enabled": news_enabled,
             "push": {
                 "enabled": push_enabled,
                 "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
-                "translation": (
-                    {
-                        "enabled": True,
-                        "base_url": "https://translator.test/v1",
-                        "api_key": "translation-secret",
-                        "engine": "fast-title-translator",
-                    }
-                    if translation_enabled
-                    else {"enabled": False}
-                ),
             },
         },
         providers={"macro_sources": {"enabled": False}},
@@ -199,10 +198,10 @@ def test_push_wiring_requires_both_news_and_push_enabled(
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
             "signing_secret": None,
             "finite_operations": finite,
-            "translation_enabled": translation_enabled,
-            "translation_base_url": ("https://translator.test/v1" if translation_enabled else None),
-            "translation_api_key": "translation-secret" if translation_enabled else None,
-            "translation_engine": "fast-title-translator" if translation_enabled else None,
+            "translation_enabled": llm_configured,
+            "translation_base_url": "https://translator.test/v1" if llm_configured else None,
+            "translation_api_key": "translation-secret" if llm_configured else None,
+            "translation_engine": "fast-title-translator" if llm_configured else None,
         }
     else:
         assert constructed == []

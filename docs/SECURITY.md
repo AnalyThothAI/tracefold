@@ -69,15 +69,19 @@ redirects. The frozen delivery payload records only the non-secret `auth_mode`
 signature. A retry whose frozen mode differs from current configuration is
 terminal before network submission.
 
-`news.push.translation.api_key` is a separate operator-owned secret. When
-translation is enabled, only the selected title is sent to the configured HTTPS
-endpoint; coins, score, URL, description, Story data, Feishu webhook, and
-signing secret are never included. Push never reads or copies global `llm`
-credentials. Configuration diagnostics expose only `translation_enabled` and
-`translation_configured`; the endpoint and key never enter logs, public status,
-generated artifacts, or frozen payloads. Frozen presentation metadata contains
-only the non-secret adapter kind, engine, prompt version, outcome, and sanitized
-fallback code.
+News Push title translation reuses the operator-owned global `llm.api_key`,
+effective `llm.base_url`, and `llm.news_brief_model`; there is no
+`news.push.translation` secret or second copy of the credential. When
+translation is available, only the selected title is sent to that configured
+provider; coins, score, URL, description, Story data, Feishu webhook, and
+signing secret are never included. Configuration diagnostics expose only
+`translation_enabled`, derived from Push enablement plus the global LLM
+credential, and `translation_configured`, derived from that global credential
+availability. The provider URL and key never enter logs, public status,
+generated artifacts, or frozen payloads. Frozen presentation metadata is
+non-secret and bounded: headline mode, target language, adapter kind, engine,
+prompt version, sanitized fallback code, and—only for dispatched translation
+work—the attempt clock and elapsed milliseconds.
 
 The News Brief model receives only the bounded selected Story evidence. It has
 no source credential, provider fetch, filesystem, shell, or arbitrary database

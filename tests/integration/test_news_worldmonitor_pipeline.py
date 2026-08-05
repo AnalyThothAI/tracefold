@@ -3,9 +3,17 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
-from tracefold.news import NewsInterface, NewsRepository, opennews_source, parse_opennews_message
+from tracefold.news import (
+    NewsInterface,
+    NewsProjectionSnapshot,
+    NewsRepository,
+    compute_news_story_projection,
+    opennews_source,
+    parse_opennews_message,
+)
 
 NOW_MS = 1_785_560_400_000
 
@@ -44,6 +52,18 @@ def _event(
     return event
 
 
+def _projection_snapshot(payload: dict[str, Any]) -> NewsProjectionSnapshot:
+    return NewsProjectionSnapshot(
+        input_fingerprint=str(payload["input_fingerprint"]),
+        cutoff_ms=int(payload["cutoff_ms"]),
+        scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
+        current_input_fingerprint=(
+            str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") is not None else None
+        ),
+        rows=tuple(dict(row) for row in payload["rows"]),
+    )
+
+
 def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts() -> None:
     conn = connect_postgres_test(read_only=False)
     hour_ms = 60 * 60 * 1000
@@ -73,7 +93,7 @@ def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts(
         )
 
         with conn.transaction():
-            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.sync_source(source, now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
                 events=events,
@@ -96,6 +116,127 @@ def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts(
             "outside-story-window": (False, False),
             "story-window-boundary": (True, True),
         }
+    finally:
+        conn.close()
+
+
+def test_story_projection_publishes_captured_input_and_rejects_older_publish_order() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_source(source, now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="projection-base",
+                        title="Baseline policy report",
+                        score=50,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="projection-a",
+                        title="First captured policy report",
+                        score=60,
+                        published_at_ms=NOW_MS + 1,
+                    ),
+                ),
+                observed_at_ms=NOW_MS + 1,
+            )
+            older = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 2))
+        older_projection = compute_news_story_projection(older)
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="projection-b",
+                        title="Second captured infrastructure report",
+                        score=70,
+                        published_at_ms=NOW_MS + 2,
+                    ),
+                ),
+                observed_at_ms=NOW_MS + 2,
+            )
+            newer = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 3))
+        newer_projection = compute_news_story_projection(newer)
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="projection-c",
+                        title="Late report arrives during Story computation",
+                        score=80,
+                        published_at_ms=NOW_MS + 3,
+                    ),
+                ),
+                observed_at_ms=NOW_MS + 3,
+            )
+            accepted = repository.publish_story_projection(
+                snapshot=newer,
+                projection=newer_projection,
+                now_ms=NOW_MS + 4,
+            )
+
+        with conn.transaction():
+            superseded = repository.publish_story_projection(
+                snapshot=older,
+                projection=older_projection,
+                now_ms=NOW_MS + 5,
+            )
+
+        membership = {
+            str(row["provider_record_id"]): bool(row["materialized"])
+            for row in conn.execute(
+                """
+                SELECT item.provider_record_id,
+                       member.item_id IS NOT NULL AS materialized
+                  FROM news_items item
+                  LEFT JOIN news_story_members member ON member.item_id = item.item_id
+                 WHERE item.provider_record_id LIKE 'projection-%'
+                 ORDER BY item.provider_record_id
+                """
+            ).fetchall()
+        }
+        conn.commit()
+
+        assert accepted["projection_status"] == "rebuilt"
+        assert superseded["projection_status"] == "superseded_snapshot"
+        assert membership == {
+            "projection-a": True,
+            "projection-b": True,
+            "projection-base": True,
+            "projection-c": False,
+        }
+
+        with conn.transaction():
+            caught_up = repository.rebuild_stories(now_ms=NOW_MS + 6)
+        assert caught_up["projection_status"] == "rebuilt"
+        assert (
+            conn.execute(
+                """
+            SELECT count(*) AS count
+              FROM news_items item
+              JOIN news_story_members member ON member.item_id = item.item_id
+             WHERE item.provider_record_id = 'projection-c'
+            """
+            ).fetchone()["count"]
+            == 1
+        )
     finally:
         conn.close()
 
@@ -135,7 +276,7 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert annotation is not None and translation is not None
 
         with conn.transaction():
-            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.sync_source(source, now_ms=NOW_MS)
             first = repository.record_opennews_events(
                 source=source,
                 events=(report,),
@@ -316,7 +457,7 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
         assert all(event is not None for event in invalid_text_events)
 
         with conn.transaction():
-            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.sync_source(source, now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
                 events=(valid, unusable, *invalid_text_events),
@@ -352,6 +493,66 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
         conn.close()
 
 
+def test_live_success_preserves_incomplete_recovery_diagnostic_until_gap_closes() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        source = opennews_source()
+        with conn.transaction():
+            NewsRepository(conn).sync_source(source, now_ms=NOW_MS)
+            opened = NewsRepository(conn).update_opennews_live_status(
+                source_id=source.source_id,
+                connected=False,
+                now_ms=NOW_MS + 1,
+                error_code="opennews_recovery_window_incomplete",
+                gap_unclosed=True,
+                gap_boundary_provider_record_id="missing-boundary",
+                expected_gap_version=None,
+            )
+
+        # A fresh Repository models a restarted Workers process reconnecting live.
+        with conn.transaction():
+            live = NewsRepository(conn).update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 2,
+                error_code=None,
+                gap_unclosed=True,
+                gap_boundary_provider_record_id="missing-boundary",
+                expected_gap_version=None,
+            )
+        still_open = conn.execute(
+            "SELECT gap_unclosed, last_error FROM news_sources WHERE source_id = %s",
+            (source.source_id,),
+        ).fetchone()
+
+        with conn.transaction():
+            closed = NewsRepository(conn).update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 3,
+                error_code=None,
+                gap_unclosed=False,
+                gap_boundary_provider_record_id=None,
+                expected_gap_version=2,
+            )
+        after_close = conn.execute(
+            "SELECT gap_unclosed, last_error FROM news_sources WHERE source_id = %s",
+            (source.source_id,),
+        ).fetchone()
+
+        assert opened == ("missing-boundary", 1)
+        assert live == ("missing-boundary", 2)
+        assert dict(still_open) == {
+            "gap_unclosed": True,
+            "last_error": "opennews_recovery_window_incomplete",
+        }
+        assert closed == (None, 2)
+        assert dict(after_close) == {"gap_unclosed": False, "last_error": None}
+    finally:
+        conn.close()
+
+
 def test_opennews_rest_and_websocket_reports_atomically_merge_during_overlap() -> None:
     setup = connect_postgres_test(read_only=False)
     writer_a = connect_postgres_test(read_only=False)
@@ -383,7 +584,7 @@ def test_opennews_rest_and_websocket_reports_atomically_merge_during_overlap() -
     try:
         reset_postgres_schema(setup)
         with setup.transaction():
-            NewsRepository(setup).sync_sources((source,), now_ms=NOW_MS)
+            NewsRepository(setup).sync_source(source, now_ms=NOW_MS)
         writer_b_pid = int(writer_b.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
         writer_b.commit()
 

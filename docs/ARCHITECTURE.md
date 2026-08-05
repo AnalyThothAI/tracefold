@@ -68,11 +68,16 @@ Material facts include:
   `macro_documents`.
 
 Current read models are `token_radar_current_rows`, `token_profile_current`,
-`market_tick_current`, deterministic `news_items`, `news_stories`, and
-`news_story_members`, plus the six stable rows in `macro_module_current`.
-Each uses stable product/window/target identity, has exactly one runtime
-writer, is rebuildable from facts, and writes zero serving rows when its
-business payload is unchanged.
+`market_tick_current`, `news_stories`, `news_story_members`, and the six stable
+rows in `macro_module_current`. Each uses stable product/window/target identity,
+has exactly one runtime writer, is rebuildable from facts, and writes zero
+serving rows when its business payload is unchanged. `news_items` is a mixed
+Article row: acquisition alone owns title/content/provider facts, persists the
+cached normalized title, and initializes required deterministic serving
+columns. Story ignores that cache while clustering and recomputes normalized
+titles transiently, then persists only the full-window classification,
+importance, and activity values. It never overwrites acquisition-owned facts
+or the cached normalized title.
 
 Source connection health in `news_sources`, queues, leases, retries, native
 model runs/jobs, and terminal events are control state. Typed Radar, Macro, and
@@ -265,7 +270,10 @@ OpenNews source
      + /api/news/brief + /api/news/sources + /api/news/status
 ```
 
-`NewsAcquisition` is the only NewsItem writer. It owns one persistent
+`NewsAcquisition` is the only writer of NewsItem Article facts and provider
+metadata. The Story projection only owns the deterministic derived
+classification, importance, and active-window columns on those rows. Acquisition
+owns one persistent
 authenticated WSS receiver, one 256-event in-memory queue, one
 publisher, and one REST recovery loop under the same structured-concurrency
 root. REST is gap-driven only: recovery reads sequential 100-item pages from
@@ -294,12 +302,16 @@ only.
 
 The sole Story writer loads all enabled NewsItems in the current 12-hour
 window, carries only fields consumed by the calculation, recomputes normalized
-titles deterministically in the CPU phase, and compares the input fingerprint
-again under the publication lock. It runs every 60 seconds and is bounded by
+titles deterministically in the CPU phase, and publishes that captured complete
+snapshot under a load-time publication-order compare-and-set. Facts arriving
+during calculation remain for the next 60-second turn; they do not invalidate
+the coherent snapshot already calculated. If a newer captured snapshot has
+already published, the older result is rejected as `superseded_snapshot` and
+cannot overwrite it. The writer runs every 60 seconds and is bounded by
 10,000 rows, 8 MiB input, and a 25-second runtime CPU budget. A narrow SQL
 count/byte preflight rejects an oversized corpus before wide rows are fetched;
 the exact encoded guard is checked again before calculation and publication. An unchanged input
-writes zero serving rows; a stale snapshot writes nothing. There are no News
+writes zero serving rows; a superseded snapshot writes nothing. There are no News
 frontiers, identity-feature rows, similarity-edge rows, aliases, or
 membership history. WorldMonitor's 96-hour freshness floor is safe behind its
 per-feed item bound; applying it unchanged to the aggregated OpenNews firehose
@@ -369,10 +381,14 @@ freezes that Story/Item evidence once. Its code-owned 10-second reconcile reads
 only persisted current Story membership and NewsItem metadata; it neither rebuilds
 Stories nor adds another acquisition path. A private durable-due loop claims
 and delivers without occupying the serial model arbiter. For an unfrozen,
-non-Chinese title, the Feishu Adapter makes at most one request to its isolated
-translation endpoint under a 1.5-second total budget. Success freezes a Chinese
-header plus visible original; any provider, validation, length, or timeout
-failure freezes and sends the original in the same turn. Its compact body renders the selected Item's valid
+non-Chinese title, the Feishu Adapter makes at most one request through the
+existing global OpenAI-compatible `llm.api_key`, effective `llm.base_url`, and
+`llm.news_brief_model`; there is no second translation endpoint, credential,
+or model configuration. The request timeout is 7.5 seconds inside an 8-second
+total translation budget. Success freezes a Chinese header plus visible
+original; any provider, validation, length, or timeout failure freezes and
+sends the original in the same turn. Only the selected title enters the model
+request. Its compact body renders the selected Item's valid
 OpenNews coin symbols, preserving provider order and deduplicating by case,
 plus the provider score and one original-link button when a canonical HTTP(S)
 Item URL exists. Items without valid coins show `未提供`; a missing URL omits
@@ -401,12 +417,34 @@ index keeps that permanent-ledger check bounded while retaining existing audit
 rows.
 The existing ledger column/status names `translation_status` and
 `pending_translation` encode payload preparation without adding another queue:
-new candidates use `pending`, then freeze as `translated`, `not_needed`, or
-`unavailable`; stale rows use `not_requested`. Provider failure never creates a
+new candidates use `pending`; after resource admission, translation dispatch
+first commits `attempted` immediately before executor submission, then freezes
+as `translated` or `unavailable`. Chinese/pre-call fallback can move directly
+to `not_needed` or `unavailable`; stale rows use `not_requested`. Recovery of
+an unfrozen `attempted` row conservatively freezes an interrupted original-title
+fallback and never submits the model again. Provider failure never creates a
 durable translation retry.
 
-The complete live News storage boundary is exactly fourteen tables:
-`news_sources`, `news_source_memberships`, `news_items`, `news_stories`,
+The current numeric provider-score value has its own
+`provider_score_updated_at_ms` fact clock. Story writes cannot move that clock;
+candidate creation freezes it as `threshold_observed_at_ms`, so the local
+high-score-fact-to-terminal latency includes Story waiting. Translation v2
+uses the durable dispatch fence as its attempt clock and freezes elapsed
+milliseconds after a normal provider outcome. A crash in the tiny interval
+between that fence and executor submission is deliberately counted as an
+interrupted failure—the conservative cost of guaranteeing at-most-one provider
+dispatch. `/api/news/status` derives the rolling 24-hour attempt success ratio,
+P95 latency, and bounded failure-code counts from those existing delivery
+envelopes; pre-call title-length or admission degradation is excluded.
+The companion clean-v2 delivery rollup targets P95 at or below 90 seconds.
+Every delivery attempt rechecks the 15-minute Article deadline immediately
+before external submission; an aged frozen retry becomes suppressed without a
+network call. Current waiting work whose score-fact clock is older than 120
+seconds is a stalled operating state, even when a retry is scheduled for the
+future.
+
+The complete live News storage boundary is exactly thirteen tables:
+`news_sources`, `news_items`, `news_stories`,
 `news_story_members`, `news_projection_summary`,
 `news_story_facet_counts`, `news_source_facet_counts`,
 `news_brief_selection_current`,
@@ -415,7 +453,10 @@ The complete live News storage boundary is exactly fourteen tables:
 `news_push_deliveries`. The
 `20260801_0234` migration removes incremental Story machinery,
 `20260801_0237` persists the bounded OpenNews recovery boundary, and
-`20260801_0238` adds the durable push baseline and delivery ledger. The current
+`20260801_0238` adds the durable push baseline and delivery ledger.
+`20260806_0243` removes RSS execution/scheduling and source-membership schema
+while retaining disabled historical source identity; `20260806_0244` adds
+dedicated provider-score and Story-success clocks. The current
 hard cut has no downgrade or compatibility lane.
 
 ### Macro

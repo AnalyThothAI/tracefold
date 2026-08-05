@@ -24,7 +24,7 @@ from tracefold.market.pricing.event_market_capture import (
 from tracefold.market.pricing.market_tick import EnrichedEventCapture, MarketTick
 from tracefold.market.pricing.market_tick_persistence import MarketTickPersistenceService
 from tracefold.market.provider_contracts import AssetMarketProviderBundle
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 TEMPORARY_RETRY_BACKOFF_MS = 10_000
 TEMPORARY_REASONS = frozenset({"provider_error", "provider_timeout", "rate_limited"})
@@ -224,18 +224,31 @@ class EventAnchorBackfill:
                 reason="backfill_expired",
                 status="expired",
             )
-        return cast(
-            _BackfillOutcome,
-            await self.finite_operations.run(
-                "event_anchor_provider_quote",
-                self._capture_provider_quote,
-                row,
-                resolution,
-                now_ms,
-                timeout_seconds=30.0,
-                on_submitted=on_submitted,
-            ),
-        )
+        try:
+            return cast(
+                _BackfillOutcome,
+                await self.finite_operations.run(
+                    "event_anchor_provider_quote",
+                    self._capture_provider_quote,
+                    row,
+                    resolution,
+                    now_ms,
+                    timeout_seconds=30.0,
+                    on_submitted=on_submitted,
+                ),
+            )
+        except ResourceOperationOverrun:
+            reason = "provider_timeout"
+            if self._should_reschedule(row=row, reason=reason, now_ms=now_ms):
+                return _RescheduleOutcome(
+                    row=dict(row),
+                    reason=reason,
+                    next_run_at_ms=min(
+                        int(row["active_until_ms"]),
+                        now_ms + TEMPORARY_RETRY_BACKOFF_MS,
+                    ),
+                )
+            return _TerminalOutcome(row=dict(row), reason=reason, status="failed")
 
     def _capture_provider_quote(
         self,

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from tracefold.platform.model_candidate import ModelCandidate
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 from .brief import brief_fingerprint, validate_and_repair_brief
 from .models import (
@@ -16,7 +16,6 @@ from .models import (
     NewsBriefStory,
     NewsSourceDefinition,
     ThreatLevel,
-    source_definition,
 )
 from .opennews import OpenNewsEvent, OpenNewsExpectedError, parse_opennews_message
 
@@ -37,19 +36,15 @@ class NewsAcquisition:
         *,
         db: Any,
         finite_operations: Any,
-        sources: Sequence[NewsSourceDefinition | Any],
+        opennews_source: NewsSourceDefinition,
         opennews_rest_client: Any | None = None,
         opennews_ws_client: Any | None = None,
     ) -> None:
         self.db = db
         self.finite_operations = finite_operations
-        self.sources = tuple(source_definition(source) for source in sources)
+        self.opennews_source = opennews_source
         self.opennews_rest_client = opennews_rest_client
         self.opennews_ws_client = opennews_ws_client
-        self.opennews_source = next(
-            (source for source in self.sources if source.source_kind == "opennews"),
-            None,
-        )
         self._opennews_queue: asyncio.Queue[OpenNewsEvent] = asyncio.Queue(maxsize=_OPENNEWS_BUFFER_CAPACITY)
         self._opennews_recovery_requested = asyncio.Event()
         self._opennews_connected = False
@@ -60,11 +55,7 @@ class NewsAcquisition:
 
     @property
     def opennews_enabled(self) -> bool:
-        return (
-            self.opennews_source is not None
-            and self.opennews_rest_client is not None
-            and self.opennews_ws_client is not None
-        )
+        return self.opennews_rest_client is not None and self.opennews_ws_client is not None
 
     async def reconcile(self) -> None:
         last_attempt_at_ms, gap_boundary_provider_record_id, gap_version = await self.db.run_business(
@@ -72,14 +63,12 @@ class NewsAcquisition:
             self._reconcile_sync,
             operation_timeout_seconds=3.0,
         )
-        self._opennews_last_recovery_attempt_at_ms = (
-            int(last_attempt_at_ms) if last_attempt_at_ms is not None else None
-        )
+        self._opennews_last_recovery_attempt_at_ms = int(last_attempt_at_ms) if last_attempt_at_ms is not None else None
         self._opennews_gap_boundary_provider_record_id = (
             str(gap_boundary_provider_record_id) if gap_boundary_provider_record_id is not None else None
         )
         self._opennews_gap_version = int(gap_version)
-        if self.opennews_source is not None and (self.opennews_rest_client is None or self.opennews_ws_client is None):
+        if self.opennews_rest_client is None or self.opennews_ws_client is None:
             await self._update_opennews_status(
                 connected=False,
                 error_code="opennews_token_missing",
@@ -87,9 +76,6 @@ class NewsAcquisition:
             )
 
     async def run_opennews(self, *, stop_event: asyncio.Event) -> None:
-        if self.opennews_source is None:
-            await stop_event.wait()
-            return
         if self.opennews_rest_client is None or self.opennews_ws_client is None:
             await stop_event.wait()
             return
@@ -225,12 +211,15 @@ class NewsAcquisition:
                 )
                 recovery_covered_gap = False
                 for page in range(1, _OPENNEWS_RECOVERY_MAX_PAGES + 1):
-                    events = await self.finite_operations.run(
-                        "opennews_rest_recovery",
-                        client.fetch_page,
-                        page,
-                        timeout_seconds=25.0,
-                    )
+                    try:
+                        events = await self.finite_operations.run(
+                            "opennews_rest_recovery",
+                            client.fetch_page,
+                            page,
+                            timeout_seconds=25.0,
+                        )
+                    except ResourceOperationOverrun:
+                        raise OpenNewsExpectedError("opennews_rest_timeout") from None
                     await self.db.run_business(
                         "opennews_recovery_publish",
                         self._publish_opennews_sync,
@@ -301,9 +290,7 @@ class NewsAcquisition:
 
     def _reconcile_sync(self) -> tuple[int | None, str | None, int]:
         with self.db.worker_session("news_source_reconcile", 3.0) as repos, repos.transaction():
-            repos.news.sync_sources(self.sources, now_ms=_now_ms())
-            if self.opennews_source is None:
-                return None, None, 0
+            repos.news.sync_source(self.opennews_source, now_ms=_now_ms())
             return cast(
                 tuple[int | None, str | None, int],
                 repos.news.opennews_recovery_state(
@@ -319,15 +306,12 @@ class NewsAcquisition:
         gap_unclosed: bool,
         expected_gap_version: int | None = None,
     ) -> bool:
-        source = self.opennews_source
-        if source is None:
-            return False
         if not gap_unclosed and expected_gap_version is None:
             expected_gap_version = self._opennews_gap_version
         state = await self.db.run_business(
             "opennews_status",
             self._update_opennews_status_sync,
-            source.source_id,
+            self.opennews_source.source_id,
             connected,
             _now_ms(),
             error_code,
@@ -376,14 +360,11 @@ class NewsAcquisition:
         observed_at_ms: int,
         recovery_started_at_ms: int | None,
     ) -> dict[str, int]:
-        source = self.opennews_source
-        if source is None:
-            raise RuntimeError("opennews_source_missing")
         with self.db.worker_session("opennews_publish", 3.0) as repos, repos.transaction():
             return cast(
                 dict[str, int],
                 repos.news.record_opennews_events(
-                    source=source,
+                    source=self.opennews_source,
                     events=events,
                     observed_at_ms=observed_at_ms,
                     recovery_started_at_ms=recovery_started_at_ms,
@@ -391,12 +372,9 @@ class NewsAcquisition:
             )
 
     def _record_opennews_recovery_attempt_sync(self, started_at_ms: int) -> None:
-        source = self.opennews_source
-        if source is None:
-            raise RuntimeError("opennews_source_missing")
         with self.db.worker_session("opennews_recovery_start", 3.0) as repos, repos.transaction():
             repos.news.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
+                source_id=self.opennews_source.source_id,
                 started_at_ms=started_at_ms,
             )
 
@@ -406,18 +384,14 @@ class NewsAcquisition:
         finished_at_ms: int,
         error: OpenNewsExpectedError,
     ) -> None:
-        source = self.opennews_source
-        if source is None:
-            raise RuntimeError("opennews_source_missing")
         with self.db.worker_session("opennews_recovery_failure", 3.0) as repos, repos.transaction():
             repos.news.record_opennews_recovery_failure(
-                source_id=source.source_id,
+                source_id=self.opennews_source.source_id,
                 started_at_ms=started_at_ms,
                 finished_at_ms=finished_at_ms,
                 error_code=error.code,
                 status_code=error.status_code,
             )
-
 
 
 class NewsBriefCandidate:
@@ -710,9 +684,7 @@ def _opennews_recovery_covers_boundary(
     report_ids = [
         event.provider_record_id
         for event in events
-        if event.observation_kind == "report"
-        and event.entry is not None
-        and event.entry.published_at_ms is not None
+        if event.observation_kind == "report" and event.entry is not None and event.entry.published_at_ms is not None
     ]
     if not report_ids:
         return False

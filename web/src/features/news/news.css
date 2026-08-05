@@ -116,98 +116,6 @@
     color: var(--foreground);
   }
 
-  .news-source-heading {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .news-source-heading h1 {
-    margin: 0.35rem 0;
-  }
-
-  .news-source-heading p {
-    margin: 0;
-    color: var(--muted-foreground);
-  }
-
-  .news-source-heading > b {
-    font: 0.8rem var(--font-mono);
-  }
-
-  .news-source-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr));
-    gap: 0.65rem;
-  }
-
-  .news-source-card {
-    display: grid;
-    gap: 0.7rem;
-    padding: 0.85rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--card) 88%, transparent);
-  }
-
-  .news-source-card > header {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .news-source-card h2 {
-    margin: 0;
-    font-size: 0.92rem;
-  }
-
-  .news-source-card header span,
-  .news-source-card header > b,
-  .news-source-card p {
-    color: var(--muted-foreground);
-    font: 0.68rem var(--font-mono);
-  }
-
-  .news-source-card header > b[data-status="success"],
-  .news-source-card header > b[data-status="not_modified"] {
-    color: var(--success);
-  }
-
-  .news-source-card header > b[data-status="failed"],
-  .news-source-error {
-    color: var(--destructive);
-  }
-
-  .news-source-card dl {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
-    gap: 0.4rem;
-    margin: 0;
-  }
-
-  .news-source-card dl div {
-    min-width: 0;
-  }
-
-  .news-source-card dt {
-    color: var(--muted-foreground);
-    font-size: 0.65rem;
-  }
-
-  .news-source-card dd {
-    overflow: hidden;
-    margin: 0.2rem 0 0;
-    font: 0.72rem var(--font-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .news-source-card p {
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-
   .news-story-list {
     display: grid;
     gap: 0.5rem;
@@ -318,6 +226,33 @@
     gap: 0.55rem;
     color: var(--muted-foreground);
     font: 0.7rem var(--font-mono);
+  }
+
+  .news-push-state {
+    width: fit-content;
+    padding: 0.08rem 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font: 650 0.66rem/1.35 var(--font-mono);
+  }
+
+  .news-push-state[data-state="pending"] {
+    border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+    color: var(--warning);
+  }
+
+  .news-push-state[data-state="sent"] {
+    border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+    color: var(--success);
+  }
+
+  .news-push-state[data-state="suppressed"] {
+    color: var(--muted-foreground);
+  }
+
+  .news-push-state[data-state="failed"] {
+    border-color: color-mix(in srgb, var(--destructive) 50%, var(--border));
+    color: var(--destructive);
   }
 
   .news-story-coin-badges {

@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
 
 from tracefold.news import (
     OPENNEWS_REST_LIMIT,
@@ -20,6 +21,14 @@ OPENNEWS_REST_URL = "https://ai.6551.io/open/news_search"
 OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
 OPENNEWS_MAX_FRAME_BYTES = 1 * 1024 * 1024
 OPENNEWS_WS_IDLE_SECONDS = 45.0
+_EXPECTED_WEBSOCKET_FAILURES = (
+    OSError,
+    TimeoutError,
+    ConnectionClosed,
+    InvalidHandshake,
+    PayloadTooBig,
+    ProtocolError,
+)
 
 
 class OpenNewsRestClient:
@@ -35,22 +44,26 @@ class OpenNewsRestClient:
         )
 
     def fetch_page(self, page: int) -> tuple[OpenNewsEvent, ...]:
+        page_number = int(page)
         try:
             response = self._client.post(
                 OPENNEWS_REST_URL,
                 json={
                     "engineTypes": {"news": []},
                     "limit": OPENNEWS_REST_LIMIT,
-                    "page": int(page),
+                    "page": page_number,
                 },
             )
             response.raise_for_status()
-            payload = response.json()
         except httpx.HTTPStatusError as exc:
             status = int(exc.response.status_code)
             code = "opennews_auth_failed" if status in {401, 403} else "opennews_http_failed"
             raise OpenNewsExpectedError(code, status_code=status) from None
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPError:
+            raise OpenNewsExpectedError("opennews_rest_failed") from None
+        try:
+            payload = response.json()
+        except (RecursionError, ValueError):
             raise OpenNewsExpectedError("opennews_rest_failed") from None
         return parse_opennews_rest_response(payload)
 
@@ -95,7 +108,7 @@ class OpenNewsWebSocketClient:
         except asyncio.CancelledError:
             await self.close()
             raise
-        except Exception:
+        except _EXPECTED_WEBSOCKET_FAILURES:
             await self.close()
             raise OpenNewsExpectedError("opennews_connect_failed") from None
 
@@ -111,14 +124,14 @@ class OpenNewsWebSocketClient:
             return _json_object(raw)
         except OpenNewsExpectedError:
             raise
-        except Exception:
+        except _EXPECTED_WEBSOCKET_FAILURES:
             raise OpenNewsExpectedError("opennews_receive_failed") from None
 
     async def close(self) -> None:
         websocket = self._websocket
         self._websocket = None
         if websocket is not None:
-            with suppress(Exception):
+            with suppress(*_EXPECTED_WEBSOCKET_FAILURES):
                 await websocket.close()
 
 
@@ -130,16 +143,16 @@ async def _bounded_recv(websocket: Any) -> Any:
             try:
                 pong = await websocket.ping()
                 await asyncio.wait_for(pong, timeout=5.0)
-            except Exception:
+            except _EXPECTED_WEBSOCKET_FAILURES:
                 raise OpenNewsExpectedError("opennews_idle_timeout") from None
 
 
 def _json_object(raw: object) -> Mapping[str, Any]:
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         payload = json.loads(str(raw))
-    except (TypeError, ValueError):
+    except (RecursionError, TypeError, ValueError):
         raise OpenNewsExpectedError("opennews_frame_invalid") from None
     if not isinstance(payload, Mapping):
         raise OpenNewsExpectedError("opennews_frame_invalid")

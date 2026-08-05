@@ -39,10 +39,12 @@ inputs. Any equivalent retired key fails
 validation; there is no alias, merge, or generated-source fallback.
 
 `llm` contains operator-owned provider credentials: `api_key` and `base_url`
-for the current OpenAI-compatible provider plus optional
-`openrouter_api_key` and `groq_api_key` for the News fallback chain. They are
-consumed only by enabled AI workers. Model execution policy, timeouts, token
-budgets, cadence, leases, retries, and reservations are code-owned.
+for the current OpenAI-compatible provider, `news_brief_model` for its model,
+plus optional `openrouter_api_key` and `groq_api_key` for the News fallback
+chain. The primary provider fields are consumed by enabled product-model
+workers and the optional News Push title-presentation adapter. Model execution
+policy, timeouts, token budgets, cadence, leases, retries, and reservations are
+code-owned.
 Environment variables are not a credential contract.
 
 `news.opennews_token` is the operator-owned secret for the production News
@@ -50,28 +52,38 @@ source. It is reported only as the redacted boolean
 `news.opennews_token_configured`. When absent, News reports
 `opennews_token_missing`; no substitute credential path is used.
 
-`news.push` contains `enabled`, `feishu_webhook_url`, optional
-`feishu_signing_secret`, and an isolated `translation` block with `enabled`,
-`base_url`, `api_key`, and `engine`. Enabling push requires the webhook, which
-must be the supported Feishu HTTPS custom-bot v2 boundary. If a non-empty
-signing secret is present, delivery includes the computed `timestamp` and
-`sign`; if absent, delivery is unsigned and includes neither field.
-Enabling translation requires all three endpoint fields; it never falls back to
-global `llm` credentials. CLI diagnostics expose only configured booleans for
-Feishu and translation. Each frozen internal delivery envelope
+`news.push` contains only `enabled`, `feishu_webhook_url`, and optional
+`feishu_signing_secret`. Enabling push requires the webhook, which must be the
+supported Feishu HTTPS custom-bot v2 boundary. If a non-empty signing secret is
+present, delivery includes the computed `timestamp` and `sign`; if absent,
+delivery is unsigned and includes neither field. Optional title translation
+reuses the existing global `llm.api_key`, effective `llm.base_url`, and
+`llm.news_brief_model`; there is no `news.push.translation` block or second
+copy of the provider credential. CLI diagnostics expose only configured
+booleans for Feishu and translation: `translation_enabled` derives from Push
+enablement plus the global LLM credential, while `translation_configured`
+reports that global credential availability. Each frozen internal delivery envelope
 contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
-Threshold, cadence, deadlines, retries, translation target, 1.5-second total
-translation budget, 500-grapheme input ceiling, validation, and card policy are
-code-owned. Push does not consume `llm` configuration or enter the serial model
-arbiter. For one fresh non-Chinese title it makes at most one request to the
-configured translation endpoint and never switches providers or retries. The
+Threshold, cadence, deadlines, retries, translation target, 7.5-second request
+timeout, 8-second total translation budget, 500-grapheme input ceiling,
+validation, and card policy are code-owned. Translation remains an outbound
+presentation adapter and does not enter the serial model arbiter. For one fresh
+non-Chinese title it sends only that title in at most one request to the global
+OpenAI-compatible provider and never switches providers or retries. After
+resource admission, a durable `attempted` fence is committed immediately before
+submission. If the process stops before the outcome is frozen, recovery sends
+the original-title fallback (or suppresses it when stale) without another model
+request; this uncertain dispatch is conservatively counted as an interrupted
+attempt. The
 Feishu JSON 2.0 card uses a valid Chinese translation as its plain-text header
 and shows the original visibly in the body. Chinese input bypasses translation;
 failure or overlong input uses the original header and a visible fallback note. Its
 live-alert admission requires the selected Item to be newer than the
 first-enable baseline and no more than 15 minutes old; stale recovery data is
-recorded as suppressed and is never sent. Its
+recorded as suppressed and is never sent. Every frozen retry rechecks that age
+immediately before network submission and becomes suppressed once the deadline
+passes. Its
 compact body shows only the selected highest-score Item's OpenNews coin symbols
 and provider score. Coin symbols preserve provider order after
 case-insensitive deduplication; missing symbols render as `未提供`. A canonical
@@ -169,7 +181,10 @@ The News public surface is exactly five read-only routes:
   backend from the member with the maximum numeric OpenNews provider score and
   deterministic publication-time/Item-ID ties. It binds that Item ID, URL, and
   bounded provider metadata together; the browser does not cluster, score,
-  select the maximum, or reorder.
+  select the maximum, or reorder. `push_delivery_state` is null for a
+  non-eligible Story and otherwise one of `pending`, `sent`, `suppressed`, or
+  `failed`, derived at read time from the current selected Item and the existing
+  durable delivery ledger.
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,
@@ -181,11 +196,17 @@ The News public surface is exactly five read-only routes:
   state, selected Story evidence, bounded immutable publication history, and
   latest run when present. Insufficient material makes no model call. A failed
   update preserves the last-known-good publication as `stale_fallback`.
-- `GET /api/news/sources` returns the one code-owned OpenNews source, its
-  memberships, live connection, last recovery, current error, and unclosed-gap
-  status.
+- `GET /api/news/sources` returns the one enabled code-owned runtime source,
+  OpenNews, and its
+  live connection, last recovery, current error, and unclosed-gap status.
 - `GET /api/news/status` derives warming/ready/degraded News health from
-  PostgreSQL source, Story-invariant, Brief, and outbound push state.
+  PostgreSQL source, Story-invariant, Brief, and outbound push state. It also
+  exposes the operator-facing `live`, `recovering`, or `stalled` state and the
+  last successful Story publication clock. Current 12-hour Articles that have
+  not yet entered any Story membership are measured directly; an oldest such
+  first-materialization wait over 120 seconds is stalled rather than falsely
+  reported ready. This counter does not claim to represent every in-place
+  mutation of an already materialized Article.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
@@ -200,7 +221,9 @@ Provider annotations merge metadata into the same current row; translations
 and non-news messages are discarded. Provider metadata is descriptive and
 does not affect Story identity, classification, importance, Feed ordering, or
 Brief. A numeric provider score may qualify the already projected Story for
-the separate outbound push state machine. Story identity is the full SHA-256
+the separate outbound push state machine. The timestamp at which the current
+numeric score value changed is persisted separately from Story-owned
+`updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is the full SHA-256
 of the earliest normalized title in
 the complete current 12-hour cluster using WorldMonitor-compatible identity.
 Valid Article facts can remain admitted for up to 96 hours independently of
@@ -220,7 +243,14 @@ after a complete valid publication transaction succeeds.
 `/api/news/status` exposes four independent News health layers: `ingest`,
 `story`, `brief`, and `push`. Push reports disabled/configured, baseline,
 pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
-error evidence without exposing secrets or card content. Deterministic Story
+error evidence without exposing secrets or card content. Its nested
+`translation_24h` reports durably fenced v2 attempts, including conservatively
+counted ambiguous interrupted dispatches, successes, success ratio, P95
+latency, failure-code counts, and SLO result; pre-fence skips are not attempts.
+`delivery_24h` reports clean v2 sent/terminal completion count, P95 from the
+persisted numeric-score fact clock, completed samples whose latency exceeded
+120 seconds, and the 90-second P95 SLO result.
+Deterministic Story
 cards remain readable while Brief or push is unavailable.
 
 Production News uses one code-owned OpenNews WSS stream plus bounded,

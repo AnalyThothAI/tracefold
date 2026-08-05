@@ -10,7 +10,7 @@ from tracefold.macro.acquisition import (
     MacroAcquisitionService,
 )
 from tracefold.macro.domain import FetchBatch, MacroSourceError
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 _FETCH_TIMEOUT_SECONDS = 30.0
 _MAX_REQUESTS = 4
@@ -75,13 +75,16 @@ class MacroAcquisition:
         except ResourceAdmissionTimeout:
             await self._release(claim)
             return None
-        except MacroSourceError as exc:
+        except (MacroSourceError, ResourceOperationOverrun) as exc:
+            failure = (
+                MacroSourceError("macro_fetch_total_timeout") if isinstance(exc, ResourceOperationOverrun) else exc
+            )
             try:
                 published = await self.db.run_business(
                     "macro_publish_failure",
                     self.service.publish_failure,
                     claim,
-                    exc,
+                    failure,
                     operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
                 )
             except ResourceAdmissionTimeout:

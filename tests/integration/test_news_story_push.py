@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -77,7 +77,7 @@ def _annotation(record_id: str, *, score: float):
 def _seed_source(conn: Any) -> NewsRepository:
     repository = NewsRepository(conn)
     with conn.transaction():
-        repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+        repository.sync_source(opennews_source(), now_ms=BASE_MS)
     return repository
 
 
@@ -157,6 +157,125 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         detail = NewsInterface(repository).get_story(story_id=scored_story["story_id"])
         assert detail is not None
         assert detail["provider_evidence"] == scored_story["provider_evidence"]
+    finally:
+        conn.close()
+
+
+def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "score-clock",
+                        title="Bitcoin market update",
+                        score=60,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 10,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 10)
+
+        initial = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        assert initial["threshold_observed_at_ms"] == BASE_MS + 10
+
+        with conn.transaction():
+            repository.rebuild_stories(now_ms=BASE_MS + 7_200_000)
+        after_story_write = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        assert after_story_write["threshold_observed_at_ms"] == BASE_MS + 10
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_annotation("score-clock", score=82),),
+                observed_at_ms=BASE_MS + 7_200_010,
+            )
+        qualified = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        assert qualified["threshold_observed_at_ms"] == BASE_MS + 7_200_010
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_annotation("score-clock", score=82),),
+                observed_at_ms=BASE_MS + 7_200_020,
+            )
+        duplicate = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        assert duplicate["threshold_observed_at_ms"] == BASE_MS + 7_200_010
+    finally:
+        conn.close()
+
+
+def test_selected_item_score_change_keeps_the_story_ledger_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=_Delivery())
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        shared_title = "Central bank holds rates steady after policy meeting"
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "selected-first",
+                        title=shared_title,
+                        score=80,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                    _event(
+                        "selected-later",
+                        title=shared_title,
+                        score=79,
+                        published_at_ms=BASE_MS + 2,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 3,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 3)
+
+        initial = next(iter(repository.story_provider_evidence().values()))
+        story_id = initial["story_id"]
+        assert initial["provider_evidence"]["provider_score"] == 80
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 4)) == {
+            "inserted": 1,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        clock["now_ms"] = BASE_MS + 4
+        assert asyncio.run(runtime.turn()) is True
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_annotation("selected-later", score=90),),
+                observed_at_ms=BASE_MS + 5,
+            )
+
+        selected_later = repository.story_provider_evidence()[story_id]
+        assert selected_later["provider_evidence"]["provider_score"] == 90
+        assert selected_later["push_delivery_status"] == "sent"
+        detail = NewsInterface(repository).get_story(story_id=story_id)
+        assert detail is not None
+        assert detail["push_delivery_state"] == "sent"
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 6)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
     finally:
         conn.close()
 
@@ -403,6 +522,75 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
         conn.close()
 
 
+def test_frozen_retry_that_ages_out_is_suppressed_before_network_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery(fail_first=True, translation_status="translated")
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "retry-ages-out",
+                        title="Issuer files for a new exchange product",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
+
+        assert asyncio.run(runtime.turn()) is True
+        retry = conn.execute(
+            """
+            SELECT status, delivery_attempts, delivery_payload,
+                   payload_fingerprint, last_error
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert retry["status"] == "retry_wait"
+        assert retry["delivery_attempts"] == 1
+        assert retry["last_error"] == "feishu_503"
+
+        clock["now_ms"] = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
+        assert asyncio.run(runtime.turn()) is True
+
+        suppressed = conn.execute(
+            """
+            SELECT status, translation_status, delivery_attempts,
+                   delivery_payload, payload_fingerprint, next_attempt_at_ms,
+                   lease_owner, lease_token, lease_expires_at_ms, last_error
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert suppressed == {
+            "status": "suppressed",
+            "translation_status": "translated",
+            "delivery_attempts": 1,
+            "delivery_payload": retry["delivery_payload"],
+            "payload_fingerprint": retry["payload_fingerprint"],
+            "next_attempt_at_ms": None,
+            "lease_owner": None,
+            "lease_token": None,
+            "lease_expires_at_ms": None,
+            "last_error": None,
+        }
+        assert delivery.prepare_calls == 1
+        assert delivery.payloads == [retry["delivery_payload"]]
+    finally:
+        conn.close()
+
+
 def test_candidate_that_ages_out_during_prepare_is_suppressed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -502,6 +690,220 @@ def test_cancelled_prepare_releases_unfrozen_claim(
             "status": "pending_translation",
             "translation_status": "pending",
             "delivery_payload": None,
+            "lease_owner": None,
+            "lease_token": None,
+            "lease_expires_at_ms": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_cancelled_translation_dispatch_is_fenced_and_restart_uses_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+
+    def cancel_after_fence() -> None:
+        clock["now_ms"] += 50
+
+    interrupted = _Delivery(
+        simulate_translation_dispatch=True,
+        cancel_after_translation_dispatch=True,
+        on_translation_dispatch=cancel_after_fence,
+    )
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=interrupted, runtime_id="before-restart")
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "translation-fence-restart",
+                        title="Bitcoin ETF sees fresh inflows",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(runtime.turn())
+
+        fenced = conn.execute(
+            """
+            SELECT status, translation_status, delivery_payload, updated_at_ms,
+                   lease_owner, lease_token, lease_expires_at_ms
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        attempted_at_ms = BASE_MS + 100
+        assert fenced == {
+            "status": "pending_translation",
+            "translation_status": "attempted",
+            "delivery_payload": None,
+            "updated_at_ms": attempted_at_ms,
+            "lease_owner": None,
+            "lease_token": None,
+            "lease_expires_at_ms": None,
+        }
+        assert interrupted.translation_dispatches == 1
+
+        restarted = _Delivery()
+        recovered = _runtime(conn, delivery=restarted, runtime_id="after-restart")
+        assert asyncio.run(recovered.turn()) is True
+
+        sent = conn.execute(
+            """
+            SELECT status, translation_status, delivery_attempts,
+                   delivery_payload, receipt
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert sent["status"] == "sent"
+        assert sent["translation_status"] == "unavailable"
+        assert sent["delivery_attempts"] == 1
+        assert sent["receipt"]["provider"] == "feishu"
+        assert sent["delivery_payload"]["presentation"] == {
+            "prompt_version": "title_zh_v2",
+            "fallback_code": "news_push_translation_interrupted_after_dispatch",
+            "translation_attempted_at_ms": attempted_at_ms,
+            "translation_duration_ms": None,
+        }
+        assert restarted.interrupted_translation_attempts == [attempted_at_ms]
+        assert restarted.translation_dispatches == 0
+        health = asyncio.run(recovered.health_snapshot(now_ms=clock["now_ms"] + 1))
+        assert health["translation_24h"] == {
+            "attempted": 1,
+            "succeeded": 0,
+            "success_ratio": 0.0,
+            "latency_p95_ms": None,
+            "failure_counts": {"news_push_translation_interrupted_after_dispatch": 1},
+            "slo_met": False,
+        }
+    finally:
+        conn.close()
+
+
+def test_completed_translation_that_ages_out_keeps_frozen_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 100}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+
+    def cross_freshness_boundary() -> None:
+        clock["now_ms"] = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
+
+    delivery = _Delivery(
+        translation_status="translated",
+        simulate_translation_dispatch=True,
+        on_prepare=cross_freshness_boundary,
+    )
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "translated-then-stale",
+                        title="Bitcoin ETF sees fresh inflows",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            repository.rebuild_stories(now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS + 100))
+
+        assert asyncio.run(runtime.turn()) is True
+
+        row = conn.execute(
+            """
+            SELECT status, translation_status, delivery_attempts,
+                   delivery_payload, payload_fingerprint
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row["status"] == "suppressed"
+        assert row["translation_status"] == "translated"
+        assert row["delivery_attempts"] == 0
+        assert row["delivery_payload"]["presentation"] == {
+            "prompt_version": "title_zh_v2",
+            "fallback_code": None,
+            "translation_attempted_at_ms": BASE_MS + 100,
+            "translation_duration_ms": 1,
+        }
+        assert row["payload_fingerprint"] is not None
+        assert delivery.translation_dispatches == 1
+        assert delivery.payloads == []
+    finally:
+        conn.close()
+
+
+def test_restart_reconcile_releases_an_old_fenced_translation_lease() -> None:
+    conn = connect_postgres_test(read_only=False)
+    attempted_at_ms = BASE_MS + 100
+    try:
+        reset_postgres_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO news_push_deliveries (
+              story_id, selected_item_id, provider_score,
+              threshold_observed_at_ms, source_payload, delivery_payload,
+              payload_fingerprint, translation_status, status,
+              delivery_attempts, next_attempt_at_ms, lease_owner,
+              lease_token, lease_expires_at_ms, receipt, last_error,
+              sent_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (
+              %s, 'old-runtime-item', 88, %s, '{}'::jsonb, NULL,
+              NULL, 'attempted', 'pending_translation',
+              0, %s, 'news_story_push:old-runtime',
+              'old-lease-token', %s, NULL, NULL,
+              NULL, %s, %s
+            )
+            """,
+            (
+                "a" * 64,
+                BASE_MS,
+                attempted_at_ms,
+                attempted_at_ms + 60_000,
+                BASE_MS,
+                attempted_at_ms,
+            ),
+        )
+        conn.commit()
+        runtime = _runtime(conn, delivery=_Delivery(), runtime_id="new-runtime")
+
+        assert asyncio.run(runtime.reconcile(now_ms=attempted_at_ms + 1)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+
+        row = conn.execute(
+            """
+            SELECT translation_status, next_attempt_at_ms, updated_at_ms,
+                   lease_owner, lease_token, lease_expires_at_ms
+              FROM news_push_deliveries
+            """
+        ).fetchone()
+        assert row == {
+            "translation_status": "attempted",
+            "next_attempt_at_ms": attempted_at_ms + 1,
+            "updated_at_ms": attempted_at_ms,
             "lease_owner": None,
             "lease_token": None,
             "lease_expires_at_ms": None,
@@ -1043,8 +1445,11 @@ class _InlineCapability:
         **kwargs: Any,
     ) -> Any:
         kwargs.pop("timeout_seconds")
+        before_submit = kwargs.pop("before_submit", None)
         on_submitted = kwargs.pop("on_submitted", None)
         assert not self.conn.in_transaction
+        if before_submit is not None:
+            await before_submit()
         if on_submitted is not None:
             on_submitted()
         return function(*args, **kwargs)
@@ -1060,6 +1465,9 @@ class _Delivery:
         on_prepare: Callable[[], None] | None = None,
         translation_status: str = "not_needed",
         prepare_error: BaseException | None = None,
+        simulate_translation_dispatch: bool = False,
+        cancel_after_translation_dispatch: bool = False,
+        on_translation_dispatch: Callable[[], None] | None = None,
     ) -> None:
         self.fail_first = fail_first
         self.error = error
@@ -1067,7 +1475,12 @@ class _Delivery:
         self.on_prepare = on_prepare
         self.translation_status = translation_status
         self.prepare_error = prepare_error
+        self.simulate_translation_dispatch = simulate_translation_dispatch
+        self.cancel_after_translation_dispatch = cancel_after_translation_dispatch
+        self.on_translation_dispatch = on_translation_dispatch
         self.prepare_calls = 0
+        self.translation_dispatches = 0
+        self.interrupted_translation_attempts: list[int] = []
         self.payloads: list[dict[str, Any]] = []
         self.idempotency_keys: list[str] = []
 
@@ -1076,33 +1489,60 @@ class _Delivery:
         source_payload: Mapping[str, Any],
         *,
         deadline_ms: int,
+        before_translation_submit: Callable[[], Awaitable[None]] | None = None,
+        interrupted_translation_attempted_at_ms: int | None = None,
     ) -> PreparedNewsPush:
         assert deadline_ms > int(source_payload["provider_evidence"]["published_at_ms"])
         self.prepare_calls += 1
         if self.prepare_error is not None:
             raise self.prepare_error
+        attempted_at_ms: int | None = None
+        fallback_code: str | None = None
+        translation_status = self.translation_status
+        if interrupted_translation_attempted_at_ms is not None:
+            self.interrupted_translation_attempts.append(interrupted_translation_attempted_at_ms)
+            attempted_at_ms = interrupted_translation_attempted_at_ms
+            fallback_code = "news_push_translation_interrupted_after_dispatch"
+            translation_status = "unavailable"
+        elif self.simulate_translation_dispatch:
+            assert before_translation_submit is not None
+            attempted_at_ms = push_module._now_ms()
+            await before_translation_submit()
+            self.translation_dispatches += 1
+            if self.on_translation_dispatch is not None:
+                self.on_translation_dispatch()
+            if self.cancel_after_translation_dispatch:
+                raise asyncio.CancelledError
         if self.on_prepare is not None:
             self.on_prepare()
         evidence = dict(source_payload["provider_evidence"])
         metadata = dict(evidence["provider_metadata"])
-        return PreparedNewsPush(
-            payload={
-                "channel": "feishu",
-                "card": {
-                    "original_title": evidence["title"],
-                    "url": evidence["url"],
-                    "provider_evidence": {
-                        "item_id": evidence["item_id"],
-                        "score": evidence["provider_score"],
-                        "source": metadata.get("source"),
-                        "signal": metadata.get("signal"),
-                        "grade": metadata.get("grade"),
-                        "coins": list(metadata.get("coins") or []),
-                    },
-                    "tracefold_story": dict(source_payload["tracefold_story"]),
+        payload: dict[str, Any] = {
+            "channel": "feishu",
+            "card": {
+                "original_title": evidence["title"],
+                "url": evidence["url"],
+                "provider_evidence": {
+                    "item_id": evidence["item_id"],
+                    "score": evidence["provider_score"],
+                    "source": metadata.get("source"),
+                    "signal": metadata.get("signal"),
+                    "grade": metadata.get("grade"),
+                    "coins": list(metadata.get("coins") or []),
                 },
+                "tracefold_story": dict(source_payload["tracefold_story"]),
             },
-            translation_status=self.translation_status,
+        }
+        if attempted_at_ms is not None:
+            payload["presentation"] = {
+                "prompt_version": "title_zh_v2",
+                "fallback_code": fallback_code,
+                "translation_attempted_at_ms": attempted_at_ms,
+                "translation_duration_ms": (None if fallback_code is not None else 1),
+            }
+        return PreparedNewsPush(
+            payload=payload,
+            translation_status=translation_status,
         )
 
     def deliver(

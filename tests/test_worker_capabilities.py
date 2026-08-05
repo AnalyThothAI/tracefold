@@ -128,6 +128,74 @@ def test_finite_permits_follow_underlying_futures_after_callers_time_out() -> No
     assert "tracefold_worker_resource_service_seconds_count" in metrics
 
 
+def test_finite_awaits_durable_fence_before_submitting_thread_work() -> None:
+    async def scenario() -> None:
+        capability = FiniteOperations()
+        events: list[str] = []
+
+        async def persist_fence() -> None:
+            events.append("fenced")
+
+        def operation() -> str:
+            assert events == ["fenced"]
+            events.append("submitted")
+            return "done"
+
+        try:
+            assert (
+                await capability.run(
+                    "fenced_operation",
+                    operation,
+                    timeout_seconds=0.5,
+                    before_submit=persist_fence,
+                )
+                == "done"
+            )
+            assert events == ["fenced", "submitted"]
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
+def test_finite_does_not_submit_when_durable_fence_fails() -> None:
+    class FenceFailure(RuntimeError):
+        pass
+
+    async def scenario() -> None:
+        capability = FiniteOperations()
+        submitted = False
+
+        async def reject_fence() -> None:
+            raise FenceFailure("fence_failed")
+
+        def operation() -> None:
+            nonlocal submitted
+            submitted = True
+
+        try:
+            with pytest.raises(FenceFailure, match="fence_failed"):
+                await capability.run(
+                    "rejected_fenced_operation",
+                    operation,
+                    timeout_seconds=0.5,
+                    before_submit=reject_fence,
+                )
+            assert submitted is False
+            assert (
+                await capability.run(
+                    "after_rejected_fence",
+                    lambda: "available",
+                    timeout_seconds=0.5,
+                )
+                == "available"
+            )
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
 def test_model_adapter_keeps_its_only_slot_until_underlying_future_finishes() -> None:
     async def scenario() -> None:
         capability = ModelAdapter()

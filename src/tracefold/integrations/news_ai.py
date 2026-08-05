@@ -133,7 +133,10 @@ class ProviderChainNewsBriefPublisher:
         )
         response.raise_for_status()
         payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (IndexError, KeyError, TypeError):
+            raise ValueError("news_brief_model_response_invalid") from None
         if not isinstance(content, str) or not content.strip():
             raise ValueError("news_brief_empty_model_response")
         return content

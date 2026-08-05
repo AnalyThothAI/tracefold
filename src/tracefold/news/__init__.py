@@ -22,7 +22,6 @@ from .models import (
     CLASSIFIER_VERSION,
     IMPORTANCE_VERSION,
     NEWS_LOCALE,
-    SOURCE_INVENTORY_VERSION,
     STORY_IDENTITY_VERSION,
     NewsBriefDraft,
     NewsBriefExpectedError,
@@ -30,11 +29,7 @@ from .models import (
     NewsBriefStory,
     NewsClassification,
     NewsFeedEntry,
-    NewsFeedExpectedError,
-    NewsFeedFetch,
-    NewsFeedReader,
     NewsSourceDefinition,
-    source_definition,
 )
 from .opennews import (
     OPENNEWS_REST_LIMIT,
@@ -63,7 +58,7 @@ from .push import (
 from .ranking import importance_score, is_delayed_brief_excluded, select_top_stories
 from .repository import NewsRepository
 from .runtime import NewsAcquisition, NewsBriefCandidate
-from .sources import WORLDMONITOR_COMMIT, default_sources, opennews_source
+from .sources import opennews_source
 
 __all__ = [
     "BRIEF_PROMPT_VERSION",
@@ -77,10 +72,8 @@ __all__ = [
     "PUSH_PAYLOAD_SCHEMA_VERSION",
     "PUSH_PROVIDER_SCORE_THRESHOLD",
     "SEVERITY_VALUES",
-    "SOURCE_INVENTORY_VERSION",
     "STORY_IDENTITY_VERSION",
     "STORY_SIMILARITY_THRESHOLD",
-    "WORLDMONITOR_COMMIT",
     "NewsAcquisition",
     "NewsBriefCandidate",
     "NewsBriefDraft",
@@ -89,9 +82,6 @@ __all__ = [
     "NewsBriefStory",
     "NewsClassification",
     "NewsFeedEntry",
-    "NewsFeedExpectedError",
-    "NewsFeedFetch",
-    "NewsFeedReader",
     "NewsInterface",
     "NewsProjectionService",
     "NewsProjectionSnapshot",
@@ -109,7 +99,6 @@ __all__ = [
     "classify_by_keyword",
     "cluster_texts",
     "compute_news_story_projection",
-    "default_sources",
     "has_historical_marker",
     "importance_score",
     "is_delayed_brief_excluded",
@@ -120,7 +109,6 @@ __all__ = [
     "parse_opennews_rest_response",
     "rebuild_all_news_for_maintenance",
     "select_top_stories",
-    "source_definition",
     "story_similarity",
     "story_vector",
 ]

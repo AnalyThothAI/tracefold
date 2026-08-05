@@ -210,7 +210,10 @@ def test_story_load_rejects_the_cap_plus_one_sentinel_before_returning() -> None
 
         def execute(self, _query: str, _params: object = None) -> SimpleNamespace:
             self.calls += 1
-            assert self.calls == 1
+            if self.calls == 1:
+                assert "news_projection_summary" in _query
+                return SimpleNamespace(fetchone=lambda: None)
+            assert self.calls == 2
             return SimpleNamespace(
                 fetchone=lambda: {
                     "item_count": NEWS_STORY_INPUT_ROW_CAP + 1,
@@ -223,7 +226,7 @@ def test_story_load_rejects_the_cap_plus_one_sentinel_before_returning() -> None
 
     with pytest.raises(NewsProjectionInputExceeded, match="news_story_input_row_cap"):
         load_story_projection(repository, now_ms=1_000)
-    assert conn.calls == 1
+    assert conn.calls == 2
 
 
 def test_story_load_rejects_wide_input_before_fetching_rows() -> None:
@@ -233,7 +236,10 @@ def test_story_load_rejects_wide_input_before_fetching_rows() -> None:
 
         def execute(self, _query: str, _params: object = None) -> SimpleNamespace:
             self.calls += 1
-            assert self.calls == 1
+            if self.calls == 1:
+                assert "news_projection_summary" in _query
+                return SimpleNamespace(fetchone=lambda: None)
+            assert self.calls == 2
             return SimpleNamespace(
                 fetchone=lambda: {
                     "item_count": 1,
@@ -246,4 +252,4 @@ def test_story_load_rejects_wide_input_before_fetching_rows() -> None:
 
     with pytest.raises(NewsProjectionInputExceeded, match="news_story_input_byte_cap"):
         load_story_projection(repository, now_ms=1_000)
-    assert conn.calls == 1
+    assert conn.calls == 2

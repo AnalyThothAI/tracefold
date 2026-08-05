@@ -546,7 +546,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.sync_source(source, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -780,7 +780,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.sync_source(source, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -891,6 +891,20 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert warming["layers"]["push"]["initialized"] is False
     assert warming["layers"]["push"]["feishu_signing_secret_configured"] is False
     assert warming["layers"]["push"]["reasons"] == ["push_baseline_uninitialized"]
+    assert warming["layers"]["push"]["translation_24h"] == {
+        "attempted": 0,
+        "succeeded": 0,
+        "success_ratio": None,
+        "latency_p95_ms": None,
+        "failure_counts": {},
+        "slo_met": None,
+    }
+    assert warming["layers"]["push"]["delivery_24h"] == {
+        "completed": 0,
+        "latency_p95_ms": None,
+        "over_120s": 0,
+        "slo_met": None,
+    }
 
     assert unsigned_ready_response.status_code == 200
     unsigned_ready = unsigned_ready_response.json()["data"]
@@ -939,6 +953,330 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert disabled_push["latest_sent_at_ms"] == now_ms + 3
 
 
+def test_api_news_status_detects_and_clears_a_stalled_story_projection(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    first_success_at_ms = now_ms - 300_000
+    pending_observed_at_ms = now_ms - 130_000
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=first_success_at_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="status-materialized",
+                        title="Central bank publishes a policy decision",
+                        description="The decision is now public.",
+                        published_at_ms=first_success_at_ms - 1_000,
+                        reporting_origin="authority",
+                    ),
+                ),
+                observed_at_ms=first_success_at_ms,
+            )
+            repos.news.rebuild_stories(now_ms=first_success_at_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="status-waiting",
+                        title="Government announces a separate infrastructure decision",
+                        description="A second current Article is waiting for Story projection.",
+                        published_at_ms=pending_observed_at_ms - 1_000,
+                        reporting_origin="government",
+                    ),
+                ),
+                observed_at_ms=pending_observed_at_ms,
+            )
+            repos.news.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=now_ms,
+                error_code=None,
+                gap_unclosed=False,
+                gap_boundary_provider_record_id=None,
+                expected_gap_version=0,
+            )
+
+        headers = {"Authorization": "Bearer secret"}
+        stalled_response = client.get("/api/news/status", headers=headers)
+
+        with write_repositories() as repos, repos.transaction():
+            repos.news.rebuild_stories(now_ms=now_ms)
+        live_response = client.get("/api/news/status", headers=headers)
+
+    assert stalled_response.status_code == 200
+    stalled = stalled_response.json()["data"]
+    assert stalled["operating_state"] == "stalled"
+    assert stalled["last_success_at_ms"] == first_success_at_ms
+    assert stalled["layers"]["story"]["status"] == "degraded"
+    assert stalled["layers"]["story"]["unmaterialized_item_count"] == 1
+    assert stalled["layers"]["story"]["oldest_unmaterialized_at_ms"] == pending_observed_at_ms
+    assert "story_projection_stalled" in stalled["layers"]["story"]["reasons"]
+
+    assert live_response.status_code == 200
+    live = live_response.json()["data"]
+    assert live["operating_state"] == "live"
+    assert live["last_success_at_ms"] == now_ms
+    assert live["layers"]["story"]["unmaterialized_item_count"] == 0
+    assert live["layers"]["story"]["oldest_unmaterialized_at_ms"] is None
+
+
+def test_api_news_feed_derives_push_delivery_state_from_selected_provider_evidence(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="push-state-high",
+                        title="Bitcoin exchange announces a new custody product",
+                        description="The exchange published its custody launch details.",
+                        published_at_ms=now_ms - 2_000,
+                        reporting_origin="exchange",
+                        provider_metadata={"score": 91},
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-low",
+                        title="Regional ministry updates an agricultural subsidy",
+                        description="The ministry published its annual subsidy notice.",
+                        published_at_ms=now_ms - 1_000,
+                        reporting_origin="ministry",
+                        provider_metadata={"score": 70},
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+
+        headers = {"Authorization": "Bearer secret"}
+        initial = client.get("/api/news/feed", headers=headers).json()["data"]["stories"]
+        high = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 91)
+        low = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 70)
+
+        assert high["push_delivery_state"] == "pending"
+        assert low["push_delivery_state"] is None
+
+        with write_repositories() as repos, repos.transaction():
+            assert repos.news.insert_push_candidate(
+                story_id=high["story_id"],
+                selected_item_id=high["provider_evidence"]["item_id"],
+                provider_score=91,
+                threshold_observed_at_ms=now_ms,
+                source_payload={"provider_evidence": high["provider_evidence"]},
+                suppressed=False,
+                now_ms=now_ms,
+            )
+
+        pending = client.get(f"/api/news/stories/{high['story_id']}", headers=headers).json()["data"]
+        assert pending["push_delivery_state"] == "pending"
+
+        expected_by_ledger_status = {
+            "retry_wait": "pending",
+            "sent": "sent",
+            "suppressed": "suppressed",
+            "terminal": "failed",
+        }
+        for ledger_status, expected in expected_by_ledger_status.items():
+            with write_repositories() as repos, repos.transaction():
+                repos.conn.execute(
+                    "UPDATE news_push_deliveries SET status = %s WHERE story_id = %s",
+                    (ledger_status, high["story_id"]),
+                )
+            detail = client.get(f"/api/news/stories/{high['story_id']}", headers=headers).json()["data"]
+            assert detail["push_delivery_state"] == expected
+
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(
+                         provider_metadata,
+                         '{score}',
+                         '70'::jsonb
+                       ),
+                       provider_score_updated_at_ms = %s
+                 WHERE item_id = %s
+                """,
+                (now_ms + 1, high["provider_evidence"]["item_id"]),
+            )
+        low_with_historical_ledger = client.get(
+            f"/api/news/stories/{high['story_id']}",
+            headers=headers,
+        ).json()["data"]
+        assert low_with_historical_ledger["push_delivery_state"] is None
+
+
+def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.news.push = type(settings.news.push)(
+        enabled=True,
+        feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook",
+    )
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="status-runtime-push",
+                        title="Bitcoin issuer announces a spot fund decision",
+                        description="The issuer published the decision.",
+                        published_at_ms=now_ms - 1_000,
+                        reporting_origin="issuer",
+                        provider_metadata={"score": 91},
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+            repos.news.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=now_ms,
+                error_code=None,
+                gap_unclosed=False,
+                gap_boundary_provider_record_id=None,
+                expected_gap_version=0,
+            )
+            repos.news.initialize_push_baseline(now_ms=now_ms)
+            repos.conn.execute(
+                """
+                INSERT INTO workers_runtime (
+                  singleton_key, runtime_id, runtime_version, lifecycle_state,
+                  started_at_ms, heartbeat_at_ms, fatal_code
+                ) VALUES (true, %s, 'test-runtime', 'starting', %s, %s, NULL)
+                """,
+                (
+                    "00000000-0000-0000-0000-000000000001",
+                    now_ms - 20_000,
+                    now_ms,
+                ),
+            )
+
+        headers = {"Authorization": "Bearer secret"}
+        starting = client.get("/api/news/status", headers=headers).json()["data"]
+        assert starting["operating_state"] == "recovering"
+        assert "workers_runtime_starting" in starting["layers"]["story"]["reasons"]
+
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute(
+                """
+                UPDATE workers_runtime
+                   SET lifecycle_state = 'running', heartbeat_at_ms = %s
+                 WHERE singleton_key
+                """,
+                (now_ms - 16_000,),
+            )
+        stale = client.get("/api/news/status", headers=headers).json()["data"]
+        assert stale["operating_state"] == "stalled"
+        assert "workers_runtime_heartbeat_stale" in stale["layers"]["story"]["reasons"]
+
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute("DELETE FROM workers_runtime")
+            evidence = next(iter(repos.news.story_provider_evidence().values()))
+            selected = evidence["provider_evidence"]
+            for index, duration_ms in enumerate((1_000, 4_000), start=1):
+                story_id = f"{index:x}" * 64
+                assert repos.news.insert_push_candidate(
+                    story_id=story_id,
+                    selected_item_id=f"translation-sample-{index}",
+                    provider_score=91,
+                    threshold_observed_at_ms=now_ms - 130_000,
+                    source_payload={"provider_evidence": selected},
+                    suppressed=False,
+                    now_ms=now_ms - 130_000,
+                )
+                repos.conn.execute(
+                    """
+                    UPDATE news_push_deliveries
+                       SET status = %s,
+                           translation_status = %s,
+                           next_attempt_at_ms = NULL,
+                           sent_at_ms = %s,
+                           updated_at_ms = %s,
+                           delivery_payload = jsonb_build_object(
+                             'presentation', jsonb_build_object(
+                               'prompt_version', 'title_zh_v2',
+                               'headline_mode', cast(%s AS text),
+                               'fallback_code', cast(%s AS text),
+                               'translation_attempted_at_ms', cast(%s AS bigint),
+                               'translation_duration_ms', cast(%s AS bigint)
+                             )
+                           ),
+                           payload_fingerprint = repeat(%s, 64)
+                     WHERE story_id = %s
+                    """,
+                    (
+                        "sent" if index == 1 else "terminal",
+                        "translated" if index == 1 else "unavailable",
+                        now_ms - 500 if index == 1 else None,
+                        now_ms - 500,
+                        "translated" if index == 1 else "fallback_original",
+                        None if index == 1 else "news_push_translation_rate_limited",
+                        now_ms - 1_000,
+                        duration_ms,
+                        str(index),
+                        story_id,
+                    ),
+                )
+
+        translation = client.get("/api/news/status", headers=headers).json()["data"]
+
+    assert translation["operating_state"] == "recovering"
+    push = translation["layers"]["push"]
+    assert push["translation_24h"] == {
+        "attempted": 2,
+        "succeeded": 1,
+        "success_ratio": 0.5,
+        "latency_p95_ms": 3850,
+        "failure_counts": {"news_push_translation_rate_limited": 1},
+        "slo_met": False,
+    }
+    assert push["delivery_24h"] == {
+        "completed": 2,
+        "latency_p95_ms": 129500,
+        "over_120s": 2,
+        "slo_met": False,
+    }
+    assert "push_translation_success_slo_breached" in push["reasons"]
+    assert "push_translation_latency_slo_breached" in push["reasons"]
+    assert "push_delivery_latency_slo_breached" in push["reasons"]
+
+    with write_repositories() as repos, repos.transaction():
+        repos.conn.execute(
+            """
+            UPDATE news_push_deliveries
+               SET status = 'pending_delivery',
+                   next_attempt_at_ms = %s,
+                   delivery_payload = NULL,
+                   payload_fingerprint = NULL,
+                   translation_status = 'pending'
+            WHERE story_id = %s
+            """,
+            (now_ms + 3_600_000, "1" * 64),
+        )
+    with TestClient(app) as client:
+        overdue = client.get(
+            "/api/news/status",
+            headers={"Authorization": "Bearer secret"},
+        ).json()["data"]
+    assert overdue["operating_state"] == "stalled"
+    assert "push_delivery_stalled" in overdue["layers"]["push"]["reasons"]
+
+
 def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
@@ -946,7 +1284,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.sync_source(source, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(

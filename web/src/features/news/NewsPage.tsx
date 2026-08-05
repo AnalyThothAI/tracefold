@@ -5,14 +5,17 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import "./news.css";
 import "./newsDetail.css";
+import "./newsStatus.css";
 import {
   type BriefPublication,
+  type NewsOperatingState,
   type NewsProviderCoin,
   type NewsProviderMetadata,
+  type NewsPushDeliveryState,
   type NewsStory,
   useNewsBriefWithToken,
   useNewsFeedWithToken,
-  useNewsSourcesWithToken,
+  useNewsStatusWithToken,
   useNewsStoryWithToken,
 } from "./useNewsPage";
 
@@ -47,6 +50,13 @@ const LEVEL_LABELS = {
   low: "低",
   info: "信息",
 } as const;
+
+const PUSH_DELIVERY_LABELS: Record<NewsPushDeliveryState, string> = {
+  pending: "待推送",
+  sent: "已推送",
+  suppressed: "未推送（过期/基线抑制）",
+  failed: "推送失败",
+};
 
 export function NewsPage({ brief = false, sources = false, token, storyId = null }: NewsPageProps) {
   if (brief) return <WorldBriefRoute token={token} />;
@@ -90,7 +100,7 @@ function FeedRoute({ token }: { token: string }) {
           </span>
           <h2>全球新闻 Story 流</h2>
           <p>
-            96 小时窗口全局聚类后的单一 Story 流；分类只是过滤器，浏览器不聚类、不评分、不重排。
+            12 小时窗口全局聚类后的单一 Story 流；分类只是过滤器，浏览器不聚类、不评分、不重排。
           </p>
         </div>
         <div className="news-header-actions">
@@ -146,7 +156,7 @@ function FeedRoute({ token }: { token: string }) {
       ) : null}
       {query.isError && !query.data ? <PageState.Error error={query.error} /> : null}
       {!query.isLoading && !query.isError && !stories.length ? (
-        <PageState.Empty title="暂无活跃 Story" hint="新闻会在下一轮两分钟采集后出现。" />
+        <PageState.Empty title="暂无活跃 Story" hint="新闻会在下一轮 60 秒采集后出现。" />
       ) : null}
       {stories.length ? (
         <PageState.Stale updating={query.isFetching && !query.isLoading}>
@@ -172,8 +182,9 @@ function FeedRoute({ token }: { token: string }) {
 }
 
 function SourcesRoute({ token }: { token: string }) {
-  const query = useNewsSourcesWithToken(token);
-  const sources = query.data?.items ?? [];
+  const query = useNewsStatusWithToken(token);
+  const status = query.data;
+  const source = status?.layers.ingest.opennews ?? null;
   return (
     <section
       aria-label="新闻来源状态"
@@ -193,67 +204,83 @@ function SourcesRoute({ token }: { token: string }) {
           <h1>新闻来源状态</h1>
           <p>一个实时连接，一条 REST 缺口恢复链路。</p>
         </div>
-        <b>{sources.length} 个来源</b>
+        {status ? (
+          <div aria-live="polite" className="news-operating-summary" role="status">
+            <b data-state={status.operating_state}>{operatingStateLabel(status.operating_state)}</b>
+            <span>
+              最近成功{" "}
+              {status.last_success_at_ms != null
+                ? relativeTime(status.last_success_at_ms)
+                : "尚未成功"}
+            </span>
+          </div>
+        ) : null}
       </header>
       {query.isLoading && !query.data ? (
         <PageState.Loading layout="panel" rows={8} label="正在读取来源状态" />
       ) : null}
       {query.isError && !query.data ? <PageState.Error error={query.error} /> : null}
-      {!query.isLoading && !query.isError && !sources.length ? (
+      {!query.isLoading && !query.isError && !source ? (
         <PageState.Empty title="尚无来源状态" hint="News 首轮来源同步后会显示来源。" />
       ) : null}
-      {sources.length ? (
+      {source ? (
         <div className="news-source-list">
-          {sources.map((source) => (
-            <article className="news-source-card" key={source.source_id}>
-              <header>
-                <div>
-                  <h2>{source.name}</h2>
-                  <span>实时新闻与市场元数据</span>
-                </div>
-                <b
-                  data-status={source.live_connected && !source.gap_unclosed ? "success" : "failed"}
-                >
-                  {source.live_connected
-                    ? source.gap_unclosed
-                      ? "WSS 已连接 · 恢复中"
-                      : "WSS 已连接"
-                    : source.gap_unclosed
-                      ? "WSS 未连接 · 缺口未闭合"
-                      : "WSS 未连接"}
-                </b>
-              </header>
-              <dl>
-                <div>
-                  <dt>上次成功</dt>
-                  <dd>
-                    {source.last_success_at_ms
-                      ? relativeTime(source.last_success_at_ms)
-                      : "尚未成功"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>上次 WSS</dt>
-                  <dd>
-                    {source.last_live_at_ms ? relativeTime(source.last_live_at_ms) : "尚未连接"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>上次 REST 恢复</dt>
-                  <dd>
-                    {source.last_recovery_at_ms
-                      ? relativeTime(source.last_recovery_at_ms)
-                      : "尚未恢复"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>连续失败</dt>
-                  <dd>{source.consecutive_failures}</dd>
-                </div>
-              </dl>
-              {source.last_error ? <p className="news-source-error">{source.last_error}</p> : null}
-            </article>
-          ))}
+          <article className="news-source-card">
+            <header>
+              <div>
+                <h2>{source.name}</h2>
+                <span>实时新闻与市场元数据</span>
+              </div>
+              <b data-status={source.live_connected && !source.gap_unclosed ? "success" : "failed"}>
+                {source.live_connected
+                  ? source.gap_unclosed
+                    ? "WSS 已连接 · 恢复中"
+                    : "WSS 已连接"
+                  : source.gap_unclosed
+                    ? "WSS 未连接 · 缺口未闭合"
+                    : "WSS 未连接"}
+              </b>
+            </header>
+            <dl>
+              <div>
+                <dt>上次成功</dt>
+                <dd>
+                  {source.last_success_at_ms != null
+                    ? relativeTime(source.last_success_at_ms)
+                    : "尚未成功"}
+                </dd>
+              </div>
+              <div>
+                <dt>上次 WSS</dt>
+                <dd>
+                  {source.last_live_at_ms != null
+                    ? relativeTime(source.last_live_at_ms)
+                    : "尚未连接"}
+                </dd>
+              </div>
+              <div>
+                <dt>上次 REST 恢复</dt>
+                <dd>
+                  {source.last_recovery_at_ms != null
+                    ? relativeTime(source.last_recovery_at_ms)
+                    : "尚未恢复"}
+                </dd>
+              </div>
+              <div>
+                <dt>缺口状态</dt>
+                <dd>{source.gap_unclosed ? "未闭合" : "已闭合"}</dd>
+              </div>
+              <div>
+                <dt>连续失败</dt>
+                <dd>{source.consecutive_failures}</dd>
+              </div>
+              <div>
+                <dt>上次 HTTP</dt>
+                <dd>{source.last_http_status ?? "尚无"}</dd>
+              </div>
+            </dl>
+            {source.last_error ? <p className="news-source-error">{source.last_error}</p> : null}
+          </article>
         </div>
       ) : null}
     </section>
@@ -277,6 +304,7 @@ function StoryCard({ story }: { story: NewsStory }) {
             <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
               {relativeTime(story.last_published_at_ms)}
             </time>
+            <PushDeliveryBadge state={story.push_delivery_state} />
             <StoryCoinBadges metadata={providerEvidence?.provider_metadata ?? {}} />
           </span>
           <strong>{story.title}</strong>
@@ -311,6 +339,15 @@ function StoryCard({ story }: { story: NewsStory }) {
   );
 }
 
+function PushDeliveryBadge({ state }: { state: NewsPushDeliveryState | null }) {
+  if (state == null) return null;
+  return (
+    <span className="news-push-state" data-state={state}>
+      {PUSH_DELIVERY_LABELS[state]}
+    </span>
+  );
+}
+
 function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
   const query = useNewsStoryWithToken(token, storyId);
   const story = query.data;
@@ -340,7 +377,8 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
           <header className="news-story-hero">
             <div className="news-story-badges">
               <span data-level={story.level}>{LEVEL_LABELS[story.level]}</span>
-              <span>当前 96 小时 Story</span>
+              <span>当前 12 小时 Story</span>
+              <PushDeliveryBadge state={story.push_delivery_state} />
             </div>
             <h1>{story.title}</h1>
             <p>{story.description || "原始来源未提供有效摘要"}</p>
@@ -696,6 +734,12 @@ function briefStateLabel(state?: string): string {
   if (state === "insufficient_material") return "选材不足";
   if (state === "failed") return "生成失败";
   return "不可用";
+}
+
+function operatingStateLabel(state: NewsOperatingState): string {
+  if (state === "live") return "实时";
+  if (state === "recovering") return "恢复中";
+  return "已停滞";
 }
 
 function relativeTime(value: number): string {

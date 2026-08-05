@@ -701,6 +701,7 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `provider_record_id` | `TEXT` | True | `None` |
 | `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
+| `provider_score_updated_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_projection_summary`
 
@@ -720,6 +721,7 @@
 | `projection_version` | `TEXT` | True | `None` |
 | `last_attempt_at_ms` | `BIGINT` | True | `None` |
 | `last_error` | `TEXT` | True | `None` |
+| `last_success_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_push_deliveries`
 
@@ -762,37 +764,23 @@
 | `story_count` | `INTEGER` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_source_memberships`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `source_id` | `TEXT` | False | `None` |
-| `membership` | `TEXT` | False | `None` |
-
 ## `news_sources`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `source_id` | `TEXT` | False | `None` |
 | `name` | `TEXT` | False | `None` |
-| `feed_url` | `TEXT` | False | `None` |
 | `tier` | `SMALLINT` | False | `None` |
 | `lang` | `TEXT` | False | `None` |
 | `enabled` | `BOOLEAN` | False | `true` |
-| `refresh_interval_seconds` | `INTEGER` | False | `None` |
-| `etag` | `TEXT` | True | `None` |
-| `last_modified` | `TEXT` | True | `None` |
 | `last_fetch_started_at_ms` | `BIGINT` | True | `None` |
 | `last_fetch_finished_at_ms` | `BIGINT` | True | `None` |
 | `last_success_at_ms` | `BIGINT` | True | `None` |
 | `last_http_status` | `INTEGER` | True | `None` |
 | `consecutive_failures` | `INTEGER` | False | `0` |
 | `last_error` | `TEXT` | True | `None` |
-| `next_fetch_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `claim_token` | `UUID` | True | `None` |
-| `claim_lease_expires_at_ms` | `BIGINT` | True | `None` |
 | `source_kind` | `TEXT` | False | `'rss'::text` |
 | `live_connected` | `BOOLEAN` | False | `false` |
 | `last_live_at_ms` | `BIGINT` | True | `None` |

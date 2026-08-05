@@ -13,6 +13,7 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
+from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.news import NewsInterface
 
 router = APIRouter()
@@ -124,18 +125,42 @@ def get_news_status(request: Request) -> JSONResponse:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     push_settings = runtime.settings.news.push
+    now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
+        workers_state, workers_reason = _news_workers_observation(
+            repos.conn,
+            now_ms=now_ms,
+        )
         data = _news_interface(repos).health(
-            now_ms=int(time.time() * 1000),
+            now_ms=now_ms,
             push_enabled=push_settings.enabled,
             feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
             feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
+            workers_state=workers_state,
+            workers_reason=workers_reason,
         )
     return _validated_json(_StatusEnvelope, {"ok": True, "data": data})
 
 
 def _news_interface(repos: Any) -> NewsInterface:
     return NewsInterface(repos.news)
+
+
+def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, str | None]:
+    row = WorkersRuntimeRepository(conn).read()
+    if row is None:
+        return None, None
+    status = workers_runtime_status(row, now_ms=now_ms)
+    state = str(status["state"])
+    if state == "running":
+        return "running", None
+    if state in {"starting", "stopping"}:
+        return "recovering", f"workers_runtime_{state}"
+    if state == "stale":
+        return "stalled", "workers_runtime_heartbeat_stale"
+    if state in {"stopped", "failed"}:
+        return "stalled", f"workers_runtime_{state}"
+    raise RuntimeError("news_workers_runtime_state_invalid")
 
 
 def _etagged(

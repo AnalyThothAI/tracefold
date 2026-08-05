@@ -2702,10 +2702,22 @@ export interface components {
             /** Source */
             source?: string | null;
         };
+        /** NewsPushDelivery24hData */
+        NewsPushDelivery24hData: {
+            /** Completed */
+            completed: number;
+            /** Latency P95 Ms */
+            latency_p95_ms: number | null;
+            /** Over 120S */
+            over_120s: number;
+            /** Slo Met */
+            slo_met: boolean | null;
+        };
         /** NewsPushStatusData */
         NewsPushStatusData: {
             /** Baseline At Ms */
             baseline_at_ms: number | null;
+            delivery_24h: components["schemas"]["NewsPushDelivery24hData"];
             /** Enabled */
             enabled: boolean;
             /** Feishu Signing Secret Configured */
@@ -2743,6 +2755,24 @@ export interface components {
             terminal_count: number;
             /** Total Count */
             total_count: number;
+            translation_24h: components["schemas"]["NewsPushTranslation24hData"];
+        };
+        /** NewsPushTranslation24hData */
+        NewsPushTranslation24hData: {
+            /** Attempted */
+            attempted: number;
+            /** Failure Counts */
+            failure_counts: {
+                [key: string]: number;
+            };
+            /** Latency P95 Ms */
+            latency_p95_ms: number | null;
+            /** Slo Met */
+            slo_met: boolean | null;
+            /** Succeeded */
+            succeeded: number;
+            /** Success Ratio */
+            success_ratio: number | null;
         };
         /** NewsSourceData */
         NewsSourceData: {
@@ -2793,9 +2823,16 @@ export interface components {
         };
         /** NewsStatusData */
         NewsStatusData: {
+            /** Last Success At Ms */
+            last_success_at_ms: number | null;
             layers: components["schemas"]["NewsStatusLayersData"];
             /** Measured At Ms */
             measured_at_ms: number;
+            /**
+             * Operating State
+             * @enum {string}
+             */
+            operating_state: "live" | "recovering" | "stalled";
             /** Reasons */
             reasons: string[];
             /**
@@ -2835,6 +2872,8 @@ export interface components {
              */
             level: "critical" | "high" | "medium" | "low" | "info";
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
+            /** Push Delivery State */
+            push_delivery_state: ("pending" | "sent" | "suppressed" | "failed") | null;
             /** Representative Item Id */
             representative_item_id: string;
             /** Scoring Item Id */
@@ -2881,6 +2920,8 @@ export interface components {
             members: components["schemas"]["NewsStoryMemberData"][];
             members_page: components["schemas"]["NewsStoryMembersPageData"];
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
+            /** Push Delivery State */
+            push_delivery_state: ("pending" | "sent" | "suppressed" | "failed") | null;
             /** Representative Item Id */
             representative_item_id: string;
             /** Scoring Item Id */
@@ -2972,10 +3013,14 @@ export interface components {
             last_error: string | null;
             /** Last Material Change At Ms */
             last_material_change_at_ms: number | null;
+            /** Last Success At Ms */
+            last_success_at_ms: number | null;
             /** Newest Item At Ms */
             newest_item_at_ms: number | null;
             /** Newest Story At Ms */
             newest_story_at_ms: number | null;
+            /** Oldest Unmaterialized At Ms */
+            oldest_unmaterialized_at_ms: number | null;
             /** Reasons */
             reasons: string[];
             /**

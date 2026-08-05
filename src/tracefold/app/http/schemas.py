@@ -183,6 +183,7 @@ class NewsStoryData(ExactApiSchema):
     first_published_at_ms: int
     last_published_at_ms: int
     provider_evidence: NewsProviderEvidenceData | None
+    push_delivery_state: Literal["pending", "sent", "suppressed", "failed"] | None
 
 
 class NewsFeedFacetData(ExactApiSchema):
@@ -380,6 +381,7 @@ class NewsStoryStatusData(ExactApiSchema):
     newest_story_at_ms: int | None
     last_material_change_at_ms: int | None
     unmaterialized_item_count: int
+    oldest_unmaterialized_at_ms: int | None
     invalid_owner_count: int
     invalid_story_aggregate_count: int
     invariant_error_count: int
@@ -387,6 +389,7 @@ class NewsStoryStatusData(ExactApiSchema):
     classifier_version: str
     importance_version: str
     last_attempt_at_ms: int | None
+    last_success_at_ms: int | None
     last_error: str | None
 
 
@@ -404,6 +407,22 @@ class NewsBriefStatusData(ExactApiSchema):
     target_fingerprint: str
     publication_id: str | None
     latest_run: NewsBriefRunData | None
+
+
+class NewsPushTranslation24hData(ExactApiSchema):
+    attempted: int
+    succeeded: int
+    success_ratio: float | None
+    latency_p95_ms: int | None
+    failure_counts: dict[str, int]
+    slo_met: bool | None
+
+
+class NewsPushDelivery24hData(ExactApiSchema):
+    completed: int
+    latency_p95_ms: int | None
+    over_120s: int
+    slo_met: bool | None
 
 
 class NewsPushStatusData(ExactApiSchema):
@@ -424,6 +443,8 @@ class NewsPushStatusData(ExactApiSchema):
     latest_sent_at_ms: int | None
     latest_error: str | None
     latest_error_at_ms: int | None
+    translation_24h: NewsPushTranslation24hData
+    delivery_24h: NewsPushDelivery24hData
     measured_at_ms: int
 
 
@@ -436,6 +457,8 @@ class NewsStatusLayersData(ExactApiSchema):
 
 class NewsStatusData(ExactApiSchema):
     status: NewsHealthStatus
+    operating_state: Literal["live", "recovering", "stalled"]
+    last_success_at_ms: int | None
     reasons: list[str]
     layers: NewsStatusLayersData
     measured_at_ms: int

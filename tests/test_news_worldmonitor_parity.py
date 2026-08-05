@@ -6,12 +6,12 @@ import json
 import pytest
 
 import tracefold.news.identity as news_identity
+import tracefold.news.sources as news_sources
 from tracefold.news import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
     classify_by_keyword,
     cluster_texts,
-    default_sources,
     has_historical_marker,
     normalize_story_text,
     story_similarity,
@@ -419,69 +419,15 @@ def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
     assert validation["line_fallbacks"] == [2]
 
 
-def test_source_inventory_is_the_confirmed_us_finance_global_politics_hard_cut() -> None:
-    sources = default_sources()
-    assert len(sources) == 73
-    assert sum(len(source.memberships) for source in sources) == 73
-    assert sum("intel" in source.memberships for source in sources) == 12
-    assert any(source.name == "6551NEWS" and source.lang == "zh" for source in sources)
-    assert sum("crypto" in source.memberships for source in sources) == 16
-    assert {source.name for source in sources if source.memberships[0] in {"asia", "middleeast"}} == {
-        "Al Jazeera",
-        "Nikkei Asia",
-        "South China Morning Post",
-        "Xinhua",
-    }
-    assert not {
-        "Guardian World",
-        "CNN World",
-        "NPR News",
-        "PBS NewsHour",
-        "ABC News",
-        "CBS News",
-        "NBC News",
-        "The Hill",
-        "Yahoo Finance",
-        "CNA",
-        "NDTV",
-        "The Hindu",
-        "Foreign Policy",
-        "Foreign Affairs",
-        "Atlantic Council",
-        "CSIS",
-        "OCCRP",
-    } & {source.name for source in sources}
-    trump = next(source for source in sources if source.name == "Trump - Truth Social")
-    assert trump.tier == 1
-    assert trump.memberships == ("politics",)
-    wallstengine = next(source for source in sources if source.name == "WallStEngine")
-    assert wallstengine.feed_url == (
-        "http://rsshub:1200/twitter/user/wallstengine/"
-        "includeReplies=0&includeRts=0&showRetweetTextInTitle=1&showQuotedInTitle=0"
-    )
-    assert wallstengine.source_id == (
-        f"news-wallstengine-{hashlib.sha256(wallstengine.feed_url.encode()).hexdigest()[:8]}"
-    )
-    assert wallstengine.tier == 4
-    assert wallstengine.lang == "en"
-    assert wallstengine.memberships == ("finance",)
-    assert wallstengine.refresh_interval_seconds == 120
-    assert not any(len(source.memberships) > 1 for source in sources)
-    manifest = [
-        {
-            "source_id": source.source_id,
-            "name": source.name,
-            "feed_url": source.feed_url,
-            "tier": source.tier,
-            "lang": source.lang,
-            "memberships": list(source.memberships),
-        }
-        for source in sources
-    ]
+def test_retired_inventory_keeps_exact_reporting_origin_tiers() -> None:
     encoded = json.dumps(
-        manifest,
+        news_sources._REPORTING_ORIGIN_TIERS,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode()
-    assert hashlib.sha256(encoded).hexdigest() == ("5ef085d74d7c9fb7019858c270e8fbe73e783f02533e9c4699f6fdc4d178f1be")
+    assert len(news_sources._REPORTING_ORIGIN_TIERS) == 79
+    assert hashlib.sha256(encoded).hexdigest() == "341a02e88d603a98612ca3d77c0226908104da00e4acffe4cba8c58b03d06788"
+    assert news_sources.reporting_origin_tier(" Reuters ", fallback_tier=4) == 1
+    assert news_sources.reporting_origin_tier("WallStEngine", fallback_tier=2) == 4
+    assert news_sources.reporting_origin_tier("unknown outlet", fallback_tier=3) == 3

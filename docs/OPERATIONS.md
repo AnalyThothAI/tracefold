@@ -242,7 +242,7 @@ Every 10 seconds, current Story with max persisted OpenNews provider score > 70
   -> News-owned durable push candidate
   -> suppress first-enable/pre-baseline/stale (>15 minute) evidence
   -> otherwise freeze one highest-score Item
-  -> one <=1.5 second Chinese-title attempt or immediate original fallback
+  -> one Chinese-title attempt (7.5 s request, 8 s total) or immediate original fallback
   -> freeze bilingual/original presentation exactly once
   -> compact selected-Item coin/score body + optional original-link button
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
@@ -265,12 +265,17 @@ concurrent disconnect or buffer overflow cannot be overwritten as healthy.
 last recovery, current error, and whether a gap remains unclosed. There is no
 second polling or acquisition-history lane.
 
-The acquisition publication is the only NewsItem writer. The fixed-period
-Story projection is the only Story/member/facet/Brief-selection writer. It
+The acquisition publication is the only writer of NewsItem Article facts and
+provider metadata; Story owns only deterministic derived columns on the same
+row. The fixed-period Story projection is the only
+Story/member/facet/Brief-selection writer. It
 re-reads the complete current 12-hour window every 60 seconds, carries only the
 calculation fields and recomputes normalized titles in the CPU phase, calculates
-outside the database, rejects stale snapshots, and atomically publishes the
-current closure. Unchanged inputs write zero serving rows. The operation is
+outside the database, and atomically publishes the coherent captured closure.
+New facts that arrive during calculation wait for the next turn instead of
+invalidating the current result. A load-time summary fingerprint prevents an
+older snapshot from overwriting a newer published snapshot. Unchanged inputs
+write zero serving rows. The operation is
 bounded by 10,000 rows and 8 MiB, with a 25-second CPU deadline in the runtime
 projection path. A narrow SQL preflight rejects an oversized corpus before the
 wide-row query, followed by the exact encoded guard. There are no News frontiers,
@@ -291,7 +296,9 @@ enter a Story through the 60-second projection before it can qualify; a later
 Push is a live alert rather than a recovery replay: the selected Item must be
 newer than the enablement baseline and at most 15 minutes old. A stale Item that
 only becomes scored through REST recovery is frozen as suppressed and performs
-no outbound request.
+no outbound request. Each frozen retry checks the same deadline again in the
+finite-operation pre-submit phase; an aged retry is atomically suppressed and
+never reaches Feishu.
 The selected-Item ledger lookup is index-backed. It is intentionally non-unique
 so historical duplicate audit rows remain intact; candidate insertion still
 writes zero new rows for any already-ledgered selected Item.
@@ -299,16 +306,18 @@ writes zero new rows for any already-ledgered selected Item.
 `published_at_ms` is the provider's article clock, not the score-eligibility
 clock. OpenNews can publish a report first and later attach `aiRating` and
 `coins` through `news.ai_update`; the Story may therefore already exist while
-push remains ineligible. `threshold_observed_at_ms` freezes the selected Item's
-current `updated_at_ms` when the delivery candidate is inserted; it is the
-closest persisted qualification clock, not a dedicated first-score receive
-clock. A provider UI may show a later annotation while continuing to label the
-card with its original publication time. Treat `published -> threshold` as an
-annotation/ingest-latency approximation and `threshold -> sent` as the local
-push interval; the combined `published -> sent` interval alone does not prove a
-slow local push. Because raw WSS frame receipt history is not retained, the
-first interval cannot separate provider emission delay from transport, recovery,
-local queue delay, or another Item metadata update.
+push remains ineligible. `provider_score_updated_at_ms` changes only when the
+current numeric score fact changes. Story projection writes cannot move it, and
+candidate creation freezes it as `threshold_observed_at_ms`. Therefore
+`threshold -> sent|suppressed|terminal` is the local end-to-end interval from
+the selected high-score fact, including Story waiting. Rows backfilled by the
+0244 migration are historical approximations; validate the 90-second P95 SLO
+only on clean post-migration observations. The status rollup therefore includes
+only v2 frozen sent/terminal envelopes; a current waiting delivery whose
+score-fact clock exceeds 120 seconds is
+an immediate stalled signal. Raw WSS receipt history is still not
+retained, so `published -> threshold` cannot separate provider emission delay
+from transport or recovery.
 
 The native Brief candidate exits before any model call when fewer than three
 Stories, fewer than two reporting origins, or an unchanged ordered Story
@@ -318,23 +327,41 @@ failed run and keeps the last-known-good current pointer.
 Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
-retried unsigned. Push does not read `llm` configuration or occupy the model
-arbiter. Optional translation uses only `news.push.translation`: one provider,
-one attempt, a code-owned 1.5-second total budget, and no durable translation
-retry. A valid Chinese result becomes the header and the original stays visible;
-Chinese input bypasses the endpoint. Timeout, invalid output, changed numeric or
-token anchors, and titles over 500 graphemes immediately freeze the original
-fallback and continue delivery. The compact body shows its
+retried unsigned. Optional translation reuses the global `llm.api_key`,
+effective `llm.base_url`, and `llm.news_brief_model`; there is no independent
+`news.push.translation` endpoint, key, or engine. It remains an outbound
+presentation adapter and does not occupy the serial model arbiter. It sends
+only the selected title, makes one provider attempt under a code-owned
+7.5-second request timeout and 8-second total budget, and has no durable
+translation retry. After finite-operation admission, it commits a durable
+dispatch fence immediately before executor submission. Recovery of a fenced
+but unfrozen row never resubmits translation: it freezes an interrupted
+original-title fallback and either delivers or age-suppresses that envelope. A
+valid Chinese result becomes the header and the original
+stays visible; Chinese input bypasses the endpoint. Timeout, invalid output,
+changed numeric or token anchors, and titles over 500 graphemes immediately
+freeze the original fallback and continue delivery. The compact body shows its
 provider-order, case-insensitively deduplicated coin symbols and provider score,
 plus one
 `查看原文` button when a canonical HTTP(S) Item URL exists. Missing symbols are
 shown as `未提供`; a missing URL omits the button. No summary, signal, grade,
 Story score, source, or publication time is rendered. Status and logs expose
 only configured booleans and sanitized error codes, never the webhook or
-signing secret.
+signing secret. In `tracefold config`, `translation_enabled` combines Push
+enablement with the global LLM credential, while `translation_configured`
+reports that global credential availability; neither field describes a second
+translation configuration.
 The ledger names `pending_translation` and `translation_status` also encode the
-one-time preparation phase. New rows move from `pending` to `translated`,
-`not_needed`, or `unavailable`; frozen retries never re-enter preparation.
+one-time preparation phase. Provider-bound rows move from `pending` through the
+durable `attempted` dispatch fence to `translated` or `unavailable`; Chinese and
+other pre-call outcomes can freeze directly as `not_needed` or `unavailable`.
+Frozen retries never re-enter preparation. The fence supplies the attempt
+clock; a normal provider outcome also freezes duration. An ambiguous crash
+after fencing is conservatively counted as an interrupted failure with no
+duration so at-most-once dispatch is preserved. The rolling 24-hour success
+ratio target is at least 95%, latency P95 is at most three seconds, and the hard
+request path stays within eight seconds. Title-too-long, freshness-budget, and
+admission failures before the fence do not count as provider attempts.
 
 Diagnose News in this order:
 
@@ -349,16 +376,27 @@ Diagnose News in this order:
 6. `/api/news/brief`: ETag and truthful public state;
 7. `news_push_state` and `news_push_deliveries`: baseline, frozen evidence,
    lease, attempt, retry/terminal state, and explicit receipt;
-8. `/api/news/status`: warming/ready/degraded derived health.
+8. `/api/news/status`: warming/ready/degraded layer health plus
+   `live`/`recovering`/`stalled`, Story last success, direct first-membership
+   backlog for current Articles, and rolling translation evidence.
 
 News health has four layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
-| ingest | OpenNews is connected, its recovery gap is closed, and at least one item has succeeded | source not configured, no item yet, disconnected stream, open gap, or current provider error |
-| story | complete current 12-hour admitted items close into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
+| ingest | OpenNews is connected, its recovery gap is closed, and at least one live/recovery publication turn has succeeded | source not configured, no successful publication turn yet, disconnected stream, open gap, or current provider error |
+| story | complete current 12-hour admitted items close into coherent current Story aggregates | current Articles missing their first Story membership, oldest such wait over 120 seconds, missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
-| push | disabled, or webhook-configured with initialized baseline and no terminal delivery | missing required webhook, uninitialized enabled state, retry backlog beyond policy, or terminal delivery error |
+| push | disabled, or webhook-configured with initialized baseline, no retry/terminal delivery, and healthy rolling translation/delivery SLOs | missing required webhook, uninitialized enabled state, any retry/terminal delivery, an SLO breach, or a wait over 120 seconds |
+
+The operator state is `stalled` when a persisted Workers runtime is no longer
+fresh/running, the oldest current Article missing its first Story membership
+exceeds 120 seconds, or any waiting Push delivery's score-fact clock exceeds
+120 seconds. Any non-ready layer that is not stalled is `recovering`, including
+source gaps/reconnects, younger Story backlog, pending/retry/terminal delivery,
+configuration errors, Brief failure, and rolling SLO breaches; otherwise the
+state is `live`. A missing `workers_runtime` row does not manufacture a stall
+for read-only/test contexts.
 
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for

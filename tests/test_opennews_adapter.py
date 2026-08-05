@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import time
 
+import httpx
 import pytest
+from websockets.exceptions import ConcurrencyError, ProtocolError
 
 from tracefold.integrations.opennews import client as opennews_client
 from tracefold.news import (
     NewsAcquisition,
-    NewsSourceDefinition,
     OpenNewsExpectedError,
     parse_opennews_message,
     parse_opennews_rest_response,
@@ -16,7 +17,7 @@ from tracefold.news import (
 from tracefold.news import runtime as news_runtime
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -24,20 +25,14 @@ def test_opennews_source_is_the_production_source() -> None:
 
     assert source.source_id == OPENNEWS_SOURCE_ID
     assert source.source_kind == "opennews"
-    assert source.memberships == ("opennews",)
-    assert source.feed_url == "https://ai.6551.io/open/news_search"
-
-
-def test_rss_source_definition_remains_a_dormant_adapter_utility() -> None:
-    source = NewsSourceDefinition(
-        source_id="rss",
-        name="RSS",
-        feed_url="https://example.com/rss",
-        tier=2,
-        memberships=("finance",),
-    )
-
-    assert source.source_kind == "rss"
+    assert source.model_dump() == {
+        "source_id": "news-opennews",
+        "name": "OpenNews",
+        "tier": 4,
+        "lang": "en",
+        "source_kind": "opennews",
+        "enabled": True,
+    }
 
 
 def test_opennews_token_is_trimmed_and_optional() -> None:
@@ -76,6 +71,88 @@ def test_websocket_handshake_owns_and_closes_partial_connection(monkeypatch) -> 
     assert websocket.owned_during_send
     assert websocket.close_calls == 1
     assert client._websocket is None
+
+
+def test_websocket_connect_classifies_transport_failure(monkeypatch) -> None:
+    async def connect(*_args, **_kwargs):
+        raise OSError("connection refused")
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    monkeypatch.setattr(opennews_client.websockets, "connect", connect)
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_connect_failed"):
+        asyncio.run(client.connect())
+
+
+def test_websocket_connect_does_not_hide_programming_errors(monkeypatch) -> None:
+    async def connect(*_args, **_kwargs):
+        raise AssertionError("programming bug")
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    monkeypatch.setattr(opennews_client.websockets, "connect", connect)
+
+    with pytest.raises(AssertionError, match="programming bug"):
+        asyncio.run(client.connect())
+
+
+def test_websocket_receive_classifies_protocol_disconnect() -> None:
+    class _WebSocket:
+        async def recv(self):
+            raise ProtocolError("invalid provider frame")
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = _WebSocket()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_receive_failed"):
+        asyncio.run(client.receive())
+
+
+def test_websocket_receive_classifies_invalid_utf8_provider_frame() -> None:
+    class _WebSocket:
+        async def recv(self):
+            return b"\xff\xfe"
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = _WebSocket()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
+        asyncio.run(client.receive())
+
+
+def test_websocket_receive_classifies_pathologically_nested_provider_frame() -> None:
+    class _WebSocket:
+        async def recv(self):
+            return "[" * 10_000 + "]" * 10_000
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = _WebSocket()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
+        asyncio.run(client.receive())
+
+
+def test_websocket_receive_does_not_hide_concurrent_use_errors() -> None:
+    class _WebSocket:
+        async def recv(self):
+            raise ConcurrencyError("recv is already running")
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = _WebSocket()
+
+    with pytest.raises(ConcurrencyError, match="already running"):
+        asyncio.run(client.receive())
+
+
+def test_websocket_close_does_not_hide_concurrent_use_errors() -> None:
+    class _WebSocket:
+        async def close(self) -> None:
+            raise ConcurrencyError("close overlaps another operation")
+
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = _WebSocket()
+
+    with pytest.raises(ConcurrencyError, match="overlaps"):
+        asyncio.run(client.close())
 
 
 def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
@@ -417,6 +494,86 @@ def test_rest_client_requests_the_selected_recovery_page() -> None:
     }
 
 
+def test_rest_client_classifies_transport_failure() -> None:
+    class _HttpClient:
+        def post(self, _url, *, json):
+            del json
+            request = httpx.Request("POST", "https://opennews.test/recovery")
+            raise httpx.ConnectError("connection refused", request=request)
+
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = _HttpClient()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
+        client.fetch_page(1)
+
+
+def test_rest_client_does_not_hide_programming_errors() -> None:
+    class _HttpClient:
+        def post(self, _url, *, json):
+            del json
+            raise AssertionError("programming bug")
+
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = _HttpClient()
+
+    with pytest.raises(AssertionError, match="programming bug"):
+        client.fetch_page(1)
+
+
+def test_rest_client_does_not_hide_request_usage_errors() -> None:
+    class _HttpClient:
+        def post(self, _url, *, json):
+            del json
+            raise ValueError("invalid request construction")
+
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = _HttpClient()
+
+    with pytest.raises(ValueError, match="request construction"):
+        client.fetch_page(1)
+
+
+def test_rest_client_classifies_invalid_provider_json() -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise ValueError("invalid provider JSON")
+
+    class _HttpClient:
+        def post(self, _url, *, json):
+            del json
+            return _Response()
+
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = _HttpClient()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
+        client.fetch_page(1)
+
+
+def test_rest_client_classifies_pathologically_nested_provider_json() -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise RecursionError("provider JSON nesting exceeded")
+
+    class _HttpClient:
+        def post(self, _url, *, json):
+            del json
+            return _Response()
+
+    client = object.__new__(opennews_client.OpenNewsRestClient)
+    client._client = _HttpClient()
+
+    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
+        client.fetch_page(1)
+
+
 def test_invalid_rest_shape_fails_closed() -> None:
     with pytest.raises(OpenNewsExpectedError, match="opennews_rest_payload_invalid"):
         parse_opennews_rest_response({"data": "not-a-list"})
@@ -500,7 +657,7 @@ def test_recovery_is_event_driven_and_keeps_a_three_hour_disconnect_gap(monkeypa
         acquisition = NewsAcquisition(
             db=database,
             finite_operations=_FiniteOperations(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=rest,
             opennews_ws_client=websocket,
         )
@@ -633,7 +790,7 @@ def test_recovery_paginates_until_the_persisted_boundary(monkeypatch) -> None:
         acquisition = NewsAcquisition(
             db=database,
             finite_operations=_FiniteOperations(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=rest,
             opennews_ws_client=object(),
         )
@@ -714,7 +871,7 @@ def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) ->
         acquisition = NewsAcquisition(
             db=database,
             finite_operations=_FiniteOperations(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=rest,
             opennews_ws_client=object(),
         )
@@ -824,7 +981,7 @@ def test_recovery_admission_timeout_keeps_the_gap_scheduled(monkeypatch) -> None
         acquisition = NewsAcquisition(
             db=_Database(),
             finite_operations=finite,
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=rest,
             opennews_ws_client=object(),
         )
@@ -844,6 +1001,125 @@ def test_recovery_admission_timeout_keeps_the_gap_scheduled(monkeypatch) -> None
     monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
 
     assert asyncio.run(scenario()) == (2, 1, "recovered-after-admission")
+
+
+def test_recovery_operation_overrun_stays_inside_the_opennews_lane(monkeypatch) -> None:
+    async def scenario() -> tuple[int, int, bool, str | None, list[str], list[str | None]]:
+        stop_event = asyncio.Event()
+        failure_codes: list[str] = []
+        status_codes: list[str | None] = []
+        recovered = parse_opennews_message(
+            {
+                "method": "news.update",
+                "params": {
+                    "id": "recovered-after-overrun",
+                    "text": "Recovery survives a bounded operation overrun",
+                    "newsType": "Reuters",
+                    "engineType": "news",
+                    "ts": 1_000_000_012_000,
+                },
+            }
+        )
+        assert recovered is not None
+
+        class _Database:
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name in {"opennews_recovery_start", "opennews_recovery_publish"}:
+                    return None
+                if operation_name == "opennews_recovery_failure":
+                    failure_codes.append(args[2].code)
+                    return None
+                if operation_name == "opennews_status":
+                    status_codes.append(args[3])
+                    if args[4] is True:
+                        return args[5], 1
+                    assert args[6] == 1
+                    stop_event.set()
+                    return None, 1
+                raise AssertionError(operation_name)
+
+        class _FiniteOperations:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(self, _operation_name, function, /, *args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
+                return await function(*args)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def fetch_page(self, page):
+                assert page == 1
+                self.calls += 1
+                return (recovered,)
+
+        finite = _FiniteOperations()
+        rest = _RestClient()
+        acquisition = NewsAcquisition(
+            db=_Database(),
+            finite_operations=finite,
+            opennews_source=opennews_source(),
+            opennews_rest_client=rest,
+            opennews_ws_client=object(),
+        )
+        acquisition._opennews_gap_boundary_provider_record_id = recovered.provider_record_id
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return (
+            finite.calls,
+            rest.calls,
+            acquisition._opennews_gap_unclosed,
+            acquisition._opennews_gap_boundary_provider_record_id,
+            failure_codes,
+            status_codes,
+        )
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == (
+        2,
+        1,
+        False,
+        None,
+        ["opennews_rest_timeout"],
+        ["opennews_rest_timeout", None],
+    )
+
+
+def test_recovery_does_not_hide_programming_errors(monkeypatch) -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "opennews_recovery_start"
+
+    class _FiniteOperations:
+        async def run(self, _operation_name, _function, /, *_args, **_kwargs):
+            raise AssertionError("programming bug")
+
+    class _RestClient:
+        async def fetch_page(self, _page):
+            raise AssertionError("provider should not be reached")
+
+    async def scenario() -> None:
+        acquisition = NewsAcquisition(
+            db=_Database(),
+            finite_operations=_FiniteOperations(),
+            opennews_source=opennews_source(),
+            opennews_rest_client=_RestClient(),
+            opennews_ws_client=object(),
+        )
+        acquisition._opennews_recovery_requested.set()
+
+        with pytest.raises(AssertionError, match="programming bug"):
+            await acquisition._opennews_recovery_loop(asyncio.Event())
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    asyncio.run(scenario())
 
 
 def test_opennews_status_admission_pressure_restarts_only_opennews(monkeypatch) -> None:
@@ -871,7 +1147,7 @@ def test_opennews_status_admission_pressure_restarts_only_opennews(monkeypatch) 
         acquisition = NewsAcquisition(
             db=_Database(),
             finite_operations=object(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=object(),
             opennews_ws_client=websocket,
         )
@@ -943,7 +1219,7 @@ def test_opennews_publish_admission_pressure_retains_gap_boundary() -> None:
         acquisition = NewsAcquisition(
             db=_Database(),
             finite_operations=object(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
         )
         acquisition._opennews_queue.put_nowait(event)
 
@@ -996,7 +1272,7 @@ def test_opennews_sibling_failure_retains_dequeued_publish_boundary(monkeypatch)
         acquisition = NewsAcquisition(
             db=_Database(),
             finite_operations=object(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=object(),
             opennews_ws_client=_WebSocketClient(),
         )
@@ -1052,7 +1328,7 @@ def test_opennews_restart_waits_for_persisted_gap_before_recovery(monkeypatch) -
         acquisition = NewsAcquisition(
             db=database,
             finite_operations=object(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
             opennews_rest_client=object(),
             opennews_ws_client=_WebSocketClient(),
         )
@@ -1088,7 +1364,7 @@ def test_late_gap_status_restores_memory_after_an_older_close() -> None:
         acquisition = NewsAcquisition(
             db=_Database(),
             finite_operations=object(),
-            sources=(opennews_source(),),
+            opennews_source=opennews_source(),
         )
         acquisition._opennews_gap_version = 1
         acquisition._opennews_gap_boundary_provider_record_id = "gap-boundary"

@@ -21,6 +21,9 @@ _NEWS_TABLES = {
     "news_brief_publications",
     "news_brief_current",
 }
+_NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT = (_NEWS_TABLES | {"news_push_state", "news_push_deliveries"}) - {
+    "news_source_memberships"
+}
 
 
 def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None:
@@ -166,9 +169,7 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
              LIMIT 1
             """
         ).fetchone()["observation_id"]
-        conn.execute(
-            "UPDATE news_sources SET source_kind='opennews' WHERE source_id='news-opennews'"
-        )
+        conn.execute("UPDATE news_sources SET source_kind='opennews' WHERE source_id='news-opennews'")
         conn.execute(
             "UPDATE news_items SET winning_observation_id=%s WHERE item_id='item-before-cut'",
             (observation_id,),
@@ -208,9 +209,7 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
             "grade": "A",
             "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
         }
-        source_states = conn.execute(
-            "SELECT source_id, enabled FROM news_sources ORDER BY source_id"
-        ).fetchall()
+        source_states = conn.execute("SELECT source_id, enabled FROM news_sources ORDER BY source_id").fetchall()
         assert source_states == [
             {"source_id": "news-opennews", "enabled": True},
             {"source_id": "rss-source", "enabled": False},
@@ -265,9 +264,80 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
     finally:
         conn.close()
 
+    command.upgrade(config, "20260806_0243")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            """
+            UPDATE news_projection_summary
+               SET last_material_change_at_ms=321,
+                   last_attempt_at_ms=456,
+                   last_error='news_story_operation_timeout',
+                   updated_at_ms=456
+             WHERE singleton_key='current'
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
     command.upgrade(config, "head")
     conn = connect_postgres_test(read_only=False)
     try:
+        tables = {
+            row["tablename"]
+            for row in conn.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'news_%'"
+            ).fetchall()
+        }
+        assert tables == _NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT
+        source_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                  FROM information_schema.columns
+                 WHERE table_schema='public' AND table_name='news_sources'
+                """
+            ).fetchall()
+        }
+        assert {
+            "feed_url",
+            "refresh_interval_seconds",
+            "etag",
+            "last_modified",
+            "next_fetch_at_ms",
+            "claim_token",
+            "claim_lease_expires_at_ms",
+        }.isdisjoint(source_columns)
+        assert {
+            "last_fetch_started_at_ms",
+            "last_fetch_finished_at_ms",
+            "last_success_at_ms",
+            "last_http_status",
+            "consecutive_failures",
+            "last_error",
+            "live_connected",
+            "last_live_at_ms",
+            "last_recovery_at_ms",
+            "gap_unclosed",
+            "gap_boundary_provider_record_id",
+            "gap_version",
+        } <= source_columns
+        retired_due_indexes = {
+            row["indexname"]
+            for row in conn.execute(
+                """
+                SELECT indexname
+                  FROM pg_indexes
+                 WHERE schemaname='public'
+                   AND indexname IN ('ix_news_sources_due', 'ix_news_sources_due_claim')
+                """
+            ).fetchall()
+        }
+        assert retired_due_indexes == set()
+        assert conn.execute("SELECT count(*) AS count FROM news_sources").fetchone()["count"] == 2
+        assert conn.execute("SELECT count(*) AS count FROM news_items").fetchone()["count"] == 1
         source = conn.execute(
             """
             SELECT gap_unclosed, gap_boundary_provider_record_id, gap_version
@@ -279,6 +349,20 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
             "gap_unclosed": True,
             "gap_boundary_provider_record_id": "provider-42",
             "gap_version": 1,
+        }
+        summary = conn.execute(
+            """
+            SELECT last_attempt_at_ms, last_material_change_at_ms,
+                   last_success_at_ms, last_error
+              FROM news_projection_summary
+             WHERE singleton_key='current'
+            """
+        ).fetchone()
+        assert summary == {
+            "last_attempt_at_ms": 456,
+            "last_material_change_at_ms": 321,
+            "last_success_at_ms": 321,
+            "last_error": "news_story_operation_timeout",
         }
     finally:
         conn.close()

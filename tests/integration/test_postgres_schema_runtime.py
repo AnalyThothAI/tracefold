@@ -78,7 +78,6 @@ RETIRED_BACKEND_TABLES = {
 }
 PROFESSIONAL_NEWS_TABLES = {
     "news_sources",
-    "news_source_memberships",
     "news_items",
     "news_stories",
     "news_story_members",
@@ -382,14 +381,10 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert news_source_columns == {
         "source_id",
         "name",
-        "feed_url",
         "tier",
         "lang",
         "source_kind",
         "enabled",
-        "refresh_interval_seconds",
-        "etag",
-        "last_modified",
         "last_fetch_started_at_ms",
         "last_fetch_finished_at_ms",
         "last_success_at_ms",
@@ -402,9 +397,6 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "gap_unclosed",
         "gap_boundary_provider_record_id",
         "gap_version",
-        "next_fetch_at_ms",
-        "claim_token",
-        "claim_lease_expires_at_ms",
         "created_at_ms",
         "updated_at_ms",
     }
@@ -447,7 +439,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260804_0242"
+    assert version == latest_migration_version() == "20260806_0244"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -472,7 +464,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260804_0242"
+    assert version == latest_migration_version() == "20260806_0244"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -851,7 +843,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260804_0242"
+        assert version == latest_migration_version() == "20260806_0244"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

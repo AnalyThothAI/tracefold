@@ -16,7 +16,7 @@ from tracefold.market.provider_contracts import (
     MarketProviderExpectedError,
 )
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 _CLAIM_LEASE_MS = 120_000
 _PROVIDER_RETRY_MS = 300_000
@@ -82,13 +82,18 @@ class AssetProfileRefresh:
         except ResourceAdmissionTimeout:
             await self._release_prework(claim)
             return None
-        except MarketProviderExpectedError as exc:
+        except (MarketProviderExpectedError, ResourceOperationOverrun) as exc:
+            provider_error = (
+                MarketProviderExpectedError("asset_profile_fetch_timeout")
+                if isinstance(exc, ResourceOperationOverrun)
+                else exc
+            )
             try:
                 published = await self.db.run_business(
                     "asset_profile_publish_unavailable",
                     self._publish_provider_failure,
                     claim,
-                    exc,
+                    provider_error,
                     observed_at_ms,
                     operation_timeout_seconds=3.0,
                 )

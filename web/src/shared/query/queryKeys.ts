@@ -20,7 +20,7 @@ export const queryKeys = {
     ["news-feed", category ?? "", sort] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
   newsBrief: () => ["news-brief"] as const,
-  newsSources: () => ["news-sources"] as const,
+  newsStatus: () => ["news-status"] as const,
   targetSocialTimeline: (targetKey: string | null, window: WindowKey) =>
     ["target-social-timeline", targetKey, window] as const,
   targetPosts: (

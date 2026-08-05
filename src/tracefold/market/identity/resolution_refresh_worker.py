@@ -16,7 +16,7 @@ from tracefold.market.provider_contracts import (
     DexTokenCandidate,
 )
 from tracefold.market.radar.constants import WINDOW_MS
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 
 from .discovery_repository import DISCOVERY_PROVIDER
@@ -143,7 +143,12 @@ class ResolutionRefresh:
             except ResourceAdmissionTimeout:
                 await self._release_prework(lookups[index:])
                 return None if index == 0 else True
-            except DexProviderTemporarilyUnavailable as exc:
+            except (DexProviderTemporarilyUnavailable, ResourceOperationOverrun) as exc:
+                provider_error = (
+                    DexProviderTemporarilyUnavailable("resolution_provider_lookup_timeout")
+                    if isinstance(exc, ResourceOperationOverrun)
+                    else exc
+                )
                 try:
                     published = await self.db.run_business(
                         "resolution_publish_unavailable",
@@ -152,7 +157,7 @@ class ResolutionRefresh:
                         lookup_key,
                         lookup_type,
                         observed_at_ms,
-                        exc,
+                        provider_error,
                         operation_timeout_seconds=3.0,
                     )
                 except ResourceAdmissionTimeout:
@@ -581,11 +586,7 @@ def _continuation_lookup_keys(lookup: dict[str, Any]) -> list[str]:
         raise RuntimeError("resolution_reprocess_lookup_keys_invalid")
     keys = sorted({str(key).strip() for key in value if str(key).strip()})
     cursor = lookup.get("reprocess_after_intent_id")
-    if (
-        not keys
-        or lookup.get("reprocess_queue_due_at_ms") is None
-        or (cursor is not None and not str(cursor).strip())
-    ):
+    if not keys or lookup.get("reprocess_queue_due_at_ms") is None or (cursor is not None and not str(cursor).strip()):
         raise RuntimeError("resolution_reprocess_continuation_invalid")
     return keys
 

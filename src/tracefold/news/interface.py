@@ -71,12 +71,16 @@ class NewsInterface:
         push_enabled: bool = False,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
+        workers_state: str | None = None,
+        workers_reason: str | None = None,
     ) -> dict[str, Any]:
         return self._repository.health_snapshot(
             now_ms=now_ms,
             push_enabled=push_enabled,
             feishu_webhook_url_configured=feishu_webhook_url_configured,
             feishu_signing_secret_configured=feishu_signing_secret_configured,
+            workers_state=workers_state,
+            workers_reason=workers_reason,
         )
 
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SOURCE_INVENTORY_VERSION = "us_finance_global_politics_crypto_v1"
 STORY_IDENTITY_VERSION = "worldmonitor_story_identity_f73de5b7"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_f73de5b7"
 IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_reporting_origin"
@@ -33,10 +32,6 @@ EventCategory = Literal[
 ]
 
 
-class NewsFeedExpectedError(RuntimeError):
-    """A typed external feed failure safe for durable source retry."""
-
-
 class NewsBriefExpectedError(RuntimeError):
     """A typed provider/response failure safe for native Brief retry."""
 
@@ -48,18 +43,14 @@ class ExactNewsModel(BaseModel):
 class NewsSourceDefinition(ExactNewsModel):
     source_id: str
     name: str
-    feed_url: str
     tier: int = Field(ge=1, le=4)
     lang: str = "en"
-    memberships: tuple[str, ...]
-    source_kind: Literal["rss", "opennews"] = "rss"
+    source_kind: Literal["opennews"] = "opennews"
     enabled: bool = True
-    refresh_interval_seconds: int = Field(default=120, ge=1)
 
     @field_validator(
         "source_id",
         "name",
-        "feed_url",
         "lang",
         mode="before",
     )
@@ -69,16 +60,6 @@ class NewsSourceDefinition(ExactNewsModel):
         if not normalized:
             raise ValueError("news_source_text_required")
         return normalized
-
-    @field_validator("memberships", mode="before")
-    @classmethod
-    def normalize_memberships(cls, value: Any) -> tuple[str, ...]:
-        if not isinstance(value, list | tuple):
-            raise ValueError("news_source_memberships_required")
-        memberships = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
-        if not memberships:
-            raise ValueError("news_source_memberships_required")
-        return memberships
 
 
 class NewsFeedEntry(ExactNewsModel):
@@ -90,18 +71,6 @@ class NewsFeedEntry(ExactNewsModel):
     language: str | None = None
     reporting_origin: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
-
-
-class NewsFeedFetch(ExactNewsModel):
-    status_code: int
-    fetch_path: Literal["direct", "relay"]
-    direct_error_code: str | None = None
-    entries: tuple[NewsFeedEntry, ...] = ()
-    entries_seen: int = Field(default=0, ge=0)
-    gate_counts: dict[str, int] = Field(default_factory=dict)
-    etag: str | None = None
-    last_modified: str | None = None
-    not_modified: bool = False
 
 
 class NewsClassification(ExactNewsModel):
@@ -130,32 +99,10 @@ class NewsBriefDraft(ExactNewsModel):
     raw_response: str
 
 
-class NewsFeedReader(Protocol):
-    def fetch_wire(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        etag: str | None,
-        last_modified: str | None,
-    ) -> object: ...
-
-    def close(self) -> None: ...
-
-
 class NewsBriefPublisher(Protocol):
     def publish(self, stories: Sequence[NewsBriefStory]) -> NewsBriefDraft: ...
 
     def close(self) -> None: ...
-
-
-def source_definition(value: NewsSourceDefinition | Mapping[str, Any] | Any) -> NewsSourceDefinition:
-    if isinstance(value, NewsSourceDefinition):
-        return value
-    if isinstance(value, Mapping):
-        return NewsSourceDefinition.model_validate({field: value[field] for field in NewsSourceDefinition.model_fields})
-    return NewsSourceDefinition.model_validate(
-        {field: getattr(value, field) for field in NewsSourceDefinition.model_fields}
-    )
 
 
 __all__ = [
@@ -165,7 +112,6 @@ __all__ = [
     "CLASSIFIER_VERSION",
     "IMPORTANCE_VERSION",
     "NEWS_LOCALE",
-    "SOURCE_INVENTORY_VERSION",
     "STORY_IDENTITY_VERSION",
     "EventCategory",
     "NewsBriefDraft",
@@ -173,9 +119,6 @@ __all__ = [
     "NewsBriefStory",
     "NewsClassification",
     "NewsFeedEntry",
-    "NewsFeedFetch",
-    "NewsFeedReader",
     "NewsSourceDefinition",
     "ThreatLevel",
-    "source_definition",
 ]

@@ -21,12 +21,6 @@ STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPO
 _PIPELINE_LOCK_KEY = 727_301_984
 
 
-class _StorySnapshotLost(RuntimeError):
-    def __init__(self, *, items: int) -> None:
-        super().__init__("news_story_snapshot_lost")
-        self.items = int(items)
-
-
 class NewsProjectionInputExceeded(RuntimeError):
     pass
 
@@ -42,6 +36,11 @@ def _require_bounded_story_rows(rows: Sequence[Mapping[str, Any]]) -> None:
 def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
     cutoff_ms = int(now_ms) - ACTIVE_WINDOW_MS
     scoring_epoch_ms = int(now_ms) - (int(now_ms) % SCORING_EPOCH_MS)
+    # This is the publish CAS baseline. Read it before the moving fact window;
+    # the reverse order can pair old facts with a newer published fingerprint.
+    summary = repository.conn.execute(
+        "SELECT input_fingerprint FROM news_projection_summary WHERE singleton_key='current'"
+    ).fetchone()
     bounds = repository.conn.execute(
         """
         SELECT count(*) AS item_count,
@@ -118,9 +117,6 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
             ],
         }
     )
-    summary = repository.conn.execute(
-        "SELECT input_fingerprint FROM news_projection_summary WHERE singleton_key='current'"
-    ).fetchone()
     return {
         "input_fingerprint": input_fingerprint,
         "cutoff_ms": cutoff_ms,
@@ -141,25 +137,25 @@ def publish_story_projection(
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
     snapshot_item_ids = sorted({str(row["item_id"]) for row in snapshot.rows})
-    current = load_story_projection(repository, now_ms=now_ms)
-    if str(current["input_fingerprint"]) != str(snapshot.input_fingerprint):
-        return {
-            "projection_status": "stale_snapshot",
-            "items": len(current["rows"]),
-            "stories": 0,
-            "rows_written": 0,
-        }
     summary = conn.execute(
         """
         SELECT input_fingerprint FROM news_projection_summary
          WHERE singleton_key='current' FOR UPDATE
         """
     ).fetchone()
-    if summary is not None and summary["input_fingerprint"] == snapshot.input_fingerprint:
+    published_fingerprint = summary["input_fingerprint"] if summary is not None else None
+    if published_fingerprint == snapshot.input_fingerprint:
         return {
             "projection_status": "unchanged_input",
             "items": len(snapshot.rows),
             "stories": len(projection.get("stories", [])),
+            "rows_written": 0,
+        }
+    if published_fingerprint != snapshot.current_input_fingerprint:
+        return {
+            "projection_status": "superseded_snapshot",
+            "items": len(snapshot.rows),
+            "stories": 0,
             "rows_written": 0,
         }
 
@@ -179,9 +175,6 @@ def publish_story_projection(
         item_ids=snapshot_item_ids,
     )
     if invariants["total"]:
-        latest = load_story_projection(repository, now_ms=now_ms)
-        if str(latest["input_fingerprint"]) != str(snapshot.input_fingerprint):
-            raise _StorySnapshotLost(items=len(latest["rows"]))
         raise RuntimeError(
             "news_story_invariant_failed:" + json.dumps(invariants, sort_keys=True, separators=(",", ":"))
         )
@@ -210,6 +203,7 @@ def publish_story_projection(
                      CASE WHEN %s THEN %s ELSE last_material_change_at_ms END
                    ), input_fingerprint=%s,
                    projection_version=%s, last_attempt_at_ms=%s,
+                   last_success_at_ms=%s,
                    last_error=NULL, updated_at_ms=%s
              WHERE singleton_key='current'
             """,
@@ -222,6 +216,7 @@ def publish_story_projection(
                 now_ms,
                 snapshot.input_fingerprint,
                 STORY_PROJECTION_VERSION,
+                now_ms,
                 now_ms,
                 now_ms,
             ),

@@ -107,7 +107,8 @@ never change NewsItem, Story, score, or public read-model state.
 covers positive and negative title pairs, exact-title and containment merges,
 CJK features, hot buckets, order independence, classification, historical
 exclusions, importance rounding, source-diverse Top-8 selection, and the
-frozen source-manifest digest. Run it with:
+frozen reporting-origin tier-map digest. The retired RSS URL/membership
+inventory is not a runtime or parity contract. Run it with:
 
 ```bash
 uv run pytest -q tests/test_news_worldmonitor_parity.py
@@ -123,14 +124,16 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly fourteen News tables, one OpenNews source, one acquisition module, one
+exactly thirteen News tables, one enabled OpenNews runtime source, one acquisition module, one
 fixed-period Story writer, and the native model seam; authenticated OpenNews
 NewsItems, deterministic complete 12-hour Story membership with the exact
 cutoff included and older retained Article facts excluded only from Story,
 fail-closed row and byte input caps, all five
 public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
-last-known-good retention, measured acquisition/projection latency, and
+last-known-good retention, captured-snapshot publication without a quiet ingest
+window, direct detection of a current Article's first-Story-membership wait over
+120 seconds, measured acquisition/projection latency, and
 browser verification of Feed, Story, Brief, and Sources. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, suppression of pre-baseline or more-than-15-minute
@@ -142,9 +145,13 @@ the selected Item's coins and provider score, optional bilingual rendering with
 the original visibly preserved, immediate original fallback for translation
 timeout/invalid/overlong output, optional canonical
 original-link button, exact signed and unsigned Feishu request shapes, response
-classification, frozen retries that never retranslate, no Push dependency on
-`llm` configuration or the serial model arbiter, and no network I/O inside a
-database transaction.
+classification, frozen retries that never retranslate or submit after the
+15-minute Article deadline, no dependency on the
+serial model arbiter, global `llm` provider reuse confined to the optional
+title-presentation adapter with no second credential, durably-fenced-attempt
+translation success/P95 evidence with pre-fence skips excluded and ambiguous
+fenced-but-interrupted dispatches counted conservatively, and no network I/O
+inside a database transaction.
 Absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
 

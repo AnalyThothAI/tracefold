@@ -4,7 +4,6 @@ import importlib
 import sys
 
 _WORKER_CPU_MODULES = (
-    "tracefold.integrations.news_feeds.rss",
     "tracefold.macro.projection",
     "tracefold.market.profiles.profile_projection",
     "tracefold.market.radar.microbatch",

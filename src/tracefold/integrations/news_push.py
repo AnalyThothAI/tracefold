@@ -5,7 +5,8 @@ import json
 import re
 import time
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,10 +32,10 @@ from .feishu import (
 _FEISHU_CHANNEL = "feishu"
 _DELIVERY_SCHEMA_VERSION = "news_feishu_delivery_v2"
 _TRANSLATION_PROVIDER = "openai_compatible"
-_TRANSLATION_PROMPT_VERSION = "title_zh_v1"
+_TRANSLATION_PROMPT_VERSION = "title_zh_v2"
 _TRANSLATION_TARGET_LANGUAGE = "zh-CN"
-_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 1.5
-_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 1.0
+_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 8.0
+_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 7.5
 _TRANSLATION_INPUT_GRAPHEME_CAP = 500
 _TRANSLATION_OUTPUT_GRAPHEME_CAP = 600
 _HEADER_GRAPHEME_CAP = 120
@@ -48,6 +49,14 @@ class _TitleTranslationError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = str(code)[:500]
         super().__init__(self.code)
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationOutcome:
+    translated_title: str | None
+    fallback_code: str | None
+    attempted_at_ms: int | None = None
+    duration_ms: int | None = None
 
 
 class _OpenAiCompatibleTitleTranslator:
@@ -73,7 +82,7 @@ class _OpenAiCompatibleTitleTranslator:
             transport=transport,
         )
 
-    def translate(self, title: str) -> str:
+    def translate(self, title: str, required_verbatim: tuple[str, ...]) -> str:
         try:
             response = self._client.post(
                 self._url,
@@ -88,14 +97,18 @@ class _OpenAiCompatibleTitleTranslator:
                             "content": (
                                 "你是金融新闻标题翻译器。只将输入标题忠实翻译为简体中文；"
                                 "不得总结、解释、补充背景、因果、评价或新事实。保留数字、百分比、"
-                                "货币单位、$TOKEN 和代币符号。只输出 JSON："
+                                "货币单位、$TOKEN 和代币符号。required_verbatim 数组中的每一项"
+                                "都必须原样出现在译文中。只输出 JSON："
                                 '{"translated_title":"单行简体中文标题"}'
                             ),
                         },
                         {
                             "role": "user",
                             "content": json.dumps(
-                                {"source_title": title},
+                                {
+                                    "source_title": title,
+                                    "required_verbatim": list(required_verbatim),
+                                },
                                 ensure_ascii=False,
                                 separators=(",", ":"),
                             ),
@@ -114,6 +127,8 @@ class _OpenAiCompatibleTitleTranslator:
             response.raise_for_status()
             payload = response.json()
             choice = payload["choices"][0]
+            if not isinstance(choice, Mapping):
+                raise TypeError("translation_choice_invalid")
             if choice.get("finish_reason") != "stop":
                 raise ValueError("translation_incomplete")
             content = choice["message"]["content"]
@@ -128,7 +143,14 @@ class _OpenAiCompatibleTitleTranslator:
             return translated.strip()
         except httpx.HTTPStatusError:
             raise _TitleTranslationError("news_push_translation_http_error") from None
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            IndexError,
+            RecursionError,
+            TypeError,
+            ValueError,
+        ):
             raise _TitleTranslationError("news_push_translation_response_invalid") from None
 
     def close(self) -> None:
@@ -179,6 +201,8 @@ class FeishuNewsPushDelivery:
         source_payload: Mapping[str, Any],
         *,
         deadline_ms: int,
+        before_translation_submit: Callable[[], Awaitable[None]] | None = None,
+        interrupted_translation_attempted_at_ms: int | None = None,
     ) -> PreparedNewsPush:
         try:
             evidence_value = source_payload.get("provider_evidence")
@@ -197,16 +221,29 @@ class FeishuNewsPushDelivery:
         translated_title: str | None = None
         translation_status = "not_needed"
         fallback_code: str | None = None
-        if self._translator is not None and not _looks_chinese_original(original_title):
+        translation_attempted_at_ms: int | None = None
+        translation_duration_ms: int | None = None
+        if interrupted_translation_attempted_at_ms is not None:
+            if int(interrupted_translation_attempted_at_ms) < 0:
+                raise ValueError("news_push_translation_attempted_at_ms_invalid")
+            translation_status = "unavailable"
+            fallback_code = "news_push_translation_interrupted_after_dispatch"
+            translation_attempted_at_ms = int(interrupted_translation_attempted_at_ms)
+        elif self._translator is not None and not _looks_chinese_original(original_title):
             if _grapheme_count_exceeds(original_title, _TRANSLATION_INPUT_GRAPHEME_CAP):
                 translation_status = "unavailable"
                 fallback_code = "news_push_translation_title_too_long"
             else:
-                translated_title, fallback_code = await self._translate_once(
+                outcome = await self._translate_once(
                     original_title,
                     symbols=symbols,
                     deadline_ms=int(deadline_ms),
+                    before_submit=before_translation_submit,
                 )
+                translated_title = outcome.translated_title
+                fallback_code = outcome.fallback_code
+                translation_attempted_at_ms = outcome.attempted_at_ms
+                translation_duration_ms = outcome.duration_ms
                 translation_status = "translated" if translated_title is not None else "unavailable"
 
         headline_mode = (
@@ -225,19 +262,23 @@ class FeishuNewsPushDelivery:
             score=score,
             source_url=source_url,
         )
+        presentation: dict[str, Any] = {
+            "headline_mode": headline_mode,
+            "target_language": _TRANSLATION_TARGET_LANGUAGE,
+            "provider": _TRANSLATION_PROVIDER if translated_title is not None else None,
+            "engine": self._translator.engine if translated_title is not None else None,
+            "prompt_version": _TRANSLATION_PROMPT_VERSION,
+            "fallback_code": fallback_code,
+        }
+        if translation_attempted_at_ms is not None:
+            presentation["translation_attempted_at_ms"] = translation_attempted_at_ms
+            presentation["translation_duration_ms"] = translation_duration_ms
         return PreparedNewsPush(
             payload={
                 "schema_version": _DELIVERY_SCHEMA_VERSION,
                 "channel": _FEISHU_CHANNEL,
                 "auth_mode": self._client.auth_mode,
-                "presentation": {
-                    "headline_mode": headline_mode,
-                    "target_language": _TRANSLATION_TARGET_LANGUAGE,
-                    "provider": _TRANSLATION_PROVIDER if translated_title is not None else None,
-                    "engine": self._translator.engine if translated_title is not None else None,
-                    "prompt_version": _TRANSLATION_PROMPT_VERSION,
-                    "fallback_code": fallback_code,
-                },
+                "presentation": presentation,
                 "card": card,
             },
             translation_status=translation_status,
@@ -249,40 +290,69 @@ class FeishuNewsPushDelivery:
         *,
         symbols: tuple[str, ...],
         deadline_ms: int,
-    ) -> tuple[str | None, str | None]:
+        before_submit: Callable[[], Awaitable[None]] | None,
+    ) -> _TranslationOutcome:
         translator = self._translator
         finite_operations = self._finite_operations
         if translator is None or finite_operations is None:
-            return None, "news_push_translation_unavailable"
+            return _TranslationOutcome(None, "news_push_translation_unavailable")
         remaining_seconds = (int(deadline_ms) - _now_ms()) / 1_000
         total_seconds = min(_TRANSLATION_TOTAL_TIMEOUT_SECONDS, remaining_seconds)
         if total_seconds <= 0:
-            return None, "news_push_translation_freshness_budget_exhausted"
+            return _TranslationOutcome(None, "news_push_translation_freshness_budget_exhausted")
+        attempted_at_ms: int | None = None
+        attempted_monotonic: float | None = None
+
+        def mark_submitted() -> None:
+            nonlocal attempted_at_ms, attempted_monotonic
+            attempted_at_ms = _now_ms()
+            attempted_monotonic = time.monotonic()
+
+        def outcome(translated: str | None, fallback: str | None) -> _TranslationOutcome:
+            duration_ms = (
+                max(0, round((time.monotonic() - attempted_monotonic) * 1_000))
+                if attempted_monotonic is not None
+                else None
+            )
+            return _TranslationOutcome(
+                translated,
+                fallback,
+                attempted_at_ms=attempted_at_ms,
+                duration_ms=duration_ms,
+            )
+
         try:
+            required_verbatim = _required_translation_anchors(
+                original_title,
+                symbols=symbols,
+            )
             async with asyncio.timeout(total_seconds):
                 translated = await finite_operations.run(
                     "news_story_push_translation",
                     translator.translate,
                     original_title,
+                    required_verbatim,
                     timeout_seconds=min(_TRANSLATION_REQUEST_TIMEOUT_SECONDS, total_seconds),
+                    before_submit=before_submit,
+                    on_submitted=mark_submitted,
                 )
-            return _validated_translation(
-                original_title,
-                translated,
-                symbols=symbols,
-            ), None
+            return outcome(
+                _validated_translation(
+                    translated,
+                    required_verbatim=required_verbatim,
+                ),
+                None,
+            )
         except asyncio.CancelledError:
             raise
         except ResourceAdmissionTimeout:
-            return None, "news_push_translation_admission_timeout"
+            return outcome(None, "news_push_translation_admission_timeout")
         except ResourceOperationOverrun:
-            return None, "news_push_translation_timeout"
+            return outcome(None, "news_push_translation_timeout")
         except TimeoutError:
-            return None, "news_push_translation_total_timeout"
+            return outcome(None, "news_push_translation_total_timeout")
         except _TitleTranslationError as error:
-            return None, error.code
-        except RuntimeError:
-            return None, "news_push_translation_unavailable"
+            return outcome(None, error.code)
 
     def deliver(
         self,
@@ -347,10 +417,9 @@ class FeishuNewsPushDelivery:
 
 
 def _validated_translation(
-    original_title: str,
     value: object,
     *,
-    symbols: tuple[str, ...],
+    required_verbatim: tuple[str, ...],
 ) -> str:
     translated = str(value or "").strip()
     if (
@@ -361,23 +430,41 @@ def _validated_translation(
         or _grapheme_count_exceeds(translated, _TRANSLATION_OUTPUT_GRAPHEME_CAP)
     ):
         raise _TitleTranslationError("news_push_translation_output_invalid")
-    anchors = {
-        match.group(0).casefold()
-        for pattern in (_NUMBER_ANCHOR, _DOLLAR_TICKER_ANCHOR)
-        for match in pattern.finditer(original_title)
-    }
-    original_casefold = original_title.casefold()
-    for symbol in symbols:
-        normalized_symbol = symbol.casefold()
-        if re.search(
-            rf"(?<![a-z0-9])\$?{re.escape(normalized_symbol)}(?![a-z0-9])",
-            original_casefold,
-        ):
-            anchors.add(normalized_symbol)
     translated_casefold = translated.casefold()
-    if any(anchor not in translated_casefold for anchor in anchors):
+    if any(anchor.casefold() not in translated_casefold for anchor in required_verbatim):
         raise _TitleTranslationError("news_push_translation_anchors_changed")
     return translated
+
+
+def _required_translation_anchors(
+    original_title: str,
+    *,
+    symbols: tuple[str, ...],
+) -> tuple[str, ...]:
+    candidates: list[tuple[int, str]] = [
+        (match.start(), match.group(0))
+        for pattern in (_NUMBER_ANCHOR, _DOLLAR_TICKER_ANCHOR)
+        for match in pattern.finditer(original_title)
+    ]
+    for symbol in symbols:
+        for match in re.finditer(
+            rf"(?<![a-z0-9])\$?{re.escape(symbol)}(?![a-z0-9])",
+            original_title,
+            flags=re.IGNORECASE,
+        ):
+            source_token = match.group(0)
+            if not source_token.startswith("$") and source_token.isupper():
+                candidates.append((match.start(), source_token))
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for _, anchor in sorted(candidates, key=lambda candidate: candidate[0]):
+        identity = anchor.casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        anchors.append(anchor)
+    return tuple(anchors)
 
 
 def _news_story_card(

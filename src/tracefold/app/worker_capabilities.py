@@ -43,6 +43,7 @@ class FiniteOperations:
         /,
         *args: Any,
         timeout_seconds: float,
+        before_submit: Callable[[], Awaitable[None]] | None = None,
         on_submitted: Callable[[], None] | None = None,
         allow_shutdown: bool = False,
         **kwargs: Any,
@@ -77,6 +78,7 @@ class FiniteOperations:
                 args,
                 kwargs,
                 timeout_seconds=timeout_seconds,
+                before_submit=before_submit,
                 on_submitted=on_submitted,
             )
         except BaseException:
@@ -90,11 +92,14 @@ class FiniteOperations:
         kwargs: dict[str, Any],
         *,
         timeout_seconds: float,
+        before_submit: Callable[[], Awaitable[None]] | None,
         on_submitted: Callable[[], None] | None,
     ) -> T:
         loop = asyncio.get_running_loop()
-        submitted_at = loop.time()
         try:
+            if before_submit is not None:
+                await before_submit()
+            submitted_at = loop.time()
             underlying = self._executor.submit(partial(function, *args, **kwargs))
         except BaseException:
             self._gate.release()

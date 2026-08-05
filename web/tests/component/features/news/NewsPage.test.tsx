@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import {
   newsFeedFixture,
   newsGlobalBriefFixture,
-  newsSourcesFixture,
+  newsStatusFixture,
   newsStoryDetailFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
@@ -25,8 +25,8 @@ describe("NewsPage", () => {
       http.get(/.*\/api\/news\/brief$/, () =>
         HttpResponse.json({ ok: true, data: newsGlobalBriefFixture() }),
       ),
-      http.get(/.*\/api\/news\/sources$/, () =>
-        HttpResponse.json({ ok: true, data: newsSourcesFixture() }),
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({ ok: true, data: newsStatusFixture() }),
       ),
     );
   });
@@ -60,6 +60,56 @@ describe("NewsPage", () => {
       "https://www.reuters.com/world/story",
     );
     expect(screen.queryByText(/AI 分析/)).not.toBeInTheDocument();
+    expect(screen.queryByText("待推送")).not.toBeInTheDocument();
+    expect(screen.getByText(/12 小时窗口全局聚类/)).toBeInTheDocument();
+  });
+
+  it("shows push state only for Stories with a Push delivery ledger state", async () => {
+    const feed = newsFeedFixture();
+    feed.stories = [
+      {
+        ...feed.stories[0],
+        push_delivery_state: "pending",
+        story_id: "story-pending",
+        title: "Pending Story",
+      },
+      {
+        ...feed.stories[0],
+        push_delivery_state: "sent",
+        story_id: "story-sent",
+        title: "Sent Story",
+      },
+      {
+        ...feed.stories[0],
+        push_delivery_state: "suppressed",
+        story_id: "story-suppressed",
+        title: "Suppressed Story",
+      },
+      {
+        ...feed.stories[0],
+        push_delivery_state: "failed",
+        story_id: "story-failed",
+        title: "Failed Story",
+      },
+      {
+        ...feed.stories[0],
+        push_delivery_state: null,
+        story_id: "story-not-eligible",
+        title: "Not eligible Story",
+      },
+    ];
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" />);
+
+    expect(await screen.findByText("Pending Story")).toBeInTheDocument();
+    expect(screen.getByText("待推送")).toBeInTheDocument();
+    expect(screen.getByText("已推送")).toBeInTheDocument();
+    expect(screen.getByText("未推送（过期/基线抑制）")).toBeInTheDocument();
+    expect(screen.getByText("推送失败")).toBeInTheDocument();
+    expect(screen.getByText("Not eligible Story").closest("article")).not.toHaveTextContent(
+      /待推送|已推送|未推送|推送失败/,
+    );
   });
 
   it("shows a linkless state for the server-selected provider evidence", async () => {
@@ -192,7 +242,7 @@ describe("NewsPage", () => {
     );
     expect(await screen.findByText("聚类成员")).toBeInTheDocument();
     expect(screen.getByText("Story 聚合身份")).toBeInTheDocument();
-    expect(screen.getByText("当前 96 小时 Story")).toBeInTheDocument();
+    expect(screen.getByText("当前 12 小时 Story")).toBeInTheDocument();
     expect(screen.getAllByText("展示代表").length).toBeGreaterThan(0);
     expect(screen.getAllByText("评分依据").length).toBeGreaterThan(0);
     expect(screen.getByText("reuters")).toBeInTheDocument();
@@ -210,6 +260,24 @@ describe("NewsPage", () => {
       "https://www.reuters.com/world/story",
     );
     expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
+  });
+
+  it("renders the Push delivery ledger state on Story detail", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStoryDetailFixture({ push_delivery_state: "sent" }),
+        }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" />,
+      "/news/stories/story-global-policy",
+    );
+
+    expect(await screen.findByText("已推送")).toBeInTheDocument();
   });
 
   it("renders explicit missing OpenNews metadata and member link states", async () => {
@@ -290,9 +358,30 @@ describe("NewsPage", () => {
     renderNews(<NewsPage sources token="test-token" />, "/news/sources");
     expect(await screen.findByText("新闻来源状态")).toBeInTheDocument();
     expect(await screen.findByText("OpenNews")).toBeInTheDocument();
-    expect(screen.getByText("1 个来源")).toBeInTheDocument();
+    expect(screen.getByText("实时")).toBeInTheDocument();
+    expect(screen.getByText(/最近成功/)).toBeInTheDocument();
     expect(screen.getByText("WSS 已连接")).toBeInTheDocument();
     expect(screen.getByText("上次 REST 恢复")).toBeInTheDocument();
+    expect(screen.getByText("缺口状态").parentElement).toHaveTextContent("已闭合");
+    expect(screen.getByText("上次 HTTP").parentElement).toHaveTextContent("200");
+  });
+
+  it.each([
+    ["recovering", "恢复中"],
+    ["stalled", "已停滞"],
+  ] as const)("renders the %s operating state from News status", async (operatingState, label) => {
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStatusFixture({ operating_state: operatingState }),
+        }),
+      ),
+    );
+
+    renderNews(<NewsPage sources token="test-token" />, "/news/sources");
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
   });
 });
 

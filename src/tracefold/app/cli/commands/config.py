@@ -73,12 +73,8 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "enabled": settings.news.push.enabled,
                         "feishu_webhook_url_configured": bool(settings.news.push.feishu_webhook_url),
                         "feishu_signing_secret_configured": bool(settings.news.push.feishu_signing_secret),
-                        "translation_enabled": settings.news.push.translation.enabled,
-                        "translation_configured": bool(
-                            settings.news.push.translation.base_url
-                            and settings.news.push.translation.api_key
-                            and settings.news.push.translation.engine
-                        ),
+                        "translation_enabled": bool(settings.news.push.enabled and settings.llm.api_key),
+                        "translation_configured": bool(settings.llm.api_key),
                     },
                 },
                 "providers": {

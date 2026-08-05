@@ -9,14 +9,17 @@ export type NewsLevel = NewsSchemas["NewsStoryData"]["level"];
 export type NewsProviderCoin = NewsSchemas["NewsProviderCoinData"];
 export type NewsProviderMetadata = NewsSchemas["NewsProviderMetadataData"];
 export type NewsProviderEvidence = NewsSchemas["NewsProviderEvidenceData"];
+export type NewsPushDeliveryState = NonNullable<
+  NewsSchemas["NewsStoryData"]["push_delivery_state"]
+>;
 export type NewsStory = NewsSchemas["NewsStoryData"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
 export type NewsStoryMember = NewsSchemas["NewsStoryMemberData"];
 export type NewsStoryDetail = NewsSchemas["NewsStoryDetailData"];
 export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
 export type WorldBrief = NewsSchemas["NewsBriefData"];
-export type NewsSource = NewsSchemas["NewsSourceData"];
-export type NewsSources = NewsSchemas["NewsSourcesData"];
+export type NewsOperatingState = NewsSchemas["NewsStatusData"]["operating_state"];
+export type NewsStatus = NewsSchemas["NewsStatusData"];
 
 export const useNewsFeedWithToken = (
   token: string,
@@ -69,13 +72,13 @@ export const useNewsBriefWithToken = (token: string) =>
     staleTime: 30_000,
   });
 
-export const useNewsSourcesWithToken = (token: string) =>
+export const useNewsStatusWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsSources(),
+    queryKey: queryKeys.newsStatus(),
     queryFn: async () =>
       (
-        await getApi<NewsSources>("/api/news/sources", {
+        await getApi<NewsStatus>("/api/news/status", {
           token,
         })
       ).data,

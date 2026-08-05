@@ -5,11 +5,11 @@ import hashlib
 import json
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v1"
 PUSH_PROVIDER_SCORE_THRESHOLD = 70.0
@@ -19,6 +19,10 @@ _DELIVERY_MAX_ATTEMPTS = 6
 _DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
 _LEASE_MS = 60_000
 _DELIVERY_TIMEOUT_SECONDS = 12.0
+
+
+class _NewsPushDeliverySuppressed(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +45,9 @@ class NewsPushDelivery(Protocol):
 
     ``prepare`` owns optional presentation-only external work and returns a
     complete envelope exactly once. The caller hashes and persists that opaque
-    result. ``deliver`` receives only the frozen envelope on every retry.
+    result. Its pre-submit callback is the durable at-most-once translation
+    fence; an interrupted fenced preparation must render the original without
+    resubmission. ``deliver`` receives only the frozen envelope on every retry.
     """
 
     async def prepare(
@@ -49,6 +55,8 @@ class NewsPushDelivery(Protocol):
         source_payload: Mapping[str, Any],
         *,
         deadline_ms: int,
+        before_translation_submit: Callable[[], Awaitable[None]] | None = None,
+        interrupted_translation_attempted_at_ms: int | None = None,
     ) -> PreparedNewsPush: ...
 
     def deliver(
@@ -152,12 +160,15 @@ class NewsStoryPush:
         if claim is None:
             return False
 
+        source_payload = dict(claim["source_payload"])
+        provider_evidence = dict(source_payload["provider_evidence"])
+        published_at_ms = int(provider_evidence["published_at_ms"])
         if claim.get("delivery_payload") is None:
-            source_payload = dict(claim["source_payload"])
-            provider_evidence = dict(source_payload["provider_evidence"])
-            published_at_ms = int(provider_evidence["published_at_ms"])
             deadline_ms = published_at_ms + PUSH_SOURCE_FRESHNESS_MS
-            if published_at_ms < now_ms - PUSH_SOURCE_FRESHNESS_MS:
+            translation_attempted_at_ms = (
+                int(claim["updated_at_ms"]) if claim.get("translation_status") == "attempted" else None
+            )
+            if translation_attempted_at_ms is None and published_at_ms < now_ms - PUSH_SOURCE_FRESHNESS_MS:
                 suppressed = await self.db.run_business(
                     "news_story_push_suppress_stale",
                     self._suppress_claimed_sync,
@@ -167,10 +178,35 @@ class NewsStoryPush:
                     operation_timeout_seconds=1.0,
                 )
                 return bool(suppressed)
+
+            async def fence_translation_dispatch() -> None:
+                nonlocal translation_attempted_at_ms
+                attempted_at_ms = _now_ms()
+                try:
+                    fenced = await self.db.run_business(
+                        "news_story_push_fence_translation",
+                        self._fence_translation_sync,
+                        story_id,
+                        lease_token,
+                        attempted_at_ms,
+                        operation_timeout_seconds=0.5,
+                    )
+                except ResourceAdmissionTimeout:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError("news_story_push_translation_fence_failed") from exc
+                if not fenced:
+                    raise RuntimeError("news_story_push_translation_fence_lost")
+                translation_attempted_at_ms = attempted_at_ms
+
             try:
                 prepared = await self.delivery.prepare(
                     source_payload,
                     deadline_ms=deadline_ms,
+                    before_translation_submit=(
+                        fence_translation_dispatch if translation_attempted_at_ms is None else None
+                    ),
+                    interrupted_translation_attempted_at_ms=(translation_attempted_at_ms),
                 )
                 if (
                     not isinstance(prepared, PreparedNewsPush)
@@ -233,14 +269,27 @@ class NewsStoryPush:
                 return bool(terminalized)
             prepared_at_ms = _now_ms()
             if published_at_ms < prepared_at_ms - PUSH_SOURCE_FRESHNESS_MS:
-                suppressed = await self.db.run_business(
-                    "news_story_push_suppress_stale",
-                    self._suppress_claimed_sync,
-                    story_id,
-                    lease_token,
-                    prepared_at_ms,
-                    operation_timeout_seconds=1.0,
-                )
+                if translation_attempted_at_ms is not None:
+                    suppressed = await self.db.run_business(
+                        "news_story_push_suppress_prepared_stale",
+                        self._suppress_prepared_sync,
+                        story_id,
+                        lease_token,
+                        prepared.translation_status,
+                        delivery_payload,
+                        payload_fingerprint,
+                        prepared_at_ms,
+                        operation_timeout_seconds=1.0,
+                    )
+                else:
+                    suppressed = await self.db.run_business(
+                        "news_story_push_suppress_stale",
+                        self._suppress_claimed_sync,
+                        story_id,
+                        lease_token,
+                        prepared_at_ms,
+                        operation_timeout_seconds=1.0,
+                    )
                 return bool(suppressed)
             claim = await self.db.run_business(
                 "news_story_push_freeze_payload",
@@ -288,6 +337,22 @@ class NewsStoryPush:
             nonlocal submitted
             submitted = True
 
+        async def suppress_if_stale_before_submit() -> None:
+            submitted_at_ms = _now_ms()
+            if published_at_ms >= submitted_at_ms - PUSH_SOURCE_FRESHNESS_MS:
+                return
+            suppressed = await self.db.run_business(
+                "news_story_push_suppress_unsubmitted_stale",
+                self._suppress_unsubmitted_sync,
+                story_id,
+                lease_token,
+                submitted_at_ms,
+                operation_timeout_seconds=0.5,
+            )
+            if not suppressed:
+                raise RuntimeError("news_story_push_stale_suppression_lost")
+            raise _NewsPushDeliverySuppressed
+
         try:
             receipt = await self.finite_operations.run(
                 "news_story_push_delivery",
@@ -295,6 +360,7 @@ class NewsStoryPush:
                 delivery_payload,
                 idempotency_key=story_id,
                 timeout_seconds=_DELIVERY_TIMEOUT_SECONDS,
+                before_submit=suppress_if_stale_before_submit,
                 on_submitted=mark_submitted,
             )
             if not isinstance(receipt, NewsPushReceipt) or not receipt.provider.strip():
@@ -302,6 +368,8 @@ class NewsStoryPush:
                     "news_story_push_receipt_invalid",
                     retryable=False,
                 )
+        except _NewsPushDeliverySuppressed:
+            return True
         except asyncio.CancelledError:
             if not submitted:
                 await asyncio.shield(
@@ -327,6 +395,17 @@ class NewsStoryPush:
                 operation_timeout_seconds=0.5,
             )
             return bool(released)
+        except ResourceOperationOverrun:
+            await self._record_delivery_failure(
+                story_id=story_id,
+                lease_token=lease_token,
+                attempt_count=attempt_count,
+                error=NewsPushDeliveryError(
+                    "news_story_push_delivery_timeout",
+                    retryable=True,
+                ),
+            )
+            return True
         except NewsPushDeliveryError as error:
             await self._record_delivery_failure(
                 story_id=story_id,
@@ -373,6 +452,10 @@ class NewsStoryPush:
 
     def _reconcile_sync(self, now_ms: int) -> dict[str, int]:
         with self.db.worker_session("news_story_push_reconcile", 3.0) as repos, repos.transaction():
+            repos.news.release_interrupted_push_translation_claims(
+                active_lease_owner=self.lease_owner,
+                now_ms=now_ms,
+            )
             baseline_at_ms, initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
             candidates = repos.news.story_provider_evidence()
             inserted = 0
@@ -470,6 +553,21 @@ class NewsStoryPush:
                 ),
             )
 
+    def _fence_translation_sync(
+        self,
+        story_id: str,
+        lease_token: str,
+        attempted_at_ms: int,
+    ) -> bool:
+        with self.db.worker_session("news_story_push_fence_translation", 0.5) as repos, repos.transaction():
+            return bool(
+                repos.news.mark_push_translation_attempted(
+                    story_id=story_id,
+                    lease_token=lease_token,
+                    attempted_at_ms=attempted_at_ms,
+                )
+            )
+
     def _suppress_claimed_sync(
         self,
         story_id: str,
@@ -479,6 +577,42 @@ class NewsStoryPush:
         with self.db.worker_session("news_story_push_suppress_stale", 1.0) as repos, repos.transaction():
             return bool(
                 repos.news.suppress_claimed_push_delivery(
+                    story_id=story_id,
+                    lease_token=lease_token,
+                    now_ms=now_ms,
+                )
+            )
+
+    def _suppress_prepared_sync(
+        self,
+        story_id: str,
+        lease_token: str,
+        translation_status: str,
+        delivery_payload: Mapping[str, Any],
+        payload_fingerprint: str,
+        now_ms: int,
+    ) -> bool:
+        with self.db.worker_session("news_story_push_suppress_prepared_stale", 1.0) as repos, repos.transaction():
+            return bool(
+                repos.news.suppress_prepared_push_delivery(
+                    story_id=story_id,
+                    lease_token=lease_token,
+                    translation_status=translation_status,
+                    delivery_payload=delivery_payload,
+                    payload_fingerprint=payload_fingerprint,
+                    now_ms=now_ms,
+                )
+            )
+
+    def _suppress_unsubmitted_sync(
+        self,
+        story_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        with self.db.worker_session("news_story_push_suppress_unsubmitted_stale", 0.5) as repos, repos.transaction():
+            return bool(
+                repos.news.suppress_unsubmitted_push_delivery(
                     story_id=story_id,
                     lease_token=lease_token,
                     now_ms=now_ms,

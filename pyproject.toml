@@ -13,7 +13,6 @@ dependencies = [
     "eth-hash[pycryptodome]>=0.8.0",
     "eth-utils>=5.0.0",
     "fastapi>=0.115.0",
-    "feedparser>=6.0,<7.0",
     "httpx[socks]>=0.27.0",
     "jsonref>=1.1.0",
     "langgraph-checkpoint-postgres==3.1.0",
@@ -149,7 +148,7 @@ warn_return_any = false
 disable_error_code = ["arg-type", "attr-defined", "union-attr", "index", "operator", "assignment", "no-untyped-call"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*", "loguru.*", "psycopg.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml", "feedparser"]
+module = ["alembic.*", "loguru.*", "psycopg.*", "curl_cffi.*", "websockets.*", "litellm.*", "solders.*", "eth_hash.*", "eth_utils.*", "testcontainers.*", "yaml"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

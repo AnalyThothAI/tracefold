@@ -79,9 +79,9 @@ lanes report explicit degradation or unavailable evidence:
   market lanes unavailable, while configured keyless sources keep their own
   independent behavior;
 - absent model credentials leaves the corresponding Brief/analysis capability
-  unavailable; News push is unaffected because it never reads `llm`. Its
-  independent optional translation remains disabled or falls back to the
-  selected Item's original OpenNews headline;
+  unavailable. News Push can still deliver, but its optional title translation
+  is unavailable and the card falls back to the selected Item's original
+  OpenNews headline;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
@@ -92,14 +92,21 @@ it never prints provider tokens, webhook URLs, signing secrets, or model keys.
 the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
-configured booleans. Push has no dependency on global model credentials or a
-provider fallback chain. Optional translation has its own endpoint/key/engine,
-makes one bounded attempt, and sends the frozen original immediately on failure.
+configured booleans. Feishu delivery has no model-credential dependency.
+Optional translation reuses `llm.api_key`, the effective `llm.base_url`, and
+`llm.news_brief_model`; it has no independent endpoint, key, model, or provider
+fallback chain. It makes one bounded attempt and sends the frozen original
+immediately on failure.
 
 An unsigned operator configuration uses the existing generated fields; do not
 add another secrets file or environment variable:
 
 ```yaml
+llm:
+  api_key: "<operator model secret>"
+  base_url: "https://api.deepseek.com/v1"
+  news_brief_model: "deepseek-chat"
+
 news:
   enabled: true
   opennews_token: "<operator secret>"
@@ -107,18 +114,15 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
-    translation:
-      enabled: false
-      base_url:
-      api_key:
-      engine:
 ```
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config. To enable translation, populate all
-three translation endpoint fields and set its switch to `true`; do not reuse or
-copy the global `llm` block implicitly. Target language, timeouts, retries, and
-title limits are code-owned.
+not commit the populated operator config. With Push enabled, a configured
+global `llm.api_key` enables the one-attempt presentation translation, which
+uses the effective `llm.base_url` and `llm.news_brief_model` from that same
+global block; do not add a `news.push.translation` block or duplicate the
+credential. The target language, 7.5-second request timeout, 8-second total
+budget, no-retry policy, and title limits are code-owned.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
@@ -128,13 +132,17 @@ The `llm` block owns operator credentials: `api_key` plus `base_url` for the
 current OpenAI-compatible provider, and optional `openrouter_api_key` and
 `groq_api_key` for the News Brief provider fallback. Worker timeouts, token
 budgets, cadence, and resource limits are code-owned; there is no
-environment-variable credential path. Story push does not consume this block.
+environment-variable credential path. Story Push reuses only `api_key`, the
+effective `base_url`, and `news_brief_model` for its outbound title-presentation
+adapter; it does not use the News Brief fallback chain or enter the serial model
+arbiter.
 
 News correctness does not depend on the model. The OpenNews WSS receiver, REST
-recovery, and publisher share one acquisition module and sole NewsItem writer.
-A healthy WSS connection never polls REST periodically; one bounded REST page
-is requested only after initial connection, reconnect, or queue overflow, with
-a persisted five-minute minimum interval between attempts.
+recovery, and publisher share one acquisition module and the sole writer of
+Article/provider facts. A healthy WSS connection never polls REST periodically;
+one bounded REST recovery attempt is requested only after initial connection,
+reconnect, or queue overflow, may read at most 11 sequential pages, and has a
+persisted five-minute minimum interval between attempts.
 A fixed 60-second writer owns the complete current 12-hour Story projection
 (while valid Article facts remain admissible for up to 96 hours),
 and the single-capacity native-state model arbiter owns World Brief. Push is a

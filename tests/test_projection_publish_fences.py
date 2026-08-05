@@ -13,7 +13,7 @@ from tracefold.macro.dependencies import (
 )
 from tracefold.macro.projection import MacroModuleClaim, MacroProjectionService
 from tracefold.news import story_store
-from tracefold.news.projection import NewsProjectionService, NewsProjectionSnapshot
+from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.repository import NewsRepository
 
 
@@ -115,17 +115,141 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
     }
 
 
-def test_news_story_changed_snapshot_rolls_back_invariant_failure(monkeypatch: Any) -> None:
+def test_news_story_load_captures_the_publish_fence_before_moving_facts() -> None:
+    calls: list[str] = []
+
+    class _LoadCursor:
+        def __init__(
+            self,
+            *,
+            row: dict[str, Any] | None = None,
+            rows: list[dict[str, Any]] | None = None,
+        ) -> None:
+            self._row = row
+            self._rows = rows or []
+
+        def fetchone(self) -> dict[str, Any] | None:
+            return self._row
+
+        def fetchall(self) -> list[dict[str, Any]]:
+            return self._rows
+
+    class _LoadConnection:
+        @staticmethod
+        def execute(sql: str, _params: object = None) -> _LoadCursor:
+            if "SELECT input_fingerprint FROM news_projection_summary" in sql:
+                calls.append("summary")
+                return _LoadCursor(row={"input_fingerprint": "published-fingerprint"})
+            if "SELECT count(*) AS item_count" in sql:
+                calls.append("bounds")
+                return _LoadCursor(row={"item_count": 1, "minimum_input_bytes": 100})
+            if "SELECT item.item_id" in sql:
+                calls.append("facts")
+                return _LoadCursor(
+                    rows=[
+                        {
+                            "item_id": "item-1",
+                            "source_id": "news-opennews",
+                            "canonical_url": "https://example.test/item-1",
+                            "reporting_origin": "Reuters",
+                            "title": "Central bank holds rates steady",
+                            "description": "Policy makers held rates steady.",
+                            "published_at_ms": 1,
+                            "content_fingerprint": "content-fingerprint",
+                            "tier": 1,
+                        }
+                    ]
+                )
+            raise AssertionError(sql)
+
+    snapshot = story_store.load_story_projection(
+        NewsRepository(_LoadConnection()),
+        now_ms=2_000_000_000_000,
+    )
+
+    assert calls == ["summary", "bounds", "facts"]
+    assert snapshot["current_input_fingerprint"] == "published-fingerprint"
+
+
+def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: Any) -> None:
+    conn = _NewsConnection(summary_fingerprint="previous-fingerprint")
+    repository = NewsRepository(conn)
+    monkeypatch.setattr(repository, "refresh_brief_selection", lambda *, now_ms: 0)
+
+    def moving_window_read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("publication must not re-read the moving input window")
+
+    monkeypatch.setattr(story_store, "load_story_projection", moving_window_read)
+    for helper in (
+        "_publish_items",
+        "_upsert_stories",
+        "_replace_memberships",
+        "_delete_absent_stories",
+        "_replace_facets",
+    ):
+        monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
+
+    snapshot = NewsProjectionSnapshot(
+        input_fingerprint="snapshot-fingerprint",
+        cutoff_ms=0,
+        scoring_epoch_ms=0,
+        current_input_fingerprint="previous-fingerprint",
+        rows=({"item_id": "snapshot", "published_at_ms": 1},),
+    )
+
+    result = story_store.publish_story_projection(
+        repository,
+        snapshot=snapshot,
+        projection={"stories": [], "memberships": [], "item_updates": []},
+        now_ms=3,
+    )
+
+    assert result["projection_status"] == "rebuilt"
+
+
+def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> None:
+    conn = _NewsConnection(summary_fingerprint="newer-fingerprint")
+    repository = NewsRepository(conn)
+
+    def unexpected_write(*_args: Any, **_kwargs: Any) -> int:
+        raise AssertionError("a superseded snapshot must not write")
+
+    for helper in (
+        "_publish_items",
+        "_upsert_stories",
+        "_replace_memberships",
+        "_delete_absent_stories",
+        "_replace_facets",
+    ):
+        monkeypatch.setattr(story_store, helper, unexpected_write)
+
+    snapshot = NewsProjectionSnapshot(
+        input_fingerprint="snapshot-fingerprint",
+        cutoff_ms=0,
+        scoring_epoch_ms=0,
+        current_input_fingerprint="previous-fingerprint",
+        rows=({"item_id": "snapshot", "published_at_ms": 1},),
+    )
+
+    result = story_store.publish_story_projection(
+        repository,
+        snapshot=snapshot,
+        projection={"stories": [], "memberships": [], "item_updates": []},
+        now_ms=3,
+    )
+
+    assert result == {
+        "projection_status": "superseded_snapshot",
+        "items": 1,
+        "stories": 0,
+        "rows_written": 0,
+    }
+
+
+def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeypatch: Any) -> None:
     conn = _NewsConnection(invariant_total=1)
     repository = NewsRepository(conn)
     monkeypatch.setattr(repository, "refresh_brief_selection", lambda *, now_ms: 0)
-    inputs = iter(
-        (
-            {"input_fingerprint": "snapshot-fingerprint", "rows": []},
-            {"input_fingerprint": "new-fingerprint", "rows": [{"item_id": "new"}]},
-        )
-    )
-    monkeypatch.setattr(story_store, "load_story_projection", lambda _repository, *, now_ms: next(inputs))
     for helper in (
         "_publish_items",
         "_upsert_stories",
@@ -142,45 +266,13 @@ def test_news_story_changed_snapshot_rolls_back_invariant_failure(monkeypatch: A
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
     )
 
-    with pytest.raises(story_store._StorySnapshotLost) as lost:
+    with pytest.raises(RuntimeError, match="news_story_invariant_failed"):
         story_store.publish_story_projection(
             repository,
             snapshot=snapshot,
             projection={"stories": [], "memberships": [], "item_updates": []},
             now_ms=3,
         )
-
-    assert lost.value.items == 1
-
-
-def test_news_projection_service_maps_snapshot_loss_to_retry() -> None:
-    class _News:
-        @staticmethod
-        def publish_story_projection(**_kwargs: Any) -> dict[str, Any]:
-            raise story_store._StorySnapshotLost(items=4)
-
-    repos = SimpleNamespace(news=_News(), transaction=nullcontext)
-
-    class _Database:
-        @staticmethod
-        def worker_session(*_args: Any, **_kwargs: Any) -> Any:
-            return nullcontext(repos)
-
-    service = NewsProjectionService(db=_Database())
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="snapshot-fingerprint",
-        cutoff_ms=0,
-        scoring_epoch_ms=0,
-        current_input_fingerprint=None,
-        rows=(),
-    )
-
-    assert service.publish(snapshot, {}, now_ms=3) == {
-        "projection_status": "stale_snapshot",
-        "items": 4,
-        "stories": 0,
-        "rows_written": 0,
-    }
 
 
 class _Cursor:
@@ -191,10 +283,17 @@ class _Cursor:
     def fetchone(self) -> dict[str, Any] | None:
         return self._row
 
+
 class _NewsConnection:
-    def __init__(self, *, invariant_total: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        invariant_total: int = 0,
+        summary_fingerprint: str | None = None,
+    ) -> None:
         self.invariant_params: object = None
         self.invariant_total = int(invariant_total)
+        self.summary_fingerprint = summary_fingerprint
 
     def execute(self, sql: str, params: object = None) -> _Cursor:
         if "WITH current_owners AS" in sql:
@@ -206,7 +305,9 @@ class _NewsConnection:
                 }
             )
         if "SELECT input_fingerprint FROM news_projection_summary" in sql:
-            return _Cursor()
+            if self.summary_fingerprint is None:
+                return _Cursor()
+            return _Cursor({"input_fingerprint": self.summary_fingerprint})
         if "UPDATE news_projection_summary" in sql:
             return _Cursor(rowcount=1)
         return _Cursor()
