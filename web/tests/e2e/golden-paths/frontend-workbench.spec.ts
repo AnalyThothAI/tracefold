@@ -15,9 +15,7 @@ const archetypes = [
   },
 ] as const;
 
-const macroPages = [
-  ["facts", "/macro", "宏观事实总览"],
-] as const;
+const macroPages = [["facts", "/macro", "宏观事实总览"]] as const;
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-07-23T10:00:00Z"));
@@ -48,9 +46,7 @@ test("freezes representative scan and case archetypes", async ({ page }) => {
   await expectNoUnhandledApiRequests(page);
 });
 
-test("freezes the current Macro facts workbench", async ({
-  page,
-}) => {
+test("freezes the current Macro facts workbench", async ({ page }) => {
   for (const [name, path, title] of macroPages) {
     await page.goto(path);
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();

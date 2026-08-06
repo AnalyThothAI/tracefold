@@ -248,8 +248,7 @@ class MacroSourceClient:
                 math.ceil((2 * int(spec.freshness_seconds)) / 86_400),
             )
             params["cosd"] = str(
-                datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
-                - timedelta(days=lookback_days)
+                datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date() - timedelta(days=lookback_days)
             )
         if end_date is not None:
             params["coed"] = str(end_date)

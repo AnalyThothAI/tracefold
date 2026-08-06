@@ -18,7 +18,9 @@ test("reads current Macro facts through FastAPI-served React", async ({ page }) 
   await expect(page.getByRole("heading", { name: "当前事实摘要" })).toBeVisible();
   expect(Date.now() - coldStartedAt).toBeLessThanOrEqual(5_000);
 
-  await expect(page.getByRole("region", { name: "六个宏观模块" }).locator("article")).toHaveCount(6);
+  await expect(page.getByRole("region", { name: "六个宏观模块" }).locator("article")).toHaveCount(
+    6,
+  );
   await expect(page.getByRole("navigation", { name: "宏观页面" }).getByRole("link")).toHaveCount(7);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [

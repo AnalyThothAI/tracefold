@@ -36,10 +36,9 @@ describe("Macro current-fact workbench", () => {
       ),
     );
 
-    renderWithProviders(
-      <MacroModulePage {...SESSION_PROPS} moduleId="rates_fed" />,
-      { route: "/macro/rates-fed" },
-    );
+    renderWithProviders(<MacroModulePage {...SESSION_PROPS} moduleId="rates_fed" />, {
+      route: "/macro/rates-fed",
+    });
 
     expect(await screen.findByRole("heading", { name: "利率与美联储" })).toBeVisible();
     expect(screen.getByText(/确定性事实页/)).toBeVisible();

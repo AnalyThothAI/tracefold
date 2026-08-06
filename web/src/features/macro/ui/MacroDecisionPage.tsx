@@ -91,9 +91,7 @@ export function MacroModulePage({
           <div>
             <span>MACRO EVIDENCE WORKBENCH</span>
             <h1>{module.label}</h1>
-            <p>
-              确定性事实页 · 事实截止 {formatInstant(module.latest_fact_at_ms)}
-            </p>
+            <p>确定性事实页 · 事实截止 {formatInstant(module.latest_fact_at_ms)}</p>
           </div>
           <Button onClick={() => void query.refetch()} size="sm" variant="outline">
             <RefreshCw aria-hidden="true" />
@@ -124,7 +122,8 @@ function MacroHeader({
         <span>ONE CURRENT SESSION · NO FALLBACK</span>
         <h1>宏观事实总览</h1>
         <p>
-          最新事实 {formatInstant(data.latest_fact_at_ms)} · {stale ? "传输缓存可能陈旧" : "读取成功"}
+          最新事实 {formatInstant(data.latest_fact_at_ms)} ·{" "}
+          {stale ? "传输缓存可能陈旧" : "读取成功"}
         </p>
       </div>
       <Button onClick={onRefresh} size="sm" variant="outline">
@@ -183,9 +182,7 @@ function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
         {historyLabel(module.status.history_depth.state)} · 数据合同{" "}
         {coverageLabel(module.status.coverage.state)}
       </strong>
-      <span>
-        {module.reason?.message ?? "当前模块直接读取持久化事实与确定性计算结果。"}
-      </span>
+      <span>{module.reason?.message ?? "当前模块直接读取持久化事实与确定性计算结果。"}</span>
     </aside>
   );
 }

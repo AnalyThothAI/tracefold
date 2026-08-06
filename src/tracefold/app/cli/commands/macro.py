@@ -212,6 +212,7 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
         },
     )
 
+
 def _parse_date(raw: str) -> date:
     return date.fromisoformat(raw)
 
