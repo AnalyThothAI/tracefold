@@ -812,7 +812,11 @@ async def _wire_components(
         document_model = MacroDocumentAnalysisService(
             db=db,
             database=db,
-            agent=FedDocumentAnalysisAgent(model=model, model_name=effective_model),
+            agent=FedDocumentAnalysisAgent(
+                model=model,
+                model_name=effective_model,
+                completion_timeout_seconds=_DOCUMENT_MODEL_TIMEOUT_SECONDS,
+            ),
             worker_name="macro_document_analysis",
             lease_owner=f"macro_document_analysis:{runtime_id}",
             stable_order=30,

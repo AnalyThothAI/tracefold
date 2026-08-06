@@ -23,6 +23,18 @@ class _Model:
         return self.response
 
 
+class _HangingModel:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def ainvoke(self, _messages: list[object]) -> AIMessage:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
 def _document() -> dict[str, object]:
     return {
         "document_id": "macrodoc_statement",
@@ -57,7 +69,11 @@ def test_agent_parses_json_text_block_without_native_response_format() -> None:
         ]
     )
     model = _Model(response)
-    agent = FedDocumentAnalysisAgent(model=model, model_name="openai/deepseek-v4-pro")
+    agent = FedDocumentAnalysisAgent(
+        model=model,
+        model_name="openai/deepseek-v4-pro",
+        completion_timeout_seconds=1.0,
+    )
     submissions: list[bool] = []
 
     draft = asyncio.run(
@@ -79,6 +95,7 @@ def test_agent_rejects_non_json_response() -> None:
     agent = FedDocumentAnalysisAgent(
         model=_Model(AIMessage(content="I cannot provide JSON.")),
         model_name="test-model",
+        completion_timeout_seconds=1.0,
     )
 
     with pytest.raises(MacroModelExpectedError, match="macro_document_model_expected"):
@@ -90,3 +107,29 @@ def test_agent_rejects_non_json_response() -> None:
                 on_model_submitted=lambda: None,
             )
         )
+
+
+def test_agent_bounds_hanging_model_as_expected_failure() -> None:
+    model = _HangingModel()
+    agent = FedDocumentAnalysisAgent(
+        model=model,
+        model_name="test-model",
+        completion_timeout_seconds=0.01,
+    )
+    submissions: list[bool] = []
+
+    with pytest.raises(
+        MacroModelExpectedError,
+        match=r"^macro_document_model_expected:TimeoutError$",
+    ):
+        asyncio.run(
+            agent.analyze(
+                document=_document(),
+                roster_context=None,
+                prior_analysis=None,
+                on_model_submitted=lambda: submissions.append(True),
+            )
+        )
+
+    assert submissions == [True]
+    assert model.cancelled is True

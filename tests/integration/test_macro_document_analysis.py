@@ -15,6 +15,9 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
+from tracefold.integrations.deepagents.fed_document_analysis import (
+    FedDocumentAnalysisAgent,
+)
 from tracefold.macro import DocumentFact
 from tracefold.macro.fed_analysis import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -98,6 +101,11 @@ class _ReleaseClaimAgent(_Agent):
             prior_analysis=prior_analysis,
             on_model_submitted=on_model_submitted,
         )
+
+
+class _HangingModel:
+    async def ainvoke(self, _messages: list[object]) -> None:
+        await asyncio.Event().wait()
 
 
 class _Clock:
@@ -203,6 +211,49 @@ def test_document_analysis_post_model_publication_admission_is_fatal(tmp_path) -
         conn.close()
 
 
+def test_document_analysis_model_timeout_uses_durable_retry(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        _insert_analysis_document(conn)
+        service = MacroDocumentAnalysisService(
+            db=_TestDb(conn),
+            agent=FedDocumentAnalysisAgent(
+                model=_HangingModel(),
+                model_name="test-fed-analysis-model",
+                completion_timeout_seconds=0.01,
+            ),
+            clock_ms=lambda: 3_603_000,
+        )
+
+        result = asyncio.run(service.run_once(now_ms=3_603_000))
+        row = conn.execute(
+            """
+            SELECT status, attempt_count, next_due_at_ms, lease_owner,
+                   leased_until_ms, last_error_code
+              FROM macro_document_analysis_jobs
+             WHERE document_id = 'macrodoc_admission_boundary'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert result == {
+        "status": "failed",
+        "document_id": "macrodoc_admission_boundary",
+        "error_code": "macro_document_model_expected_timeouterror",
+        "jobs_written": 1,
+    }
+    assert row == {
+        "status": "retryable",
+        "attempt_count": 1,
+        "next_due_at_ms": 3_903_000,
+        "lease_owner": None,
+        "leased_until_ms": None,
+        "last_error_code": "macro_document_model_expected_timeouterror",
+    }
+
+
 def test_document_analysis_lost_claim_does_not_publish(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -215,9 +266,7 @@ def test_document_analysis_lost_claim_does_not_publish(tmp_path) -> None:
         )
 
         result = asyncio.run(service.run_once(now_ms=3_603_000))
-        analysis_count = conn.execute(
-            "SELECT COUNT(*)::int AS count FROM macro_document_analyses"
-        ).fetchone()["count"]
+        analysis_count = conn.execute("SELECT COUNT(*)::int AS count FROM macro_document_analyses").fetchone()["count"]
         job = conn.execute(
             """
             SELECT status, attempt_count, lease_owner

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from typing import cast
 
 import pytest
@@ -9,7 +11,11 @@ from tracefold.app.market_providers import (
     wire_asset_market,
 )
 from tracefold.app.provider_ownership import configured_profile_provider_ids, gmgn_stream_enabled
-from tracefold.integrations.gmgn.openapi_client import GmgnOpenApiError
+from tracefold.integrations.gmgn.openapi_client import (
+    GmgnOpenApiClient,
+    GmgnOpenApiError,
+    GmgnTokenInfoLookup,
+)
 from tracefold.integrations.gmgn.openapi_gateway import GmgnOpenApiGateway
 from tracefold.integrations.gmgn.providers import GmgnDexMarketProvider
 from tracefold.integrations.okx import providers as okx_providers
@@ -40,11 +46,155 @@ class _FailedGmgnGateway:
         raise GmgnOpenApiError("provider response failed")
 
 
+class _ManualClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
+class _RecordingGmgnClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.closed = False
+
+    def lookup_token_info(self, *, chain: str, address: str) -> GmgnTokenInfoLookup:
+        self.calls.append((chain, address))
+        return GmgnTokenInfoLookup(info=None, cache_status="miss")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BlockingGmgnClient(_RecordingGmgnClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_lookup_entered = Event()
+        self.release_first_lookup = Event()
+        self.second_lookup_entered = Event()
+        self.close_entered = Event()
+        self._state_lock = Lock()
+        self._active_lookups = 0
+        self.max_active_lookups = 0
+
+    def lookup_token_info(self, *, chain: str, address: str) -> GmgnTokenInfoLookup:
+        with self._state_lock:
+            self.calls.append((chain, address))
+            call_number = len(self.calls)
+            self._active_lookups += 1
+            self.max_active_lookups = max(self.max_active_lookups, self._active_lookups)
+        try:
+            if call_number == 1:
+                self.first_lookup_entered.set()
+                if not self.release_first_lookup.wait(timeout=2.0):
+                    raise TimeoutError("test did not release the first GMGN lookup")
+            else:
+                self.second_lookup_entered.set()
+            return GmgnTokenInfoLookup(info=None, cache_status="miss")
+        finally:
+            with self._state_lock:
+                self._active_lookups -= 1
+
+    def close(self) -> None:
+        self.close_entered.set()
+        super().close()
+
+
+def _gmgn_provider(client: object, *, clock: _ManualClock | None = None) -> GmgnDexMarketProvider:
+    return GmgnDexMarketProvider(
+        GmgnOpenApiGateway(
+            cast(GmgnOpenApiClient, client),
+            token_info_cache_ttl_seconds=60,
+            retry_attempts=1,
+            clock=clock or _ManualClock(),
+            sleep=lambda _: None,
+        )
+    )
+
+
 def test_gmgn_provider_failure_is_a_local_expected_failure() -> None:
     provider = GmgnDexMarketProvider(cast(GmgnOpenApiGateway, _FailedGmgnGateway()))
 
     with pytest.raises(DexProviderTemporarilyUnavailable, match="provider response failed"):
         provider.token_profile(chain_id="solana", address="token")
+
+
+def test_gmgn_adapter_serializes_profile_and_quote_lookups() -> None:
+    client = _BlockingGmgnClient()
+    provider = _gmgn_provider(client)
+    second_started = Event()
+
+    def quote_lookup() -> list[DexTokenQuote]:
+        second_started.set()
+        return provider.token_quotes([DexTokenQuoteRequest(chain_id="solana", address="quote-token")])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(provider.token_profile, chain_id="solana", address="profile-token")
+        assert client.first_lookup_entered.wait(timeout=1.0)
+        second = executor.submit(quote_lookup)
+        assert second_started.wait(timeout=1.0)
+        try:
+            assert not client.second_lookup_entered.wait(timeout=0.1)
+        finally:
+            client.release_first_lookup.set()
+        assert first.result(timeout=1.0) is None
+        assert second.result(timeout=1.0) == []
+
+    assert client.max_active_lookups == 1
+
+
+def test_gmgn_adapter_close_waits_for_an_active_lookup() -> None:
+    client = _BlockingGmgnClient()
+    provider = _gmgn_provider(client)
+    close_started = Event()
+
+    def close_provider() -> None:
+        close_started.set()
+        provider.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        lookup = executor.submit(provider.token_profile, chain_id="solana", address="profile-token")
+        assert client.first_lookup_entered.wait(timeout=1.0)
+        close = executor.submit(close_provider)
+        assert close_started.wait(timeout=1.0)
+        try:
+            assert not client.close_entered.wait(timeout=0.1)
+        finally:
+            client.release_first_lookup.set()
+        assert lookup.result(timeout=1.0) is None
+        close.result(timeout=1.0)
+
+    assert client.closed is True
+
+
+def test_gmgn_adapter_token_info_cache_expires_through_public_interfaces() -> None:
+    clock = _ManualClock()
+    client = _RecordingGmgnClient()
+    provider = _gmgn_provider(client, clock=clock)
+    request = DexTokenQuoteRequest(chain_id="solana", address="shared-token")
+
+    assert provider.token_profile(chain_id="solana", address="shared-token") is None
+    assert provider.token_quotes([request]) == []
+    assert client.calls == [("solana", "shared-token")]
+
+    clock.value = 61.0
+    assert provider.token_profile(chain_id="solana", address="shared-token") is None
+    assert client.calls == [("solana", "shared-token"), ("solana", "shared-token")]
+
+
+def test_gmgn_adapter_token_info_cache_is_bounded() -> None:
+    client = _RecordingGmgnClient()
+    provider = _gmgn_provider(client)
+
+    for index in range(257):
+        assert provider.token_profile(chain_id="solana", address=f"token-{index}") is None
+    assert len(client.calls) == 257
+
+    assert provider.token_profile(chain_id="solana", address="token-0") is None
+    assert len(client.calls) == 258
+    assert provider.token_profile(chain_id="solana", address="token-256") is None
+    assert len(client.calls) == 258
 
 
 def test_multi_target_quotes_use_the_bounded_bulk_provider_only() -> None:

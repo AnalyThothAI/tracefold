@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Lock
 from typing import TypeVar
 
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
@@ -31,6 +32,7 @@ class GmgnOpenApiRoute:
 
 
 TOKEN_INFO_ROUTE = GmgnOpenApiRoute(name="token_info", weight=1.0)
+_TOKEN_INFO_CACHE_MAX_ENTRIES = 256
 
 
 class GmgnOpenApiGateway:
@@ -88,26 +90,40 @@ class GmgnOpenApiGateway:
         )
         self._clock = clock
         self._sleep = sleep
+        self._lock = Lock()
         self._circuit_open_until = 0.0
         self._token_info_cache: dict[tuple[str, str], tuple[float, GmgnTokenInfo | None]] = {}
 
     def lookup_token_info(self, *, chain: str, address: str) -> GmgnTokenInfoLookup:
-        key = (str(chain), str(address))
-        cached = self._token_info_cache.get(key)
-        now = self._clock()
-        if cached is not None and cached[0] >= now:
-            return GmgnTokenInfoLookup(info=cached[1], cache_status="hit")
+        with self._lock:
+            key = (str(chain), str(address))
+            now = self._clock()
+            self._prune_expired_token_info(now)
+            cached = self._token_info_cache.get(key)
+            if cached is not None:
+                return GmgnTokenInfoLookup(info=cached[1], cache_status="hit")
 
-        lookup = self._execute(
-            TOKEN_INFO_ROUTE,
-            lambda: self._client.lookup_token_info(chain=chain, address=address),
-        )
-        if self._token_info_cache_ttl_seconds > 0:
-            self._token_info_cache[key] = (self._clock() + self._token_info_cache_ttl_seconds, lookup.info)
-        return GmgnTokenInfoLookup(info=lookup.info, cache_status="miss")
+            lookup = self._execute(
+                TOKEN_INFO_ROUTE,
+                lambda: self._client.lookup_token_info(chain=chain, address=address),
+            )
+            if self._token_info_cache_ttl_seconds > 0:
+                if len(self._token_info_cache) >= _TOKEN_INFO_CACHE_MAX_ENTRIES:
+                    self._token_info_cache.pop(next(iter(self._token_info_cache)))
+                self._token_info_cache[key] = (
+                    self._clock() + self._token_info_cache_ttl_seconds,
+                    lookup.info,
+                )
+            return GmgnTokenInfoLookup(info=lookup.info, cache_status="miss")
 
     def close(self) -> None:
-        self._client.close()
+        with self._lock:
+            self._client.close()
+
+    def _prune_expired_token_info(self, now: float) -> None:
+        expired = [key for key, (expires_at, _) in self._token_info_cache.items() if expires_at < now]
+        for key in expired:
+            del self._token_info_cache[key]
 
     def _execute(self, route: GmgnOpenApiRoute, operation: Callable[[], T]) -> T:
         self._raise_if_circuit_open()
