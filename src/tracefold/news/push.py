@@ -461,6 +461,11 @@ class NewsStoryPush:
             inserted = 0
             suppressed = 0
             for candidate in candidates.values():
+                # The evidence query resolves the same Story/Item identity fences
+                # enforced by insert_push_candidate. Avoid issuing a guaranteed
+                # no-op INSERT for ledgered Stories on every reconcile turn.
+                if candidate.get("push_delivery_status") is not None:
+                    continue
                 evidence = dict(candidate["provider_evidence"])
                 score = float(evidence["provider_score"])
                 if score <= PUSH_PROVIDER_SCORE_THRESHOLD:
