@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 from psycopg import pq
 
 from tests.integration.test_token_radar_idempotency import (
+    ASSET_ADDRESS,
     EVENT_MS,
     FIXED_NOW_MS,
     _seed_resolved_radar_source,
@@ -18,6 +20,7 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.app.repositories import repositories_for_connection
+from tracefold.market import MarketTick, MarketTickPersistenceService, market_tick_id
 from tracefold.market.radar.constants import (
     TOKEN_RADAR_PROJECTION_VERSION,
     WINDOW_MS,
@@ -283,11 +286,37 @@ def test_market_change_marks_only_windows_with_existing_features() -> None:
         conn.execute("DELETE FROM radar_projection_frontiers")
         conn.commit()
 
+        market_target_id = f"eip155:1:{ASSET_ADDRESS.lower()}"
+        observed_at_ms = FIXED_NOW_MS + 2
+        tick = MarketTick(
+            tick_id=market_tick_id(
+                target_type="chain_token",
+                target_id=market_target_id,
+                source_provider="okx_dex_rest",
+                observed_at_ms=observed_at_ms,
+            ),
+            target_type="chain_token",
+            target_id=market_target_id,
+            chain="eip155:1",
+            token_address=ASSET_ADDRESS.lower(),
+            exchange=None,
+            instrument=None,
+            pricefeed_id=None,
+            source_tier="tier2_poll",
+            source_provider="okx_dex_rest",
+            observed_at_ms=observed_at_ms,
+            received_at_ms=observed_at_ms,
+            price_usd=Decimal("1.30"),
+            liquidity_usd=Decimal("100000"),
+            volume_24h_usd=Decimal("500000"),
+            market_cap_usd=Decimal("1000000"),
+            holders=1000,
+            created_at_ms=observed_at_ms,
+        )
         with repos.transaction():
-            changed = repos.radar_source_edges.mark_market_targets(
-                [(target.target_type, target.target_id)],
-                now_ms=FIXED_NOW_MS + 2,
-                input_fingerprint="market-current:new",
+            persisted = MarketTickPersistenceService(repos).persist_ticks(
+                [tick],
+                now_ms=observed_at_ms,
             )
         windows = conn.execute(
             """
@@ -297,7 +326,11 @@ def test_market_change_marks_only_windows_with_existing_features() -> None:
             """
         ).fetchall()
 
-        assert changed == 1
+        assert persisted.inserted == 1
+        assert persisted.changed_targets == [("chain_token", market_target_id)]
+        assert [(row["product_target_type"], row["product_target_id"]) for row in persisted.live_market_rows] == [
+            ("Asset", target.target_id)
+        ]
         assert windows == [{"window_key": "1h"}]
     finally:
         conn.close()

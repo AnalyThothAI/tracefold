@@ -9,7 +9,6 @@ from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
     MarketTick,
     MarketTickPersistenceService,
-    MarketTickSourceProvider,
     market_tick_id,
 )
 
@@ -31,7 +30,7 @@ def test_market_tick_persistence_is_idempotent_and_updates_current_in_same_trans
                 address="0x1111111111111111111111111111111111111111",
                 observed_at_ms=NOW_MS - 1,
             )
-        tick = _tick(source_provider="okx_dex_ws")
+        tick = _tick()
 
         with repos.transaction():
             first = MarketTickPersistenceService(repos).persist_ticks([tick, tick], now_ms=NOW_MS + 10)
@@ -63,7 +62,7 @@ def test_market_tick_persistence_is_idempotent_and_updates_current_in_same_trans
         assert current["tick_id"] == tick.tick_id
         assert "raw_payload_json" not in current
         assert "payload_hash" not in current
-        assert dirty_count["count"] == 4
+        assert dirty_count["count"] == 0
     finally:
         conn.close()
 
@@ -75,7 +74,7 @@ def test_older_tick_fact_cannot_regress_market_tick_current(tmp_path) -> None:
         repos = repositories_for_connection(
             conn,
         )
-        newer = _tick(source_provider="okx_dex_ws")
+        newer = _tick()
         older_observed_at_ms = NOW_MS - 1_000
         older = replace(
             newer,
@@ -121,7 +120,7 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
                 address="0x1111111111111111111111111111111111111111",
                 observed_at_ms=NOW_MS - 1,
             )
-            MarketTickPersistenceService(repos).persist_ticks([_tick(source_provider="okx_dex_ws")], now_ms=NOW_MS)
+            MarketTickPersistenceService(repos).persist_ticks([_tick()], now_ms=NOW_MS)
         with repos.transaction():
             conn.execute("DELETE FROM market_tick_current")
             conn.execute("DELETE FROM radar_projection_frontiers")
@@ -157,8 +156,8 @@ def test_market_tick_current_can_be_rebuilt_in_bounded_fact_batches(tmp_path) ->
         assert exhausted.changed_targets == ()
         assert exhausted.next_cursor is None
         assert current is not None
-        assert current["tick_id"] == _tick(source_provider="okx_dex_ws").tick_id
-        assert dirty == {"count": 4}
+        assert current["tick_id"] == _tick().tick_id
+        assert dirty == {"count": 0}
     finally:
         conn.close()
 
@@ -176,7 +175,7 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
                 address="0x1111111111111111111111111111111111111111",
                 observed_at_ms=NOW_MS - 1,
             )
-            MarketTickPersistenceService(repos).persist_ticks([_tick(source_provider="okx_dex_ws")], now_ms=NOW_MS)
+            MarketTickPersistenceService(repos).persist_ticks([_tick()], now_ms=NOW_MS)
             conn.execute(
                 """
                 UPDATE market_tick_current
@@ -208,7 +207,7 @@ def test_market_tick_current_rebuild_repairs_equal_key_payload_drift_once(tmp_pa
         assert current is not None
         assert current["price_usd"] == Decimal("1.23")
         assert current["liquidity_usd"] == Decimal("1000")
-        assert dirty == {"count": 4}
+        assert dirty == {"count": 0}
 
         with repos.transaction():
             conn.execute("DELETE FROM radar_projection_frontiers")
@@ -230,13 +229,13 @@ def test_market_tick_rebuild_cursor_seeks_one_stable_target_page_at_a_time(tmp_p
         repos = repositories_for_connection(
             conn,
         )
-        first = _tick(source_provider="okx_dex_ws")
+        first = _tick()
         second = replace(
             first,
             tick_id=market_tick_id(
                 target_type="chain_token",
                 target_id=SECOND_TARGET_ID,
-                source_provider="okx_dex_ws",
+                source_provider="okx_dex_rest",
                 observed_at_ms=NOW_MS,
             ),
             target_id=SECOND_TARGET_ID,
@@ -262,12 +261,12 @@ def test_market_tick_rebuild_cursor_seeks_one_stable_target_page_at_a_time(tmp_p
     assert exhausted == []
 
 
-def _tick(*, source_provider: MarketTickSourceProvider) -> MarketTick:
+def _tick() -> MarketTick:
     return MarketTick(
         tick_id=market_tick_id(
             target_type="chain_token",
             target_id=TARGET_ID,
-            source_provider=source_provider,
+            source_provider="okx_dex_rest",
             observed_at_ms=NOW_MS,
         ),
         target_type="chain_token",
@@ -277,8 +276,8 @@ def _tick(*, source_provider: MarketTickSourceProvider) -> MarketTick:
         exchange=None,
         instrument=None,
         pricefeed_id=None,
-        source_tier="tier1_ws" if source_provider == "okx_dex_ws" else "tier2_poll",
-        source_provider=source_provider,
+        source_tier="tier2_poll",
+        source_provider="okx_dex_rest",
         observed_at_ms=NOW_MS,
         received_at_ms=NOW_MS + 1,
         price_usd=Decimal("1.23"),

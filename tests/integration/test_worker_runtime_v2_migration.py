@@ -88,7 +88,7 @@ def test_migration_preserves_every_outer_news_status_and_native_model_state() ->
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -180,7 +180,7 @@ def test_migration_fans_out_document_terminal_targets_with_exact_hashes() -> Non
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -238,7 +238,7 @@ def test_migration_refuses_unknown_terminal_owner_without_partial_schema_changes
         conn.close()
 
     with pytest.raises(RuntimeError, match="worker_runtime_v2_unknown_terminal_owners:unclassified_projection"):
-        _upgrade_head()
+        _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -315,7 +315,7 @@ def test_migration_maps_only_authorized_legacy_terminal_owners_and_preserves_evi
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -346,7 +346,7 @@ def test_migration_installs_v2_thesis_lifecycle_without_replacing_legacy_owned_f
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -433,7 +433,7 @@ def test_migration_retains_matching_valid_native_leases_and_transient_attempt_fl
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -476,7 +476,7 @@ def test_migration_creates_missing_dirty_thesis_native_intent() -> None:
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -545,7 +545,7 @@ def test_migration_revives_existing_failed_native_state_for_dirty_outer_intent()
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -692,7 +692,7 @@ def test_migration_recompute_terminal_brief_owner_clears_pending_clocks() -> Non
     finally:
         conn.close()
 
-    _upgrade_head()
+    _upgrade_0233()
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -728,10 +728,10 @@ def _prepare_0232() -> None:
     command.upgrade(config, "20260731_0232")
 
 
-def _upgrade_head() -> None:
+def _upgrade_0233() -> None:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260731_0233")
 
 
 def _insert_document_jobs(conn) -> None:
