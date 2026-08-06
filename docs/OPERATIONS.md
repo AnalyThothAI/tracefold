@@ -113,8 +113,14 @@ JIT off, parallel gather off, and 8 MiB work memory. Workers owns the exact
 pool/lane topology above. Finite provider/filesystem operations share the
 three-slot external capability; stream sockets remain long-lived async root
 children outside it. A provider-wide failure opens durable circuit state and
-consumes no target attempt. A caller timeout never releases a resource permit
-before the underlying future actually completes.
+consumes no target attempt. Only the owning provider seam may map an outer
+finite-operation overrun into its existing durable failure policy. Database,
+model, CPU, cleanup, and unclassified overruns remain process-fatal. A caller
+timeout never releases a resource permit before the underlying future actually
+completes; three stuck provider futures therefore exhaust the shared external
+capability even though the root heartbeat can remain healthy. Diagnose that
+state from the resource-active/admission metrics and domain status. If an
+underlying thread never returns, process exit is the only release authority.
 
 The anonymous GMGN direct WebSocket treats `upstream.reconnect_delay` as its
 initial retry delay and doubles consecutive connection failures to a code-owned
@@ -400,7 +406,12 @@ for read-only/test contexts.
 
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
-the model or outbound delivery.
+the model or outbound delivery. OpenNews recovery reads at most 11 REST pages
+per trigger and waits at least five minutes between attempts. When that bounded
+window does not reach the persisted gap boundary, it retains the open-gap
+diagnostic but does not start an unbounded historical backfill. A later
+connection or buffer-overflow trigger may retry the current bounded window;
+live frames alone never claim that the older gap is closed.
 
 #### Operator-authorized Issue #33 maintenance hard cut
 

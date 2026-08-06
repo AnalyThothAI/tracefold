@@ -835,6 +835,7 @@ def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) ->
 
     async def scenario() -> tuple[list[int], int, list[str], bool, str | None]:
         stop_event = asyncio.Event()
+        incomplete = asyncio.Event()
 
         class _Database:
             def __init__(self) -> None:
@@ -850,7 +851,7 @@ def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) ->
                 if operation_name == "opennews_status":
                     assert args[4] is True
                     self.status_errors.append(args[3])
-                    stop_event.set()
+                    incomplete.set()
                     return args[5], 8
                 raise AssertionError(operation_name)
 
@@ -879,7 +880,13 @@ def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) ->
         acquisition._opennews_gap_version = 7
         acquisition._opennews_recovery_requested.set()
 
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        task = asyncio.create_task(acquisition._opennews_recovery_loop(stop_event))
+        try:
+            await asyncio.wait_for(incomplete.wait(), timeout=1.0)
+            await asyncio.sleep(0.01)
+        finally:
+            stop_event.set()
+            await asyncio.wait_for(task, timeout=1.0)
         return (
             rest.pages,
             database.publish_count,

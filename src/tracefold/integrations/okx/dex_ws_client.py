@@ -12,7 +12,7 @@ from typing import Any
 
 import websockets
 from loguru import logger
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
 
 from tracefold.integrations.okx.dex_client import EVM_ADDRESS_RE
 from tracefold.platform.validation import require_positive_int
@@ -20,6 +20,17 @@ from tracefold.platform.validation import require_positive_int
 
 class OkxDexWsClientError(RuntimeError):
     pass
+
+
+_EXPECTED_WEBSOCKET_FAILURES = (
+    OSError,
+    TimeoutError,
+    ConnectionClosed,
+    InvalidHandshake,
+    PayloadTooBig,
+    ProtocolError,
+)
+_EXPECTED_RECONNECT_FAILURES = (*_EXPECTED_WEBSOCKET_FAILURES, OkxDexWsClientError)
 
 
 class _OkxDexWsMissingPong(RuntimeError):
@@ -166,7 +177,7 @@ class OkxDexWebSocketMarketProvider:
                 await _close_websocket(websocket)
                 await self._drop_connection(state="failed_terminal")
                 raise
-            except (WebSocketException, OSError, TimeoutError) as exc:
+            except _EXPECTED_WEBSOCKET_FAILURES as exc:
                 await _close_websocket(websocket)
                 await self._drop_connection(state="degraded_recoverable")
                 self._record_recoverable_error(
@@ -191,7 +202,7 @@ class OkxDexWebSocketMarketProvider:
             )
         except asyncio.CancelledError:
             raise
-        except (WebSocketException, OSError, TimeoutError):
+        except _EXPECTED_WEBSOCKET_FAILURES:
             await self._drop_connection(state="degraded_recoverable")
             self._record_recoverable_error(category="transport")
             raise
@@ -244,7 +255,7 @@ class OkxDexWebSocketMarketProvider:
                 raise
             except _OkxDexWsMissingPong:
                 await self._reconnect_after_recoverable_error("missing_pong")
-            except (WebSocketException, OSError, TimeoutError) as exc:
+            except _EXPECTED_WEBSOCKET_FAILURES as exc:
                 await self._reconnect_after_recoverable_error(
                     "recv_timeout" if isinstance(exc, TimeoutError) else "transport"
                 )
@@ -345,7 +356,7 @@ class OkxDexWebSocketMarketProvider:
             await self.ensure_connected()
         except asyncio.CancelledError:
             raise
-        except (WebSocketException, OSError, TimeoutError, OkxDexWsClientError) as exc:
+        except _EXPECTED_RECONNECT_FAILURES as exc:
             raise _OkxDexWsReconnectFailed("OKX DEX WS reconnect failed") from exc
 
     def _record_recoverable_error(self, *, category: str) -> None:
@@ -445,7 +456,7 @@ async def _close_websocket(websocket: Any | None) -> None:
     except TimeoutError:
         close_task.cancel()
         logger.warning("OKX DEX WS close timed out | timeout_seconds={}", OKX_DEX_WS_CLOSE_TIMEOUT_SECONDS)
-    except (WebSocketException, OSError) as exc:
+    except _EXPECTED_WEBSOCKET_FAILURES as exc:
         close_task.cancel()
         logger.warning("OKX DEX WS close raised | error={}", exc)
 

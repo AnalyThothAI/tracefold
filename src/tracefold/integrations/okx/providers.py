@@ -3,6 +3,8 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, Protocol, cast
 
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
+
 from tracefold.app.provider_types import OkxProviderBundle
 from tracefold.integrations.okx.chains import OKX_CHAIN_INDEX_TO_CHAIN, OKX_CHAIN_TO_CHAIN_INDEX
 from tracefold.integrations.okx.dex_client import OkxDexClient
@@ -27,6 +29,15 @@ from tracefold.market import (
     canonical_chain_id,
 )
 from tracefold.platform.config.settings import Settings
+
+_EXPECTED_OKX_WS_TRANSPORT_ERRORS = (
+    OSError,
+    TimeoutError,
+    ConnectionClosed,
+    InvalidHandshake,
+    PayloadTooBig,
+    ProtocolError,
+)
 
 _DEX_WS_SUBSCRIPTION_LIMIT = 100
 
@@ -117,15 +128,15 @@ class OkxDexWebSocketMarketProviderAdapter:
             )
         try:
             await self._provider.replace_subscriptions(mapped_targets)
-        except OkxDexWsClientError as exc:
-            raise MarketStreamExpectedError(str(exc)) from exc
+        except (OkxDexWsClientError, *_EXPECTED_OKX_WS_TRANSPORT_ERRORS) as exc:
+            raise MarketStreamExpectedError(_stream_error_code(exc)) from exc
 
     async def iter_price_info(self):
         try:
             async for update in self._provider.iter_price_info():
                 yield _domain_dex_market_fact_update(update)
-        except OkxDexWsClientError as exc:
-            raise MarketStreamExpectedError(str(exc)) from exc
+        except (OkxDexWsClientError, *_EXPECTED_OKX_WS_TRANSPORT_ERRORS) as exc:
+            raise MarketStreamExpectedError(_stream_error_code(exc)) from exc
 
     async def aclose(self) -> None:
         await self._provider.aclose()
@@ -137,6 +148,12 @@ class OkxDexWebSocketMarketProviderAdapter:
 
     def connection_state_payload(self) -> dict[str, Any]:
         return self._provider.connection_state_payload()
+
+
+def _stream_error_code(exc: Exception) -> str:
+    if isinstance(exc, OkxDexWsClientError):
+        return str(exc)
+    return "okx_dex_ws_transport_failed"
 
 
 def wire_okx_provider_bundle(settings: Settings) -> OkxProviderBundle:

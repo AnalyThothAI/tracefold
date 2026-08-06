@@ -201,8 +201,13 @@ in one setup round trip, so PostgreSQL is the native deadline authority for all
 SQL in that session. Transaction exit restores the connection automatically;
 there is no session reset round trip. Awaiting DB, CPU, finite-operation, and
 model work adds only a bounded completion grace so the native result wins at
-its deadline; a future that remains alive beyond that grace is fatal. Projection
-turns therefore have phase-native deadlines and no aggregate fatal watchdog.
+its deadline. A DB, model, CPU, cleanup, or otherwise unclassified future that
+remains alive beyond that grace is fatal. Only an explicitly classified true
+external provider seam may translate a finite-operation overrun into its
+existing durable retry, degradation, or terminal policy; doing so never
+releases the shared capability permit before the underlying future actually
+finishes. Projection turns therefore have phase-native deadlines and no
+aggregate fatal watchdog.
 
 Projection claim leases cover the complete legal phase envelope: Radar uses
 45 seconds, while Profile and Macro use 30 seconds each. The fixed-period News

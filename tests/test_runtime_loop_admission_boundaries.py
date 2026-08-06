@@ -262,6 +262,31 @@ def test_market_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
     assert result.skipped_reasons == {"provider_timeout": 1}
 
 
+def test_market_cex_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
+    class _OverrunFiniteOperations:
+        async def run(self, *_args, **_kwargs):
+            raise ResourceOperationOverrun("resource_operation_overrun:market_tick_poll_cex")
+
+    poll = object.__new__(MarketTickPoll)
+    poll.cex_market = SimpleNamespace(tickers=lambda **_kwargs: ())
+    poll.finite_operations = _OverrunFiniteOperations()
+
+    result = asyncio.run(
+        poll._poll_cex_targets_async(
+            [
+                SimpleNamespace(
+                    target_id="binance:BTCUSDT",
+                    exchange="binance",
+                    instrument="BTCUSDT",
+                )
+            ]
+        )
+    )
+
+    assert result.ticks == []
+    assert result.skipped_reasons == {"provider_timeout": 1}
+
+
 def test_macro_provider_overrun_publishes_a_bounded_source_failure_without_releasing_claim() -> None:
     claim = {"target_key": "fred:gdp"}
 

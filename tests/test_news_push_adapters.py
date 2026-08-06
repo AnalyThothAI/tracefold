@@ -20,7 +20,7 @@ from tracefold.integrations.feishu import (
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.news import NewsPushDeliveryError
 from tracefold.platform.config.settings import NewsPushSettings, Settings, default_config_yaml
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 _PREPARE_DEADLINE_MS = 4_102_444_800_000
@@ -719,6 +719,33 @@ def test_translation_admission_timeout_immediately_freezes_original_fallback() -
     assert "translation_attempted_at_ms" not in prepared.payload["presentation"]
     assert "translation_duration_ms" not in prepared.payload["presentation"]
     assert fenced is False
+
+
+def test_translation_operation_overrun_freezes_original_fallback_without_retry() -> None:
+    class _OverrunFiniteOperations:
+        async def run(self, operation_name, _function, /, *_args, **kwargs):
+            kwargs["on_submitted"]()
+            raise ResourceOperationOverrun(f"resource_operation_overrun:{operation_name}")
+
+    delivery = _translation_delivery(
+        lambda _request: _translation_response("比特币 ETF 录得资金流入"),
+        finite_operations=_OverrunFiniteOperations(),
+    )
+    try:
+        prepared = asyncio.run(
+            delivery.prepare(
+                _news_push_source_payload(),
+                deadline_ms=_PREPARE_DEADLINE_MS,
+            )
+        )
+    finally:
+        delivery.close()
+
+    assert prepared.translation_status == "unavailable"
+    assert prepared.payload["presentation"]["fallback_code"] == "news_push_translation_timeout"
+    assert isinstance(prepared.payload["presentation"]["translation_attempted_at_ms"], int)
+    assert isinstance(prepared.payload["presentation"]["translation_duration_ms"], int)
+    assert prepared.payload["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
 
 
 def test_interrupted_translation_fallback_never_calls_the_provider_again() -> None:
