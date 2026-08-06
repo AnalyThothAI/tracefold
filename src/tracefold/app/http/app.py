@@ -160,16 +160,7 @@ def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:
 
 
 def _readiness_payload(runtime: ServeRuntime) -> tuple[dict[str, Any], int]:
-    status = runtime.status_payload()
-    db_status = status["db"]
-    reasons = [reason for reason in status["reasons"] if reason in {"database_unavailable", "database_schema_mismatch"}]
-    payload = {
-        "ok": bool(db_status["ok"]),
-        "reasons": reasons,
-        "store": "postgresql",
-        "db": db_status,
-        "composition": {"workers_runtime": status["workers_runtime"]},
-    }
+    payload = runtime.readiness_payload()
     return payload, 200 if payload["ok"] else 503
 
 

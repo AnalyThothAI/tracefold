@@ -7,7 +7,7 @@ from decimal import Decimal
 from tests.factories import make_event
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.app.provider_types import AssetMarketProviders
+from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.app.workers import _PooledIngestStore
 from tracefold.market import (

@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from tracefold.app.provider_types import AssetMarketProviders, OkxProviderBundle
+from tracefold.app.provider_ownership import configured_profile_provider_ids
 from tracefold.integrations.binance import providers as binance
-from tracefold.integrations.binance.providers import (
-    BinanceUsdmFuturesMarketProvider,
-    BinanceWeb3DexProfileProvider,
-)
 from tracefold.integrations.gmgn import providers as gmgn
 from tracefold.integrations.okx import providers as okx
 from tracefold.market import (
+    BINANCE_WEB3_PROFILE_PROVIDER,
+    GMGN_DEX_PROFILE_PROVIDER,
+    CexMarketProvider,
     DexProfileSource,
+    DexTokenDiscoveryProvider,
     DexTokenProfileProvider,
     DexTokenQuote,
     DexTokenQuoteProvider,
@@ -24,6 +25,15 @@ from tracefold.platform.config.settings import Settings
 
 class _SyncCloseProvider(Protocol):
     def close(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AssetMarketProviders:
+    cex_market: CexMarketProvider | None = None
+    dex_discovery_market: DexTokenDiscoveryProvider | None = None
+    dex_quote_market: DexTokenQuoteProvider | None = None
+    dex_profile_sources: tuple[DexProfileSource, ...] = ()
+    discovery_chain_ids: tuple[str, ...] = ()
 
 
 class FallbackDexQuoteProvider:
@@ -65,15 +75,19 @@ class FallbackDexQuoteProvider:
 
 
 def wire_asset_market(settings: Settings) -> AssetMarketProviders:
-    okx_bundle: OkxProviderBundle | None = None
-    binance_cex_market: BinanceUsdmFuturesMarketProvider | None = None
+    okx_discovery_market: DexTokenDiscoveryProvider | None = None
+    okx_quote_market: DexTokenQuoteProvider | None = None
+    binance_cex_market: CexMarketProvider | None = None
     gmgn_dex_market: object | None = None
-    binance_profile_market: BinanceWeb3DexProfileProvider | None = None
+    binance_profile_market: DexTokenProfileProvider | None = None
     try:
-        okx_bundle = okx.wire_okx_provider_bundle(settings)
-        binance_enabled = settings.providers.binance.enabled
+        profile_provider_ids = configured_profile_provider_ids(settings)
+        if settings.okx_dex_configured:
+            okx_discovery_market = okx.SerializedDiscoveryProvider(okx.okx_dex_discovery_market(settings))
+            okx_quote_market = okx.okx_dex_quote_market(settings)
+        binance_enabled = BINANCE_WEB3_PROFILE_PROVIDER in profile_provider_ids
         binance_cex_market = binance.binance_usdm_futures_market(settings) if binance_enabled else None
-        gmgn_dex_market = gmgn.gmgn_dex_market(settings) if settings.gmgn_configured else None
+        gmgn_dex_market = gmgn.gmgn_dex_market(settings) if GMGN_DEX_PROFILE_PROVIDER in profile_provider_ids else None
         binance_profile_market = binance.binance_web3_profile_market(settings) if binance_enabled else None
         dex_profile_sources = _dex_profile_sources(
             gmgn_dex_market=gmgn_dex_market,
@@ -81,34 +95,20 @@ def wire_asset_market(settings: Settings) -> AssetMarketProviders:
         )
         return AssetMarketProviders(
             cex_market=binance_cex_market,
-            dex_discovery_market=okx_bundle.dex_discovery_market,
+            dex_discovery_market=okx_discovery_market,
             dex_quote_market=_dex_quote_market(
                 primary=gmgn_dex_market,
-                fallback=okx_bundle.dex_quote_market,
+                fallback=okx_quote_market,
             ),
             dex_profile_sources=dex_profile_sources,
-            stream_dex_market=okx_bundle.stream_dex_market,
             discovery_chain_ids=okx.okx_chain_indexes_to_chain_ids(settings.providers.okx.dex_chain_indexes),
-            provider_health=(
-                okx_bundle.health,
-                gmgn.gmgn_provider_health(settings),
-                binance.binance_provider_health(settings),
-            ),
         )
     except Exception as exc:
-        okx_cleanup_providers = (
-            (
-                okx_bundle.dex_discovery_market,
-                okx_bundle.dex_quote_market,
-                okx_bundle.stream_dex_market,
-            )
-            if okx_bundle is not None
-            else ()
-        )
         _close_partial_providers(
             exc,
             binance_cex_market,
-            *okx_cleanup_providers,
+            okx_discovery_market,
+            okx_quote_market,
             gmgn_dex_market,
             binance_profile_market,
         )
@@ -131,15 +131,15 @@ def _dex_quote_market(
 def _dex_profile_sources(
     *,
     gmgn_dex_market: object | None,
-    binance_profile_market: BinanceWeb3DexProfileProvider | None,
+    binance_profile_market: DexTokenProfileProvider | None,
 ) -> tuple[DexProfileSource, ...]:
     sources: list[DexProfileSource] = []
     if gmgn_dex_market is not None:
         sources.append(
-            DexProfileSource(provider="gmgn_dex_profile", market=_require_token_profile_source(gmgn_dex_market))
+            DexProfileSource(provider=GMGN_DEX_PROFILE_PROVIDER, market=_require_token_profile_source(gmgn_dex_market))
         )
     if binance_profile_market is not None:
-        sources.append(DexProfileSource(provider="binance_web3_profile", market=binance_profile_market))
+        sources.append(DexProfileSource(provider=BINANCE_WEB3_PROFILE_PROVIDER, market=binance_profile_market))
     return tuple(sources)
 
 
@@ -184,6 +184,7 @@ def _close_partial_providers(error: BaseException, *providers: object | None) ->
 
 
 __all__ = [
+    "AssetMarketProviders",
     "FallbackDexQuoteProvider",
     "wire_asset_market",
 ]

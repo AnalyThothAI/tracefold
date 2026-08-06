@@ -19,6 +19,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
 
 from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
+from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
@@ -1123,9 +1124,7 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "probe_rtt_at_most_1_second": max(probe_rtts) <= 1_000,
         "container_memory_below_2_gib": max(container_memory_values) < _MAX_RSS_BYTES,
         "postgres_connections_at_most_4": max(int(row["worker_connections"]) for row in postgres_samples) <= 4,
-        "postgres_lock_wait_within_budget": max(
-            float(row["max_lock_wait_seconds"]) for row in postgres_samples
-        )
+        "postgres_lock_wait_within_budget": max(float(row["max_lock_wait_seconds"]) for row in postgres_samples)
         <= WORKER_DATABASE_LOCK_TIMEOUT_SECONDS,
         "postgres_transaction_within_steady_budget": max(
             float(row["max_transaction_seconds"]) for row in postgres_samples
@@ -1428,7 +1427,7 @@ def _collection_metadata(settings: Any, *, repository_root: Path) -> dict[str, A
         "configuration": {
             "config_path": str((settings.app_home / "config.yaml").resolve()),
             "redacted_enablement": {
-                "collector_enabled": bool(settings.upstream.channels),
+                "collector_enabled": gmgn_stream_enabled(settings),
                 "news_enabled": bool(settings.news.enabled),
                 "macro_enabled": bool(settings.providers.macro_sources.enabled),
                 "model_configured": bool(

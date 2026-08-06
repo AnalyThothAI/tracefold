@@ -214,6 +214,7 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
     profile = object.__new__(AssetProfileRefresh)
     profile.db = database
     profile.dex_profile_sources = (SimpleNamespace(provider="gmgn_dex_profile"),)
+    profile._inactive_cleanup_complete = True
     profile._source_cursor = 0
 
     image = object.__new__(TokenImageMirror)
@@ -514,6 +515,7 @@ def test_asset_profile_provider_overrun_uses_existing_failure_branch_without_rel
         runtime_id="runtime",
         dex_profile_sources=(DexProfileSource(provider="gmgn_dex_profile", market=object()),),
     )
+    worker._inactive_cleanup_complete = True
 
     assert asyncio.run(worker.turn(now_ms=1_000)) == "failed"
     assert isinstance(database.error, MarketProviderExpectedError)
@@ -564,6 +566,7 @@ def test_asset_profile_releases_claim_when_publication_admission_is_saturated() 
             ),
         ),
     )
+    profile._inactive_cleanup_complete = True
 
     assert asyncio.run(profile.turn(now_ms=1)) is None
     assert database.operations == [

@@ -9,6 +9,10 @@ from typing import Any
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.http.exceptions import ApiUnavailable
 from tracefold.app.http.ws import PersistedLiveBroadcaster
+from tracefold.app.provider_operations import (
+    provider_operational_status,
+    provider_operational_status_unavailable,
+)
 from tracefold.app.repositories import RepositorySession
 from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import Settings
@@ -36,6 +40,41 @@ class ServeRuntime:
 
     def status_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
+        runtime = self._runtime_status_payload(now_ms=measured_at_ms)
+        if not runtime["db"]["ok"]:
+            providers = provider_operational_status_unavailable(reason="database_unavailable")
+        else:
+            try:
+                with self.repositories(lane="ordinary") as repos:
+                    providers = provider_operational_status(
+                        repos.conn,
+                        settings=self.settings,
+                        now_ms=measured_at_ms,
+                    )
+            except Exception:
+                providers = provider_operational_status_unavailable(reason="provider_status_query_failed")
+        return {
+            "measured_at_ms": measured_at_ms,
+            "runtime": runtime,
+            "providers": providers,
+        }
+
+    def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
+        measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
+        runtime = self._runtime_status_payload(now_ms=measured_at_ms)
+        db_status = runtime["db"]
+        reasons = [
+            reason for reason in runtime["reasons"] if reason in {"database_unavailable", "database_schema_mismatch"}
+        ]
+        return {
+            "ok": bool(db_status["ok"]),
+            "reasons": reasons,
+            "store": "postgresql",
+            "db": db_status,
+            "composition": {"workers_runtime": runtime["workers_runtime"]},
+        }
+
+    def _runtime_status_payload(self, *, now_ms: int) -> dict[str, Any]:
         expected_revision = latest_migration_version()
         runtime_query_failed = False
         runtime_row: dict[str, Any] | None = None
@@ -71,7 +110,7 @@ class ServeRuntime:
         }
         runtime_status = workers_runtime_status(
             runtime_row,
-            now_ms=measured_at_ms,
+            now_ms=now_ms,
             query_failed=runtime_query_failed,
         )
         reasons: list[str] = []
@@ -85,7 +124,6 @@ class ServeRuntime:
         return {
             "ok": bool(db_status["ok"]) and runtime_status["state"] == "running",
             "reasons": reasons,
-            "measured_at_ms": measured_at_ms,
             "db": db_status,
             "workers_runtime": runtime_status,
         }
@@ -111,8 +149,8 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
                 default_replay_limit=settings.api.replay_limit,
             ),
         )
-        status = runtime.status_payload()
-        if status["db"]["error_code"] == "database_unavailable":
+        readiness = runtime.readiness_payload()
+        if readiness["db"]["error_code"] == "database_unavailable":
             raise RuntimeError("postgres health check failed")
         return runtime
     except Exception:

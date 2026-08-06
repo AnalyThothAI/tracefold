@@ -77,9 +77,12 @@ readiness endpoint, or missing console.
 The release acceptance uses an isolated empty home and a distinct empty Compose
 volume. The first `make up` must reach Alembic head with healthy Serve/Workers
 and real console HTML; the second must preserve config/password hashes and a
-database sentinel. Missing optional live credentials must appear as capability
-degradation rather than startup failure or fake data. A failed startup keeps
-its containers/logs available for `make logs` and returns non-zero.
+database sentinel, leave the PostgreSQL container identity and start time
+unchanged, and run migration, Serve, and Workers from one image whose runtime
+and OCI revisions match the checked-out commit. Missing optional live
+credentials must appear as capability degradation rather than startup failure
+or fake data. A failed startup keeps its containers/logs available for
+`make logs` and returns non-zero.
 
 The focused maintained checks include:
 

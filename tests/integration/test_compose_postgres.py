@@ -48,6 +48,18 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
         "postgres_migrate_password",
     ]
 
+    shared_app_image = "${COMPOSE_PROJECT_NAME:-tracefold}-app:local"
+    shared_app_build = {
+        "context": ".",
+        "args": {
+            "TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}",
+        },
+        "secrets": ["github_token"],
+    }
+    for role in ("cutover", "migrate", "serve", "workers"):
+        assert services[role]["image"] == shared_app_image
+        assert services[role]["build"] == shared_app_build
+
     for role in ("serve", "workers"):
         depends = services[role]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"
@@ -59,9 +71,6 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
     assert services["workers"]["ports"] == ["${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"]
-    assert services["workers"]["build"]["args"] == {
-        "TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}",
-    }
     assert services["cutover"]["profiles"] == ["maintenance"]
     assert services["cutover"]["command"] == [
         "tracefold",

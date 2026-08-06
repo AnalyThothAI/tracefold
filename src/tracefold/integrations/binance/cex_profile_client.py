@@ -4,7 +4,8 @@ from typing import Any
 
 import httpx
 
-PROVIDER = "binance_cex_profile"
+from tracefold.market import BINANCE_CEX_PROFILE_PROVIDER
+
 SOURCE = "binance_marketing_symbol_list"
 _SYMBOL_LIST_PATH = "/bapi/composite/v1/public/marketing/symbol/list"
 
@@ -54,7 +55,7 @@ class BinanceCexProfileClient:
             profiles.append(
                 {
                     "base_symbol": symbol,
-                    "provider": PROVIDER,
+                    "provider": BINANCE_CEX_PROFILE_PROVIDER,
                     "symbol": symbol,
                     "name": _name(item.get("name")) or symbol,
                     "logo_url": logo_url,

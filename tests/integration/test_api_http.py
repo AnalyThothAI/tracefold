@@ -2008,9 +2008,10 @@ def test_api_status_exposes_operational_state(tmp_path):
     assert body["ok"] is True
     data = body["data"]
     assert "handles" not in data
-    assert data["ok"] is False
-    assert data["reasons"] == ["runtime_missing"]
-    assert data["workers_runtime"] == {
+    assert set(data) == {"measured_at_ms", "runtime", "providers"}
+    assert data["runtime"]["ok"] is False
+    assert data["runtime"]["reasons"] == ["runtime_missing"]
+    assert data["runtime"]["workers_runtime"] == {
         "runtime_id": None,
         "runtime_version": None,
         "state": "unavailable",
@@ -2020,13 +2021,13 @@ def test_api_status_exposes_operational_state(tmp_path):
         "fatal_code": None,
         "unavailable_reason": "runtime_missing",
     }
-    assert "workers" not in data
-    assert "worker_lanes" not in data
-    assert "collector" not in data
-    assert "enrichment" not in data
-    assert "notifications" not in data
-
-    assert "snapshot_gate" not in data
+    assert data["providers"]["status"] in {"ok", "degraded"}
+    assert "workers" not in data["runtime"]
+    assert "worker_lanes" not in data["runtime"]
+    assert "collector" not in data["runtime"]
+    assert "enrichment" not in data["runtime"]
+    assert "notifications" not in data["runtime"]
+    assert "snapshot_gate" not in data["runtime"]
 
 
 def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
@@ -2043,14 +2044,70 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     assert readiness.json()["reasons"] == ["database_unavailable"]
     assert response.status_code == 200
     assert body["ok"] is True
-    assert body["data"]["ok"] is False
-    assert body["data"]["reasons"] == [
+    assert body["data"]["runtime"]["ok"] is False
+    assert body["data"]["runtime"]["reasons"] == [
         "database_unavailable",
         "runtime_status_query_failed",
     ]
-    assert body["data"]["db"]["ok"] is False
-    assert body["data"]["workers_runtime"]["state"] == "unavailable"
+    assert body["data"]["runtime"]["db"]["ok"] is False
+    assert body["data"]["runtime"]["workers_runtime"]["state"] == "unavailable"
+    assert body["data"]["providers"] == {
+        "status": "unavailable",
+        "reasons": ["database_unavailable"],
+        "items": [],
+    }
     assert "news" not in body["data"]
+
+
+def test_api_status_separates_provider_freshness_circuit_and_unowned_backlog_from_readiness(
+    tmp_path,
+):
+    settings = make_settings(tmp_path)
+    settings.providers.binance.enabled = False
+    with write_repositories() as repos, repos.transaction():
+        repos.asset_profile_refresh_targets.enqueue_targets(
+            [
+                {
+                    "provider": "binance_web3_profile",
+                    "target_type": "Asset",
+                    "target_id": "asset:dex:sol:test-provider-status",
+                    "chain_id": "sol",
+                    "address": "test-provider-status",
+                    "symbol": "TEST",
+                    "payload_hash": "sha256:provider-status",
+                    "source_watermark_ms": 1,
+                    "heat_tier": "hot",
+                    "priority": 10,
+                }
+            ],
+            reason="provider_status_test",
+            now_ms=1,
+            due_at_ms=1,
+        )
+        repos.provider_circuits.open(
+            provider="okx_dex_search",
+            error="provider status test",
+            now_ms=1,
+            retry_ms=60_000,
+        )
+
+    app = create_app(settings=settings)
+    with TestClient(app) as client:
+        readiness = client.get("/readyz")
+        response = client.get("/api/status", headers={"Authorization": "Bearer secret"})
+
+    assert readiness.status_code == 200
+    data = response.json()["data"]
+    assert data["providers"]["status"] == "degraded"
+    providers = {item["provider"]: item for item in data["providers"]["items"]}
+    assert providers["gmgn_direct_ws"]["freshness"] == "no_evidence"
+    assert providers["gmgn_direct_ws"]["reasons"] == ["source_stale"]
+    assert providers["okx_dex_search"]["circuit_status"] == "open"
+    assert providers["okx_dex_search"]["reasons"] == ["circuit_open"]
+    assert "last_error" not in providers["okx_dex_search"]
+    assert providers["binance_web3_profile"]["owned"] is False
+    assert providers["binance_web3_profile"]["has_backlog"] is True
+    assert providers["binance_web3_profile"]["reasons"] == ["unowned_backlog"]
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

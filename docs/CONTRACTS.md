@@ -120,8 +120,10 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/status` combines the serve startup/schema snapshot with persisted
-  singleton `workers_runtime`; stale worker heartbeats fail closed as unavailable.
+- `/api/status` separates process/database/Workers runtime truth from Provider
+  operations. `runtime` fails closed on stale worker heartbeats; `providers`
+  reports configured ownership, durable circuit state, continuous-source
+  freshness, and owned or unowned queue backlog without calling an upstream.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no model configuration, model policy, capacity counters,
@@ -139,7 +141,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 
 | Family | Routes | Source of data |
 |---|---|---|
-| Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition and worker status |
+| Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
@@ -437,6 +439,12 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
+
+`queue-inspect`, `projection-status`, `factor-diagnostics`,
+`validate-projections`, and `audit-token-intent` are strict Serve-role reads.
+They do not acquire the maintenance lock, so operators can inspect the running
+singleton without interrupting it. Repair and rebuild commands remain
+exclusive maintenance operations.
 
 `db hard-cut --execute` is the current operator-authorized in-place migration
 path. It requires the legacy bootstrap DSN/password file, refuses active

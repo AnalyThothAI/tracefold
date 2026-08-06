@@ -27,13 +27,17 @@ class ProfileProjectionCandidate:
         db: Any,
         cpu: Any,
         runtime_id: str,
+        active_profile_provider_ids: tuple[str, ...],
         stable_order: int = 20,
     ) -> None:
         self.db = db
         self.cpu = cpu
         self.runtime_id = runtime_id
         self.stable_order = int(stable_order)
-        self.service = ProfileProjectionService(db=db)
+        self.service = ProfileProjectionService(
+            db=db,
+            active_profile_provider_ids=active_profile_provider_ids,
+        )
 
     async def peek(
         self,

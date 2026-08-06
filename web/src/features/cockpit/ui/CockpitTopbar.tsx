@@ -106,8 +106,11 @@ function healthAnomaly({
   if (statusError) {
     return "状态检查失败";
   }
-  if (status && !status.ok) {
-    return status.reasons[0] || "服务未就绪";
+  if (status && !status.runtime.ok) {
+    return status.runtime.reasons[0] || "服务未就绪";
+  }
+  if (status && status.providers.status !== "ok") {
+    return status.providers.reasons[0] || "Provider 状态不可用";
   }
   if (socketStatus !== "connected") {
     return `实时连接 ${socketStatus}`;

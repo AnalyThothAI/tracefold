@@ -339,6 +339,80 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "params": (),
     },
     {
+        "name": "provider_gmgn_freshness",
+        "sql": """
+            SELECT received_at_ms
+            FROM raw_frames
+            WHERE source = 'gmgn'
+            ORDER BY received_at_ms DESC
+            LIMIT 1
+        """,
+        "params": (),
+    },
+    {
+        "name": "provider_circuits",
+        "sql": """
+            SELECT provider, status, consecutive_failures, next_probe_at_ms
+            FROM provider_circuit_state
+            WHERE provider = ANY(%s::text[])
+            ORDER BY provider
+        """,
+        "params": (
+            [
+                "gmgn_direct_ws",
+                "gmgn_dex_profile",
+                "binance_web3_profile",
+                "okx_dex_search",
+            ],
+        ),
+    },
+    {
+        "name": "provider_backlogs",
+        "sql": """
+            WITH providers(provider) AS (
+              SELECT unnest(%s::text[])
+            )
+            SELECT
+              provider,
+              (
+                SELECT profile_queue.provider
+                FROM asset_profile_refresh_targets profile_queue
+                WHERE profile_queue.provider = providers.provider
+                  AND profile_queue.terminal_reason IS NULL
+                ORDER BY
+                  profile_queue.provider,
+                  profile_queue.priority,
+                  profile_queue.due_at_ms,
+                  profile_queue.updated_at_ms,
+                  profile_queue.target_type,
+                  profile_queue.target_id
+                LIMIT 1
+              ) IS NOT NULL OR (
+                SELECT discovery_queue.provider
+                FROM token_discovery_dirty_lookup_keys discovery_queue
+                WHERE discovery_queue.provider = providers.provider
+                ORDER BY
+                  discovery_queue.provider,
+                  discovery_queue.refresh_priority,
+                  discovery_queue.due_at_ms,
+                  discovery_queue.latest_seen_ms DESC,
+                  discovery_queue.updated_at_ms,
+                  discovery_queue.lookup_key
+                LIMIT 1
+              ) IS NOT NULL AS has_backlog
+            FROM providers
+            ORDER BY provider
+        """,
+        "params": (
+            [
+                "gmgn_direct_ws",
+                "gmgn_dex_profile",
+                "binance_web3_profile",
+                "okx_dex_search",
+            ],
+        ),
+    },
+    {
         "name": "persisted_live_after_cursor",
         "sql": """
             SELECT cursor, payload_json
@@ -355,7 +429,13 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
 PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/readyz": ("readiness_schema",),
     "/ws": ("persisted_live_after_cursor",),
-    "/api/status": ("workers_runtime",),
+    "/api/status": (
+        "readiness_schema",
+        "workers_runtime",
+        "provider_gmgn_freshness",
+        "provider_circuits",
+        "provider_backlogs",
+    ),
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
     "/api/token-radar": ("token_radar_latest", "token_profile_target"),

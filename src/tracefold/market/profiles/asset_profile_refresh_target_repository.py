@@ -177,6 +177,44 @@ class AssetProfileRefreshTargetRepository:
         )
         return {"targets": changed}
 
+    def delete_inactive_provider_targets(
+        self,
+        *,
+        inactive_providers: Iterable[str],
+        limit: int,
+    ) -> int:
+        providers = tuple(
+            dict.fromkeys(_required_text(provider, field_name="provider") for provider in inactive_providers)
+        )
+        if not providers:
+            return 0
+        cursor = self.conn.execute(
+            """
+            WITH candidates AS (
+              SELECT provider, target_type, target_id
+              FROM asset_profile_refresh_targets
+              WHERE provider = ANY(%s::text[])
+                AND terminal_reason IS NULL
+              ORDER BY provider, priority, due_at_ms, updated_at_ms, target_type, target_id
+              LIMIT %s
+              FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM asset_profile_refresh_targets queue
+            USING candidates
+            WHERE queue.provider = candidates.provider
+              AND queue.target_type = candidates.target_type
+              AND queue.target_id = candidates.target_id
+            """,
+            (
+                list(providers),
+                require_positive_int(limit, error_code="asset_profile_inactive_provider_delete_limit_required"),
+            ),
+        )
+        return mutation_count(
+            cursor,
+            error_code="asset_profile_inactive_provider_delete_count_invalid",
+        )
+
     def enqueue_missing_token_radar_current_targets_for_ops(
         self,
         *,

@@ -27,12 +27,14 @@ make logs
 make down
 ```
 
-`make up` preflights `uv`, Docker, Compose, `curl`, and daemon access, runs
-idempotent initialization, builds the Python/React image, starts PostgreSQL,
-requires the one-shot migration to succeed, starts Serve and Workers, and then
-runs the same fail-closed status gate. On failure, use `make logs`; rerunning
-`make up` preserves operator config, four password files, and named-volume data.
-`make down` stops containers without deleting that volume.
+`make up` preflights Git, `uv`, Docker, Compose, `curl`, and daemon access, runs
+idempotent initialization, builds one shared Python/React image, starts
+PostgreSQL when absent, requires the one-shot migration to succeed, starts
+Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
+recreates only migration, Serve, and Workers; it does not recreate a running
+PostgreSQL container. On failure, use `make logs`. Operator config, four
+password files, and named-volume data remain in place. `make down` stops
+containers without deleting that volume.
 
 Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
 creates a non-login owner plus the separate Serve, Workers, and migrate roles
@@ -53,13 +55,18 @@ Compose command whose exit status ignores an unhealthy Worker.
 | `/healthz` | process liveness | none |
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
 | Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
-| `/api/status` | serve snapshot plus persisted worker status | bounded control read |
+| `/api/status` | separate runtime truth and persisted Provider operations | bounded control plus ordinary read |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
-Queue backlog, optional provider degradation, and a missing Fed document
-analysis do not make the HTTP process unready. Domain freshness and native
-model-job state remain visible through their own API and operator diagnostics.
+Provider degradation and a missing Fed document analysis do not make the HTTP
+process unready. `/api/status.providers` derives configured ownership,
+continuous-source freshness, durable circuit state, and queue backlog from
+PostgreSQL; it never probes an upstream. Only adapters with a durable
+operational signal appear there, and backlog is an indexed existence signal;
+use `tracefold ops queue-inspect` for exact on-demand queue detail. Domain
+freshness and native model-job state remain visible through their own API and
+operator diagnostics.
 
 ## Worker ownership
 

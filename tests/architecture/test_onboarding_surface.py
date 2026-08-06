@@ -20,7 +20,12 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
         "docker-logs",
         "docker-down",
     }.isdisjoint(targets)
-    assert "--force-recreate" in makefile
+    assert "docker compose build migrate" in makefile
+    assert makefile.count("docker compose build ") == 1
+    assert "docker compose up -d --no-build --force-recreate --wait" in makefile
+    assert "--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers" in makefile
+    assert "docker compose up -d --build --force-recreate" not in makefile
+    assert "git rev-parse --verify HEAD 2>/dev/null || true" not in makefile
 
 
 def test_status_rejects_a_still_running_migration(tmp_path: Path) -> None:

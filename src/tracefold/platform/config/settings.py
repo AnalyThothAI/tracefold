@@ -156,7 +156,6 @@ class OkxProviderConfig(BaseModel):
 
     dex_base_url: str = "https://web3.okx.com"
     dex_chain_indexes: tuple[str, ...] = ("501", "1", "56", "8453", "607")
-    dex_ws_url: str = "wss://wsdex.okx.com/ws/v6/dex"
     dex_api_key: str | None = None
     dex_secret_key: str | None = None
     dex_passphrase: str | None = None
@@ -180,11 +179,6 @@ class OkxProviderConfig(BaseModel):
             return None
         normalized = str(value).strip()
         return normalized or None
-
-    @field_validator("dex_ws_url", mode="before")
-    @classmethod
-    def parse_ws_url(cls, value: Any) -> str:
-        return str(value or "wss://wsdex.okx.com/ws/v6/dex").strip()
 
 
 class BinanceProviderConfig(BaseModel):
@@ -345,15 +339,6 @@ class Settings(BaseModel):
     def okx_dex_configured(self) -> bool:
         return bool(self.providers.okx.dex_base_url)
 
-    @property
-    def okx_dex_ws_configured(self) -> bool:
-        return bool(
-            self.providers.okx.dex_ws_url
-            and self.providers.okx.dex_api_key
-            and self.providers.okx.dex_secret_key
-            and self.providers.okx.dex_passphrase
-        )
-
     @field_validator("ws_token", mode="before")
     @classmethod
     def parse_optional_ws_token(cls, value: Any) -> str | None:
@@ -430,7 +415,6 @@ providers:
   okx:
     dex_base_url: "https://web3.okx.com"
     dex_chain_indexes: ["501", "1", "56", "8453", "607"]
-    dex_ws_url: "wss://wsdex.okx.com/ws/v6/dex"
     dex_api_key:
     dex_secret_key:
     dex_passphrase:

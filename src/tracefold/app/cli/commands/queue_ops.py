@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from tracefold.app.queue_health import fetch_queue_table_health
+from tracefold.app.queue_health import fetch_queue_table_health, queue_tables_for_owner
 from tracefold.market import DISCOVERY_PROVIDER
 from tracefold.platform.postgres.projection_frontier import (
     FRONTIER_SPECS,
@@ -16,18 +16,6 @@ from tracefold.platform.postgres.queue_terminal import (
 )
 
 QUEUE_RETRY_TRANSITIONS: Mapping[tuple[str, str], Callable[..., dict[str, Any]]]
-
-_QUEUE_TABLES_BY_OWNER: dict[str, tuple[str, ...]] = {
-    "event_anchor_backfill": ("event_anchor_backfill_jobs",),
-    "resolution_refresh": ("token_discovery_dirty_lookup_keys",),
-    "asset_profile_refresh": ("asset_profile_refresh_targets",),
-    "token_image_mirror": ("token_image_source_dirty_targets",),
-    "radar_projection": ("radar_projection_frontiers",),
-    "profile_projection": ("token_profile_projection_frontiers",),
-    "macro_projection": ("macro_module_frontiers",),
-    "news_brief": ("news_brief_runs",),
-    "macro_document_analysis": ("macro_document_analysis_jobs",),
-}
 
 
 def handle_queue_inspect(args: Any, repos: Any) -> tuple[int, dict[str, Any]]:
@@ -153,10 +141,7 @@ def _inspect_active_queues(
     source_table: str | None,
     limit: int,
 ) -> dict[str, Any]:
-    if owner_key is not None:
-        selected_tables = list(_QUEUE_TABLES_BY_OWNER.get(owner_key, ()))
-    else:
-        selected_tables = sorted({table for tables in _QUEUE_TABLES_BY_OWNER.values() for table in tables})
+    selected_tables = list(queue_tables_for_owner(owner_key))
     if source_table is not None:
         selected_tables = [table for table in selected_tables if table == source_table]
     limit = max(1, min(500, int(limit)))
@@ -165,7 +150,7 @@ def _inspect_active_queues(
     items = [
         {
             "source_table": table,
-            "queue_health": fetch_queue_table_health(conn, table, now_ms=now_ms, owner_key=owner_key),
+            "queue_health": fetch_queue_table_health(conn, table, now_ms=now_ms),
         }
         for table in selected_tables
     ]

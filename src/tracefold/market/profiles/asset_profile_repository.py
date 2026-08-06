@@ -5,10 +5,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from tracefold.market.profiles.profile_source_ids import GMGN_DEX_PROFILE_PROVIDER
 from tracefold.platform.postgres.json_safety import postgres_safe_json, postgres_safe_text
-
-GMGN_DEX_PROFILE_PROVIDER = "gmgn_dex_profile"
-BINANCE_WEB3_PROFILE_PROVIDER = "binance_web3_profile"
 
 _NON_READY_STATUSES = {"missing", "unsupported", "error"}
 

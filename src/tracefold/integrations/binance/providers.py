@@ -11,9 +11,7 @@ from tracefold.integrations.binance.web3_token_client import BinanceWeb3TokenCli
 from tracefold.market import (
     CexTicker,
     DexTokenProfile,
-    MarketCapability,
     MarketProviderExpectedError,
-    ProviderHealth,
     canonical_chain_address,
 )
 from tracefold.platform.config.settings import Settings
@@ -95,19 +93,6 @@ def binance_usdm_futures_market(settings: Settings) -> BinanceUsdmFuturesMarketP
     )
 
 
-def binance_provider_health(settings: Settings) -> ProviderHealth:
-    capabilities = (
-        frozenset({MarketCapability.PROFILE_CEX, MarketCapability.PROFILE_DEX_EXACT, MarketCapability.QUOTE_CEX})
-        if settings.providers.binance.enabled
-        else frozenset()
-    )
-    return ProviderHealth(
-        provider="binance",
-        capabilities=capabilities,
-        configured=settings.providers.binance.enabled,
-    )
-
-
 def _cex_ticker(ticker: BinanceUsdmTicker24hr) -> CexTicker:
     return CexTicker(
         inst_id=ticker.symbol,
@@ -122,7 +107,6 @@ def _cex_ticker(ticker: BinanceUsdmTicker24hr) -> CexTicker:
 __all__ = [
     "BinanceUsdmFuturesMarketProvider",
     "BinanceWeb3DexProfileProvider",
-    "binance_provider_health",
     "binance_usdm_futures_market",
     "binance_web3_profile_market",
 ]

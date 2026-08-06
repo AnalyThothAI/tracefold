@@ -16,16 +16,19 @@ from loguru import logger
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.llm import configured_chat_model, llm_is_configured
-from tracefold.app.market_providers import wire_asset_market
+from tracefold.app.market_providers import (
+    AssetMarketProviders,
+    wire_asset_market,
+)
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
-from tracefold.app.provider_types import AssetMarketProviders
+from tracefold.app.provider_ownership import configured_profile_provider_ids, gmgn_stream_enabled
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import prewarm_worker_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
-from tracefold.integrations.gmgn.providers import gmgn_upstream_factory
+from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
@@ -47,7 +50,6 @@ from tracefold.market import (
     EventMarketCaptureService,
     IngestService,
     MarketTickPoll,
-    MarketTickStream,
     ProfileProjectionCandidate,
     RadarProjectionCandidate,
     ResolutionRefresh,
@@ -147,6 +149,7 @@ class _ProbeState:
 @dataclass(slots=True)
 class _Components:
     providers: AssetMarketProviders
+    asset_profile_refresh: AssetProfileRefresh
     collector: CollectorService | None
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
@@ -156,7 +159,6 @@ class _Components:
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
     market_poll: MarketTickPoll | None
-    market_stream: MarketTickStream | None
     projections: tuple[Any, ...]
     models: tuple[Any, ...]
     document_model: MacroDocumentAnalysisService | None
@@ -308,16 +310,6 @@ async def run_workers(settings: Settings) -> None:
                             on_fatal=enter_fatal,
                         ),
                         name="gmgn-stream",
-                    )
-                )
-            if components.market_stream is not None:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            components.market_stream.run(stop_event=work_stop_event),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="okx-market-stream",
                     )
                 )
             if components.news is not None and components.news.opennews_enabled:
@@ -736,10 +728,12 @@ async def _wire_components(
         event_anchor_active_window_ms=_EVENT_ANCHOR_ACTIVE_WINDOW_MS,
     )
     collector: CollectorService | None = None
-    upstream_factory = gmgn_upstream_factory(settings)
-    if upstream_factory is not None:
+    if gmgn_stream_enabled(settings):
         collector = CollectorService(store=ingest, upstream_client=None, db=db)
-        collector.upstream_client = upstream_factory(collector.handle_frame)
+        collector.upstream_client = gmgn_upstream_client(
+            settings,
+            on_frame=collector.handle_frame,
+        )
 
     due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
     news: NewsAcquisition | None = None
@@ -871,14 +865,13 @@ async def _wire_components(
             claim_limit=1,
         )
         due_turns.append((resolution.turn, 30.0))
-    if providers.dex_profile_sources:
-        profile = AssetProfileRefresh(
-            db=db,
-            finite_operations=finite,
-            runtime_id=runtime_id,
-            dex_profile_sources=providers.dex_profile_sources,
-        )
-        due_turns.append((profile.turn, 60.0))
+    asset_profile_refresh = AssetProfileRefresh(
+        db=db,
+        finite_operations=finite,
+        runtime_id=runtime_id,
+        dex_profile_sources=providers.dex_profile_sources,
+    )
+    due_turns.append((asset_profile_refresh.turn, 60.0))
     image = TokenImageMirror(
         db=db,
         app_home=settings.app_home,
@@ -899,18 +892,24 @@ async def _wire_components(
         if providers.cex_market is not None or providers.dex_quote_market is not None
         else None
     )
-    market_stream = (
-        MarketTickStream(db=db, stream_dex_market=providers.stream_dex_market)
-        if providers.stream_dex_market is not None
-        else None
-    )
+    active_profile_provider_ids = configured_profile_provider_ids(settings)
+    wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
+    if wired_profile_provider_ids != active_profile_provider_ids:
+        raise RuntimeError("profile_provider_wiring_mismatch")
     projections = (
         RadarProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=10),
-        ProfileProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=20),
+        ProfileProjectionCandidate(
+            db=db,
+            cpu=cpu,
+            runtime_id=runtime_id,
+            active_profile_provider_ids=active_profile_provider_ids,
+            stable_order=20,
+        ),
         MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=30),
     )
     return _Components(
         providers=providers,
+        asset_profile_refresh=asset_profile_refresh,
         collector=collector,
         news=news,
         news_story=news_story,
@@ -920,7 +919,6 @@ async def _wire_components(
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
         market_poll=market_poll,
-        market_stream=market_stream,
         projections=projections,
         models=tuple(model_candidates),
         document_model=document_model,
@@ -928,6 +926,7 @@ async def _wire_components(
 
 
 async def _reconcile_once(components: _Components) -> None:
+    await components.asset_profile_refresh.reconcile()
     if components.news is not None:
         await components.news.reconcile()
     if components.news_push is not None:
@@ -1011,8 +1010,6 @@ async def _close_market_providers(
             timeout_seconds=5.0,
             allow_shutdown=True,
         )
-    if providers.stream_dex_market is not None and id(providers.stream_dex_market) not in seen:
-        await providers.stream_dex_market.aclose()
 
 
 async def _fatal_exit(

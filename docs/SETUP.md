@@ -11,13 +11,14 @@ plugin, and `curl`; start the Docker daemon. From a fresh clone, run:
 make up
 ```
 
-This is the canonical startup path. It preflights `uv`, Docker, Compose,
+This is the canonical startup path. It preflights Git, `uv`, Docker, Compose,
 `curl`, and daemon access; idempotently initializes the operator directory;
-builds the React console and Python service; initializes PostgreSQL and its
-least-privilege roles on a fresh named volume; migrates to the current Alembic
-head; starts Serve and Workers; and waits for PostgreSQL, migration, both
-runtime readiness boundaries, and an HTML console. Any failed boundary makes
-the command return non-zero and directs the operator to `make logs`.
+builds one application image containing the React console and Python service;
+initializes PostgreSQL and its least-privilege roles on a fresh named volume;
+migrates to the current Alembic head; starts Serve and Workers; and waits for
+PostgreSQL, migration, both runtime readiness boundaries, and an HTML console.
+Any failed boundary makes the command return non-zero and directs the operator
+to `make logs`.
 
 ```bash
 make status  # fail closed unless the complete product is ready
@@ -27,9 +28,10 @@ make down    # stop containers; preserve config, passwords, and database data
 
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
 and Workers metrics/readiness are bound to loopback by default. A second
-`make up` deliberately recreates the containers so edits to the bind-mounted
-operator config take effect, while preserving the operator files and
-named-volume data.
+`make up` rebuilds the shared application image and deliberately recreates only
+the migration, Serve, and Workers containers so edits to the bind-mounted
+operator config take effect. An already running PostgreSQL container is not
+recreated; the operator files and named-volume data remain in place.
 
 ### Initialization semantics
 

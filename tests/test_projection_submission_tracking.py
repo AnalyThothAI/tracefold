@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from tracefold.macro.projection_worker import MacroProjectionCandidate
+from tracefold.market.profiles.profile_source_ids import GMGN_DEX_PROFILE_PROVIDER
 from tracefold.market.profiles.token_profile_current_worker import ProfileProjectionCandidate
 from tracefold.market.radar.projection_worker import RadarProjectionCandidate
 from tracefold.platform.projection import ProjectionShard
@@ -22,6 +23,13 @@ class _Cpu:
             "radar_projection_rank": [],
             "radar_projection_hydration": {},
         }.get(operation_name, {})
+
+
+def _candidate(candidate_type: Any, *, db: Any) -> Any:
+    kwargs: dict[str, Any] = {"db": db, "cpu": _Cpu(), "runtime_id": "runtime-1"}
+    if candidate_type is ProfileProjectionCandidate:
+        kwargs["active_profile_provider_ids"] = (GMGN_DEX_PROFILE_PROVIDER,)
+    return candidate_type(**kwargs)
 
 
 class _AdmissionBlockingDb:
@@ -80,7 +88,7 @@ def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_ty
 
     async def scenario() -> float | None:
         database = _RecordingDb()
-        candidate = candidate_type(db=database, cpu=_Cpu(), runtime_id="runtime-1")
+        candidate = _candidate(candidate_type, db=database)
         assert await candidate.peek(now_ms=1_000) is None
         return database.timeout_seconds
 
@@ -127,7 +135,7 @@ def test_cancellation_during_later_admission_releases_claim_exactly(
 ) -> None:
     async def scenario() -> list[str]:
         db = _AdmissionBlockingDb(block_operation=block_operation, claim=claim)
-        candidate = candidate_type(db=db, cpu=_Cpu(), runtime_id="runtime-1")
+        candidate = _candidate(candidate_type, db=db)
         task = asyncio.create_task(candidate.execute(shard))
         await asyncio.wait_for(db.waiting.wait(), timeout=1.0)
         task.cancel()

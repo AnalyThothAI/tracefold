@@ -10,11 +10,7 @@ import httpx
 import pytest
 
 from tracefold.integrations.okx.dex_client import OkxDexClient, _candidate_from_row
-from tracefold.integrations.okx.dex_ws_client import _price_info_update_from_row, _rows_from_message
-from tracefold.integrations.okx.providers import (
-    OkxDexDiscoveryProvider,
-    _domain_dex_market_fact_update,
-)
+from tracefold.integrations.okx.providers import OkxDexDiscoveryProvider
 from tracefold.market import (
     CollectorService,
     IngestedEvent,
@@ -252,42 +248,6 @@ def test_gmgn_event_publications_are_serial() -> None:
         return resources.max_active
 
     assert asyncio.run(scenario()) == 1
-
-
-def test_okx_dex_ws_price_info_fixture_maps_provider_fields_to_domain_fact() -> None:
-    message = _load_json("okx_dex_price_info.json")
-
-    rows = _rows_from_message(message)
-    integration_update = _price_info_update_from_row(rows[0])
-
-    assert len(rows) == 1
-    assert rows[0]["chainIndex"] == "56"
-    assert rows[0]["tokenContractAddress"] == "0x8F32420F2E3728C49399b00DD0A796602d984444"
-    assert rows[0]["providerExtraMemo"] == "retained-in-raw-only"
-    assert integration_update is not None
-    assert integration_update.chain_id == "56"
-    assert integration_update.address == "0x8f32420f2e3728c49399b00dd0a796602d984444"
-    assert integration_update.observed_at_ms == 1_778_085_000_000
-    assert integration_update.price_usd == 0.1205
-    assert integration_update.market_cap_usd == 123_456
-    assert integration_update.liquidity_usd == 45_678
-    assert integration_update.volume_24h_usd == 7_890
-    assert integration_update.holders == 321
-    assert integration_update.raw == rows[0]
-    assert not hasattr(integration_update, "providerExtraMemo")
-
-    domain_update = _domain_dex_market_fact_update(integration_update)
-
-    assert domain_update.chain_id == "eip155:56"
-    assert domain_update.address == "0x8f32420f2e3728c49399b00dd0a796602d984444"
-    assert domain_update.observed_at_ms == 1_778_085_000_000
-    assert domain_update.price_usd == 0.1205
-    assert domain_update.market_cap_usd == 123_456
-    assert domain_update.liquidity_usd == 45_678
-    assert domain_update.holders == 321
-    assert domain_update.raw is integration_update.raw
-    assert domain_update.raw["providerExtraMemo"] == "retained-in-raw-only"
-    assert not hasattr(domain_update, "providerExtraMemo")
 
 
 def test_okx_dex_search_fixture_maps_rest_candidate_and_domain_candidate() -> None:

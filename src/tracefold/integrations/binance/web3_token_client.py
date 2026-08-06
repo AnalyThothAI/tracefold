@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 
-PROVIDER = "binance_web3_profile"
+from tracefold.market import BINANCE_WEB3_PROFILE_PROVIDER
+
 _TOKEN_METADATA_PATH = "/bapi/defi/v1/public/wallet-direct/buw/wallet/dex/market/token/meta/info/ai"
 _IMAGE_BASE_URL = "https://bin.bnbstatic.com"
 
@@ -60,7 +61,7 @@ class BinanceWeb3TokenClient:
             return None
         links = _links(data.get("links"))
         raw = dict(data)
-        raw["source_provider"] = PROVIDER
+        raw["source_provider"] = BINANCE_WEB3_PROFILE_PROVIDER
         return BinanceWeb3TokenMetadata(
             chain_id=_domain_chain_id(str(data.get("chainId") or binance_chain_id)),
             address=_address(data.get("contractAddress") or address),

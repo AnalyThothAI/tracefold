@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, cast
 
 from tracefold.market.profiles.asset_profile_refresh import (
     fetch_asset_profile,
@@ -10,6 +10,11 @@ from tracefold.market.profiles.asset_profile_refresh import (
     write_ready_asset_profile,
 )
 from tracefold.market.profiles.profile_projection import PROFILE_PROJECTION_VERSION
+from tracefold.market.profiles.profile_source_ids import (
+    ASSET_PROFILE_REFRESH_PROVIDERS,
+    INACTIVE_PROFILE_TARGET_DELETE_BATCH,
+    inactive_asset_profile_provider_ids,
+)
 from tracefold.market.provider_contracts import (
     DexProfileSource,
     DexTokenProfile,
@@ -23,7 +28,6 @@ _PROVIDER_RETRY_MS = 300_000
 _READY_REFRESH_MS = 6 * 60 * 60_000
 _MISSING_RETRY_MS = (15 * 60_000, 30 * 60_000, 60 * 60_000, 120 * 60_000)
 _STATEMENT_TIMEOUT_SECONDS = 3.0
-_PROFILE_PROVIDERS = frozenset({"gmgn_dex_profile", "binance_web3_profile"})
 
 
 class AssetProfileRefresh:
@@ -41,14 +45,58 @@ class AssetProfileRefresh:
         self.claim_owner = f"asset_profile_refresh:{runtime_id}"
         self.dex_profile_sources = tuple(dex_profile_sources)
         unknown = sorted(
-            source.provider for source in self.dex_profile_sources if source.provider not in _PROFILE_PROVIDERS
+            source.provider
+            for source in self.dex_profile_sources
+            if source.provider not in ASSET_PROFILE_REFRESH_PROVIDERS
         )
         if unknown:
             raise ValueError(f"asset_profile_provider_invalid:{','.join(unknown)}")
+        providers = [source.provider for source in self.dex_profile_sources]
+        if len(providers) != len(set(providers)):
+            raise ValueError("asset_profile_provider_duplicate")
+        self._inactive_provider_ids = inactive_asset_profile_provider_ids(tuple(providers))
+        self._inactive_cleanup_complete = not self._inactive_provider_ids
         self._source_cursor = 0
+
+    async def reconcile(self) -> dict[str, Any]:
+        result = cast(
+            dict[str, Any],
+            await self.db.run_business(
+                "asset_profile_reconcile_providers",
+                self._reconcile_providers,
+                operation_timeout_seconds=3.0,
+            ),
+        )
+        self._inactive_cleanup_complete = int(result["inactive_targets_deleted"]) < INACTIVE_PROFILE_TARGET_DELETE_BATCH
+        return result
+
+    def _reconcile_providers(self) -> dict[str, Any]:
+        active_providers = tuple(source.provider for source in self.dex_profile_sources)
+        with (
+            self.db.worker_session(
+                self.name,
+                statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
+            ) as repos,
+            repos.transaction(),
+        ):
+            deleted = repos.asset_profile_refresh_targets.delete_inactive_provider_targets(
+                inactive_providers=self._inactive_provider_ids,
+                limit=INACTIVE_PROFILE_TARGET_DELETE_BATCH,
+            )
+        return {
+            "active_providers": list(active_providers),
+            "inactive_targets_deleted": int(deleted),
+        }
 
     async def turn(self, *, now_ms: int | None = None) -> str | bool | None:
         observed_at_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        if not self._inactive_cleanup_complete:
+            try:
+                cleanup = await self.reconcile()
+            except ResourceAdmissionTimeout:
+                return None
+            if int(cleanup["inactive_targets_deleted"]) > 0:
+                return "processed"
         if not self.dex_profile_sources:
             return False
 

@@ -7,6 +7,11 @@ from tracefold.market.identity.identity_evidence_policy import (
     EVIDENCE_OKX_DEX_EXACT_ADDRESS,
     EVIDENCE_OKX_DEX_SYMBOL_CANDIDATE,
 )
+from tracefold.market.profiles.profile_source_ids import (
+    BINANCE_CEX_PROFILE_PROVIDER,
+    BINANCE_WEB3_PROFILE_PROVIDER,
+    GMGN_DEX_PROFILE_PROVIDER,
+)
 from tracefold.market.profiles.profile_source_selection import (
     select_gmgn_stream_source,
     select_okx_dex_source,
@@ -27,11 +32,11 @@ class TokenProfileSourceQuery:
             """
             SELECT *
             FROM asset_profiles
-            WHERE provider = 'gmgn_dex_profile'
+            WHERE provider = %s
               AND status = 'ready'
               AND asset_id = ANY(%s)
             """,
-            (requested,),
+            (GMGN_DEX_PROFILE_PROVIDER, requested),
         ).fetchall()
         return {str(row["asset_id"]): dict(row) for row in rows}
 
@@ -43,11 +48,11 @@ class TokenProfileSourceQuery:
             """
             SELECT *
             FROM asset_profiles
-            WHERE provider = 'binance_web3_profile'
+            WHERE provider = %s
               AND status = 'ready'
               AND asset_id = ANY(%s)
             """,
-            (requested,),
+            (BINANCE_WEB3_PROFILE_PROVIDER, requested),
         ).fetchall()
         return {str(row["asset_id"]): dict(row) for row in rows}
 
@@ -87,12 +92,12 @@ class TokenProfileSourceQuery:
             FROM cex_token_profiles
             JOIN cex_tokens
               ON cex_tokens.cex_token_id = cex_token_profiles.cex_token_id
-            WHERE cex_token_profiles.provider = 'binance_cex_profile'
+            WHERE cex_token_profiles.provider = %s
               AND cex_token_profiles.status = 'ready'
               AND cex_tokens.cex_token_id = ANY(%s)
               AND cex_tokens.status IN ('candidate', 'canonical')
             """,
-            (requested,),
+            (BINANCE_CEX_PROFILE_PROVIDER, requested),
         ).fetchall()
         return {str(row["cex_token_id"]): dict(row) for row in rows}
 

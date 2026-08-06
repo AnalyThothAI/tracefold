@@ -9,8 +9,6 @@ from psycopg.types.json import Jsonb
 from tracefold.platform.postgres.json_safety import postgres_safe_json, postgres_safe_text
 from tracefold.platform.postgres.write_contract import returning_mutation_count
 
-BINANCE_CEX_PROFILE_PROVIDER = "binance_cex_profile"
-
 
 def _optional_returning_row(cursor: Any, row: Any) -> dict[str, Any] | None:
     returning_mutation_count(cursor, row, error_code="cex_token_profile_repository_rowcount_invalid")

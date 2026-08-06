@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from tracefold.app import workers
-from tracefold.app.provider_types import AssetMarketProviders
+from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.news import NewsPushReceipt, NewsStoryPush
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
@@ -99,7 +99,12 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
             calls.append(("push", now_ms))
             return {"inserted": 0}
 
+    class _ProfileRefresh:
+        async def reconcile(self) -> None:
+            calls.append(("profile", None))
+
     components = SimpleNamespace(
+        asset_profile_refresh=_ProfileRefresh(),
         news=_News(),
         news_push=_Push(),
         macro_turns=(),
@@ -108,8 +113,8 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
 
     asyncio.run(workers._reconcile_once(components))  # type: ignore[arg-type]
 
-    assert [name for name, _value in calls] == ["news", "push"]
-    assert calls[1][1] is not None
+    assert [name for name, _value in calls] == ["profile", "news", "push"]
+    assert calls[2][1] is not None
 
 
 @pytest.mark.parametrize(
@@ -151,7 +156,8 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
             return None
 
     monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
-    monkeypatch.setattr(workers, "gmgn_upstream_factory", lambda _settings: None)
+    monkeypatch.setattr(workers, "configured_profile_provider_ids", lambda _settings: ())
+    monkeypatch.setattr(workers, "gmgn_upstream_client", lambda _settings, **_kwargs: None)
     monkeypatch.setattr(workers, "FeishuNewsPushDelivery", _Delivery)
     monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
 
@@ -205,6 +211,37 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
         }
     else:
         assert constructed == []
+
+
+def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
+
+    def fail_if_constructed(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("disabled GMGN stream must not construct a client")
+
+    monkeypatch.setattr(workers, "gmgn_upstream_client", fail_if_constructed)
+    settings = Settings(
+        upstream={"channels": []},
+        news={"enabled": False},
+        providers={
+            "binance": {"enabled": False},
+            "macro_sources": {"enabled": False},
+        },
+    )
+
+    components = asyncio.run(
+        workers._wire_components(
+            settings=settings,
+            db=object(),  # type: ignore[arg-type]
+            telemetry=object(),  # type: ignore[arg-type]
+            finite=object(),  # type: ignore[arg-type]
+            model_adapter=object(),  # type: ignore[arg-type]
+            cpu=object(),  # type: ignore[arg-type]
+            runtime_id="runtime-disabled-gmgn",
+        )
+    )
+
+    assert components.collector is None
 
 
 def test_news_story_push_closes_delivery_through_finite_capability() -> None:

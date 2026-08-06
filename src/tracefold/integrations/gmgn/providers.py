@@ -4,7 +4,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from tracefold.app.provider_types import UpstreamClientFactory
 from tracefold.integrations.gmgn.direct_ws import DirectGmgnWebSocketClient
 from tracefold.integrations.gmgn.openapi_client import (
     GmgnOpenApiClient,
@@ -17,8 +16,6 @@ from tracefold.market import (
     DexTokenProfile,
     DexTokenQuote,
     DexTokenQuoteRequest,
-    MarketCapability,
-    ProviderHealth,
     UpstreamClientProtocol,
     canonical_chain_address,
 )
@@ -103,34 +100,21 @@ def gmgn_dex_market(settings: Settings) -> GmgnDexMarketProvider:
     )
 
 
-def gmgn_provider_health(settings: Settings) -> ProviderHealth:
-    capabilities = (
-        frozenset(
-            {
-                MarketCapability.QUOTE_DEX_EXACT,
-                MarketCapability.PROFILE_DEX_EXACT,
-            }
-        )
-        if settings.gmgn_configured
-        else frozenset()
+def gmgn_upstream_client(
+    settings: Settings,
+    *,
+    on_frame: Callable[[str], Awaitable[None]],
+) -> UpstreamClientProtocol:
+    return DirectGmgnWebSocketClient(
+        app_version=settings.upstream.app_version,
+        channels=list(settings.upstream.channels),
+        chains=list(settings.upstream.chains),
+        proxy=settings.upstream.proxy,
+        reconnect_delay=settings.upstream.reconnect_delay,
+        heartbeat_interval=settings.upstream.heartbeat_interval,
+        idle_timeout=settings.upstream.idle_timeout,
+        on_frame=on_frame,
     )
-    return ProviderHealth(provider="gmgn", capabilities=capabilities, configured=settings.gmgn_configured)
-
-
-def gmgn_upstream_factory(settings: Settings) -> UpstreamClientFactory:
-    def factory(on_frame: Callable[[str], Awaitable[None]]) -> UpstreamClientProtocol:
-        return DirectGmgnWebSocketClient(
-            app_version=settings.upstream.app_version,
-            channels=list(settings.upstream.channels),
-            chains=list(settings.upstream.chains),
-            proxy=settings.upstream.proxy,
-            reconnect_delay=settings.upstream.reconnect_delay,
-            heartbeat_interval=settings.upstream.heartbeat_interval,
-            idle_timeout=settings.upstream.idle_timeout,
-            on_frame=on_frame,
-        )
-
-    return factory
 
 
 def _number_from_mapping(payload: dict[str, Any], *keys: str) -> float | None:
@@ -148,6 +132,5 @@ def _number_from_mapping(payload: dict[str, Any], *keys: str) -> float | None:
 __all__ = [
     "GmgnDexMarketProvider",
     "gmgn_dex_market",
-    "gmgn_provider_health",
-    "gmgn_upstream_factory",
+    "gmgn_upstream_client",
 ]

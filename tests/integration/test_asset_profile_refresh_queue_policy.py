@@ -14,7 +14,12 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.app.worker_capabilities import FiniteOperations
-from tracefold.market import AssetProfileRefresh, TokenImageMirror
+from tracefold.market import (
+    BINANCE_WEB3_PROFILE_PROVIDER,
+    GMGN_DEX_PROFILE_PROVIDER,
+    AssetProfileRefresh,
+    TokenImageMirror,
+)
 from tracefold.market.profiles.asset_profile_refresh_worker import _missing_retry_delay_ms
 from tracefold.market.provider_contracts import (
     DexProfileSource,
@@ -22,7 +27,7 @@ from tracefold.market.provider_contracts import (
 )
 
 NOW_MS = 1_779_000_000_000
-PROVIDER = "gmgn_dex_profile"
+PROVIDER = GMGN_DEX_PROFILE_PROVIDER
 
 
 class _SessionTrackingDB:
@@ -198,6 +203,87 @@ def test_missing_profile_retry_schedule_is_code_owned_and_exact() -> None:
         60 * 60_000,
         120 * 60_000,
     ]
+
+
+def test_startup_reconcile_deletes_only_inactive_provider_targets() -> None:
+    conn = connect_postgres_test()
+    finite = FiniteOperations()
+    try:
+        reset_postgres_schema(conn)
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.asset_profile_refresh_targets.enqueue_targets(
+                [
+                    {
+                        "provider": provider,
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "chain_id": "sol",
+                        "address": "address-1",
+                        "symbol": "ONE",
+                        "source_watermark_ms": NOW_MS,
+                        "priority": 20,
+                        "heat_tier": "hot",
+                        "payload_hash": f"sha256:{provider}",
+                    }
+                    for provider in (PROVIDER, BINANCE_WEB3_PROFILE_PROVIDER)
+                ],
+                reason="profile_provider_reconcile",
+                now_ms=NOW_MS,
+            )
+        worker = AssetProfileRefresh(
+            db=_SessionTrackingDB(conn),
+            dex_profile_sources=(DexProfileSource(provider=PROVIDER, market=object()),),
+            finite_operations=finite,
+            runtime_id="integration-test",
+        )
+
+        result = asyncio.run(worker.reconcile())
+
+        assert result == {
+            "active_providers": [PROVIDER],
+            "inactive_targets_deleted": 1,
+        }
+        assert conn.execute("SELECT provider FROM asset_profile_refresh_targets ORDER BY provider").fetchall() == [
+            {"provider": PROVIDER}
+        ]
+    finally:
+        finite.close()
+        conn.close()
+
+
+def test_inactive_provider_cleanup_is_bounded_by_one_exact_batch() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.asset_profile_refresh_targets.enqueue_targets(
+                [
+                    {
+                        "provider": BINANCE_WEB3_PROFILE_PROVIDER,
+                        "target_type": "Asset",
+                        "target_id": f"asset-{index}",
+                        "chain_id": "sol",
+                        "address": f"address-{index}",
+                        "symbol": f"TOKEN{index}",
+                        "source_watermark_ms": NOW_MS,
+                        "priority": 20,
+                        "heat_tier": "hot",
+                        "payload_hash": f"sha256:inactive-{index}",
+                    }
+                    for index in range(2)
+                ],
+                reason="bounded_inactive_provider_cleanup",
+                now_ms=NOW_MS,
+            )
+            deleted = repos.asset_profile_refresh_targets.delete_inactive_provider_targets(
+                inactive_providers=(BINANCE_WEB3_PROFILE_PROVIDER,),
+                limit=1,
+            )
+
+        assert deleted == 1
+        assert conn.execute("SELECT count(*) AS count FROM asset_profile_refresh_targets").fetchone() == {"count": 1}
+    finally:
+        conn.close()
 
 
 def test_provider_failure_releases_database_and_consumes_no_target_attempt() -> None:

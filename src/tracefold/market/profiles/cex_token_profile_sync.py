@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from tracefold.market.profiles.cex_token_profile_repository import (
-    BINANCE_CEX_PROFILE_PROVIDER,
-)
+from tracefold.market.profiles.profile_source_ids import BINANCE_CEX_PROFILE_PROVIDER
 
 
 def sync_cex_token_profiles(

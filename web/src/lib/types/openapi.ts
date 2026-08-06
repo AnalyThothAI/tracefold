@@ -3031,6 +3031,49 @@ export interface components {
             /** Unmaterialized Item Count */
             unmaterialized_item_count: number;
         };
+        /** ProviderOperationalData */
+        ProviderOperationalData: {
+            /** Circuit Status */
+            circuit_status: ("open" | "closed") | null;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /**
+             * Freshness
+             * @enum {string}
+             */
+            freshness: "current" | "stale" | "no_evidence" | "not_applicable";
+            /** Freshness Budget Ms */
+            freshness_budget_ms: number | null;
+            /** Has Backlog */
+            has_backlog: boolean;
+            /** Latest Fact At Ms */
+            latest_fact_at_ms: number | null;
+            /** Next Probe At Ms */
+            next_probe_at_ms: number | null;
+            /** Owned */
+            owned: boolean;
+            /** Provider */
+            provider: string;
+            /** Reasons */
+            reasons: ("unowned_backlog" | "circuit_open" | "source_stale")[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "degraded" | "inactive";
+        };
+        /** ProviderOperationsData */
+        ProviderOperationsData: {
+            /** Items */
+            items: components["schemas"]["ProviderOperationalData"][];
+            /** Reasons */
+            reasons: string[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "degraded" | "unavailable";
+        };
         /** ReadinessData */
         ReadinessData: {
             /** Composition */
@@ -3182,14 +3225,10 @@ export interface components {
         };
         /** StatusData */
         StatusData: {
-            db: components["schemas"]["StatusDatabaseData"];
             /** Measured At Ms */
             measured_at_ms: number;
-            /** Ok */
-            ok: boolean;
-            /** Reasons */
-            reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
-            workers_runtime: components["schemas"]["WorkersRuntimeData"];
+            providers: components["schemas"]["ProviderOperationsData"];
+            runtime: components["schemas"]["StatusRuntimeData"];
         };
         /** StatusDatabaseData */
         StatusDatabaseData: {
@@ -3203,6 +3242,15 @@ export interface components {
             ok: boolean;
             /** Schema Ok */
             schema_ok: boolean;
+        };
+        /** StatusRuntimeData */
+        StatusRuntimeData: {
+            db: components["schemas"]["StatusDatabaseData"];
+            /** Ok */
+            ok: boolean;
+            /** Reasons */
+            reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
+            workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
         /** StocksRadarAttentionData */
         StocksRadarAttentionData: {

@@ -527,7 +527,8 @@ def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkey
         token_radar = FakeTokenRadar()
 
     @contextmanager
-    def fake_repositories(_settings):
+    def fake_repositories(_settings, *, role):
+        captured["role"] = role
         yield FakeRepos()
 
     write_runtime_config(tmp_path, db_path=tmp_path / ".tracefold" / "postgres_test_db")
@@ -543,6 +544,7 @@ def test_cli_ops_factor_diagnostics_reads_latest_token_radar_current_rows(monkey
     payload = json.loads(stdout.getvalue())
     assert code == 0
     assert captured == {
+        "role": "serve",
         "window": "1h",
         "venue": "all",
         "limit": 7,

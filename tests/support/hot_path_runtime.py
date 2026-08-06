@@ -23,7 +23,6 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
         providers={
             "okx": {
                 "dex_base_url": "",
-                "dex_ws_url": "",
             },
             "binance": {"enabled": False},
             "macro_sources": {"enabled": False},

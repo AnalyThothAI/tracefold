@@ -92,6 +92,7 @@ asset-flow: ## print 5m token activity
 	@$(TRACEFOLD) asset-flow --window 5m --limit 20
 
 preflight: ## verify the one-command startup prerequisites
+	@command -v git >/dev/null 2>&1 || { echo "git is not installed or not on PATH" >&2; exit 127; }
 	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed or not on PATH" >&2; exit 127; }
 	@command -v docker >/dev/null 2>&1 || { echo "docker is not installed or not on PATH" >&2; exit 127; }
 	@docker compose version >/dev/null 2>&1 || { echo "docker compose plugin is unavailable" >&2; exit 127; }
@@ -108,9 +109,12 @@ up: preflight init ## build, migrate, start, and verify the complete product
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
 			token=$$(gh auth token 2>/dev/null || true); \
 		fi; \
-		revision=$$(git rev-parse --verify HEAD 2>/dev/null || true); \
-		if ! GITHUB_TOKEN="$$token" TRACEFOLD_BUILD_REVISION="$$revision" \
-			docker compose up -d --build --force-recreate --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS); then \
+		GITHUB_TOKEN="$$token"; \
+		TRACEFOLD_BUILD_REVISION=$$(git rev-parse --verify HEAD); \
+		export GITHUB_TOKEN TRACEFOLD_BUILD_REVISION; \
+		if ! docker compose build migrate || \
+			! docker compose up -d --no-build --force-recreate --wait \
+				--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers; then \
 			docker compose ps --all >&2 || true; \
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \

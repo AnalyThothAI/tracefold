@@ -57,11 +57,11 @@ make up
 ```
 
 `make up` preflights the prerequisites, initializes the operator files without
-overwriting existing choices, builds both the React console and Python
-service, bootstraps least-privilege PostgreSQL roles on a fresh volume,
-migrates to the current schema, starts Serve and Workers, and waits for both
-runtimes plus the HTML console. It exits non-zero and points to `make logs` if
-any required boundary is not ready.
+overwriting existing choices, builds one application image containing the
+React console and Python service, bootstraps least-privilege PostgreSQL roles
+on a fresh volume, migrates to the current schema, starts Serve and Workers,
+and waits for both runtimes plus the HTML console. It exits non-zero and points
+to `make logs` if any required boundary is not ready.
 
 Open `http://127.0.0.1:8765/` after it succeeds. The lifecycle is deliberately
 small:
@@ -72,13 +72,14 @@ make logs    # follow service logs; Ctrl-C leaves the services running
 make down    # stop containers without deleting PostgreSQL data
 ```
 
-A second `make up` recreates the containers so configuration changes take
-effect while preserving the PostgreSQL volume, operator configuration, and
-role passwords. The generated defaults contain no provider, model, or webhook
-credential, and News push is disabled. The product still starts;
-credential-dependent capabilities report an explicit degraded or unavailable
-state instead of fabricating data. Add credentials only to
-`~/.tracefold/config.yaml`, then rerun `make up`.
+A second `make up` rebuilds that application image and recreates only the
+migration, Serve, and Workers containers so configuration changes take effect.
+An already running PostgreSQL container is not recreated, and its named volume,
+operator configuration, and role passwords are preserved. The generated
+defaults contain no provider, model, or webhook credential, and News push is
+disabled. The product still starts; credential-dependent capabilities report
+an explicit degraded or unavailable state instead of fabricating data. Add
+credentials only to `~/.tracefold/config.yaml`, then rerun `make up`.
 
 The operator-owned runtime directory is:
 

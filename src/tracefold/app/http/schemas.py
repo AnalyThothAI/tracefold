@@ -80,7 +80,7 @@ class WorkersRuntimeData(ExactApiSchema):
     )
 
 
-class StatusData(ExactApiSchema):
+class StatusRuntimeData(ExactApiSchema):
     ok: bool
     reasons: list[
         Literal[
@@ -95,9 +95,34 @@ class StatusData(ExactApiSchema):
             "runtime_failed",
         ]
     ]
-    measured_at_ms: int
     db: StatusDatabaseData
     workers_runtime: WorkersRuntimeData
+
+
+class ProviderOperationalData(ExactApiSchema):
+    provider: str
+    owned: bool
+    status: Literal["ok", "degraded", "inactive"]
+    reasons: list[Literal["unowned_backlog", "circuit_open", "source_stale"]]
+    freshness: Literal["current", "stale", "no_evidence", "not_applicable"]
+    freshness_budget_ms: int | None
+    latest_fact_at_ms: int | None
+    circuit_status: Literal["open", "closed"] | None
+    consecutive_failures: int
+    next_probe_at_ms: int | None
+    has_backlog: bool
+
+
+class ProviderOperationsData(ExactApiSchema):
+    status: Literal["ok", "degraded", "unavailable"]
+    reasons: list[str]
+    items: list[ProviderOperationalData]
+
+
+class StatusData(ExactApiSchema):
+    measured_at_ms: int
+    runtime: StatusRuntimeData
+    providers: ProviderOperationsData
 
 
 class ReadinessData(ExactApiSchema):

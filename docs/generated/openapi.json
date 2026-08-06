@@ -8604,6 +8604,156 @@
         "title": "NewsStoryStatusData",
         "type": "object"
       },
+      "ProviderOperationalData": {
+        "additionalProperties": false,
+        "properties": {
+          "circuit_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "closed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Circuit Status"
+          },
+          "consecutive_failures": {
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "freshness": {
+            "enum": [
+              "current",
+              "stale",
+              "no_evidence",
+              "not_applicable"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "freshness_budget_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Budget Ms"
+          },
+          "has_backlog": {
+            "title": "Has Backlog",
+            "type": "boolean"
+          },
+          "latest_fact_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Fact At Ms"
+          },
+          "next_probe_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Probe At Ms"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "unowned_backlog",
+                "circuit_open",
+                "source_stale"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "degraded",
+              "inactive"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "owned",
+          "status",
+          "reasons",
+          "freshness",
+          "freshness_budget_ms",
+          "latest_fact_at_ms",
+          "circuit_status",
+          "consecutive_failures",
+          "next_probe_at_ms",
+          "has_backlog"
+        ],
+        "title": "ProviderOperationalData",
+        "type": "object"
+      },
+      "ProviderOperationsData": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderOperationalData"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "degraded",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reasons",
+          "items"
+        ],
+        "title": "ProviderOperationsData",
+        "type": "object"
+      },
       "ReadinessData": {
         "additionalProperties": false,
         "properties": {
@@ -9061,45 +9211,21 @@
       "StatusData": {
         "additionalProperties": false,
         "properties": {
-          "db": {
-            "$ref": "#/components/schemas/StatusDatabaseData"
-          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
           },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
+          "providers": {
+            "$ref": "#/components/schemas/ProviderOperationsData"
           },
-          "reasons": {
-            "items": {
-              "enum": [
-                "database_unavailable",
-                "database_schema_mismatch",
-                "runtime_status_query_failed",
-                "runtime_missing",
-                "runtime_heartbeat_stale",
-                "runtime_starting",
-                "runtime_stopping",
-                "runtime_stopped",
-                "runtime_failed"
-              ],
-              "type": "string"
-            },
-            "title": "Reasons",
-            "type": "array"
-          },
-          "workers_runtime": {
-            "$ref": "#/components/schemas/WorkersRuntimeData"
+          "runtime": {
+            "$ref": "#/components/schemas/StatusRuntimeData"
           }
         },
         "required": [
-          "ok",
-          "reasons",
           "measured_at_ms",
-          "db",
-          "workers_runtime"
+          "runtime",
+          "providers"
         ],
         "title": "StatusData",
         "type": "object"
@@ -9154,6 +9280,47 @@
           "error_code"
         ],
         "title": "StatusDatabaseData",
+        "type": "object"
+      },
+      "StatusRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "db": {
+            "$ref": "#/components/schemas/StatusDatabaseData"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "database_unavailable",
+                "database_schema_mismatch",
+                "runtime_status_query_failed",
+                "runtime_missing",
+                "runtime_heartbeat_stale",
+                "runtime_starting",
+                "runtime_stopping",
+                "runtime_stopped",
+                "runtime_failed"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "workers_runtime": {
+            "$ref": "#/components/schemas/WorkersRuntimeData"
+          }
+        },
+        "required": [
+          "ok",
+          "reasons",
+          "db",
+          "workers_runtime"
+        ],
+        "title": "StatusRuntimeData",
         "type": "object"
       },
       "StocksRadarAttentionData": {

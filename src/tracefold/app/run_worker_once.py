@@ -6,8 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.market_providers import wire_asset_market
-from tracefold.app.provider_types import AssetMarketProviders
+from tracefold.app.market_providers import AssetMarketProviders, wire_asset_market
 from tracefold.app.worker_capabilities import FiniteOperations
 from tracefold.market import AssetProfileRefresh, ResolutionRefresh, TokenImageMirror
 from tracefold.platform.config.settings import Settings
@@ -260,11 +259,6 @@ async def _close_maintenance(
                     timeout_seconds=5.0,
                     allow_shutdown=True,
                 )
-            except Exception as exc:
-                errors.append(exc)
-        if providers.stream_dex_market is not None and id(providers.stream_dex_market) not in seen:
-            try:
-                await providers.stream_dex_market.aclose()
             except Exception as exc:
                 errors.append(exc)
     try:

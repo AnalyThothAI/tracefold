@@ -21,19 +21,20 @@ from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 @pytest.mark.parametrize(
-    ("service_type", "worker_name"),
+    ("service_type", "worker_name", "kwargs"),
     [
-        (RadarMicroBatchService, "radar_projection"),
-        (MacroProjectionService, "macro_projection"),
-        (NewsProjectionService, "news_story_projection"),
-        (ProfileProjectionService, "profile_projection"),
+        (RadarMicroBatchService, "radar_projection", {}),
+        (MacroProjectionService, "macro_projection", {}),
+        (NewsProjectionService, "news_story_projection", {}),
+        (ProfileProjectionService, "profile_projection", {"active_profile_provider_ids": ()}),
     ],
 )
 def test_projection_services_default_to_canonical_terminal_owner(
     service_type: Any,
     worker_name: str,
+    kwargs: dict[str, Any],
 ) -> None:
-    service = service_type(db=_RecordingSessionDatabase())
+    service = service_type(db=_RecordingSessionDatabase(), **kwargs)
 
     assert service.worker_name == worker_name
 
@@ -168,7 +169,7 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
         ),
         (
             ProfileProjectionService,
-            {},
+            {"active_profile_provider_ids": ()},
             "profile_maintenance_rebuild",
         ),
     )

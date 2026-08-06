@@ -1,8 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import {
-  macroModuleFixture,
-  macroOverviewFixture,
-} from "@tests/fixtures/macroFixture";
+import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import { marketContextFixture, marketObservationFixture } from "@tests/fixtures/marketFixtures";
 import {
   newsFeedFixture,
@@ -126,25 +123,32 @@ async function fulfillTokenImage(route: Route) {
 
 function statusData() {
   return {
-    ok: true,
-    reasons: [],
     measured_at_ms: NOW,
-    db: {
+    runtime: {
       ok: true,
-      schema_ok: true,
-      current_revision: "20260731_0233",
-      expected_revision: "20260731_0233",
-      error_code: null,
+      reasons: [],
+      db: {
+        ok: true,
+        schema_ok: true,
+        current_revision: "20260731_0233",
+        expected_revision: "20260731_0233",
+        error_code: null,
+      },
+      workers_runtime: {
+        runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e10",
+        runtime_version: "a521557",
+        state: "running",
+        started_at_ms: NOW,
+        heartbeat_at_ms: NOW,
+        heartbeat_stale_after_ms: 15_000,
+        fatal_code: null,
+        unavailable_reason: null,
+      },
     },
-    workers_runtime: {
-      runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e10",
-      runtime_version: "a521557",
-      state: "running",
-      started_at_ms: NOW,
-      heartbeat_at_ms: NOW,
-      heartbeat_stale_after_ms: 15_000,
-      fatal_code: null,
-      unavailable_reason: null,
+    providers: {
+      status: "ok",
+      reasons: [],
+      items: [],
     },
   };
 }

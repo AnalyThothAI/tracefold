@@ -96,6 +96,10 @@ def test_backend_has_only_the_hard_cut_package_shape() -> None:
     assert not (SRC / "domains").exists()
     for retired in ("operations", "runtime", "surfaces"):
         assert not (SRC / "app" / retired).exists()
+    for retired in ("provider_types.py", "providers.py"):
+        assert not (SRC / "app" / retired).exists()
+    assert not (SRC / "integrations" / "okx" / "dex_ws_client.py").exists()
+    assert not (SRC / "market" / "pricing" / "market_tick_stream_worker.py").exists()
     for retired in ("db", "logging", "runtime"):
         assert not (SRC / "platform" / retired).exists()
     assert not list(SRC.rglob("*_intel"))
@@ -123,6 +127,13 @@ def test_business_dependency_dag_is_one_way() -> None:
     assert violations == {}
 
 
+def test_provider_ownership_policy_does_not_import_concrete_adapters() -> None:
+    for filename in ("provider_ownership.py", "provider_operations.py"):
+        imports = _imports(SRC / "app" / filename)
+        assert "tracefold.app.market_providers" not in imports
+        assert not [name for name in imports if name.startswith("tracefold.integrations")]
+
+
 def test_platform_does_not_depend_on_app_business_or_integrations() -> None:
     forbidden = {"app", "integrations", *BUSINESS_PACKAGES}
     violations: dict[str, list[str]] = {}
@@ -136,6 +147,16 @@ def test_platform_does_not_depend_on_app_business_or_integrations() -> None:
         if unexpected:
             violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
+
+
+def test_integrations_do_not_depend_on_app() -> None:
+    violations = [
+        f"{path.relative_to(ROOT)} -> {imported}"
+        for path in _python_files(SRC / "integrations")
+        for imported in _imports(path)
+        if imported == "tracefold.app" or imported.startswith("tracefold.app.")
+    ]
+    assert violations == []
 
 
 def test_external_consumers_use_business_package_roots_only() -> None:

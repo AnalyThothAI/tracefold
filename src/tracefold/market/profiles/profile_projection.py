@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from tracefold.market.profiles.profile_source_ids import (
+    ASSET_PROFILE_REFRESH_PROVIDERS,
+    INACTIVE_PROFILE_TARGET_DELETE_BATCH,
+    inactive_asset_profile_provider_ids,
+)
 from tracefold.market.profiles.token_image_source_admission import (
     TokenImageSourceCandidate,
     admit_token_image_sources,
@@ -66,9 +71,11 @@ class ProfileProjectionService:
         self,
         *,
         db: Any,
+        active_profile_provider_ids: tuple[str, ...],
         worker_name: str = "profile_projection",
     ) -> None:
         self.db = db
+        self.active_profile_provider_ids = _require_active_profile_provider_ids(active_profile_provider_ids)
         self.worker_name = worker_name
 
     def next_due(self, *, now_ms: int) -> dict[str, Any] | None:
@@ -225,6 +232,7 @@ class ProfileProjectionService:
             _ensure_asset_profile_recovery(
                 repos,
                 snapshot=current,
+                active_profile_provider_ids=self.active_profile_provider_ids,
                 now_ms=int(now_ms),
             )
             if not repos.projection_frontiers.complete(
@@ -350,12 +358,14 @@ def rebuild_all_profiles_for_maintenance(
     *,
     db: Any,
     app_home: str | Path,
+    active_profile_provider_ids: tuple[str, ...],
     now_ms: int,
 ) -> dict[str, Any]:
     """Sweep outside-serving recovery state and rebuild serving profiles."""
 
     service = ProfileProjectionService(
         db=db,
+        active_profile_provider_ids=active_profile_provider_ids,
         worker_name="profile_maintenance_rebuild",
     )
     serving_predicate = """
@@ -374,8 +384,22 @@ def rebuild_all_profiles_for_maintenance(
         "windows": list(_VALID_WINDOWS),
         "venues": list(_VALID_VENUES),
     }
+    inactive_providers = inactive_asset_profile_provider_ids(service.active_profile_provider_ids)
+    inactive_targets_deleted = 0
+    while inactive_providers:
+        with service._session() as repos, repos.transaction():
+            deleted = repos.asset_profile_refresh_targets.delete_inactive_provider_targets(
+                inactive_providers=inactive_providers,
+                limit=INACTIVE_PROFILE_TARGET_DELETE_BATCH,
+            )
+        inactive_targets_deleted += int(deleted)
+        if int(deleted) < INACTIVE_PROFILE_TARGET_DELETE_BATCH:
+            break
+
+    cleanup_counts: dict[str, int] = {
+        "inactive_profile_refresh": inactive_targets_deleted,
+    }
     with service._session() as repos, repos.transaction():
-        cleanup_counts: dict[str, int] = {}
         cleanup_counts["profile_current"] = int(
             repos.conn.execute(
                 f"""
@@ -774,6 +798,7 @@ def _ensure_asset_profile_recovery(
     repos: Any,
     *,
     snapshot: dict[str, Any],
+    active_profile_provider_ids: tuple[str, ...],
     now_ms: int,
 ) -> None:
     identity = snapshot.get("asset_identity")
@@ -807,7 +832,7 @@ def _ensure_asset_profile_recovery(
             "priority": 20,
             "due_at_ms": int(now_ms),
         }
-        for provider in ("gmgn_dex_profile", "binance_web3_profile")
+        for provider in active_profile_provider_ids
     ]
     repos.asset_profile_refresh_targets.enqueue_targets(
         targets,
@@ -828,6 +853,14 @@ def _claim_still_current(
         and str(row["input_fingerprint"]) == claim.input_fingerprint
         and str(row["projection_version"]) == claim.projection_version
     )
+
+
+def _require_active_profile_provider_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    providers = tuple(dict.fromkeys(str(value or "").strip() for value in values))
+    unknown = sorted(provider for provider in providers if provider not in ASSET_PROFILE_REFRESH_PROVIDERS)
+    if unknown:
+        raise ValueError(f"profile_projection_provider_invalid:{','.join(unknown)}")
+    return providers
 
 
 def _fingerprint(value: Any) -> str:

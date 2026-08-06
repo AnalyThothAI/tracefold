@@ -4,13 +4,15 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from tracefold.market.profiles.profile_source_ids import (
+    BINANCE_CEX_PROFILE_PROVIDER,
+    BINANCE_WEB3_PROFILE_PROVIDER,
+    GMGN_DEX_PROFILE_PROVIDER,
+    GMGN_STREAM_PROFILE_PROVIDER,
+    OKX_DEX_PROFILE_PROVIDER,
+)
 from tracefold.market.profiles.token_image_mirror import is_allowed_token_image_source_url
 
-GMGN_DEX_PROFILE_PROVIDER = "gmgn_dex_profile"
-BINANCE_WEB3_PROFILE_PROVIDER = "binance_web3_profile"
-GMGN_STREAM_PROFILE_PROVIDER = "gmgn_stream_snapshot"
-OKX_DEX_PROFILE_PROVIDER = "okx_dex_evidence"
-BINANCE_CEX_PROFILE_PROVIDER = "binance_cex_profile"
 TOKEN_IMAGE_MIRROR_WORKER = "token_image_mirror"
 
 DIRTY_REASON = "token_profile_current_source_admission"

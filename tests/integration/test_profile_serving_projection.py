@@ -18,6 +18,7 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
+from tracefold.market import BINANCE_WEB3_PROFILE_PROVIDER, GMGN_DEX_PROFILE_PROVIDER
 from tracefold.market.profiles.profile_projection import (
     ProfileProjectionService,
     _fingerprint,
@@ -125,7 +126,10 @@ def test_outside_serving_profile_shard_deletes_current_and_recovery_state() -> N
                 version="token-profile-current-serving-v1",
             )
 
-        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        service = ProfileProjectionService(
+            db=_SingleConnectionDB(conn),
+            active_profile_provider_ids=(),
+        )
         claim = service.claim(
             target_type="Asset",
             target_id=TARGET_ID,
@@ -178,7 +182,10 @@ def test_serving_profile_projection_is_one_target_and_activates_only_provider_re
         _seed_resolved_radar_source(conn)
         conn.commit()
         target_id = _seed_radar_current(conn)
-        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        service = ProfileProjectionService(
+            db=_SingleConnectionDB(conn),
+            active_profile_provider_ids=(GMGN_DEX_PROFILE_PROVIDER,),
+        )
         claim = service.claim(
             target_type="Asset",
             target_id=target_id,
@@ -226,12 +233,7 @@ def test_serving_profile_projection_is_one_target_and_activates_only_provider_re
         ).fetchall()
         assert providers == [
             {
-                "provider": "binance_web3_profile",
-                "heat_tier": "hot",
-                "due_at_ms": FIXED_NOW_MS + 30_001,
-            },
-            {
-                "provider": "gmgn_dex_profile",
+                "provider": GMGN_DEX_PROFILE_PROVIDER,
                 "heat_tier": "hot",
                 "due_at_ms": FIXED_NOW_MS + 30_001,
             },
@@ -260,7 +262,10 @@ def test_profile_publish_ignores_rank_only_payload_changes() -> None:
         _seed_resolved_radar_source(conn)
         conn.commit()
         target_id = _seed_radar_current(conn)
-        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        service = ProfileProjectionService(
+            db=_SingleConnectionDB(conn),
+            active_profile_provider_ids=(),
+        )
         claim = service.claim(
             target_type="Asset",
             target_id=target_id,
@@ -313,7 +318,10 @@ def test_rank_only_publication_does_not_redirty_a_clean_profile() -> None:
         _seed_resolved_radar_source(conn)
         conn.commit()
         target_id = _seed_radar_current(conn)
-        service = ProfileProjectionService(db=_SingleConnectionDB(conn))
+        service = ProfileProjectionService(
+            db=_SingleConnectionDB(conn),
+            active_profile_provider_ids=(),
+        )
         claim = service.claim(
             target_type="Asset",
             target_id=target_id,
@@ -411,16 +419,36 @@ def test_profile_maintenance_sweeps_history_and_rebuilds_only_serving_set(
                     image_states_by_source_key={},
                 )
             )
+            repos.asset_profile_refresh_targets.enqueue_targets(
+                [
+                    {
+                        "provider": BINANCE_WEB3_PROFILE_PROVIDER,
+                        "target_type": "Asset",
+                        "target_id": target_id,
+                        "chain_id": "eip155:1",
+                        "address": "0x1111111111111111111111111111111111111111",
+                        "symbol": "TEST",
+                        "payload_hash": "sha256:inactive-binance",
+                        "source_watermark_ms": NOW_MS - 1,
+                        "heat_tier": "hot",
+                        "priority": 20,
+                    }
+                ],
+                reason="inactive_provider_fixture",
+                now_ms=NOW_MS - 1,
+            )
 
         result = rebuild_all_profiles_for_maintenance(
             db=_SingleConnectionDB(conn),
             app_home=tmp_path,
+            active_profile_provider_ids=(GMGN_DEX_PROFILE_PROVIDER,),
             now_ms=NOW_MS,
         )
 
         assert result["projection_status"] == "rebuilt"
         assert result["serving_targets"] == 1
         assert result["cleanup"]["profile_current"] == 1
+        assert result["cleanup"]["inactive_profile_refresh"] == 1
         assert conn.execute(
             """
             SELECT target_id
@@ -428,6 +456,9 @@ def test_profile_maintenance_sweeps_history_and_rebuilds_only_serving_set(
             ORDER BY target_id
             """
         ).fetchall() == [{"target_id": target_id}]
+        assert conn.execute("SELECT provider FROM asset_profile_refresh_targets ORDER BY provider").fetchall() == [
+            {"provider": GMGN_DEX_PROFILE_PROVIDER}
+        ]
     finally:
         conn.close()
 

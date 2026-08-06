@@ -40,12 +40,16 @@ startup therefore preserves the database and operator-owned credentials, while
 an unknown existing schema or missing role fails instead of being implicitly
 hard-cut.
 
-The same image contains the Python service and a production React build. Serve
-owns the static console and public HTTP/WebSocket boundary; Workers exposes
-only its loopback operational boundary. Image construction and Compose startup
-do not become alternate configuration sources: `tracefold init` remains the
-single generated-default authority and `~/.tracefold/config.yaml` remains the
-single live application config.
+The same project-scoped application image contains the Python service and a
+production React build. Migration, maintenance cutover, Serve, and Workers use
+that exact image and build revision with different commands and credentials.
+`make up` builds the image once and recreates only migration, Serve, and
+Workers; it starts PostgreSQL when absent but does not recreate a running
+PostgreSQL container. Serve owns the static console and public HTTP/WebSocket
+boundary; Workers exposes only its loopback operational boundary. Image
+construction and Compose startup do not become alternate configuration
+sources: `tracefold init` remains the single generated-default authority and
+`~/.tracefold/config.yaml` remains the single live application config.
 
 The projection coordinator executes exactly one semantic shard at a time.
 A productive turn yields cooperatively and immediately rereads every typed
@@ -163,6 +167,17 @@ TaskGroup loops live in `tracefold.app.workers`; platform exposes only bounded
 resource/projection/model candidate contracts. Queue state machines and
 read-model behavior stay with their business owner. These rules are executable in
 `tests/architecture/test_backend_boundaries.py`.
+
+A Provider is an integration adapter, not a product layer, registry, or second
+source of truth. Each adapter translates one upstream transport and error model
+into a business-package protocol. App composition decides which configured
+adapter owns each durable queue; disabled adapters own no work, and startup
+starts a bounded drain of their obsolete nonterminal profile queue rows, which
+continues through ordinary Worker turns. Operational status is derived from
+PostgreSQL facts, circuits, and queues rather than cached provider objects or
+live probes. Expected provider failures stay inside the owning bounded loop; an
+unhandled child exception is deliberately a Workers-root failure and the
+container restarts the single process.
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
 profile, price, Radar, collector, general cross-asset observation, and

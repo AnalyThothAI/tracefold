@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-GMGN_DEX_PROFILE_PROVIDER = "gmgn_dex_profile"
-BINANCE_WEB3_PROFILE_PROVIDER = "binance_web3_profile"
-GMGN_STREAM_PROFILE_PROVIDER = "gmgn_stream_snapshot"
-OKX_DEX_PROFILE_PROVIDER = "okx_dex_evidence"
-BINANCE_CEX_PROFILE_PROVIDER = "binance_cex_profile"
+from tracefold.market.profiles.profile_source_ids import (
+    BINANCE_CEX_PROFILE_PROVIDER,
+    BINANCE_WEB3_PROFILE_PROVIDER,
+    GMGN_DEX_PROFILE_PROVIDER,
+    GMGN_STREAM_PROFILE_PROVIDER,
+    OKX_DEX_PROFILE_PROVIDER,
+)
 
 STATUS_READY = "ready"
 STATUS_MISSING = "missing"

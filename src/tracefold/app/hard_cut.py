@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from tracefold.app.provider_ownership import configured_profile_provider_ids
 from tracefold.macro import (
     rebuild_all_macro_modules_for_maintenance,
 )
@@ -43,6 +44,7 @@ def rebuild_hard_cut_read_models(
     profile = rebuild_all_profiles_for_maintenance(
         db=db,
         app_home=Path(settings.app_home),
+        active_profile_provider_ids=configured_profile_provider_ids(settings),
         now_ms=int(now_ms),
     )
     audits = run_hard_cut_audits(db=db)

@@ -70,8 +70,11 @@ describe("CockpitTopbar", () => {
             socketStatus: "connected",
             lastSocketMessageAt: 1_700_000_000_000,
             status: appStatusFixture({
-              ok: false,
-              reasons: ["runtime_missing"],
+              runtime: {
+                ...appStatusFixture().runtime,
+                ok: false,
+                reasons: ["runtime_missing"],
+              },
             }),
             statusLoading: false,
             statusError: false,
@@ -84,5 +87,33 @@ describe("CockpitTopbar", () => {
 
     expect(screen.getByRole("status")).toHaveAttribute("title", "runtime_missing");
     expect(screen.getByText("runtime_missing")).toBeInTheDocument();
+  });
+
+  it("shows a provider degradation without treating runtime as unavailable", () => {
+    render(
+      <MemoryRouter>
+        <CockpitTopbar
+          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          status={{
+            socketStatus: "connected",
+            lastSocketMessageAt: 1_700_000_000_000,
+            status: appStatusFixture({
+              providers: {
+                status: "degraded",
+                reasons: ["gmgn_direct_ws:source_stale"],
+                items: [],
+              },
+            }),
+            statusLoading: false,
+            statusError: false,
+            configReady: true,
+          }}
+          onRefresh={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("status")).toHaveAttribute("title", "gmgn_direct_ws:source_stale");
+    expect(screen.getByText("gmgn_direct_ws:source_stale")).toBeInTheDocument();
   });
 });
