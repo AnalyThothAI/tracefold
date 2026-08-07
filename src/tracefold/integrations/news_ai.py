@@ -1,480 +1,394 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
-import unicodedata
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
 
 import httpx
 
 from tracefold.news import (
-    NewsBriefDraft,
-    NewsBriefExpectedError,
+    INSIGHTS_SYNTHESIS_GATE,
+    INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
+    INSIGHTS_SYNTHESIS_PARSE,
+    INSIGHTS_SYNTHESIS_PROVIDER,
+    JAVASCRIPT_WHITESPACE_PATTERN,
     NewsBriefStory,
-    NewsTitleTranslationExpectedError,
-    NewsTitleTranslationResult,
-    looks_zh_cn_title,
-    normalize_news_display_text,
-)
-
-_TITLE_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 7.5
-_TITLE_TRANSLATION_INPUT_GRAPHEME_CAP = 500
-_TITLE_TRANSLATION_OUTPUT_GRAPHEME_CAP = 600
-_NUMBER_ANCHOR = re.compile(r"(?<![\w])\d+(?:[.,]\d+)*(?:[%％])?(?![\w])")
-_MONEY_AMOUNT_ANCHOR = re.compile(r"[$€£¥]\s?\d+(?:[.,]\d+)*")
-_DOLLAR_TICKER_ANCHOR = re.compile(r"\$[A-Za-z][A-Za-z0-9]{0,15}")
-_UPPERCASE_TOKEN_ANCHOR = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]{1,15}(?![A-Za-z0-9])")
-_EXCHANGE_TICKER_ANCHOR = re.compile(
-    r"\b(?:NASDAQ|NYSE|AMEX|OTC(?:QX|QB)?|LSE|TSX|ASX|HKEX)\s*:\s*([A-Z][A-Z0-9.-]{1,15})\b"
-)
-_PARENTHESIZED_TICKER_ANCHOR = re.compile(r"\(([A-Z][A-Z0-9.-]{1,9})\)")
-_TRAILING_TICKER_ANCHOR = re.compile(r"[-\u2013\u2014]\s*([A-Z][A-Z0-9.-]{1,9})\s*$")
-_PRESERVED_UPPERCASE_SYMBOLS = frozenset(
-    {
-        "AAVE",
-        "ADA",
-        "APT",
-        "ARB",
-        "ATOM",
-        "AUD",
-        "AVAX",
-        "BCH",
-        "BNB",
-        "BONK",
-        "BTC",
-        "CAD",
-        "CHF",
-        "CNY",
-        "DAI",
-        "DOGE",
-        "DOT",
-        "ETH",
-        "EUR",
-        "FDUSD",
-        "GBP",
-        "HKD",
-        "JPY",
-        "LINK",
-        "LTC",
-        "MKR",
-        "OP",
-        "PEPE",
-        "PYUSD",
-        "RMB",
-        "SHIB",
-        "SOL",
-        "SUI",
-        "TON",
-        "TRX",
-        "UNI",
-        "USD",
-        "USDC",
-        "USDT",
-        "WIF",
-        "WLD",
-        "XRP",
-    }
+    NewsBriefSynthesisResult,
+    brief_system_prompt,
+    brief_user_prompt,
+    compose_l1_brief,
+    compose_l2_brief,
+    compose_none_brief,
+    is_brief_lead_eligible,
+    javascript_trim,
+    parse_brief_synthesis,
+    parse_javascript_number,
+    synthesis_system_prompt,
+    synthesis_user_prompt,
+    utf16_length,
+    web_usv_string,
 )
 
 
 @dataclass(frozen=True, slots=True)
-class OpenAiCompatibleProvider:
+class _BriefProvider:
     name: str
-    base_url: str
+    url: str
     model: str
-    api_key: str | None
+    timeout_seconds: float
+    api_key: str | None = field(default=None, repr=False)
 
 
-class OpenAiCompatibleNewsTitleTranslator:
-    """Translate one exact News display title through the global LLM endpoint."""
+@dataclass(frozen=True, slots=True)
+class _LlmCandidate:
+    text: str
+    provider: str
+    model: str
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-        transport: httpx.BaseTransport | None = None,
-    ) -> None:
-        normalized_base_url = str(base_url or "").strip().rstrip("/")
-        normalized_api_key = str(api_key or "").strip()
-        normalized_model = str(model or "").strip()
-        if not normalized_base_url or not normalized_api_key or not normalized_model:
-            raise ValueError("news_title_translation_configuration_required")
-        self._model = normalized_model
-        self._client = httpx.Client(
-            timeout=httpx.Timeout(_TITLE_TRANSLATION_REQUEST_TIMEOUT_SECONDS),
-            headers={
-                "Authorization": f"Bearer {normalized_api_key}",
-                "Content-Type": "application/json",
-            },
-            follow_redirects=False,
-            transport=transport,
-        )
-        self._url = f"{normalized_base_url}/chat/completions"
 
-    def translate(self, source_title: str) -> NewsTitleTranslationResult:
-        exact_source_title = str(source_title)
-        if (
-            not exact_source_title
-            or normalize_news_display_text(exact_source_title) != exact_source_title
-            or _grapheme_count(exact_source_title) > _TITLE_TRANSLATION_INPUT_GRAPHEME_CAP
-        ):
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_source_invalid",
-                retryable=False,
-            )
-        required_verbatim = _required_title_anchors(exact_source_title)
-        try:
-            response = self._client.post(
-                self._url,
-                json={
-                    "model": self._model,
-                    "temperature": 0,
-                    "max_tokens": 256,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "你是金融新闻标题翻译器。只将输入标题忠实翻译为简体中文；"
-                                "不得总结、解释、补充背景、因果、评价或新事实。保留数字、百分比、"
-                                "货币单位、$TOKEN 和代币符号。required_verbatim 数组中的每一项"
-                                "都必须原样出现在译文中。只输出 JSON："
-                                '{"translated_title":"单行简体中文标题"}'
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {
-                                    "source_title": exact_source_title,
-                                    "required_verbatim": list(required_verbatim),
-                                },
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            ),
-                        },
-                    ],
-                },
-            )
-        except httpx.TimeoutException:
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_timeout",
-                retryable=True,
-            ) from None
-        except httpx.HTTPError:
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_transport_error",
-                retryable=True,
-            ) from None
-        if response.status_code == 429 or response.status_code >= 500:
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_provider_unavailable",
-                retryable=True,
-            )
-        if response.status_code >= 400:
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_provider_rejected",
-                retryable=False,
-            )
-        try:
-            payload = response.json()
-            choice = payload["choices"][0]
-            if not isinstance(choice, Mapping) or choice.get("finish_reason") != "stop":
-                raise ValueError("news_title_translation_incomplete")
-            message = choice["message"]
-            if not isinstance(message, Mapping):
-                raise TypeError("news_title_translation_message_invalid")
-            content = message["content"]
-            if not isinstance(content, str):
-                raise TypeError("news_title_translation_content_invalid")
-            translated_payload = json.loads(content)
-            if not isinstance(translated_payload, Mapping):
-                raise TypeError("news_title_translation_shape_invalid")
-            translated = translated_payload["translated_title"]
-            if not isinstance(translated, str):
-                raise TypeError("news_title_translation_title_invalid")
-            title_zh = _validate_title_translation(
-                translated,
-                required_verbatim=required_verbatim,
-            )
-        except NewsTitleTranslationExpectedError:
-            raise
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
-            raise NewsTitleTranslationExpectedError(
-                "news_title_translation_response_invalid",
-                retryable=False,
-            ) from None
-        return NewsTitleTranslationResult(
-            title_zh=title_zh,
-            provider="openai_compatible",
-            model=self._model,
-        )
+@dataclass(frozen=True, slots=True)
+class _ChainOutcome:
+    candidate: _LlmCandidate | None
+    accepted: NewsBriefSynthesisResult | None
+    first_rejection_code: str | None
 
-    def close(self) -> None:
-        self._client.close()
+
+class _BudgetExhausted(RuntimeError):
+    pass
 
 
 class ProviderChainNewsBriefPublisher:
-    """One bounded pass through the configured World Brief provider chain."""
+    """Pinned public WorldMonitor L1/L2 provider waterfall."""
 
     def __init__(
         self,
         *,
-        configured_base_url: str,
-        configured_api_key: str | None,
-        configured_model: str,
         ollama_base_url: str,
-        ollama_model: str,
-        openrouter_base_url: str,
-        openrouter_model: str,
         openrouter_api_key: str | None,
-        groq_base_url: str,
-        groq_model: str,
         groq_api_key: str | None,
         total_timeout_seconds: float = 60.0,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._total_timeout_seconds = total_timeout_seconds
-        self._client = httpx.Client(
-            timeout=min(30.0, total_timeout_seconds),
-            transport=transport,
-        )
-        self._providers = _configured_providers(
-            (
-                OpenAiCompatibleProvider(
-                    "ollama",
-                    ollama_base_url,
-                    ollama_model,
-                    None,
-                ),
-                OpenAiCompatibleProvider(
-                    "deepseek",
-                    configured_base_url,
-                    configured_model,
-                    configured_api_key,
-                ),
-                OpenAiCompatibleProvider(
-                    "openrouter",
-                    openrouter_base_url,
-                    openrouter_model,
-                    openrouter_api_key,
-                ),
-                OpenAiCompatibleProvider(
-                    "groq",
-                    groq_base_url,
-                    groq_model,
-                    groq_api_key,
-                ),
+        normalized_ollama = str(ollama_base_url or "").strip().rstrip("/")
+        if total_timeout_seconds <= 0:
+            raise ValueError("news_brief_total_timeout_invalid")
+        self._total_timeout_seconds = float(total_timeout_seconds)
+        self._monotonic = monotonic
+        self._wall_clock = wall_clock
+        self._sleep = sleep
+        self._transport = transport
+        self._runner = asyncio.Runner()
+        self._closed = False
+        providers: list[_BriefProvider] = []
+        if normalized_ollama:
+            providers.append(
+                _BriefProvider(
+                    name="ollama",
+                    url=f"{normalized_ollama}/chat/completions",
+                    model="llama3.1:8b",
+                    timeout_seconds=25.0,
+                )
             )
-        )
+        if str(openrouter_api_key or "").strip():
+            providers.append(
+                _BriefProvider(
+                    name="openrouter",
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    model="deepseek/deepseek-v4-flash",
+                    timeout_seconds=20.0,
+                    api_key=str(openrouter_api_key).strip(),
+                )
+            )
+        if str(groq_api_key or "").strip():
+            providers.append(
+                _BriefProvider(
+                    name="groq",
+                    url="https://api.groq.com/openai/v1/chat/completions",
+                    model="llama-3.3-70b-versatile",
+                    timeout_seconds=15.0,
+                    api_key=str(groq_api_key).strip(),
+                )
+            )
+        self._providers = tuple(providers)
 
     def publish(
         self,
-        stories: list[NewsBriefStory] | tuple[NewsBriefStory, ...],
-    ) -> NewsBriefDraft:
-        if not stories:
+        stories: Sequence[NewsBriefStory],
+        *,
+        date_iso: str | None = None,
+    ) -> NewsBriefSynthesisResult:
+        top_stories = tuple(stories)
+        if not top_stories:
             raise ValueError("news_brief_stories_required")
-        deadline = time.monotonic() + self._total_timeout_seconds
-        failures: list[str] = []
-        for provider in self._providers:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
+        brief_story = next((story for story in top_stories if is_brief_lead_eligible(story)), None)
+        if brief_story is None:
+            return compose_none_brief(None, failure_code=INSIGHTS_SYNTHESIS_MISSING_CLUSTER)
+
+        prompt_date = date_iso or datetime.now(UTC).date().isoformat()
+        deadline = self._monotonic() + self._total_timeout_seconds
+
+        def accept_l1(candidate: _LlmCandidate) -> tuple[NewsBriefSynthesisResult | None, str | None]:
+            if parse_brief_synthesis(candidate.text, len(top_stories)) is None:
+                return None, INSIGHTS_SYNTHESIS_PARSE
             try:
-                raw = self._call(
-                    provider,
-                    stories=stories,
-                    timeout_seconds=min(remaining, 30.0),
+                composed = compose_l1_brief(
+                    candidate.text,
+                    top_stories,
+                    provider=candidate.provider,
+                    model=candidate.model,
                 )
-                lead, lines = _parse(raw, expected_count=len(stories))
-                return NewsBriefDraft(
-                    lead=lead,
-                    lines=tuple(lines),
-                    provider=provider.name,
-                    model=provider.model,
-                    raw_response=raw,
-                )
-            except (httpx.HTTPError, ValueError) as exc:
-                failures.append(f"{provider.name}:{type(exc).__name__}")
-        raise NewsBriefExpectedError(
-            "news_brief_provider_chain_exhausted:" + (",".join(failures) if failures else "no_configured_provider")
+            except (TypeError, ValueError):
+                return None, INSIGHTS_SYNTHESIS_GATE
+            return composed, None if composed is not None else INSIGHTS_SYNTHESIS_GATE
+
+        l1 = self._call_chain(
+            system_prompt=synthesis_system_prompt(prompt_date),
+            user_prompt=synthesis_user_prompt(top_stories),
+            max_tokens=900,
+            deadline=deadline,
+            accept=accept_l1,
+        )
+        if l1.accepted is not None:
+            return l1.accepted
+        failure_code = l1.first_rejection_code or INSIGHTS_SYNTHESIS_PROVIDER
+
+        l2 = self._call_chain(
+            system_prompt=brief_system_prompt(prompt_date),
+            user_prompt=brief_user_prompt(brief_story.primary_title),
+            max_tokens=300,
+            deadline=deadline,
+            accept=None,
+        )
+        if l2.candidate is None:
+            return compose_none_brief(brief_story, failure_code=failure_code)
+        return compose_l2_brief(
+            l2.candidate.text,
+            brief_story,
+            provider=l2.candidate.provider,
+            model=l2.candidate.model,
+            failure_code=failure_code,
         )
 
     def close(self) -> None:
-        self._client.close()
+        if self._closed:
+            return
+        self._closed = True
+        self._runner.close()
 
-    def _call(
+    def _call_chain(
         self,
-        provider: OpenAiCompatibleProvider,
         *,
-        stories: list[NewsBriefStory] | tuple[NewsBriefStory, ...],
-        timeout_seconds: float,
-    ) -> str:
-        headers = {"Content-Type": "application/json"}
-        if provider.api_key:
-            headers["Authorization"] = f"Bearer {provider.api_key}"
-        response = self._client.post(
-            f"{provider.base_url.rstrip('/')}/chat/completions",
-            headers=headers,
-            json={
-                "model": provider.model,
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": _system_prompt(len(stories))},
-                    {"role": "user", "content": _user_prompt(stories)},
-                ],
-            },
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        deadline: float,
+        accept: Callable[[_LlmCandidate], tuple[NewsBriefSynthesisResult | None, str | None]] | None,
+    ) -> _ChainOutcome:
+        first_rejection_code: str | None = None
+        for provider in self._providers:
+            try:
+                candidate = self._call_provider(
+                    provider,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    max_tokens=max_tokens,
+                    deadline=deadline,
+                )
+            except _BudgetExhausted:
+                break
+            if candidate is None:
+                continue
+            if accept is None:
+                return _ChainOutcome(candidate=candidate, accepted=None, first_rejection_code=None)
+            try:
+                accepted, rejection_code = accept(candidate)
+            except (OverflowError, RecursionError, TypeError, ValueError):
+                accepted, rejection_code = None, INSIGHTS_SYNTHESIS_GATE
+            if accepted is not None:
+                return _ChainOutcome(candidate=candidate, accepted=accepted, first_rejection_code=None)
+            if first_rejection_code is None:
+                first_rejection_code = rejection_code or INSIGHTS_SYNTHESIS_GATE
+        return _ChainOutcome(candidate=None, accepted=None, first_rejection_code=first_rejection_code)
+
+    def _call_provider(
+        self,
+        provider: _BriefProvider,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        deadline: float,
+    ) -> _LlmCandidate | None:
+        body: dict[str, object] = {
+            "model": provider.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.1,
+        }
+        if provider.name == "ollama":
+            body["think"] = False
+        elif provider.name == "openrouter":
+            body["reasoning"] = {"enabled": False}
+        headers = _provider_headers(provider)
+        response: httpx.Response | None = None
+        for attempt in range(3):
+            usable = deadline - self._monotonic() - 5.0
+            if usable <= 0:
+                raise _BudgetExhausted
+            try:
+                response = self._runner.run(
+                    self._post_provider(
+                        provider.url,
+                        headers=headers,
+                        body=body,
+                        timeout_seconds=max(0.001, min(provider.timeout_seconds, usable)),
+                    )
+                )
+            except httpx.HTTPError:
+                if attempt >= 2:
+                    return None
+                wait = float(2**attempt)
+                self._sleep(wait)
+                continue
+            if 200 <= response.status_code < 300:
+                break
+            if response.status_code not in {408, 429} and not 500 <= response.status_code <= 599:
+                return None
+            if attempt >= 2:
+                return None
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"), now_seconds=self._wall_clock())
+            remaining = max(0.0, deadline - self._monotonic() - 5.0)
+            if retry_after is not None and retry_after >= remaining:
+                return None
+            bounded_hint = min(retry_after, 10.0) if retry_after is not None else 0.0
+            wait = max(float(2**attempt), bounded_hint)
+            self._sleep(wait)
+        if response is None or not 200 <= response.status_code < 300:
+            return None
         try:
+            payload = json.loads(response.content, parse_constant=_reject_json_constant)
             content = payload["choices"][0]["message"]["content"]
-        except (IndexError, KeyError, TypeError):
-            raise ValueError("news_brief_model_response_invalid") from None
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("news_brief_empty_model_response")
-        return content
+        except (UnicodeDecodeError, ValueError, RecursionError, IndexError, KeyError, TypeError):
+            return None
+        if not isinstance(content, str) or not javascript_trim(content) or "\x00" in content:
+            return None
+        text = _clean_provider_text(content)
+        if utf16_length(text) < 20:
+            return None
+        returned_model = payload.get("model")
+        normalized_model = javascript_trim(web_usv_string(returned_model)) if isinstance(returned_model, str) else ""
+        model = normalized_model if normalized_model and "\x00" not in normalized_model else provider.model
+        return _LlmCandidate(text=text, provider=provider.name, model=model)
 
-
-def _configured_providers(
-    providers: Sequence[OpenAiCompatibleProvider],
-) -> tuple[OpenAiCompatibleProvider, ...]:
-    return tuple(
-        provider
-        for provider in providers
-        if provider.base_url and provider.model and (provider.api_key or provider.name == "ollama")
-    )
-
-
-def _system_prompt(story_count: int) -> str:
-    return f"""你是 WORLD BRIEF 编辑。只输出 JSON：
-{{"lead":"...","lines":[{{"n":1,"text":"..."}}, ...]}}
-
-要求：
-- 使用简体中文；lead 为 2-3 句，概括最重要的 2-3 条线索。
-- lines 必须正好 {story_count} 条，严格保持输入顺序，一条新闻一句话。
-- 每个事实都只能来自对应编号的标题；不得补充背景、数字、人物、地点或因果。
-- lead 的每个主张必须带来源编号 [n]；第 n 条 line 必须只以 [n] 结尾。
-- 不得合并不同 Story 的事实；不得重排、增加或删除 Story。
-- 专有名词必须能在输入标题中逐字找到。"""
-
-
-def _user_prompt(
-    stories: list[NewsBriefStory] | tuple[NewsBriefStory, ...],
-) -> str:
-    rows = [
-        f"{index}. {story.title}（{story.source}，{story.source_count} 个独立物理来源）"
-        for index, story in enumerate(stories, start=1)
-    ]
-    return "编号 Story：\n" + "\n".join(rows)
-
-
-def _parse(raw: str, *, expected_count: int) -> tuple[str, list[str]]:
-    cleaned = raw.replace("```json", "").replace("```", "").strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("news_brief_json_missing")
-    payload = json.loads(cleaned[start : end + 1])
-    lead = str(payload.get("lead") or "").strip()
-    raw_lines = payload.get("lines")
-    if not lead or not isinstance(raw_lines, list):
-        raise ValueError("news_brief_shape_invalid")
-    by_index: dict[int, str] = {}
-    for entry in raw_lines:
-        if not isinstance(entry, dict):
-            continue
+    async def _post_provider(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        body: dict[str, object],
+        timeout_seconds: float,
+    ) -> httpx.Response:
         try:
-            index = int(entry.get("n"))
-        except (TypeError, ValueError):
-            continue
-        text = str(entry.get("text") or "").strip()
-        if 1 <= index <= expected_count and text and index not in by_index:
-            by_index[index] = text
-    return lead, [by_index.get(index, "") for index in range(1, expected_count + 1)]
+            async with asyncio.timeout(timeout_seconds):
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    transport=self._transport,
+                ) as client:
+                    return await client.post(
+                        url,
+                        headers=headers,
+                        json=body,
+                        timeout=httpx.Timeout(timeout_seconds),
+                    )
+        except TimeoutError as exc:
+            raise httpx.ReadTimeout("news_brief_provider_timeout") from exc
 
 
-def _required_title_anchors(source_title: str) -> tuple[str, ...]:
-    candidates = [
-        (match.start(), match.group(0))
-        for pattern in (_NUMBER_ANCHOR, _MONEY_AMOUNT_ANCHOR, _DOLLAR_TICKER_ANCHOR)
-        for match in pattern.finditer(source_title)
-    ]
-    candidates.extend(
-        (match.start(), match.group(0))
-        for match in _UPPERCASE_TOKEN_ANCHOR.finditer(source_title)
-        if match.group(0) in _PRESERVED_UPPERCASE_SYMBOLS
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
+_TASK_NARRATION = re.compile(
+    r"^(we need to|i need to|let me|i'll |i should|i will |the task is|the instructions|according to the rules|"
+    rf"so we need to|okay[,.]{JAVASCRIPT_WHITESPACE_PATTERN}*(i'll|let me|so|we need|the task|i should|i will)|"
+    rf"sure[,.]{JAVASCRIPT_WHITESPACE_PATTERN}*(i'll|let me|so|"
+    r"we need|the task|i should|i will|here)|first[, ]+(i|we|let)|to summarize (the headlines|the task|this)|"
+    r"my task (is|was|:)|step [0-9])",
+    re.IGNORECASE | re.ASCII,
+)
+_PROMPT_ECHO = re.compile(
+    r"^(summarize the top story|summarize the key|rules:|here are the rules|the top story is likely)",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def _provider_headers(provider: _BriefProvider) -> dict[str, str]:
+    headers = {"Content-Type": "application/json", "User-Agent": _CHROME_UA}
+    if provider.api_key:
+        headers["Authorization"] = f"Bearer {provider.api_key}"
+    if provider.name == "openrouter":
+        headers["HTTP-Referer"] = "https://worldmonitor.app"
+        headers["X-Title"] = "World Monitor"
+    return headers
+
+
+def _retry_after_seconds(value: str | None, *, now_seconds: float) -> float | None:
+    if not value:
+        return None
+    seconds = parse_javascript_number(value)
+    if isfinite(seconds) and seconds == 0:
+        return 1.0
+    if not isfinite(seconds) or seconds <= 0:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=UTC)
+            return max(retry_at.timestamp() - now_seconds, 1.0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return seconds
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid_json_constant:{value}")
+
+
+def _clean_provider_text(value: str) -> str:
+    trimmed = javascript_trim(web_usv_string(value))
+    if _TASK_NARRATION.match(trimmed) or _PROMPT_ECHO.match(trimmed):
+        lines = [line for line in trimmed.split("\n") if javascript_trim(line)]
+        clean = [
+            line
+            for line in lines
+            if not _TASK_NARRATION.match(javascript_trim(line)) and not _PROMPT_ECHO.match(javascript_trim(line))
+        ]
+        trimmed = javascript_trim("\n".join(clean)) or trimmed
+    return javascript_trim(
+        re.sub(
+            r"<think>[\s\S]*",
+            "",
+            re.sub(
+                r"<\|thinking\|>[\s\S]*?<\|/thinking\|>",
+                "",
+                re.sub(r"<think>[\s\S]*?</think>", "", trimmed, flags=re.IGNORECASE | re.ASCII),
+                flags=re.IGNORECASE | re.ASCII,
+            ),
+            flags=re.IGNORECASE | re.ASCII,
+        )
     )
-    for pattern in (
-        _EXCHANGE_TICKER_ANCHOR,
-        _PARENTHESIZED_TICKER_ANCHOR,
-        _TRAILING_TICKER_ANCHOR,
-    ):
-        candidates.extend((match.start(1), match.group(1)) for match in pattern.finditer(source_title))
-    anchors: list[str] = []
-    seen: set[str] = set()
-    for _, anchor in sorted(candidates):
-        identity = anchor.casefold()
-        if identity in seen:
-            continue
-        seen.add(identity)
-        anchors.append(anchor)
-    return tuple(anchors)
-
-
-def _validate_title_translation(
-    value: object,
-    *,
-    required_verbatim: tuple[str, ...],
-) -> str:
-    translated = str(value or "").strip()
-    if (
-        not translated
-        or normalize_news_display_text(translated) != translated
-        or not looks_zh_cn_title(translated)
-        or _grapheme_count(translated) > _TITLE_TRANSLATION_OUTPUT_GRAPHEME_CAP
-    ):
-        raise NewsTitleTranslationExpectedError(
-            "news_title_translation_output_invalid",
-            retryable=False,
-        )
-    translated_casefold = translated.casefold()
-    if any(anchor.casefold() not in translated_casefold for anchor in required_verbatim):
-        raise NewsTitleTranslationExpectedError(
-            "news_title_translation_anchors_changed",
-            retryable=False,
-        )
-    return translated
-
-
-def _grapheme_count(value: str) -> int:
-    count = 0
-    current = False
-    join_next = False
-    for character in value:
-        codepoint = ord(character)
-        extends = (
-            bool(unicodedata.combining(character)) or 0xFE00 <= codepoint <= 0xFE0F or 0x1F3FB <= codepoint <= 0x1F3FF
-        )
-        if not current:
-            current = True
-            count += 1
-        elif character == "\u200d":
-            join_next = True
-        elif extends or join_next:
-            join_next = False
-        else:
-            count += 1
-    return count
 
 
 __all__ = [
-    "OpenAiCompatibleNewsTitleTranslator",
     "ProviderChainNewsBriefPublisher",
 ]

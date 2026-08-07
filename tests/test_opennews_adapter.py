@@ -249,8 +249,14 @@ def test_malformed_article_url_keeps_report_as_linkless() -> None:
     assert event.entry.link is None
 
 
-@pytest.mark.parametrize("invalid_text", ["bad\x00text", "bad\ud800text"])
-def test_non_postgres_text_is_discarded_at_provider_boundary(invalid_text: str) -> None:
+@pytest.mark.parametrize(
+    ("invalid_text", "expected_title"),
+    [("bad\x00text", "bad text"), ("bad\ud800text", None)],
+)
+def test_wire_text_strips_controls_and_rejects_non_utf8(
+    invalid_text: str,
+    expected_title: str | None,
+) -> None:
     event = parse_opennews_message(
         {
             "method": "news.update",
@@ -272,10 +278,106 @@ def test_non_postgres_text_is_discarded_at_provider_boundary(invalid_text: str) 
     )
 
     assert event is not None and event.entry is not None
-    assert event.entry.title is None
+    assert event.entry.title == expected_title
     assert event.entry.description == ""
     assert event.entry.link is None
     assert event.provider_metadata == {"score": 75}
+
+
+def test_headline_clamp_uses_javascript_utf16_units_and_valid_utf8() -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-astral-clamp",
+                "text": "a" * 499 + "𝔸" + "z",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.title == "a" * 499 + "\ufffd"
+    assert len(event.entry.title.encode("utf-16-le")) // 2 == 500
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("😀" * 20, "😀" * 20),
+        ("😀" * 250, "😀" * 200),
+        ("a" * 399 + "𝔸", "a" * 399 + "\ufffd"),
+    ],
+)
+def test_description_bounds_use_javascript_utf16_units_and_valid_utf8(
+    description: str,
+    expected: str,
+) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-description-clamp",
+                "text": "Canonical headline differs from the description evidence",
+                "description": description,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.description == expected
+
+
+def test_description_equality_uses_javascript_lowercase_not_casefold() -> None:
+    title = "Straße market update with enough context for the public evidence boundary"
+    description = "Strasse market update with enough context for the public evidence boundary"
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-description-case",
+                "text": title,
+                "description": description,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.description == description
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\ufeff1234567890", "1234567890"),
+        ("Alpha\ufeffBeta announces a public policy update", "Alpha Beta announces a public policy update"),
+    ],
+)
+def test_plaintext_blocks_use_javascript_whitespace(text: str, expected: str) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-js-whitespace",
+                "text": text,
+                "newsType": "\ufeffReuters\ufeff",
+                "engineType": "\ufeffnews\ufeff",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.title == expected
+    assert event.entry.reporting_origin == "reuters"
 
 
 @pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])

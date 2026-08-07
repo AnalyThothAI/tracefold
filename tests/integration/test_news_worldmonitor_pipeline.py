@@ -397,13 +397,13 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         conn.close()
 
 
-def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
+def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
         repository = NewsRepository(conn)
         source = opennews_source()
-        unusable = parse_opennews_message(
+        emoji_only = parse_opennews_message(
             {
                 "method": "news.update",
                 "params": {
@@ -420,7 +420,7 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
                 },
             }
         )
-        invalid_text_events = tuple(
+        canonicalized_text_events = tuple(
             parse_opennews_message(
                 {
                     "method": "news.update",
@@ -453,42 +453,122 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
                 },
             }
         )
-        assert unusable is not None and valid is not None
-        assert all(event is not None for event in invalid_text_events)
+        assert emoji_only is not None and valid is not None
+        assert all(event is not None for event in canonicalized_text_events)
 
         with conn.transaction():
             repository.sync_source(source, now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
-                events=(valid, unusable, *invalid_text_events),
+                events=(valid, emoji_only, *canonicalized_text_events),
                 observed_at_ms=NOW_MS,
             )
 
         assert result == {
             "events_seen": 4,
-            "items_inserted": 1,
+            "items_inserted": 3,
             "items_updated": 0,
             "metadata_updated": 0,
-            "rejected": 3,
+            "rejected": 1,
         }
         rows = conn.execute(
             """
-            SELECT provider_record_id, normalized_title, provider_metadata
+            SELECT provider_record_id, title, reporting_origin, provider_metadata
               FROM news_items
              ORDER BY provider_record_id
             """
         ).fetchall()
         assert rows == [
             {
+                "provider_record_id": "3442019",
+                "title": "👑👑👑",
+                "reporting_origin": "aeyakovenko",
+                "provider_metadata": {
+                    "score": 5,
+                    "source": "aeyakovenko",
+                    "signal": "neutral",
+                    "grade": "C",
+                    "coins": [{"symbol": "SOL", "market_type": "cex"}],
+                },
+            },
+            {
+                "provider_record_id": "wire-nul-title",
+                "title": "bad title",
+                "reporting_origin": "reuters",
+                "provider_metadata": {},
+            },
+            {
                 "provider_record_id": "wire-valid",
-                "normalized_title": "solana validators approve network upgrade",
+                "title": "Solana validators approve network upgrade",
+                "reporting_origin": "reuters",
                 "provider_metadata": {
                     "score": 75,
                     "signal": "long",
                     "grade": "A",
                 },
-            }
+            },
         ]
+    finally:
+        conn.close()
+
+
+def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        frames = (
+            ("hyphenated", "Alpha-Beta!!!", "Reuters", None),
+            ("joined", "AlphaBeta???", "AP", None),
+            ("emoji-1", "👑👑👑", "Twitter", "aeyakovenko"),
+            ("emoji-2", "👑👑👑", "Twitter", "aeyakovenko"),
+        )
+        parsed_events = []
+        for index, (record_id, title, news_type, author) in enumerate(frames):
+            event = parse_opennews_message(
+                {
+                    "method": "news.update",
+                    "params": {
+                        "id": record_id,
+                        "text": title,
+                        "newsType": news_type,
+                        "engineType": "news",
+                        "ts": NOW_MS + index,
+                        **({"source": author} if author else {}),
+                    },
+                }
+            )
+            assert event is not None
+            parsed_events.append(event)
+        events = tuple(parsed_events)
+
+        with conn.transaction():
+            repository.sync_source(source, now_ms=NOW_MS + len(events))
+            repository.record_opennews_events(
+                source=source,
+                events=events,
+                observed_at_ms=NOW_MS + len(events),
+            )
+        with conn.transaction():
+            rebuilt = repository.rebuild_stories(now_ms=NOW_MS + len(events))
+
+        ownership = conn.execute(
+            """
+            SELECT count(*) AS membership_count,
+                   count(DISTINCT member.story_id) AS story_count,
+                   count(DISTINCT story.canonical_key) AS canonical_key_count
+              FROM news_story_members member
+              JOIN news_stories story ON story.story_id = member.story_id
+            """
+        ).fetchone()
+        assert ownership == {
+            "membership_count": 4,
+            "story_count": 4,
+            "canonical_key_count": 2,
+        }
+        assert rebuilt["projection_status"] == "rebuilt"
+        assert conn.execute("SELECT count(*) AS count FROM news_items").fetchone()["count"] == 4
     finally:
         conn.close()
 

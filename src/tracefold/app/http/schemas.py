@@ -190,16 +190,6 @@ class NewsImportanceFactorsData(ExactApiSchema):
     total: int
 
 
-class NewsStoryTitleTranslationData(ExactApiSchema):
-    state: Literal["pending", "ready", "failed", "unavailable"]
-    title_zh: str | None
-    source_title: str
-    source_title_fingerprint: str
-    locale: Literal["zh-CN"]
-    workflow_version: str
-    prompt_version: str
-
-
 class NewsStoryData(ExactApiSchema):
     story_id: str
     title: str
@@ -219,7 +209,6 @@ class NewsStoryData(ExactApiSchema):
     last_published_at_ms: int
     provider_evidence: NewsProviderEvidenceData | None
     push_delivery_state: Literal["pending", "sent", "suppressed", "failed"] | None
-    title_translation: NewsStoryTitleTranslationData | None
 
 
 class NewsFeedFacetData(ExactApiSchema):
@@ -301,74 +290,146 @@ class NewsStoryDetailData(NewsStoryData):
 
 
 class NewsBriefSourceData(ExactApiSchema):
-    n: int
-    story_id: str
     title: str
     source: str
-    url: str | None
+    url: str
+    published_at_ms: int | None
 
 
-class NewsBriefValidationData(ExactApiSchema):
-    citation_index_lock: bool
-    citation_closure: bool
-    proper_noun_grounding: bool
-    no_cross_story_stitching: bool
-    story_count: int
-    lead_fallback: bool
-    line_fallbacks: list[int]
-    grounding_failures: list[int]
-    model_line_coverage: int
-    final_story_coverage: int
+class NewsBriefStoryLineData(ExactApiSchema):
+    n: int
+    text: str
+
+
+PublicInsightsThreatLevel = Literal["critical", "high", "elevated", "moderate"]
+PublicInsightsCategory = Literal[
+    "conflict",
+    "violence",
+    "unrest",
+    "geopolitical",
+    "crisis",
+    "natural_disaster",
+    "political",
+    "economic",
+    "general",
+]
+
+
+class NewsBriefTopStoryData(ExactApiSchema):
+    story_id: str
+    primary_title: str
+    primary_source: str
+    primary_link: str | None
+    primary_published_at_ms: int
+    source_count: int
+    unique_source_count: int
+    sources: list[str]
+    last_updated_ms: int
+    member_titles: list[str]
+    source_tier: int
+    upstream_importance_score: int | float
+    entity_corroboration: bool
+    corroboration_source_count: int
+    importance_score: float
+    effective_importance_score: float
+    is_alert: bool
+    threat_level: PublicInsightsThreatLevel
+    category: PublicInsightsCategory
+
+
+class NewsBriefSourceAgeRangeData(ExactApiSchema):
+    newest_ms: int
+    oldest_ms: int
+
+
+class NewsBriefSelectionStatsData(ExactApiSchema):
+    considered: int
+    admissibility_dropped: int
+    source_cap_dropped: int
+    overflow_dropped: int
+    brief_eligible_considered: int
+    brief_eligible_promoted: bool
+
+
+class NewsBriefProvenanceData(ExactApiSchema):
+    projection_revision: str
+    selector_evaluated_at_ms: int
+    selection_stats: NewsBriefSelectionStatsData
+
+
+NewsBriefFailureCode = Literal[
+    "INSIGHTS_SYNTHESIS_PARSE",
+    "INSIGHTS_SYNTHESIS_GATE",
+    "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
+    "INSIGHTS_SYNTHESIS_PROVIDER",
+]
+
+
+class NewsBriefL1ValidationData(ExactApiSchema):
+    failure_code: None
+    stripped_citations: int = Field(ge=0)
+    line_fallbacks: list[int] = Field(max_length=8)
+
+
+class NewsBriefL2ValidationData(ExactApiSchema):
+    failure_code: NewsBriefFailureCode
+    headline_fallback: bool
+
+
+class NewsBriefNoneValidationData(ExactApiSchema):
+    failure_code: NewsBriefFailureCode
 
 
 class NewsBriefPublicationData(ExactApiSchema):
     publication_id: str
-    fingerprint: str
-    evidence_cutoff_at_ms: int
-    published_at_ms: int
+    selection_fingerprint: str
+    target_fingerprint: str
+    quality: Literal["ok", "degraded"]
+    brief_kind: Literal["l1", "l2", "none"]
+    world_brief: str
+    brief_story_lines: list[NewsBriefStoryLineData]
+    top_stories: list[NewsBriefTopStoryData]
+    selected_story_ids: list[str]
+    sources: list[NewsBriefSourceData]
+    source_age_range: NewsBriefSourceAgeRangeData
     provider: str
     model: str
     prompt_version: str
     workflow_version: str
+    composer_version: str
     schema_version: str
-    locale: str
-    selected_story_ids: list[str]
-    lead: str
-    lines: list[str]
-    sources: list[NewsBriefSourceData]
-    validation: NewsBriefValidationData
+    selector_version: str
+    identity_version: str
+    locale: Literal["en"]
+    validation: NewsBriefL1ValidationData | NewsBriefL2ValidationData | NewsBriefNoneValidationData
+    provenance: NewsBriefProvenanceData
+    published_at_ms: int
+    created_at_ms: int
 
 
 class NewsBriefRunData(ExactApiSchema):
     run_id: str
-    fingerprint: str
-    status: Literal["running", "retryable", "ready", "insufficient_material", "failed"]
-    attempt_count: int
-    candidate_story_count: int
-    candidate_source_count: int
-    heartbeat_at_ms: int | None
+    target_fingerprint: str
+    selection_fingerprint: str
+    status: Literal["waiting_input", "running", "retry_wait", "published"]
+    model_outcome: Literal["ok", "l2", "none"] | None
+    pointer_action: Literal["advance_ok", "advance_degraded", "preserve_lkg", "none"]
+    failure_count: int
+    next_due_at_ms: int | None
     lease_expires_at_ms: int | None
-    last_error: str | None
+    last_error_code: str | None
     created_at_ms: int
     updated_at_ms: int
+    last_attempt_at_ms: int | None
     completed_at_ms: int | None
 
 
 class NewsBriefData(ExactApiSchema):
-    state: Literal[
-        "unavailable",
-        "insufficient_material",
-        "running",
-        "ready",
-        "stale_fallback",
-        "failed",
-    ]
-    target_fingerprint: str
-    candidate_story_count: int
-    candidate_source_count: int
+    state: Literal["unavailable", "current", "degraded", "last_known_good"]
+    target_fingerprint: str | None
+    pending_due_at_ms: int | None
     publication: NewsBriefPublicationData | None
     latest_run: NewsBriefRunData | None
-    history: list[NewsBriefPublicationData]
 
 
 class NewsSourceData(ExactApiSchema):
@@ -441,43 +502,10 @@ class NewsStoryStatusData(ExactApiSchema):
 class NewsBriefStatusData(ExactApiSchema):
     status: NewsHealthStatus
     reasons: list[str]
-    public_state: Literal[
-        "unavailable",
-        "insufficient_material",
-        "running",
-        "ready",
-        "stale_fallback",
-        "failed",
-    ]
-    target_fingerprint: str
+    public_state: Literal["unavailable", "current", "degraded", "last_known_good"]
+    target_fingerprint: str | None
     publication_id: str | None
     latest_run: NewsBriefRunData | None
-
-
-class NewsTitleTranslationRolling24hData(ExactApiSchema):
-    attempted: int
-    succeeded: int
-    success_ratio: float | None
-    latency_p95_ms: int | None
-    failure_counts: dict[str, int]
-
-
-class NewsTitleTranslationStatusData(ExactApiSchema):
-    status: NewsHealthStatus
-    reasons: list[str]
-    configured: bool
-    locale: Literal["zh-CN"]
-    workflow_version: str
-    prompt_version: str
-    eligible_count: int
-    ready_count: int
-    pending_count: int
-    retry_count: int
-    failed_count: int
-    unavailable_count: int
-    oldest_pending_at_ms: int | None
-    latest_success_at_ms: int | None
-    rolling_24h: NewsTitleTranslationRolling24hData
 
 
 class NewsPushTranslation24hData(ExactApiSchema):
@@ -523,7 +551,6 @@ class NewsStatusLayersData(ExactApiSchema):
     ingest: NewsIngestStatusData
     story: NewsStoryStatusData
     brief: NewsBriefStatusData
-    translation: NewsTitleTranslationStatusData
     push: NewsPushStatusData
 
 

@@ -146,10 +146,11 @@ def test_frontier_and_native_job_health_use_eligibility_and_expired_lease_clocks
         assert profile["due_count"] == 1
         assert profile["oldest_due_age_ms"] == 1_000
 
-        assert brief["counts_by_status"] == {"retryable": 1}
+        assert brief["counts_by_status"] == {"retry_wait": 1}
         assert brief["queue_depth"] == 1
         assert brief["due_count"] == 1
         assert brief["failed_count"] == 1
+        assert brief["max_attempt_count"] == 7
         assert brief["status"] == "degraded"
 
         assert document["counts_by_status"] == {"claimed": 1, "retryable": 1}
@@ -181,13 +182,16 @@ def _insert_news_brief_retry(conn) -> None:
     conn.execute(
         """
         INSERT INTO news_brief_runs(
-          run_id, fingerprint, status, attempt_count,
-          candidate_story_count, candidate_source_count,
-          last_error, next_due_at_ms, created_at_ms, updated_at_ms
+          run_id, target_fingerprint, selection_fingerprint,
+          status, model_outcome, pointer_action, failure_count,
+          last_error_code, next_due_at_ms,
+          created_at_ms, updated_at_ms, completed_at_ms
         )
         VALUES (
-          'brief-run-health', 'brief-health', 'retryable', 1,
-          3, 2, 'provider_timeout', %(next_due_at_ms)s, 1, %(updated_at_ms)s
+          'brief-run-health', repeat('a', 64), repeat('b', 64),
+          'retry_wait', 'none', 'none', 7,
+          'INSIGHTS_SYNTHESIS_PROVIDER', %(next_due_at_ms)s,
+          1, %(updated_at_ms)s, %(updated_at_ms)s
         )
         """,
         {"next_due_at_ms": NOW_MS - 500, "updated_at_ms": NOW_MS - 500},

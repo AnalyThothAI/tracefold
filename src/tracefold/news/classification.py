@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 from typing import Final, cast
 
+from .identity import JAVASCRIPT_WHITESPACE_PATTERN
 from .models import EventCategory, NewsClassification, ThreatLevel
 
 SEVERITY_VALUES: Final[dict[ThreatLevel, int]] = {
@@ -169,21 +170,35 @@ SHORT_KEYWORDS: Final = {
     "flood",
 }
 
-_HISTORICAL_ANCHORED = re.compile(r"^(?:science history|throwback|flashback)\s*:?", re.I)
-_HISTORICAL_BRAND = re.compile(r"^(?:[A-Z][\w'&-]*\s+){1,4}(?:[Tt]hrowback|[Ff]lashback)(?:\s+[A-Za-z]+)?\s*:")
-_HISTORICAL_YEAR_PREFIX = re.compile(r"^on this day in\s+(?:19|20)\d{2}\b", re.I)
-_THIS_DAY_HISTORY = re.compile(r"^this day in history\b", re.I)
+_HISTORICAL_ANCHORED = re.compile(
+    rf"^(?:science history|throwback|flashback){JAVASCRIPT_WHITESPACE_PATTERN}*:?",
+    re.I | re.ASCII,
+)
+_HISTORICAL_BRAND = re.compile(
+    rf"^(?:[A-Z][A-Za-z0-9_'&-]*{JAVASCRIPT_WHITESPACE_PATTERN}+){{1,4}}"
+    rf"(?:[Tt]hrowback|[Ff]lashback)(?:{JAVASCRIPT_WHITESPACE_PATTERN}+[A-Za-z]+)?"
+    rf"{JAVASCRIPT_WHITESPACE_PATTERN}*:",
+    re.ASCII,
+)
+_HISTORICAL_YEAR_PREFIX = re.compile(
+    rf"^on this day in{JAVASCRIPT_WHITESPACE_PATTERN}+(?:19|20)[0-9]{{2}}(?![A-Za-z0-9_])",
+    re.I | re.ASCII,
+)
+_THIS_DAY_HISTORY = re.compile(r"^this day in history(?![A-Za-z0-9_])", re.I | re.ASCII)
 _HISTORICAL_PHRASE = re.compile(
-    r"\b(?:\d+\s+(?:years?|decades?|months?)\s+(?:ago|after|later)|anniversary|"
-    r"in memoriam|remembering|remembered|commemorat(?:e|es|ed|ion)|retrospective)\b",
-    re.I,
+    rf"(?<![A-Za-z0-9_])(?:[0-9]+{JAVASCRIPT_WHITESPACE_PATTERN}+(?:years?|decades?|months?)"
+    rf"{JAVASCRIPT_WHITESPACE_PATTERN}+(?:ago|after|later)|anniversary|"
+    rf"in memoriam|remembering|remembered|commemorat(?:e|es|ed|ion)|retrospective)"
+    rf"(?![A-Za-z0-9_])",
+    re.I | re.ASCII,
 )
 _FULL_DATE = re.compile(
-    r"\b(?:january|february|march|april|may|june|july|august|september|october|"
-    r"november|december)\s+\d{1,2},?\s+((?:19|20)\d{2})\b",
-    re.I,
+    rf"(?<![A-Za-z0-9_])(?:january|february|march|april|may|june|july|august|september|october|"
+    rf"november|december){JAVASCRIPT_WHITESPACE_PATTERN}+[0-9]{{1,2}},?"
+    rf"{JAVASCRIPT_WHITESPACE_PATTERN}+((?:19|20)[0-9]{{2}})(?![A-Za-z0-9_])",
+    re.I | re.ASCII,
 )
-_ISO_DATE = re.compile(r"\b((?:19|20)\d{2})-\d{1,2}-\d{1,2}\b")
+_ISO_DATE = re.compile(r"(?<![A-Za-z0-9_])((?:19|20)[0-9]{2})-[0-9]{1,2}-[0-9]{1,2}(?![A-Za-z0-9_])")
 
 
 def has_historical_marker(title: str, *, now_ms: int | None = None) -> bool:
@@ -211,8 +226,20 @@ def has_historical_marker(title: str, *, now_ms: int | None = None) -> bool:
 
 def _matches(text: str, keyword: str) -> bool:
     if keyword in SHORT_KEYWORDS:
-        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+        start = text.find(keyword)
+        while start >= 0:
+            end = start + len(keyword)
+            before_is_word = start > 0 and _is_javascript_word_char(text[start - 1])
+            after_is_word = end < len(text) and _is_javascript_word_char(text[end])
+            if not before_is_word and not after_is_word:
+                return True
+            start = text.find(keyword, start + 1)
+        return False
     return keyword in text
+
+
+def _is_javascript_word_char(char: str) -> bool:
+    return char == "_" or "a" <= char <= "z" or "A" <= char <= "Z" or "0" <= char <= "9"
 
 
 def _first_match(

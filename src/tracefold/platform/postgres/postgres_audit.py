@@ -41,7 +41,6 @@ PROJECTION_TABLES = (
     "news_story_facet_counts",
     "news_source_facet_counts",
     "news_brief_selection_current",
-    "news_story_title_translations",
 )
 
 FOREIGN_KEY_CONSTRAINTS = {
@@ -310,12 +309,14 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_brief",
         "sql": """
-            SELECT current.publication_id, selection.story_id
+            SELECT current.publication_id,
+                   selection.selection_fingerprint,
+                   selection.top_stories
             FROM news_brief_current current
-            LEFT JOIN news_brief_selection_current selection ON true
+            LEFT JOIN news_brief_selection_current selection
+              ON selection.singleton_key
             WHERE current.singleton_key
-            ORDER BY selection.rank
-            LIMIT 8
+            LIMIT 1
         """,
         "params": (),
     },
@@ -816,47 +817,14 @@ class ProjectionValidationAudit:
                  OR current.source_id IS NULL
                  OR current.story_count IS DISTINCT FROM expected.story_count
             ),
-            brief_ranked_by_origin AS (
-              SELECT story.story_id,
-                     story.importance_score,
-                     story.last_published_at_ms,
-                     row_number() OVER (
-                       PARTITION BY item.reporting_origin
-                       ORDER BY story.importance_score DESC,
-                                story.last_published_at_ms DESC,
-                                story.story_id
-                     ) AS origin_rank
-                FROM news_stories story
-                JOIN news_items item
-                  ON item.item_id = story.representative_item_id
-               WHERE NOT item.brief_excluded
-            ),
-            brief_candidates AS (
-              SELECT story_id, importance_score, last_published_at_ms
-                FROM brief_ranked_by_origin
-               WHERE origin_rank <= 3
-               ORDER BY importance_score DESC,
-                        last_published_at_ms DESC,
-                        story_id
-               LIMIT 8
-            ),
-            brief_expected AS (
-              SELECT row_number() OVER (
-                       ORDER BY importance_score DESC,
-                                last_published_at_ms DESC,
-                                story_id
-                     )::smallint AS rank,
-                     story_id
-              FROM brief_candidates
-            ),
             brief_mismatch AS (
               SELECT count(*)::integer AS count
-              FROM brief_expected expected
-              FULL OUTER JOIN news_brief_selection_current current
-                USING (rank)
-              WHERE expected.story_id IS NULL
-                 OR current.story_id IS NULL
-                 OR current.story_id IS DISTINCT FROM expected.story_id
+              FROM news_brief_selection_current current
+              WHERE NOT current.singleton_key
+                 OR current.selection_fingerprint !~ '^[0-9a-f]{64}$'
+                 OR jsonb_typeof(current.top_stories) <> 'array'
+                 OR jsonb_array_length(current.top_stories) > 8
+                 OR jsonb_typeof(current.selection_stats) <> 'object'
             )
             SELECT
               (SELECT count FROM stock_mismatch)
@@ -866,7 +834,7 @@ class ProjectionValidationAudit:
               (SELECT count FROM source_facet_mismatch)
                 AS news_source_facet_mismatch,
               (SELECT count FROM brief_mismatch)
-                AS news_brief_selection_mismatch
+                AS news_brief_selection_snapshot_mismatch
             """
         ).fetchone()
         bounded_checks = {str(name): int(value or 0) for name, value in dict(bounded_models or {}).items()}

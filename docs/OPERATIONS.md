@@ -238,25 +238,22 @@ News:
 
 ```text
 OpenNews WSS + bounded REST recovery
-  -> report/annotation merge into current NewsItem
+  -> canonical first-block headline/origin fact + annotation merge
   -> every 60 seconds load complete enabled 12-hour item window
   -> WorldMonitor clustering + classification + importance
-  -> compare-and-publish current Story/member/facet/Brief selection closure
+  -> compare-and-publish current Story/member/facet closure
+  -> public UTF-16 title-length gate + same-kernel seed clustering
+  -> public cluster score/admission/recency selector
+  -> singleton server-ordered Top Story selection snapshot
   -> /api/news/feed + /api/news/stories/{story_id}
 
-Current Story with max numeric OpenNews score strictly > 70
-  -> safe normalized Story display title + exact fingerprints
-  -> news_story_title_translations durable target
-  -> native News Story-title translation candidate
-  -> serial model arbiter + one serial model adapter
-  -> exact-bound zh-CN title or immediate original fallback
-  -> /api/news/feed + /api/news/stories/{story_id}
-
-Top-8 changed Story fingerprint
+Changed public selection/contract target fingerprint
+  -> 10-minute debounce + 120-second fenced claim
   -> native News Brief candidate
   -> serial model arbiter
-  -> one serial model adapter
-  -> validated Chinese immutable publication + current pointer
+  -> Ollama -> optional OpenRouter -> optional Groq L1 waterfall
+  -> shared-budget corroboration-gated L2 fallback
+  -> whole immutable English Insights publication or whole LKG
   -> /api/news/brief
 
 Every 10 seconds, current Story with max persisted OpenNews provider score > 70
@@ -287,8 +284,15 @@ last recovery, current error, and whether a gap remains unclosed. There is no
 second polling or acquisition-history lane.
 
 The acquisition publication is the only writer of NewsItem Article facts and
-provider metadata; Story owns only deterministic derived columns on the same
-row. The fixed-period Story projection is the only
+provider metadata. It admits one record as one fact: the first non-empty
+logical plaintext block is the title (maximum 500 JavaScript UTF-16 code
+units, with Web scalar-value replacement when the clamp splits a surrogate
+pair); a cleaned explicit description or remaining blocks become 40-to-400
+JavaScript UTF-16 code-unit description evidence, with the same replacement
+after truncation. Reporting origin uses a Twitter author before
+`newsType`, URL host, and `opennews`. Linkless reports remain valid. Story owns
+only deterministic derived columns on the same row. The fixed-period Story
+projection is the only
 Story/member/facet/Brief-selection writer. It
 re-reads the complete current 12-hour window every 60 seconds, carries only the
 calculation fields and recomputes normalized titles in the CPU phase, calculates
@@ -340,23 +344,36 @@ an immediate stalled signal. Raw WSS receipt history is still not
 retained, so `published -> threshold` cannot separate provider emission delay
 from transport or recovery.
 
-The native Brief candidate exits before any model call when fewer than three
-Stories, fewer than two reporting origins, or an unchanged ordered Story
-fingerprint is observed. On provider or validation failure it records the
-failed run and keeps the last-known-good current pointer.
+The selector turn keeps the complete captured Story closure, then applies the
+pinned JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items
+with the same identity kernel. It applies the public cluster score,
+admissibility gate, 16-hour effective-recency ordering,
+maximum-three primary-source cap, and corroborated-lead reservation, then seals
+at most eight Top Stories plus drop telemetry. Unchanged canonical selection
+replay writes zero serving rows. It has no personalization, embedding, topic
+grouping, entity veto, client ISQ ordering, or source-category quota.
 
-The native Story-title candidate reconciles only current Stories whose selected
-maximum numeric OpenNews score is strictly greater than 70. It fingerprints
-the safe normalized display title and also retains the raw Story-title binding;
-a title change creates new work and an old result cannot attach. Chinese source
-titles complete locally. Other titles use the configured global LLM provider
-through the serial model adapter, with short PostgreSQL claim/publication
-transactions around the outside model call and bounded retry/terminal state.
-The candidate exports a current due time rather than its oldest backlog time to
-the process-wide arbiter, so a translation backlog does not outrank already-due
-Brief or Macro model work merely by age. Feed/detail never wait: any non-ready
-state uses the original title. Restart recovery reclaims expired leases from
-PostgreSQL; there is no wake plane, browser call, or second Story writer.
+The native Brief candidate makes no model call for an empty selection or a
+non-empty selection without an eligible lead. A new selection or synthesis-
+contract target waits for the 10-minute debounce, then claims one 120-second
+lease. L1 sends only ordered primary headlines, primary sources, and distinct-
+source counts. Every response must pass the publication composer; transport or
+composer failure advances through Ollama `llama3.1:8b`, optional OpenRouter
+`deepseek/deepseek-v4-flash` with reasoning disabled, and optional Groq
+`llama-3.3-70b-versatile`. The direct global OpenAI-compatible provider is not
+part of Brief.
+
+L1 and the eligible-lead L2 single-headline fallback share one 60-second
+provider budget with a five-second guard. L1 publishes healthy English content
+with index-locked lines and source slots. L2/no-text remains degraded, has no
+Story lines, and exposes at most one link-valid source. Without a healthy LKG,
+a complete degraded snapshot can advance so Top Stories remain useful. With a
+healthy LKG, a degraded run preserves the entire older publication and all of
+its clocks; only bounded run telemetry changes. Current degraded targets retry
+at most every 30 minutes, failure telemetry caps at 100 without permanent
+terminalization, and identical publication payload replay inserts nothing.
+Claims/publication transitions are short PostgreSQL transactions around model
+I/O outside the transaction.
 
 Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
@@ -400,33 +417,32 @@ admission failures before the fence do not count as provider attempts.
 Diagnose News in this order:
 
 1. `/api/news/sources`: OpenNews live/recovery/gap and current error;
-2. `news_items`: provider identity, bounded metadata, and content fingerprint;
+2. `news_items`: provider identity, canonical headline/description/origin,
+   bounded metadata, and content fingerprint;
 3. `news_story_members` and `news_stories`: current membership closure,
    full-SHA Story ID, state fingerprint, reporting-origin count, score factors;
-4. `news_story_title_translations`: current raw/normalized title binding,
-   locale/version identity, claim/lease, attempts, result, and sanitized error;
+4. `news_brief_selection_current`: singleton projection revision, complete
+   Top Story evidence, selection fingerprints/statistics, and server order;
 5. `/api/news/feed`: flat global keyset order, strict provider-score filter,
-   server search, reporting-origin facets, complete filter-bound cursor, and
-   exact title-translation binding;
+   server search, reporting-origin facets, and complete filter-bound cursor;
 6. `news_brief_runs`, `news_brief_current`, and
-   `news_brief_publications`: candidate fingerprint, lease/run state, current
-   publication, last error, and immutable history;
+   `news_brief_publications`: target fingerprint, fenced lease/run state,
+   pointer action, whole current/LKG publication, and bounded error code;
 7. `/api/news/brief`: ETag and truthful public state;
 8. `news_push_state` and `news_push_deliveries`: baseline, frozen evidence,
    lease, attempt, retry/terminal state, and explicit receipt;
 9. `/api/news/status`: warming/ready/degraded layer health plus
    `live`/`recovering`/`stalled`, Story last success, direct first-membership
-   backlog for current Articles, exact-bound Story-title translation health,
-   and separate rolling Push-translation evidence.
+   backlog for current Articles, Brief current/LKG state, and separate rolling
+   Push-translation evidence.
 
-News health has five layers:
+News health has four layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | OpenNews is connected, its recovery gap is closed, and at least one live/recovery publication turn has succeeded | source not configured, no successful publication turn yet, disconnected stream, open gap, or current provider error |
 | story | complete current 12-hour admitted items close into coherent current Story aggregates | current Articles missing their first Story membership, oldest such wait over 120 seconds, missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
-| translation | every current strict-score-eligible Story has an exact-bound ready Chinese/source-Chinese title; an empty eligible set is explicit | pending/running/retry work is `warming` without an invented latency SLO; terminal/unavailable work or missing global LLM configuration while eligible non-Chinese work exists is `degraded` |
-| brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
+| brief | one healthy current publication matches the current public target | no publication is `warming`; a degraded publication or whole last-known-good fallback is `degraded`, with bounded run reason/next due visible |
 | push | disabled, or webhook-configured with initialized baseline, no retry/terminal delivery, and healthy rolling translation/delivery SLOs | missing required webhook, uninitialized enabled state, any retry/terminal delivery, an SLO breach, or a wait over 120 seconds |
 
 The operator state is `stalled` when a persisted Workers runtime is no longer
@@ -536,10 +552,18 @@ targets, document analyses, and six module rows.
 Migration `20260801_0237` persists the bounded OpenNews recovery boundary.
 Migration `20260801_0238` creates only `news_push_state` and
 `news_push_deliveries`; it performs no backfill and no outbound send.
-Migration `20260807_0245` adds only `news_story_title_translations`, bringing
-the live News boundary to exactly fourteen tables. It creates no endpoint,
-configuration field, Story backfill/mutation, or external call; Workers
-reconcile current strict-score-eligible title targets after restart.
+Migration `20260807_0246` is the irreversible World Brief hard cut. It fails
+closed if a retained OpenNews row cannot yield a canonical title, otherwise
+canonicalizes only the code-owned OpenNews facts in bounded batches, leaves
+disabled historical source facts unchanged, clears the rebuildable Story closure, drops
+the retired Story-title table and incompatible Brief rows/schema, and installs
+the singleton selection plus discriminated L1/L2/none publication state. The
+live News boundary remains exactly thirteen tables. Existing Push baselines,
+selected-Item ledgers, pending/retry deliveries, receipts, and freshness fences
+are preserved byte-for-byte; the migration performs no provider or outbound
+call and creates no compatibility view. Cutover preflight must prove at most
+100,000 `news-opennews` rows; otherwise migration fails closed with
+`news_world_brief_hard_cut_opennews_row_cap:<count>` before rewriting facts.
 
 ## Operator actions and retention
 

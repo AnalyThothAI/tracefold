@@ -36,8 +36,8 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_world_brief`, `news_story_title_translation`, and
-`macro_document_analysis` are the only production product-model consumers.
+`news_world_brief` and `macro_document_analysis` are the only production
+product-model consumers.
 Optional News Push title translation is an outbound presentation adapter, not
 a product model: it cannot write a NewsItem, Story, score, or read model.
 News acquisition, NewsItem classification, Story identity, importance
@@ -83,25 +83,22 @@ non-secret and bounded: headline mode, target language, adapter kind, engine,
 prompt version, sanitized fallback code, and—only for dispatched translation
 work—the attempt clock and elapsed milliseconds.
 
-News Story display-title translation independently reuses the same
-operator-owned global `llm.api_key`, effective `llm.base_url`, and
-`llm.news_brief_model`; there is no translation-specific credential, endpoint,
-or configuration object. Only the safe normalized Story display title is sent
-to the configured provider. Article descriptions, members, provider metadata,
-coins, scores, URLs, Push/Feishu material, and raw provider payloads are never
-included. The durable row contains only bounded non-secret target identity,
-exact raw/normalized title fingerprints, source/translated title, locale,
-workflow/prompt/model labels, claims, attempts, clocks, and sanitized error
-codes. A result is public only while its exact current title binding matches;
-the model cannot mutate a NewsItem or Story, affect scoring/membership, trigger
-Push, or replace the original fallback. Public status exposes aggregate
-configured/health evidence and sanitized failure counts, never provider URLs,
-keys, prompts, or model response payloads.
+The public News Brief L1 model receives only ordered primary headlines,
+primary reporting origins, and distinct-source counts. It receives no Article
+description/body, provider AI metadata, unrelated corpus context, user profile,
+preference, personalized filter, Push/Feishu material, or source credential.
+L2 receives only the one eligible primary headline. Both have no provider
+fetch, filesystem, shell, or arbitrary database capability. Every accepted L1
+response passes the same citation/proper-noun/number/date gates used for
+publication before an immutable snapshot is inserted; raw responses and
+prompts are never persisted.
 
-The News Brief model receives only the bounded selected Story evidence. It has
-no source credential, provider fetch, filesystem, shell, or arbitrary database
-capability. A validated immutable publication is inserted only after its
-citation indexes close against the selected Stories.
+News Brief uses the code-owned local Ollama endpoint first and only the
+operator-owned `llm.openrouter_api_key` and `llm.groq_api_key` for its optional
+remote providers. It never reads the global `llm.api_key`, `llm.base_url`, or
+`llm.news_brief_model`. Diagnostics expose only configured booleans and bounded
+provider/model labels, failure codes, and clocks; they never probe or expose an
+endpoint, key, Authorization header, Retry-After contents, prompt, or response.
 
 Fed document analysis receives one bounded official source body plus
 effective-dated role and prior-signal context. It has no provider or web tool,

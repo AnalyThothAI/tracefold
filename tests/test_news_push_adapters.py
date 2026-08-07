@@ -126,6 +126,10 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
         "translation_enabled": True,
         "translation_configured": True,
     }
+    assert payload["data"]["news"]["brief"] == {
+        "openrouter_configured": False,
+        "groq_configured": False,
+    }
     rendered = json.dumps(payload)
     assert _FEISHU_TEST_URL not in rendered
     assert "test-signing-secret" not in rendered

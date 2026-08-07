@@ -26,7 +26,6 @@ _NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT = (
     | {
         "news_push_state",
         "news_push_deliveries",
-        "news_story_title_translations",
     }
 ) - {"news_source_memberships"}
 
@@ -364,10 +363,10 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
             """
         ).fetchone()
         assert summary == {
-            "last_attempt_at_ms": 456,
-            "last_material_change_at_ms": 321,
-            "last_success_at_ms": 321,
-            "last_error": "news_story_operation_timeout",
+            "last_attempt_at_ms": None,
+            "last_material_change_at_ms": None,
+            "last_success_at_ms": None,
+            "last_error": None,
         }
     finally:
         conn.close()

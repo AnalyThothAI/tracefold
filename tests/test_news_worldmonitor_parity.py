@@ -1,25 +1,20 @@
 from __future__ import annotations
 
-import hashlib
-import json
-
 import pytest
 
 import tracefold.news.identity as news_identity
-import tracefold.news.sources as news_sources
 from tracefold.news import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
     classify_by_keyword,
     cluster_texts,
     has_historical_marker,
+    normalize_story_canonical_title,
     normalize_story_text,
     story_similarity,
     story_vector,
 )
-from tracefold.news.brief import validate_and_repair_brief
-from tracefold.news.models import NewsBriefDraft, NewsBriefStory
-from tracefold.news.ranking import importance_factors, select_top_stories
+from tracefold.news.ranking import importance_factors
 
 POSITIVE_PAIRS = (
     (
@@ -271,6 +266,38 @@ def test_candidate_tokens_and_normalization_match_worldmonitor() -> None:
     assert normalize_story_text("  Fed — holds,  rates!  ") == "fed holds rates"
 
 
+def test_worldmonitor_lowercases_before_filtering_combining_marks() -> None:
+    assert normalize_story_text("İ") == "i"
+    assert cluster_texts(("İ", "i")) == [[0, 1]]
+
+
+def test_worldmonitor_identity_uses_pinned_unicode_17_properties_and_lowering() -> None:
+    assert normalize_story_text("\U0006139c\U00017237\U00011db7\U00036a54\U000353a7") == ("\U00017237\U00011db7")
+    assert news_identity.javascript_lower("\u1c89 \U00010d50 \ua7ce \U00016ea0") == (
+        "\u1c8a \U00010d70 \ua7cf \U00016ebb"
+    )
+    assert news_identity._content_tokens("\ua7ce \U00016ea0 \U00011db7") == [
+        ("\ua7cf", 3.0),
+        ("\U00016ebb", 3.0),
+        ("\U00011db7", 1.0),
+    ]
+
+
+def test_worldmonitor_identity_clamp_counts_utf16_code_units() -> None:
+    prefix = "😀" * 151
+    left = prefix + " Iran threatens to close Strait of Hormuz"
+    right = prefix + " Iran threatens to close the Strait of Hormuz"
+
+    assert story_similarity(left, right) == 0
+    assert cluster_texts((left, right)) == [[0], [1]]
+
+
+def test_canonical_story_hash_normalizer_is_distinct_from_component_normalization() -> None:
+    title = "Alpha-Beta!!! - Reuters"
+    assert normalize_story_text(title) == "alpha beta reuters"
+    assert normalize_story_canonical_title(title) == "alphabeta"
+
+
 def test_cluster_membership_is_order_independent() -> None:
     titles = [
         "Turkey central bank hikes interest rates to 50% in surprise move",
@@ -322,6 +349,20 @@ def test_worldmonitor_historical_marker_false_matrix(title: str) -> None:
     assert has_historical_marker(title, now_ms=1_776_211_200_000) is False
 
 
+def test_worldmonitor_short_keyword_uses_javascript_ascii_word_boundary() -> None:
+    classification = classify_by_keyword("中国war升级")
+
+    assert classification.level == "high"
+    assert classification.category == "conflict"
+
+
+def test_worldmonitor_historical_marker_uses_javascript_ascii_word_boundary() -> None:
+    classification = classify_by_keyword("Invasion 5 years ago纪念", now_ms=1_779_000_000_000)
+
+    assert classification.level == "info"
+    assert classification.source == "keyword-historical-downgrade"
+
+
 @pytest.mark.parametrize(("level", "tier", "corroboration", "expected"), IMPORTANCE_CASES)
 def test_worldmonitor_importance_score_matrix(
     level: str,
@@ -364,70 +405,16 @@ def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> 
     }
 
 
-def test_top8_keeps_rank_and_caps_reporting_origin_at_three() -> None:
-    stories = [
-        {
-            "story_id": f"story-{index}",
-            "importance_score": 100 - index,
-            "last_published_at_ms": 100 - index,
-            "representative_source_name": "reuters" if index < 5 else f"feed-{index}",
-        }
-        for index in range(12)
-    ]
-    selected = select_top_stories(stories)
-    assert len(selected) == 8
-    assert [row["story_id"] for row in selected[:3]] == ["story-0", "story-1", "story-2"]
-    assert "story-3" not in {row["story_id"] for row in selected}
-
-
-def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
-    stories = [
-        NewsBriefStory(
-            story_id="story-1",
-            title="Title one",
-            source="Reuters",
-            url="https://example.test/1",
-            source_count=2,
-            importance_score=90,
-            level="high",
-            category="economic",
-        ),
-        NewsBriefStory(
-            story_id="story-2",
-            title="Title two",
-            source="AP",
-            url="https://example.test/2",
-            source_count=2,
-            importance_score=80,
-            level="medium",
-            category="diplomatic",
-        ),
-    ]
-    repaired, validation, degraded = validate_and_repair_brief(
-        NewsBriefDraft(
-            lead="uncited lead",
-            lines=("第一条有效 [1]", "wrong citation [1]"),
-            provider="test",
-            model="test",
-            raw_response="{}",
-        ),
-        stories,
+def test_worldmonitor_future_timestamp_recency_is_not_clamped_to_now() -> None:
+    now_ms = 1_779_000_000_000
+    factors = importance_factors(
+        level="info",
+        tier=4,
+        corroboration_count=1,
+        published_at_ms=now_ms + 12 * 60 * 60_000,
+        now_ms=now_ms,
+        title="Scheduled central bank update",
     )
-    assert degraded is True
-    assert repaired.lead == "今日重点：Title one [1]"
-    assert repaired.lines == ("第一条有效 [1]", "第2条：Title two [2]")
-    assert validation["line_fallbacks"] == [2]
 
-
-def test_retired_inventory_keeps_exact_reporting_origin_tiers() -> None:
-    encoded = json.dumps(
-        news_sources._REPORTING_ORIGIN_TIERS,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-    assert len(news_sources._REPORTING_ORIGIN_TIERS) == 79
-    assert hashlib.sha256(encoded).hexdigest() == "341a02e88d603a98612ca3d77c0226908104da00e4acffe4cba8c58b03d06788"
-    assert news_sources.reporting_origin_tier(" Reuters ", fallback_tier=4) == 1
-    assert news_sources.reporting_origin_tier("WallStEngine", fallback_tier=2) == 4
-    assert news_sources.reporting_origin_tier("unknown outlet", fallback_tier=3) == 3
+    assert factors["recency_points"] == 15.0
+    assert factors["total"] == 23

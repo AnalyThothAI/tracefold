@@ -224,6 +224,67 @@ def test_model_adapter_keeps_its_only_slot_until_underlying_future_finishes() ->
     asyncio.run(scenario())
 
 
+def test_model_awaits_durable_fence_before_submitting_thread_work() -> None:
+    async def scenario() -> None:
+        capability = ModelAdapter()
+        events: list[str] = []
+
+        async def persist_fence() -> None:
+            events.append("fenced")
+
+        def operation() -> str:
+            assert events == ["fenced"]
+            events.append("submitted")
+            return "done"
+
+        try:
+            assert (
+                await capability.run(
+                    "fenced_model",
+                    operation,
+                    timeout_seconds=0.5,
+                    before_submit=persist_fence,
+                )
+                == "done"
+            )
+            assert events == ["fenced", "submitted"]
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
+def test_model_does_not_submit_when_durable_fence_fails() -> None:
+    class FenceFailure(RuntimeError):
+        pass
+
+    async def scenario() -> None:
+        capability = ModelAdapter()
+        submitted = False
+
+        async def reject_fence() -> None:
+            raise FenceFailure("fence_failed")
+
+        def operation() -> None:
+            nonlocal submitted
+            submitted = True
+
+        try:
+            with pytest.raises(FenceFailure, match="fence_failed"):
+                await capability.run(
+                    "rejected_fenced_model",
+                    operation,
+                    timeout_seconds=0.5,
+                    before_submit=reject_fence,
+                )
+            assert submitted is False
+            assert await capability.run("after_rejected_fence", lambda: "available", timeout_seconds=0.5) == "available"
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
 def test_database_has_two_business_slots_and_an_independent_control_slot() -> None:
     async def scenario() -> None:
         database = WorkerDatabase(worker_pool=object(), telemetry=None)

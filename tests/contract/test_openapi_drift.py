@@ -93,6 +93,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "/api/news/status": "ApiEnvelope_NewsStatusData_",
     }
 
+    assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)
+
     for path, envelope in expected.items():
         response_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
@@ -107,6 +109,46 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsStatusData",
     ):
         assert schema["components"]["schemas"][name]["additionalProperties"] is False
+
+
+@pytest.mark.contract
+def test_news_contract_hard_cuts_title_translation_and_old_brief_aggregates() -> None:
+    from tracefold.app.http.app import create_app
+    from tracefold.platform.config.settings import Settings
+
+    schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
+    components = schema["components"]["schemas"]
+    story_properties = components["NewsStoryData"]["properties"]
+    brief_properties = components["NewsBriefData"]["properties"]
+    publication_properties = components["NewsBriefPublicationData"]["properties"]
+    status_layers = components["NewsStatusLayersData"]["properties"]
+
+    assert "title_translation" not in story_properties
+    assert not {name for name in components if "TitleTranslation" in name}
+    assert set(brief_properties) == {
+        "state",
+        "target_fingerprint",
+        "pending_due_at_ms",
+        "publication",
+        "latest_run",
+    }
+    assert {"top_stories", "brief_kind", "world_brief", "source_age_range", "provenance"} <= set(publication_properties)
+    validation = publication_properties["validation"]
+    assert {entry["$ref"] for entry in validation["anyOf"]} == {
+        "#/components/schemas/NewsBriefL1ValidationData",
+        "#/components/schemas/NewsBriefL2ValidationData",
+        "#/components/schemas/NewsBriefNoneValidationData",
+    }
+    for name in (
+        "NewsBriefL1ValidationData",
+        "NewsBriefL2ValidationData",
+        "NewsBriefNoneValidationData",
+    ):
+        assert components[name]["additionalProperties"] is False
+    assert {"history", "candidate_story_count", "candidate_source_count", "lead", "lines"}.isdisjoint(
+        brief_properties | publication_properties
+    )
+    assert "translation" not in status_layers
 
 
 @pytest.mark.contract

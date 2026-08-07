@@ -19,6 +19,7 @@ class StatusQueueSpec:
     due_column: str
     lease_column: str
     running_age_column: str = "updated_at_ms"
+    attempt_count_column: str = "attempt_count"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,13 +43,14 @@ _STATUS_QUEUE_SPECS = {
     "news_brief_runs": StatusQueueSpec(
         owner_key="news_brief",
         table="news_brief_runs",
-        waiting_statuses=("retryable",),
+        waiting_statuses=("retry_wait",),
         running_statuses=("running",),
-        retry_statuses=("retryable",),
-        terminal_statuses=("failed",),
+        retry_statuses=("retry_wait",),
+        terminal_statuses=(),
         due_column="next_due_at_ms",
         lease_column="lease_expires_at_ms",
-        running_age_column="heartbeat_at_ms",
+        running_age_column="updated_at_ms",
+        attempt_count_column="failure_count",
     ),
     "macro_document_analysis_jobs": StatusQueueSpec(
         owner_key="macro_document_analysis",
@@ -129,6 +131,7 @@ def _status_queue_health(
     due_column = _validate_identifier(spec.due_column)
     lease_column = _validate_identifier(spec.lease_column)
     running_age_column = _validate_identifier(spec.running_age_column)
+    attempt_count_column = _validate_identifier(spec.attempt_count_column)
     waiting_filter = _status_filter("status", spec.waiting_statuses)
     running_filter = _status_filter("status", spec.running_statuses)
     active_filter = _status_filter("status", (*spec.waiting_statuses, *spec.running_statuses))
@@ -163,7 +166,7 @@ def _status_queue_health(
               MIN({running_age_column}) FILTER (
                 WHERE {running_filter} AND {lease_column} > %(now_ms)s
               ) AS oldest_running_at_ms,
-              MAX(attempt_count) AS max_attempt_count
+              MAX({attempt_count_column}) AS max_attempt_count
             FROM {table}
             WHERE {_status_filter("status", all_statuses)}
             """,

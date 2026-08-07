@@ -80,9 +80,11 @@ lanes report explicit degradation or unavailable evidence:
 - absent GMGN/OKX credentials leave their authenticated profile, discovery, or
   market lanes unavailable, while configured keyless sources keep their own
   independent behavior;
-- absent model credentials leaves the corresponding Brief/analysis capability
-  unavailable. News Push can still deliver, but its optional title translation
-  is unavailable and the card falls back to the selected Item's original
+- the public Brief always has its code-owned Ollama first provider and
+  deterministic degraded Top Stories. Absent optional OpenRouter/Groq keys can
+  reduce synthesis availability but does not empty the public selection;
+- absent the separate global model credential leaves optional News Push title
+  translation unavailable; Push still sends the selected Item's original
   OpenNews headline;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.

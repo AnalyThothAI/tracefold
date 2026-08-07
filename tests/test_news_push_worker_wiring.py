@@ -87,6 +87,56 @@ def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> No
     assert "translator" not in parameters
 
 
+def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publisher_kwargs: list[dict[str, Any]] = []
+
+    class _BriefPublisher:
+        def __init__(self, **kwargs: Any) -> None:
+            publisher_kwargs.append(kwargs)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
+    monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
+    settings = Settings(
+        upstream={"channels": []},
+        llm={
+            "api_key": "push-translation-only",
+            "base_url": "https://translation.test/v1",
+            "news_brief_model": "push-translation-model",
+            "openrouter_api_key": "openrouter-secret",
+            "groq_api_key": "groq-secret",
+        },
+        news={"enabled": True},
+        providers={"binance": {"enabled": False}, "macro_sources": {"enabled": False}},
+    )
+
+    components = asyncio.run(
+        workers._wire_components(
+            settings=settings,
+            db=object(),  # type: ignore[arg-type]
+            telemetry=object(),  # type: ignore[arg-type]
+            finite=object(),  # type: ignore[arg-type]
+            model_adapter=object(),  # type: ignore[arg-type]
+            cpu=object(),  # type: ignore[arg-type]
+            runtime_id="runtime-public-brief",
+        )
+    )
+
+    assert components.news_brief is not None
+    assert publisher_kwargs == [
+        {
+            "ollama_base_url": "http://host.docker.internal:11434/v1",
+            "openrouter_api_key": "openrouter-secret",
+            "groq_api_key": "groq-secret",
+            "total_timeout_seconds": 60.0,
+        }
+    ]
+
+
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
     calls: list[tuple[str, int | None]] = []
 
@@ -195,10 +245,7 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     )
 
     assert (components.news_push is not None) is expected_push
-    assert (components.news_title_translation is not None) is news_enabled
-    if components.news_title_translation is not None:
-        assert components.news_title_translation in components.models
-        assert (components.news_title_translation.translator is not None) is llm_configured
+    assert not hasattr(components, "news_title_translation")
     if expected_push:
         assert [name for name, _kwargs in constructed] == ["delivery"]
         assert components.news_push is not None
@@ -324,7 +371,6 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
                 collector=None,
                 news=None,
                 news_brief=None,
-                news_title_translation=None,
                 news_push=_Push(),
                 macro_source=None,
             ),  # type: ignore[arg-type]

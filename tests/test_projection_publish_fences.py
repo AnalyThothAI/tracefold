@@ -13,6 +13,7 @@ from tracefold.macro.dependencies import (
 )
 from tracefold.macro.projection import MacroModuleClaim, MacroProjectionService
 from tracefold.news import story_store
+from tracefold.news.brief import selection_fingerprint
 from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.repository import NewsRepository
 
@@ -74,7 +75,6 @@ def test_macro_publish_rejects_lost_claim_before_serving_write() -> None:
 def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: Any) -> None:
     conn = _NewsConnection()
     repository = NewsRepository(conn)
-    monkeypatch.setattr(repository, "refresh_brief_selection", lambda *, now_ms: 0)
     monkeypatch.setattr(
         story_store,
         "load_story_projection",
@@ -105,7 +105,12 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
     result = story_store.publish_story_projection(
         repository,
         snapshot=snapshot,
-        projection={"stories": [], "memberships": [], "item_updates": []},
+        projection={
+            "stories": [],
+            "memberships": [],
+            "item_updates": [],
+            "selection_snapshot": _selection_snapshot("snapshot-fingerprint"),
+        },
         now_ms=3,
     )
 
@@ -174,7 +179,6 @@ def test_news_story_load_captures_the_publish_fence_before_moving_facts() -> Non
 def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: Any) -> None:
     conn = _NewsConnection(summary_fingerprint="previous-fingerprint")
     repository = NewsRepository(conn)
-    monkeypatch.setattr(repository, "refresh_brief_selection", lambda *, now_ms: 0)
 
     def moving_window_read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("publication must not re-read the moving input window")
@@ -200,7 +204,12 @@ def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: 
     result = story_store.publish_story_projection(
         repository,
         snapshot=snapshot,
-        projection={"stories": [], "memberships": [], "item_updates": []},
+        projection={
+            "stories": [],
+            "memberships": [],
+            "item_updates": [],
+            "selection_snapshot": _selection_snapshot("snapshot-fingerprint"),
+        },
         now_ms=3,
     )
 
@@ -249,7 +258,6 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
 def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeypatch: Any) -> None:
     conn = _NewsConnection(invariant_total=1)
     repository = NewsRepository(conn)
-    monkeypatch.setattr(repository, "refresh_brief_selection", lambda *, now_ms: 0)
     for helper in (
         "_publish_items",
         "_upsert_stories",
@@ -270,9 +278,26 @@ def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeyp
         story_store.publish_story_projection(
             repository,
             snapshot=snapshot,
-            projection={"stories": [], "memberships": [], "item_updates": []},
+            projection={
+                "stories": [],
+                "memberships": [],
+                "item_updates": [],
+                "selection_snapshot": _selection_snapshot("snapshot-fingerprint"),
+            },
             now_ms=3,
         )
+
+
+def _selection_snapshot(projection_revision: str) -> dict[str, Any]:
+    payload = {
+        "projection_revision": projection_revision,
+        "selector_evaluated_at_ms": 0,
+        "top_stories": [],
+        "selection_stats": {},
+        "selector_version": "test-selector",
+        "identity_version": "test-identity",
+    }
+    return {**payload, "selection_fingerprint": selection_fingerprint(payload)}
 
 
 class _Cursor:
@@ -309,5 +334,7 @@ class _NewsConnection:
                 return _Cursor()
             return _Cursor({"input_fingerprint": self.summary_fingerprint})
         if "UPDATE news_projection_summary" in sql:
+            return _Cursor(rowcount=1)
+        if "INSERT INTO news_brief_selection_current" in sql:
             return _Cursor(rowcount=1)
         return _Cursor()

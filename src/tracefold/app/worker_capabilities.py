@@ -154,6 +154,7 @@ class ModelAdapter:
             thread_name_prefix="tracefold-model-adapter",
         )
         self._pending: set[asyncio.Future[Any]] = set()
+        self._admitting = False
         self._accepting = True
         self._closed = False
         self._telemetry = telemetry
@@ -165,14 +166,14 @@ class ModelAdapter:
         /,
         *args: Any,
         timeout_seconds: float,
-        after_submit: Callable[[], Awaitable[None]] | None = None,
+        before_submit: Callable[[], Awaitable[None]] | None = None,
         on_submitted: Callable[[], None] | None = None,
         allow_shutdown: bool = False,
         **kwargs: Any,
     ) -> T:
         if self._closed or (not self._accepting and not allow_shutdown):
             raise RuntimeError("model_adapter_closed")
-        if any(not future.done() for future in self._pending):
+        if self._admitting or any(not future.done() for future in self._pending):
             raise RuntimeError("model_adapter_parallel_submission")
         loop = asyncio.get_running_loop()
         admission_started = loop.time()
@@ -183,8 +184,14 @@ class ModelAdapter:
             "accepted",
             admission_started,
         )
-        submitted_at = loop.time()
-        underlying = self._executor.submit(partial(function, *args, **kwargs))
+        self._admitting = True
+        try:
+            if before_submit is not None:
+                await before_submit()
+            submitted_at = loop.time()
+            underlying = self._executor.submit(partial(function, *args, **kwargs))
+        finally:
+            self._admitting = False
         wrapped = asyncio.wrap_future(underlying)
         self._pending.add(wrapped)
         _change_active(self._telemetry, "model_adapter", 1)
@@ -203,8 +210,6 @@ class ModelAdapter:
         )
         if on_submitted is not None:
             on_submitted()
-        if after_submit is not None:
-            await after_submit()
         done, _ = await asyncio.wait(
             {wrapped},
             timeout=max(0.001, float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS),

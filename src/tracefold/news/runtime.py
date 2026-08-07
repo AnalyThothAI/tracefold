@@ -4,28 +4,33 @@ import asyncio
 import time
 from collections.abc import Sequence
 from typing import Any, cast
+from uuid import uuid4
 
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-from .brief import brief_fingerprint, validate_and_repair_brief
 from .models import (
-    EventCategory,
-    NewsBriefExpectedError,
     NewsBriefPublisher,
     NewsBriefStory,
+    NewsBriefSynthesisResult,
     NewsSourceDefinition,
-    ThreatLevel,
 )
 from .opennews import OpenNewsEvent, OpenNewsExpectedError, parse_opennews_message
 
 _BRIEF_MODEL_TIMEOUT_SECONDS = 60.0
 _BRIEF_PREPARE_TIMEOUT_SECONDS = 7.0
-_BRIEF_MAX_ATTEMPTS = 3
 _OPENNEWS_BUFFER_CAPACITY = 256
 _OPENNEWS_RECONNECT_SECONDS = 3.0
 _OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS = 5 * 60
 _OPENNEWS_RECOVERY_MAX_PAGES = 11
+
+
+class _BriefClaimLost(RuntimeError):
+    pass
+
+
+class _BriefStartAdmissionTimeout(RuntimeError):
+    pass
 
 
 class NewsAcquisition:
@@ -395,7 +400,7 @@ class NewsAcquisition:
 
 
 class NewsBriefCandidate:
-    """Native News Brief candidate for the serial model arbiter."""
+    """The one serial-model consumer of the frozen public selection snapshot."""
 
     def __init__(
         self,
@@ -421,11 +426,10 @@ class NewsBriefCandidate:
         )
         if row is None:
             return None
-        due_at_ms = int(row.get("next_due_at_ms") or row.get("pending_due_at_ms") or now_ms)
         return ModelCandidate(
             kind="news_brief",
             target_key=str(row["target_fingerprint"]),
-            due_at_ms=due_at_ms,
+            due_at_ms=int(row["next_due_at_ms"]),
             stable_order=self.stable_order,
         )
 
@@ -441,26 +445,37 @@ class NewsBriefCandidate:
             return False
         if prepared is None:
             return False
-        if bool(prepared.get("completed_without_model")):
+        if bool(prepared["completed_without_model"]):
             return True
-        claim = prepared["claim"]
+
+        claim = dict(prepared["claim"])
         model_submitted = False
-        claim_lost = False
 
         def mark_model_submitted() -> None:
             nonlocal model_submitted
             model_submitted = True
 
-        async def start_attempt_after_submit() -> None:
-            nonlocal claim_lost
-            started = await self.db.run_business(
-                "news_brief_start_model",
-                self._start_model_sync,
-                claim,
-                operation_timeout_seconds=0.5,
-            )
+        async def start_attempt_before_submit() -> None:
+            start_submitted = False
+
+            def mark_start_submitted() -> None:
+                nonlocal start_submitted
+                start_submitted = True
+
+            try:
+                started = await self.db.run_business(
+                    "news_brief_start_model",
+                    self._start_model_sync,
+                    claim,
+                    operation_timeout_seconds=0.5,
+                    on_submitted=mark_start_submitted,
+                )
+            except ResourceAdmissionTimeout as exc:
+                if start_submitted:
+                    raise RuntimeError("news_brief_start_model_outcome_unknown") from exc
+                raise _BriefStartAdmissionTimeout from exc
             if not started:
-                claim_lost = True
+                raise _BriefClaimLost
 
         try:
             generated = await self.model_adapter.run(
@@ -468,7 +483,7 @@ class NewsBriefCandidate:
                 self._generate_sync,
                 prepared["stories"],
                 timeout_seconds=_BRIEF_MODEL_TIMEOUT_SECONDS,
-                after_submit=start_attempt_after_submit,
+                before_submit=start_attempt_before_submit,
                 on_submitted=mark_model_submitted,
             )
         except asyncio.CancelledError:
@@ -480,29 +495,12 @@ class NewsBriefCandidate:
                 raise
             await self._release_prework(claim)
             return False
-        except NewsBriefExpectedError as exc:
-            failure_submitted = False
-
-            def mark_failure_submitted() -> None:
-                nonlocal failure_submitted
-                failure_submitted = True
-
-            try:
-                failed = await self.db.run_business(
-                    "news_brief_publish_failure",
-                    self._fail_sync,
-                    claim,
-                    exc,
-                    operation_timeout_seconds=3.0,
-                    on_submitted=mark_failure_submitted,
-                )
-            except ResourceAdmissionTimeout:
-                if failure_submitted:
-                    raise
-                return False
-            return failed is not None
-        if claim_lost:
+        except _BriefStartAdmissionTimeout:
+            await self._release_prework(claim)
             return False
+        except _BriefClaimLost:
+            return False
+
         publish_submitted = False
 
         def mark_publish_submitted() -> None:
@@ -545,58 +543,23 @@ class NewsBriefCandidate:
         )
 
     def _peek_sync(self, now_ms: int) -> dict[str, Any] | None:
-        with self.db.worker_session("news_brief_peek", 0.5) as repos:
-            return cast(
-                dict[str, Any] | None,
-                repos.news.peek_brief_candidate(now_ms=now_ms),
-            )
+        with self.db.worker_session("news_brief_peek", 0.5) as repos, repos.transaction():
+            return cast(dict[str, Any] | None, repos.news.peek_brief_candidate(now_ms=now_ms))
 
-    def _prepare_sync(self, target_fingerprint: str) -> dict[str, Any] | None:
+    def _prepare_sync(self, target_fingerprint_value: str) -> dict[str, Any] | None:
         now_ms = _now_ms()
-        with self.db.worker_session("news_brief_prepare", 3.0) as repos:
-            candidates = repos.news.brief_candidates()
-        fingerprint = brief_fingerprint(candidates)
-        if fingerprint != target_fingerprint:
-            return None
-        source_count = len({str(row["representative_source_name"]) for row in candidates})
-        if len(candidates) < 3 or source_count < 2:
-            with self.db.worker_session("news_brief_insufficient", 3.0) as repos, repos.transaction():
-                repos.news.record_brief_insufficient(
-                    fingerprint=fingerprint,
-                    story_count=len(candidates),
-                    source_count=source_count,
-                    now_ms=now_ms,
-                )
-            return {"completed_without_model": True}
-        with self.db.worker_session("news_brief_claim", 0.5) as repos, repos.transaction():
-            claim = repos.news.claim_brief_run(
-                fingerprint=fingerprint,
-                story_count=len(candidates),
-                source_count=source_count,
-                now_ms=now_ms,
-                max_attempts=_BRIEF_MAX_ATTEMPTS,
+        with self.db.worker_session("news_brief_prepare", 3.0) as repos, repos.transaction():
+            prepared = repos.news.prepare_brief_run(
+                target_fingerprint=target_fingerprint_value,
                 lease_owner=self.lease_owner,
+                lease_token=uuid4().hex,
+                now_ms=now_ms,
             )
-        if claim is None:
-            return None
-        stories = [
-            NewsBriefStory(
-                story_id=str(row["story_id"]),
-                title=str(row["representative_title"]),
-                source=str(row["representative_source_name"]),
-                url=(str(row["representative_url"]) if row["representative_url"] else None),
-                source_count=int(row["source_count"]),
-                importance_score=int(row["importance_score"]),
-                level=cast(ThreatLevel, str(row["level"])),
-                category=cast(EventCategory, str(row["category"])),
-            )
-            for row in candidates
-        ]
+        if prepared is None or bool(prepared["completed_without_model"]):
+            return cast(dict[str, Any] | None, prepared)
         return {
-            "claim": dict(claim),
-            "fingerprint": fingerprint,
-            "candidates": candidates,
-            "stories": stories,
+            **dict(prepared),
+            "stories": [NewsBriefStory.model_validate(story) for story in prepared["top_stories"]],
         }
 
     def _start_model_sync(self, claim: dict[str, Any]) -> bool:
@@ -605,8 +568,8 @@ class NewsBriefCandidate:
                 repos.news.start_brief_model(
                     run_id=str(claim["run_id"]),
                     lease_owner=str(claim["lease_owner"]),
+                    lease_token=str(claim["lease_token"]),
                     now_ms=_now_ms(),
-                    max_attempts=_BRIEF_MAX_ATTEMPTS,
                 )
             )
 
@@ -616,47 +579,28 @@ class NewsBriefCandidate:
                 repos.news.release_brief_claim(
                     run_id=str(claim["run_id"]),
                     lease_owner=str(claim["lease_owner"]),
+                    lease_token=str(claim["lease_token"]),
                     due_at_ms=int(claim["release_due_at_ms"]),
                     now_ms=_now_ms(),
                 )
             )
 
-    def _generate_sync(self, stories: list[NewsBriefStory]) -> tuple[Any, dict[str, Any]]:
-        draft = self.publisher.publish(stories)
-        repaired, validation, _ = validate_and_repair_brief(draft, stories)
-        return repaired, dict(validation)
+    def _generate_sync(self, stories: list[NewsBriefStory]) -> NewsBriefSynthesisResult:
+        return self.publisher.publish(stories)
 
     def _publish_sync(
         self,
         prepared: dict[str, Any],
-        generated: tuple[Any, dict[str, Any]],
+        generated: NewsBriefSynthesisResult,
     ) -> str | None:
-        repaired, validation = generated
-        claim = prepared["claim"]
         with self.db.worker_session("news_brief_publish", 3.0) as repos, repos.transaction():
             return cast(
                 str | None,
                 repos.news.publish_brief(
-                    run_id=str(claim["run_id"]),
-                    lease_owner=str(claim["lease_owner"]),
-                    fingerprint=str(prepared["fingerprint"]),
-                    stories=prepared["candidates"],
-                    draft=repaired,
-                    validation=validation,
+                    claim=prepared["claim"],
+                    selection=prepared["selection"],
+                    result=generated,
                     now_ms=_now_ms(),
-                ),
-            )
-
-    def _fail_sync(self, claim: dict[str, Any], error: NewsBriefExpectedError) -> str | None:
-        with self.db.worker_session("news_brief_publish_failure", 3.0) as repos, repos.transaction():
-            return cast(
-                str | None,
-                repos.news.fail_brief_run(
-                    run_id=str(claim["run_id"]),
-                    lease_owner=str(claim["lease_owner"]),
-                    error=error,
-                    now_ms=_now_ms(),
-                    max_attempts=_BRIEF_MAX_ATTEMPTS,
                 ),
             )
 

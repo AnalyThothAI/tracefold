@@ -34,7 +34,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["projection_schema"]["token_radar_current_rows"] is True
     assert payload["projection_schema"]["token_radar_publication_state"] is True
     assert payload["projection_schema"]["news_projection_summary"] is True
-    assert payload["projection_schema"]["news_story_title_translations"] is True
+    assert "news_story_title_translations" not in payload["projection_schema"]
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
     assert payload["foreign_key_checks"]["token_radar_current_rows_missing_intents"] == 0
@@ -154,6 +154,9 @@ def test_query_audit_public_news_views_read_only_bounded_models():
     assert "LIMIT 101" in filtered_facets["sql"]
     assert "news_brief_selection_current" in brief["sql"]
     assert "row_number()" not in brief["sql"].lower()
+    assert "selection_fingerprint" in brief["sql"]
+    assert "top_stories" in brief["sql"]
+    assert "selection.rank" not in brief["sql"]
 
 
 def test_query_audit_stocks_radar_reads_only_current_projection():

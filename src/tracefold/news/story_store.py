@@ -7,6 +7,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from .brief import selection_fingerprint
 from .models import CLASSIFIER_VERSION, IMPORTANCE_VERSION, STORY_IDENTITY_VERSION
 
 # OpenNews is a high-volume aggregate, unlike WorldMonitor's per-feed input
@@ -184,7 +185,11 @@ def publish_story_projection(
         memberships=memberships,
         now_ms=now_ms,
     )
-    bounded_writes += repository.refresh_brief_selection(now_ms=now_ms)
+    bounded_writes += _replace_brief_selection(
+        conn,
+        selection=projection["selection_snapshot"],
+        now_ms=now_ms,
+    )
     material_writes = item_writes + story_writes + membership_writes + bounded_writes
     newest_item = max((int(row["published_at_ms"]) for row in snapshot.rows), default=None)
     newest_story = max(
@@ -250,6 +255,51 @@ def record_story_projection_failure(
         """,
         (now_ms, str(error_code)[:500], now_ms),
     )
+
+
+def _replace_brief_selection(
+    conn: Any,
+    *,
+    selection: Mapping[str, Any],
+    now_ms: int,
+) -> int:
+    snapshot = dict(selection)
+    fingerprint = str(snapshot.pop("selection_fingerprint"))
+    if selection_fingerprint(snapshot) != fingerprint:
+        raise RuntimeError("news_brief_selection_fingerprint_invalid")
+    cursor = conn.execute(
+        """
+        INSERT INTO news_brief_selection_current (
+          singleton_key, selection_fingerprint, projection_revision,
+          selector_evaluated_at_ms, top_stories, selection_stats,
+          selector_version, identity_version, updated_at_ms
+        ) VALUES (
+          true, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (singleton_key) DO UPDATE SET
+          selection_fingerprint = EXCLUDED.selection_fingerprint,
+          projection_revision = EXCLUDED.projection_revision,
+          selector_evaluated_at_ms = EXCLUDED.selector_evaluated_at_ms,
+          top_stories = EXCLUDED.top_stories,
+          selection_stats = EXCLUDED.selection_stats,
+          selector_version = EXCLUDED.selector_version,
+          identity_version = EXCLUDED.identity_version,
+          updated_at_ms = EXCLUDED.updated_at_ms
+        WHERE news_brief_selection_current.selection_fingerprint
+              IS DISTINCT FROM EXCLUDED.selection_fingerprint
+        """,
+        (
+            fingerprint,
+            str(snapshot["projection_revision"]),
+            int(snapshot["selector_evaluated_at_ms"]),
+            Jsonb(snapshot["top_stories"]),
+            Jsonb(snapshot["selection_stats"]),
+            str(snapshot["selector_version"]),
+            str(snapshot["identity_version"]),
+            int(now_ms),
+        ),
+    )
+    return int(cursor.rowcount or 0)
 
 
 def _publish_items(

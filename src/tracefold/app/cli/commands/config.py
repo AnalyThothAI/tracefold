@@ -69,6 +69,10 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 "news": {
                     "enabled": settings.news.enabled,
                     "opennews_token_configured": bool(settings.news.opennews_token),
+                    "brief": {
+                        "openrouter_configured": bool(settings.llm.openrouter_api_key),
+                        "groq_configured": bool(settings.llm.groq_api_key),
+                    },
                     "push": {
                         "enabled": settings.news.push.enabled,
                         "feishu_webhook_url_configured": bool(settings.news.push.feishu_webhook_url),

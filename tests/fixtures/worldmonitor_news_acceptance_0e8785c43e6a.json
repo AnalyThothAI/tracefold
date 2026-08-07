@@ -1,0 +1,2372 @@
+{
+  "corpora": {
+    "0b879b52100da65c46d48cf3a8eee6f1a908a8ce30f78d7e3df87724f99a9cc6": {
+      "clusters": [
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 136,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081320000,
+          "memberTitles": [
+            "Central bank releases routine monthly statistical bulletin",
+            "Central bank releases routine monthly statistical bulletin"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081260000,
+          "primarySource": "Reuters",
+          "primaryTitle": "Central bank releases routine monthly statistical bulletin",
+          "sourceCount": 2,
+          "sourceTier": 1,
+          "sources": [
+            "Reuters",
+            "field wire"
+          ],
+          "storyId": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 2,
+          "upstreamImportanceScore": 35
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 49.400000000000006,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081380000,
+          "memberTitles": [
+            "University publishes annual library schedule"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081380000,
+          "primarySource": "campus wire",
+          "primaryTitle": "University publishes annual library schedule",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "campus wire"
+          ],
+          "storyId": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 17
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 49.400000000000006,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081440000,
+          "memberTitles": [
+            "Local museum opens seasonal art exhibition"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081440000,
+          "primarySource": "local daily",
+          "primaryTitle": "Local museum opens seasonal art exhibition",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "local daily"
+          ],
+          "storyId": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 17
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 68,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081560000,
+          "memberTitles": [
+            "Central bank schedules routine policy meeting next week",
+            "Central bank schedules routine policy meeting next week"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081560000,
+          "primarySource": "routine alpha",
+          "primaryTitle": "Central bank schedules routine policy meeting next week",
+          "sourceCount": 2,
+          "sourceTier": 4,
+          "sources": [
+            "routine alpha",
+            "routine beta"
+          ],
+          "storyId": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 2,
+          "upstreamImportanceScore": 20
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 2,
+          "entityCorroboration": true,
+          "importanceScore": 254,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081620000,
+          "memberTitles": [
+            "China delegation observes Iran talks on energy cooperation"
+          ],
+          "primaryLink": "https://example.test/entity-2",
+          "primaryPublishedAtMs": 1786081620000,
+          "primarySource": "diplomat_b",
+          "primaryTitle": "China delegation observes Iran talks on energy cooperation",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "diplomat_b"
+          ],
+          "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+          "threat": {
+            "category": "diplomatic",
+            "level": "low",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 60
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 2,
+          "entityCorroboration": true,
+          "importanceScore": 246,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081680000,
+          "memberTitles": [
+            "Iran talks resume over bilateral agreement"
+          ],
+          "primaryLink": "https://example.test/entity-1",
+          "primaryPublishedAtMs": 1786081680000,
+          "primarySource": "diplomat_a",
+          "primaryTitle": "Iran talks resume over bilateral agreement",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "diplomat_a"
+          ],
+          "storyId": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb",
+          "threat": {
+            "category": "diplomatic",
+            "level": "low",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 60
+        },
+        {
+          "category": "crisis",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 305.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081740000,
+          "memberTitles": [
+            "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081740000,
+          "primarySource": "alert seven",
+          "primaryTitle": "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert seven"
+          ],
+          "storyId": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550",
+          "threat": {
+            "category": "disaster",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "high",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 342.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081800000,
+          "memberTitles": [
+            "Deadly shooting massacre attack kills civilians with casualties in city market"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081800000,
+          "primarySource": "alert six",
+          "primaryTitle": "Deadly shooting massacre attack kills civilians with casualties in city market",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert six"
+          ],
+          "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 348.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081860000,
+          "memberTitles": [
+            "Artillery offensive attack leaves wounded troops and casualties near border crossing"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081860000,
+          "primarySource": "alert five",
+          "primaryTitle": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert five"
+          ],
+          "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 331.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081920000,
+          "memberTitles": [
+            "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081920000,
+          "primarySource": "alert four",
+          "primaryTitle": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert four"
+          ],
+          "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 348.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081980000,
+          "memberTitles": [
+            "Violent protest clashes follow military crackdown shooting with civilian casualties"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081980000,
+          "primarySource": "alert three",
+          "primaryTitle": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert three"
+          ],
+          "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 316.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082040000,
+          "memberTitles": [
+            "Bomb attack leaves casualties near central station"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082040000,
+          "primarySource": "alert two",
+          "primaryTitle": "Bomb attack leaves casualties near central station",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert two"
+          ],
+          "storyId": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 314.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082100000,
+          "memberTitles": [
+            "Navy warship missile strike destroys hostile drone fleet during sea combat attack"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082100000,
+          "primarySource": "alert one",
+          "primaryTitle": "Navy warship missile strike destroys hostile drone fleet during sea combat attack",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert one"
+          ],
+          "storyId": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849",
+          "threat": {
+            "category": "military",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 229,
+          "isAlert": false,
+          "lastUpdatedMs": 1786082160000,
+          "memberTitles": [
+            "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082160000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393",
+          "threat": {
+            "category": "disaster",
+            "level": "medium",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 45
+        },
+        {
+          "category": "unrest",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 367.6,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082220000,
+          "memberTitles": [
+            "Coup sparks violent clashes in capital district"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082220000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Coup sparks violent clashes in capital district",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+          "threat": {
+            "category": "military",
+            "level": "critical",
+            "source": "keyword"
+          },
+          "threatLevel": "high",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 73
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 336.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082280000,
+          "memberTitles": [
+            "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082280000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 356.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082340000,
+          "memberTitles": [
+            "Deadly missile airstrike attack kills troops at northern airbase during combat"
+          ],
+          "primaryLink": "https://example.test/cap-1",
+          "primaryPublishedAtMs": 1786082340000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 121.6,
+          "isAlert": false,
+          "lastUpdatedMs": 1786086000000,
+          "memberTitles": [
+            "Major explosion kills troops and triggers emergency response"
+          ],
+          "primaryLink": "https://example.test/next-turn",
+          "primaryPublishedAtMs": 1786086000000,
+          "primarySource": "next wire",
+          "primaryTitle": "Major explosion kills troops and triggers emergency response",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "next wire"
+          ],
+          "storyId": "4faccea12fd5b7be3a8c017ab167a879eee038cbb80426fbf6c2bfa789985089",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 18
+        }
+      ],
+      "components": [
+        {
+          "canonicalKey": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871",
+          "memberCount": 2,
+          "memberIds": [
+            "tier-fallback-newer",
+            "tier-reuters-older"
+          ],
+          "memberTitles": [
+            "Central bank releases routine monthly statistical bulletin",
+            "Central bank releases routine monthly statistical bulletin"
+          ],
+          "sourceCount": 2,
+          "sources": [
+            "Reuters",
+            "field wire"
+          ],
+          "storyId": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "canonicalKey": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f",
+          "memberCount": 1,
+          "memberIds": [
+            "drop-2"
+          ],
+          "memberTitles": [
+            "University publishes annual library schedule"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "campus wire"
+          ],
+          "storyId": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f"
+        },
+        {
+          "canonicalKey": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20",
+          "memberCount": 1,
+          "memberIds": [
+            "drop-1"
+          ],
+          "memberTitles": [
+            "Local museum opens seasonal art exhibition"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "local daily"
+          ],
+          "storyId": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20"
+        },
+        {
+          "canonicalKey": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1",
+          "memberCount": 2,
+          "memberIds": [
+            "routine-1",
+            "routine-2"
+          ],
+          "memberTitles": [
+            "Central bank schedules routine policy meeting next week",
+            "Central bank schedules routine policy meeting next week"
+          ],
+          "sourceCount": 2,
+          "sources": [
+            "routine alpha",
+            "routine beta"
+          ],
+          "storyId": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "canonicalKey": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+          "memberCount": 1,
+          "memberIds": [
+            "entity-2"
+          ],
+          "memberTitles": [
+            "China delegation observes Iran talks on energy cooperation"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "diplomat_b"
+          ],
+          "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5"
+        },
+        {
+          "canonicalKey": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb",
+          "memberCount": 1,
+          "memberIds": [
+            "entity-1"
+          ],
+          "memberTitles": [
+            "Iran talks resume over bilateral agreement"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "diplomat_a"
+          ],
+          "storyId": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb"
+        },
+        {
+          "canonicalKey": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-7"
+          ],
+          "memberTitles": [
+            "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert seven"
+          ],
+          "storyId": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550"
+        },
+        {
+          "canonicalKey": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-6"
+          ],
+          "memberTitles": [
+            "Deadly shooting massacre attack kills civilians with casualties in city market"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert six"
+          ],
+          "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17"
+        },
+        {
+          "canonicalKey": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-5"
+          ],
+          "memberTitles": [
+            "Artillery offensive attack leaves wounded troops and casualties near border crossing"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert five"
+          ],
+          "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d"
+        },
+        {
+          "canonicalKey": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-4"
+          ],
+          "memberTitles": [
+            "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert four"
+          ],
+          "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9"
+        },
+        {
+          "canonicalKey": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-3"
+          ],
+          "memberTitles": [
+            "Violent protest clashes follow military crackdown shooting with civilian casualties"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert three"
+          ],
+          "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7"
+        },
+        {
+          "canonicalKey": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-2"
+          ],
+          "memberTitles": [
+            "Bomb attack leaves casualties near central station"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert two"
+          ],
+          "storyId": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490"
+        },
+        {
+          "canonicalKey": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-1"
+          ],
+          "memberTitles": [
+            "Navy warship missile strike destroys hostile drone fleet during sea combat attack"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert one"
+          ],
+          "storyId": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849"
+        },
+        {
+          "canonicalKey": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-4"
+          ],
+          "memberTitles": [
+            "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393"
+        },
+        {
+          "canonicalKey": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-3"
+          ],
+          "memberTitles": [
+            "Coup sparks violent clashes in capital district"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b"
+        },
+        {
+          "canonicalKey": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-2"
+          ],
+          "memberTitles": [
+            "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb"
+        },
+        {
+          "canonicalKey": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-1"
+          ],
+          "memberTitles": [
+            "Deadly missile airstrike attack kills troops at northern airbase during combat"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac"
+        },
+        {
+          "canonicalKey": "4faccea12fd5b7be3a8c017ab167a879eee038cbb80426fbf6c2bfa789985089",
+          "memberCount": 1,
+          "memberIds": [
+            "next-turn"
+          ],
+          "memberTitles": [
+            "Major explosion kills troops and triggers emergency response"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "next wire"
+          ],
+          "storyId": "4faccea12fd5b7be3a8c017ab167a879eee038cbb80426fbf6c2bfa789985089"
+        }
+      ],
+      "firstStage": [
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "tier-reuters-older",
+          "importanceScore": 35,
+          "level": "info",
+          "titleHash": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "tier-fallback-newer",
+          "importanceScore": 20,
+          "level": "info",
+          "titleHash": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "drop-2",
+          "importanceScore": 17,
+          "level": "info",
+          "titleHash": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "drop-1",
+          "importanceScore": 17,
+          "level": "info",
+          "titleHash": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "routine-2",
+          "importanceScore": 20,
+          "level": "info",
+          "titleHash": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "routine-1",
+          "importanceScore": 20,
+          "level": "info",
+          "titleHash": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "category": "diplomatic",
+          "classSource": "keyword",
+          "confidence": 0.6,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 2,
+          "id": "entity-2",
+          "importanceScore": 60,
+          "level": "low",
+          "titleHash": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5"
+        },
+        {
+          "category": "diplomatic",
+          "classSource": "keyword",
+          "confidence": 0.6,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 2,
+          "id": "entity-1",
+          "importanceScore": 60,
+          "level": "low",
+          "titleHash": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb"
+        },
+        {
+          "category": "disaster",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-7",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-6",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-5",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-4",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-3",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-2",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490"
+        },
+        {
+          "category": "military",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-1",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849"
+        },
+        {
+          "category": "disaster",
+          "classSource": "keyword",
+          "confidence": 0.7,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-4",
+          "importanceScore": 45,
+          "level": "medium",
+          "titleHash": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393"
+        },
+        {
+          "category": "military",
+          "classSource": "keyword",
+          "confidence": 0.9,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-3",
+          "importanceScore": 73,
+          "level": "critical",
+          "titleHash": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-2",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-1",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "next-turn",
+          "importanceScore": 18,
+          "level": "info",
+          "titleHash": "4faccea12fd5b7be3a8c017ab167a879eee038cbb80426fbf6c2bfa789985089"
+        }
+      ],
+      "lkg": null,
+      "selector": {
+        "briefClusterStoryId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+        "selected": [
+          {
+            "effectiveImportanceScore": 343.47625,
+            "entityCorroboration": false,
+            "importanceScore": 367.6,
+            "primarySource": "cap wire",
+            "primaryTitle": "Coup sparks violent clashes in capital district",
+            "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 333.6601041666667,
+            "entityCorroboration": false,
+            "importanceScore": 356.3,
+            "primarySource": "cap wire",
+            "primaryTitle": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+            "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 323.9915625,
+            "entityCorroboration": false,
+            "importanceScore": 348.3,
+            "primarySource": "alert three",
+            "primaryTitle": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+            "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 323.2659375,
+            "entityCorroboration": false,
+            "importanceScore": 348.3,
+            "primarySource": "alert five",
+            "primaryTitle": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+            "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 317.34062500000005,
+            "entityCorroboration": false,
+            "importanceScore": 342.3,
+            "primarySource": "alert six",
+            "primaryTitle": "Deadly shooting massacre attack kills civilians with casualties in city market",
+            "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 314.580625,
+            "entityCorroboration": false,
+            "importanceScore": 336.3,
+            "primarySource": "cap wire",
+            "primaryTitle": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+            "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 307.8329166666667,
+            "entityCorroboration": false,
+            "importanceScore": 331.3,
+            "primarySource": "alert four",
+            "primaryTitle": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+            "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 234.68541666666667,
+            "entityCorroboration": true,
+            "importanceScore": 254,
+            "primarySource": "diplomat_b",
+            "primaryTitle": "China delegation observes Iran talks on energy cooperation",
+            "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+            "uniqueSourceCount": 1
+          }
+        ],
+        "stats": {
+          "admissibilityDropped": 2,
+          "briefEligibleConsidered": 4,
+          "briefEligiblePromoted": true,
+          "considered": 18,
+          "overflowDropped": 7,
+          "sourceCapDropped": 1
+        }
+      },
+      "synthesis": {
+        "composed": {
+          "hallucinatedLines": 0,
+          "lead": "Coup sparks violent clashes in capital district [1]. Deadly missile airstrike attack kills troops at northern airbase during combat [2].",
+          "lines": [
+            {
+              "n": 1,
+              "text": "Coup sparks violent clashes in capital district. [1]"
+            },
+            {
+              "n": 2,
+              "text": "Deadly missile airstrike attack kills troops at northern airbase during combat. [2]"
+            },
+            {
+              "n": 3,
+              "text": "Violent protest clashes follow military crackdown shooting with civilian casualties. [3]"
+            },
+            {
+              "n": 4,
+              "text": "Artillery offensive attack leaves wounded troops and casualties near border crossing. [4]"
+            },
+            {
+              "n": 5,
+              "text": "Deadly shooting massacre attack kills civilians with casualties in city market. [5]"
+            },
+            {
+              "n": 6,
+              "text": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse. [6]"
+            },
+            {
+              "n": 7,
+              "text": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency. [7]"
+            },
+            {
+              "n": 8,
+              "text": "China delegation observes Iran talks on energy cooperation. [8]"
+            }
+          ],
+          "sources": [
+            {
+              "source": "cap wire",
+              "title": "Coup sparks violent clashes in capital district",
+              "url": ""
+            },
+            {
+              "source": "cap wire",
+              "title": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+              "url": "https://example.test/cap-1"
+            },
+            {
+              "source": "alert three",
+              "title": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+              "url": ""
+            },
+            {
+              "source": "alert five",
+              "title": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+              "url": ""
+            },
+            {
+              "source": "alert six",
+              "title": "Deadly shooting massacre attack kills civilians with casualties in city market",
+              "url": ""
+            },
+            {
+              "source": "cap wire",
+              "title": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+              "url": ""
+            },
+            {
+              "source": "alert four",
+              "title": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+              "url": ""
+            },
+            {
+              "source": "diplomat_b",
+              "title": "China delegation observes Iran talks on energy cooperation",
+              "url": "https://example.test/entity-2"
+            }
+          ],
+          "strippedCitations": 0
+        },
+        "l1Raw": "{\"lead\":\"Coup sparks violent clashes in capital district [1]. Deadly missile airstrike attack kills troops at northern airbase during combat [2].\",\"lines\":[{\"n\":1,\"text\":\"Coup sparks violent clashes in capital district [1].\"},{\"n\":2,\"text\":\"Deadly missile airstrike attack kills troops at northern airbase during combat [2].\"},{\"n\":3,\"text\":\"Violent protest clashes follow military crackdown shooting with civilian casualties [3].\"},{\"n\":4,\"text\":\"Artillery offensive attack leaves wounded troops and casualties near border crossing [4].\"},{\"n\":5,\"text\":\"Deadly shooting massacre attack kills civilians with casualties in city market [5].\"},{\"n\":6,\"text\":\"Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse [6].\"},{\"n\":7,\"text\":\"Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency [7].\"},{\"n\":8,\"text\":\"China delegation observes Iran talks on energy cooperation [8].\"}]}",
+        "l2": {
+          "headlineFallback": false,
+          "status": "degraded",
+          "systemPrompt": "Current date: 2026-08-07.\n\nRewrite the provided headline as 2 concise sentences MAX (under 60 words total).\nRules:\n- Use ONLY facts present in the headline text. Do not add names, places, dates, or context that are not explicitly in the headline.\n- Do not invent proper nouns (people, organizations, countries) that are not in the headline.\n- Include a location, person, or organization ONLY if it appears in the headline. If the headline has no location, do not add one.\n- NEVER start with \"Breaking news\", \"Good evening\", \"Tonight\", or TV-style openings.\n- No bullet points, no meta-commentary, no speculation beyond the headline.",
+          "text": "China delegation observes Iran talks on energy cooperation.",
+          "userPrompt": "Headline: China delegation observes Iran talks on energy cooperation\n\nRewrite as 2 sentences using only facts from this headline."
+        },
+        "systemPrompt": "Current date: 2026-08-07.\n\nYou are compiling the WORLD BRIEF from the numbered stories below. Respond with JSON ONLY (no markdown fences, no commentary):\n{\"lead\": \"...\", \"lines\": [{\"n\": 1, \"text\": \"...\"}, ...]}\n\nRules:\n- \"lead\": 2-3 sentences, under 80 words, synthesizing the most consequential 2-3 threads. Cite every claim with the bracket number of its story, e.g. [1] or [3].\n- \"lines\": exactly one entry per numbered story, in order. Each \"text\" is ONE sentence under 30 words restating that story, ending with its citation [n].\n- Use ONLY facts present in the numbered story text. Do not add names, places, dates, numbers, or context that are not explicitly there.\n- Do not invent proper nouns (people, organizations, countries) that are not in the story text.\n- Two numbered stories can describe the SAME event in different words. A lead claim may combine them, but it MUST carry the citation of EVERY story it drew from — write [3][7], not just [3]. Any name, place, or number you take from a story you did not cite counts as invented.\n- Write acronyms WITHOUT periods: \"US\", \"UN\", \"EU\", \"UK\" — never \"U.S.\", \"U.N.\". A trailing period there reads as the end of a sentence.\n- Refer to an actor by the name the story uses. Do not swap in a capital city, nickname, or synonym for it — write \"US\", not \"Washington\"; \"Iran\", not \"Tehran\" — unless that word is in the story text.\n- NEVER start with \"Breaking news\", \"Good evening\", \"Tonight\", or TV-style openings.",
+        "userPrompt": "Stories:\n1. Coup sparks violent clashes in capital district (cap wire, 1 source)\n2. Deadly missile airstrike attack kills troops at northern airbase during combat (cap wire, 1 source)\n3. Violent protest clashes follow military crackdown shooting with civilian casualties (alert three, 1 source)\n4. Artillery offensive attack leaves wounded troops and casualties near border crossing (alert five, 1 source)\n5. Deadly shooting massacre attack kills civilians with casualties in city market (alert six, 1 source)\n6. Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse (cap wire, 1 source)\n7. Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency (alert four, 1 source)\n8. China delegation observes Iran talks on energy cooperation (diplomat_b, 1 source)\n\nCompile the world brief JSON."
+      }
+    },
+    "d5859f0b7fd4c1ff3ffcafb14cbae742fc5c604f9155e8e782d458a753920c7c": {
+      "clusters": [
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 138.2,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081320000,
+          "memberTitles": [
+            "Central bank releases routine monthly statistical bulletin",
+            "Central bank releases routine monthly statistical bulletin"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081260000,
+          "primarySource": "Reuters",
+          "primaryTitle": "Central bank releases routine monthly statistical bulletin",
+          "sourceCount": 2,
+          "sourceTier": 1,
+          "sources": [
+            "Reuters",
+            "field wire"
+          ],
+          "storyId": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 2,
+          "upstreamImportanceScore": 36
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 51.6,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081380000,
+          "memberTitles": [
+            "University publishes annual library schedule"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081380000,
+          "primarySource": "campus wire",
+          "primaryTitle": "University publishes annual library schedule",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "campus wire"
+          ],
+          "storyId": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 18
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 51.6,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081440000,
+          "memberTitles": [
+            "Local museum opens seasonal art exhibition"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081440000,
+          "primarySource": "local daily",
+          "primaryTitle": "Local museum opens seasonal art exhibition",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "local daily"
+          ],
+          "storyId": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 18
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 70.2,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081560000,
+          "memberTitles": [
+            "Central bank schedules routine policy meeting next week",
+            "Central bank schedules routine policy meeting next week"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081560000,
+          "primarySource": "routine alpha",
+          "primaryTitle": "Central bank schedules routine policy meeting next week",
+          "sourceCount": 2,
+          "sourceTier": 4,
+          "sources": [
+            "routine alpha",
+            "routine beta"
+          ],
+          "storyId": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1",
+          "threat": {
+            "category": "general",
+            "level": "info",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 2,
+          "upstreamImportanceScore": 21
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 2,
+          "entityCorroboration": true,
+          "importanceScore": 256.20000000000005,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081620000,
+          "memberTitles": [
+            "China delegation observes Iran talks on energy cooperation"
+          ],
+          "primaryLink": "https://example.test/entity-2",
+          "primaryPublishedAtMs": 1786081620000,
+          "primarySource": "diplomat_b",
+          "primaryTitle": "China delegation observes Iran talks on energy cooperation",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "diplomat_b"
+          ],
+          "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+          "threat": {
+            "category": "diplomatic",
+            "level": "low",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 61
+        },
+        {
+          "category": "general",
+          "corroborationSourceCount": 2,
+          "entityCorroboration": true,
+          "importanceScore": 248.20000000000002,
+          "isAlert": false,
+          "lastUpdatedMs": 1786081680000,
+          "memberTitles": [
+            "Iran talks resume over bilateral agreement"
+          ],
+          "primaryLink": "https://example.test/entity-1",
+          "primaryPublishedAtMs": 1786081680000,
+          "primarySource": "diplomat_a",
+          "primaryTitle": "Iran talks resume over bilateral agreement",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "diplomat_a"
+          ],
+          "storyId": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb",
+          "threat": {
+            "category": "diplomatic",
+            "level": "low",
+            "source": "keyword"
+          },
+          "threatLevel": "moderate",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 61
+        },
+        {
+          "category": "crisis",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 305.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081740000,
+          "memberTitles": [
+            "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081740000,
+          "primarySource": "alert seven",
+          "primaryTitle": "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert seven"
+          ],
+          "storyId": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550",
+          "threat": {
+            "category": "disaster",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "high",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 342.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081800000,
+          "memberTitles": [
+            "Deadly shooting massacre attack kills civilians with casualties in city market"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081800000,
+          "primarySource": "alert six",
+          "primaryTitle": "Deadly shooting massacre attack kills civilians with casualties in city market",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert six"
+          ],
+          "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 348.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081860000,
+          "memberTitles": [
+            "Artillery offensive attack leaves wounded troops and casualties near border crossing"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081860000,
+          "primarySource": "alert five",
+          "primaryTitle": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert five"
+          ],
+          "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 331.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081920000,
+          "memberTitles": [
+            "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081920000,
+          "primarySource": "alert four",
+          "primaryTitle": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert four"
+          ],
+          "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 348.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786081980000,
+          "memberTitles": [
+            "Violent protest clashes follow military crackdown shooting with civilian casualties"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786081980000,
+          "primarySource": "alert three",
+          "primaryTitle": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert three"
+          ],
+          "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 316.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082040000,
+          "memberTitles": [
+            "Bomb attack leaves casualties near central station"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082040000,
+          "primarySource": "alert two",
+          "primaryTitle": "Bomb attack leaves casualties near central station",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert two"
+          ],
+          "storyId": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 314.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082100000,
+          "memberTitles": [
+            "Navy warship missile strike destroys hostile drone fleet during sea combat attack"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082100000,
+          "primarySource": "alert one",
+          "primaryTitle": "Navy warship missile strike destroys hostile drone fleet during sea combat attack",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "alert one"
+          ],
+          "storyId": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849",
+          "threat": {
+            "category": "military",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 229,
+          "isAlert": false,
+          "lastUpdatedMs": 1786082160000,
+          "memberTitles": [
+            "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082160000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393",
+          "threat": {
+            "category": "disaster",
+            "level": "medium",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 45
+        },
+        {
+          "category": "unrest",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 367.6,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082220000,
+          "memberTitles": [
+            "Coup sparks violent clashes in capital district"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082220000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Coup sparks violent clashes in capital district",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+          "threat": {
+            "category": "military",
+            "level": "critical",
+            "source": "keyword"
+          },
+          "threatLevel": "high",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 73
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 336.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082280000,
+          "memberTitles": [
+            "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse"
+          ],
+          "primaryLink": null,
+          "primaryPublishedAtMs": 1786082280000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        },
+        {
+          "category": "conflict",
+          "corroborationSourceCount": 0,
+          "entityCorroboration": false,
+          "importanceScore": 356.3,
+          "isAlert": true,
+          "lastUpdatedMs": 1786082340000,
+          "memberTitles": [
+            "Deadly missile airstrike attack kills troops at northern airbase during combat"
+          ],
+          "primaryLink": "https://example.test/cap-1",
+          "primaryPublishedAtMs": 1786082340000,
+          "primarySource": "cap wire",
+          "primaryTitle": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+          "sourceCount": 1,
+          "sourceTier": 4,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+          "threat": {
+            "category": "conflict",
+            "level": "high",
+            "source": "keyword"
+          },
+          "threatLevel": "critical",
+          "uniqueSourceCount": 1,
+          "upstreamImportanceScore": 59
+        }
+      ],
+      "components": [
+        {
+          "canonicalKey": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871",
+          "memberCount": 2,
+          "memberIds": [
+            "tier-fallback-newer",
+            "tier-reuters-older"
+          ],
+          "memberTitles": [
+            "Central bank releases routine monthly statistical bulletin",
+            "Central bank releases routine monthly statistical bulletin"
+          ],
+          "sourceCount": 2,
+          "sources": [
+            "Reuters",
+            "field wire"
+          ],
+          "storyId": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "canonicalKey": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f",
+          "memberCount": 1,
+          "memberIds": [
+            "drop-2"
+          ],
+          "memberTitles": [
+            "University publishes annual library schedule"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "campus wire"
+          ],
+          "storyId": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f"
+        },
+        {
+          "canonicalKey": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20",
+          "memberCount": 1,
+          "memberIds": [
+            "drop-1"
+          ],
+          "memberTitles": [
+            "Local museum opens seasonal art exhibition"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "local daily"
+          ],
+          "storyId": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20"
+        },
+        {
+          "canonicalKey": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1",
+          "memberCount": 2,
+          "memberIds": [
+            "routine-1",
+            "routine-2"
+          ],
+          "memberTitles": [
+            "Central bank schedules routine policy meeting next week",
+            "Central bank schedules routine policy meeting next week"
+          ],
+          "sourceCount": 2,
+          "sources": [
+            "routine alpha",
+            "routine beta"
+          ],
+          "storyId": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "canonicalKey": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+          "memberCount": 1,
+          "memberIds": [
+            "entity-2"
+          ],
+          "memberTitles": [
+            "China delegation observes Iran talks on energy cooperation"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "diplomat_b"
+          ],
+          "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5"
+        },
+        {
+          "canonicalKey": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb",
+          "memberCount": 1,
+          "memberIds": [
+            "entity-1"
+          ],
+          "memberTitles": [
+            "Iran talks resume over bilateral agreement"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "diplomat_a"
+          ],
+          "storyId": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb"
+        },
+        {
+          "canonicalKey": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-7"
+          ],
+          "memberTitles": [
+            "Hurricane catastrophe sparks violent clashes, kills residents, and leaves thousands injured after collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert seven"
+          ],
+          "storyId": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550"
+        },
+        {
+          "canonicalKey": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-6"
+          ],
+          "memberTitles": [
+            "Deadly shooting massacre attack kills civilians with casualties in city market"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert six"
+          ],
+          "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17"
+        },
+        {
+          "canonicalKey": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-5"
+          ],
+          "memberTitles": [
+            "Artillery offensive attack leaves wounded troops and casualties near border crossing"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert five"
+          ],
+          "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d"
+        },
+        {
+          "canonicalKey": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-4"
+          ],
+          "memberTitles": [
+            "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert four"
+          ],
+          "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9"
+        },
+        {
+          "canonicalKey": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-3"
+          ],
+          "memberTitles": [
+            "Violent protest clashes follow military crackdown shooting with civilian casualties"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert three"
+          ],
+          "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7"
+        },
+        {
+          "canonicalKey": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-2"
+          ],
+          "memberTitles": [
+            "Bomb attack leaves casualties near central station"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert two"
+          ],
+          "storyId": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490"
+        },
+        {
+          "canonicalKey": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849",
+          "memberCount": 1,
+          "memberIds": [
+            "alert-1"
+          ],
+          "memberTitles": [
+            "Navy warship missile strike destroys hostile drone fleet during sea combat attack"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "alert one"
+          ],
+          "storyId": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849"
+        },
+        {
+          "canonicalKey": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-4"
+          ],
+          "memberTitles": [
+            "Wildfire catastrophe follows military attack, kills troops, and triggers emergency evacuation after collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393"
+        },
+        {
+          "canonicalKey": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-3"
+          ],
+          "memberTitles": [
+            "Coup sparks violent clashes in capital district"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b"
+        },
+        {
+          "canonicalKey": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-2"
+          ],
+          "memberTitles": [
+            "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb"
+        },
+        {
+          "canonicalKey": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+          "memberCount": 1,
+          "memberIds": [
+            "cap-1"
+          ],
+          "memberTitles": [
+            "Deadly missile airstrike attack kills troops at northern airbase during combat"
+          ],
+          "sourceCount": 1,
+          "sources": [
+            "cap wire"
+          ],
+          "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac"
+        }
+      ],
+      "firstStage": [
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "tier-reuters-older",
+          "importanceScore": 36,
+          "level": "info",
+          "titleHash": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "tier-fallback-newer",
+          "importanceScore": 21,
+          "level": "info",
+          "titleHash": "882e8f51ffac5a0bdf9e9ea30b15a8ba9c1cd79b7d52d265577266c6a3911871"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "drop-2",
+          "importanceScore": 18,
+          "level": "info",
+          "titleHash": "1766cd6e639a18438966ed4a49d958ff84c822de4434c1730c4b446f8bf8e26f"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "drop-1",
+          "importanceScore": 18,
+          "level": "info",
+          "titleHash": "f4642e0a57f748ce0f3afdfc0d6736b2a57913e25e98f2f217b7ab06efad9c20"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "routine-2",
+          "importanceScore": 21,
+          "level": "info",
+          "titleHash": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "category": "general",
+          "classSource": "keyword",
+          "confidence": 0.3,
+          "corroborationCount": 2,
+          "entityCorroborationCount": 0,
+          "id": "routine-1",
+          "importanceScore": 21,
+          "level": "info",
+          "titleHash": "e6f2f15e6b05b30d0734e5dc0bbb6886088921db3d97302af4f22c7fe107b7a1"
+        },
+        {
+          "category": "diplomatic",
+          "classSource": "keyword",
+          "confidence": 0.6,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 2,
+          "id": "entity-2",
+          "importanceScore": 61,
+          "level": "low",
+          "titleHash": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5"
+        },
+        {
+          "category": "diplomatic",
+          "classSource": "keyword",
+          "confidence": 0.6,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 2,
+          "id": "entity-1",
+          "importanceScore": 61,
+          "level": "low",
+          "titleHash": "5b993cd6845b3cb20125472c8ee588cd3312f1b660fe67c64721b81820f435bb"
+        },
+        {
+          "category": "disaster",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-7",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "34a3ab004a52ae57735b846e4aa53e9575f4310c90b847d3aaa6917203b32550"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-6",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-5",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-4",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-3",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-2",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "dfa266a5fdb5272dad2ca722d6de5e3cb4982f5a0855cb329fb754917acb4490"
+        },
+        {
+          "category": "military",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "alert-1",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "b99f91a3b04dc7e400bd020ff460b70ebaea9c20511eac26674b68ed483ff849"
+        },
+        {
+          "category": "disaster",
+          "classSource": "keyword",
+          "confidence": 0.7,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-4",
+          "importanceScore": 45,
+          "level": "medium",
+          "titleHash": "adbd289ad256f5d59814db5a579a7614e31d6ce2ba42291d773bea1f2e24e393"
+        },
+        {
+          "category": "military",
+          "classSource": "keyword",
+          "confidence": 0.9,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-3",
+          "importanceScore": 73,
+          "level": "critical",
+          "titleHash": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-2",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb"
+        },
+        {
+          "category": "conflict",
+          "classSource": "keyword",
+          "confidence": 0.8,
+          "corroborationCount": 1,
+          "entityCorroborationCount": 0,
+          "id": "cap-1",
+          "importanceScore": 59,
+          "level": "high",
+          "titleHash": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac"
+        }
+      ],
+      "lkg": null,
+      "selector": {
+        "briefClusterStoryId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+        "selected": [
+          {
+            "effectiveImportanceScore": 366.45125,
+            "entityCorroboration": false,
+            "importanceScore": 367.6,
+            "primarySource": "cap wire",
+            "primaryTitle": "Coup sparks violent clashes in capital district",
+            "storyId": "fee17391b7b878175205fb36cb0bac297cfac0ce7debcac24fca552b4d2dcc6b",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 355.92885416666667,
+            "entityCorroboration": false,
+            "importanceScore": 356.3,
+            "primarySource": "cap wire",
+            "primaryTitle": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+            "storyId": "e512dafe99495b49075a8c5476a472986bf4f83e4ec30a7118a3c07791dbf1ac",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 345.7603125,
+            "entityCorroboration": false,
+            "importanceScore": 348.3,
+            "primarySource": "alert three",
+            "primaryTitle": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+            "storyId": "46334aed6dcbcfb77b741c031d490aa9f91ef6a2a2cfffa5bb99178641ddf5a7",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 345.0346875,
+            "entityCorroboration": false,
+            "importanceScore": 348.3,
+            "primarySource": "alert five",
+            "primaryTitle": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+            "storyId": "b8d9c9b33a065a194c7b59ce89cce8c572e1a40ff969fd5097d4c2da2658c47d",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 338.734375,
+            "entityCorroboration": false,
+            "importanceScore": 342.3,
+            "primarySource": "alert six",
+            "primaryTitle": "Deadly shooting massacre attack kills civilians with casualties in city market",
+            "storyId": "42bbad47815c5fd49599bf6281296ceb418d24ca2ecefa0cbf24924b50e6ad17",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 335.599375,
+            "entityCorroboration": false,
+            "importanceScore": 336.3,
+            "primarySource": "cap wire",
+            "primaryTitle": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+            "storyId": "4c53414b75b64d6b28b91f693b7a3fa8fae941d66bd89ca2695ef158aed7cdbb",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 328.5391666666667,
+            "entityCorroboration": false,
+            "importanceScore": 331.3,
+            "primarySource": "alert four",
+            "primaryTitle": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+            "storyId": "a8fe149dd93ceccff8add75945904495699c97a861204a5c2107a1d7bf3e80d9",
+            "uniqueSourceCount": 1
+          },
+          {
+            "effectiveImportanceScore": 252.73062500000003,
+            "entityCorroboration": true,
+            "importanceScore": 256.20000000000005,
+            "primarySource": "diplomat_b",
+            "primaryTitle": "China delegation observes Iran talks on energy cooperation",
+            "storyId": "6ad6d843b4624498ad3d15912996f24d0ae771f50947972782a32cd98b9988a5",
+            "uniqueSourceCount": 1
+          }
+        ],
+        "stats": {
+          "admissibilityDropped": 2,
+          "briefEligibleConsidered": 4,
+          "briefEligiblePromoted": true,
+          "considered": 17,
+          "overflowDropped": 6,
+          "sourceCapDropped": 1
+        }
+      },
+      "synthesis": {
+        "composed": {
+          "hallucinatedLines": 0,
+          "lead": "Coup sparks violent clashes in capital district [1]. Deadly missile airstrike attack kills troops at northern airbase during combat [2].",
+          "lines": [
+            {
+              "n": 1,
+              "text": "Coup sparks violent clashes in capital district. [1]"
+            },
+            {
+              "n": 2,
+              "text": "Deadly missile airstrike attack kills troops at northern airbase during combat. [2]"
+            },
+            {
+              "n": 3,
+              "text": "Violent protest clashes follow military crackdown shooting with civilian casualties. [3]"
+            },
+            {
+              "n": 4,
+              "text": "Artillery offensive attack leaves wounded troops and casualties near border crossing. [4]"
+            },
+            {
+              "n": 5,
+              "text": "Deadly shooting massacre attack kills civilians with casualties in city market. [5]"
+            },
+            {
+              "n": 6,
+              "text": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse. [6]"
+            },
+            {
+              "n": 7,
+              "text": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency. [7]"
+            },
+            {
+              "n": 8,
+              "text": "China delegation observes Iran talks on energy cooperation. [8]"
+            }
+          ],
+          "sources": [
+            {
+              "source": "cap wire",
+              "title": "Coup sparks violent clashes in capital district",
+              "url": ""
+            },
+            {
+              "source": "cap wire",
+              "title": "Deadly missile airstrike attack kills troops at northern airbase during combat",
+              "url": "https://example.test/cap-1"
+            },
+            {
+              "source": "alert three",
+              "title": "Violent protest clashes follow military crackdown shooting with civilian casualties",
+              "url": ""
+            },
+            {
+              "source": "alert five",
+              "title": "Artillery offensive attack leaves wounded troops and casualties near border crossing",
+              "url": ""
+            },
+            {
+              "source": "alert six",
+              "title": "Deadly shooting massacre attack kills civilians with casualties in city market",
+              "url": ""
+            },
+            {
+              "source": "cap wire",
+              "title": "Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse",
+              "url": ""
+            },
+            {
+              "source": "alert four",
+              "title": "Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency",
+              "url": ""
+            },
+            {
+              "source": "diplomat_b",
+              "title": "China delegation observes Iran talks on energy cooperation",
+              "url": "https://example.test/entity-2"
+            }
+          ],
+          "strippedCitations": 0
+        },
+        "l1Raw": "{\"lead\":\"Coup sparks violent clashes in capital district [1]. Deadly missile airstrike attack kills troops at northern airbase during combat [2].\",\"lines\":[{\"n\":1,\"text\":\"Coup sparks violent clashes in capital district [1].\"},{\"n\":2,\"text\":\"Deadly missile airstrike attack kills troops at northern airbase during combat [2].\"},{\"n\":3,\"text\":\"Violent protest clashes follow military crackdown shooting with civilian casualties [3].\"},{\"n\":4,\"text\":\"Artillery offensive attack leaves wounded troops and casualties near border crossing [4].\"},{\"n\":5,\"text\":\"Deadly shooting massacre attack kills civilians with casualties in city market [5].\"},{\"n\":6,\"text\":\"Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse [6].\"},{\"n\":7,\"text\":\"Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency [7].\"},{\"n\":8,\"text\":\"China delegation observes Iran talks on energy cooperation [8].\"}]}",
+        "l2": {
+          "headlineFallback": false,
+          "status": "degraded",
+          "systemPrompt": "Current date: 2026-08-07.\n\nRewrite the provided headline as 2 concise sentences MAX (under 60 words total).\nRules:\n- Use ONLY facts present in the headline text. Do not add names, places, dates, or context that are not explicitly in the headline.\n- Do not invent proper nouns (people, organizations, countries) that are not in the headline.\n- Include a location, person, or organization ONLY if it appears in the headline. If the headline has no location, do not add one.\n- NEVER start with \"Breaking news\", \"Good evening\", \"Tonight\", or TV-style openings.\n- No bullet points, no meta-commentary, no speculation beyond the headline.",
+          "text": "China delegation observes Iran talks on energy cooperation.",
+          "userPrompt": "Headline: China delegation observes Iran talks on energy cooperation\n\nRewrite as 2 sentences using only facts from this headline."
+        },
+        "systemPrompt": "Current date: 2026-08-07.\n\nYou are compiling the WORLD BRIEF from the numbered stories below. Respond with JSON ONLY (no markdown fences, no commentary):\n{\"lead\": \"...\", \"lines\": [{\"n\": 1, \"text\": \"...\"}, ...]}\n\nRules:\n- \"lead\": 2-3 sentences, under 80 words, synthesizing the most consequential 2-3 threads. Cite every claim with the bracket number of its story, e.g. [1] or [3].\n- \"lines\": exactly one entry per numbered story, in order. Each \"text\" is ONE sentence under 30 words restating that story, ending with its citation [n].\n- Use ONLY facts present in the numbered story text. Do not add names, places, dates, numbers, or context that are not explicitly there.\n- Do not invent proper nouns (people, organizations, countries) that are not in the story text.\n- Two numbered stories can describe the SAME event in different words. A lead claim may combine them, but it MUST carry the citation of EVERY story it drew from — write [3][7], not just [3]. Any name, place, or number you take from a story you did not cite counts as invented.\n- Write acronyms WITHOUT periods: \"US\", \"UN\", \"EU\", \"UK\" — never \"U.S.\", \"U.N.\". A trailing period there reads as the end of a sentence.\n- Refer to an actor by the name the story uses. Do not swap in a capital city, nickname, or synonym for it — write \"US\", not \"Washington\"; \"Iran\", not \"Tehran\" — unless that word is in the story text.\n- NEVER start with \"Breaking news\", \"Good evening\", \"Tonight\", or TV-style openings.",
+        "userPrompt": "Stories:\n1. Coup sparks violent clashes in capital district (cap wire, 1 source)\n2. Deadly missile airstrike attack kills troops at northern airbase during combat (cap wire, 1 source)\n3. Violent protest clashes follow military crackdown shooting with civilian casualties (alert three, 1 source)\n4. Artillery offensive attack leaves wounded troops and casualties near border crossing (alert five, 1 source)\n5. Deadly shooting massacre attack kills civilians with casualties in city market (alert six, 1 source)\n6. Coastal earthquake disaster follows military attack and kills dozens with casualties after emergency collapse (cap wire, 1 source)\n7. Tsunami catastrophe follows military attack, kills residents, and leaves casualties in coastal emergency (alert four, 1 source)\n8. China delegation observes Iran talks on energy cooperation (diplomat_b, 1 source)\n\nCompile the world brief JSON."
+      }
+    }
+  },
+  "driver_sha256": "31f479d1e6eca3eecdc4d9811e8165b01dd6f6da9cb22604482254c0a194a9a2",
+  "head": "0e8785c43e6a693990a14181ae0a16066c15fc8c",
+  "lkg_policy": {
+    "degraded_with_healthy_existing": "serve_existing_whole_and_do_not_publish"
+  }
+}

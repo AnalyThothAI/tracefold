@@ -1,0 +1,310 @@
+{
+  "driver_sha256": "0c7e286e33a7043ea9374991bdba8d2d699cd99c8759eada446f80e3f7c4e730",
+  "fixture_format": "tracefold.worldmonitor-news-differential.v1",
+  "output": {
+    "classifications": [
+      {
+        "category": "conflict",
+        "confidence": 0.8,
+        "level": "high",
+        "source": "keyword"
+      },
+      {
+        "category": "general",
+        "confidence": 0.85,
+        "level": "info",
+        "source": "keyword-historical-downgrade"
+      },
+      {
+        "category": "general",
+        "confidence": 0.85,
+        "level": "info",
+        "source": "keyword-historical-downgrade"
+      },
+      {
+        "category": "general",
+        "confidence": 0.3,
+        "level": "info",
+        "source": "keyword"
+      }
+    ],
+    "grounding": {
+      "facts": [
+        [
+          "number:0.000001",
+          "number:100000000000000000000",
+          "number:1e+21",
+          "number:1e-7"
+        ]
+      ],
+      "numeric": [
+        {
+          "hallucinated": [
+            "number:12.34561%"
+          ],
+          "ok": false
+        },
+        {
+          "hallucinated": [
+            "number:2"
+          ],
+          "ok": false
+        },
+        {
+          "ok": true
+        },
+        {
+          "hallucinated": [
+            "number:12%"
+          ],
+          "ok": false
+        }
+      ],
+      "properNouns": [
+        {
+          "hallucinated": [
+            "strasse"
+          ],
+          "ok": false
+        },
+        {
+          "hallucinated": [
+            "alpha"
+          ],
+          "ok": false
+        },
+        {
+          "hallucinated": [
+            "foo\ua7cfbar"
+          ],
+          "ok": false
+        },
+        {
+          "hallucinated": [
+            "beirut'ſ"
+          ],
+          "ok": false
+        }
+      ]
+    },
+    "identity": {
+      "canonicalHashes": [
+        "f5ea619b8c8b3d6699216892c546c2be78f6c5b9212e4b70d923c9729c667273",
+        "a4c4aeb92c20500f364b12b3771ef3a11193e2cf04d0f28956a829749993b39f",
+        "a4c4aeb92c20500f364b12b3771ef3a11193e2cf04d0f28956a829749993b39f",
+        "f0e20150e549c0ffdd5ee05ce68e97b72ea06dbc1f93109bd18c5ab264f1156c",
+        "01d48e59a9932c536bdb4fc57d300183f5d73f42c3676733b87a56a749a96c0c"
+      ],
+      "clusters": [
+        [
+          [
+            0,
+            1
+          ]
+        ],
+        [
+          [
+            0
+          ],
+          [
+            1
+          ]
+        ],
+        [
+          [
+            0,
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        [
+          [
+            0,
+            1
+          ]
+        ]
+      ],
+      "normalizations": [
+        "fed holds rates",
+        "i",
+        "alpha beta reuters",
+        "\u65e5\u672c\u9280\u884c\u304c\u91d1\u5229\u3092\u5f15\u304d\u4e0a\u3052 \u5e02\u5834\u306b\u885d\u6483",
+        "alpha beta launches satellite today",
+        "a \ud81c\ude37\ud807\uddb7 i \ua7cf \ud81b\udebb war 12"
+      ],
+      "similarities": [
+        0.6820934881719452,
+        0.4867906139054616,
+        0,
+        0.6565088629294751,
+        0.9476070829586852
+      ]
+    },
+    "importance": [
+      23
+    ],
+    "parserEdges": {
+      "fenceCleanup": [
+        "\n{}",
+        "\n{}",
+        "jſon\n{}"
+      ],
+      "coercions": [
+        {
+          "lead": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+          "lines": [
+            {
+              "n": 1,
+              "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+            }
+          ]
+        },
+        {
+          "lead": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+          "lines": [
+            {
+              "n": 1,
+              "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+            }
+          ]
+        },
+        {
+          "lead": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+          "lines": [
+            {
+              "n": 1,
+              "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+            }
+          ]
+        }
+      ],
+      "nonfinite": null
+    },
+    "seedStageEligible": [
+      false,
+      false,
+      true
+    ],
+    "selector": {
+      "selected": [
+        {
+          "effectiveImportanceScore": 540,
+          "importanceScore": 540,
+          "storyId": "shared-0"
+        },
+        {
+          "effectiveImportanceScore": 540,
+          "importanceScore": 540,
+          "storyId": "shared-1"
+        },
+        {
+          "effectiveImportanceScore": 540,
+          "importanceScore": 540,
+          "storyId": "shared-2"
+        },
+        {
+          "effectiveImportanceScore": 540,
+          "importanceScore": 540,
+          "storyId": "wire-0"
+        },
+        {
+          "effectiveImportanceScore": 27.5,
+          "importanceScore": 44,
+          "storyId": "corroborated"
+        }
+      ],
+      "stats": {
+        "admissibilityDropped": 0,
+        "briefEligibleConsidered": 1,
+        "briefEligiblePromoted": true,
+        "considered": 9,
+        "overflowDropped": 3,
+        "sourceCapDropped": 1
+      }
+    },
+    "sourceOrdering": [
+      "_a",
+      "@z",
+      "ap",
+      "AP",
+      "\u00e9clair",
+      "zulu"
+    ],
+    "synthesis": {
+      "composed": {
+        "hallucinatedLines": 0,
+        "lead": "Iran raises the stakes around Hormuz [1] while Turkey delivers a dramatic rate hike [2].",
+        "lines": [
+          {
+            "n": 1,
+            "text": "Iran threatens to close the Strait of Hormuz. [1]"
+          },
+          {
+            "n": 2,
+            "text": "Turkey raises interest rates to 50%. [2]"
+          }
+        ],
+        "sources": [
+          {
+            "source": "Reuters",
+            "title": "Iran threatens to close Strait of Hormuz",
+            "url": ""
+          },
+          {
+            "source": "Bloomberg",
+            "title": "Turkey hikes interest rates to 50%",
+            "url": "https://example.test/turkey"
+          }
+        ],
+        "strippedCitations": 0
+      },
+      "dottedComposed": {
+        "hallucinatedLines": 0,
+        "lead": "Iran met \u4e2dU.S. officials during regional security talks [1]. Iran held talks with \u4e2dU.S. officials [1].",
+        "lines": [
+          {
+            "n": 1,
+            "text": "Iran met \u4e2dU.S. officials during regional security talks. [1]"
+          }
+        ],
+        "sources": [
+          {
+            "source": "Reuters",
+            "title": "Iran met \u4e2dU.S. officials during regional security talks",
+            "url": "https://example.test/talks"
+          }
+        ],
+        "strippedCitations": 0
+      },
+      "parsed": {
+        "lead": "Iran raises the stakes around Hormuz [1] while Turkey delivers a dramatic rate hike [2].",
+        "lines": [
+          {
+            "n": 1,
+            "text": "Iran threatens to close the Strait of Hormuz [1]."
+          },
+          {
+            "n": 2,
+            "text": "Turkey raises interest rates to 50% [1]."
+          }
+        ]
+      },
+      "systemPrompt": "Current date: 2026-08-07.\n\nYou are compiling the WORLD BRIEF from the numbered stories below. Respond with JSON ONLY (no markdown fences, no commentary):\n{\"lead\": \"...\", \"lines\": [{\"n\": 1, \"text\": \"...\"}, ...]}\n\nRules:\n- \"lead\": 2-3 sentences, under 80 words, synthesizing the most consequential 2-3 threads. Cite every claim with the bracket number of its story, e.g. [1] or [3].\n- \"lines\": exactly one entry per numbered story, in order. Each \"text\" is ONE sentence under 30 words restating that story, ending with its citation [n].\n- Use ONLY facts present in the numbered story text. Do not add names, places, dates, numbers, or context that are not explicitly there.\n- Do not invent proper nouns (people, organizations, countries) that are not in the story text.\n- Two numbered stories can describe the SAME event in different words. A lead claim may combine them, but it MUST carry the citation of EVERY story it drew from \u2014 write [3][7], not just [3]. Any name, place, or number you take from a story you did not cite counts as invented.\n- Write acronyms WITHOUT periods: \"US\", \"UN\", \"EU\", \"UK\" \u2014 never \"U.S.\", \"U.N.\". A trailing period there reads as the end of a sentence.\n- Refer to an actor by the name the story uses. Do not swap in a capital city, nickname, or synonym for it \u2014 write \"US\", not \"Washington\"; \"Iran\", not \"Tehran\" \u2014 unless that word is in the story text.\n- NEVER start with \"Breaking news\", \"Good evening\", \"Tonight\", or TV-style openings.",
+      "userPrompt": "Stories:\n1. Iran threatens to close Strait of Hormuz (Reuters, 2 sources)\n2. Turkey hikes interest rates to 50% (Bloomberg, 1 source)\n\nCompile the world brief JSON."
+    },
+    "webHelpers": {
+      "clipped": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d...",
+      "sanitized": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud835",
+      "urls": [
+        "https://example.com/",
+        "",
+        "http://example.com/a"
+      ]
+    }
+  },
+  "payload_sha256": "b1668a565523c6a58bcb5c58254af8aaad2081f162c3ed70610a6fff9bb0f405",
+  "worldmonitor_head": "0e8785c43e6a693990a14181ae0a16066c15fc8c",
+  "worldmonitor_repository": "https://github.com/koala73/worldmonitor.git"
+}
