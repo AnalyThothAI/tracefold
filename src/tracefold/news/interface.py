@@ -92,7 +92,6 @@ class NewsInterface:
         *,
         now_ms: int,
         push_enabled: bool = False,
-        title_translation_configured: bool = False,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
         workers_state: str | None = None,
@@ -101,7 +100,6 @@ class NewsInterface:
         return self._repository.health_snapshot(
             now_ms=now_ms,
             push_enabled=push_enabled,
-            title_translation_configured=title_translation_configured,
             feishu_webhook_url_configured=feishu_webhook_url_configured,
             feishu_signing_secret_configured=feishu_signing_secret_configured,
             workers_state=workers_state,

@@ -30,13 +30,14 @@ from tracefold.market import (
     rebuild_all_token_radar_for_maintenance,
 )
 from tracefold.news import (
-    NewsBriefDraft,
+    NewsBriefSource,
+    NewsBriefStoryLine,
+    NewsBriefSynthesisResult,
     NewsFeedEntry,
     OpenNewsEvent,
     opennews_source,
     parse_opennews_message,
 )
-from tracefold.news.brief import brief_fingerprint
 from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
@@ -577,6 +578,13 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                         reporting_origin="example-news",
                     ),
                     _opennews_event(
+                        provider_record_id="story-1-corroboration",
+                        title="Central bank raises interest rate after policy shock",
+                        description="A second wire independently confirmed the policy decision.",
+                        published_at_ms=now_ms - 70_000,
+                        reporting_origin="second-wire",
+                    ),
+                    _opennews_event(
                         provider_record_id="story-3",
                         title="Cyber attack disrupts regional infrastructure",
                         description="Operators reported a sustained service disruption.",
@@ -587,46 +595,51 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                 observed_at_ms=now_ms,
             )
             repos.news.rebuild_stories(now_ms=now_ms)
-            candidates = repos.news.brief_candidates()
-            fingerprint = brief_fingerprint(candidates)
-            claim = repos.news.claim_brief_run(
-                fingerprint=fingerprint,
-                story_count=len(candidates),
-                source_count=2,
-                now_ms=now_ms,
-                max_attempts=3,
+            assert repos.news.peek_brief_candidate(now_ms=now_ms) is None
+            candidate = repos.news.peek_brief_candidate(now_ms=now_ms + 600_000)
+            assert candidate is not None
+            prepared = repos.news.prepare_brief_run(
+                target_fingerprint=candidate["target_fingerprint"],
                 lease_owner="test-runtime",
+                lease_token="test-lease",
+                now_ms=now_ms + 600_000,
             )
-            assert claim is not None
-            repos.news.publish_brief(
+            assert prepared is not None and prepared["completed_without_model"] is False
+            claim = prepared["claim"]
+            stories = prepared["top_stories"]
+            assert repos.news.start_brief_model(
                 run_id=claim["run_id"],
                 lease_owner=claim["lease_owner"],
-                fingerprint=fingerprint,
-                stories=candidates,
-                draft=NewsBriefDraft(
-                    lead="今日全球政策重点发生变化 [1]",
-                    lines=tuple(
-                        f"第{index}条：{story['representative_title']} [{index}]"
-                        for index, story in enumerate(candidates, 1)
+                lease_token=claim["lease_token"],
+                now_ms=now_ms + 600_001,
+            )
+            publication_id = repos.news.publish_brief(
+                claim=claim,
+                selection=prepared["selection"],
+                result=NewsBriefSynthesisResult(
+                    brief_kind="l1",
+                    quality="ok",
+                    world_brief="Central bank policy and global emergencies lead the public brief [1].",
+                    brief_story_lines=tuple(
+                        NewsBriefStoryLine(n=index, text=f"{story['primary_title']} [{index}]")
+                        for index, story in enumerate(stories, 1)
+                    ),
+                    sources=tuple(
+                        NewsBriefSource(
+                            title=story["primary_title"],
+                            source=story["primary_source"],
+                            url=story["primary_link"] or "",
+                            published_at_ms=story["primary_published_at_ms"],
+                        )
+                        for story in stories
                     ),
                     provider="fixture",
                     model="fixture-model",
-                    raw_response="{}",
+                    validation={"fixture": True},
                 ),
-                validation={
-                    "citation_index_lock": True,
-                    "citation_closure": True,
-                    "proper_noun_grounding": True,
-                    "no_cross_story_stitching": True,
-                    "story_count": len(candidates),
-                    "lead_fallback": False,
-                    "line_fallbacks": [],
-                    "grounding_failures": [],
-                    "model_line_coverage": len(candidates),
-                    "final_story_coverage": len(candidates),
-                },
-                now_ms=now_ms,
+                now_ms=now_ms + 600_002,
             )
+            assert publication_id is not None
 
         headers = {"Authorization": "Bearer secret"}
         sources_response = client.get("/api/news/sources", headers=headers)
@@ -683,7 +696,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "Major earthquake strikes coastal region",
         "Cyber attack disrupts regional infrastructure",
     }
-    assert story["source_count"] == 1
+    assert story["source_count"] == 2
     assert story["provider_evidence"] == {
         "item_id": story["representative_item_id"],
         "url": "https://example.test/story-1",
@@ -725,7 +738,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail["members"][0]["provider_record_id"]
     assert detail["members"][0]["provider_metadata"] == story["provider_evidence"]["provider_metadata"]
     assert detail["members_page"] == {
-        "returned_count": 1,
+        "returned_count": 2,
         "has_more": False,
         "next_cursor": None,
     }
@@ -734,10 +747,20 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
 
     assert brief_response.status_code == 200
     brief = brief_response.json()["data"]
-    assert brief["state"] == "ready"
+    assert brief["state"] == "current"
     assert len(brief["publication"]["selected_story_ids"]) == 3
-    assert brief["publication"]["locale"] == "zh-CN"
-    assert brief["publication"]["validation"]["citation_index_lock"] is True
+    assert brief["publication"]["locale"] == "en"
+    assert brief["publication"]["brief_kind"] == "l1"
+    assert brief["publication"]["validation"] == {"fixture": True}
+    assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["brief_story_lines"])
+    assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["sources"])
+    assert set(brief) == {
+        "state",
+        "target_fingerprint",
+        "pending_due_at_ms",
+        "publication",
+        "latest_run",
+    }
     assert unchanged_brief.status_code == 304
     assert status_response.status_code == 200
     disabled_push = status_response.json()["data"]["layers"]["push"]
@@ -845,9 +868,7 @@ def test_api_news_strips_wire_controls_and_prefers_bounded_explicit_description(
                     "This remaining block must not replace an explicit provider description."
                 ),
                 "description": (
-                    "<p>Officials confirmed the decision &amp; published implementation details "
-                    + ("x" * 500)
-                    + "</p>"
+                    "<p>Officials confirmed the decision &amp; published implementation details " + ("x" * 500) + "</p>"
                 ),
                 "newsType": "Reuters",
                 "engineType": "news",
@@ -879,10 +900,7 @@ def test_api_news_strips_wire_controls_and_prefers_bounded_explicit_description(
         "description_length": len(detail["members"][0]["description"]),
     } == {
         "title": "Central bank approves policy today",
-        "description": (
-            "Officials confirmed the decision & published implementation details "
-            + ("x" * 332)
-        ),
+        "description": ("Officials confirmed the decision & published implementation details " + ("x" * 332)),
         "description_length": 400,
     }
 
@@ -1004,8 +1022,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert {name: layer["status"] for name, layer in warming["layers"].items()} == {
         "ingest": "ready",
         "story": "ready",
-        "brief": "ready",
-        "translation": "ready",
+        "brief": "warming",
         "push": "warming",
     }
     assert warming["layers"]["push"]["initialized"] is False
@@ -1028,7 +1045,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
 
     assert unsigned_ready_response.status_code == 200
     unsigned_ready = unsigned_ready_response.json()["data"]
-    assert unsigned_ready["status"] == "ready"
+    assert unsigned_ready["status"] == "warming"
     assert unsigned_ready["layers"]["push"]["status"] == "ready"
     assert unsigned_ready["layers"]["push"]["reasons"] == []
     assert unsigned_ready["layers"]["push"]["feishu_signing_secret_configured"] is False
@@ -1061,7 +1078,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert disabled_history_response.status_code == 200
     disabled_history = disabled_history_response.json()["data"]
     disabled_push = disabled_history["layers"]["push"]
-    assert disabled_history["status"] == "ready"
+    assert disabled_history["status"] == "warming"
     assert disabled_push["status"] == "disabled"
     assert disabled_push["enabled"] is False
     assert disabled_push["initialized"] is True
@@ -1138,10 +1155,11 @@ def test_api_news_status_detects_and_clears_a_stalled_story_projection(tmp_path)
 
     assert live_response.status_code == 200
     live = live_response.json()["data"]
-    assert live["operating_state"] == "live"
+    assert live["operating_state"] == "recovering"
     assert live["last_success_at_ms"] == now_ms
     assert live["layers"]["story"]["unmaterialized_item_count"] == 0
     assert live["layers"]["story"]["oldest_unmaterialized_at_ms"] is None
+    assert live["layers"]["brief"]["public_state"] == "unavailable"
 
 
 def test_api_news_feed_derives_push_delivery_state_from_selected_provider_evidence(tmp_path):

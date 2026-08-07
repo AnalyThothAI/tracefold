@@ -13,7 +13,7 @@ from tracefold.app.cli.commands.queue_ops import handle_queue_resolve
 from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
 
-def test_operator_retry_requeues_retained_native_model_terminal_states() -> None:
+def test_operator_retry_requeues_retained_macro_model_terminal_state() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -35,9 +35,6 @@ def test_operator_retry_requeues_retained_native_model_terminal_states() -> None
                 assert payload["ok"] is True
                 assert payload["data"]["transition"]["requeued"] == 1
 
-        brief = conn.execute(
-            "SELECT status, attempt_count, next_due_at_ms FROM news_brief_runs WHERE fingerprint = 'brief-fp'"
-        ).fetchone()
         document = conn.execute(
             """
             SELECT status, attempt_count, next_due_at_ms
@@ -54,12 +51,8 @@ def test_operator_retry_requeues_retained_native_model_terminal_states() -> None
         ).fetchall()
         conn.commit()
 
-        assert brief == {"status": "retryable", "attempt_count": 0, "next_due_at_ms": 9_000}
         assert document == {"status": "retryable", "attempt_count": 0, "next_due_at_ms": 9_000}
-        assert [row["owner_key"] for row in resolved] == [
-            "macro_document_analysis",
-            "news_brief",
-        ]
+        assert [row["owner_key"] for row in resolved] == ["macro_document_analysis"]
         assert {row["operator_action"] for row in resolved} == {"retry"}
         assert {row["operator_reason"] for row in resolved} == {"operator verified provider recovery"}
     finally:
@@ -67,17 +60,6 @@ def test_operator_retry_requeues_retained_native_model_terminal_states() -> None
 
 
 def _insert_native_terminal_states(conn) -> list[str]:
-    conn.execute(
-        """
-        INSERT INTO news_brief_runs(
-          run_id, fingerprint, status, attempt_count,
-          candidate_story_count, candidate_source_count,
-          last_error, completed_at_ms, created_at_ms, updated_at_ms
-        )
-        VALUES ('brief-run-1', 'brief-fp', 'failed', 3, 3, 2,
-                'provider exhausted', 1_000, 100, 1_000)
-        """
-    )
     conn.execute(
         """
         INSERT INTO macro_documents(
@@ -104,11 +86,6 @@ def _insert_native_terminal_states(conn) -> list[str]:
     )
 
     rows = (
-        (
-            "news_brief",
-            "news_brief_runs",
-            "brief-fp",
-        ),
         (
             "macro_document_analysis",
             "macro_document_analysis_jobs",

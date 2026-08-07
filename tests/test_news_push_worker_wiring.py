@@ -87,6 +87,19 @@ def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> No
     assert "translator" not in parameters
 
 
+def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain() -> None:
+    wiring = inspect.getsource(workers._wire_components)
+
+    assert "configured_base_url" not in wiring
+    assert "configured_api_key" not in wiring
+    assert "configured_model" not in wiring
+    assert "news_brief_model" not in wiring.split("if settings.news.push.enabled:", 1)[0]
+    assert "ollama_base_url=_NEWS_OLLAMA_BASE_URL" in wiring
+    assert "openrouter_api_key=settings.llm.openrouter_api_key" in wiring
+    assert "groq_api_key=settings.llm.groq_api_key" in wiring
+    assert workers._NEWS_OLLAMA_BASE_URL == "http://host.docker.internal:11434/v1"
+
+
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
     calls: list[tuple[str, int | None]] = []
 
@@ -195,10 +208,7 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     )
 
     assert (components.news_push is not None) is expected_push
-    assert (components.news_title_translation is not None) is news_enabled
-    if components.news_title_translation is not None:
-        assert components.news_title_translation in components.models
-        assert (components.news_title_translation.translator is not None) is llm_configured
+    assert not hasattr(components, "news_title_translation")
     if expected_push:
         assert [name for name, _kwargs in constructed] == ["delivery"]
         assert components.news_push is not None
@@ -324,7 +334,6 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
                 collector=None,
                 news=None,
                 news_brief=None,
-                news_title_translation=None,
                 news_push=_Push(),
                 macro_source=None,
             ),  # type: ignore[arg-type]

@@ -294,37 +294,6 @@ def _projection_retry_transition(
     return transition
 
 
-def _retry_news_brief(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    del reason
-    target_key = _native_target_key(event)
-    row = repos.conn.execute(
-        """
-        UPDATE news_brief_runs
-           SET status = 'retryable',
-               attempt_count = 0,
-               lease_owner = NULL,
-               lease_expires_at_ms = NULL,
-               heartbeat_at_ms = NULL,
-               last_error = NULL,
-               next_due_at_ms = %s,
-               completed_at_ms = NULL,
-               updated_at_ms = %s
-         WHERE fingerprint = %s
-           AND status = 'failed'
-        RETURNING run_id, fingerprint, next_due_at_ms
-        """,
-        (int(now_ms), int(now_ms), target_key),
-    ).fetchone()
-    _require_requeued(row, "news_brief_retry_not_requeued")
-    return {"requeued": 1, "run": dict(row)}
-
-
 def _retry_macro_document_analysis(
     repos: Any,
     event: dict[str, Any],
@@ -404,7 +373,6 @@ QUEUE_RETRY_TRANSITIONS = {
     ("resolution_refresh", "token_discovery_dirty_lookup_keys"): _retry_discovery_lookup_key,
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
-    ("news_brief", "news_brief_runs"): _retry_news_brief,
     (
         "macro_document_analysis",
         "macro_document_analysis_jobs",

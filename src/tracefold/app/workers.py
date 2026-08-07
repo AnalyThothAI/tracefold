@@ -30,10 +30,7 @@ from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntim
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.integrations.news_ai import (
-    OpenAiCompatibleNewsTitleTranslator,
-    ProviderChainNewsBriefPublisher,
-)
+from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
@@ -64,7 +61,6 @@ from tracefold.news import (
     NewsBriefCandidate,
     NewsStoryProjection,
     NewsStoryPush,
-    NewsStoryTitleTranslationCandidate,
     opennews_source,
 )
 from tracefold.platform.config.settings import Settings
@@ -84,11 +80,6 @@ _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
 _MODEL_MAX_TOKENS = 6_000
 _NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
-_NEWS_OLLAMA_MODEL = "deepseek-r1:8b"
-_NEWS_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-_NEWS_OPENROUTER_MODEL = "deepseek/deepseek-v4-flash"
-_NEWS_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_NEWS_GROQ_MODEL = "llama-3.3-70b-versatile"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
 _NEWS_PUSH_IDLE_SECONDS = 5.0
@@ -158,7 +149,6 @@ class _Components:
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
-    news_title_translation: NewsStoryTitleTranslationCandidate | None
     news_push: NewsStoryPush | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
@@ -744,7 +734,6 @@ async def _wire_components(
     news: NewsAcquisition | None = None
     news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
-    news_title_translation: NewsStoryTitleTranslationCandidate | None = None
     news_push: NewsStoryPush | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
@@ -761,21 +750,12 @@ async def _wire_components(
             opennews_ws_client=opennews_ws,
         )
         news_story = NewsStoryProjection(db=db, cpu=cpu)
-        configured_base_url = settings.llm.base_url or ("https://api.deepseek.com/v1" if settings.llm.api_key else "")
         news_brief = NewsBriefCandidate(
             db=db,
             model_adapter=model_adapter,
             publisher=ProviderChainNewsBriefPublisher(
-                configured_base_url=configured_base_url,
-                configured_api_key=settings.llm.api_key,
-                configured_model=settings.llm.news_brief_model,
                 ollama_base_url=_NEWS_OLLAMA_BASE_URL,
-                ollama_model=_NEWS_OLLAMA_MODEL,
-                openrouter_base_url=_NEWS_OPENROUTER_BASE_URL,
-                openrouter_model=_NEWS_OPENROUTER_MODEL,
                 openrouter_api_key=settings.llm.openrouter_api_key,
-                groq_base_url=_NEWS_GROQ_BASE_URL,
-                groq_model=_NEWS_GROQ_MODEL,
                 groq_api_key=settings.llm.groq_api_key,
                 total_timeout_seconds=_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS,
             ),
@@ -783,22 +763,6 @@ async def _wire_components(
             stable_order=20,
         )
         model_candidates.append(news_brief)
-        news_title_translation = NewsStoryTitleTranslationCandidate(
-            db=db,
-            model_adapter=model_adapter,
-            translator=(
-                OpenAiCompatibleNewsTitleTranslator(
-                    base_url=configured_base_url,
-                    api_key=settings.llm.api_key,
-                    model=settings.llm.news_brief_model,
-                )
-                if settings.llm.api_key
-                else None
-            ),
-            runtime_id=runtime_id,
-            stable_order=25,
-        )
-        model_candidates.append(news_title_translation)
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
             signing_secret = settings.news.push.feishu_signing_secret
@@ -814,7 +778,9 @@ async def _wire_components(
                     signing_secret=signing_secret,
                     finite_operations=finite,
                     translation_enabled=translation_enabled,
-                    translation_base_url=configured_base_url or None,
+                    translation_base_url=(
+                        settings.llm.base_url or "https://api.deepseek.com/v1" if translation_enabled else None
+                    ),
                     translation_api_key=translation_api_key,
                     translation_engine=(settings.llm.news_brief_model if translation_enabled else None),
                 ),
@@ -940,7 +906,6 @@ async def _wire_components(
         news=news,
         news_story=news_story,
         news_brief=news_brief,
-        news_title_translation=news_title_translation,
         news_push=news_push,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
@@ -984,8 +949,6 @@ async def _graceful_cleanup(
             await _within(components.news.close(), started_at)
         if components.news_brief is not None:
             await _within(components.news_brief.close(), started_at)
-        if components.news_title_translation is not None:
-            await _within(components.news_title_translation.close(), started_at)
         if components.news_push is not None:
             await _within(components.news_push.close(), started_at)
         if components.macro_source is not None:

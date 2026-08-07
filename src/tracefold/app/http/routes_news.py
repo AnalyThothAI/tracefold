@@ -149,7 +149,6 @@ def get_news_status(request: Request) -> JSONResponse:
         data = _news_interface(repos).health(
             now_ms=now_ms,
             push_enabled=push_settings.enabled,
-            title_translation_configured=bool(runtime.settings.llm.api_key),
             feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
             feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
             workers_state=workers_state,
