@@ -34,6 +34,15 @@ describe("News feed density contract", () => {
     expect(cssRule(feedCss, ".news-story-primary")).toContain("padding: 0.52rem 0.7rem 0.42rem");
     expect(cssRule(feedCss, ".news-story-why")).toContain("padding: 0.26rem 0.7rem");
   });
+
+  it("keeps the public Brief cards shrinkable and wraps its mobile header", () => {
+    const briefCss = readSource("src/features/news/newsBrief.css");
+    const responsiveCss = readSource("src/features/news/newsDetailResponsive.css");
+
+    expect(cssRule(briefCss, ".news-brief-story")).toContain("min-width: 0");
+    expect(cssRule(briefCss, ".news-brief-story")).toContain("overflow-wrap: anywhere");
+    expect(cssRule(responsiveCss, ".news-brief-toolbar")).toContain("flex-direction: column");
+  });
 });
 
 function readSource(relativePath: string): string {

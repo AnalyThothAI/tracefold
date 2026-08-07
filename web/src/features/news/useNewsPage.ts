@@ -13,15 +13,14 @@ export type NewsPushDeliveryState = NonNullable<
   NewsSchemas["NewsStoryData"]["push_delivery_state"]
 >;
 export type NewsStory = NewsSchemas["NewsStoryData"];
-export type NewsTitleTranslation = NonNullable<NewsStory["title_translation"]>;
 export type NewsFeed = NewsSchemas["NewsFeedData"];
 export type NewsStoryMember = NewsSchemas["NewsStoryMemberData"];
 export type NewsStoryDetail = NewsSchemas["NewsStoryDetailData"];
 export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
-export type WorldBrief = NewsSchemas["NewsBriefData"];
+export type BriefTopStory = NewsSchemas["NewsBriefTopStoryData"];
+export type NewsBrief = NewsSchemas["NewsBriefData"];
 export type NewsOperatingState = NewsSchemas["NewsStatusData"]["operating_state"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
-export type NewsTranslationLayer = NewsStatus["layers"]["translation"];
 
 export type NewsFeedFilters = {
   category: string | null;
@@ -97,7 +96,7 @@ export const useNewsBriefWithToken = (token: string) =>
     queryKey: queryKeys.newsBrief(),
     queryFn: async () =>
       (
-        await getApi<WorldBrief>("/api/news/brief", {
+        await getApi<NewsBrief>("/api/news/brief", {
           etagKey: "news-brief",
           token,
         })

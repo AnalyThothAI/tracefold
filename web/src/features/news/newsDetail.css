@@ -8,8 +8,7 @@
   .news-story-hero,
   .news-detail-card,
   .news-audit-disclosure,
-  .news-brief-document,
-  .news-brief-history {
+  .news-brief-document {
     padding: 1rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -63,15 +62,6 @@
     -webkit-line-clamp: 4;
   }
 
-  .news-story-hero > .news-original-title {
-    overflow: hidden;
-    max-width: 82ch;
-    margin-top: 0.45rem;
-    font-size: 0.78rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .news-title-expansion {
     max-width: 82ch;
     margin-top: 0.55rem;
@@ -98,10 +88,6 @@
     margin: 0.55rem 0 0;
     line-height: 1.55;
     overflow-wrap: anywhere;
-  }
-
-  .news-title-expansion div {
-    margin-top: 0.65rem;
   }
 
   .news-story-lead {
@@ -159,8 +145,7 @@
   }
 
   .news-evidence-section h2,
-  .news-audit-content h2,
-  .news-brief-lead h2 {
+  .news-audit-content h2 {
     margin: 0.18rem 0 0;
     font-size: 0.9rem;
   }
@@ -253,8 +238,7 @@
   }
 
   .news-provider-disclosure > summary,
-  .news-audit-disclosure > summary,
-  .news-brief-history > summary {
+  .news-audit-disclosure > summary {
     color: var(--muted-foreground);
     cursor: pointer;
     font: 0.7rem var(--font-mono);

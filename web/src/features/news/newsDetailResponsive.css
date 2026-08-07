@@ -34,6 +34,8 @@
 
     .news-brief-toolbar {
       align-items: flex-start;
+      flex-direction: column;
+      gap: 0.4rem;
     }
   }
 }

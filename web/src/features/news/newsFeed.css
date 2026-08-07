@@ -91,24 +91,6 @@
     color: var(--primary);
   }
 
-  .news-original-title,
-  .news-member-original {
-    overflow: hidden;
-    margin: 0.08rem 0 0;
-    color: var(--muted-foreground);
-    font-size: 0.66rem;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .news-translation-unavailable {
-    display: inline-block;
-    margin-top: 0.16rem;
-    color: var(--muted-foreground);
-    font-size: 0.66rem;
-  }
-
   .news-story-summary {
     display: -webkit-box;
     overflow: hidden;

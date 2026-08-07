@@ -12,6 +12,8 @@ import "./newsDetailResponsive.css";
 import "./newsFeed.css";
 import {
   type BriefPublication,
+  type BriefTopStory,
+  type NewsBrief,
   type NewsFeed,
   type NewsLevel,
   type NewsProviderCoin,
@@ -21,8 +23,6 @@ import {
   type NewsStory,
   type NewsStoryDetail,
   type NewsStoryMember,
-  type NewsTitleTranslation,
-  type NewsTranslationLayer,
   useNewsBriefWithToken,
   useNewsFeedWithToken,
   useNewsStatusWithToken,
@@ -268,7 +268,7 @@ function NewsSectionTabs({
         全部
       </Link>
       <Link aria-current={active === "brief" ? "page" : undefined} to={newsBriefPath()}>
-        中文简报
+        公共全球简报
       </Link>
     </nav>
   );
@@ -429,8 +429,7 @@ function NewsInlineStatus({
   status?: NewsStatus;
 }) {
   const source = status?.layers.ingest.opennews ?? null;
-  const translation = getTranslationLayer(status);
-  const readerStatus = readerFacingNewsStatus(error, status, translation);
+  const readerStatus = readerFacingNewsStatus(error, status);
   const lastSuccessAt = readerLastSuccessAt(status);
   const ingestReasons = status?.layers.ingest.reasons ?? [];
   const recoveringOpenNewsGap = Boolean(source?.live_connected && source.gap_unclosed);
@@ -472,57 +471,6 @@ function NewsInlineStatus({
             </dl>
           </section>
         ) : null}
-        {translation ? (
-          <section>
-            <h2>中文标题翻译</h2>
-            <dl>
-              <div>
-                <dt>服务状态</dt>
-                <dd>{translationStateLabel(translation)}</dd>
-              </div>
-              <div>
-                <dt>当前就绪</dt>
-                <dd>
-                  {translation.ready_count}/{translation.eligible_count}
-                </dd>
-              </div>
-              <div>
-                <dt>处理中</dt>
-                <dd>{translation.pending_count + translation.retry_count}</dd>
-              </div>
-              <div>
-                <dt>失败</dt>
-                <dd>{translation.failed_count}</dd>
-              </div>
-              {translation.unavailable_count ? (
-                <div>
-                  <dt>不可翻译</dt>
-                  <dd>{translation.unavailable_count}</dd>
-                </div>
-              ) : null}
-              <div>
-                <dt>24h 成功</dt>
-                <dd>
-                  {translation.rolling_24h.succeeded}/{translation.rolling_24h.attempted}
-                </dd>
-              </div>
-              {translation.rolling_24h.success_ratio != null ? (
-                <div>
-                  <dt>24h 成功率</dt>
-                  <dd>{formatRatio(translation.rolling_24h.success_ratio)}</dd>
-                </div>
-              ) : null}
-              {translation.rolling_24h.latency_p95_ms != null ? (
-                <div>
-                  <dt>P95 耗时</dt>
-                  <dd>{formatDuration(translation.rolling_24h.latency_p95_ms)}</dd>
-                </div>
-              ) : null}
-            </dl>
-            <p>只统计全球新闻列表的中文标题翻译，与飞书推送翻译相互独立。</p>
-            {translation.reasons.length ? <p>部分标题翻译暂不可用，系统会继续恢复。</p> : null}
-          </section>
-        ) : null}
         {error || source?.last_error || hasIngestWarning || status?.layers.story.reasons.length ? (
           <p className="news-status-warning">
             数据更新遇到异常，系统正在自动恢复。必要时请通过 CLI 查看诊断代码。
@@ -536,10 +484,7 @@ function NewsInlineStatus({
 function StoryCard({ story }: { story: NewsStory }) {
   const providerEvidence = story.provider_evidence;
   const metadata = providerEvidence?.provider_metadata ?? {};
-  const sourceTitle = story.title;
-  const translatedTitle = readyTranslatedTitle(story);
-  const translationUnavailable = isTranslationUnavailable(story);
-  const displayTitle = translatedTitle ?? sourceTitle;
+  const displayTitle = story.title;
   const summary = validSummary(story.description, displayTitle);
   const originalUrl = story.url;
   const coins = providerCoinSymbols(metadata);
@@ -578,12 +523,6 @@ function StoryCard({ story }: { story: NewsStory }) {
         </header>
         <Link className="news-story-title" to={newsStoryPath(story.story_id)}>
           <h2>{displayTitle}</h2>
-          {translatedTitle && translatedTitle !== sourceTitle ? (
-            <p className="news-original-title">{sourceTitle}</p>
-          ) : null}
-          {translationUnavailable ? (
-            <span className="news-translation-unavailable">暂无译文</span>
-          ) : null}
         </Link>
         {summary ? <p className="news-story-summary">{summary}</p> : null}
         <div className="news-story-signals">
@@ -732,10 +671,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
 }
 
 function StoryHero({ story }: { story: NewsStory }) {
-  const sourceTitle = story.title;
-  const translatedTitle = readyTranslatedTitle(story);
-  const translationUnavailable = isTranslationUnavailable(story);
-  const displayTitle = translatedTitle ?? sourceTitle;
+  const displayTitle = story.title;
   const summary = validSummary(story.description, displayTitle);
   const metadata = story.provider_evidence?.provider_metadata ?? {};
   const originalUrl = story.url;
@@ -745,8 +681,6 @@ function StoryHero({ story }: { story: NewsStory }) {
   const displayTitleOverflows = useTitleOverflow(titleRef, displayTitle);
   const displayTitleIsLong =
     displayTitle.length > DETAIL_TITLE_EXPANSION_THRESHOLD || displayTitleOverflows;
-  const sourceTitleIsLong =
-    translatedTitle != null && sourceTitle.length > DETAIL_TITLE_EXPANSION_THRESHOLD;
   return (
     <header className="news-story-hero">
       <div className="news-story-badges">
@@ -764,28 +698,14 @@ function StoryHero({ story }: { story: NewsStory }) {
       <h1 className="is-clamped" ref={titleRef}>
         {displayTitle}
       </h1>
-      {translatedTitle && translatedTitle !== sourceTitle ? (
-        <p className="news-original-title" title={sourceTitle}>
-          {sourceTitle}
-        </p>
-      ) : null}
-      {displayTitleIsLong || sourceTitleIsLong ? (
+      {displayTitleIsLong ? (
         <details className="news-title-expansion">
           <summary>
             <span className="news-title-expand-label">展开完整标题</span>
             <span className="news-title-collapse-label">收起完整标题</span>
           </summary>
           {displayTitleIsLong ? <p>{displayTitle}</p> : null}
-          {sourceTitleIsLong ? (
-            <div>
-              <b>原文</b>
-              <p>{sourceTitle}</p>
-            </div>
-          ) : null}
         </details>
-      ) : null}
-      {translationUnavailable ? (
-        <span className="news-translation-unavailable">暂无译文</span>
       ) : null}
       {summary ? <p className="news-story-lead">{summary}</p> : null}
       <div className="news-story-hero-footer">
@@ -988,105 +908,157 @@ function WorldBriefRoute({ token }: { token: string }) {
   const brief = query.data;
   return (
     <section
-      aria-label="中文新闻简报"
+      aria-label="公共全球简报"
       className="radar-panel news-panel news-detail-shell"
       data-page-archetype="case"
     >
       <NewsSectionTabs active="brief" searchParams={searchParams} />
       <header className="news-toolbar news-brief-toolbar">
         <div>
-          <span className="news-eyebrow">中文研判</span>
-          <h1>全球新闻简报</h1>
+          <span className="news-eyebrow">PUBLIC WORLD BRIEF</span>
+          <h1>公共全球简报</h1>
+          <p>服务端确定性精选，AI 仅作为独立增强层。</p>
         </div>
         <span className="news-brief-state" data-state={brief?.state ?? "unavailable"}>
           {briefStateLabel(brief?.state)}
         </span>
       </header>
       {query.isLoading && !brief ? (
-        <PageState.Loading layout="panel" rows={5} label="正在读取中文简报" />
+        <PageState.Loading layout="panel" rows={5} label="正在读取公共全球简报" />
       ) : null}
       {query.isError && !brief ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
       {brief && !brief.publication ? (
         <PageState.Empty
-          hint={
-            brief.latest_run?.last_error ||
-            `当前 ${brief.candidate_story_count} 个新闻事件、${brief.candidate_source_count} 个来源；至少需要 3 个新闻事件和 2 个来源。`
-          }
-          title={
-            brief.state === "failed"
-              ? "简报生成失败"
-              : brief.state === "insufficient_material"
-                ? "材料还不足"
-                : "尚无中文简报"
-          }
+          hint={briefUnavailableHint(brief.pending_due_at_ms)}
+          title="尚无公共全球简报"
         />
       ) : null}
       {brief?.publication ? (
         <BriefDocument publication={brief.publication} state={brief.state} />
       ) : null}
-      {brief?.history.length ? (
-        <details className="news-brief-history">
-          <summary>历史发布 · {brief.history.length}</summary>
-          <div className="news-brief-history-list">
-            {brief.history.map((publication) => (
-              <div key={publication.publication_id}>
-                <time>{absoluteTime(publication.published_at_ms)}</time>
-                <span>{publication.model}</span>
-                <span>已验证</span>
-              </div>
-            ))}
-          </div>
-        </details>
-      ) : null}
     </section>
   );
 }
 
-function BriefDocument({ publication, state }: { publication: BriefPublication; state: string }) {
+function BriefDocument({
+  publication,
+  state,
+}: {
+  publication: BriefPublication;
+  state: NewsBrief["state"];
+}) {
   return (
     <article className="news-brief-document">
-      <header>
-        <span>{state === "stale_fallback" ? "材料已变化，展示上一版" : "当前发布"}</span>
+      <header className="news-brief-publication-meta">
+        <span>{state === "last_known_good" ? "完整快照 · 保留展示" : "不可变发布快照"}</span>
+        <p>发布 {absoluteTime(publication.published_at_ms)}</p>
         <p>
-          证据截止 {absoluteTime(publication.evidence_cutoff_at_ms)} · 发布{" "}
-          {absoluteTime(publication.published_at_ms)}
+          来源时间 {absoluteTime(publication.source_age_range.oldest_ms)} 至{" "}
+          {absoluteTime(publication.source_age_range.newest_ms)}
         </p>
       </header>
-      <section className="news-brief-lead">
-        <h2>总览</h2>
-        <p>{publication.lead}</p>
+      <section aria-labelledby="news-brief-top-stories" className="news-brief-top-stories">
+        <header>
+          <div>
+            <span className="news-eyebrow">SERVER-RANKED</span>
+            <h2 id="news-brief-top-stories">公开重点新闻</h2>
+          </div>
+          <span>{publication.top_stories.length} 个新闻事件 · 严格按服务器顺序</span>
+        </header>
+        <ol>
+          {publication.top_stories.map((story, index) => (
+            <BriefTopStoryCard index={index + 1} key={story.story_id} story={story} />
+          ))}
+        </ol>
       </section>
-      <ol className="news-brief-lines">
-        {publication.lines.map((line, index) => {
-          const source = publication.sources[index];
-          const sourceUrl = validExternalUrl(source?.url);
-          return (
-            <li key={source?.story_id ?? index}>
-              <p>{line}</p>
-              {source ? (
-                <div>
-                  <Link to={newsStoryPath(source.story_id)}>查看证据</Link>
-                  {sourceUrl ? (
-                    <a href={sourceUrl} rel="noreferrer" target="_blank">
-                      {source.source}
-                      <ExternalLink aria-hidden />
-                    </a>
-                  ) : (
-                    <span>{source.source}</span>
-                  )}
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-      <footer>
-        {publication.provider}/{publication.model} · 引用锁定{" "}
-        {publication.validation.citation_index_lock ? "通过" : "失败"}
-      </footer>
+      <BriefEnhancement publication={publication} />
     </article>
+  );
+}
+
+function BriefTopStoryCard({ index, story }: { index: number; story: BriefTopStory }) {
+  const primaryLink = validExternalUrl(story.primary_link);
+  return (
+    <li>
+      <article className="news-brief-story" data-testid="brief-top-story">
+        <header>
+          <span className="news-brief-rank">#{index}</span>
+          <span data-threat={story.threat_level}>{publicThreatLabel(story.threat_level)}</span>
+          <span>{publicCategoryLabel(story.category)}</span>
+        </header>
+        <h2>{story.primary_title}</h2>
+        <div className="news-brief-story-meta">
+          <b>{story.primary_source}</b>
+          <time dateTime={new Date(story.primary_published_at_ms).toISOString()}>
+            主要来源 {relativeTime(story.primary_published_at_ms)}
+          </time>
+          <span>来源更新 {relativeTime(story.last_updated_ms)}</span>
+          <span>{story.source_count} 条报道</span>
+          <span>{story.unique_source_count} 家独立来源</span>
+        </div>
+        <p className="news-brief-sources">{story.sources.join("、")}</p>
+        <div className="news-brief-story-actions">
+          <Link to={newsStoryPath(story.story_id)}>查看新闻事件</Link>
+          {primaryLink ? (
+            <a href={primaryLink} rel="noreferrer" target="_blank">
+              阅读主要来源
+              <ExternalLink aria-hidden />
+            </a>
+          ) : (
+            <span>无主要来源链接</span>
+          )}
+        </div>
+        <details className="news-brief-members">
+          <summary>相关标题 · {story.member_titles.length}</summary>
+          <ul>
+            {story.member_titles.map((title, memberIndex) => (
+              <li key={`${story.story_id}:${memberIndex}`}>{title}</li>
+            ))}
+          </ul>
+        </details>
+      </article>
+    </li>
+  );
+}
+
+function BriefEnhancement({ publication }: { publication: BriefPublication }) {
+  if (publication.brief_kind === "none") {
+    return (
+      <section className="news-brief-no-enhancement">
+        <span>本版没有 AI 增强</span>
+      </section>
+    );
+  }
+  const kindLabel = publication.brief_kind === "l1" ? "L1 · 完整校验" : "L2 · 降级概览";
+  return (
+    <section aria-labelledby="news-brief-enhancement" className="news-brief-enhancement">
+      <header>
+        <div>
+          <span className="news-eyebrow">AI ENHANCEMENT</span>
+          <h2 id="news-brief-enhancement">AI 增强概览</h2>
+        </div>
+        <span>{kindLabel}</span>
+      </header>
+      <p className="news-brief-world-brief">{publication.world_brief}</p>
+      {publication.brief_kind === "l1" && publication.brief_story_lines.length ? (
+        <ol aria-label="AI 新闻事件摘要" className="news-brief-lines">
+          {publication.brief_story_lines.map((line) => {
+            const story = publication.top_stories[line.n - 1];
+            return (
+              <li key={line.n}>
+                <p>{line.text}</p>
+                {story ? <Link to={newsStoryPath(story.story_id)}>查看新闻事件</Link> : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      <footer>
+        {publication.provider}/{publication.model}
+      </footer>
+    </section>
   );
 }
 
@@ -1145,24 +1117,6 @@ function normalizeFacets(value: unknown): Facet[] {
 function withSelectedFacet(facets: Facet[], selected: string | null): Facet[] {
   if (!selected || facets.some((facet) => facet.value === selected)) return facets;
   return [{ count: 0, label: selected, value: selected }, ...facets];
-}
-
-function readyTranslatedTitle(story: NewsStory): string | null {
-  const translation = exactTitleTranslation(story);
-  if (!translation || translation.state !== "ready" || !translation.title_zh) {
-    return null;
-  }
-  return translation.title_zh;
-}
-
-function isTranslationUnavailable(story: NewsStory): boolean {
-  const translation = exactTitleTranslation(story);
-  return translation?.state === "failed" || translation?.state === "unavailable";
-}
-
-function exactTitleTranslation(story: NewsStory): NewsTitleTranslation | null {
-  const translation = story.title_translation;
-  return translation?.source_title === story.title ? translation : null;
 }
 
 function validSummary(value: string | null | undefined, title: string): string | null {
@@ -1329,10 +1283,6 @@ function hasProviderMetadata(metadata: NewsProviderMetadata): boolean {
   );
 }
 
-function getTranslationLayer(status?: NewsStatus): NewsTranslationLayer | null {
-  return status?.layers.translation ?? null;
-}
-
 function localizedSignal(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (["long", "bullish", "positive", "buy"].includes(normalized)) return "偏多";
@@ -1341,17 +1291,9 @@ function localizedSignal(value: string): string {
   return value;
 }
 
-function translationStateLabel(translation: NewsTranslationLayer): string {
-  if (!translation.configured) return "未启用";
-  if (translation.status === "ready") return "正常";
-  if (translation.status === "warming") return "启动中";
-  return "部分异常";
-}
-
 function readerFacingNewsStatus(
   error: boolean,
   status: NewsStatus | undefined,
-  translation: NewsTranslationLayer | null,
 ): { label: string; state: "live" | "recovering" | "stalled" } {
   if (error) return { label: "状态暂不可用", state: "stalled" };
   if (!status) return { label: "正在检查新闻", state: "recovering" };
@@ -1368,12 +1310,6 @@ function readerFacingNewsStatus(
   const factStates = [status.layers.ingest.status, status.layers.story.status];
   if (factStates.includes("warming")) {
     return { label: "新闻数据恢复中", state: "recovering" };
-  }
-  if (translation?.status === "warming") {
-    return { label: "中文标题补齐中", state: "live" };
-  }
-  if (translation?.status === "degraded") {
-    return { label: "部分中文标题暂不可用", state: "recovering" };
   }
   return { label: "新闻已同步", state: "live" };
 }
@@ -1409,13 +1345,42 @@ function readerLastSuccessAt(status?: NewsStatus): number | null {
   return candidates.length ? Math.min(...candidates) : null;
 }
 
-function briefStateLabel(state?: string): string {
-  if (state === "ready") return "已就绪";
-  if (state === "running") return "正在生成";
-  if (state === "stale_fallback") return "展示上一版";
-  if (state === "insufficient_material") return "材料不足";
-  if (state === "failed") return "生成失败";
+function briefStateLabel(state?: NewsBrief["state"]): string {
+  if (state === "current") return "当前公开快报";
+  if (state === "degraded") return "当前快报 · AI 增强降级";
+  if (state === "last_known_good") return "上一份完整公开快报";
   return "不可用";
+}
+
+function briefUnavailableHint(pendingDueAtMs: number | null): string {
+  return pendingDueAtMs == null
+    ? "等待服务端发布首份完整快照。"
+    : `服务端预计在 ${absoluteTime(pendingDueAtMs)} 后再次评估。`;
+}
+
+function publicThreatLabel(value: BriefTopStory["threat_level"]): string {
+  const labels: Record<BriefTopStory["threat_level"], string> = {
+    critical: "严重",
+    elevated: "升高",
+    high: "高",
+    moderate: "中等",
+  };
+  return labels[value];
+}
+
+function publicCategoryLabel(value: BriefTopStory["category"]): string {
+  const labels: Record<BriefTopStory["category"], string> = {
+    conflict: "冲突",
+    crisis: "危机",
+    economic: "经济",
+    general: "综合",
+    geopolitical: "地缘政治",
+    natural_disaster: "自然灾害",
+    political: "政治",
+    unrest: "动荡",
+    violence: "暴力",
+  };
+  return labels[value];
 }
 
 function relativeTime(value: number): string {
@@ -1442,14 +1407,6 @@ function formatProviderCoin(coin: NewsProviderCoin): string {
     coin.grade ? `等级 ${coin.grade}` : "",
   ].filter(Boolean);
   return annotations.length ? `${identity} · ${annotations.join(" · ")}` : identity;
-}
-
-function formatRatio(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
-function formatDuration(value: number): string {
-  return value < 1_000 ? `${Math.round(value)} ms` : `${(value / 1_000).toFixed(1)} 秒`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,10 +1,11 @@
 import type {
   BriefPublication,
+  BriefTopStory,
+  NewsBrief,
   NewsFeed,
   NewsStatus,
   NewsStory,
   NewsStoryDetail,
-  WorldBrief,
 } from "@features/news/useNewsPage";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -52,7 +53,6 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
     title: "Central banks respond to a new global policy shock",
     url: "https://www.reuters.com/world/story",
     ...overrides,
-    title_translation: overrides.title_translation ?? null,
   };
 }
 
@@ -124,68 +124,143 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
 export function newsBriefPublicationFixture(
   overrides: Partial<BriefPublication> = {},
 ): BriefPublication {
+  const topStories = [
+    newsBriefTopStoryFixture(),
+    newsBriefTopStoryFixture({
+      category: "natural_disaster",
+      effective_importance_score: 404,
+      importance_score: 418,
+      is_alert: false,
+      last_updated_ms: NEWS_NOW_MS - 1_800_000,
+      member_titles: [
+        "Typhoon makes landfall near a major port",
+        "Coastal communities prepare for severe winds",
+      ],
+      primary_link: null,
+      primary_published_at_ms: NEWS_NOW_MS - 2_400_000,
+      primary_source: "NHK",
+      primary_title: "Typhoon makes landfall near a major port",
+      source_count: 2,
+      sources: ["NHK"],
+      story_id: "story-typhoon",
+      threat_level: "elevated",
+      unique_source_count: 1,
+      upstream_importance_score: 179,
+    }),
+  ];
   return {
-    evidence_cutoff_at_ms: NEWS_NOW_MS - 30_000,
-    fingerprint: "brief-fingerprint",
-    lead: "全球政策冲击正在改变央行预期 [1]",
-    lines: ["主要央行回应新的全球政策冲击 [1]"],
-    locale: "zh-CN",
-    model: "deepseek-v4-flash",
-    prompt_version: "news-world-brief-v1",
-    provider: "openrouter",
-    publication_id: "brief-publication",
+    brief_kind: "l1",
+    brief_story_lines: [
+      { n: 1, text: "Ceasefire talks resume as delegations return [1]" },
+      { n: 2, text: "A typhoon makes landfall near a major port [2]" },
+    ],
+    composer_version: "news-public-insights-composer-v1",
+    created_at_ms: NEWS_NOW_MS,
+    identity_version: "news-story-identity-v2",
+    locale: "en",
+    model: "llama3.1:8b",
+    prompt_version: "news-public-insights-prompt-v1",
+    provider: "ollama",
+    provenance: {
+      projection_revision: "projection-revision",
+      selection_stats: {
+        admissibility_dropped: 2,
+        brief_eligible_considered: 1,
+        brief_eligible_promoted: false,
+        considered: 4,
+        overflow_dropped: 0,
+        source_cap_dropped: 0,
+      },
+      selector_evaluated_at_ms: NEWS_NOW_MS - 3_600_000,
+    },
+    publication_id: "a".repeat(64),
     published_at_ms: NEWS_NOW_MS,
-    schema_version: "news-world-brief-v1",
-    selected_story_ids: ["story-global-policy"],
+    quality: "ok",
+    schema_version: "news-public-insights-v1",
+    selected_story_ids: topStories.map((story) => story.story_id),
+    selection_fingerprint: "b".repeat(64),
+    selector_version: "news-public-selector-v1",
+    source_age_range: {
+      newest_ms: NEWS_NOW_MS - 900_000,
+      oldest_ms: NEWS_NOW_MS - 2_400_000,
+    },
     sources: [
       {
-        n: 1,
-        source: "Reuters World",
-        story_id: "story-global-policy",
-        title: "Central banks respond to a new global policy shock",
-        url: "https://www.reuters.com/world/story",
+        published_at_ms: NEWS_NOW_MS - 1_200_000,
+        source: "Reuters",
+        title: "Ceasefire talks resume as delegations return",
+        url: "https://www.reuters.com/world/ceasefire",
+      },
+      {
+        published_at_ms: NEWS_NOW_MS - 2_400_000,
+        source: "NHK",
+        title: "Typhoon makes landfall near a major port",
+        url: "",
       },
     ],
+    target_fingerprint: "c".repeat(64),
+    top_stories: topStories,
     validation: {
-      citation_index_lock: true,
       citation_closure: true,
-      final_story_coverage: 1,
-      grounding_failures: [],
-      lead_fallback: false,
-      line_fallbacks: [],
-      model_line_coverage: 1,
-      no_cross_story_stitching: true,
-      proper_noun_grounding: true,
-      story_count: 1,
     },
-    workflow_version: "news-world-brief-v1",
+    workflow_version: "news-public-insights-workflow-v1",
+    world_brief: "Ceasefire talks and severe weather lead the public news agenda [1][2].",
     ...overrides,
   };
 }
 
-export function newsGlobalBriefFixture(overrides: Partial<WorldBrief> = {}): WorldBrief {
+export function newsBriefTopStoryFixture(overrides: Partial<BriefTopStory> = {}): BriefTopStory {
+  return {
+    category: "geopolitical",
+    corroboration_source_count: 2,
+    effective_importance_score: 132,
+    entity_corroboration: true,
+    importance_score: 146,
+    is_alert: true,
+    last_updated_ms: NEWS_NOW_MS - 900_000,
+    member_titles: [
+      "Ceasefire talks resume as delegations return",
+      "Delegations return to the negotiating table",
+      "Regional leaders welcome renewed talks",
+    ],
+    primary_link: "https://www.reuters.com/world/ceasefire",
+    primary_published_at_ms: NEWS_NOW_MS - 1_200_000,
+    primary_source: "Reuters",
+    primary_title: "Ceasefire talks resume as delegations return",
+    source_count: 3,
+    source_tier: 1,
+    sources: ["Reuters", "Associated Press"],
+    story_id: "story-ceasefire",
+    threat_level: "high",
+    unique_source_count: 2,
+    upstream_importance_score: 91,
+    ...overrides,
+  };
+}
+
+export function newsGlobalBriefFixture(overrides: Partial<NewsBrief> = {}): NewsBrief {
   const publication = newsBriefPublicationFixture();
   return {
-    candidate_source_count: 4,
-    candidate_story_count: 1,
-    history: [publication],
     latest_run: {
-      attempt_count: 1,
-      candidate_source_count: 4,
-      candidate_story_count: 1,
       completed_at_ms: NEWS_NOW_MS,
       created_at_ms: NEWS_NOW_MS,
-      fingerprint: "brief-fingerprint",
-      heartbeat_at_ms: NEWS_NOW_MS,
-      last_error: null,
+      failure_count: 0,
+      last_attempt_at_ms: NEWS_NOW_MS - 5_000,
+      last_error_code: null,
       lease_expires_at_ms: null,
+      model_outcome: "ok",
+      next_due_at_ms: null,
+      pointer_action: "advance_ok",
       run_id: "brief-run",
-      status: "ready",
+      selection_fingerprint: publication.selection_fingerprint,
+      status: "published",
+      target_fingerprint: publication.target_fingerprint,
       updated_at_ms: NEWS_NOW_MS,
     },
+    pending_due_at_ms: null,
     publication,
-    state: "ready",
-    target_fingerprint: "brief-fingerprint",
+    state: "current",
+    target_fingerprint: publication.target_fingerprint,
     ...overrides,
   };
 }
@@ -196,7 +271,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     layers: {
       brief: {
         latest_run: null,
-        public_state: "ready",
+        public_state: "current",
         publication_id: "brief-publication",
         reasons: [],
         status: "ready",
@@ -251,29 +326,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
           succeeded: 1,
           success_ratio: 1,
         },
-      },
-      translation: {
-        configured: true,
-        eligible_count: 4,
-        failed_count: 0,
-        latest_success_at_ms: NEWS_NOW_MS - 60_000,
-        locale: "zh-CN",
-        oldest_pending_at_ms: null,
-        pending_count: 0,
-        prompt_version: "news-title-translation-v1",
-        ready_count: 4,
-        reasons: [],
-        retry_count: 0,
-        rolling_24h: {
-          attempted: 4,
-          failure_counts: {},
-          latency_p95_ms: 1_500,
-          succeeded: 4,
-          success_ratio: 1,
-        },
-        status: "ready",
-        unavailable_count: 0,
-        workflow_version: "news-title-translation-v1",
       },
       story: {
         active_items: 4,
