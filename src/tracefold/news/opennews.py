@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +25,12 @@ _TRACKING_PARAMS = frozenset(
     }
 )
 _MAX_COINS = 32
+_MAX_HEADLINE_LEN = 500
+_MAX_DESCRIPTION_LEN = 400
+_MIN_DESCRIPTION_LEN = 40
+_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class OpenNewsExpectedError(RuntimeError):
@@ -88,11 +96,18 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     observation_kind: Literal["report", "translation"] = "translation" if _is_translation(params) else "report"
     entry = None
     if observation_kind == "report":
+        blocks = _logical_blocks(_content_text(params.get("text")))
+        title = blocks[0][:_MAX_HEADLINE_LEN].strip() if blocks else ""
+        description = _canonical_description(
+            explicit=_content_text(params.get("description")),
+            remaining_blocks=blocks[1:],
+            title=title,
+        )
         entry = NewsFeedEntry(
             guid=provider_record_id,
             link=canonical_url or None,
-            title=_text(params.get("text")) or None,
-            description=_text(params.get("description")),
+            title=title or None,
+            description=description,
             published_at_ms=_timestamp_ms(params.get("ts")),
             reporting_origin=_reporting_origin(params, canonical_url=canonical_url),
             raw={},
@@ -156,12 +171,46 @@ def _article_url(value: str) -> str:
 
 
 def _reporting_origin(params: Mapping[str, Any], *, canonical_url: str) -> str:
-    explicit = _text(params.get("newsType")).lower()
+    news_type = _text(params.get("newsType"))
+    if news_type.casefold() == "twitter":
+        author = _text(params.get("source")).lower()
+        if author:
+            return author
+    explicit = news_type.lower()
     if explicit:
         return explicit
     if canonical_url:
         return str(urlsplit(canonical_url).hostname or "").lower() or "opennews"
     return "opennews"
+
+
+def _logical_blocks(value: str) -> tuple[str, ...]:
+    decoded = html.unescape(value)
+    separated = _BREAK_RE.sub("\n", decoded).replace("\r\n", "\n").replace("\r", "\n")
+    blocks = []
+    for raw in separated.split("\n"):
+        cleaned = html.unescape(raw)
+        cleaned = _TAG_RE.sub(" ", cleaned)
+        cleaned = _CONTROL_RE.sub(" ", cleaned)
+        cleaned = " ".join(cleaned.split())
+        if cleaned:
+            blocks.append(cleaned)
+    return tuple(blocks)
+
+
+def _canonical_description(
+    *,
+    explicit: str,
+    remaining_blocks: tuple[str, ...],
+    title: str,
+) -> str:
+    explicit_blocks = _logical_blocks(explicit)
+    description = " ".join(explicit_blocks or remaining_blocks).strip()
+    if len(description) < _MIN_DESCRIPTION_LEN:
+        return ""
+    if " ".join(description.casefold().split()) == " ".join(title.casefold().split()):
+        return ""
+    return description[:_MAX_DESCRIPTION_LEN]
 
 
 def _is_translation(params: Mapping[str, Any]) -> bool:
@@ -233,6 +282,17 @@ def _number(value: object) -> int | float | None:
 def _text(value: object) -> str:
     text = str(value or "").strip()
     if not text or "\x00" in text:
+        return ""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return text
+
+
+def _content_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
         return ""
     try:
         text.encode("utf-8")

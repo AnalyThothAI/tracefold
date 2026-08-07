@@ -29,7 +29,13 @@ from tracefold.market import (
     parse_gmgn_token_payload,
     rebuild_all_token_radar_for_maintenance,
 )
-from tracefold.news import NewsBriefDraft, NewsFeedEntry, OpenNewsEvent, opennews_source
+from tracefold.news import (
+    NewsBriefDraft,
+    NewsFeedEntry,
+    OpenNewsEvent,
+    opennews_source,
+    parse_opennews_message,
+)
 from tracefold.news.brief import brief_fingerprint
 from tracefold.platform.config.settings import Settings
 
@@ -766,6 +772,119 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "latest_sent_at_ms": None,
     }
     assert [response.status_code for response in retired_responses] == [404] * 6
+
+
+def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "twitter-canonical-wire",
+                "text": (
+                    "Iran announces verified ceasefire talks&lt;br&gt;"
+                    "Officials said the announcement followed two days of negotiations "
+                    "and published a detailed timetable.&lt;br&gt;https://example.test/noise"
+                ),
+                "newsType": "Twitter",
+                "engineType": "news",
+                "source": "ReutersWorld",
+                "link": "https://example.test/twitter-canonical-wire",
+                "ts": now_ms,
+            },
+        }
+    )
+    assert event is not None
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(event,),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+
+        headers = {"Authorization": "Bearer secret"}
+        feed = client.get("/api/news/feed", headers=headers).json()["data"]
+        detail = client.get(
+            f"/api/news/stories/{feed['stories'][0]['story_id']}",
+            headers=headers,
+        ).json()["data"]
+
+    assert {
+        "story_title": feed["stories"][0]["title"],
+        "item_title": detail["members"][0]["title"],
+        "description": detail["members"][0]["description"],
+        "reporting_origin": detail["members"][0]["reporting_origin"],
+    } == {
+        "story_title": "Iran announces verified ceasefire talks",
+        "item_title": "Iran announces verified ceasefire talks",
+        "description": (
+            "Officials said the announcement followed two days of negotiations "
+            "and published a detailed timetable. https://example.test/noise"
+        ),
+        "reporting_origin": "reutersworld",
+    }
+
+
+def test_api_news_strips_wire_controls_and_prefers_bounded_explicit_description(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-controls-and-description",
+                "text": (
+                    "Central bank approves policy\x00 today<br>"
+                    "This remaining block must not replace an explicit provider description."
+                ),
+                "description": (
+                    "<p>Officials confirmed the decision &amp; published implementation details "
+                    + ("x" * 500)
+                    + "</p>"
+                ),
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": now_ms,
+            },
+        }
+    )
+    assert event is not None
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(event,),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+        headers = {"Authorization": "Bearer secret"}
+        feed = client.get("/api/news/feed", headers=headers).json()["data"]
+        detail = client.get(
+            f"/api/news/stories/{feed['stories'][0]['story_id']}",
+            headers=headers,
+        ).json()["data"]
+
+    assert {
+        "title": detail["members"][0]["title"],
+        "description": detail["members"][0]["description"],
+        "description_length": len(detail["members"][0]["description"]),
+    } == {
+        "title": "Central bank approves policy today",
+        "description": (
+            "Officials confirmed the decision & published implementation details "
+            + ("x" * 332)
+        ),
+        "description_length": 400,
+    }
 
 
 def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_path):

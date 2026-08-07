@@ -249,8 +249,14 @@ def test_malformed_article_url_keeps_report_as_linkless() -> None:
     assert event.entry.link is None
 
 
-@pytest.mark.parametrize("invalid_text", ["bad\x00text", "bad\ud800text"])
-def test_non_postgres_text_is_discarded_at_provider_boundary(invalid_text: str) -> None:
+@pytest.mark.parametrize(
+    ("invalid_text", "expected_title"),
+    [("bad\x00text", "bad text"), ("bad\ud800text", None)],
+)
+def test_wire_text_strips_controls_and_rejects_non_utf8(
+    invalid_text: str,
+    expected_title: str | None,
+) -> None:
     event = parse_opennews_message(
         {
             "method": "news.update",
@@ -272,7 +278,7 @@ def test_non_postgres_text_is_discarded_at_provider_boundary(invalid_text: str) 
     )
 
     assert event is not None and event.entry is not None
-    assert event.entry.title is None
+    assert event.entry.title == expected_title
     assert event.entry.description == ""
     assert event.entry.link is None
     assert event.provider_metadata == {"score": 75}
