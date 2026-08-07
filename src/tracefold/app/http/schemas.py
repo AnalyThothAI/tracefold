@@ -357,6 +357,29 @@ class NewsBriefProvenanceData(ExactApiSchema):
     selection_stats: NewsBriefSelectionStatsData
 
 
+NewsBriefFailureCode = Literal[
+    "INSIGHTS_SYNTHESIS_PARSE",
+    "INSIGHTS_SYNTHESIS_GATE",
+    "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
+    "INSIGHTS_SYNTHESIS_PROVIDER",
+]
+
+
+class NewsBriefL1ValidationData(ExactApiSchema):
+    failure_code: None
+    stripped_citations: int = Field(ge=0)
+    line_fallbacks: list[int] = Field(max_length=8)
+
+
+class NewsBriefL2ValidationData(ExactApiSchema):
+    failure_code: NewsBriefFailureCode
+    headline_fallback: bool
+
+
+class NewsBriefNoneValidationData(ExactApiSchema):
+    failure_code: NewsBriefFailureCode
+
+
 class NewsBriefPublicationData(ExactApiSchema):
     publication_id: str
     selection_fingerprint: str
@@ -378,7 +401,7 @@ class NewsBriefPublicationData(ExactApiSchema):
     selector_version: str
     identity_version: str
     locale: Literal["en"]
-    validation: dict[str, Any]
+    validation: NewsBriefL1ValidationData | NewsBriefL2ValidationData | NewsBriefNoneValidationData
     provenance: NewsBriefProvenanceData
     published_at_ms: int
     created_at_ms: int

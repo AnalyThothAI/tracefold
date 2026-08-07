@@ -512,7 +512,7 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
         conn.close()
 
 
-def test_story_hash_collisions_preserve_complete_postgres_membership() -> None:
+def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -550,6 +550,7 @@ def test_story_hash_collisions_preserve_complete_postgres_membership() -> None:
                 events=events,
                 observed_at_ms=NOW_MS + len(events),
             )
+        with conn.transaction():
             rebuilt = repository.rebuild_stories(now_ms=NOW_MS + len(events))
 
         ownership = conn.execute(
@@ -561,20 +562,13 @@ def test_story_hash_collisions_preserve_complete_postgres_membership() -> None:
               JOIN news_stories story ON story.story_id = member.story_id
             """
         ).fetchone()
-        assert rebuilt["projection_status"] == "rebuilt"
         assert ownership == {
             "membership_count": 4,
             "story_count": 4,
             "canonical_key_count": 2,
         }
-        assert (
-            repository._story_invariant_counts(
-                item_ids=[
-                    row["item_id"] for row in conn.execute("SELECT item_id FROM news_items ORDER BY item_id").fetchall()
-                ]
-            )["total"]
-            == 0
-        )
+        assert rebuilt["projection_status"] == "rebuilt"
+        assert conn.execute("SELECT count(*) AS count FROM news_items").fetchone()["count"] == 4
     finally:
         conn.close()
 

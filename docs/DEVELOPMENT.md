@@ -111,23 +111,41 @@ bounded canonical headline, remaining text is bounded description evidence,
 and reporting origin follows the verified-wrapper/news-type/host/OpenNews
 precedence. Provider AI metadata remains descriptive and may qualify outbound
 Push only; it cannot affect Story identity, public scoring, admission, ordering,
-or Brief. The public selector is one global server-owned order with no profile,
+or Brief. The public seed applies the pinned JavaScript UTF-16
+`title.length > 10` gate and reclusters eligible Items with the same identity
+kernel before selection. The public selector is one global server-owned order with no profile,
 preference, embedding, topic grouping, entity veto, private diversity rule, or
 client-side reorder.
 
-`tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
-covers positive and negative title pairs, exact-title and containment merges,
+`tests/test_news_worldmonitor_parity.py` is the maintained local golden suite.
+It covers positive and negative title pairs, exact-title and containment merges,
 CJK features, hot buckets, order independence, classification, historical
 exclusions, importance rounding, public selector ordering and admission,
 corroborated-lead reservation, and the frozen reporting-origin tier-map digest.
+`tests/test_news_pinned_worldmonitor_differential.py` is the actual upstream
+differential: when the pinned sibling is present, it imports and executes its
+identity, selector, prompt, parser, and composer modules and verifies the result
+against the committed golden before comparing Tracefold. Portable runs without
+the sibling use that same golden rather than skipping the lane.
+The identity port also fixes the pinned Node runtime's Unicode 17 letter,
+number, uppercase, and lowercase semantics so host Python Unicode data cannot
+silently change Story IDs.
 The real-PostgreSQL public pipeline suite additionally covers the canonical
 OpenNews adapter, complete Story closure, singleton selection, L1/L2 composer,
 immutable publication, and whole LKG decision. The retired RSS URL/membership
 inventory is not a runtime or parity contract. Run the differential lane with:
 
 ```bash
-uv run pytest -q tests/test_news_worldmonitor_parity.py
+TRACEFOLD_WORLDMONITOR_REPO=/path/to/worldmonitor \
+  uv run pytest -q \
+    tests/test_news_pinned_worldmonitor_differential.py \
+    tests/test_news_worldmonitor_parity.py
 ```
+
+The repository defaults to the sibling `../worldmonitor`. A present repo at any
+commit other than `0e8785c43e6a693990a14181ae0a16066c15fc8c` fails. Release
+evidence uses that exact sibling so the frozen-golden fallback is not mistaken
+for a fresh upstream execution.
 
 The release evaluation replays the current production 12-hour NewsItem corpus
 in isolated PostgreSQL. Record the source cutoff; Item, Story,

@@ -2422,6 +2422,33 @@ export interface components {
             /** Target Fingerprint */
             target_fingerprint: string | null;
         };
+        /** NewsBriefL1ValidationData */
+        NewsBriefL1ValidationData: {
+            /** Failure Code */
+            failure_code: null;
+            /** Line Fallbacks */
+            line_fallbacks: number[];
+            /** Stripped Citations */
+            stripped_citations: number;
+        };
+        /** NewsBriefL2ValidationData */
+        NewsBriefL2ValidationData: {
+            /**
+             * Failure Code
+             * @enum {string}
+             */
+            failure_code: "INSIGHTS_SYNTHESIS_PARSE" | "INSIGHTS_SYNTHESIS_GATE" | "INSIGHTS_SYNTHESIS_MISSING_CLUSTER" | "INSIGHTS_SYNTHESIS_PROVIDER";
+            /** Headline Fallback */
+            headline_fallback: boolean;
+        };
+        /** NewsBriefNoneValidationData */
+        NewsBriefNoneValidationData: {
+            /**
+             * Failure Code
+             * @enum {string}
+             */
+            failure_code: "INSIGHTS_SYNTHESIS_PARSE" | "INSIGHTS_SYNTHESIS_GATE" | "INSIGHTS_SYNTHESIS_MISSING_CLUSTER" | "INSIGHTS_SYNTHESIS_PROVIDER";
+        };
         /** NewsBriefProvenanceData */
         NewsBriefProvenanceData: {
             /** Projection Revision */
@@ -2482,9 +2509,7 @@ export interface components {
             /** Top Stories */
             top_stories: components["schemas"]["NewsBriefTopStoryData"][];
             /** Validation */
-            validation: {
-                [key: string]: unknown;
-            };
+            validation: components["schemas"]["NewsBriefL1ValidationData"] | components["schemas"]["NewsBriefL2ValidationData"] | components["schemas"]["NewsBriefNoneValidationData"];
             /** Workflow Version */
             workflow_version: string;
             /** World Brief */

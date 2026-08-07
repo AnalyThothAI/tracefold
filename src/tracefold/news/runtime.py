@@ -10,7 +10,6 @@ from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 from .models import (
-    INSIGHTS_SYNTHESIS_PROVIDER,
     NewsBriefPublisher,
     NewsBriefStory,
     NewsBriefSynthesisResult,
@@ -24,6 +23,14 @@ _OPENNEWS_BUFFER_CAPACITY = 256
 _OPENNEWS_RECONNECT_SECONDS = 3.0
 _OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS = 5 * 60
 _OPENNEWS_RECOVERY_MAX_PAGES = 11
+
+
+class _BriefClaimLost(RuntimeError):
+    pass
+
+
+class _BriefStartAdmissionTimeout(RuntimeError):
+    pass
 
 
 class NewsAcquisition:
@@ -443,22 +450,32 @@ class NewsBriefCandidate:
 
         claim = dict(prepared["claim"])
         model_submitted = False
-        claim_lost = False
 
         def mark_model_submitted() -> None:
             nonlocal model_submitted
             model_submitted = True
 
-        async def start_attempt_after_submit() -> None:
-            nonlocal claim_lost
-            started = await self.db.run_business(
-                "news_brief_start_model",
-                self._start_model_sync,
-                claim,
-                operation_timeout_seconds=0.5,
-            )
+        async def start_attempt_before_submit() -> None:
+            start_submitted = False
+
+            def mark_start_submitted() -> None:
+                nonlocal start_submitted
+                start_submitted = True
+
+            try:
+                started = await self.db.run_business(
+                    "news_brief_start_model",
+                    self._start_model_sync,
+                    claim,
+                    operation_timeout_seconds=0.5,
+                    on_submitted=mark_start_submitted,
+                )
+            except ResourceAdmissionTimeout as exc:
+                if start_submitted:
+                    raise RuntimeError("news_brief_start_model_outcome_unknown") from exc
+                raise _BriefStartAdmissionTimeout from exc
             if not started:
-                claim_lost = True
+                raise _BriefClaimLost
 
         try:
             generated = await self.model_adapter.run(
@@ -466,7 +483,7 @@ class NewsBriefCandidate:
                 self._generate_sync,
                 prepared["stories"],
                 timeout_seconds=_BRIEF_MODEL_TIMEOUT_SECONDS,
-                after_submit=start_attempt_after_submit,
+                before_submit=start_attempt_before_submit,
                 on_submitted=mark_model_submitted,
             )
         except asyncio.CancelledError:
@@ -478,16 +495,17 @@ class NewsBriefCandidate:
                 raise
             await self._release_prework(claim)
             return False
-        except ResourceOperationOverrun:
-            failed = await self.db.run_business(
-                "news_brief_publish_failure",
-                self._fail_sync,
-                claim,
-                operation_timeout_seconds=3.0,
-            )
-            return failed is not None
-        if claim_lost:
+        except _BriefStartAdmissionTimeout:
+            await self._release_prework(claim)
             return False
+        except _BriefClaimLost:
+            return False
+
+        publish_submitted = False
+
+        def mark_publish_submitted() -> None:
+            nonlocal publish_submitted
+            publish_submitted = True
 
         try:
             published = await self.db.run_business(
@@ -496,8 +514,11 @@ class NewsBriefCandidate:
                 prepared,
                 generated,
                 operation_timeout_seconds=3.0,
+                on_submitted=mark_publish_submitted,
             )
         except ResourceAdmissionTimeout:
+            if publish_submitted:
+                raise
             return False
         return published is not None
 
@@ -579,17 +600,6 @@ class NewsBriefCandidate:
                     claim=prepared["claim"],
                     selection=prepared["selection"],
                     result=generated,
-                    now_ms=_now_ms(),
-                ),
-            )
-
-    def _fail_sync(self, claim: dict[str, Any]) -> str | None:
-        with self.db.worker_session("news_brief_publish_failure", 3.0) as repos, repos.transaction():
-            return cast(
-                str | None,
-                repos.news.fail_brief_run(
-                    claim=claim,
-                    error_code=INSIGHTS_SYNTHESIS_PROVIDER,
                     now_ms=_now_ms(),
                 ),
             )

@@ -371,7 +371,7 @@ def importance_factors(
 ) -> dict[str, float | int | str]:
     scoring_corroboration_count = max(int(corroboration_count), int(entity_corroboration_count))
     corroboration = min(max(scoring_corroboration_count, 0), 5) * 20
-    age_ms = max(0, now_ms - published_at_ms)
+    age_ms = now_ms - published_at_ms
     recency = max(0.0, 1.0 - age_ms / 86_400_000) * 100
     base = _js_round(
         SEVERITY_VALUES[level] * 0.55
@@ -464,7 +464,7 @@ def is_top_stories_admissible(cluster: Mapping[str, Any], score: float) -> bool:
 
 
 def select_top_stories(
-    stories: Sequence[Mapping[str, Any]],
+    stories: Sequence[dict[str, Any]],
     *,
     now_ms: int,
     limit: int = 8,
@@ -472,7 +472,7 @@ def select_top_stories(
 ) -> list[dict[str, Any]]:
     """Select WorldMonitor's public top-eight corpus with no personalization."""
 
-    clusters = [dict(story) for story in stories]
+    clusters = list(stories)
     compute_entity_corroboration(clusters, now_ms=now_ms)
 
     admissible: list[tuple[dict[str, Any], float, float]] = []

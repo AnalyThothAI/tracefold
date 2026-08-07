@@ -47,6 +47,7 @@ def peek_brief_candidate(repository: Any, *, now_ms: int) -> dict[str, Any] | No
             now_ms=now_ms,
         )
         return None
+    run: Mapping[str, Any] | None = None
     if current["target_fingerprint"] != target:
         if current["latest_run_id"] is not None:
             conn.execute(
@@ -66,24 +67,53 @@ def peek_brief_candidate(repository: Any, *, now_ms: int) -> dict[str, Any] | No
                     str(current["latest_run_id"]),
                 ),
             )
-        conn.execute(
-            """
-            UPDATE news_brief_current
-               SET target_fingerprint = %s,
-                   latest_run_id = NULL,
-                   pending_first_dirty_at_ms = %s,
-                   pending_due_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE singleton_key = true
-            """,
-            (target, now_ms, now_ms + BRIEF_DEBOUNCE_MS, now_ms),
-        )
-        return None
-
-    run = conn.execute(
-        "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s",
-        (target,),
-    ).fetchone()
+        run = conn.execute(
+            "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s FOR UPDATE",
+            (target,),
+        ).fetchone()
+        if run is not None:
+            publication_id = _publication_for_reactivated_target(
+                conn,
+                current=current,
+                run=run,
+            )
+            conn.execute(
+                """
+                UPDATE news_brief_current
+                   SET publication_id = %s,
+                       target_fingerprint = %s,
+                       latest_run_id = %s,
+                       pending_first_dirty_at_ms = NULL,
+                       pending_due_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE singleton_key = true
+                """,
+                (publication_id, target, str(run["run_id"]), now_ms),
+            )
+        else:
+            pending_first_dirty_at_ms = current["pending_first_dirty_at_ms"]
+            pending_due_at_ms = current["pending_due_at_ms"]
+            if pending_first_dirty_at_ms is None or pending_due_at_ms is None:
+                pending_first_dirty_at_ms = now_ms
+                pending_due_at_ms = now_ms + BRIEF_DEBOUNCE_MS
+            conn.execute(
+                """
+                UPDATE news_brief_current
+                   SET target_fingerprint = %s,
+                       latest_run_id = NULL,
+                       pending_first_dirty_at_ms = %s,
+                       pending_due_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key = true
+                """,
+                (target, pending_first_dirty_at_ms, pending_due_at_ms, now_ms),
+            )
+            return None
+    if run is None:
+        run = conn.execute(
+            "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s",
+            (target,),
+        ).fetchone()
     if run is None:
         pending_due_at_ms = current["pending_due_at_ms"]
         if pending_due_at_ms is None:
@@ -126,11 +156,11 @@ def prepare_brief_run(
         raise ValueError("news_brief_lease_identity_required")
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
-    if current is None or current["target_fingerprint"] != target_fingerprint_value:
-        return None
     selection = _selection(conn)
     if selection is None or target_fingerprint(str(selection["selection_fingerprint"])) != target_fingerprint_value:
+        return None
+    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
+    if current is None or current["target_fingerprint"] != target_fingerprint_value:
         return None
     stories = list(selection["top_stories"])
     if not stories:
@@ -222,16 +252,9 @@ def prepare_brief_run(
     conn.execute(
         """
         UPDATE news_brief_current
-           SET latest_run_id = %s,
-               pending_first_dirty_at_ms = NULL,
-               pending_due_at_ms = NULL,
-               updated_at_ms = %s
+           SET latest_run_id = %s, updated_at_ms = %s
          WHERE singleton_key = true AND target_fingerprint = %s
-           AND (
-             latest_run_id IS DISTINCT FROM %s
-             OR pending_first_dirty_at_ms IS NOT NULL
-             OR pending_due_at_ms IS NOT NULL
-           )
+           AND latest_run_id IS DISTINCT FROM %s
         """,
         (run_id, now_ms, target_fingerprint_value, run_id),
     )
@@ -258,7 +281,9 @@ def start_brief_model(
     lease_token: str,
     now_ms: int,
 ) -> bool:
-    cursor = repository.conn.execute(
+    conn = repository.conn
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+    cursor = conn.execute(
         """
         UPDATE news_brief_runs
            SET last_attempt_at_ms = %s, updated_at_ms = %s
@@ -280,7 +305,9 @@ def release_brief_claim(
     due_at_ms: int,
     now_ms: int,
 ) -> bool:
-    cursor = repository.conn.execute(
+    conn = repository.conn
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+    cursor = conn.execute(
         """
         UPDATE news_brief_runs
            SET status = 'retry_wait', model_outcome = 'none',
@@ -289,8 +316,9 @@ def release_brief_claim(
                lease_expires_at_ms = NULL, updated_at_ms = %s
          WHERE run_id = %s AND status = 'running'
            AND lease_owner = %s AND lease_token = %s
+           AND lease_expires_at_ms > %s
         """,
-        (due_at_ms, now_ms, run_id, lease_owner, lease_token),
+        (due_at_ms, now_ms, run_id, lease_owner, lease_token, now_ms),
     )
     return int(cursor.rowcount or 0) == 1
 
@@ -304,6 +332,7 @@ def publish_brief(
     now_ms: int,
 ) -> str | None:
     conn = repository.conn
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
     active_selection = conn.execute(
         """
         SELECT selection_fingerprint
@@ -317,6 +346,9 @@ def publish_brief(
         or str(active_selection["selection_fingerprint"]) != str(claim["selection_fingerprint"])
         or target_fingerprint(str(active_selection["selection_fingerprint"])) != str(claim["target_fingerprint"])
     ):
+        return None
+    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
+    if current is None or current["target_fingerprint"] != claim["target_fingerprint"]:
         return None
     run = conn.execute(
         """
@@ -336,8 +368,7 @@ def publish_brief(
             now_ms,
         ),
     ).fetchone()
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
-    if run is None or current is None or current["target_fingerprint"] != claim["target_fingerprint"]:
+    if run is None:
         return None
     if str(selection["selection_fingerprint"]) != str(claim["selection_fingerprint"]):
         return None
@@ -351,65 +382,29 @@ def publish_brief(
     )
 
 
-def fail_brief_run(
-    repository: Any,
-    *,
-    claim: Mapping[str, Any],
-    error_code: str = INSIGHTS_SYNTHESIS_PROVIDER,
-    now_ms: int,
-) -> str | None:
-    conn = repository.conn
-    run = conn.execute(
-        """
-        SELECT * FROM news_brief_runs
-         WHERE run_id = %s AND status = 'running'
-           AND lease_owner = %s AND lease_token = %s
-         FOR UPDATE
-        """,
-        (str(claim["run_id"]), str(claim["lease_owner"]), str(claim["lease_token"])),
-    ).fetchone()
-    if run is None:
-        return None
-    healthy = _healthy_current_publication(conn)
-    action = "preserve_lkg" if healthy is not None else "none"
-    conn.execute(
-        """
-        UPDATE news_brief_runs
-           SET status = 'retry_wait', model_outcome = 'none',
-               pointer_action = %s,
-               failure_count = LEAST(100, failure_count + 1),
-               next_due_at_ms = %s,
-               lease_owner = NULL, lease_token = NULL,
-               lease_expires_at_ms = NULL,
-               last_error_code = %s,
-               completed_at_ms = %s, updated_at_ms = %s
-         WHERE run_id = %s
-        """,
-        (action, now_ms + BRIEF_RETRY_MS, _safe_error_code(error_code), now_ms, now_ms, str(run["run_id"])),
-    )
-    return action
-
-
 def get_brief(repository: Any, *, now_ms: int) -> dict[str, Any]:
     del now_ms  # State is durable; reads never reinterpret leases into a new product state.
     conn = repository.conn
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true").fetchone()
-    if current is None:
+    joined = conn.execute(
+        """
+        SELECT to_jsonb(brief_current) AS current_row,
+               to_jsonb(publication) AS publication_row,
+               to_jsonb(run) AS run_row
+          FROM news_brief_current AS brief_current
+          LEFT JOIN news_brief_publications AS publication
+            ON publication.publication_id = brief_current.publication_id
+          LEFT JOIN news_brief_runs AS run
+            ON run.run_id = brief_current.latest_run_id
+         WHERE brief_current.singleton_key = true
+        """
+    ).fetchone()
+    if joined is None or joined["current_row"] is None:
         raise RuntimeError("news_brief_current_missing")
-    publication = None
-    if current["publication_id"] is not None:
-        row = conn.execute(
-            "SELECT * FROM news_brief_publications WHERE publication_id = %s",
-            (str(current["publication_id"]),),
-        ).fetchone()
-        publication = _publication_payload(row) if row is not None else None
-    run = None
-    if current["latest_run_id"] is not None:
-        row = conn.execute(
-            "SELECT * FROM news_brief_runs WHERE run_id = %s",
-            (str(current["latest_run_id"]),),
-        ).fetchone()
-        run = _run_payload(row) if row is not None else None
+    current = cast(Mapping[str, Any], joined["current_row"])
+    publication_row = cast(Mapping[str, Any] | None, joined["publication_row"])
+    run_row = cast(Mapping[str, Any] | None, joined["run_row"])
+    publication = _publication_payload(publication_row) if publication_row is not None else None
+    run = _run_payload(run_row) if run_row is not None else None
     if publication is None:
         state = "unavailable"
     elif publication["quality"] == "ok" and publication["target_fingerprint"] != current["target_fingerprint"]:
@@ -430,7 +425,7 @@ def get_brief(repository: Any, *, now_ms: int) -> dict[str, Any]:
 
 
 def _selection(conn: Any) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM news_brief_selection_current WHERE singleton_key = true").fetchone()
+    row = conn.execute("SELECT * FROM news_brief_selection_current WHERE singleton_key = true FOR SHARE").fetchone()
     return dict(row) if row is not None else None
 
 
@@ -539,12 +534,13 @@ def _finish_without_model(
           last_error_code, created_at_ms, updated_at_ms,
           last_attempt_at_ms, completed_at_ms
         )
-        VALUES (%s, %s, %s, 'waiting_input', 'none', %s, 0,
+        VALUES (%s, %s, %s, 'waiting_input', 'none', %s, %s,
                 NULL, NULL, NULL, NULL, %s, %s, %s, NULL, %s)
         ON CONFLICT (target_fingerprint) DO UPDATE SET
           selection_fingerprint = EXCLUDED.selection_fingerprint,
           status = 'waiting_input', model_outcome = 'none',
           pointer_action = EXCLUDED.pointer_action,
+          failure_count = EXCLUDED.failure_count,
           next_due_at_ms = NULL,
           lease_owner = NULL, lease_token = NULL, lease_expires_at_ms = NULL,
           last_error_code = EXCLUDED.last_error_code,
@@ -556,6 +552,7 @@ def _finish_without_model(
             target_fingerprint_value,
             str(selection["selection_fingerprint"]),
             action,
+            min(BRIEF_MAX_FAILURES, int(existing_run["failure_count"] or 0) + 1) if existing_run is not None else 1,
             INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
             now_ms,
             now_ms,
@@ -763,6 +760,39 @@ def _healthy_current_publication(conn: Any) -> Mapping[str, Any] | None:
     )
 
 
+def _publication_for_reactivated_target(
+    conn: Any,
+    *,
+    current: Mapping[str, Any],
+    run: Mapping[str, Any],
+) -> str | None:
+    if str(run["status"]) != "published":
+        healthy = _healthy_current_publication(conn)
+        if healthy is not None:
+            return str(healthy["publication_id"])
+    publication = conn.execute(
+        """
+        SELECT publication_id
+          FROM news_brief_publications
+         WHERE target_fingerprint = %s
+           AND selection_fingerprint = %s
+           AND quality = %s
+         ORDER BY published_at_ms DESC, publication_id
+         LIMIT 1
+        """,
+        (
+            str(run["target_fingerprint"]),
+            str(run["selection_fingerprint"]),
+            "ok" if str(run["status"]) == "published" else "degraded",
+        ),
+    ).fetchone()
+    if publication is not None:
+        return str(publication["publication_id"])
+    if str(run["status"]) == "published":
+        raise RuntimeError("news_brief_published_run_missing_publication")
+    return str(current["publication_id"]) if current["publication_id"] is not None else None
+
+
 def _safe_error_code(value: object) -> str:
     normalized = str(value or "").strip()
     allowed = {
@@ -835,7 +865,6 @@ __all__ = [
     "BRIEF_LEASE_MS",
     "BRIEF_MAX_FAILURES",
     "BRIEF_RETRY_MS",
-    "fail_brief_run",
     "get_brief",
     "peek_brief_candidate",
     "prepare_brief_run",

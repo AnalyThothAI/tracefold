@@ -242,6 +242,7 @@ OpenNews WSS + bounded REST recovery
   -> every 60 seconds load complete enabled 12-hour item window
   -> WorldMonitor clustering + classification + importance
   -> compare-and-publish current Story/member/facet closure
+  -> public UTF-16 title-length gate + same-kernel seed clustering
   -> public cluster score/admission/recency selector
   -> singleton server-ordered Top Story selection snapshot
   -> /api/news/feed + /api/news/stories/{story_id}
@@ -284,9 +285,11 @@ second polling or acquisition-history lane.
 
 The acquisition publication is the only writer of NewsItem Article facts and
 provider metadata. It admits one record as one fact: the first non-empty
-logical plaintext block is the title (maximum 500 characters); a cleaned
-explicit description or remaining blocks become 40-to-400-character
-description evidence. Reporting origin uses a Twitter author before
+logical plaintext block is the title (maximum 500 JavaScript UTF-16 code
+units, with Web scalar-value replacement when the clamp splits a surrogate
+pair); a cleaned explicit description or remaining blocks become 40-to-400
+JavaScript UTF-16 code-unit description evidence, with the same replacement
+after truncation. Reporting origin uses a Twitter author before
 `newsType`, URL host, and `opennews`. Linkless reports remain valid. Story owns
 only deterministic derived columns on the same row. The fixed-period Story
 projection is the only
@@ -341,8 +344,10 @@ an immediate stalled signal. Raw WSS receipt history is still not
 retained, so `published -> threshold` cannot separate provider emission delay
 from transport or recovery.
 
-The selector operates on the complete captured Story closure. It applies the
-public cluster score, admissibility gate, 16-hour effective-recency ordering,
+The selector turn keeps the complete captured Story closure, then applies the
+pinned JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items
+with the same identity kernel. It applies the public cluster score,
+admissibility gate, 16-hour effective-recency ordering,
 maximum-three primary-source cap, and corroborated-lead reservation, then seals
 at most eight Top Stories plus drop telemetry. Unchanged canonical selection
 replay writes zero serving rows. It has no personalization, embedding, topic
@@ -549,13 +554,16 @@ Migration `20260801_0238` creates only `news_push_state` and
 `news_push_deliveries`; it performs no backfill and no outbound send.
 Migration `20260807_0246` is the irreversible World Brief hard cut. It fails
 closed if a retained OpenNews row cannot yield a canonical title, otherwise
-canonicalizes every retained fact, clears the rebuildable Story closure, drops
+canonicalizes only the code-owned OpenNews facts in bounded batches, leaves
+disabled historical source facts unchanged, clears the rebuildable Story closure, drops
 the retired Story-title table and incompatible Brief rows/schema, and installs
 the singleton selection plus discriminated L1/L2/none publication state. The
 live News boundary remains exactly thirteen tables. Existing Push baselines,
 selected-Item ledgers, pending/retry deliveries, receipts, and freshness fences
 are preserved byte-for-byte; the migration performs no provider or outbound
-call and creates no compatibility view.
+call and creates no compatibility view. Cutover preflight must prove at most
+100,000 `news-opennews` rows; otherwise migration fails closed with
+`news_world_brief_hard_cut_opennews_row_cap:<count>` before rewriting facts.
 
 ## Operator actions and retention
 

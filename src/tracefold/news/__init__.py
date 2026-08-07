@@ -20,14 +20,19 @@ from .classification import (
     has_historical_marker,
 )
 from .identity import (
+    JAVASCRIPT_WHITESPACE_PATTERN,
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
     cluster_texts,
     is_same_story,
+    javascript_trim,
     normalize_story_canonical_title,
     normalize_story_text,
+    parse_javascript_number,
     story_similarity,
     story_vector,
+    utf16_length,
+    web_usv_string,
 )
 from .interface import NewsInterface
 from .models import (
@@ -94,6 +99,7 @@ __all__ = [
     "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
     "INSIGHTS_SYNTHESIS_PARSE",
     "INSIGHTS_SYNTHESIS_PROVIDER",
+    "JAVASCRIPT_WHITESPACE_PATTERN",
     "NEWS_LOCALE",
     "NEWS_STORY_PUBLISH_TIMEOUT_SECONDS",
     "OPENNEWS_REST_LIMIT",
@@ -139,10 +145,12 @@ __all__ = [
     "importance_score",
     "is_brief_lead_eligible",
     "is_same_story",
+    "javascript_trim",
     "normalize_story_canonical_title",
     "normalize_story_text",
     "opennews_source",
     "parse_brief_synthesis",
+    "parse_javascript_number",
     "parse_opennews_message",
     "parse_opennews_rest_response",
     "publication_id",
@@ -154,4 +162,6 @@ __all__ = [
     "synthesis_system_prompt",
     "synthesis_user_prompt",
     "target_fingerprint",
+    "utf16_length",
+    "web_usv_string",
 ]

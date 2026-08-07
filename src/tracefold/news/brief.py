@@ -6,8 +6,23 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
+import regex
+from ada_url import URL
+
+from .identity import (
+    JAVASCRIPT_WHITESPACE_PATTERN,
+    collapse_javascript_whitespace,
+    javascript_is_letter_or_number,
+    javascript_lower,
+    javascript_starts_with_lowercase_letter,
+    javascript_starts_with_uppercase_letter,
+    javascript_trim,
+    parse_javascript_number,
+    utf16_length,
+    utf16_slice,
+    web_usv_string,
+)
 from .models import (
     BRIEF_COMPOSER_VERSION,
     BRIEF_PROMPT_VERSION,
@@ -20,13 +35,16 @@ from .models import (
     NewsBriefSynthesisResult,
 )
 
-_CODE_FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
-_CITATION_RE = re.compile(r"\[(\d{1,3})\]")
-_LINE_CITATION_RE = re.compile(r"\s*\[\d{1,3}\]")
-_ANCHOR_DELIMS_RE = re.compile(r"[\s,.!?;:()'\"‘’“”´\\/—–\-\[\]{}]+")
-_WORD_SPLIT_RE = re.compile(r"(?:[^\w'’\-]|_)+", re.UNICODE)
-_PROPER_SENTENCE_SPLIT_RE = re.compile(r"[.!?]+\s+|\n+")
-_DOTTED_ACRONYM_RE = re.compile(r"\b[A-Z]\.(?:[A-Z]\.?)+")
+_CODE_FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE | re.ASCII)
+_CITATION_RE = re.compile(r"\[([0-9]{1,3})\]")
+_LINE_CITATION_RE = re.compile(rf"{JAVASCRIPT_WHITESPACE_PATTERN}*\[[0-9]{{1,3}}\]")
+_CITATION_WITH_WHITESPACE_RE = re.compile(rf"{JAVASCRIPT_WHITESPACE_PATTERN}*\[([0-9]{{1,3}})\]")
+_ANCHOR_DELIMS_RE = re.compile(rf"(?:{JAVASCRIPT_WHITESPACE_PATTERN}|[,.!?;:()'\"‘’“”´\\/—–\-\[\]{{}}])+")
+_WORD_SPLIT_RE = regex.compile(r"[^\p{L}\p{N}'’\-]+")
+_PROPER_SENTENCE_SPLIT_RE = re.compile(rf"[.!?]+{JAVASCRIPT_WHITESPACE_PATTERN}+|\n+")
+_LEAD_SENTENCE_SPLIT_RE = re.compile(rf"(?<=[.!?]){JAVASCRIPT_WHITESPACE_PATTERN}+")
+_JS_WHITESPACE_PREFIX_RE = re.compile(rf"{JAVASCRIPT_WHITESPACE_PATTERN}+")
+_DOTTED_ACRONYM_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Z]\.(?:[A-Z]\.?)+")
 _TITLE_PREFIX_STOP = frozenset(
     {
         "President",
@@ -194,8 +212,8 @@ _DEMONYM_TO_NATION = (
     ("North Korean", "North Korea"),
     ("North Koreans", "North Korea"),
 )
-_ACRONYM_NORMALIZE = {variant.casefold(): group[0].casefold() for group in _ACRONYM_EXPANSIONS for variant in group}
-_DEMONYM_NORMALIZE = {demonym.casefold(): nation.casefold() for demonym, nation in _DEMONYM_TO_NATION}
+_ACRONYM_NORMALIZE = {variant.lower(): group[0].lower() for group in _ACRONYM_EXPANSIONS for variant in group}
+_DEMONYM_NORMALIZE = {demonym.lower(): nation.lower() for demonym, nation in _DEMONYM_TO_NATION}
 _SENTENCE_START_AMBIGUOUS = frozenset(
     [
         "the",
@@ -380,22 +398,27 @@ _NUMBER_WORD_VALUES = {
 _NUMBER_WORDS = sorted((*_NUMBER_WORD_VALUES, "dozens"), key=len, reverse=True)
 _NUMBER_WORD_PATTERN = "|".join(re.escape(word) for word in _NUMBER_WORDS)
 _NUMBER_WORD_SEQUENCE_RE = re.compile(
-    rf"\b(?:{_NUMBER_WORD_PATTERN})(?:[- ](?:{_NUMBER_WORD_PATTERN}|and))*\b(?:\s+percent\b)?",
-    re.IGNORECASE,
+    rf"(?<![A-Za-z0-9_])(?:{_NUMBER_WORD_PATTERN})(?:[- ](?:{_NUMBER_WORD_PATTERN}|and))*"
+    rf"(?![A-Za-z0-9_])(?:{JAVASCRIPT_WHITESPACE_PATTERN}+percent(?![A-Za-z0-9_]))?",
+    re.IGNORECASE | re.ASCII,
 )
 _DIGIT_FACT_RE = re.compile(
-    r"\d[\d,]*(?:\.\d+)?(?:\s*(?:%|percent|thousands?|millions?|billions?|trillions?))?",
-    re.IGNORECASE,
+    rf"[0-9][0-9,]*(?:\.[0-9]+)?(?:{JAVASCRIPT_WHITESPACE_PATTERN}*"
+    rf"(?:%|percent|thousands?|millions?|billions?|trillions?))?",
+    re.IGNORECASE | re.ASCII,
 )
 _MONTH_PATTERN = (
     r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
     r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
 )
 _DATE_EXPRESSION_RE = re.compile(
-    rf"\b(?:\d{{4}}-\d{{1,2}}-\d{{1,2}}|\d{{1,2}}[/-]\d{{1,2}}(?:[/-]\d{{2,4}})?|"
-    rf"(?:{_MONTH_PATTERN})\.?\s+\d{{1,2}}(?:,?\s+\d{{4}})?|"
-    rf"\d{{1,2}}\s+(?:{_MONTH_PATTERN})\.?\s*(?:\d{{4}})?)\b",
-    re.IGNORECASE,
+    rf"(?<![A-Za-z0-9_])(?:[0-9]{{4}}-[0-9]{{1,2}}-[0-9]{{1,2}}|"
+    rf"[0-9]{{1,2}}[/-][0-9]{{1,2}}(?:[/-][0-9]{{2,4}})?|"
+    rf"(?:{_MONTH_PATTERN})\.?{JAVASCRIPT_WHITESPACE_PATTERN}+[0-9]{{1,2}}"
+    rf"(?:,?{JAVASCRIPT_WHITESPACE_PATTERN}+[0-9]{{4}})?|"
+    rf"[0-9]{{1,2}}{JAVASCRIPT_WHITESPACE_PATTERN}+(?:{_MONTH_PATTERN})\.?"
+    rf"{JAVASCRIPT_WHITESPACE_PATTERN}*(?:[0-9]{{4}})?)(?![A-Za-z0-9_])",
+    re.IGNORECASE | re.ASCII,
 )
 _MONTH_NUMBERS = {
     "jan": 1,
@@ -623,9 +646,9 @@ def brief_user_prompt(headline: str) -> str:
 
 
 def parse_brief_synthesis(raw_text: str, story_count: int) -> tuple[str, tuple[tuple[int, str], ...]] | None:
-    if not isinstance(raw_text, str) or not raw_text:
+    if not isinstance(raw_text, str) or not raw_text or "\x00" in raw_text:
         return None
-    text = _CODE_FENCE_RE.sub("", raw_text).strip()
+    text = javascript_trim(_CODE_FENCE_RE.sub("", web_usv_string(raw_text)))
     start = text.find("{")
     if start < 0:
         return None
@@ -633,14 +656,14 @@ def parse_brief_synthesis(raw_text: str, story_count: int) -> tuple[str, tuple[t
     if end is None:
         return None
     try:
-        parsed = json.loads(text[start : end + 1])
-    except (json.JSONDecodeError, TypeError):
+        parsed = json.loads(text[start : end + 1], parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
         return None
     if not isinstance(parsed, Mapping):
         return None
     lead_value = parsed.get("lead")
-    lead = lead_value.strip() if isinstance(lead_value, str) else ""
-    if not 40 <= len(lead) <= 700:
+    lead = javascript_trim(web_usv_string(lead_value)) if isinstance(lead_value, str) else ""
+    if "\x00" in lead or not 40 <= utf16_length(lead) <= 700:
         return None
     raw_lines = parsed.get("lines")
     by_index: dict[int, str] = {}
@@ -650,8 +673,14 @@ def parse_brief_synthesis(raw_text: str, story_count: int) -> tuple[str, tuple[t
                 continue
             n = _line_index(entry.get("n"))
             line_value = entry.get("text")
-            line = line_value.strip() if isinstance(line_value, str) else ""
-            if n is None or not 1 <= n <= story_count or not 15 <= len(line) <= 260 or n in by_index:
+            line = javascript_trim(web_usv_string(line_value)) if isinstance(line_value, str) else ""
+            if (
+                n is None
+                or not 1 <= n <= story_count
+                or "\x00" in line
+                or not 15 <= utf16_length(line) <= 260
+                or n in by_index
+            ):
                 continue
             by_index[n] = line
     if len(by_index) < math.ceil(story_count / 2):
@@ -685,7 +714,7 @@ def compose_l1_brief(
         if line is None:
             lines.append(NewsBriefStoryLine(n=index, text=f"{headline} [{index}]"))
             continue
-        bare = _LINE_CITATION_RE.sub("", line).strip()
+        bare = javascript_trim(_LINE_CITATION_RE.sub("", line))
         if not _proper_nouns_grounded(bare, _story_ground_text(story)):
             line_fallbacks.append(index)
             lines.append(NewsBriefStoryLine(n=index, text=f"{headline} [{index}]"))
@@ -716,7 +745,7 @@ def compose_l2_brief(
     model: str,
     failure_code: str,
 ) -> NewsBriefSynthesisResult:
-    world_brief = text.strip()
+    world_brief = javascript_trim(web_usv_string(text))
     noun_valid, _hallucinated = validate_no_hallucinated_proper_nouns(world_brief, story.primary_title)
     headline_fallback = not noun_valid
     if headline_fallback:
@@ -774,7 +803,7 @@ def verify_citation_indexes(text: str, source_count: int) -> tuple[str, int]:
         stripped += 1
         return ""
 
-    return re.sub(r"\s*\[(\d{1,3})\]", replace, text), stripped
+    return _CITATION_WITH_WHITESPACE_RE.sub(replace, text), stripped
 
 
 def selection_fingerprint(snapshot: Mapping[str, Any]) -> str:
@@ -831,7 +860,8 @@ def publication_id(payload: Mapping[str, Any]) -> str:
 
 
 def _canonical_hash(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = web_usv_string(serialized).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -861,13 +891,45 @@ def _balanced_object_end(text: str, start: int) -> int | None:
 
 
 def _line_index(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
+    number = _javascript_number(value)
     return int(number) if math.isfinite(number) and number.is_integer() else None
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"nonfinite JSON constant: {value}")
+
+
+def _javascript_number(value: Any) -> float:
+    """Coerce one JSON value with JavaScript ``Number(value)`` semantics."""
+
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except OverflowError:
+            return -math.inf if value < 0 else math.inf
+    if isinstance(value, list):
+        value = ",".join(_javascript_array_item_string(item) for item in value)
+    if not isinstance(value, str):
+        return math.nan
+    return parse_javascript_number(value)
+
+
+def _javascript_array_item_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ",".join(_javascript_array_item_string(item) for item in value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return _format_number(value)
+    if isinstance(value, str):
+        return value
+    return "[object Object]"
 
 
 def _story_ground_text(story: NewsBriefStory) -> str:
@@ -928,7 +990,7 @@ def _extract_proper_noun_entries(text: str) -> list[tuple[tuple[str, ...], bool,
     sequences: list[tuple[tuple[str, ...], bool, bool, bool]] = []
     sentence_ordinal = -1
     for raw_sentence in _PROPER_SENTENCE_SPLIT_RE.split(preprocessed):
-        sentence = raw_sentence.strip()
+        sentence = javascript_trim(raw_sentence)
         if not sentence:
             continue
         sentence_ordinal += 1
@@ -943,13 +1005,14 @@ def _extract_proper_noun_entries(text: str) -> list[tuple[tuple[str, ...], bool,
         first_token = True
         for token in tokens:
             stripped = re.sub(r"[.,;:'’]+$", "", token)
-            stripped = re.sub(r"['’]s$", "", stripped, flags=re.IGNORECASE)
+            stripped = re.sub(r"['’]s$", "", stripped, flags=re.IGNORECASE | re.ASCII)
             token_for_lookup = stripped or token
             is_title_prefix = stripped in _TITLE_PREFIX_STOP
-            is_joiner = token.casefold() in _PROPER_NOUN_JOINER
+            lowered_token = javascript_lower(token)
+            is_joiner = lowered_token in _PROPER_NOUN_JOINER
             is_capitalized = len(token) >= 2 and token[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             is_all_caps = bool(re.fullmatch(r"[A-Z]{2,6}", token))
-            ambiguous_start = first_token and not is_all_caps and token.casefold() in _SENTENCE_START_AMBIGUOUS
+            ambiguous_start = first_token and not is_all_caps and lowered_token in _SENTENCE_START_AMBIGUOUS
             if is_title_prefix and not current:
                 first_token = False
                 continue
@@ -960,7 +1023,7 @@ def _extract_proper_noun_entries(text: str) -> list[tuple[tuple[str, ...], bool,
             first_token = False
             if is_joiner:
                 if current:
-                    bridge_buffer.append(token.casefold())
+                    bridge_buffer.append(lowered_token)
                 continue
             if is_capitalized or is_all_caps:
                 if current and bridge_buffer:
@@ -970,7 +1033,7 @@ def _extract_proper_noun_entries(text: str) -> list[tuple[tuple[str, ...], bool,
                     current_started_sentence = at_sentence_start
                     current_all_caps = is_all_caps
                     current_first_sentence = sentence_ordinal == 0
-                current.append(token_for_lookup.casefold())
+                current.append(javascript_lower(token_for_lookup))
                 continue
             if current:
                 sequences.append((tuple(current), current_started_sentence, current_all_caps, current_first_sentence))
@@ -985,7 +1048,7 @@ def _extract_proper_noun_entries(text: str) -> list[tuple[tuple[str, ...], bool,
 
 
 def _normalize_token(token: str) -> str:
-    lowered = token.casefold()
+    lowered = javascript_lower(token)
     return _ACRONYM_NORMALIZE.get(lowered, _DEMONYM_NORMALIZE.get(lowered, lowered))
 
 
@@ -995,7 +1058,7 @@ def _normalize_sequence(sequence: tuple[str, ...]) -> tuple[str, ...]:
     while index < len(sequence):
         matched = False
         for span in range(min(5, len(sequence) - index), 1, -1):
-            candidate = " ".join(sequence[index : index + span]).casefold()
+            candidate = javascript_lower(" ".join(sequence[index : index + span]))
             if candidate in _ACRONYM_NORMALIZE:
                 normalized.append(_ACRONYM_NORMALIZE[candidate])
                 index += span
@@ -1016,12 +1079,14 @@ def _ground_token_set(text: str) -> set[str]:
         if not raw:
             continue
         stripped = re.sub(r"[.,;:'’]+$", "", raw)
-        stripped = re.sub(r"['’]s$", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"['’]s$", "", stripped, flags=re.IGNORECASE | re.ASCII)
         value = stripped or raw
-        token = value.casefold()
+        token = javascript_lower(value)
         if not token:
             continue
-        if not value[0].isupper() and (token in _ACRONYM_NORMALIZE or token in _DEMONYM_NORMALIZE):
+        if not javascript_starts_with_uppercase_letter(value) and (
+            token in _ACRONYM_NORMALIZE or token in _DEMONYM_NORMALIZE
+        ):
             continue
         tokens.add(_normalize_token(token))
     return tokens
@@ -1035,7 +1100,9 @@ def _contains_subsequence(haystack: tuple[str, ...], needle: tuple[str, ...]) ->
 
 def _lead_is_grounded(lead: str, stories: Sequence[NewsBriefStory]) -> bool:
     gate_view = _normalize_mid_sentence_acronyms_for_split(lead)
-    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", gate_view) if sentence.strip()]
+    sentences = [
+        javascript_trim(sentence) for sentence in _LEAD_SENTENCE_SPLIT_RE.split(gate_view) if javascript_trim(sentence)
+    ]
     if not sentences:
         return False
     for sentence in sentences:
@@ -1047,10 +1114,10 @@ def _lead_is_grounded(lead: str, stories: Sequence[NewsBriefStory]) -> bool:
             return False
         if not _facts_grounded(sentence, ground_text):
             return False
-    anchors = {token.casefold() for story in stories[:8] for token in _anchor_tokens(story.primary_title)}
+    anchors = {javascript_lower(token) for story in stories[:8] for token in _anchor_tokens(story.primary_title)}
     if not anchors:
         return True
-    lead_tokens = {token.casefold() for token in _ANCHOR_DELIMS_RE.split(lead) if len(token) >= 4}
+    lead_tokens = {javascript_lower(token) for token in _ANCHOR_DELIMS_RE.split(lead) if utf16_length(token) >= 4}
     threshold = 2 if len(anchors) >= 4 else 1
     return len(anchors & lead_tokens) >= threshold
 
@@ -1058,11 +1125,11 @@ def _lead_is_grounded(lead: str, stories: Sequence[NewsBriefStory]) -> bool:
 def _normalize_mid_sentence_acronyms_for_split(text: str) -> str:
     def replace(match: re.Match[str]) -> str:
         remainder = text[match.end() :]
-        whitespace = re.match(r"\s+", remainder)
+        whitespace = _JS_WHITESPACE_PREFIX_RE.match(remainder)
         if whitespace is None:
             return match.group(0)
         following = remainder[whitespace.end() :]
-        if following[:1].islower() or re.match(r"(?:\[\d{1,3}\])+(?:[.!?]|$)", following):
+        if javascript_starts_with_lowercase_letter(following) or re.match(r"(?:\[[0-9]{1,3}\])+(?:[.!?]|$)", following):
             return match.group(0).replace(".", "")
         return match.group(0)
 
@@ -1073,7 +1140,9 @@ def _anchor_tokens(value: str) -> tuple[str, ...]:
     return tuple(
         token
         for token in _ANCHOR_DELIMS_RE.split(value)
-        if len(token) >= 4 and token[:1].isupper() and token.casefold() not in _ANCHOR_STOPWORDS
+        if utf16_length(token) >= 4
+        and token[:1] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        and javascript_lower(token) not in _ANCHOR_STOPWORDS
     )
 
 
@@ -1094,9 +1163,9 @@ def _numeric_facts(text: str) -> set[str]:
     remaining = _DATE_EXPRESSION_RE.sub(replace_date, remaining)
 
     def replace_digit(match: re.Match[str]) -> str:
-        before = remaining[match.start() - 1] if match.start() > 0 else ""
-        after = remaining[match.end()] if match.end() < len(remaining) else ""
-        if (before and before.isalnum()) or (after and after.isalnum()):
+        before = _utf16_adjacent_code_unit(remaining, match.start(), before=True)
+        after = _utf16_adjacent_code_unit(remaining, match.end(), before=False)
+        if _is_unicode_letter_or_number(before) or _is_unicode_letter_or_number(after):
             return match.group(0)
         facts.add(_normalize_digit_fact(match.group(0)))
         return " " * len(match.group(0))
@@ -1107,18 +1176,77 @@ def _numeric_facts(text: str) -> set[str]:
     return facts
 
 
+def _utf16_adjacent_code_unit(text: str, index: int, *, before: bool) -> str:
+    encoded = text.encode("utf-16-le", errors="surrogatepass")
+    offset = utf16_length(text[:index]) * 2
+    start = offset - 2 if before else offset
+    if start < 0 or start + 2 > len(encoded):
+        return ""
+    return encoded[start : start + 2].decode("utf-16-le", errors="surrogatepass")
+
+
+def _is_unicode_letter_or_number(value: str) -> bool:
+    return javascript_is_letter_or_number(value)
+
+
 def _format_number(value: float | int) -> str:
-    return str(int(value)) if float(value).is_integer() else format(float(value), "g")
+    """Format one IEEE-754 double like JavaScript ``String(number)``."""
+
+    try:
+        number = float(value)
+    except OverflowError:
+        number = -math.inf if value < 0 else math.inf
+    if math.isnan(number):
+        return "NaN"
+    if math.isinf(number):
+        return "-Infinity" if number < 0 else "Infinity"
+    if number == 0:
+        return "0"
+
+    sign = "-" if number < 0 else ""
+    raw = repr(abs(number)).lower()
+    if "e" in raw:
+        coefficient, exponent_text = raw.split("e", 1)
+        integer, _, fraction = coefficient.partition(".")
+        digits = (integer + fraction).rstrip("0")
+        decimal_position = len(integer) + int(exponent_text)
+    else:
+        integer, _, fraction = raw.partition(".")
+        if integer != "0":
+            digits = (integer + fraction).rstrip("0")
+            decimal_position = len(integer)
+        else:
+            leading_zeroes = len(fraction) - len(fraction.lstrip("0"))
+            digits = fraction.lstrip("0").rstrip("0")
+            decimal_position = -leading_zeroes
+
+    digit_count = len(digits)
+    if digit_count <= decimal_position <= 21:
+        formatted = digits + ("0" * (decimal_position - digit_count))
+    elif 0 < decimal_position <= 21:
+        formatted = f"{digits[:decimal_position]}.{digits[decimal_position:]}"
+    elif -6 < decimal_position <= 0:
+        formatted = f"0.{('0' * -decimal_position)}{digits}"
+    else:
+        tail = f".{digits[1:]}" if digit_count > 1 else ""
+        exponent = decimal_position - 1
+        formatted = f"{digits[0]}{tail}e{'+' if exponent >= 0 else ''}{exponent}"
+    return sign + formatted
 
 
 def _normalize_digit_fact(raw: str) -> str:
+    normalized_raw = javascript_trim(raw).lower().replace(",", "")
     match = re.fullmatch(
-        r"(\d+(?:\.\d+)?)(?:\s*(%|percent|thousands?|millions?|billions?|trillions?))?",
-        raw.strip().casefold().replace(",", ""),
+        rf"([0-9]+(?:\.[0-9]+)?)(?:{JAVASCRIPT_WHITESPACE_PATTERN}*"
+        rf"(%|percent|thousands?|millions?|billions?|trillions?))?",
+        normalized_raw,
+        flags=re.ASCII,
     )
     if match is None:
-        return f"number:{raw.strip().casefold()}"
+        return f"number:{javascript_trim(raw).lower()}"
     value = float(match.group(1))
+    if not math.isfinite(value):
+        return f"number:{javascript_trim(raw).lower()}"
     unit = match.group(2)
     if unit is None:
         return f"number:{_format_number(value)}"
@@ -1129,7 +1257,7 @@ def _normalize_digit_fact(raw: str) -> str:
 
 
 def _normalize_number_word_fact(raw: str) -> str:
-    words = [word for word in raw.casefold().replace("-", " ").split() if word]
+    words = [word for word in collapse_javascript_whitespace(raw.lower().replace("-", " ")).split(" ") if word]
     percent = bool(words and words[-1] == "percent")
     if percent:
         words.pop()
@@ -1181,44 +1309,56 @@ def _add_date_fact(facts: set[str], year: str | None, month: str | int | None, d
 
 
 def _add_date_expression_facts(facts: set[str], raw: str) -> None:
-    normalized = " ".join(raw.strip().split())
-    match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", normalized)
+    normalized = collapse_javascript_whitespace(raw)
+    match = re.fullmatch(r"([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})", normalized)
     if match:
         _add_date_fact(facts, match.group(1), match.group(2), match.group(3))
         return
-    match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?", normalized)
+    match = re.fullmatch(r"([0-9]{1,2})[/-]([0-9]{1,2})(?:[/-]([0-9]{2,4}))?", normalized)
     if match:
         _add_date_fact(facts, match.group(3), match.group(1), match.group(2))
         return
-    match = re.fullmatch(r"([A-Za-z]+)\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?", normalized)
+    match = re.fullmatch(
+        rf"([A-Za-z]+)\.?{JAVASCRIPT_WHITESPACE_PATTERN}+([0-9]{{1,2}})"
+        rf"(?:,?{JAVASCRIPT_WHITESPACE_PATTERN}+([0-9]{{4}}))?",
+        normalized,
+    )
     if match:
-        _add_date_fact(facts, match.group(3), _MONTH_NUMBERS.get(match.group(1).casefold()), match.group(2))
+        _add_date_fact(facts, match.group(3), _MONTH_NUMBERS.get(match.group(1).lower()), match.group(2))
         return
-    match = re.fullmatch(r"(\d{1,2})\s+([A-Za-z]+)\.?\s*(?:\s+(\d{4}))?", normalized)
+    match = re.fullmatch(
+        rf"([0-9]{{1,2}}){JAVASCRIPT_WHITESPACE_PATTERN}+([A-Za-z]+)\.?"
+        rf"{JAVASCRIPT_WHITESPACE_PATTERN}*(?:{JAVASCRIPT_WHITESPACE_PATTERN}+([0-9]{{4}}))?",
+        normalized,
+    )
     if match:
-        _add_date_fact(facts, match.group(3), _MONTH_NUMBERS.get(match.group(2).casefold()), match.group(1))
+        _add_date_fact(facts, match.group(3), _MONTH_NUMBERS.get(match.group(2).lower()), match.group(1))
 
 
 def _sanitize_title(value: str) -> str:
-    return re.sub(r"[\x00-\x1f\x7f]", "", re.sub(r"<[^>]*>", "", value))[:500].strip()
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", re.sub(r"<[^>]*>", "", value))
+    return javascript_trim(web_usv_string(utf16_slice(cleaned, 500)))
 
 
 def _valid_http_url(value: str | None) -> str:
     if not isinstance(value, str):
         return ""
-    normalized = value.strip()
+    normalized = javascript_trim(value)
     try:
-        parsed = urlsplit(normalized)
+        parsed = URL(normalized)
     except ValueError:
         return ""
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.protocol not in {"http:", "https:"} or not parsed.hostname:
         return ""
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, parsed.fragment))
+    return parsed.href
 
 
 def _clip_text(value: str, maximum: int) -> str:
-    text = " ".join(value.split())
-    return f"{text[: maximum - 1].strip()}..." if len(text) > maximum else text
+    text = collapse_javascript_whitespace(value)
+    if utf16_length(text) <= maximum:
+        return web_usv_string(text)
+    clipped = javascript_trim(web_usv_string(utf16_slice(text, maximum - 1)))
+    return f"{clipped}..."
 
 
 def _l1_source(story: NewsBriefStory) -> NewsBriefSource:

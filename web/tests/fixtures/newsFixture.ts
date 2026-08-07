@@ -201,7 +201,9 @@ export function newsBriefPublicationFixture(
     target_fingerprint: "c".repeat(64),
     top_stories: topStories,
     validation: {
-      citation_closure: true,
+      failure_code: null,
+      stripped_citations: 0,
+      line_fallbacks: [],
     },
     workflow_version: "news-public-insights-workflow-v1",
     world_brief: "Ceasefire talks and severe weather lead the public news agenda [1][2].",

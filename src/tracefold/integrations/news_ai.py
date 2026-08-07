@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -7,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from math import isfinite
 
 import httpx
 
@@ -15,6 +17,7 @@ from tracefold.news import (
     INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
     INSIGHTS_SYNTHESIS_PARSE,
     INSIGHTS_SYNTHESIS_PROVIDER,
+    JAVASCRIPT_WHITESPACE_PATTERN,
     NewsBriefStory,
     NewsBriefSynthesisResult,
     brief_system_prompt,
@@ -23,9 +26,13 @@ from tracefold.news import (
     compose_l2_brief,
     compose_none_brief,
     is_brief_lead_eligible,
+    javascript_trim,
     parse_brief_synthesis,
+    parse_javascript_number,
     synthesis_system_prompt,
     synthesis_user_prompt,
+    utf16_length,
+    web_usv_string,
 )
 
 
@@ -66,7 +73,7 @@ class ProviderChainNewsBriefPublisher:
         openrouter_api_key: str | None,
         groq_api_key: str | None,
         total_timeout_seconds: float = 60.0,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -78,7 +85,9 @@ class ProviderChainNewsBriefPublisher:
         self._monotonic = monotonic
         self._wall_clock = wall_clock
         self._sleep = sleep
-        self._client = httpx.Client(follow_redirects=False, transport=transport)
+        self._transport = transport
+        self._runner = asyncio.Runner()
+        self._closed = False
         providers: list[_BriefProvider] = []
         if normalized_ollama:
             providers.append(
@@ -170,7 +179,10 @@ class ProviderChainNewsBriefPublisher:
         )
 
     def close(self) -> None:
-        self._client.close()
+        if self._closed:
+            return
+        self._closed = True
+        self._runner.close()
 
     def _call_chain(
         self,
@@ -199,7 +211,7 @@ class ProviderChainNewsBriefPublisher:
                 return _ChainOutcome(candidate=candidate, accepted=None, first_rejection_code=None)
             try:
                 accepted, rejection_code = accept(candidate)
-            except (TypeError, ValueError):
+            except (OverflowError, RecursionError, TypeError, ValueError):
                 accepted, rejection_code = None, INSIGHTS_SYNTHESIS_GATE
             if accepted is not None:
                 return _ChainOutcome(candidate=candidate, accepted=accepted, first_rejection_code=None)
@@ -236,22 +248,21 @@ class ProviderChainNewsBriefPublisher:
             if usable <= 0:
                 raise _BudgetExhausted
             try:
-                response = self._client.post(
-                    provider.url,
-                    headers=headers,
-                    json=body,
-                    timeout=max(0.001, min(provider.timeout_seconds, usable)),
+                response = self._runner.run(
+                    self._post_provider(
+                        provider.url,
+                        headers=headers,
+                        body=body,
+                        timeout_seconds=max(0.001, min(provider.timeout_seconds, usable)),
+                    )
                 )
             except httpx.HTTPError:
                 if attempt >= 2:
                     return None
                 wait = float(2**attempt)
-                remaining = max(0.0, deadline - self._monotonic() - 5.0)
-                if wait >= remaining:
-                    return None
                 self._sleep(wait)
                 continue
-            if response.status_code < 400:
+            if 200 <= response.status_code < 300:
                 break
             if response.status_code not in {408, 429} and not 500 <= response.status_code <= 599:
                 return None
@@ -263,24 +274,46 @@ class ProviderChainNewsBriefPublisher:
                 return None
             bounded_hint = min(retry_after, 10.0) if retry_after is not None else 0.0
             wait = max(float(2**attempt), bounded_hint)
-            if wait >= remaining:
-                return None
             self._sleep(wait)
-        if response is None or response.status_code >= 400:
+        if response is None or not 200 <= response.status_code < 300:
             return None
         try:
-            payload = response.json()
+            payload = json.loads(response.content, parse_constant=_reject_json_constant)
             content = payload["choices"][0]["message"]["content"]
-        except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+        except (UnicodeDecodeError, ValueError, RecursionError, IndexError, KeyError, TypeError):
             return None
-        if not isinstance(content, str) or not content.strip():
+        if not isinstance(content, str) or not javascript_trim(content) or "\x00" in content:
             return None
         text = _clean_provider_text(content)
-        if len(text) < 20:
+        if utf16_length(text) < 20:
             return None
         returned_model = payload.get("model")
-        model = returned_model.strip() if isinstance(returned_model, str) and returned_model.strip() else provider.model
+        normalized_model = javascript_trim(web_usv_string(returned_model)) if isinstance(returned_model, str) else ""
+        model = normalized_model if normalized_model and "\x00" not in normalized_model else provider.model
         return _LlmCandidate(text=text, provider=provider.name, model=model)
+
+    async def _post_provider(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        body: dict[str, object],
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async with httpx.AsyncClient(
+                    follow_redirects=True,
+                    transport=self._transport,
+                ) as client:
+                    return await client.post(
+                        url,
+                        headers=headers,
+                        json=body,
+                        timeout=httpx.Timeout(timeout_seconds),
+                    )
+        except TimeoutError as exc:
+            raise httpx.ReadTimeout("news_brief_provider_timeout") from exc
 
 
 _CHROME_UA = (
@@ -288,14 +321,15 @@ _CHROME_UA = (
 )
 _TASK_NARRATION = re.compile(
     r"^(we need to|i need to|let me|i'll |i should|i will |the task is|the instructions|according to the rules|"
-    r"so we need to|okay[,.]\s*(i'll|let me|so|we need|the task|i should|i will)|sure[,.]\s*(i'll|let me|so|"
+    rf"so we need to|okay[,.]{JAVASCRIPT_WHITESPACE_PATTERN}*(i'll|let me|so|we need|the task|i should|i will)|"
+    rf"sure[,.]{JAVASCRIPT_WHITESPACE_PATTERN}*(i'll|let me|so|"
     r"we need|the task|i should|i will|here)|first[, ]+(i|we|let)|to summarize (the headlines|the task|this)|"
-    r"my task (is|was|:)|step \d)",
-    re.IGNORECASE,
+    r"my task (is|was|:)|step [0-9])",
+    re.IGNORECASE | re.ASCII,
 )
 _PROMPT_ECHO = re.compile(
     r"^(summarize the top story|summarize the key|rules:|here are the rules|the top story is likely)",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -312,9 +346,10 @@ def _provider_headers(provider: _BriefProvider) -> dict[str, str]:
 def _retry_after_seconds(value: str | None, *, now_seconds: float) -> float | None:
     if not value:
         return None
-    try:
-        seconds = float(value)
-    except ValueError:
+    seconds = parse_javascript_number(value)
+    if isfinite(seconds) and seconds == 0:
+        return 1.0
+    if not isfinite(seconds) or seconds <= 0:
         try:
             retry_at = parsedate_to_datetime(value)
             if retry_at.tzinfo is None:
@@ -322,28 +357,36 @@ def _retry_after_seconds(value: str | None, *, now_seconds: float) -> float | No
             return max(retry_at.timestamp() - now_seconds, 1.0)
         except (TypeError, ValueError, OverflowError):
             return None
-    return seconds if seconds > 0 else None
+    return seconds
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid_json_constant:{value}")
 
 
 def _clean_provider_text(value: str) -> str:
-    trimmed = value.strip()
+    trimmed = javascript_trim(web_usv_string(value))
     if _TASK_NARRATION.match(trimmed) or _PROMPT_ECHO.match(trimmed):
-        lines = [line for line in trimmed.splitlines() if line.strip()]
+        lines = [line for line in trimmed.split("\n") if javascript_trim(line)]
         clean = [
-            line for line in lines if not _TASK_NARRATION.match(line.strip()) and not _PROMPT_ECHO.match(line.strip())
+            line
+            for line in lines
+            if not _TASK_NARRATION.match(javascript_trim(line)) and not _PROMPT_ECHO.match(javascript_trim(line))
         ]
-        trimmed = "\n".join(clean).strip() or trimmed
-    return re.sub(
-        r"<think>[\s\S]*",
-        "",
+        trimmed = javascript_trim("\n".join(clean)) or trimmed
+    return javascript_trim(
         re.sub(
-            r"<\|thinking\|>[\s\S]*?<\|/thinking\|>",
+            r"<think>[\s\S]*",
             "",
-            re.sub(r"<think>[\s\S]*?</think>", "", trimmed, flags=re.IGNORECASE),
-            flags=re.IGNORECASE,
-        ),
-        flags=re.IGNORECASE,
-    ).strip()
+            re.sub(
+                r"<\|thinking\|>[\s\S]*?<\|/thinking\|>",
+                "",
+                re.sub(r"<think>[\s\S]*?</think>", "", trimmed, flags=re.IGNORECASE | re.ASCII),
+                flags=re.IGNORECASE | re.ASCII,
+            ),
+            flags=re.IGNORECASE | re.ASCII,
+        )
+    )
 
 
 __all__ = [

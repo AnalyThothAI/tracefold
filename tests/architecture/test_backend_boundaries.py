@@ -235,6 +235,50 @@ def test_news_kiss_has_one_acquisition_module_and_one_story_writer() -> None:
     assert workers_source.count("NewsStoryProjection(") == 1
 
 
+def test_public_news_has_no_personalization_or_parallel_product_infrastructure() -> None:
+    paths = [*_python_files(SRC / "news"), SRC / "integrations" / "news_ai.py"]
+    forbidden_import_roots = {
+        "celery",
+        "chromadb",
+        "faiss",
+        "kafka",
+        "multiprocessing",
+        "pinecone",
+        "qdrant_client",
+        "rabbitmq",
+        "redis",
+        "sentence_transformers",
+        "subprocess",
+    }
+    import_violations = [
+        f"{path.relative_to(ROOT)} -> {imported}"
+        for path in paths
+        for imported in _imports(path)
+        if imported.split(".")[0] in forbidden_import_roots
+    ]
+    assert import_violations == []
+
+    forbidden_product_markers = (
+        "personalized_filter",
+        "user_preference",
+        "embedding_provider",
+        "vector_store",
+        "topic_quota",
+    )
+    marker_violations = [
+        f"{path.relative_to(ROOT)}:{marker}"
+        for path in paths
+        for marker in forbidden_product_markers
+        if marker in path.read_text(encoding="utf-8").lower()
+    ]
+    assert marker_violations == []
+
+    projection_source = (SRC / "news" / "projection.py").read_text(encoding="utf-8")
+    story_input_source = (SRC / "news" / "story_store.py").read_text(encoding="utf-8")
+    assert "provider_metadata" not in projection_source
+    assert "provider_metadata" not in story_input_source
+
+
 def test_news_kiss_retired_tables_have_no_production_owner() -> None:
     retired_tables = {
         "news_identity_features",

@@ -271,6 +271,18 @@ def test_worldmonitor_lowercases_before_filtering_combining_marks() -> None:
     assert cluster_texts(("İ", "i")) == [[0, 1]]
 
 
+def test_worldmonitor_identity_uses_pinned_unicode_17_properties_and_lowering() -> None:
+    assert normalize_story_text("\U0006139c\U00017237\U00011db7\U00036a54\U000353a7") == ("\U00017237\U00011db7")
+    assert news_identity.javascript_lower("\u1c89 \U00010d50 \ua7ce \U00016ea0") == (
+        "\u1c8a \U00010d70 \ua7cf \U00016ebb"
+    )
+    assert news_identity._content_tokens("\ua7ce \U00016ea0 \U00011db7") == [
+        ("\ua7cf", 3.0),
+        ("\U00016ebb", 3.0),
+        ("\U00011db7", 1.0),
+    ]
+
+
 def test_worldmonitor_identity_clamp_counts_utf16_code_units() -> None:
     prefix = "😀" * 151
     left = prefix + " Iran threatens to close Strait of Hormuz"
@@ -337,6 +349,20 @@ def test_worldmonitor_historical_marker_false_matrix(title: str) -> None:
     assert has_historical_marker(title, now_ms=1_776_211_200_000) is False
 
 
+def test_worldmonitor_short_keyword_uses_javascript_ascii_word_boundary() -> None:
+    classification = classify_by_keyword("中国war升级")
+
+    assert classification.level == "high"
+    assert classification.category == "conflict"
+
+
+def test_worldmonitor_historical_marker_uses_javascript_ascii_word_boundary() -> None:
+    classification = classify_by_keyword("Invasion 5 years ago纪念", now_ms=1_779_000_000_000)
+
+    assert classification.level == "info"
+    assert classification.source == "keyword-historical-downgrade"
+
+
 @pytest.mark.parametrize(("level", "tier", "corroboration", "expected"), IMPORTANCE_CASES)
 def test_worldmonitor_importance_score_matrix(
     level: str,
@@ -377,3 +403,18 @@ def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> 
         "entity_corroboration_boost": 0,
         "total": 80,
     }
+
+
+def test_worldmonitor_future_timestamp_recency_is_not_clamped_to_now() -> None:
+    now_ms = 1_779_000_000_000
+    factors = importance_factors(
+        level="info",
+        tier=4,
+        corroboration_count=1,
+        published_at_ms=now_ms + 12 * 60 * 60_000,
+        now_ms=now_ms,
+        title="Scheduled central bank update",
+    )
+
+    assert factors["recency_points"] == 15.0
+    assert factors["total"] == 23

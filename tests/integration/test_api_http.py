@@ -635,7 +635,11 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                     ),
                     provider="fixture",
                     model="fixture-model",
-                    validation={"fixture": True},
+                    validation={
+                        "failure_code": None,
+                        "stripped_citations": 0,
+                        "line_fallbacks": [],
+                    },
                 ),
                 now_ms=now_ms + 600_002,
             )
@@ -751,7 +755,11 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert len(brief["publication"]["selected_story_ids"]) == 3
     assert brief["publication"]["locale"] == "en"
     assert brief["publication"]["brief_kind"] == "l1"
-    assert brief["publication"]["validation"] == {"fixture": True}
+    assert brief["publication"]["validation"] == {
+        "failure_code": None,
+        "stripped_citations": 0,
+        "line_fallbacks": [],
+    }
     assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["brief_story_lines"])
     assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["sources"])
     assert set(brief) == {

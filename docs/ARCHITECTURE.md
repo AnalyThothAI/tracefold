@@ -282,6 +282,7 @@ OpenNews source
   -> provider annotations update bounded metadata on the current item
   -> complete 12-hour current WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
+  -> public UTF-16 title-length gate + same-kernel seed clustering
   -> public cluster evidence + importance/admissibility/recency selection
   -> at most eight server-ordered Top Stories with corroborated-lead reservation
   -> L1 structured synthesis/acceptance -> L2 single-headline fallback
@@ -314,8 +315,10 @@ The stream socket does not consume a finite-operation permit; REST does.
 OpenNews provider record ID is the current-fact identity. Reconnect and
 REST/WSS overlap therefore update or no-op the same row. A report becomes one
 fact: the first non-empty logical plaintext block is the title (maximum 500
-characters), a cleaned explicit description or remaining blocks become the
-bounded description, and reporting origin resolves from a Twitter author,
+JavaScript UTF-16 code units), a cleaned explicit description or remaining
+blocks become the 40-to-400 JavaScript UTF-16 code-unit description (both
+truncation paths apply Web scalar-value replacement), and reporting origin
+resolves from a Twitter author,
 then `newsType`, URL host, or `opennews`. Linkless dispatches remain valid.
 `news.ai_update`
 updates only the bounded provider-source label, `score`, `signal`, `grade`, and
@@ -357,13 +360,17 @@ Story identity is the Python port of WorldMonitor's
 512-dimensional vectors, uniform and boosted cosine channels, threshold
 `0.615`, exact-duplicate union, high-containment rescue, 250-item candidate
 buckets, and deterministic union-find. A Story ID is the full SHA-256 of the
-earliest normalized title in that current cluster. It may change when the
-earliest item expires; the previous Story is removed and its detail route
-returns not found. There is no archived Story product, embedding,
-full-article extraction, browser clustering, revision product, per-Story AI
-analysis, or localized-title state. Outbound Push may independently freeze a
-Chinese presentation copy of its selected OpenNews Item headline, but that
-delivery-local adapter adds no model-derived NewsItem or Story state.
+shared `normalizeStoryText` value for the pinned earliest anchor in that
+current component; an untrackable component uses its per-Item sentinel. It may
+change when the earliest item expires; the previous Story is removed and its
+detail route returns not found. The separate `canonical_key` records the
+caller-owned public `titleHash` used by the digest first stage. Distinct lexical
+components may share that value, but never membership or selector grouping.
+There is no archived Story product, embedding, full-article extraction,
+browser clustering, revision product, per-Story AI analysis, or localized-title
+state. Outbound Push may independently freeze a Chinese presentation copy of
+its selected OpenNews Item headline, but that delivery-local adapter adds no
+model-derived NewsItem or Story state.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
 including exclusions and historical downgrade. There is no item-level AI
@@ -379,17 +386,21 @@ filtering, sorting, and keyset pagination; category, severity, reporting
 origin, source, and strict provider-score qualification are facets or filters,
 never clustering buckets or browser-side caps.
 
-The Story transaction is also the only public selection writer. It treats each
-current Story as one public `seed-insights` cluster, derives member titles,
-distinct origins, entity corroboration, source tier, public category/threat,
-second-stage importance, admissibility, and 16-hour effective-recency rank,
-then selects at most eight. One primary reporting origin can occupy at most
-three slots. If the normal Top Stories contain no eligible corroborated lead,
-the highest-ranked eligible candidate is reserved and the result is restored
-to public rank order. Drop counts distinguish admissibility, source-cap, and
-overflow effects. This is one global public selection: there is no profile,
-preference, embedding, topic grouping, entity veto, `(source, category)` quota,
-client-side ISQ reorder, or promised topic/multi-source diversity.
+The Story transaction is also the only public selection writer. Materialized
+Stories retain complete ownership, while the public `seed-insights` stage first
+drops titles whose JavaScript UTF-16 length is at most ten and then reruns the
+same pinned clustering kernel over eligible Items. Removing a short bridge can
+split one complete Story into multiple public candidates; each candidate maps
+back to its containing Story ID. The selector derives member titles, distinct
+origins, entity corroboration, source tier, public category/threat, second-stage
+importance, admissibility, and 16-hour effective-recency rank, then selects at
+most eight. One primary reporting origin can occupy at most three slots. If the
+normal Top Stories contain no eligible corroborated lead, the highest-ranked
+eligible candidate is reserved and the result is restored to public rank order.
+Drop counts distinguish admissibility, source-cap, and overflow effects. This
+is one global public selection: there is no profile, preference, embedding,
+topic grouping, entity veto, `(source, category)` quota, client-side ISQ
+reorder, or promised topic/multi-source diversity.
 
 The selection table is one singleton captured-current snapshot, not rank rows.
 `selection_fingerprint` binds its projection revision/evaluation clock, every

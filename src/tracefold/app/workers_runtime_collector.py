@@ -1430,9 +1430,8 @@ def _collection_metadata(settings: Any, *, repository_root: Path) -> dict[str, A
                 "collector_enabled": gmgn_stream_enabled(settings),
                 "news_enabled": bool(settings.news.enabled),
                 "macro_enabled": bool(settings.providers.macro_sources.enabled),
-                "model_configured": bool(
-                    settings.llm.api_key or settings.llm.openrouter_api_key or settings.llm.groq_api_key
-                ),
+                "news_brief_openrouter_configured": bool(settings.llm.openrouter_api_key),
+                "news_brief_groq_configured": bool(settings.llm.groq_api_key),
             },
         },
     }

@@ -6509,6 +6509,80 @@
         "title": "NewsBriefData",
         "type": "object"
       },
+      "NewsBriefL1ValidationData": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_code": {
+            "title": "Failure Code",
+            "type": "null"
+          },
+          "line_fallbacks": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 8,
+            "title": "Line Fallbacks",
+            "type": "array"
+          },
+          "stripped_citations": {
+            "minimum": 0.0,
+            "title": "Stripped Citations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "failure_code",
+          "stripped_citations",
+          "line_fallbacks"
+        ],
+        "title": "NewsBriefL1ValidationData",
+        "type": "object"
+      },
+      "NewsBriefL2ValidationData": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_code": {
+            "enum": [
+              "INSIGHTS_SYNTHESIS_PARSE",
+              "INSIGHTS_SYNTHESIS_GATE",
+              "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
+              "INSIGHTS_SYNTHESIS_PROVIDER"
+            ],
+            "title": "Failure Code",
+            "type": "string"
+          },
+          "headline_fallback": {
+            "title": "Headline Fallback",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "failure_code",
+          "headline_fallback"
+        ],
+        "title": "NewsBriefL2ValidationData",
+        "type": "object"
+      },
+      "NewsBriefNoneValidationData": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_code": {
+            "enum": [
+              "INSIGHTS_SYNTHESIS_PARSE",
+              "INSIGHTS_SYNTHESIS_GATE",
+              "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
+              "INSIGHTS_SYNTHESIS_PROVIDER"
+            ],
+            "title": "Failure Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "failure_code"
+        ],
+        "title": "NewsBriefNoneValidationData",
+        "type": "object"
+      },
       "NewsBriefProvenanceData": {
         "additionalProperties": false,
         "properties": {
@@ -6640,9 +6714,18 @@
             "type": "array"
           },
           "validation": {
-            "additionalProperties": true,
-            "title": "Validation",
-            "type": "object"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsBriefL1ValidationData"
+              },
+              {
+                "$ref": "#/components/schemas/NewsBriefL2ValidationData"
+              },
+              {
+                "$ref": "#/components/schemas/NewsBriefNoneValidationData"
+              }
+            ],
+            "title": "Validation"
           },
           "workflow_version": {
             "title": "Workflow Version",

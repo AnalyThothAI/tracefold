@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 from alembic import command
 from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
@@ -158,6 +160,80 @@ def _push_ledger_snapshot(conn: Any) -> dict[str, Any]:
     }
 
 
+def _retained_item_snapshot(conn: Any, item_id: str) -> dict[str, Any]:
+    return dict(
+        conn.execute(
+            """
+            SELECT item_id, source_id, source_item_key, provider_record_id,
+                   provider_metadata, provider_score_updated_at_ms,
+                   canonical_url, reporting_origin, title, description, lang,
+                   published_at_ms, first_observed_at_ms, last_observed_at_ms,
+                   content_fingerprint, level, category, classification_source,
+                   classification_confidence, importance_score, importance_factors,
+                   active, created_at_ms, updated_at_ms
+              FROM news_items
+             WHERE item_id = %s
+            """,
+            (item_id,),
+        ).fetchone()
+    )
+
+
+def _insert_opennews_migration_rows(conn: Any, *, count: int, title_prefix: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO news_sources(
+          source_id, name, tier, lang, enabled, consecutive_failures,
+          created_at_ms, updated_at_ms, source_kind, live_connected,
+          gap_unclosed, gap_version
+        ) VALUES (
+          'news-opennews', 'OpenNews', 2, 'en', true, 0,
+          0, 0, 'opennews', false, false, 0
+        )
+        """
+    )
+    for index in range(1, count + 1):
+        conn.execute(
+            """
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, provider_record_id,
+              provider_metadata, canonical_url, reporting_origin,
+              title, normalized_title, description, lang, published_at_ms,
+              first_observed_at_ms, last_observed_at_ms, content_fingerprint,
+              level, category, classification_source, classification_confidence,
+              importance_score, importance_factors, brief_excluded,
+              active, created_at_ms, updated_at_ms
+            ) VALUES (
+              %(item_id)s, 'news-opennews', %(record_id)s, %(record_id)s,
+              %(metadata)s, NULL, 'twitter', %(title)s, 'legacy', '', 'en',
+              %(clock)s, %(clock)s, %(clock)s, 'legacy-fingerprint',
+              'info', 'general', 'keyword', 1, 0, '{}'::jsonb, false,
+              true, %(clock)s, %(clock)s
+            )
+            """,
+            {
+                "item_id": f"migration-item-{index}",
+                "record_id": f"migration-record-{index}",
+                "metadata": Jsonb({"source": f"Author{index}"}),
+                "title": (
+                    f"<b>{title_prefix} {index}</b><br>"
+                    "Detailed retained context is longer than forty UTF-16 code units."
+                ),
+                "clock": 100 + index,
+            },
+        )
+
+
+def _migration_module():
+    return importlib.import_module(
+        "tracefold.platform.postgres.alembic.versions.20260807_0246_news_world_brief_hard_cut"
+    )
+
+
+def _sqlalchemy_test_url() -> str:
+    return _test_postgres_dsn().replace("postgresql://", "postgresql+psycopg://", 1)
+
+
 def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -249,6 +325,18 @@ def test_world_brief_hard_cut_matches_the_canonical_opennews_fact_adapter() -> N
             "link": "",
             "ts": 126,
         },
+        {
+            "id": "javascript-whitespace",
+            "text": (
+                "\ufeffAlpha\ufeffBeta policy update\ufeff<br>"
+                "Detailed\ufeffpublic context is longer than forty UTF-16 code units for readers."
+            ),
+            "description": "",
+            "newsType": "\ufeffReuters\ufeff",
+            "engineType": "\ufeffnews\ufeff",
+            "link": "",
+            "ts": 127,
+        },
     )
     expected: dict[str, dict[str, object]] = {}
     try:
@@ -290,6 +378,7 @@ def test_world_brief_hard_cut_matches_the_canonical_opennews_fact_adapter() -> N
                 "explicit-news-type": " ReUtErS ",
                 "url-host-fallback": "",
                 "opennews-fallback": "",
+                "javascript-whitespace": "\ufeffReUtErS\ufeff",
             }[str(params["id"])]
             conn.execute(
                 """
@@ -378,6 +467,9 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
             ) VALUES (
               'news-opennews', 'OpenNews', 2, 'en', true, 0,
               0, 0, 'opennews', false, false, 0
+            ), (
+              'legacy-rss', 'Legacy RSS', 3, 'en', false, 0,
+              0, 0, 'rss', false, false, 0
             );
 
             INSERT INTO news_items(
@@ -397,6 +489,15 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
               'polluted old normalized title', '', 'en', 123, 124, 125,
               'old-content-fingerprint', 'info', 'general', 'keyword', 1,
               0, '{}'::jsonb, true, true, 124, 125
+            ), (
+              'item-legacy-rss', 'legacy-rss', 'rss-1', NULL,
+              '{"legacy":"sealed"}'::jsonb, NULL,
+              'https://legacy.example/story', 'Legacy RSS',
+              '<b>Legacy RSS headline</b><br>Irreplaceable body',
+              'legacy-rss-normalized', 'Irreplaceable historical RSS description',
+              'en', 120, 121, 122, 'sealed-rss-content-fingerprint',
+              'medium', 'general', 'keyword', 0.75,
+              17, '{"sealed":true}'::jsonb, false, false, 121, 122
             );
 
             INSERT INTO news_stories(
@@ -492,6 +593,27 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
             )
             """
         )
+        conn.execute(
+            """
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, provider_record_id,
+              provider_metadata, provider_score_updated_at_ms,
+              canonical_url, reporting_origin, title, normalized_title,
+              description, lang, published_at_ms, first_observed_at_ms,
+              last_observed_at_ms, content_fingerprint, level, category,
+              classification_source, classification_confidence,
+              importance_score, importance_factors, brief_excluded,
+              active, created_at_ms, updated_at_ms
+            ) VALUES (
+              'item-astral-clamp', 'news-opennews', 'wire-astral', 'wire-astral',
+              '{}'::jsonb, NULL, NULL, 'Reuters', %(title)s, 'legacy',
+              '', 'en', 123, 124, 125, 'old-astral-fingerprint',
+              'info', 'general', 'keyword', 1, 0, '{}'::jsonb, true,
+              true, 124, 125
+            )
+            """,
+            {"title": "a" * 499 + "𝔸" + "z"},
+        )
         terminalize_source_row(
             conn,
             owner_key="news_brief",
@@ -503,6 +625,7 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
             now_ms=126,
         )
         push_before = _push_ledger_snapshot(conn)
+        rss_before = _retained_item_snapshot(conn, "item-legacy-rss")
         conn.commit()
     finally:
         conn.close()
@@ -518,7 +641,9 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
              WHERE item_id='item-retained'
             """
         ).fetchone()
+        astral_item = conn.execute("SELECT title FROM news_items WHERE item_id='item-astral-clamp'").fetchone()
         push_after = _push_ledger_snapshot(conn)
+        rss_after = _retained_item_snapshot(conn, "item-legacy-rss")
         old_state_counts = conn.execute(
             """
             SELECT
@@ -557,6 +682,8 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
         "created_at_ms": 124,
         "updated_at_ms": 125,
     }
+    assert astral_item == {"title": "a" * 499 + "\ufffd"}
+    assert rss_after == rss_before
     assert push_after == push_before
     assert push_before["state"]["row_count"] == 1
     assert push_before["deliveries"]["row_count"] == 2
@@ -590,9 +717,9 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
         "updated_at_ms": 0,
     }
     assert summary == {
-        "active_item_count": 1,
+        "active_item_count": 2,
         "active_story_count": 0,
-        "unmaterialized_item_count": 1,
+        "unmaterialized_item_count": 2,
         "input_fingerprint": None,
         "projection_version": None,
         "last_attempt_at_ms": None,
@@ -714,6 +841,88 @@ def test_world_brief_state_accepts_only_discriminated_publication_and_run_shapes
         {"status": "running", "model_outcome": None, "pointer_action": "none"},
         {"status": "waiting_input", "model_outcome": "none", "pointer_action": "advance_degraded"},
     ]
+
+
+def test_opennews_fact_normalization_crosses_keyset_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, conn = _reset_to_0245()
+    try:
+        _insert_opennews_migration_rows(conn, count=3, title_prefix="Batch headline")
+        conn.commit()
+    finally:
+        conn.close()
+
+    migration = _migration_module()
+    engine = sa.create_engine(_sqlalchemy_test_url())
+    try:
+        with engine.begin() as bind:
+            monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+            monkeypatch.setattr(migration, "_NORMALIZATION_BATCH_SIZE", 1)
+            monkeypatch.setattr(migration, "_NORMALIZATION_ROW_CAP", 10)
+            migration._normalize_retained_opennews_facts()
+    finally:
+        engine.dispose()
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        facts = conn.execute(
+            """
+            SELECT item_id, title, description, reporting_origin
+              FROM news_items
+             ORDER BY item_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    assert facts == [
+        {
+            "item_id": f"migration-item-{index}",
+            "title": f"Batch headline {index}",
+            "description": "Detailed retained context is longer than forty UTF-16 code units.",
+            "reporting_origin": f"author{index}",
+        }
+        for index in range(1, 4)
+    ]
+
+
+def test_opennews_fact_normalization_row_cap_fails_before_rewriting(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, conn = _reset_to_0245()
+    try:
+        _insert_opennews_migration_rows(conn, count=2, title_prefix="Cap headline")
+        before = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT item_id, title, reporting_origin, content_fingerprint FROM news_items ORDER BY item_id"
+            ).fetchall()
+        ]
+        conn.commit()
+    finally:
+        conn.close()
+
+    migration = _migration_module()
+    engine = sa.create_engine(_sqlalchemy_test_url())
+    try:
+        with (
+            pytest.raises(RuntimeError, match="news_world_brief_hard_cut_opennews_row_cap:2"),
+            engine.begin() as bind,
+        ):
+            monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+            monkeypatch.setattr(migration, "_NORMALIZATION_BATCH_SIZE", 1)
+            monkeypatch.setattr(migration, "_NORMALIZATION_ROW_CAP", 1)
+            migration._normalize_retained_opennews_facts()
+    finally:
+        engine.dispose()
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        after = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT item_id, title, reporting_origin, content_fingerprint FROM news_items ORDER BY item_id"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    assert after == before
 
 
 def test_world_brief_hard_cut_fails_atomically_instead_of_deleting_an_unusable_fact() -> None:

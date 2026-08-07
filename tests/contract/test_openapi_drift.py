@@ -133,6 +133,18 @@ def test_news_contract_hard_cuts_title_translation_and_old_brief_aggregates() ->
         "latest_run",
     }
     assert {"top_stories", "brief_kind", "world_brief", "source_age_range", "provenance"} <= set(publication_properties)
+    validation = publication_properties["validation"]
+    assert {entry["$ref"] for entry in validation["anyOf"]} == {
+        "#/components/schemas/NewsBriefL1ValidationData",
+        "#/components/schemas/NewsBriefL2ValidationData",
+        "#/components/schemas/NewsBriefNoneValidationData",
+    }
+    for name in (
+        "NewsBriefL1ValidationData",
+        "NewsBriefL2ValidationData",
+        "NewsBriefNoneValidationData",
+    ):
+        assert components[name]["additionalProperties"] is False
     assert {"history", "candidate_story_count", "candidate_source_count", "lead", "lines"}.isdisjoint(
         brief_properties | publication_properties
     )

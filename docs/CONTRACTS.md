@@ -238,9 +238,12 @@ does not change the absent-parameter Feed API behavior described above.
 
 NewsItem identity is `(source_id, provider_record_id)`. OpenNews reports upsert
 one canonical current fact. The title is the first non-empty logical plaintext
-block, capped at 500 characters. A cleaned explicit description wins;
-otherwise remaining blocks form the description, with the 40-to-400-character
-contract and title-equality suppression. Verified Twitter wrapper reports use
+block, capped at 500 JavaScript UTF-16 code units; a clamp that splits a
+surrogate pair is converted with Web scalar-value replacement before storage.
+A cleaned explicit description wins; otherwise remaining blocks form the
+description, with the 40-to-400 JavaScript UTF-16 code-unit contract,
+Web scalar-value replacement after truncation, and title-equality suppression.
+Verified Twitter wrapper reports use
 the author handle as reporting origin; other reports use `newsType`, then the
 canonical URL host, then `opennews`. Linkless reports remain valid. Provider
 metadata is limited to the provider-source label, `score`, `signal`, `grade`,
@@ -255,6 +258,14 @@ numeric score value changed is persisted separately from Story-owned
 `updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is the full SHA-256
 of the earliest normalized title in
 the complete current 12-hour cluster using WorldMonitor-compatible identity.
+Story IDs identify the exact shared lexical components; `canonical_key` keeps
+the caller-owned public `titleHash` used for first-stage signals. Separate
+components may share that public tracking hash while retaining distinct Story
+IDs and complete Item membership. The public seed stage independently applies
+the pinned JavaScript UTF-16 `title.length > 10` gate before rerunning the same
+clustering kernel. A short bridge can therefore split one complete Story into
+multiple selector candidates that map back to the same Story ID. No additional
+semantic merge rule is exposed.
 Valid Article facts can remain admitted for up to 96 hours independently of
 current Story membership. Corroboration counts
 distinct reporting origins, not acquisition paths, memberships, or repeated
@@ -262,7 +273,8 @@ observations. Keyword classification and importance are deterministic and
 fully sufficient without AI.
 
 The complete current 12-hour Story closure uses only the canonical title for
-the pinned WorldMonitor lexical identity. The public selector then derives the
+the pinned WorldMonitor lexical identity. The public seed then filters short
+titles and reclusters eligible Items with that same identity before deriving
 cluster evidence, second-stage importance/admissibility score, 16-hour
 effective recency, maximum-three primary-source cap, and corroborated-lead
 reservation. It selects at most eight Stories in stable server order and

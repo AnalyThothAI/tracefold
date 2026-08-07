@@ -949,6 +949,7 @@ function BriefDocument({
   publication: BriefPublication;
   state: NewsBrief["state"];
 }) {
+  const selectionStats = publication.provenance.selection_stats;
   return (
     <article className="news-brief-document">
       <header className="news-brief-publication-meta">
@@ -958,6 +959,14 @@ function BriefDocument({
           来源时间 {absoluteTime(publication.source_age_range.oldest_ms)} 至{" "}
           {absoluteTime(publication.source_age_range.newest_ms)}
         </p>
+        <ul aria-label="公开精选漏斗" className="news-brief-selection-stats">
+          <li>候选 {selectionStats.considered}</li>
+          <li>可作主线 {selectionStats.brief_eligible_considered}</li>
+          <li>主线补位 {selectionStats.brief_eligible_promoted ? "已触发" : "未触发"}</li>
+          <li>准入剔除 {selectionStats.admissibility_dropped}</li>
+          <li>来源上限剔除 {selectionStats.source_cap_dropped}</li>
+          <li>名额溢出剔除 {selectionStats.overflow_dropped}</li>
+        </ul>
       </header>
       <section aria-labelledby="news-brief-top-stories" className="news-brief-top-stories">
         <header>
@@ -969,7 +978,7 @@ function BriefDocument({
         </header>
         <ol>
           {publication.top_stories.map((story, index) => (
-            <BriefTopStoryCard index={index + 1} key={story.story_id} story={story} />
+            <BriefTopStoryCard index={index + 1} key={`${story.story_id}:${index}`} story={story} />
           ))}
         </ol>
       </section>
@@ -1050,7 +1059,7 @@ function BriefEnhancement({ publication }: { publication: BriefPublication }) {
             const story = publication.top_stories[line.n - 1];
             return (
               <li key={line.n}>
-                <p>{line.text}</p>
+                <p>{renderBriefCitations(line.text, publication.top_stories)}</p>
                 {story ? <Link to={newsStoryPath(story.story_id)}>查看新闻事件</Link> : null}
               </li>
             );
@@ -1067,7 +1076,7 @@ function BriefEnhancement({ publication }: { publication: BriefPublication }) {
 function renderBriefCitations(text: string, topStories: readonly BriefTopStory[]): ReactNode[] {
   const fragments: ReactNode[] = [];
   let cursor = 0;
-  for (const match of text.matchAll(/\[(\d{1,2})\]/g)) {
+  for (const match of text.matchAll(/\[(\d{1,3})\]/g)) {
     const marker = match[0];
     const start = match.index;
     if (start > cursor) fragments.push(text.slice(cursor, start));

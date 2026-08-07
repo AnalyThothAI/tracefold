@@ -526,6 +526,18 @@ describe("NewsPage", () => {
     expect(screen.queryByText(/历史发布|候选新闻|综合得分/)).not.toBeInTheDocument();
   });
 
+  it("shows the sealed public selection funnel", async () => {
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+
+    const funnel = await screen.findByLabelText("公开精选漏斗");
+    expect(within(funnel).getByText("候选 4")).toBeInTheDocument();
+    expect(within(funnel).getByText("可作主线 1")).toBeInTheDocument();
+    expect(within(funnel).getByText("主线补位 未触发")).toBeInTheDocument();
+    expect(within(funnel).getByText("准入剔除 2")).toBeInTheDocument();
+    expect(within(funnel).getByText("来源上限剔除 0")).toBeInTheDocument();
+    expect(within(funnel).getByText("名额溢出剔除 0")).toBeInTheDocument();
+  });
+
   it("shows primary and member evidence, counts, source age, and linkless state", async () => {
     const brief = newsGlobalBriefFixture();
     if (!brief.publication) throw new Error("brief publication fixture required");
@@ -563,9 +575,10 @@ describe("NewsPage", () => {
       topStories.compareDocumentPosition(enhancement) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getByText(/Ceasefire talks and severe weather/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Ceasefire talks resume as delegations return \[1\]/),
-    ).toBeInTheDocument();
+    const summaries = screen.getByRole("list", { name: "AI 新闻事件摘要" });
+    expect(within(summaries).getAllByRole("listitem")[0]).toHaveTextContent(
+      "Ceasefire talks resume as delegations return [1]",
+    );
     expect(screen.getByText("L1 · 完整校验")).toBeInTheDocument();
   });
 
@@ -603,6 +616,27 @@ describe("NewsPage", () => {
     fireEvent.click(citations[0]);
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent("/news/stories/story-typhoon"),
+    );
+  });
+
+  it("links each L1 Story-line citation marker to its immutable Story slot", async () => {
+    const brief = newsGlobalBriefFixture();
+    if (!brief.publication) throw new Error("brief publication fixture required");
+    brief.publication.brief_story_lines[1].text = "A typhoon reaches the coast [002]";
+    server.use(
+      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
+    );
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+
+    const summaries = await screen.findByRole("list", { name: "AI 新闻事件摘要" });
+    const items = within(summaries).getAllByRole("listitem");
+    expect(within(items[0]).getByRole("link", { name: /引用 1/ })).toHaveAttribute(
+      "href",
+      "/news/stories/story-ceasefire",
+    );
+    expect(within(items[1]).getByRole("link", { name: /引用 2/ })).toHaveAttribute(
+      "href",
+      "/news/stories/story-typhoon",
     );
   });
 

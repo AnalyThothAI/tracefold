@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from psycopg import conninfo
 
+from tracefold.app import workers_runtime_collector as collector_module
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.app.workers_runtime_collector import (
     _LOOPBACK_PROXY,
@@ -24,6 +25,7 @@ from tracefold.app.workers_runtime_collector import (
     validate_workers_runtime_collection,
 )
 from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
+from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
@@ -42,6 +44,25 @@ def test_runtime_and_frontier_contract_follow_news_hard_cut() -> None:
 
 def test_loopback_probe_never_uses_operator_system_proxy() -> None:
     assert _LOOPBACK_PROXY.proxies == {}
+
+
+def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch, tmp_path: Path) -> None:
+    settings = Settings(
+        llm={
+            "api_key": "push-translation-only",
+            "openrouter_api_key": None,
+            "groq_api_key": "groq-secret",
+        }
+    )
+    settings.set_config_dir(tmp_path)
+    monkeypatch.setattr(collector_module, "_git_head", lambda _root: "a" * 40)
+
+    metadata = collector_module._collection_metadata(settings, repository_root=tmp_path)
+    enablement = metadata["configuration"]["redacted_enablement"]
+
+    assert "model_configured" not in enablement
+    assert enablement["news_brief_openrouter_configured"] is False
+    assert enablement["news_brief_groq_configured"] is True
 
 
 class _VirtualClock:

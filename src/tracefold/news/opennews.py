@@ -9,6 +9,13 @@ from math import isfinite
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .identity import (
+    collapse_javascript_whitespace,
+    javascript_trim,
+    utf16_length,
+    utf16_slice,
+    web_usv_string,
+)
 from .models import NewsFeedEntry
 
 OPENNEWS_REST_LIMIT = 100
@@ -97,7 +104,7 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     entry = None
     if observation_kind == "report":
         blocks = _logical_blocks(_content_text(params.get("text")))
-        title = blocks[0][:_MAX_HEADLINE_LEN].strip() if blocks else ""
+        title = javascript_trim(web_usv_string(utf16_slice(blocks[0], _MAX_HEADLINE_LEN))) if blocks else ""
         description = _canonical_description(
             explicit=_content_text(params.get("description")),
             remaining_blocks=blocks[1:],
@@ -131,7 +138,7 @@ def _timestamp_ms(value: object) -> int | None:
         if not isfinite(number):
             return None
         return int(number * 1_000) if abs(number) < 100_000_000_000 else int(number)
-    text = str(value).strip()
+    text = javascript_trim(str(value))
     if not text:
         return None
     try:
@@ -150,7 +157,7 @@ def _timestamp_ms(value: object) -> int | None:
 
 def _article_url(value: str) -> str:
     try:
-        parsed = urlsplit(value.strip())
+        parsed = urlsplit(javascript_trim(value))
     except ValueError:
         return ""
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
@@ -172,7 +179,7 @@ def _article_url(value: str) -> str:
 
 def _reporting_origin(params: Mapping[str, Any], *, canonical_url: str) -> str:
     news_type = _text(params.get("newsType"))
-    if news_type.casefold() == "twitter":
+    if news_type.lower() == "twitter":
         author = _text(params.get("source")).lower()
         if author:
             return author
@@ -192,7 +199,7 @@ def _logical_blocks(value: str) -> tuple[str, ...]:
         cleaned = html.unescape(raw)
         cleaned = _TAG_RE.sub(" ", cleaned)
         cleaned = _CONTROL_RE.sub(" ", cleaned)
-        cleaned = " ".join(cleaned.split())
+        cleaned = collapse_javascript_whitespace(cleaned)
         if cleaned:
             blocks.append(cleaned)
     return tuple(blocks)
@@ -205,16 +212,16 @@ def _canonical_description(
     title: str,
 ) -> str:
     explicit_blocks = _logical_blocks(explicit)
-    description = " ".join(explicit_blocks or remaining_blocks).strip()
-    if len(description) < _MIN_DESCRIPTION_LEN:
+    description = javascript_trim(" ".join(explicit_blocks or remaining_blocks))
+    if utf16_length(description) < _MIN_DESCRIPTION_LEN:
         return ""
-    if " ".join(description.casefold().split()) == " ".join(title.casefold().split()):
+    if collapse_javascript_whitespace(description.lower()) == collapse_javascript_whitespace(title.lower()):
         return ""
-    return description[:_MAX_DESCRIPTION_LEN]
+    return web_usv_string(utf16_slice(description, _MAX_DESCRIPTION_LEN))
 
 
 def _is_translation(params: Mapping[str, Any]) -> bool:
-    return _text(params.get("newsType")).casefold() == "translation" or any(
+    return _text(params.get("newsType")).lower() == "translation" or any(
         key in params for key in ("translation", "translationOf", "translatedFrom", "translatedText")
     )
 
@@ -280,7 +287,7 @@ def _number(value: object) -> int | float | None:
 
 
 def _text(value: object) -> str:
-    text = str(value or "").strip()
+    text = javascript_trim(str(value or ""))
     if not text or "\x00" in text:
         return ""
     try:
@@ -291,7 +298,7 @@ def _text(value: object) -> str:
 
 
 def _content_text(value: object) -> str:
-    text = str(value or "").strip()
+    text = javascript_trim(str(value or ""))
     if not text:
         return ""
     try:

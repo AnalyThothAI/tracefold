@@ -1330,20 +1330,6 @@ class NewsRepository:
             now_ms=now_ms,
         )
 
-    def fail_brief_run(
-        self,
-        *,
-        claim: Mapping[str, Any],
-        error_code: str,
-        now_ms: int,
-    ) -> str | None:
-        return brief_store.fail_brief_run(
-            self,
-            claim=claim,
-            error_code=error_code,
-            now_ms=now_ms,
-        )
-
     def get_brief(self, *, now_ms: int) -> dict[str, Any]:
         return brief_store.get_brief(self, now_ms=now_ms)
 

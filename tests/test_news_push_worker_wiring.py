@@ -87,17 +87,54 @@ def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> No
     assert "translator" not in parameters
 
 
-def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain() -> None:
-    wiring = inspect.getsource(workers._wire_components)
+def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publisher_kwargs: list[dict[str, Any]] = []
 
-    assert "configured_base_url" not in wiring
-    assert "configured_api_key" not in wiring
-    assert "configured_model" not in wiring
-    assert "news_brief_model" not in wiring.split("if settings.news.push.enabled:", 1)[0]
-    assert "ollama_base_url=_NEWS_OLLAMA_BASE_URL" in wiring
-    assert "openrouter_api_key=settings.llm.openrouter_api_key" in wiring
-    assert "groq_api_key=settings.llm.groq_api_key" in wiring
-    assert workers._NEWS_OLLAMA_BASE_URL == "http://host.docker.internal:11434/v1"
+    class _BriefPublisher:
+        def __init__(self, **kwargs: Any) -> None:
+            publisher_kwargs.append(kwargs)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
+    monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
+    settings = Settings(
+        upstream={"channels": []},
+        llm={
+            "api_key": "push-translation-only",
+            "base_url": "https://translation.test/v1",
+            "news_brief_model": "push-translation-model",
+            "openrouter_api_key": "openrouter-secret",
+            "groq_api_key": "groq-secret",
+        },
+        news={"enabled": True},
+        providers={"binance": {"enabled": False}, "macro_sources": {"enabled": False}},
+    )
+
+    components = asyncio.run(
+        workers._wire_components(
+            settings=settings,
+            db=object(),  # type: ignore[arg-type]
+            telemetry=object(),  # type: ignore[arg-type]
+            finite=object(),  # type: ignore[arg-type]
+            model_adapter=object(),  # type: ignore[arg-type]
+            cpu=object(),  # type: ignore[arg-type]
+            runtime_id="runtime-public-brief",
+        )
+    )
+
+    assert components.news_brief is not None
+    assert publisher_kwargs == [
+        {
+            "ollama_base_url": "http://host.docker.internal:11434/v1",
+            "openrouter_api_key": "openrouter-secret",
+            "groq_api_key": "groq-secret",
+            "total_timeout_seconds": 60.0,
+        }
+    ]
 
 
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:

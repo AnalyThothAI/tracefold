@@ -24,22 +24,47 @@ depends_on = None
 _MAX_HEADLINE_LEN = 500
 _MAX_DESCRIPTION_LEN = 400
 _MIN_DESCRIPTION_LEN = 40
+_OPENNEWS_SOURCE_ID = "news-opennews"
+_NORMALIZATION_BATCH_SIZE = 1_000
+_NORMALIZATION_ROW_CAP = 100_000
 _BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_JAVASCRIPT_WHITESPACE = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+_JS_WHITESPACE_RE = re.compile(f"[{re.escape(_JAVASCRIPT_WHITESPACE)}]+")
+
+
+def _utf16_slice_usv(value: str, stop: int) -> str:
+    """Frozen JS ``slice`` followed by Web scalar-value conversion."""
+
+    encoded = value.encode("utf-16-le", errors="surrogatepass")
+    sliced = encoded[: max(0, stop) * 2].decode("utf-16-le", errors="surrogatepass")
+    return sliced.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _collapse_javascript_whitespace(value: str) -> str:
+    return _JS_WHITESPACE_RE.sub(" ", value).strip(_JAVASCRIPT_WHITESPACE)
 
 
 def _logical_blocks(value: object) -> tuple[str, ...]:
     """Frozen 0246 copy of the OpenNews plaintext-block adapter."""
 
-    decoded = html.unescape(str(value or "").strip())
+    decoded = html.unescape(str(value or "").strip(_JAVASCRIPT_WHITESPACE))
     separated = _BREAK_RE.sub("\n", decoded).replace("\r\n", "\n").replace("\r", "\n")
     blocks: list[str] = []
     for raw in separated.split("\n"):
         cleaned = html.unescape(raw)
         cleaned = _TAG_RE.sub(" ", cleaned)
         cleaned = _CONTROL_RE.sub(" ", cleaned)
-        cleaned = " ".join(cleaned.split())
+        cleaned = _collapse_javascript_whitespace(cleaned)
         if cleaned:
             blocks.append(cleaned)
     return tuple(blocks)
@@ -47,16 +72,16 @@ def _logical_blocks(value: object) -> tuple[str, ...]:
 
 def _canonical_description(*, explicit: object, remaining_blocks: tuple[str, ...], title: str) -> str:
     explicit_blocks = _logical_blocks(explicit)
-    description = " ".join(explicit_blocks or remaining_blocks).strip()
-    if len(description) < _MIN_DESCRIPTION_LEN:
+    description = " ".join(explicit_blocks or remaining_blocks).strip(_JAVASCRIPT_WHITESPACE)
+    if _utf16_length(description) < _MIN_DESCRIPTION_LEN:
         return ""
-    if " ".join(description.casefold().split()) == " ".join(title.casefold().split()):
+    if _collapse_javascript_whitespace(description.lower()) == _collapse_javascript_whitespace(title.lower()):
         return ""
-    return description[:_MAX_DESCRIPTION_LEN]
+    return _utf16_slice_usv(description, _MAX_DESCRIPTION_LEN)
 
 
 def _text(value: object) -> str:
-    text = str(value or "").strip()
+    text = str(value or "").strip(_JAVASCRIPT_WHITESPACE)
     if not text or "\x00" in text:
         return ""
     try:
@@ -75,7 +100,7 @@ def _canonical_reporting_origin(
     """Frozen 0246 copy of the OpenNews newsType/origin precedence."""
 
     news_type = _text(retained_origin)
-    if news_type.casefold() == "twitter" and isinstance(provider_metadata, Mapping):
+    if news_type.lower() == "twitter" and isinstance(provider_metadata, Mapping):
         author = _text(provider_metadata.get("source")).lower()
         if author:
             return author
@@ -117,61 +142,77 @@ def _normalize_retained_opennews_facts() -> None:
     """One-time canonicalization without importing mutable runtime code."""
 
     conn = op.get_bind()
-    rows = (
+    item_count = int(
         conn.execute(
-            sa.text(
-                """
-            SELECT item_id, canonical_url, reporting_origin, title, description,
-                   lang, published_at_ms, provider_metadata
-              FROM news_items
-             ORDER BY item_id
-            """
-            )
-        )
-        .mappings()
-        .all()
+            sa.text("SELECT count(*) FROM news_items WHERE source_id = :source_id"),
+            {"source_id": _OPENNEWS_SOURCE_ID},
+        ).scalar_one()
     )
-    updates: list[dict[str, object]] = []
-    rejected_item_count = 0
-    for row in rows:
-        blocks = _logical_blocks(row["title"])
-        title = blocks[0][:_MAX_HEADLINE_LEN].strip() if blocks else ""
-        if not title:
-            rejected_item_count += 1
-            continue
-        description = _canonical_description(
-            explicit=row["description"],
-            remaining_blocks=blocks[1:],
-            title=title,
-        )
-        metadata = row["provider_metadata"]
-        canonical_url = str(row["canonical_url"]) if row["canonical_url"] is not None else None
-        reporting_origin = _canonical_reporting_origin(
-            retained_origin=row["reporting_origin"],
-            canonical_url=canonical_url,
-            provider_metadata=metadata,
-        )
-        language = str(row["lang"])
-        published_at_ms = int(row["published_at_ms"])
-        updates.append(
-            {
-                "item_id": str(row["item_id"]),
-                "title": title,
-                "description": description,
-                "reporting_origin": reporting_origin,
-                "content_fingerprint": _content_fingerprint(
-                    title=title,
-                    description=description,
-                    canonical_url=canonical_url,
-                    reporting_origin=reporting_origin,
-                    published_at_ms=published_at_ms,
-                    language=language,
+    if item_count > _NORMALIZATION_ROW_CAP:
+        raise RuntimeError(f"news_world_brief_hard_cut_opennews_row_cap:{item_count}")
+
+    after_item_id = ""
+    processed = 0
+    while processed < item_count:
+        rows = (
+            conn.execute(
+                sa.text(
+                    """
+                    SELECT item_id, canonical_url, reporting_origin, title, description,
+                           lang, published_at_ms, provider_metadata
+                      FROM news_items
+                     WHERE source_id = :source_id AND item_id > :after_item_id
+                     ORDER BY item_id
+                     LIMIT :batch_size
+                    """
                 ),
-            }
+                {
+                    "source_id": _OPENNEWS_SOURCE_ID,
+                    "after_item_id": after_item_id,
+                    "batch_size": _NORMALIZATION_BATCH_SIZE,
+                },
+            )
+            .mappings()
+            .all()
         )
-    if rejected_item_count:
-        raise RuntimeError(f"news_world_brief_hard_cut_unusable_retained_headline:{rejected_item_count}")
-    if updates:
+        if not rows:
+            break
+        updates: list[dict[str, object]] = []
+        for row in rows:
+            blocks = _logical_blocks(row["title"])
+            title = _utf16_slice_usv(blocks[0], _MAX_HEADLINE_LEN).strip(_JAVASCRIPT_WHITESPACE) if blocks else ""
+            if not title:
+                raise RuntimeError("news_world_brief_hard_cut_unusable_retained_headline:1")
+            description = _canonical_description(
+                explicit=row["description"],
+                remaining_blocks=blocks[1:],
+                title=title,
+            )
+            metadata = row["provider_metadata"]
+            canonical_url = str(row["canonical_url"]) if row["canonical_url"] is not None else None
+            reporting_origin = _canonical_reporting_origin(
+                retained_origin=row["reporting_origin"],
+                canonical_url=canonical_url,
+                provider_metadata=metadata,
+            )
+            language = str(row["lang"])
+            published_at_ms = int(row["published_at_ms"])
+            updates.append(
+                {
+                    "item_id": str(row["item_id"]),
+                    "title": title,
+                    "description": description,
+                    "reporting_origin": reporting_origin,
+                    "content_fingerprint": _content_fingerprint(
+                        title=title,
+                        description=description,
+                        canonical_url=canonical_url,
+                        reporting_origin=reporting_origin,
+                        published_at_ms=published_at_ms,
+                        language=language,
+                    ),
+                }
+            )
         conn.execute(
             sa.text(
                 """
@@ -180,14 +221,21 @@ def _normalize_retained_opennews_facts() -> None:
                        description = :description,
                        reporting_origin = :reporting_origin,
                        content_fingerprint = :content_fingerprint
-                 WHERE item_id = :item_id
+                 WHERE item_id = :item_id AND source_id = 'news-opennews'
                 """
             ),
             updates,
         )
+        processed += len(rows)
+        after_item_id = str(rows[-1]["item_id"])
+    if processed != item_count:
+        raise RuntimeError(f"news_world_brief_hard_cut_opennews_count_changed:{processed}:{item_count}")
 
 
 def upgrade() -> None:
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.execute("SET LOCAL statement_timeout = '120s'")
+    op.execute("SET LOCAL transaction_timeout = '300s'")
     op.execute(
         """
         DROP TABLE news_story_title_translations;

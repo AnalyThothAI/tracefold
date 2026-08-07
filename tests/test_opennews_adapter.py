@@ -284,6 +284,102 @@ def test_wire_text_strips_controls_and_rejects_non_utf8(
     assert event.provider_metadata == {"score": 75}
 
 
+def test_headline_clamp_uses_javascript_utf16_units_and_valid_utf8() -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-astral-clamp",
+                "text": "a" * 499 + "𝔸" + "z",
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.title == "a" * 499 + "\ufffd"
+    assert len(event.entry.title.encode("utf-16-le")) // 2 == 500
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("😀" * 20, "😀" * 20),
+        ("😀" * 250, "😀" * 200),
+        ("a" * 399 + "𝔸", "a" * 399 + "\ufffd"),
+    ],
+)
+def test_description_bounds_use_javascript_utf16_units_and_valid_utf8(
+    description: str,
+    expected: str,
+) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-description-clamp",
+                "text": "Canonical headline differs from the description evidence",
+                "description": description,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.description == expected
+
+
+def test_description_equality_uses_javascript_lowercase_not_casefold() -> None:
+    title = "Straße market update with enough context for the public evidence boundary"
+    description = "Strasse market update with enough context for the public evidence boundary"
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-description-case",
+                "text": title,
+                "description": description,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.description == description
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("\ufeff1234567890", "1234567890"),
+        ("Alpha\ufeffBeta announces a public policy update", "Alpha Beta announces a public policy update"),
+    ],
+)
+def test_plaintext_blocks_use_javascript_whitespace(text: str, expected: str) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": "wire-js-whitespace",
+                "text": text,
+                "newsType": "\ufeffReuters\ufeff",
+                "engineType": "\ufeffnews\ufeff",
+                "ts": 1_775_195_200_000,
+            },
+        }
+    )
+
+    assert event is not None and event.entry is not None
+    assert event.entry.title == expected
+    assert event.entry.reporting_origin == "reuters"
+
+
 @pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_timestamp_becomes_missing_date(timestamp: float) -> None:
     event = parse_opennews_message(
