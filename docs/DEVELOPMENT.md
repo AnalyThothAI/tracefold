@@ -95,81 +95,77 @@ uv run pytest -q \
 
 ### News WorldMonitor parity evaluation
 
-News identity, classification, importance, and Brief selection are frozen to
-the implementation copied from WorldMonitor commit
-`f73de5b7dde76ff292f800d7d06f3529d2178d43`. Tracefold adds OpenNews current
-facts, current-only Story rows, immutable Chinese Brief publications, and one
-News-owned outbound Story-push state machine. Push provider score is a
-delivery-eligibility policy only; it does not add a second Story identity,
-ranking policy, or item-level analysis product. Story qualification and scoring
-perform no model work and remain deterministic. Optional translation in the
-outbound Feishu presentation envelope remains independent from the exact-bound
-zh-CN Story display-title publication. The latter is a reading-layer model
-output keyed by the safe normalized Story title; neither can change NewsItem,
-Story identity, membership, classification, importance, ordering, Brief, or
-Push eligibility.
+The public News authority is WorldMonitor commit
+`0e8785c43e6a693990a14181ae0a16066c15fc8c`. Exact differential parity begins
+after Tracefold has adapted OpenNews into a canonical digest-like corpus with
+keyword-sourced threats. It covers shared lexical Story identity, public
+cluster scoring and selection, English L1/L2 synthesis, and whole-payload
+`news:insights:v1` publication/LKG semantics. WorldMonitor's RSS population
+builder, optional cached-classification branch, Dashboard ISQ reorder, and
+personalized Digest Magazine pipeline are reference or excluded surfaces, not
+Tracefold runtime contracts.
+
+Tracefold retains one complete current 12-hour OpenNews Story closure. One
+provider record becomes one NewsItem: the first logical plaintext block is the
+bounded canonical headline, remaining text is bounded description evidence,
+and reporting origin follows the verified-wrapper/news-type/host/OpenNews
+precedence. Provider AI metadata remains descriptive and may qualify outbound
+Push only; it cannot affect Story identity, public scoring, admission, ordering,
+or Brief. The public selector is one global server-owned order with no profile,
+preference, embedding, topic grouping, entity veto, private diversity rule, or
+client-side reorder.
 
 `tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
 covers positive and negative title pairs, exact-title and containment merges,
 CJK features, hot buckets, order independence, classification, historical
-exclusions, importance rounding, source-diverse Top-8 selection, and the
-frozen reporting-origin tier-map digest. The retired RSS URL/membership
-inventory is not a runtime or parity contract. Run it with:
+exclusions, importance rounding, public selector ordering and admission,
+corroborated-lead reservation, and the frozen reporting-origin tier-map digest.
+The real-PostgreSQL public pipeline suite additionally covers the canonical
+OpenNews adapter, complete Story closure, singleton selection, L1/L2 composer,
+immutable publication, and whole LKG decision. The retired RSS URL/membership
+inventory is not a runtime or parity contract. Run the differential lane with:
 
 ```bash
 uv run pytest -q tests/test_news_worldmonitor_parity.py
 ```
 
-The release evaluation additionally replays the current production NewsItem
-corpus in isolated PostgreSQL. The review artifact must state its source
-cutoff, item/Story/singleton/multi-member/source/category counts, every
-multi-member cluster, and the highest-similarity non-merged pairs. It is a
-distribution review, not a compression target. The known Ebola
-3,200-infections/1,405-deaths pair remains split at approximately `0.509`
-similarity because the frozen threshold is `0.615`; changing that result
-requires a new shared-corpus specification, never a private production patch.
+The release evaluation replays the current production 12-hour NewsItem corpus
+in isolated PostgreSQL. Record the source cutoff; Item, Story,
+singleton/multi-member, reporting-origin, and category counts; every materially
+large cluster; highest-similarity non-merges; selected Top Story evidence and
+drop distribution; and both pinned commits. This is a distribution and parity
+review, not a compression target. The Story turn must remain inside the
+10,000-row, 8 MiB, 25-second, and 60-second freshness boundaries without
+sampling or widening the window.
 
-Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly fourteen News tables, one enabled OpenNews runtime source, one
-acquisition module, one fixed-period Story writer, and the native model seam;
-authenticated OpenNews
-NewsItems, deterministic complete 12-hour Story membership with the exact
-cutoff included and older retained Article facts excluded only from Story,
-fail-closed row and byte input caps, all five
-public endpoints, one valid Chinese
-Brief or truthful insufficient-material state, provider-failure
-last-known-good retention, captured-snapshot publication without a quiet ingest
-window, direct detection of a current Article's first-Story-membership wait over
-120 seconds, measured acquisition/projection latency, and browser verification
-of the compact Feed, reading-first Story, inline News health, and Brief modes;
-the source-health API remains verified even though no standalone browser
-Sources route survives. Acceptance also proves the browser default strict
-`provider_score_gt=70`, latest order, 25-row explicit pagination, server-side
-title/origin/provider/coin search, origin facets, filter-bound cursors,
-unchanged absent-parameter API behavior, safe plain-text display, and
-exact-bound zh-CN title success/Chinese bypass/original fallback. Title change
-and restart tests must prove retranslation, bounded claims/retries, and that
-stale output never attaches or performs model/network I/O in a database
-transaction. When push is enabled,
-acceptance additionally proves first-enable zero-send baseline suppression,
-strict score greater than 70, suppression of pre-baseline or more-than-15-minute
-old recovery evidence, independent 10-second candidate reconciliation after a
-later provider annotation on an existing Story, frozen at-least-once
-retry behavior, exactly-once ledger qualification of a selected Item even when
-its current Story ID changes, exact preservation of the original headline, compact body rendering from
-the selected Item's coins and provider score, optional bilingual rendering with
-the original visibly preserved, immediate original fallback for translation
-timeout/invalid/overlong output, optional canonical
-original-link button, exact signed and unsigned Feishu request shapes, response
-classification, frozen retries that never retranslate or submit after the
-15-minute Article deadline, no dependency on the
-serial model arbiter, global `llm` provider reuse confined to the optional
-title-presentation adapter with no second credential, durably-fenced-attempt
-translation success/P95 evidence with pre-fence skips excluded and ambiguous
-fenced-but-interrupted dispatches counted conservatively, and no network I/O
-inside a database transaction.
-Absence of a signing secret is an explicit unsigned mode, never a fallback
-after a signed attempt fails.
+Cutover acceptance requires one atomic hard cut: exactly thirteen News tables,
+five public News routes, one enabled OpenNews runtime source, one acquisition
+module, one fixed-period Story/selection writer, one native model seam, and no
+old payload, prompt, selector, reading-layer localization, personalized, or
+compatibility path. The primary maintained seam sends representative OpenNews
+frames through real PostgreSQL, the production complete Story projection and public selector,
+fake external model transports, immutable publication, and authenticated
+`GET /api/news/brief`; repositories, transactions, calculation, selector,
+composer, state machine, and HTTP serialization remain real.
+
+Release evidence additionally proves canonical headline/origin normalization
+and repeat-delivery zero writes; complete Story membership and CAS; exact public
+Top Story order and provenance; L1 success or truthful L2/none degradation;
+whole healthy LKG preservation without clock refresh or mixed snapshots;
+bounded retries and fenced claims; no model/network I/O in a database
+transaction; all five endpoints; generated contracts; and the responsive real
+`/news/brief` route. The page keeps server order, makes Top Stories primary,
+labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
+publication history or personalized ranking.
+
+When Push is enabled, acceptance still proves first-enable zero-send baseline
+suppression, strict score greater than 70, the 15-minute Article deadline,
+selected-Item ledger deduplication across Story-ID changes, frozen at-least-once
+delivery, optional one-shot presentation-only title translation with immediate
+original fallback, exact signed/unsigned Feishu shapes, bounded retry/terminal
+classification, and no dependency on the serial model arbiter. Push state and
+pending/retry rows survive the News hard cut; absence of a signing secret is an
+explicit unsigned mode, never a fallback after a signed attempt fails.
 
 ## Generated contracts
 

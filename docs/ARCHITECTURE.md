@@ -122,7 +122,6 @@ tracefold.news
   ranking.py        first-stage factors and public Insights selector
   brief.py          public English L1/L2 composer and payload identities
   brief_store.py    singleton target/run/publication/LKG state machine
-  presentation.py   safe plain-text reading-layer normalization
   repository.py     PostgreSQL current Item, Story, source-health, and Brief state
   interface.py      sole external News read interface
   runtime.py        bounded OpenNews live/recovery and native Brief candidate
@@ -206,8 +205,6 @@ Important atomic units are:
   membership/projection;
 - immutable World Brief publication plus completion of its exact
   evidence/model/version attempt;
-- exact-bound Story display-title publication plus completion of its claimed
-  normalized-title/model/version target;
 - immutable Fed document analysis plus completion of its exact native job;
 - retry or terminal transition plus mutation of its source queue row.
 
@@ -363,8 +360,8 @@ buckets, and deterministic union-find. A Story ID is the full SHA-256 of the
 earliest normalized title in that current cluster. It may change when the
 earliest item expires; the previous Story is removed and its detail route
 returns not found. There is no archived Story product, embedding,
-full-article extraction, browser clustering, revision product, or per-Story AI
-analysis or Story-title model state. Outbound Push may independently freeze a
+full-article extraction, browser clustering, revision product, per-Story AI
+analysis, or localized-title state. Outbound Push may independently freeze a
 Chinese presentation copy of its selected OpenNews Item headline, but that
 delivery-local adapter adds no model-derived NewsItem or Story state.
 
@@ -528,8 +525,8 @@ The complete live News storage boundary is exactly thirteen tables:
 `20260806_0243` removes RSS execution/scheduling and source-membership schema
 while retaining disabled historical source identity; `20260806_0244` adds
 dedicated provider-score and Story-success clocks. `20260807_0246` canonicalizes
-retained OpenNews facts, removes the retired Story-title table and incompatible
-Brief state, rebuilds Story state, and installs the singleton selection plus
+retained OpenNews facts, removes the retired reading-layer title table and
+incompatible Brief state, rebuilds Story state, and installs the singleton selection plus
 discriminated L1/L2/none publication contract without altering the two Push
 tables. The current hard cut has no downgrade or compatibility lane.
 
