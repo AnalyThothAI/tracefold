@@ -187,6 +187,20 @@
     overflow-wrap: anywhere;
   }
 
+  .news-brief-citation {
+    color: var(--primary);
+    font: 650 0.72em var(--font-mono);
+    text-decoration: underline;
+    text-decoration-thickness: 0.08em;
+    text-underline-offset: 0.16em;
+  }
+
+  .news-brief-citation:focus-visible {
+    border-radius: 0.15rem;
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
   .news-brief-lines {
     display: grid;
     gap: 0.5rem;

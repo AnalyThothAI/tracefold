@@ -1,7 +1,7 @@
 import { newsBriefPath, newsPath, newsStoryPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { ArrowLeft, ExternalLink, SlidersHorizontal } from "lucide-react";
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import "./news.css";
@@ -1041,7 +1041,9 @@ function BriefEnhancement({ publication }: { publication: BriefPublication }) {
         </div>
         <span>{kindLabel}</span>
       </header>
-      <p className="news-brief-world-brief">{publication.world_brief}</p>
+      <p className="news-brief-world-brief">
+        {renderBriefCitations(publication.world_brief, publication.top_stories)}
+      </p>
       {publication.brief_kind === "l1" && publication.brief_story_lines.length ? (
         <ol aria-label="AI 新闻事件摘要" className="news-brief-lines">
           {publication.brief_story_lines.map((line) => {
@@ -1060,6 +1062,35 @@ function BriefEnhancement({ publication }: { publication: BriefPublication }) {
       </footer>
     </section>
   );
+}
+
+function renderBriefCitations(text: string, topStories: readonly BriefTopStory[]): ReactNode[] {
+  const fragments: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(/\[(\d{1,2})\]/g)) {
+    const marker = match[0];
+    const start = match.index;
+    if (start > cursor) fragments.push(text.slice(cursor, start));
+    const citationNumber = Number.parseInt(match[1] ?? "0", 10);
+    const story = topStories[citationNumber - 1];
+    fragments.push(
+      story ? (
+        <Link
+          aria-label={`引用 ${citationNumber}：${story.primary_title}`}
+          className="news-brief-citation"
+          key={`${start}:${marker}`}
+          to={newsStoryPath(story.story_id)}
+        >
+          {marker}
+        </Link>
+      ) : (
+        marker
+      ),
+    );
+    cursor = start + marker.length;
+  }
+  if (cursor < text.length) fragments.push(text.slice(cursor));
+  return fragments;
 }
 
 function parseLevel(value: string | null): NewsLevel | null {

@@ -569,6 +569,43 @@ describe("NewsPage", () => {
     expect(screen.getByText("L1 · 完整校验")).toBeInTheDocument();
   });
 
+  it("links valid lead citations to their immutable Story slots with native keyboard access", async () => {
+    const brief = newsGlobalBriefFixture();
+    if (!brief.publication) throw new Error("brief publication fixture required");
+    brief.publication.world_brief =
+      "Severe weather follows renewed diplomacy [2], while talks continue [1]; sealed unknown [9].";
+    server.use(
+      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
+    );
+
+    renderNews(<NewsPage brief token="test-token" />, "/news/brief");
+
+    const lead = await screen.findByText(
+      (_, element) =>
+        element?.tagName === "P" && element.textContent === brief.publication?.world_brief,
+    );
+    expect(lead.textContent).toBe(brief.publication.world_brief);
+    const citations = within(lead).getAllByRole("link");
+    expect(citations).toHaveLength(2);
+    expect(citations[0]).toHaveAccessibleName("引用 2：Typhoon makes landfall near a major port");
+    expect(citations[0]).toHaveTextContent("[2]");
+    expect(citations[0]).toHaveAttribute("href", "/news/stories/story-typhoon");
+    expect(citations[1]).toHaveAccessibleName(
+      "引用 1：Ceasefire talks resume as delegations return",
+    );
+    expect(citations[1]).toHaveTextContent("[1]");
+    expect(citations[1]).toHaveAttribute("href", "/news/stories/story-ceasefire");
+    expect(within(lead).queryByRole("link", { name: /引用 9/ })).not.toBeInTheDocument();
+
+    citations[0].focus();
+    expect(citations[0]).toHaveFocus();
+    expect(citations[0]).toHaveProperty("tabIndex", 0);
+    fireEvent.click(citations[0]);
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/news/stories/story-typhoon"),
+    );
+  });
+
   it("renders L2 prose without inventing Story lines and renders none with no prose", async () => {
     const brief = newsGlobalBriefFixture();
     if (!brief.publication) throw new Error("brief publication fixture required");
