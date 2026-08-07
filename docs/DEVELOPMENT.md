@@ -102,9 +102,12 @@ facts, current-only Story rows, immutable Chinese Brief publications, and one
 News-owned outbound Story-push state machine. Push provider score is a
 delivery-eligibility policy only; it does not add a second Story identity,
 ranking policy, or item-level analysis product. Story qualification and scoring
-perform no model work and remain deterministic. Optional title
-translation is confined to the outbound Feishu presentation envelope and can
-never change NewsItem, Story, score, or public read-model state.
+perform no model work and remain deterministic. Optional translation in the
+outbound Feishu presentation envelope remains independent from the exact-bound
+zh-CN Story display-title publication. The latter is a reading-layer model
+output keyed by the safe normalized Story title; neither can change NewsItem,
+Story identity, membership, classification, importance, ordering, Brief, or
+Push eligibility.
 
 `tests/test_news_worldmonitor_parity.py` is the executable parity suite. It
 covers positive and negative title pairs, exact-title and containment merges,
@@ -127,8 +130,9 @@ similarity because the frozen threshold is `0.615`; changing that result
 requires a new shared-corpus specification, never a private production patch.
 
 Cutover acceptance requires a destructive empty-News-schema cold start,
-exactly thirteen News tables, one enabled OpenNews runtime source, one acquisition module, one
-fixed-period Story writer, and the native model seam; authenticated OpenNews
+exactly fourteen News tables, one enabled OpenNews runtime source, one
+acquisition module, one fixed-period Story writer, and the native model seam;
+authenticated OpenNews
 NewsItems, deterministic complete 12-hour Story membership with the exact
 cutoff included and older retained Article facts excluded only from Story,
 fail-closed row and byte input caps, all five
@@ -136,8 +140,17 @@ public endpoints, one valid Chinese
 Brief or truthful insufficient-material state, provider-failure
 last-known-good retention, captured-snapshot publication without a quiet ingest
 window, direct detection of a current Article's first-Story-membership wait over
-120 seconds, measured acquisition/projection latency, and
-browser verification of Feed, Story, Brief, and Sources. When push is enabled,
+120 seconds, measured acquisition/projection latency, and browser verification
+of the compact Feed, reading-first Story, inline News health, and Brief modes;
+the source-health API remains verified even though no standalone browser
+Sources route survives. Acceptance also proves the browser default strict
+`provider_score_gt=70`, latest order, 25-row explicit pagination, server-side
+title/origin/provider/coin search, origin facets, filter-bound cursors,
+unchanged absent-parameter API behavior, safe plain-text display, and
+exact-bound zh-CN title success/Chinese bypass/original fallback. Title change
+and restart tests must prove retranslation, bounded claims/retries, and that
+stale output never attaches or performs model/network I/O in a database
+transaction. When push is enabled,
 acceptance additionally proves first-enable zero-send baseline suppression,
 strict score greater than 70, suppression of pre-baseline or more-than-15-minute
 old recovery evidence, independent 10-second candidate reconciliation after a

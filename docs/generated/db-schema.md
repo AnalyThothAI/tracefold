@@ -830,6 +830,33 @@
 | `story_id` | `TEXT` | False | `None` |
 | `item_id` | `TEXT` | False | `None` |
 
+## `news_story_title_translations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `story_id` | `TEXT` | False | `None` |
+| `source_title` | `TEXT` | False | `None` |
+| `source_title_fingerprint` | `TEXT` | False | `None` |
+| `source_raw_title_fingerprint` | `TEXT` | False | `None` |
+| `locale` | `TEXT` | False | `None` |
+| `workflow_version` | `TEXT` | False | `None` |
+| `prompt_version` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `result_kind` | `TEXT` | True | `None` |
+| `translated_title` | `TEXT` | True | `None` |
+| `provider` | `TEXT` | True | `None` |
+| `model` | `TEXT` | True | `None` |
+| `attempt_count` | `SMALLINT` | False | `0` |
+| `attempts` | `JSONB` | False | `'[]'::jsonb` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `lease_owner` | `TEXT` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
+| `lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `last_error` | `TEXT` | True | `None` |
+| `completed_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `persisted_live_events`
 
 | Column | Type | Nullable | Default |

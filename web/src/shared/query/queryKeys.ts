@@ -16,8 +16,23 @@ export const queryKeys = {
   macroPage: (pageId: string) => ["macro", "page", pageId] as const,
   macroSeries: (conceptKeys: string[], window: string) =>
     ["macro", "series", [...conceptKeys].sort(), window] as const,
-  newsFeed: (category: string | null, sort: "importance" | "latest") =>
-    ["news-feed", category ?? "", sort] as const,
+  newsFeed: (
+    q: string,
+    category: string | null,
+    level: string | null,
+    reportingOrigin: string | null,
+    providerScoreGt: number | null,
+    sort: "importance" | "latest",
+  ) =>
+    [
+      "news-feed",
+      q,
+      category ?? "",
+      level ?? "",
+      reportingOrigin ?? "",
+      providerScoreGt,
+      sort,
+    ] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
   newsBrief: () => ["news-brief"] as const,
   newsStatus: () => ["news-status"] as const,

@@ -6970,6 +6970,13 @@
           "page": {
             "$ref": "#/components/schemas/NewsFeedFacetsPageData"
           },
+          "reporting_origins": {
+            "items": {
+              "$ref": "#/components/schemas/NewsFeedReportingOriginFacetData"
+            },
+            "title": "Reporting Origins",
+            "type": "array"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/NewsFeedSourceFacetData"
@@ -6982,6 +6989,7 @@
           "categories",
           "levels",
           "sources",
+          "reporting_origins",
           "page"
         ],
         "title": "NewsFeedFacetsData",
@@ -6998,6 +7006,10 @@
             "title": "Levels Has More",
             "type": "boolean"
           },
+          "reporting_origins_has_more": {
+            "title": "Reporting Origins Has More",
+            "type": "boolean"
+          },
           "sources_has_more": {
             "title": "Sources Has More",
             "type": "boolean"
@@ -7006,7 +7018,8 @@
         "required": [
           "categories_has_more",
           "levels_has_more",
-          "sources_has_more"
+          "sources_has_more",
+          "reporting_origins_has_more"
         ],
         "title": "NewsFeedFacetsPageData",
         "type": "object"
@@ -7036,6 +7049,39 @@
             ],
             "title": "Level"
           },
+          "provider_score_gt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Score Gt"
+          },
+          "q": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Q"
+          },
+          "reporting_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reporting Origin"
+          },
           "source_id": {
             "anyOf": [
               {
@@ -7051,9 +7097,36 @@
         "required": [
           "category",
           "level",
-          "source_id"
+          "source_id",
+          "reporting_origin",
+          "provider_score_gt",
+          "q"
         ],
         "title": "NewsFeedFiltersData",
+        "type": "object"
+      },
+      "NewsFeedReportingOriginFacetData": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count",
+          "label"
+        ],
+        "title": "NewsFeedReportingOriginFacetData",
         "type": "object"
       },
       "NewsFeedSourceFacetData": {
@@ -7966,12 +8039,16 @@
           },
           "story": {
             "$ref": "#/components/schemas/NewsStoryStatusData"
+          },
+          "translation": {
+            "$ref": "#/components/schemas/NewsTitleTranslationStatusData"
           }
         },
         "required": [
           "ingest",
           "story",
           "brief",
+          "translation",
           "push"
         ],
         "title": "NewsStatusLayersData",
@@ -8089,6 +8166,16 @@
             "title": "Title",
             "type": "string"
           },
+          "title_translation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryTitleTranslationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "url": {
             "anyOf": [
               {
@@ -8119,7 +8206,8 @@
           "first_published_at_ms",
           "last_published_at_ms",
           "provider_evidence",
-          "push_delivery_state"
+          "push_delivery_state",
+          "title_translation"
         ],
         "title": "NewsStoryData",
         "type": "object"
@@ -8250,6 +8338,16 @@
             "title": "Title",
             "type": "string"
           },
+          "title_translation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsStoryTitleTranslationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "url": {
             "anyOf": [
               {
@@ -8281,6 +8379,7 @@
           "last_published_at_ms",
           "provider_evidence",
           "push_delivery_state",
+          "title_translation",
           "canonical_title",
           "members",
           "members_page"
@@ -8602,6 +8701,221 @@
           "last_error"
         ],
         "title": "NewsStoryStatusData",
+        "type": "object"
+      },
+      "NewsStoryTitleTranslationData": {
+        "additionalProperties": false,
+        "properties": {
+          "locale": {
+            "const": "zh-CN",
+            "title": "Locale",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "source_title": {
+            "title": "Source Title",
+            "type": "string"
+          },
+          "source_title_fingerprint": {
+            "title": "Source Title Fingerprint",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "ready",
+              "failed",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "title_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Zh"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "title_zh",
+          "source_title",
+          "source_title_fingerprint",
+          "locale",
+          "workflow_version",
+          "prompt_version"
+        ],
+        "title": "NewsStoryTitleTranslationData",
+        "type": "object"
+      },
+      "NewsTitleTranslationRolling24hData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "integer"
+          },
+          "failure_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Failure Counts",
+            "type": "object"
+          },
+          "latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P95 Ms"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          },
+          "success_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Ratio"
+          }
+        },
+        "required": [
+          "attempted",
+          "succeeded",
+          "success_ratio",
+          "latency_p95_ms",
+          "failure_counts"
+        ],
+        "title": "NewsTitleTranslationRolling24hData",
+        "type": "object"
+      },
+      "NewsTitleTranslationStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "eligible_count": {
+            "title": "Eligible Count",
+            "type": "integer"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "latest_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Success At Ms"
+          },
+          "locale": {
+            "const": "zh-CN",
+            "title": "Locale",
+            "type": "string"
+          },
+          "oldest_pending_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending At Ms"
+          },
+          "pending_count": {
+            "title": "Pending Count",
+            "type": "integer"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "ready_count": {
+            "title": "Ready Count",
+            "type": "integer"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "retry_count": {
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "rolling_24h": {
+            "$ref": "#/components/schemas/NewsTitleTranslationRolling24hData"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "warming",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unavailable_count": {
+            "title": "Unavailable Count",
+            "type": "integer"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reasons",
+          "configured",
+          "locale",
+          "workflow_version",
+          "prompt_version",
+          "eligible_count",
+          "ready_count",
+          "pending_count",
+          "retry_count",
+          "failed_count",
+          "unavailable_count",
+          "oldest_pending_at_ms",
+          "latest_success_at_ms",
+          "rolling_24h"
+        ],
+        "title": "NewsTitleTranslationStatusData",
         "type": "object"
       },
       "ProviderOperationalData": {
@@ -11620,6 +11934,44 @@
             "schema": {
               "default": "",
               "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reporting_origin",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Reporting Origin",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider_score_gt",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider Score Gt"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Q",
               "type": "string"
             }
           },

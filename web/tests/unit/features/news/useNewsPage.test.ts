@@ -10,19 +10,44 @@ import { describe, expect, it } from "vitest";
 describe("useNewsFeedWithToken", () => {
   it("reads only the WorldMonitor-compatible Feed endpoint", async () => {
     let category: string | null = null;
+    let level: string | null = null;
+    let limit: string | null = null;
+    let providerScoreGt: string | null = null;
+    let q: string | null = null;
+    let reportingOrigin: string | null = null;
     let sort: string | null = null;
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
-        category = new URL(request.url).searchParams.get("category");
-        sort = new URL(request.url).searchParams.get("sort");
+        const params = new URL(request.url).searchParams;
+        category = params.get("category");
+        level = params.get("level");
+        limit = params.get("limit");
+        providerScoreGt = params.get("provider_score_gt");
+        q = params.get("q");
+        reportingOrigin = params.get("reporting_origin");
+        sort = params.get("sort");
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
     );
-    const { result } = renderHook(() => useNewsFeedWithToken("token", "economic", "latest"), {
-      wrapper: wrapper(),
-    });
+    const { result } = renderHook(
+      () =>
+        useNewsFeedWithToken("token", {
+          category: "economic",
+          level: "high",
+          providerScoreGt: 70,
+          q: "bitcoin",
+          reportingOrigin: "reuters",
+          sort: "latest",
+        }),
+      { wrapper: wrapper() },
+    );
     await waitFor(() => expect(result.current.data?.pages[0].stories).toHaveLength(1));
     expect(category).toBe("economic");
+    expect(level).toBe("high");
+    expect(limit).toBe("25");
+    expect(providerScoreGt).toBe("70");
+    expect(q).toBe("bitcoin");
+    expect(reportingOrigin).toBe("reuters");
     expect(sort).toBe("latest");
     expect(result.current.data?.pages[0].stories[0].importance_score).toBe(83);
   });

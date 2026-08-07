@@ -21,9 +21,14 @@ _NEWS_TABLES = {
     "news_brief_publications",
     "news_brief_current",
 }
-_NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT = (_NEWS_TABLES | {"news_push_state", "news_push_deliveries"}) - {
-    "news_source_memberships"
-}
+_NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT = (
+    _NEWS_TABLES
+    | {
+        "news_push_state",
+        "news_push_deliveries",
+        "news_story_title_translations",
+    }
+) - {"news_source_memberships"}
 
 
 def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None:

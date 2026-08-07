@@ -4,6 +4,7 @@ import { marketContextFixture, marketObservationFixture } from "@tests/fixtures/
 import {
   newsFeedFixture,
   newsGlobalBriefFixture,
+  newsStatusFixture,
   newsStoryDetailFixture,
   newsStoryFixture,
 } from "@tests/fixtures/newsFixture";
@@ -50,6 +51,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/target-social-timeline") return fulfill(route, timelineData());
     if (path === "/api/target-posts") return fulfill(route, targetPostsData(url));
     if (path === "/api/news/feed") return fulfill(route, newsFeedData());
+    if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
     if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
     if (path === "/api/news/brief") return fulfill(route, newsGlobalBriefFixture());
     if (path === "/api/stocks-radar") return fulfill(route, stocksRadarData(url));
@@ -93,7 +95,14 @@ function newsFeedData() {
     title: "Macro desk flags liquidity rotation",
     description: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
   });
-  return { ...newsFeedFixture(), stories: [story] };
+  return {
+    ...newsFeedFixture(),
+    stories: Array.from({ length: 5 }, (_, index) => ({
+      ...story,
+      story_id: index === 0 ? story.story_id : `story-global-policy-${index + 1}`,
+      title: index === 0 ? story.title : `Global policy update ${index + 1}`,
+    })),
+  };
 }
 
 function newsStoryDetailData(path: string) {

@@ -1,5 +1,5 @@
 import { CockpitTopbar } from "@features/cockpit";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { appStatusFixture } from "@tests/fixtures/appRouteFixtures";
 import { axe } from "jest-axe";
 import { createRef } from "react";
@@ -11,6 +11,51 @@ afterEach(() => {
 });
 
 describe("CockpitTopbar", () => {
+  it("keeps its search draft synchronized with the URL-owned query", () => {
+    const status = {
+      socketStatus: "connected",
+      lastSocketMessageAt: 1_700_000_000_000,
+      status: null,
+      statusLoading: false,
+      statusError: false,
+      configReady: true,
+    };
+    const search = {
+      ariaLabel: "news search",
+      inputRef: createRef<HTMLInputElement>(),
+      onSubmitQuery: vi.fn(),
+      query: "bitcoin",
+    };
+    const { rerender } = render(
+      <MemoryRouter>
+        <CockpitTopbar search={search} status={status} onRefresh={vi.fn()} />
+      </MemoryRouter>,
+    );
+    const input = screen.getByRole("textbox", { name: "news search" });
+    expect(input).toHaveValue("bitcoin");
+
+    fireEvent.change(input, { target: { value: "local draft" } });
+    expect(input).toHaveValue("local draft");
+
+    rerender(
+      <MemoryRouter>
+        <CockpitTopbar
+          search={{ ...search, query: "ethereum" }}
+          status={status}
+          onRefresh={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    expect(input).toHaveValue("ethereum");
+
+    rerender(
+      <MemoryRouter>
+        <CockpitTopbar search={{ ...search, query: "" }} status={status} onRefresh={vi.fn()} />
+      </MemoryRouter>,
+    );
+    expect(input).toHaveValue("");
+  });
+
   it("keeps healthy status out of the task-focused topbar", async () => {
     const { container } = render(
       <MemoryRouter>

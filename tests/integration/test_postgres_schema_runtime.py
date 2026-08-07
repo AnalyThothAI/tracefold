@@ -90,6 +90,7 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_brief_current",
     "news_push_state",
     "news_push_deliveries",
+    "news_story_title_translations",
 }
 LEGACY_NEWS_TABLES = {
     "news_fetch_runs",
@@ -439,7 +440,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260806_0244"
+    assert version == latest_migration_version() == "20260807_0245"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -464,7 +465,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260806_0244"
+    assert version == latest_migration_version() == "20260807_0245"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -843,7 +844,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260806_0244"
+        assert version == latest_migration_version() == "20260807_0245"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

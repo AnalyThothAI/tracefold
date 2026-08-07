@@ -1,0 +1,15 @@
+@layer app.features {
+  .news-audit-source-link {
+    display: inline-flex;
+    gap: 0.25rem;
+    align-items: center;
+    width: fit-content;
+    color: var(--primary);
+    font-size: 0.68rem;
+  }
+
+  .news-audit-source-link svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+}

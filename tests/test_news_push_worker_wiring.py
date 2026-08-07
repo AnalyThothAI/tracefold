@@ -195,6 +195,10 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     )
 
     assert (components.news_push is not None) is expected_push
+    assert (components.news_title_translation is not None) is news_enabled
+    if components.news_title_translation is not None:
+        assert components.news_title_translation in components.models
+        assert (components.news_title_translation.translator is not None) is llm_configured
     if expected_push:
         assert [name for name, _kwargs in constructed] == ["delivery"]
         assert components.news_push is not None
@@ -320,6 +324,7 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
                 collector=None,
                 news=None,
                 news_brief=None,
+                news_title_translation=None,
                 news_push=_Push(),
                 macro_source=None,
             ),  # type: ignore[arg-type]

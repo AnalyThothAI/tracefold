@@ -1,7 +1,7 @@
 import type { OpenApiStatusData } from "@lib/types";
 import { IconButton } from "@shared/ui/IconButton";
 import { Home, RefreshCw, Search, TriangleAlert } from "lucide-react";
-import { useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import { useNavigate } from "react-router-dom";
 
 import "./CockpitTopbar.css";
@@ -13,6 +13,7 @@ export type CockpitTopbarProps = {
     inputRef: RefObject<HTMLInputElement | null>;
     onSubmitQuery: (query: string) => void;
     placeholder?: string;
+    query?: string;
     showMainRouteButton?: boolean;
   };
   status: {
@@ -33,8 +34,9 @@ export function CockpitTopbar({
   onRefresh,
 }: CockpitTopbarProps) {
   const navigate = useNavigate();
-  const [searchDraft, setSearchDraft] = useState("");
+  const [searchDraft, setSearchDraft] = useState(search.query ?? "");
   const anomaly = healthAnomaly(status);
+  useEffect(() => setSearchDraft(search.query ?? ""), [search.query]);
   return (
     <header className="topbar">
       <div className="brand">

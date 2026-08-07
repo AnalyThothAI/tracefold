@@ -30,7 +30,10 @@ from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntim
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
+from tracefold.integrations.news_ai import (
+    OpenAiCompatibleNewsTitleTranslator,
+    ProviderChainNewsBriefPublisher,
+)
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
@@ -61,6 +64,7 @@ from tracefold.news import (
     NewsBriefCandidate,
     NewsStoryProjection,
     NewsStoryPush,
+    NewsStoryTitleTranslationCandidate,
     opennews_source,
 )
 from tracefold.platform.config.settings import Settings
@@ -154,6 +158,7 @@ class _Components:
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
+    news_title_translation: NewsStoryTitleTranslationCandidate | None
     news_push: NewsStoryPush | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
@@ -739,6 +744,7 @@ async def _wire_components(
     news: NewsAcquisition | None = None
     news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
+    news_title_translation: NewsStoryTitleTranslationCandidate | None = None
     news_push: NewsStoryPush | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
@@ -777,6 +783,22 @@ async def _wire_components(
             stable_order=20,
         )
         model_candidates.append(news_brief)
+        news_title_translation = NewsStoryTitleTranslationCandidate(
+            db=db,
+            model_adapter=model_adapter,
+            translator=(
+                OpenAiCompatibleNewsTitleTranslator(
+                    base_url=configured_base_url,
+                    api_key=settings.llm.api_key,
+                    model=settings.llm.news_brief_model,
+                )
+                if settings.llm.api_key
+                else None
+            ),
+            runtime_id=runtime_id,
+            stable_order=25,
+        )
+        model_candidates.append(news_title_translation)
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
             signing_secret = settings.news.push.feishu_signing_secret
@@ -918,6 +940,7 @@ async def _wire_components(
         news=news,
         news_story=news_story,
         news_brief=news_brief,
+        news_title_translation=news_title_translation,
         news_push=news_push,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
@@ -961,6 +984,8 @@ async def _graceful_cleanup(
             await _within(components.news.close(), started_at)
         if components.news_brief is not None:
             await _within(components.news_brief.close(), started_at)
+        if components.news_title_translation is not None:
+            await _within(components.news_title_translation.close(), started_at)
         if components.news_push is not None:
             await _within(components.news_push.close(), started_at)
         if components.macro_source is not None:

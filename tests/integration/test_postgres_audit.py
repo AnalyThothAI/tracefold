@@ -34,6 +34,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["projection_schema"]["token_radar_current_rows"] is True
     assert payload["projection_schema"]["token_radar_publication_state"] is True
     assert payload["projection_schema"]["news_projection_summary"] is True
+    assert payload["projection_schema"]["news_story_title_translations"] is True
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
     assert payload["foreign_key_checks"]["token_radar_current_rows_missing_intents"] == 0
@@ -140,12 +141,17 @@ def test_query_audit_news_status_reads_the_singleton_projection_summary():
 def test_query_audit_public_news_views_read_only_bounded_models():
     story_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_story_facets")
     source_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_source_facets")
+    filtered_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_filtered_facets")
     brief = next(item for item in HOT_QUERIES if item["name"] == "news_brief")
 
     assert "news_story_facet_counts" in story_facets["sql"]
     assert "FROM news_stories" not in story_facets["sql"]
     assert "news_source_facet_counts" in source_facets["sql"]
     assert "news_story_members" not in source_facets["sql"]
+    assert "news_story_members" in filtered_facets["sql"]
+    assert "provider_metadata" in filtered_facets["sql"]
+    assert "reporting_origin" in filtered_facets["sql"]
+    assert "LIMIT 101" in filtered_facets["sql"]
     assert "news_brief_selection_current" in brief["sql"]
     assert "row_number()" not in brief["sql"].lower()
 

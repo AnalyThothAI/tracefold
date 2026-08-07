@@ -244,6 +244,14 @@ OpenNews WSS + bounded REST recovery
   -> compare-and-publish current Story/member/facet/Brief selection closure
   -> /api/news/feed + /api/news/stories/{story_id}
 
+Current Story with max numeric OpenNews score strictly > 70
+  -> safe normalized Story display title + exact fingerprints
+  -> news_story_title_translations durable target
+  -> native News Story-title translation candidate
+  -> serial model arbiter + one serial model adapter
+  -> exact-bound zh-CN title or immediate original fallback
+  -> /api/news/feed + /api/news/stories/{story_id}
+
 Top-8 changed Story fingerprint
   -> native News Brief candidate
   -> serial model arbiter
@@ -337,6 +345,19 @@ Stories, fewer than two reporting origins, or an unchanged ordered Story
 fingerprint is observed. On provider or validation failure it records the
 failed run and keeps the last-known-good current pointer.
 
+The native Story-title candidate reconciles only current Stories whose selected
+maximum numeric OpenNews score is strictly greater than 70. It fingerprints
+the safe normalized display title and also retains the raw Story-title binding;
+a title change creates new work and an old result cannot attach. Chinese source
+titles complete locally. Other titles use the configured global LLM provider
+through the serial model adapter, with short PostgreSQL claim/publication
+transactions around the outside model call and bounded retry/terminal state.
+The candidate exports a current due time rather than its oldest backlog time to
+the process-wide arbiter, so a translation backlog does not outrank already-due
+Brief or Macro model work merely by age. Feed/detail never wait: any non-ready
+state uses the original title. Restart recovery reclaims expired leases from
+PostgreSQL; there is no wake plane, browser call, or second Story writer.
+
 Enabled push requires a valid Feishu webhook but not a signing secret. With a
 secret, each request carries the Feishu timestamp/signature pair; without one,
 the request deliberately carries neither. A signed request that fails is never
@@ -382,23 +403,29 @@ Diagnose News in this order:
 2. `news_items`: provider identity, bounded metadata, and content fingerprint;
 3. `news_story_members` and `news_stories`: current membership closure,
    full-SHA Story ID, state fingerprint, reporting-origin count, score factors;
-4. `/api/news/feed`: flat global keyset order, filters, facets, and cursor;
-5. `news_brief_runs`, `news_brief_current`, and
+4. `news_story_title_translations`: current raw/normalized title binding,
+   locale/version identity, claim/lease, attempts, result, and sanitized error;
+5. `/api/news/feed`: flat global keyset order, strict provider-score filter,
+   server search, reporting-origin facets, complete filter-bound cursor, and
+   exact title-translation binding;
+6. `news_brief_runs`, `news_brief_current`, and
    `news_brief_publications`: candidate fingerprint, lease/run state, current
    publication, last error, and immutable history;
-6. `/api/news/brief`: ETag and truthful public state;
-7. `news_push_state` and `news_push_deliveries`: baseline, frozen evidence,
+7. `/api/news/brief`: ETag and truthful public state;
+8. `news_push_state` and `news_push_deliveries`: baseline, frozen evidence,
    lease, attempt, retry/terminal state, and explicit receipt;
-8. `/api/news/status`: warming/ready/degraded layer health plus
+9. `/api/news/status`: warming/ready/degraded layer health plus
    `live`/`recovering`/`stalled`, Story last success, direct first-membership
-   backlog for current Articles, and rolling translation evidence.
+   backlog for current Articles, exact-bound Story-title translation health,
+   and separate rolling Push-translation evidence.
 
-News health has four layers:
+News health has five layers:
 
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | OpenNews is connected, its recovery gap is closed, and at least one live/recovery publication turn has succeeded | source not configured, no successful publication turn yet, disconnected stream, open gap, or current provider error |
 | story | complete current 12-hour admitted items close into coherent current Story aggregates | current Articles missing their first Story membership, oldest such wait over 120 seconds, missing/duplicate ownership, aggregate mismatch, projection failure, or no current Stories |
+| translation | every current strict-score-eligible Story has an exact-bound ready Chinese/source-Chinese title; an empty eligible set is explicit | pending/running/retry work is `warming` without an invented latency SLO; terminal/unavailable work or missing global LLM configuration while eligible non-Chinese work exists is `degraded` |
 | brief | current valid publication matches the current Top-8 fingerprint, or insufficient material is explicit | no publication, expired/failed run, mismatched fingerprint, or stale last-known-good |
 | push | disabled, or webhook-configured with initialized baseline, no retry/terminal delivery, and healthy rolling translation/delivery SLOs | missing required webhook, uninitialized enabled state, any retry/terminal delivery, an SLO breach, or a wait over 120 seconds |
 
@@ -509,6 +536,10 @@ targets, document analyses, and six module rows.
 Migration `20260801_0237` persists the bounded OpenNews recovery boundary.
 Migration `20260801_0238` creates only `news_push_state` and
 `news_push_deliveries`; it performs no backfill and no outbound send.
+Migration `20260807_0245` adds only `news_story_title_translations`, bringing
+the live News boundary to exactly fourteen tables. It creates no endpoint,
+configuration field, Story backfill/mutation, or external call; Workers
+reconcile current strict-score-eligible title targets after restart.
 
 ## Operator actions and retention
 

@@ -41,6 +41,7 @@ PROJECTION_TABLES = (
     "news_story_facet_counts",
     "news_source_facet_counts",
     "news_brief_selection_current",
+    "news_story_title_translations",
 )
 
 FOREIGN_KEY_CONSTRAINTS = {
@@ -245,6 +246,37 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             FROM news_source_facet_counts facets
             JOIN news_sources sources ON sources.source_id = facets.source_id
             ORDER BY facets.story_count DESC, sources.name, sources.source_id
+            LIMIT 101
+        """,
+        "params": (),
+    },
+    {
+        "name": "news_feed_filtered_facets",
+        "sql": """
+            WITH filtered_stories AS MATERIALIZED (
+              SELECT stories.story_id
+              FROM news_stories stories
+              WHERE EXISTS (
+                SELECT 1
+                FROM news_story_members members
+                JOIN news_items items ON items.item_id = members.item_id
+                WHERE members.story_id = stories.story_id
+                  AND CASE
+                        WHEN jsonb_typeof(items.provider_metadata -> 'score') = 'number'
+                          THEN (items.provider_metadata ->> 'score')::numeric
+                        ELSE NULL
+                      END > 70
+              )
+            )
+            SELECT lower(btrim(items.reporting_origin)) AS reporting_origin,
+                   count(DISTINCT filtered_stories.story_id)::integer AS story_count
+            FROM filtered_stories
+            JOIN news_story_members members
+              ON members.story_id = filtered_stories.story_id
+            JOIN news_items items ON items.item_id = members.item_id
+            WHERE nullif(btrim(items.reporting_origin), '') IS NOT NULL
+            GROUP BY lower(btrim(items.reporting_origin))
+            ORDER BY story_count DESC, reporting_origin
             LIMIT 101
         """,
         "params": (),
@@ -456,8 +488,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/target-social-timeline": ("target_posts_recent",),
     "/api/news/feed": (
         "news_feed",
-        "news_feed_story_facets",
-        "news_feed_source_facets",
+        "news_feed_filtered_facets",
     ),
     "/api/news/stories/{story_id}": ("news_story", "news_story_members"),
     "/api/news/brief": ("news_brief",),

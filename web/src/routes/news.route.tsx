@@ -8,11 +8,6 @@ export function Component() {
   const { storyId } = useParams();
   const location = useLocation();
   return (
-    <NewsPage
-      brief={location.pathname === "/news/brief"}
-      sources={location.pathname === "/news/sources"}
-      storyId={storyId ?? null}
-      token={token}
-    />
+    <NewsPage brief={location.pathname === "/news/brief"} storyId={storyId ?? null} token={token} />
   );
 }

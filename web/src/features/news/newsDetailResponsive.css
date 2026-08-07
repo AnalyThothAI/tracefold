@@ -1,0 +1,39 @@
+@layer app.features {
+  @media (max-width: 767px) {
+    .news-story-hero,
+    .news-detail-card,
+    .news-brief-document {
+      padding: 0.8rem;
+    }
+
+    .news-story-hero-footer,
+    .news-evidence-section > header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .news-primary-link {
+      justify-content: center;
+    }
+
+    .news-evidence-metrics span {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .news-provider-facts,
+    .news-factor-grid,
+    .news-story-identity-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .news-member-actions {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .news-brief-toolbar {
+      align-items: flex-start;
+    }
+  }
+}

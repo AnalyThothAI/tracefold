@@ -190,6 +190,16 @@ class NewsImportanceFactorsData(ExactApiSchema):
     total: int
 
 
+class NewsStoryTitleTranslationData(ExactApiSchema):
+    state: Literal["pending", "ready", "failed", "unavailable"]
+    title_zh: str | None
+    source_title: str
+    source_title_fingerprint: str
+    locale: Literal["zh-CN"]
+    workflow_version: str
+    prompt_version: str
+
+
 class NewsStoryData(ExactApiSchema):
     story_id: str
     title: str
@@ -209,6 +219,7 @@ class NewsStoryData(ExactApiSchema):
     last_published_at_ms: int
     provider_evidence: NewsProviderEvidenceData | None
     push_delivery_state: Literal["pending", "sent", "suppressed", "failed"] | None
+    title_translation: NewsStoryTitleTranslationData | None
 
 
 class NewsFeedFacetData(ExactApiSchema):
@@ -220,16 +231,22 @@ class NewsFeedSourceFacetData(NewsFeedFacetData):
     label: str
 
 
+class NewsFeedReportingOriginFacetData(NewsFeedFacetData):
+    label: str
+
+
 class NewsFeedFacetsPageData(ExactApiSchema):
     categories_has_more: bool
     levels_has_more: bool
     sources_has_more: bool
+    reporting_origins_has_more: bool
 
 
 class NewsFeedFacetsData(ExactApiSchema):
     categories: list[NewsFeedFacetData]
     levels: list[NewsFeedFacetData]
     sources: list[NewsFeedSourceFacetData]
+    reporting_origins: list[NewsFeedReportingOriginFacetData]
     page: NewsFeedFacetsPageData
 
 
@@ -237,6 +254,9 @@ class NewsFeedFiltersData(ExactApiSchema):
     category: str | None
     level: str | None
     source_id: str | None
+    reporting_origin: str | None
+    provider_score_gt: float | None
+    q: str | None
 
 
 class NewsFeedData(ExactApiSchema):
@@ -434,6 +454,32 @@ class NewsBriefStatusData(ExactApiSchema):
     latest_run: NewsBriefRunData | None
 
 
+class NewsTitleTranslationRolling24hData(ExactApiSchema):
+    attempted: int
+    succeeded: int
+    success_ratio: float | None
+    latency_p95_ms: int | None
+    failure_counts: dict[str, int]
+
+
+class NewsTitleTranslationStatusData(ExactApiSchema):
+    status: NewsHealthStatus
+    reasons: list[str]
+    configured: bool
+    locale: Literal["zh-CN"]
+    workflow_version: str
+    prompt_version: str
+    eligible_count: int
+    ready_count: int
+    pending_count: int
+    retry_count: int
+    failed_count: int
+    unavailable_count: int
+    oldest_pending_at_ms: int | None
+    latest_success_at_ms: int | None
+    rolling_24h: NewsTitleTranslationRolling24hData
+
+
 class NewsPushTranslation24hData(ExactApiSchema):
     attempted: int
     succeeded: int
@@ -477,6 +523,7 @@ class NewsStatusLayersData(ExactApiSchema):
     ingest: NewsIngestStatusData
     story: NewsStoryStatusData
     brief: NewsBriefStatusData
+    translation: NewsTitleTranslationStatusData
     push: NewsPushStatusData
 
 

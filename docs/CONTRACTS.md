@@ -42,7 +42,8 @@ validation; there is no alias, merge, or generated-source fallback.
 for the current OpenAI-compatible provider, `news_brief_model` for its model,
 plus optional `openrouter_api_key` and `groq_api_key` for the News fallback
 chain. The primary provider fields are consumed by enabled product-model
-workers and the optional News Push title-presentation adapter. Model execution
+workers—including the exact-bound News Story display-title translator—and the
+optional News Push title-presentation adapter. Model execution
 policy, timeouts, token budgets, cadence, leases, retries, and reservations are
 code-owned.
 Environment variables are not a credential contract.
@@ -67,8 +68,8 @@ contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
 change modes; it never contains the webhook, secret, timestamp, or signature.
 Threshold, cadence, deadlines, retries, translation target, 7.5-second request
 timeout, 8-second total translation budget, 500-grapheme input ceiling,
-validation, and card policy are code-owned. Translation remains an outbound
-presentation adapter and does not enter the serial model arbiter. For one fresh
+validation, and card policy are code-owned. This Push translation remains an
+outbound presentation adapter and does not enter the serial model arbiter. For one fresh
 non-Chinese title it sends only that title in at most one request to the global
 OpenAI-compatible provider and never switches providers or retries. After
 resource admission, a durable `attempted` fence is committed immediately before
@@ -89,8 +90,16 @@ and provider score. Coin symbols preserve provider order after
 case-insensitive deduplication; missing symbols render as `未提供`. A canonical
 HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
 card has no subtitle, summary, signal, grade, Story score, source, or publication
-time. Translation is presentation-only: Article, Story, provider score, and
+time. Push translation is presentation-only: Article, Story, provider score, and
 public News read models remain unchanged.
+
+The News Story display-title translator is a distinct product-model consumer.
+It reuses the same global `llm.api_key`, effective `llm.base_url`, and
+`llm.news_brief_model`; there is no News translation config block, credential,
+endpoint, or browser model call. Its eligibility threshold, locale,
+prompt/workflow versions, claims, leases, retry policy, retention, and resource
+budgets are code-owned. It can publish only an exact-bound zh-CN reading title
+for a current high-signal Story and cannot mutate NewsItem or Story rows.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
@@ -126,8 +135,10 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
   freshness, and owned or unowned queue backlog without calling an upstream.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
-Status contains no model configuration, model policy, capacity counters,
-prompt state, or model-derived business status.
+Status contains no provider/model credentials, base URLs, request policy,
+capacity counters, prompt contents, or raw model responses. A code-owned
+workflow/prompt version may accompany aggregate product health so exact-bound
+translation evidence is interpretable; it is not operator configuration.
 
 API responses use a typed envelope:
 
@@ -146,7 +157,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | OpenNews current items and source health, deterministic Story read model, and immutable Chinese Brief |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | OpenNews current items/source health, deterministic Story read model, exact-bound Story-title translations, and immutable Chinese Brief |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
@@ -174,23 +185,36 @@ no population `scope`; a retired `scope` query parameter is rejected with
 
 The News public surface is exactly five read-only routes:
 
-- `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&sort={importance|latest}&limit={limit}&cursor={cursor}`
-  returns one flat global Story page. `importance` is the default; page size
-  defaults to 50 and is capped at 100. Both sorts use the same eligible Story
-  population. Filters run before deterministic keyset ordering and
-  pagination. The response includes Stories, facets, `next_cursor`, and
-  `has_more`. Each Story carries nullable `provider_evidence`, selected by the
-  backend from the member with the maximum numeric OpenNews provider score and
-  deterministic publication-time/Item-ID ties. It binds that Item ID, URL, and
-  bounded provider metadata together; the browser does not cluster, score,
-  select the maximum, or reorder. `push_delivery_state` is null for a
-  non-eligible Story and otherwise one of `pending`, `sent`, `suppressed`, or
-  `failed`, derived at read time from the current selected Item and the existing
-  durable delivery ledger.
+- `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&reporting_origin={reporting_origin}&provider_score_gt={score}&q={query}&sort={importance|latest}&limit={limit}&cursor={cursor}`
+  returns one flat global Story page. `importance` remains the API default;
+  page size remains 50 by default and is capped at 100. Omitting the three new
+  parameters preserves the complete Feed population and prior ordering for
+  non-browser consumers. `provider_score_gt` is a strict comparison against
+  the backend-selected maximum numeric OpenNews score; the browser's fixed
+  high-signal view sends exactly `70`. `reporting_origin` is a normalized exact
+  match. `q` is normalized server-side search over an exact-bound ready zh-CN
+  title when present, original title/description, reporting origin, provider
+  source, and coin symbols. All search and filters run before deterministic
+  keyset ordering and pagination. Every cursor and ETag binds the complete
+  normalized filter identity. The response includes Stories, filtered facets
+  including reporting origins, `next_cursor`, and `has_more`.
+
+  Each Story carries nullable `provider_evidence`, selected by the backend from
+  the member with the maximum numeric OpenNews provider score and deterministic
+  publication-time/Item-ID ties. It binds that Item ID, URL, and bounded
+  provider metadata together; the browser does not cluster, score, select the
+  maximum, or reorder. A nullable `title_translation` binds state, locale,
+  source title and fingerprint, prompt/workflow versions, and ready zh-CN title
+  to the exact current Story display title. Only a matching `ready` result is a
+  Chinese reading title; all other states fall back immediately to the original.
+  `push_delivery_state` remains null for a non-eligible Story and otherwise one
+  of `pending`, `sent`, `suppressed`, or `failed`, derived at read time from the
+  current selected Item and the existing durable delivery ledger.
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,
-  importance score, and the transparent factor breakdown. Member and
+  importance score, the same exact-bound title-translation state, and the
+  transparent factor breakdown. Member and
   representative URLs are nullable for linkless dispatches. An expired Story
   ID returns not found; there is no archived Story contract, revision timeline,
   or per-Story AI analysis.
@@ -202,7 +226,8 @@ The News public surface is exactly five read-only routes:
   OpenNews, and its
   live connection, last recovery, current error, and unclosed-gap status.
 - `GET /api/news/status` derives warming/ready/degraded News health from
-  PostgreSQL source, Story-invariant, Brief, and outbound push state. It also
+  PostgreSQL source, Story-invariant, exact-bound title-translation, Brief, and
+  outbound push state. It also
   exposes the operator-facing `live`, `recovering`, or `stalled` state and the
   last successful Story publication clock. Current 12-hour Articles that have
   not yet entered any Story membership are measured directly; an oldest such
@@ -215,12 +240,17 @@ The News public surface is exactly five read-only routes:
 Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
+The React `/news` client deliberately requests `provider_score_gt=70`,
+`sort=latest`, and `limit=25` for its default `focus` mode. That product default
+does not change the absent-parameter Feed API behavior described above.
+
 NewsItem identity is `(source_id, provider_record_id)`. OpenNews reports upsert
 the current title, description, link, reporting origin, publication time, and
 bounded provider metadata (provider-source label, `score`, `signal`, `grade`,
 and coin details).
-Provider annotations merge metadata into the same current row; translations
-and non-news messages are discarded. Provider metadata is descriptive and
+Provider annotations merge metadata into the same current row; translation
+frames received from OpenNews and non-news messages are discarded. Provider
+metadata is descriptive and
 does not affect Story identity, classification, importance, Feed ordering, or
 Brief. A numeric provider score may qualify the already projected Story for
 the separate outbound push state machine. The timestamp at which the current
@@ -234,6 +264,13 @@ distinct reporting origins, not acquisition paths, memberships, or repeated
 observations. Keyword classification and importance are deterministic and
 fully sufficient without AI.
 
+The reading layer derives safe normalized plain text from the current Story
+display title and description without changing persisted Article evidence or
+the WorldMonitor identity input. This normalized title is the translation
+input and fingerprint authority. Markup/entity cleanup is presentation-only;
+the public translation object also carries the exact source title so a client
+can reject any mismatched result.
+
 The native Brief candidate calls no model when fewer than three Stories or fewer than two
 reporting origins are available, or when its ordered Top-8 Story fingerprint is
 unchanged. A new fingerprint permits one attempt per configured provider,
@@ -242,8 +279,13 @@ locked: line `[n]` always refers to selected Story `n`. Invalid lines are
 repaired locally without shifting indexes. The current pointer changes only
 after a complete valid publication transaction succeeds.
 
-`/api/news/status` exposes four independent News health layers: `ingest`,
-`story`, `brief`, and `push`. Push reports disabled/configured, baseline,
+`/api/news/status` exposes five independent News health layers: `ingest`,
+`story`, `translation`, `brief`, and `push`. The translation layer reports its
+configured state, current eligible/pending/retry/ready/failed/unavailable
+counts, bounded reasons, and rolling 24-hour attempts, successes, success
+ratio, P95 latency, and sanitized failure-code counts. Pending, failed, or
+unavailable title work never blocks Story or Feed readability. Push reports
+disabled/configured, baseline,
 pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
 error evidence without exposing secrets or card content. Its nested
 `translation_24h` reports durably fenced v2 attempts, including conservatively
@@ -397,7 +439,9 @@ the six module rows.
 `20260801_0238` adds the News push baseline and delivery ledger. Applying either
 migration does not send a message; delivery begins only after an explicit
 webhook-backed push configuration and the first enabled reconcile establishes
-its baseline. Signing is optional.
+its baseline. Signing is optional. `20260807_0245` adds the one News-owned
+durable Story display-title translation table; it adds no endpoint, config
+field, Story mutation, or outbound delivery.
 
 ### Token images
 

@@ -38,6 +38,7 @@ from .opennews import (
     parse_opennews_message,
     parse_opennews_rest_response,
 )
+from .presentation import normalize_news_display_text, normalize_news_display_title
 from .projection import (
     NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
     NewsProjectionService,
@@ -59,6 +60,17 @@ from .ranking import importance_score, is_delayed_brief_excluded, select_top_sto
 from .repository import NewsRepository
 from .runtime import NewsAcquisition, NewsBriefCandidate
 from .sources import opennews_source
+from .title_translation import (
+    TITLE_TRANSLATION_LOCALE,
+    TITLE_TRANSLATION_MAX_ATTEMPTS,
+    TITLE_TRANSLATION_PROMPT_VERSION,
+    TITLE_TRANSLATION_WORKFLOW_VERSION,
+    NewsStoryTitleTranslationCandidate,
+    NewsTitleTranslationExpectedError,
+    NewsTitleTranslationResult,
+    NewsTitleTranslator,
+    looks_zh_cn_title,
+)
 
 __all__ = [
     "BRIEF_PROMPT_VERSION",
@@ -74,6 +86,10 @@ __all__ = [
     "SEVERITY_VALUES",
     "STORY_IDENTITY_VERSION",
     "STORY_SIMILARITY_THRESHOLD",
+    "TITLE_TRANSLATION_LOCALE",
+    "TITLE_TRANSLATION_MAX_ATTEMPTS",
+    "TITLE_TRANSLATION_PROMPT_VERSION",
+    "TITLE_TRANSLATION_WORKFLOW_VERSION",
     "NewsAcquisition",
     "NewsBriefCandidate",
     "NewsBriefDraft",
@@ -92,6 +108,10 @@ __all__ = [
     "NewsSourceDefinition",
     "NewsStoryProjection",
     "NewsStoryPush",
+    "NewsStoryTitleTranslationCandidate",
+    "NewsTitleTranslationExpectedError",
+    "NewsTitleTranslationResult",
+    "NewsTitleTranslator",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "PreparedNewsPush",
@@ -103,6 +123,9 @@ __all__ = [
     "importance_score",
     "is_delayed_brief_excluded",
     "is_same_story",
+    "looks_zh_cn_title",
+    "normalize_news_display_text",
+    "normalize_news_display_title",
     "normalize_story_text",
     "opennews_source",
     "parse_opennews_message",

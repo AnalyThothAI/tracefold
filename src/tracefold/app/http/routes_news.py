@@ -30,6 +30,9 @@ def get_news_feed(
     category: Annotated[str, Query()] = "",
     level: Annotated[str, Query()] = "",
     source_id: Annotated[str, Query()] = "",
+    reporting_origin: Annotated[str, Query(max_length=128)] = "",
+    provider_score_gt: Annotated[float | None, Query()] = None,
+    q: Annotated[str, Query(max_length=200)] = "",
     sort: Annotated[str, Query(pattern="^(importance|latest)$")] = "importance",
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str, Query()] = "",
@@ -40,6 +43,9 @@ def get_news_feed(
             "category",
             "level",
             "source_id",
+            "reporting_origin",
+            "provider_score_gt",
+            "q",
             "sort",
             "limit",
             "cursor",
@@ -53,12 +59,21 @@ def get_news_feed(
                 category=category or None,
                 level=level or None,
                 source_id=source_id or None,
+                reporting_origin=reporting_origin or None,
+                provider_score_gt=provider_score_gt,
+                q=q or None,
                 sort=sort,
                 limit=limit,
                 cursor=cursor or None,
             )
     except ValueError as exc:
-        raise ApiBadRequest(str(exc), field="cursor") from exc
+        code = str(exc)
+        field = {
+            "news_feed_provider_score_gt_invalid": "provider_score_gt",
+            "news_feed_query_invalid": "q",
+            "news_feed_reporting_origin_invalid": "reporting_origin",
+        }.get(code, "cursor")
+        raise ApiBadRequest(code, field=field) from exc
     return _etagged(data, request, envelope=_FeedEnvelope)
 
 
@@ -134,6 +149,7 @@ def get_news_status(request: Request) -> JSONResponse:
         data = _news_interface(repos).health(
             now_ms=now_ms,
             push_enabled=push_settings.enabled,
+            title_translation_configured=bool(runtime.settings.llm.api_key),
             feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
             feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
             workers_state=workers_state,

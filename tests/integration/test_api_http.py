@@ -886,6 +886,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
         "ingest": "ready",
         "story": "ready",
         "brief": "ready",
+        "translation": "ready",
         "push": "warming",
     }
     assert warming["layers"]["push"]["initialized"] is False
@@ -1345,6 +1346,228 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
         "error": "unsupported_query_param",
         "field": "view",
     }
+
+
+def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_server_authoritative(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="policy-primary",
+                        title="Bitcoin reserve policy approved by central bank",
+                        description="Market monitor officials released policy documents.",
+                        published_at_ms=now_ms - 40_000,
+                        reporting_origin="Reuters",
+                        provider_metadata={
+                            "score": 71,
+                            "source": "Wire Alpha",
+                            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="policy-corroboration",
+                        title="Bitcoin reserve policy approved by central bank",
+                        description="A unique corroboration marker from a second newsroom.",
+                        published_at_ms=now_ms - 30_000,
+                        reporting_origin="Bloomberg",
+                        provider_metadata={"score": 65, "source": "Wire Beta"},
+                    ),
+                    _opennews_event(
+                        provider_record_id="threshold",
+                        title="Regional power grid reports planned maintenance",
+                        description="Routine work will begin overnight.",
+                        published_at_ms=now_ms - 20_000,
+                        reporting_origin="Utility Times",
+                        provider_metadata={
+                            "score": 70,
+                            "source": "Boundary Desk",
+                            "coins": [{"symbol": "BOUNDARYCOIN", "market_type": "spot"}],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="software",
+                        title="Software consortium releases open source database update",
+                        description="Market monitor teams published the release notes.",
+                        published_at_ms=now_ms - 10_000,
+                        reporting_origin="Bloomberg",
+                        provider_metadata={
+                            "score": 82,
+                            "source": "Provider Desk",
+                            "coins": [{"symbol": "ETH", "market_type": "spot"}],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="unscored",
+                        title="Local library extends weekend opening hours",
+                        description="The updated public schedule starts next month.",
+                        published_at_ms=now_ms - 5_000,
+                        reporting_origin="Community News",
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            repos.news.rebuild_stories(now_ms=now_ms)
+
+        headers = {"Authorization": "Bearer secret"}
+        complete = client.get("/api/news/feed", headers=headers)
+        priority = client.get(
+            "/api/news/feed",
+            params={"provider_score_gt": 70, "sort": "latest"},
+            headers=headers,
+        )
+        by_title = client.get("/api/news/feed", params={"q": "BITCOIN RESERVE"}, headers=headers)
+        by_description = client.get(
+            "/api/news/feed",
+            params={"q": "corroboration marker"},
+            headers=headers,
+        )
+        by_reporting_origin = client.get("/api/news/feed", params={"q": "utility times"}, headers=headers)
+        by_provider_source = client.get("/api/news/feed", params={"q": "provider desk"}, headers=headers)
+        by_coin = client.get("/api/news/feed", params={"q": "boundarycoin"}, headers=headers)
+        exact_origin = client.get(
+            "/api/news/feed",
+            params={"reporting_origin": " BLOOMBERG ", "sort": "latest"},
+            headers=headers,
+        )
+        first_page = client.get(
+            "/api/news/feed",
+            params={
+                "provider_score_gt": 70,
+                "reporting_origin": "bloomberg",
+                "q": "market monitor",
+                "sort": "latest",
+                "limit": 1,
+            },
+            headers=headers,
+        )
+        cursor = first_page.json()["data"]["next_cursor"]
+        second_page = client.get(
+            "/api/news/feed",
+            params={
+                "provider_score_gt": 70,
+                "reporting_origin": "bloomberg",
+                "q": "market monitor",
+                "sort": "latest",
+                "limit": 1,
+                "cursor": cursor,
+            },
+            headers=headers,
+        )
+        mismatches = (
+            client.get(
+                "/api/news/feed",
+                params={
+                    "provider_score_gt": 69,
+                    "reporting_origin": "bloomberg",
+                    "q": "market monitor",
+                    "sort": "latest",
+                    "limit": 1,
+                    "cursor": cursor,
+                },
+                headers=headers,
+            ),
+            client.get(
+                "/api/news/feed",
+                params={
+                    "provider_score_gt": 70,
+                    "reporting_origin": "reuters",
+                    "q": "market monitor",
+                    "sort": "latest",
+                    "limit": 1,
+                    "cursor": cursor,
+                },
+                headers=headers,
+            ),
+            client.get(
+                "/api/news/feed",
+                params={
+                    "provider_score_gt": 70,
+                    "reporting_origin": "bloomberg",
+                    "q": "release notes",
+                    "sort": "latest",
+                    "limit": 1,
+                    "cursor": cursor,
+                },
+                headers=headers,
+            ),
+        )
+
+    assert complete.status_code == 200
+    complete_data = complete.json()["data"]
+    assert len(complete_data["stories"]) == 4
+    assert complete_data["filters"] == {
+        "category": None,
+        "level": None,
+        "source_id": None,
+        "reporting_origin": None,
+        "provider_score_gt": None,
+        "q": None,
+    }
+    assert {facet["value"]: facet["count"] for facet in complete_data["facets"]["reporting_origins"]} == {
+        "bloomberg": 2,
+        "community news": 1,
+        "reuters": 1,
+        "utility times": 1,
+    }
+    assert complete_data["facets"]["page"]["reporting_origins_has_more"] is False
+
+    assert priority.status_code == 200
+    priority_data = priority.json()["data"]
+    assert priority_data["filters"]["provider_score_gt"] == 70
+    assert [story["provider_evidence"]["provider_metadata"]["score"] for story in priority_data["stories"]] == [
+        82,
+        71,
+    ]
+    assert all(story["provider_evidence"]["provider_metadata"]["score"] > 70 for story in priority_data["stories"])
+    assert {facet["value"] for facet in priority_data["facets"]["reporting_origins"]} == {
+        "bloomberg",
+        "reuters",
+    }
+
+    expected_policy_title = "Bitcoin reserve policy approved by central bank"
+    assert [story["title"] for story in by_title.json()["data"]["stories"]] == [expected_policy_title]
+    assert [story["title"] for story in by_description.json()["data"]["stories"]] == [expected_policy_title]
+    assert [story["title"] for story in by_reporting_origin.json()["data"]["stories"]] == [
+        "Regional power grid reports planned maintenance"
+    ]
+    assert [story["title"] for story in by_provider_source.json()["data"]["stories"]] == [
+        "Software consortium releases open source database update"
+    ]
+    assert [story["title"] for story in by_coin.json()["data"]["stories"]] == [
+        "Regional power grid reports planned maintenance"
+    ]
+
+    assert exact_origin.status_code == 200
+    assert exact_origin.json()["data"]["filters"]["reporting_origin"] == "bloomberg"
+    assert [story["title"] for story in exact_origin.json()["data"]["stories"]] == [
+        "Software consortium releases open source database update",
+        expected_policy_title,
+    ]
+    assert exact_origin.json()["data"]["facets"]["reporting_origins"] == [
+        {"value": "bloomberg", "label": "bloomberg", "count": 2},
+        {"value": "reuters", "label": "reuters", "count": 1},
+    ]
+    assert first_page.status_code == 200
+    assert cursor
+    assert second_page.status_code == 200
+    first_story_id = first_page.json()["data"]["stories"][0]["story_id"]
+    second_story_id = second_page.json()["data"]["stories"][0]["story_id"]
+    assert first_story_id != second_story_id
+    assert second_page.json()["data"]["next_cursor"] is None
+    assert second_page.json()["data"]["has_more"] is False
+    assert [response.status_code for response in mismatches] == [400, 400, 400]
+    assert [response.json() for response in mismatches] == [
+        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
+        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
+        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
+    ]
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):

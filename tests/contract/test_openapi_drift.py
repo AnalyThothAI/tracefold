@@ -110,6 +110,27 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
 
 
 @pytest.mark.contract
+def test_news_feed_contract_exposes_priority_search_and_reporting_origin_facets() -> None:
+    from tracefold.app.http.app import create_app
+    from tracefold.platform.config.settings import Settings
+
+    schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
+    operation = schema["paths"]["/api/news/feed"]["get"]
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+
+    assert {"q", "reporting_origin", "provider_score_gt"}.issubset(parameters)
+    assert parameters["q"]["schema"]["maxLength"] == 200
+    assert parameters["reporting_origin"]["schema"]["maxLength"] == 128
+    assert set(schema["components"]["schemas"]["NewsFeedFiltersData"]["required"]) >= {
+        "q",
+        "reporting_origin",
+        "provider_score_gt",
+    }
+    assert set(schema["components"]["schemas"]["NewsFeedFacetsData"]["required"]) >= {"reporting_origins"}
+    assert set(schema["components"]["schemas"]["NewsFeedFacetsPageData"]["required"]) >= {"reporting_origins_has_more"}
+
+
+@pytest.mark.contract
 def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
     openapi_text = OPENAPI_PATH.read_text(encoding="utf-8")
     openapi_ts_text = OPENAPI_TS_PATH.read_text(encoding="utf-8")

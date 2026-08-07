@@ -23,8 +23,8 @@ acquisition, the bounded external/model/CPU capabilities, singleton runtime
 status, one fixed-period News Story writer, and one EDF projection
 coordinator for the frontier-backed domains. Workers recover exclusively by
 re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native News
-Brief/Fed-document model state, the News Story-push state machine, and queues
-on bounded code-owned clocks.
+Brief/Story-title/Fed-document model state, the News Story-push state machine,
+and queues on bounded code-owned clocks.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -96,6 +96,11 @@ heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
 `news_brief_publications` and `macro_document_analyses` are immutable derived
 model outputs keyed by frozen evidence; they are not material facts.
+`news_story_title_translations` is News-owned durable model state keyed by the
+current Story, its exact normalized display-title fingerprint, locale, and
+workflow/prompt versions. It can supply a presentation title only when that
+binding still matches; it never mutates the Story row or becomes identity,
+classification, ranking, membership, Brief, or Push input.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze no-backfill baselines, selected Story evidence, one optional
 presentation-only Chinese title translation or explicit original fallback,
@@ -121,9 +126,11 @@ tracefold.news
   identity.py       WorldMonitor-compatible 512-dimension title clustering
   ranking.py        55/20/15/10 importance and Top-8 selection
   brief.py          Chinese Brief fingerprint and citation index lock
+  presentation.py   safe plain-text reading-layer normalization
   repository.py     PostgreSQL current Item, Story, source-health, and Brief state
   interface.py      sole external News read interface
   runtime.py        bounded OpenNews live/recovery and native Brief candidate
+  title_translation.py exact-bound zh-CN Story-title model candidate
   projection.py     complete 12-hour current WorldMonitor Story calculation
   story_store.py    current-only Story compare-and-publish store
   push.py           Story-qualified durable Feishu delivery
@@ -204,6 +211,8 @@ Important atomic units are:
   membership/projection;
 - immutable World Brief publication plus completion of its exact
   evidence/model/version attempt;
+- exact-bound Story display-title publication plus completion of its claimed
+  normalized-title/model/version target;
 - immutable Fed document analysis plus completion of its exact native job;
 - retry or terminal transition plus mutation of its source queue row.
 
@@ -280,10 +289,12 @@ OpenNews source
   -> provider annotations update bounded metadata on the current item
   -> complete 12-hour current WorldMonitor title clustering every 60 seconds
   -> coherent current-only Story + members
+  -> strict max numeric OpenNews score>70 Story-title targets
+     -> exact-bound zh-CN display title or immediate original fallback
   -> News-owned strict score>70 push state
      -> one bounded Chinese-title attempt or immediate original fallback
      -> signed or explicitly unsigned frozen Feishu card
-  -> one flat global cursor Feed; category is a facet
+  -> one flat global cursor Feed; category, severity, and reporting origin are facets
   -> deterministic Top-8 Brief selection
   -> one Chinese World Brief publication
   -> /api/news/feed + /api/news/stories/{story_id}
@@ -310,8 +321,8 @@ The stream socket does not consume a finite-operation permit; REST does.
 OpenNews provider record ID is the current-fact identity. Reconnect and
 REST/WSS overlap therefore update or no-op the same row. `news.ai_update`
 updates only the bounded provider-source label, `score`, `signal`, `grade`, and
-coin metadata on that row. Translations, `strategy.triggered`, non-news engine
-events, and invalid or
+coin metadata on that row. OpenNews translation frames, `strategy.triggered`,
+non-news engine events, and invalid or
 stale reports are discarded rather than retained as audit history. Provider
 metadata is descriptive and cannot affect identity, classification, Story,
 importance, ordering, or Brief. It may qualify an already projected Story for
@@ -352,8 +363,9 @@ earliest normalized title in that current cluster. It may change when the
 earliest item expires; the previous Story is removed and its detail route
 returns not found. There is no archived Story product, embedding,
 full-article extraction, browser clustering, revision product, or per-Story AI
-analysis. The outbound push preserves the selected OpenNews original headline
-as evidence and may freeze a Chinese presentation copy; it never adds
+analysis. The separate Story-title candidate may publish an exact-bound Chinese
+reading title, and outbound Push may independently freeze a Chinese
+presentation copy of its selected OpenNews Item headline. Neither adds
 model-derived NewsItem or Story state.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
@@ -365,8 +377,10 @@ diplomacy/flashpoint and entity-corroboration boosts. Corroboration and public
 of one provider record counts once. Because Tracefold persists this otherwise
 request-time score, recency uses the equivalent one-hour healthy-cache epoch;
 unchanged input within an epoch writes zero serving rows. The API exposes the
-scoring item and factor breakdown. Global clustering precedes filtering,
-sorting, and keyset pagination; category is a facet, never a bucket or cap.
+scoring item and factor breakdown. Global clustering precedes search,
+filtering, sorting, and keyset pagination; category, severity, reporting
+origin, source, and strict provider-score qualification are facets or filters,
+never clustering buckets or browser-side caps.
 
 The native News Brief candidate selects at most eight Stories, caps one
 representative reporting origin at three, and excludes opinion, feel-good,
@@ -386,6 +400,21 @@ run with an unexpired lease and heartbeat. News Brief preserves the first-dirty
 600-second debounce in native domain state; once due, the serial model arbiter
 waits on the fixed 250 ms bounded cadence after every completed candidate. No
 per-Story or Brief worker timer is a correctness authority.
+
+`NewsStoryTitleTranslationCandidate` is the News-owned native model consumer
+for the browser reading title. Reconciliation admits only current Stories whose
+backend-selected maximum numeric OpenNews score is strictly greater than 70.
+Its input is the safe normalized Story display title—not the selected
+high-score Item headline—and its durable identity binds Story ID, exact
+normalized display-title fingerprint, locale `zh-CN`, and workflow/prompt
+versions. A Chinese source title completes locally; other titles use the
+existing global OpenAI-compatible provider configuration and the serial model
+adapter. Claims, bounded retries, terminal state, and rolling health are
+PostgreSQL-backed, while model I/O runs outside a transaction. A changed Story
+display title creates distinct work. Serving exposes a Chinese title only when
+the current raw and normalized title bindings both match; pending, failed,
+unavailable, or stale work immediately leaves the exact original display title
+readable. The candidate never writes `news_stories`.
 
 `NewsStoryPush` is a News-owned durable outbound worker, not a model candidate
 or generic Notifications service. On first enablement it atomically suppresses
@@ -463,20 +492,22 @@ network call. Current waiting work whose score-fact clock is older than 120
 seconds is a stalled operating state, even when a retry is scheduled for the
 future.
 
-The complete live News storage boundary is exactly thirteen tables:
+The complete live News storage boundary is exactly fourteen tables:
 `news_sources`, `news_items`, `news_stories`,
 `news_story_members`, `news_projection_summary`,
 `news_story_facet_counts`, `news_source_facet_counts`,
 `news_brief_selection_current`,
 `news_brief_runs`,
-`news_brief_publications`, `news_brief_current`, `news_push_state`, and
+`news_brief_publications`, `news_brief_current`,
+`news_story_title_translations`, `news_push_state`, and
 `news_push_deliveries`. The
 `20260801_0234` migration removes incremental Story machinery,
 `20260801_0237` persists the bounded OpenNews recovery boundary, and
 `20260801_0238` adds the durable push baseline and delivery ledger.
 `20260806_0243` removes RSS execution/scheduling and source-membership schema
 while retaining disabled historical source identity; `20260806_0244` adds
-dedicated provider-score and Story-success clocks. The current
+dedicated provider-score and Story-success clocks; and `20260807_0245` adds the
+exact-bound durable zh-CN Story display-title state. The current
 hard cut has no downgrade or compatibility lane.
 
 ### Macro

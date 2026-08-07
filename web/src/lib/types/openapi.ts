@@ -2574,6 +2574,8 @@ export interface components {
             /** Levels */
             levels: components["schemas"]["NewsFeedFacetData"][];
             page: components["schemas"]["NewsFeedFacetsPageData"];
+            /** Reporting Origins */
+            reporting_origins: components["schemas"]["NewsFeedReportingOriginFacetData"][];
             /** Sources */
             sources: components["schemas"]["NewsFeedSourceFacetData"][];
         };
@@ -2583,6 +2585,8 @@ export interface components {
             categories_has_more: boolean;
             /** Levels Has More */
             levels_has_more: boolean;
+            /** Reporting Origins Has More */
+            reporting_origins_has_more: boolean;
             /** Sources Has More */
             sources_has_more: boolean;
         };
@@ -2592,8 +2596,23 @@ export interface components {
             category: string | null;
             /** Level */
             level: string | null;
+            /** Provider Score Gt */
+            provider_score_gt: number | null;
+            /** Q */
+            q: string | null;
+            /** Reporting Origin */
+            reporting_origin: string | null;
             /** Source Id */
             source_id: string | null;
+        };
+        /** NewsFeedReportingOriginFacetData */
+        NewsFeedReportingOriginFacetData: {
+            /** Count */
+            count: number;
+            /** Label */
+            label: string;
+            /** Value */
+            value: string;
         };
         /** NewsFeedSourceFacetData */
         NewsFeedSourceFacetData: {
@@ -2847,6 +2866,7 @@ export interface components {
             ingest: components["schemas"]["NewsIngestStatusData"];
             push: components["schemas"]["NewsPushStatusData"];
             story: components["schemas"]["NewsStoryStatusData"];
+            translation: components["schemas"]["NewsTitleTranslationStatusData"];
         };
         /** NewsStoryData */
         NewsStoryData: {
@@ -2888,6 +2908,7 @@ export interface components {
             story_id: string;
             /** Title */
             title: string;
+            title_translation: components["schemas"]["NewsStoryTitleTranslationData"] | null;
             /** Url */
             url: string | null;
         };
@@ -2936,6 +2957,7 @@ export interface components {
             story_id: string;
             /** Title */
             title: string;
+            title_translation: components["schemas"]["NewsStoryTitleTranslationData"] | null;
             /** Url */
             url: string | null;
         };
@@ -3030,6 +3052,82 @@ export interface components {
             status: "ready" | "warming" | "degraded";
             /** Unmaterialized Item Count */
             unmaterialized_item_count: number;
+        };
+        /** NewsStoryTitleTranslationData */
+        NewsStoryTitleTranslationData: {
+            /**
+             * Locale
+             * @constant
+             */
+            locale: "zh-CN";
+            /** Prompt Version */
+            prompt_version: string;
+            /** Source Title */
+            source_title: string;
+            /** Source Title Fingerprint */
+            source_title_fingerprint: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "ready" | "failed" | "unavailable";
+            /** Title Zh */
+            title_zh: string | null;
+            /** Workflow Version */
+            workflow_version: string;
+        };
+        /** NewsTitleTranslationRolling24hData */
+        NewsTitleTranslationRolling24hData: {
+            /** Attempted */
+            attempted: number;
+            /** Failure Counts */
+            failure_counts: {
+                [key: string]: number;
+            };
+            /** Latency P95 Ms */
+            latency_p95_ms: number | null;
+            /** Succeeded */
+            succeeded: number;
+            /** Success Ratio */
+            success_ratio: number | null;
+        };
+        /** NewsTitleTranslationStatusData */
+        NewsTitleTranslationStatusData: {
+            /** Configured */
+            configured: boolean;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Failed Count */
+            failed_count: number;
+            /** Latest Success At Ms */
+            latest_success_at_ms: number | null;
+            /**
+             * Locale
+             * @constant
+             */
+            locale: "zh-CN";
+            /** Oldest Pending At Ms */
+            oldest_pending_at_ms: number | null;
+            /** Pending Count */
+            pending_count: number;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Ready Count */
+            ready_count: number;
+            /** Reasons */
+            reasons: string[];
+            /** Retry Count */
+            retry_count: number;
+            rolling_24h: components["schemas"]["NewsTitleTranslationRolling24hData"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "warming" | "degraded";
+            /** Unavailable Count */
+            unavailable_count: number;
+            /** Workflow Version */
+            workflow_version: string;
         };
         /** ProviderOperationalData */
         ProviderOperationalData: {
@@ -4071,6 +4169,9 @@ export interface operations {
                 category?: string;
                 level?: string;
                 source_id?: string;
+                reporting_origin?: string;
+                provider_score_gt?: number | null;
+                q?: string;
                 sort?: string;
                 limit?: number;
                 cursor?: string;

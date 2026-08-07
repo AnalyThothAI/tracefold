@@ -65,6 +65,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     if (event.key === "4") liveRoute.updateWindow("24h");
   };
   const searchTargetsNews = shouldRouteTopbarSearchToNews(location.pathname);
+  const currentSearchQuery = new URLSearchParams(location.search).get("q") ?? "";
   const submitTopbarSearch = (searchText: string) => {
     if (!searchTargetsNews) {
       navigate(searchPath({ q: searchText.trim(), window: "24h" }));
@@ -88,6 +89,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       inputRef: searchInputRef,
       onSubmitQuery: submitTopbarSearch,
       placeholder: searchTargetsNews ? "搜索新闻 / 来源 / token" : "搜索 token / @handle / CA",
+      query: currentSearchQuery,
     },
     status: {
       socketStatus: socketSnapshot.status,

@@ -37,10 +37,6 @@ export function createAppRouteObjects(): RouteObject[] {
               lazy: () => import("./news.route"),
             },
             {
-              path: "news/sources",
-              lazy: () => import("./news.route"),
-            },
-            {
               path: "macro",
               lazy: async () => {
                 const { MacroOverviewPage } = await import("@features/macro");

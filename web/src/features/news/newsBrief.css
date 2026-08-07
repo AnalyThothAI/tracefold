@@ -1,0 +1,106 @@
+@layer app.features {
+  .news-brief-toolbar {
+    align-items: flex-end;
+  }
+
+  .news-brief-state[data-state="ready"] {
+    color: var(--success);
+  }
+
+  .news-brief-state[data-state="stale_fallback"],
+  .news-brief-state[data-state="running"],
+  .news-brief-state[data-state="insufficient_material"] {
+    color: var(--warning);
+  }
+
+  .news-brief-state[data-state="failed"],
+  .news-brief-state[data-state="unavailable"] {
+    color: var(--destructive);
+  }
+
+  .news-brief-document > header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .news-brief-document > header > span,
+  .news-brief-document > header p,
+  .news-brief-document footer {
+    margin: 0;
+    color: var(--muted-foreground);
+    font: 0.66rem var(--font-mono);
+  }
+
+  .news-brief-lead {
+    padding: 0.9rem 1rem;
+    border-left: 3px solid var(--primary);
+    background: color-mix(in srgb, var(--primary) 7%, transparent);
+  }
+
+  .news-brief-lead p {
+    margin: 0.45rem 0 0;
+    line-height: 1.7;
+  }
+
+  .news-brief-lines {
+    display: grid;
+    gap: 0.55rem;
+    margin: 0;
+    padding-left: 1.4rem;
+  }
+
+  .news-brief-lines li {
+    padding: 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .news-brief-lines p {
+    margin: 0;
+    line-height: 1.55;
+  }
+
+  .news-brief-lines li > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    margin-top: 0.5rem;
+  }
+
+  .news-brief-lines a {
+    display: inline-flex;
+    gap: 0.25rem;
+    align-items: center;
+    color: var(--primary);
+    font-size: 0.7rem;
+  }
+
+  .news-brief-lines svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .news-brief-history {
+    padding: 0.8rem 1rem;
+  }
+
+  .news-brief-history-list {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.65rem;
+  }
+
+  .news-brief-history-list > div {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.45rem 0;
+    border-top: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font: 0.66rem var(--font-mono);
+  }
+}

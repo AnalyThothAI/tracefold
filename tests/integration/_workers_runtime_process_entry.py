@@ -43,6 +43,7 @@ def _components(
         news=None,
         news_story=None,
         news_brief=None,
+        news_title_translation=None,
         news_push=None,
         macro_source=None,
         macro_turns=(),

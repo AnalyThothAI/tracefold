@@ -104,6 +104,7 @@ describe("data router architecture", () => {
 
     expect(routerSource).toContain('path: "news/stories/:storyId"');
     expect(routerSource).not.toContain('path: "news/items/:newsItemId"');
+    expect(routerSource).not.toContain('path: "news/sources"');
   });
 
   it("does not keep the retired Signal Lab page routes or navigation target", () => {

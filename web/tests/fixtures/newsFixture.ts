@@ -52,6 +52,7 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
     title: "Central banks respond to a new global policy shock",
     url: "https://www.reuters.com/world/story",
     ...overrides,
+    title_translation: overrides.title_translation ?? null,
   };
 }
 
@@ -63,11 +64,20 @@ export function newsFeedFixture(): NewsFeed {
       page: {
         categories_has_more: false,
         levels_has_more: false,
+        reporting_origins_has_more: false,
         sources_has_more: false,
       },
+      reporting_origins: [{ count: 1, label: "Reuters", value: "reuters" }],
       sources: [{ count: 1, label: "Reuters World", value: "wm-politics-reuters" }],
     },
-    filters: { category: null, level: null, source_id: null },
+    filters: {
+      category: null,
+      level: null,
+      provider_score_gt: null,
+      q: null,
+      reporting_origin: null,
+      source_id: null,
+    },
     has_more: false,
     next_cursor: null,
     sort: "importance",
@@ -181,7 +191,7 @@ export function newsGlobalBriefFixture(overrides: Partial<WorldBrief> = {}): Wor
 }
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
-  return {
+  const status: NewsStatus = {
     last_success_at_ms: NEWS_NOW_MS - 60_000,
     layers: {
       brief: {
@@ -242,6 +252,29 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
           success_ratio: 1,
         },
       },
+      translation: {
+        configured: true,
+        eligible_count: 4,
+        failed_count: 0,
+        latest_success_at_ms: NEWS_NOW_MS - 60_000,
+        locale: "zh-CN",
+        oldest_pending_at_ms: null,
+        pending_count: 0,
+        prompt_version: "news-title-translation-v1",
+        ready_count: 4,
+        reasons: [],
+        retry_count: 0,
+        rolling_24h: {
+          attempted: 4,
+          failure_counts: {},
+          latency_p95_ms: 1_500,
+          succeeded: 4,
+          success_ratio: 1,
+        },
+        status: "ready",
+        unavailable_count: 0,
+        workflow_version: "news-title-translation-v1",
+      },
       story: {
         active_items: 4,
         active_stories: 1,
@@ -269,4 +302,5 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     status: "ready",
     ...overrides,
   };
+  return status;
 }

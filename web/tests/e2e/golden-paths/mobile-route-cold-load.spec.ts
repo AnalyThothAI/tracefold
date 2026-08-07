@@ -63,14 +63,25 @@ const routeCases: RouteCase[] = [
     name: "news queue",
     path: "/news",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "全球新闻 Story 流" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "全球新闻" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("navigation", { name: "新闻分类" })).toBeVisible();
-      await expect(page.getByRole("navigation", { name: "新闻排序" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "新闻视图" })).toBeVisible();
+      await expect(page.getByLabel("news search")).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "新闻排序" })).toBeVisible();
       await expect(
         page.getByRole("link", { name: /Macro desk flags liquidity rotation/ }),
       ).toBeVisible();
+      const rows = page.locator(".news-story-row");
+      await expect(rows).toHaveCount(5);
+      const fullyVisibleRows = await rows.evaluateAll(
+        (elements) =>
+          elements.filter((element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.top >= 0 && rect.bottom <= window.innerHeight;
+          }).length,
+      );
+      expect(fullyVisibleRows).toBeGreaterThanOrEqual(2);
     },
     nestedOverflowSelectors: [".news-panel", ".news-story-list", ".news-story-row"],
     lastMeaningfulSelector: ".news-story-row",
@@ -79,13 +90,11 @@ const routeCases: RouteCase[] = [
     name: "news detail",
     path: "/news/stories/story-global-policy",
     primary: async (page) => {
-      await expect(page.getByRole("region", { name: "Story 事实页" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "新闻事件详情" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("link", { name: "返回 Story 流" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Story 聚合身份" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Tracefold Story 重要度" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "聚类成员" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "返回全球新闻" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /家独立来源/ })).toBeVisible();
       await expect(
         page.getByRole("heading", {
           exact: true,
@@ -93,6 +102,9 @@ const routeCases: RouteCase[] = [
           name: "Macro desk flags liquidity rotation",
         }),
       ).toBeVisible();
+      await page.getByText("查看 Tracefold 评分与新闻事件审计").click();
+      await expect(page.getByRole("heading", { name: "聚合身份" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /Tracefold 重要度/ })).toBeVisible();
     },
     nestedOverflowSelectors: [".news-panel", ".news-story-detail", ".news-detail-grid"],
     lastMeaningfulSelector: ".news-member-list",

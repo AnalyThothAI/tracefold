@@ -32,10 +32,6 @@ export function newsBriefPath(): string {
   return "/news/brief";
 }
 
-export function newsSourcesPath(): string {
-  return "/news/sources";
-}
-
 export function stocksPath({
   window = "1h",
 }: {
