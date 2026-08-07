@@ -397,13 +397,13 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         conn.close()
 
 
-def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
+def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
         repository = NewsRepository(conn)
         source = opennews_source()
-        unusable = parse_opennews_message(
+        emoji_only = parse_opennews_message(
             {
                 "method": "news.update",
                 "params": {
@@ -420,7 +420,7 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
                 },
             }
         )
-        invalid_text_events = tuple(
+        canonicalized_text_events = tuple(
             parse_opennews_message(
                 {
                     "method": "news.update",
@@ -453,41 +453,60 @@ def test_opennews_unusable_title_is_rejected_without_poisoning_batch() -> None:
                 },
             }
         )
-        assert unusable is not None and valid is not None
-        assert all(event is not None for event in invalid_text_events)
+        assert emoji_only is not None and valid is not None
+        assert all(event is not None for event in canonicalized_text_events)
 
         with conn.transaction():
             repository.sync_source(source, now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
-                events=(valid, unusable, *invalid_text_events),
+                events=(valid, emoji_only, *canonicalized_text_events),
                 observed_at_ms=NOW_MS,
             )
 
         assert result == {
             "events_seen": 4,
-            "items_inserted": 1,
+            "items_inserted": 3,
             "items_updated": 0,
             "metadata_updated": 0,
-            "rejected": 3,
+            "rejected": 1,
         }
         rows = conn.execute(
             """
-            SELECT provider_record_id, normalized_title, provider_metadata
+            SELECT provider_record_id, title, reporting_origin, provider_metadata
               FROM news_items
              ORDER BY provider_record_id
             """
         ).fetchall()
         assert rows == [
             {
+                "provider_record_id": "3442019",
+                "title": "👑👑👑",
+                "reporting_origin": "aeyakovenko",
+                "provider_metadata": {
+                    "score": 5,
+                    "source": "aeyakovenko",
+                    "signal": "neutral",
+                    "grade": "C",
+                    "coins": [{"symbol": "SOL", "market_type": "cex"}],
+                },
+            },
+            {
+                "provider_record_id": "wire-nul-title",
+                "title": "bad title",
+                "reporting_origin": "reuters",
+                "provider_metadata": {},
+            },
+            {
                 "provider_record_id": "wire-valid",
-                "normalized_title": "solana validators approve network upgrade",
+                "title": "Solana validators approve network upgrade",
+                "reporting_origin": "reuters",
                 "provider_metadata": {
                     "score": 75,
                     "signal": "long",
                     "grade": "A",
                 },
-            }
+            },
         ]
     finally:
         conn.close()

@@ -13,45 +13,22 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
 
-from tracefold.platform.postgres.queue_terminal import terminalize_source_row
-
-from .brief import brief_fingerprint
+from . import brief_store
 from .classification import classify_by_keyword
-from .identity import normalize_story_text
 from .models import (
-    BRIEF_PROMPT_VERSION,
-    BRIEF_SCHEMA_VERSION,
-    BRIEF_WORKFLOW_VERSION,
     CLASSIFIER_VERSION,
     IMPORTANCE_VERSION,
-    NEWS_LOCALE,
     STORY_IDENTITY_VERSION,
-    NewsBriefDraft,
+    NewsBriefSynthesisResult,
     NewsSourceDefinition,
 )
 from .opennews import OpenNewsEvent
-from .presentation import normalize_news_display_text, normalize_news_display_title
-from .ranking import (
-    is_delayed_brief_excluded,
-    select_top_stories,
-)
-from .title_translation import (
-    TITLE_TRANSLATION_LOCALE,
-    TITLE_TRANSLATION_PROMPT_VERSION,
-    TITLE_TRANSLATION_WORKFLOW_VERSION,
-    looks_zh_cn_title,
-    story_title_fingerprint,
-)
 
-_BRIEF_LOCK_KEY = 727_301_985
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _STORY_ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
 _NEWS_STALL_AFTER_MS = 120_000
 _SLO_WINDOW_MS = 24 * 60 * 60 * 1000
-_BRIEF_LEASE_MS = 120_000
 _PUBLIC_LIST_LIMIT = 100
-_TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD = 70
-_TITLE_TRANSLATION_TARGET_LIMIT = 10_000
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -225,49 +202,10 @@ def _feed_filter_where(
                      )
                    )
               )
-              OR EXISTS (
-                SELECT 1
-                  FROM news_story_title_translations translation
-                 WHERE translation.story_id = st.story_id
-                   AND translation.source_raw_title_fingerprint = encode(
-                     sha256(convert_to(st.representative_title, 'UTF8')),
-                     'hex'
-                   )
-                   AND translation.locale = %s
-                   AND translation.workflow_version = %s
-                   AND translation.prompt_version = %s
-                   AND translation.status = 'ready'
-                   AND strpos(lower(translation.translated_title), %s) > 0
-                   AND EXISTS (
-                     SELECT 1
-                       FROM news_story_members eligible_member
-                       JOIN news_items eligible_item
-                         ON eligible_item.item_id = eligible_member.item_id
-                      WHERE eligible_member.story_id = st.story_id
-                        AND jsonb_typeof(
-                          eligible_item.provider_metadata -> 'score'
-                        ) = 'number'
-                        AND (
-                          eligible_item.provider_metadata ->> 'score'
-                        )::numeric > 70
-                   )
-              )
             )
             """
         )
-        params.extend(
-            [
-                q,
-                q,
-                q,
-                q,
-                q,
-                TITLE_TRANSLATION_LOCALE,
-                TITLE_TRANSLATION_WORKFLOW_VERSION,
-                TITLE_TRANSLATION_PROMPT_VERSION,
-                q,
-            ]
-        )
+        params.extend([q, q, q, q, q])
     return where, params
 
 
@@ -438,10 +376,8 @@ class NewsRepository:
             title = str(entry.title or "").strip() if entry is not None else ""
             canonical_url = _canonical_url(str(entry.link or "")) or None if entry is not None else None
             published_at_ms = entry.published_at_ms if entry is not None else None
-            normalized_title = normalize_story_text(title)
             rejection = self._opennews_rejection_reason(
                 title=title,
-                normalized_title=normalized_title,
                 published_at_ms=published_at_ms,
                 now_ms=observed_at_ms,
             )
@@ -479,7 +415,6 @@ class NewsRepository:
                 "canonical_url": canonical_url,
                 "reporting_origin": reporting_origin,
                 "title": title,
-                "normalized_title": normalized_title,
                 "description": description,
                 "lang": language,
                 "published_at_ms": published_at_ms,
@@ -489,11 +424,6 @@ class NewsRepository:
                 "category": classification.category,
                 "classification_source": classification.source,
                 "classification_confidence": classification.confidence,
-                "brief_excluded": is_delayed_brief_excluded(
-                    title=title,
-                    url=str(canonical_url or ""),
-                    description=description,
-                ),
             }
             cursor = self.conn.execute(
                 """
@@ -501,23 +431,23 @@ class NewsRepository:
                   item_id, source_id, source_item_key, provider_record_id,
                   provider_metadata, provider_score_updated_at_ms,
                   canonical_url, reporting_origin, title,
-                  normalized_title, description, lang, published_at_ms,
+                  description, lang, published_at_ms,
                   first_observed_at_ms, last_observed_at_ms,
                   content_fingerprint, level, category,
                   classification_source, classification_confidence,
-                  importance_score, importance_factors, brief_excluded,
+                  importance_score, importance_factors,
                   active, created_at_ms, updated_at_ms
                 ) VALUES (
                   %(item_id)s, %(source_id)s, %(source_item_key)s,
                   %(provider_record_id)s, %(provider_metadata)s,
                   %(provider_score_updated_at_ms)s,
                   %(canonical_url)s, %(reporting_origin)s, %(title)s,
-                  %(normalized_title)s, %(description)s, %(lang)s,
+                  %(description)s, %(lang)s,
                   %(published_at_ms)s, %(observed_at_ms)s,
                   %(observed_at_ms)s, %(content_fingerprint)s,
                   %(level)s, %(category)s, %(classification_source)s,
                   %(classification_confidence)s, 0, '{}'::jsonb,
-                  %(brief_excluded)s, true, %(observed_at_ms)s,
+                  true, %(observed_at_ms)s,
                   %(observed_at_ms)s
                 )
                 ON CONFLICT (source_id, provider_record_id)
@@ -535,7 +465,6 @@ class NewsRepository:
                   canonical_url = EXCLUDED.canonical_url,
                   reporting_origin = EXCLUDED.reporting_origin,
                   title = EXCLUDED.title,
-                  normalized_title = EXCLUDED.normalized_title,
                   description = EXCLUDED.description,
                   lang = EXCLUDED.lang,
                   published_at_ms = EXCLUDED.published_at_ms,
@@ -545,7 +474,6 @@ class NewsRepository:
                   category = EXCLUDED.category,
                   classification_source = EXCLUDED.classification_source,
                   classification_confidence = EXCLUDED.classification_confidence,
-                  brief_excluded = EXCLUDED.brief_excluded,
                   active = true,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE current_item.content_fingerprint IS DISTINCT FROM EXCLUDED.content_fingerprint
@@ -613,14 +541,11 @@ class NewsRepository:
     def _opennews_rejection_reason(
         *,
         title: str,
-        normalized_title: str,
         published_at_ms: int | None,
         now_ms: int,
     ) -> str | None:
         if not title:
             return "missing_title"
-        if not normalized_title:
-            return "unusable_title"
         if published_at_ms is None:
             return "missing_date"
         if published_at_ms > now_ms + 3_600_000:
@@ -914,161 +839,7 @@ class NewsRepository:
             ),
         )
 
-    def refresh_brief_selection(self, *, now_ms: int) -> int:
-        candidates = self.conn.execute(
-            """
-            SELECT story.story_id, story.importance_score,
-                   story.last_published_at_ms,
-                   item.reporting_origin AS representative_source_name
-              FROM news_stories story
-              JOIN news_items item
-                ON item.item_id = story.representative_item_id
-             WHERE NOT item.brief_excluded
-             ORDER BY story.importance_score DESC,
-                      story.last_published_at_ms DESC,
-                      story.story_id
-            """
-        ).fetchall()
-        desired = [str(row["story_id"]) for row in select_top_stories(candidates, limit=8, max_per_source=3)]
-        existing = [
-            str(row["story_id"])
-            for row in self.conn.execute(
-                """
-                SELECT story_id
-                FROM news_brief_selection_current
-                ORDER BY rank
-                """
-            ).fetchall()
-        ]
-        writes = 0
-        if desired != existing:
-            writes = int(self.conn.execute("DELETE FROM news_brief_selection_current").rowcount or 0)
-            for rank, story_id in enumerate(desired, start=1):
-                writes += int(
-                    self.conn.execute(
-                        """
-                        INSERT INTO news_brief_selection_current (
-                          rank, story_id, updated_at_ms
-                        )
-                        VALUES (%s, %s, %s)
-                        """,
-                        (rank, story_id, int(now_ms)),
-                    ).rowcount
-                    or 0
-                )
-        candidates = self.brief_candidates()
-        fingerprint = brief_fingerprint(candidates)
-        writes += self._schedule_brief_target(
-            fingerprint=fingerprint,
-            now_ms=now_ms,
-        )
-        return writes
-
-    def _schedule_brief_target(self, *, fingerprint: str, now_ms: int) -> int:
-        publication = self.conn.execute(
-            """
-            SELECT publication_id
-              FROM news_brief_publications
-             WHERE fingerprint = %s
-            """,
-            (fingerprint,),
-        ).fetchone()
-        run = self.conn.execute(
-            """
-            SELECT run_id, status
-              FROM news_brief_runs
-             WHERE fingerprint = %s
-            """,
-            (fingerprint,),
-        ).fetchone()
-        terminal_run = run is not None and str(run["status"]) in {
-            "ready",
-            "insufficient_material",
-            "failed",
-        }
-        if publication is not None or terminal_run:
-            cursor = self.conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET target_fingerprint = %s,
-                       publication_id = COALESCE(%s, publication_id),
-                       latest_run_id = COALESCE(%s, latest_run_id),
-                       pending_first_dirty_at_ms = NULL,
-                       pending_due_at_ms = NULL,
-                       updated_at_ms = %s
-                 WHERE singleton_key
-                   AND (
-                     target_fingerprint IS DISTINCT FROM %s
-                     OR publication_id IS DISTINCT FROM COALESCE(%s, publication_id)
-                     OR latest_run_id IS DISTINCT FROM COALESCE(%s, latest_run_id)
-                     OR pending_first_dirty_at_ms IS NOT NULL
-                     OR pending_due_at_ms IS NOT NULL
-                   )
-                """,
-                (
-                    fingerprint,
-                    publication["publication_id"] if publication is not None else None,
-                    run["run_id"] if run is not None else None,
-                    now_ms,
-                    fingerprint,
-                    publication["publication_id"] if publication is not None else None,
-                    run["run_id"] if run is not None else None,
-                ),
-            )
-            return int(cursor.rowcount or 0)
-        cursor = self.conn.execute(
-            """
-            UPDATE news_brief_current
-               SET target_fingerprint = %s,
-                   pending_first_dirty_at_ms = COALESCE(pending_first_dirty_at_ms, %s),
-                   pending_due_at_ms = COALESCE(pending_due_at_ms, %s),
-                   updated_at_ms = %s
-             WHERE singleton_key
-               AND (
-                 target_fingerprint IS DISTINCT FROM %s
-                 OR pending_first_dirty_at_ms IS NULL
-                 OR pending_due_at_ms IS NULL
-               )
-            """,
-            (fingerprint, now_ms, now_ms + 600_000, now_ms, fingerprint),
-        )
-        return int(cursor.rowcount or 0)
-
     # Read contract ------------------------------------------------------------
-
-    def story_title_translations(
-        self,
-        *,
-        story_ids: Sequence[str],
-    ) -> dict[str, dict[str, Any]]:
-        """Read only translations attached to the exact current raw Story title."""
-
-        if not story_ids:
-            return {}
-        rows = self.conn.execute(
-            """
-            SELECT translation.*
-              FROM news_story_title_translations translation
-              JOIN news_stories story
-                ON story.story_id = translation.story_id
-               AND translation.source_raw_title_fingerprint = encode(
-                 sha256(convert_to(story.representative_title, 'UTF8')),
-                 'hex'
-               )
-             WHERE translation.story_id = ANY(%s)
-               AND translation.locale = %s
-               AND translation.workflow_version = %s
-               AND translation.prompt_version = %s
-             ORDER BY translation.story_id
-            """,
-            (
-                list(story_ids),
-                TITLE_TRANSLATION_LOCALE,
-                TITLE_TRANSLATION_WORKFLOW_VERSION,
-                TITLE_TRANSLATION_PROMPT_VERSION,
-            ),
-        ).fetchall()
-        return {str(row["story_id"]): dict(row) for row in rows}
 
     def list_feed(
         self,
@@ -1189,7 +960,6 @@ class NewsRepository:
         page = rows[:limit]
         page_story_ids = [str(row["story_id"]) for row in page]
         provider_evidence = self.story_provider_evidence(story_ids=page_story_ids)
-        title_translations = self.story_title_translations(story_ids=page_story_ids)
         next_cursor = None
         if has_more and page:
             last = page[-1]
@@ -1209,11 +979,6 @@ class NewsRepository:
             selected = provider_evidence.get(str(row["story_id"]))
             story["provider_evidence"] = _public_provider_evidence(selected)
             story["push_delivery_state"] = _public_push_delivery_state(selected)
-            story["title_translation"] = _public_story_title_translation(
-                story=story,
-                selected=selected,
-                translation=title_translations.get(str(row["story_id"])),
-            )
             stories.append(story)
         return {
             "sort": sort,
@@ -1362,7 +1127,6 @@ class NewsRepository:
             return None
         selected = self.story_provider_evidence(story_ids=(story_id,)).get(story_id)
         provider_evidence = _public_provider_evidence(selected)
-        title_translation = self.story_title_translations(story_ids=(story_id,)).get(story_id)
         member_where = ["m.story_id = %s"]
         member_params: list[Any] = [story_id]
         if members_cursor:
@@ -1426,11 +1190,6 @@ class NewsRepository:
             **story,
             "provider_evidence": provider_evidence,
             "push_delivery_state": _public_push_delivery_state(selected),
-            "title_translation": _public_story_title_translation(
-                story=story,
-                selected=selected,
-                translation=title_translation,
-            ),
             "canonical_title": str(row["canonical_title"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
@@ -1502,1323 +1261,91 @@ class NewsRepository:
 
     # World Brief ---------------------------------------------------------------
 
-    def brief_candidates(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT story.*,
-                   representative.reporting_origin AS representative_source_name
-            FROM news_brief_selection_current selection
-            JOIN news_stories story
-              ON story.story_id = selection.story_id
-            JOIN news_items representative
-              ON representative.item_id = story.representative_item_id
-            ORDER BY selection.rank
-            """
-        ).fetchall()
-        return select_top_stories(rows, limit=8, max_per_source=3)
-
     def peek_brief_candidate(self, *, now_ms: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT current.target_fingerprint,
-                   current.pending_first_dirty_at_ms,
-                   current.pending_due_at_ms,
-                   run.run_id,
-                   run.status AS run_status,
-                   run.next_due_at_ms,
-                   run.lease_expires_at_ms
-              FROM news_brief_current current
-              LEFT JOIN news_brief_runs run
-                ON run.fingerprint = current.target_fingerprint
-             WHERE current.singleton_key
-               AND (
-                 (
-                   run.status = 'retryable'
-                   AND run.next_due_at_ms <= %s
-                 )
-                 OR (
-                   run.status = 'running'
-                   AND run.lease_expires_at_ms <= %s
-                 )
-                 OR (
-                   current.pending_due_at_ms <= %s
-                   AND (run.run_id IS NULL OR run.status NOT IN ('ready', 'insufficient_material', 'failed'))
-                 )
-               )
-             LIMIT 1
-            """,
-            (now_ms, now_ms, now_ms),
-        ).fetchone()
-        return dict(row) if row is not None else None
+        return brief_store.peek_brief_candidate(self, now_ms=now_ms)
 
-    def record_brief_insufficient(
+    def prepare_brief_run(
         self,
         *,
-        fingerprint: str,
-        story_count: int,
-        source_count: int,
-        now_ms: int,
-    ) -> None:
-        self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-        run_id = deterministic_id("brief_run", fingerprint)
-        self.conn.execute(
-            """
-            INSERT INTO news_brief_runs (
-              run_id, fingerprint, status, attempt_count,
-              candidate_story_count, candidate_source_count,
-              created_at_ms, updated_at_ms, completed_at_ms, next_due_at_ms
-            )
-            VALUES (%s, %s, 'insufficient_material', 0, %s, %s, %s, %s, %s, NULL)
-            ON CONFLICT (fingerprint) DO UPDATE SET
-              status = 'insufficient_material',
-              candidate_story_count = EXCLUDED.candidate_story_count,
-              candidate_source_count = EXCLUDED.candidate_source_count,
-              lease_owner = NULL,
-              lease_expires_at_ms = NULL,
-              heartbeat_at_ms = NULL,
-              last_error = NULL,
-              next_due_at_ms = NULL,
-              updated_at_ms = EXCLUDED.updated_at_ms,
-              completed_at_ms = EXCLUDED.completed_at_ms
-            WHERE news_brief_runs.status <> 'ready'
-              AND (
-                news_brief_runs.status <> 'insufficient_material'
-                OR news_brief_runs.candidate_story_count
-                     IS DISTINCT FROM EXCLUDED.candidate_story_count
-                OR news_brief_runs.candidate_source_count
-                     IS DISTINCT FROM EXCLUDED.candidate_source_count
-              )
-            """,
-            (
-                run_id,
-                fingerprint,
-                story_count,
-                source_count,
-                now_ms,
-                now_ms,
-                now_ms,
-            ),
-        )
-        self.conn.execute(
-            """
-            UPDATE news_brief_current
-               SET target_fingerprint = %s,
-                   latest_run_id = %s,
-                   pending_first_dirty_at_ms = NULL,
-                   pending_due_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE singleton_key
-               AND target_fingerprint = %s
-               AND (
-                 latest_run_id IS DISTINCT FROM %s
-                 OR pending_first_dirty_at_ms IS NOT NULL
-                 OR pending_due_at_ms IS NOT NULL
-               )
-            """,
-            (fingerprint, run_id, now_ms, fingerprint, run_id),
-        )
-
-    def claim_brief_run(
-        self,
-        *,
-        fingerprint: str,
-        story_count: int,
-        source_count: int,
-        now_ms: int,
-        max_attempts: int,
+        target_fingerprint: str,
         lease_owner: str,
+        lease_token: str,
+        now_ms: int,
     ) -> dict[str, Any] | None:
-        self.conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-        current = self.conn.execute(
-            """
-            SELECT pending_due_at_ms
-              FROM news_brief_current
-             WHERE singleton_key AND target_fingerprint = %s
-            """,
-            (fingerprint,),
-        ).fetchone()
-        release_due_at_ms = int((current or {}).get("pending_due_at_ms") or now_ms)
-        row = self.conn.execute(
-            """
-            SELECT *
-              FROM news_brief_runs
-             WHERE fingerprint = %s
-             FOR UPDATE
-            """,
-            (fingerprint,),
-        ).fetchone()
-        if row is not None:
-            status = str(row["status"])
-            if status in {"ready", "insufficient_material"}:
-                return None
-            if (
-                status == "running"
-                and row["lease_expires_at_ms"] is not None
-                and int(row["lease_expires_at_ms"]) > now_ms
-            ):
-                return None
-            if int(row["attempt_count"]) >= max_attempts:
-                self.conn.execute(
-                    """
-                    UPDATE news_brief_runs
-                       SET status = 'failed',
-                           lease_owner = NULL,
-                           lease_expires_at_ms = NULL,
-                           heartbeat_at_ms = NULL,
-                           last_error = 'brief_attempts_exhausted',
-                           next_due_at_ms = NULL,
-                           updated_at_ms = %s,
-                           completed_at_ms = %s
-                     WHERE run_id = %s
-                       AND status <> 'failed'
-                    """,
-                    (now_ms, now_ms, str(row["run_id"])),
-                )
-                self.conn.execute(
-                    """
-                    UPDATE news_brief_current
-                       SET pending_first_dirty_at_ms = NULL,
-                           pending_due_at_ms = NULL,
-                           latest_run_id = %s,
-                           updated_at_ms = %s
-                     WHERE singleton_key AND target_fingerprint = %s
-                    """,
-                    (str(row["run_id"]), now_ms, fingerprint),
-                )
-                return None
-            run_id = str(row["run_id"])
-            attempt_count = int(row["attempt_count"])
-            release_due_at_ms = int(row.get("next_due_at_ms") or release_due_at_ms)
-        else:
-            run_id = deterministic_id("brief_run", fingerprint)
-            attempt_count = 0
-        owner = str(lease_owner).strip()
-        if not owner:
-            raise ValueError("news_brief_lease_owner_required")
-        self.conn.execute(
-            """
-            INSERT INTO news_brief_runs (
-              run_id, fingerprint, status, attempt_count,
-              candidate_story_count, candidate_source_count,
-              lease_owner, lease_expires_at_ms, heartbeat_at_ms,
-              created_at_ms, updated_at_ms
-            )
-            VALUES (%s, %s, 'running', %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (fingerprint) DO UPDATE SET
-              status = 'running',
-              attempt_count = EXCLUDED.attempt_count,
-              candidate_story_count = EXCLUDED.candidate_story_count,
-              candidate_source_count = EXCLUDED.candidate_source_count,
-              lease_owner = EXCLUDED.lease_owner,
-              lease_expires_at_ms = EXCLUDED.lease_expires_at_ms,
-              heartbeat_at_ms = EXCLUDED.heartbeat_at_ms,
-              last_error = NULL,
-              next_due_at_ms = NULL,
-              updated_at_ms = EXCLUDED.updated_at_ms,
-              completed_at_ms = NULL
-            """,
-            (
-                run_id,
-                fingerprint,
-                attempt_count,
-                story_count,
-                source_count,
-                owner,
-                now_ms + _BRIEF_LEASE_MS,
-                now_ms,
-                now_ms,
-                now_ms,
-            ),
+        return brief_store.prepare_brief_run(
+            self,
+            target_fingerprint_value=target_fingerprint,
+            lease_owner=lease_owner,
+            lease_token=lease_token,
+            now_ms=now_ms,
         )
-        current = self.conn.execute(
-            """
-            UPDATE news_brief_current
-               SET latest_run_id = %s,
-                   updated_at_ms = %s
-             WHERE singleton_key
-               AND target_fingerprint = %s
-            """,
-            (run_id, now_ms, fingerprint),
-        )
-        if int(current.rowcount or 0) != 1:
-            self.conn.execute(
-                """
-                UPDATE news_brief_runs
-                   SET status = 'retryable',
-                       next_due_at_ms = %s,
-                       lease_owner = NULL,
-                       lease_expires_at_ms = NULL,
-                       heartbeat_at_ms = NULL,
-                       updated_at_ms = %s
-                 WHERE run_id = %s AND lease_owner = %s
-                """,
-                (now_ms, now_ms, run_id, owner),
-            )
-            return None
-        return {
-            "run_id": run_id,
-            "lease_owner": owner,
-            "fingerprint": fingerprint,
-            "attempt_count": attempt_count,
-            "release_due_at_ms": release_due_at_ms,
-        }
 
     def start_brief_model(
         self,
         *,
         run_id: str,
         lease_owner: str,
+        lease_token: str,
         now_ms: int,
-        max_attempts: int,
     ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET attempt_count = attempt_count + 1,
-                   heartbeat_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE run_id = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_expires_at_ms > %s
-               AND attempt_count < %s
-            """,
-            (now_ms, now_ms, run_id, lease_owner, now_ms, max_attempts),
+        return brief_store.start_brief_model(
+            self,
+            run_id=run_id,
+            lease_owner=lease_owner,
+            lease_token=lease_token,
+            now_ms=now_ms,
         )
-        return int(cursor.rowcount or 0) == 1
 
     def release_brief_claim(
         self,
         *,
         run_id: str,
         lease_owner: str,
+        lease_token: str,
         due_at_ms: int,
         now_ms: int,
     ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET status = 'retryable',
-                   next_due_at_ms = %s,
-                   lease_owner = NULL,
-                   lease_expires_at_ms = NULL,
-                   heartbeat_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE run_id = %s
-               AND status = 'running'
-               AND lease_owner = %s
-            """,
-            (due_at_ms, now_ms, run_id, lease_owner),
+        return brief_store.release_brief_claim(
+            self,
+            run_id=run_id,
+            lease_owner=lease_owner,
+            lease_token=lease_token,
+            due_at_ms=due_at_ms,
+            now_ms=now_ms,
         )
-        return int(cursor.rowcount or 0) == 1
 
     def publish_brief(
         self,
         *,
-        run_id: str,
-        lease_owner: str,
-        fingerprint: str,
-        stories: Sequence[Mapping[str, Any]],
-        draft: NewsBriefDraft,
-        validation: Mapping[str, Any],
+        claim: Mapping[str, Any],
+        selection: Mapping[str, Any],
+        result: NewsBriefSynthesisResult,
         now_ms: int,
     ) -> str | None:
-        publication_id = deterministic_id("brief", fingerprint)
-        sources = [
-            {
-                "n": index + 1,
-                "story_id": str(story["story_id"]),
-                "title": str(story["representative_title"]),
-                "source": str(story["representative_source_name"]),
-                "url": str(story["representative_url"]),
-            }
-            for index, story in enumerate(stories)
-        ]
-        evidence_cutoff = max(int(story["last_published_at_ms"]) for story in stories)
-        claimed = self.conn.execute(
-            """
-            SELECT 1
-              FROM news_brief_runs run
-              JOIN news_brief_current current
-                ON current.singleton_key
-               AND current.target_fingerprint = run.fingerprint
-             WHERE run.run_id = %s
-               AND run.fingerprint = %s
-               AND run.status = 'running'
-               AND run.lease_owner = %s
-               AND run.lease_expires_at_ms > %s
-             FOR UPDATE OF run, current
-            """,
-            (run_id, fingerprint, lease_owner, now_ms),
-        ).fetchone()
-        if claimed is None:
-            return None
-        self.conn.execute(
-            """
-            INSERT INTO news_brief_publications (
-              publication_id, fingerprint, evidence_cutoff_at_ms,
-              published_at_ms, provider, model, prompt_version,
-              workflow_version, schema_version, locale, selected_story_ids,
-              lead, lines, sources, validation, raw_response, created_at_ms
-            )
-            VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s
-            )
-            ON CONFLICT (fingerprint) DO NOTHING
-            """,
-            (
-                publication_id,
-                fingerprint,
-                evidence_cutoff,
-                now_ms,
-                draft.provider,
-                draft.model,
-                BRIEF_PROMPT_VERSION,
-                BRIEF_WORKFLOW_VERSION,
-                BRIEF_SCHEMA_VERSION,
-                NEWS_LOCALE,
-                Jsonb([str(story["story_id"]) for story in stories]),
-                draft.lead,
-                Jsonb(list(draft.lines)),
-                Jsonb(sources),
-                Jsonb(dict(validation)),
-                draft.raw_response,
-                now_ms,
-            ),
+        return brief_store.publish_brief(
+            self,
+            claim=claim,
+            selection=selection,
+            result=result,
+            now_ms=now_ms,
         )
-        self.conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET status = 'ready',
-                   lease_owner = NULL,
-                   lease_expires_at_ms = NULL,
-                   heartbeat_at_ms = %s,
-                   next_due_at_ms = NULL,
-                   completed_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE run_id = %s AND lease_owner = %s
-            """,
-            (now_ms, now_ms, now_ms, run_id, lease_owner),
-        )
-        self.conn.execute(
-            """
-            UPDATE news_brief_current
-               SET publication_id = %s,
-                   latest_run_id = %s,
-                   pending_first_dirty_at_ms = NULL,
-                   pending_due_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE singleton_key AND target_fingerprint = %s
-            """,
-            (publication_id, run_id, now_ms, fingerprint),
-        )
-        return publication_id
 
     def fail_brief_run(
         self,
         *,
-        run_id: str,
-        lease_owner: str,
-        error: Exception,
-        now_ms: int,
-        max_attempts: int = 3,
-        retry_delay_ms: int = 300_000,
-    ) -> str | None:
-        row = self.conn.execute(
-            """
-            SELECT fingerprint, attempt_count
-              FROM news_brief_runs
-             WHERE run_id = %s
-               AND status = 'running'
-               AND lease_owner = %s
-             FOR UPDATE
-            """,
-            (run_id, lease_owner),
-        ).fetchone()
-        if row is None:
-            return None
-        exhausted = int(row["attempt_count"]) >= int(max_attempts)
-        status = "failed" if exhausted else "retryable"
-        next_due_at_ms = None if exhausted else int(now_ms) + int(retry_delay_ms)
-        self.conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET status = %s,
-                   lease_owner = NULL,
-                   lease_expires_at_ms = NULL,
-                   heartbeat_at_ms = %s,
-                   last_error = %s,
-                   next_due_at_ms = %s,
-                   completed_at_ms = CASE WHEN %s THEN %s ELSE NULL END,
-                   updated_at_ms = %s
-             WHERE run_id = %s
-               AND status = 'running'
-               AND lease_owner = %s
-            """,
-            (
-                status,
-                now_ms,
-                f"{type(error).__name__}:{str(error)[:1000]}",
-                next_due_at_ms,
-                exhausted,
-                now_ms,
-                now_ms,
-                run_id,
-                lease_owner,
-            ),
-        )
-        if exhausted:
-            self.conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET latest_run_id = %s,
-                       pending_first_dirty_at_ms = NULL,
-                       pending_due_at_ms = NULL,
-                       updated_at_ms = %s
-                 WHERE singleton_key AND target_fingerprint = %s
-                """,
-                (run_id, now_ms, str(row["fingerprint"])),
-            )
-            terminal_row = self.conn.execute(
-                "SELECT * FROM news_brief_runs WHERE run_id = %s",
-                (run_id,),
-            ).fetchone()
-            if terminal_row is None:
-                raise RuntimeError("news_brief_terminal_row_missing")
-            source_row = {**dict(terminal_row), "native_target_key": str(row["fingerprint"])}
-            terminalize_source_row(
-                self.conn,
-                owner_key="news_brief",
-                source_table="news_brief_runs",
-                target_key=str(row["fingerprint"]),
-                source_row=source_row,
-                final_status="failed",
-                final_reason=str(source_row.get("last_error") or "brief_attempts_exhausted"),
-                final_reason_bucket="model_attempts_exhausted",
-                now_ms=int(now_ms),
-                attempt_count=int(source_row.get("attempt_count") or 0),
-            )
-        else:
-            self.conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET latest_run_id = %s,
-                       pending_due_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key AND target_fingerprint = %s
-                """,
-                (run_id, next_due_at_ms, now_ms, str(row["fingerprint"])),
-            )
-        return status
-
-    def get_brief(self, *, now_ms: int, history_limit: int = 20) -> dict[str, Any]:
-        candidates = self.brief_candidates()
-        fingerprint = brief_fingerprint(candidates)
-        candidate_sources = {str(candidate["representative_source_name"]) for candidate in candidates}
-        sufficient = len(candidates) >= 3 and len(candidate_sources) >= 2
-        current = self.conn.execute(
-            """
-            SELECT c.publication_id, c.target_fingerprint, c.latest_run_id,
-                   c.updated_at_ms, p.*
-              FROM news_brief_current c
-              LEFT JOIN news_brief_publications p
-                ON p.publication_id = c.publication_id
-             WHERE c.singleton_key
-            """
-        ).fetchone()
-        run = self.conn.execute(
-            """
-            SELECT *
-              FROM news_brief_runs
-             WHERE fingerprint = %s
-             ORDER BY updated_at_ms DESC
-             LIMIT 1
-            """,
-            (fingerprint,),
-        ).fetchone()
-        history = self.conn.execute(
-            """
-            SELECT *
-              FROM news_brief_publications
-             ORDER BY published_at_ms DESC, publication_id DESC
-             LIMIT %s
-            """,
-            (history_limit,),
-        ).fetchall()
-        publication = _brief_payload(current) if current is not None and current["publication_id"] else None
-        publication_matches = publication is not None and publication["fingerprint"] == fingerprint
-        run_active = (
-            run is not None
-            and str(run["status"]) == "running"
-            and run["lease_expires_at_ms"] is not None
-            and int(run["lease_expires_at_ms"]) > now_ms
-            and run["heartbeat_at_ms"] is not None
-            and int(run["heartbeat_at_ms"]) > now_ms - _BRIEF_LEASE_MS
-        )
-        run_failed = run is not None and (
-            str(run["status"]) == "failed" or (str(run["status"]) == "running" and not run_active)
-        )
-        if not sufficient:
-            state = "insufficient_material"
-        elif publication_matches:
-            state = "ready"
-        elif run_active:
-            state = "running"
-        elif publication is not None:
-            state = "stale_fallback"
-        elif run_failed:
-            state = "failed"
-        else:
-            state = "unavailable"
-        return {
-            "state": state,
-            "target_fingerprint": fingerprint,
-            "candidate_story_count": len(candidates),
-            "candidate_source_count": len(candidate_sources),
-            "publication": publication if sufficient else None,
-            "latest_run": _brief_run_payload(run, now_ms=now_ms) if run else None,
-            "history": [_brief_payload(row) for row in history],
-        }
-
-    # Story display-title translation ----------------------------------------
-
-    def reconcile_story_title_translation_targets(
-        self,
-        *,
-        now_ms: int,
-        configured: bool,
-        locale: str,
-        workflow_version: str,
-        prompt_version: str,
-        max_attempts: int,
-        retry_delays_ms: Sequence[int],
-        retention_ms: int,
-    ) -> dict[str, int]:
-        if locale != TITLE_TRANSLATION_LOCALE:
-            raise ValueError("news_title_translation_locale_invalid")
-        if max_attempts != 3 or len(retry_delays_ms) != max_attempts - 1:
-            raise ValueError("news_title_translation_retry_policy_invalid")
-        if retention_ms <= 0:
-            raise ValueError("news_title_translation_retention_invalid")
-
-        recovered = 0
-        expired = self.conn.execute(
-            """
-            SELECT *
-             FROM news_story_title_translations
-             WHERE status = 'running'
-               AND lease_expires_at_ms <= %s
-             ORDER BY lease_expires_at_ms, story_id
-             LIMIT 100
-             FOR UPDATE SKIP LOCKED
-            """,
-            (int(now_ms),),
-        ).fetchall()
-        for row in expired:
-            attempt_count = int(row["attempt_count"])
-            current_identity = (
-                str(row["locale"]) == locale
-                and str(row["workflow_version"]) == workflow_version
-                and str(row["prompt_version"]) == prompt_version
-            )
-            attempt_error = (
-                "news_title_translation_interrupted" if current_identity else "news_title_translation_workflow_obsolete"
-            )
-            attempts = _finish_story_title_translation_attempt(
-                row["attempts"],
-                attempt_count=attempt_count,
-                now_ms=now_ms,
-                outcome="failed",
-                error_code=attempt_error,
-            )
-            if not current_identity:
-                status = "unavailable"
-                next_attempt_at_ms = None
-                completed_at_ms = int(now_ms)
-                last_error = "news_title_translation_workflow_obsolete"
-            elif not configured:
-                status = "unavailable"
-                next_attempt_at_ms = None
-                completed_at_ms = int(now_ms)
-                last_error = "news_title_translation_not_configured"
-            elif attempt_count >= max_attempts:
-                status = "failed"
-                next_attempt_at_ms = None
-                completed_at_ms = int(now_ms)
-                last_error = "news_title_translation_interrupted"
-            else:
-                status = "retry_wait"
-                next_attempt_at_ms = int(now_ms) + int(retry_delays_ms[attempt_count - 1])
-                completed_at_ms = None
-                last_error = "news_title_translation_interrupted"
-            cursor = self.conn.execute(
-                """
-                UPDATE news_story_title_translations
-                   SET status = %s,
-                       attempts = %s,
-                       next_attempt_at_ms = %s,
-                       lease_owner = NULL,
-                       lease_token = NULL,
-                       lease_expires_at_ms = NULL,
-                       last_error = %s,
-                       completed_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE story_id = %s
-                   AND source_title_fingerprint = %s
-                   AND locale = %s
-                   AND workflow_version = %s
-                   AND prompt_version = %s
-                   AND status = 'running'
-                """,
-                (
-                    status,
-                    Jsonb(attempts),
-                    next_attempt_at_ms,
-                    last_error,
-                    completed_at_ms,
-                    int(now_ms),
-                    str(row["story_id"]),
-                    str(row["source_title_fingerprint"]),
-                    str(row["locale"]),
-                    str(row["workflow_version"]),
-                    str(row["prompt_version"]),
-                ),
-            )
-            recovered += int(cursor.rowcount or 0)
-
-        story_rows = self.conn.execute(
-            """
-            SELECT story.story_id,
-                   story.representative_title,
-                   story.last_published_at_ms
-              FROM news_stories story
-             WHERE EXISTS (
-               SELECT 1
-                 FROM news_story_members member
-                 JOIN news_items item ON item.item_id = member.item_id
-                WHERE member.story_id = story.story_id
-                  AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                  AND (item.provider_metadata ->> 'score')::numeric > %s
-             )
-             ORDER BY story.last_published_at_ms DESC, story.story_id
-             LIMIT %s
-            """,
-            (
-                _TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD,
-                _TITLE_TRANSLATION_TARGET_LIMIT,
-            ),
-        ).fetchall()
-        targets: list[dict[str, Any]] = []
-        for row in story_rows:
-            raw_title = str(row["representative_title"])
-            source_title = normalize_news_display_title(raw_title)
-            targets.append(
-                {
-                    "story_id": str(row["story_id"]),
-                    "source_title": source_title,
-                    "source_title_fingerprint": story_title_fingerprint(source_title),
-                    "source_raw_title_fingerprint": hashlib.sha256(raw_title.encode("utf-8")).hexdigest(),
-                    "source_is_zh": looks_zh_cn_title(source_title),
-                }
-            )
-
-        inserted_or_rebound = 0
-        transitioned = 0
-        if targets:
-            target_payload = Jsonb(targets)
-            cursor = self.conn.execute(
-                """
-                WITH targets AS (
-                  SELECT *
-                    FROM jsonb_to_recordset(%s) AS target(
-                      story_id text,
-                      source_title text,
-                      source_title_fingerprint text,
-                      source_raw_title_fingerprint text,
-                      source_is_zh boolean
-                    )
-                )
-                INSERT INTO news_story_title_translations (
-                  story_id, source_title, source_title_fingerprint,
-                  source_raw_title_fingerprint, locale, workflow_version,
-                  prompt_version, status, result_kind, translated_title,
-                  provider, model, attempt_count, attempts,
-                  next_attempt_at_ms, lease_owner, lease_token,
-                  lease_expires_at_ms, last_error, completed_at_ms,
-                  created_at_ms, updated_at_ms
-                )
-                SELECT target.story_id,
-                       target.source_title,
-                       target.source_title_fingerprint,
-                       target.source_raw_title_fingerprint,
-                       %s, %s, %s,
-                       CASE
-                         WHEN target.source_is_zh THEN 'ready'
-                         WHEN %s THEN 'pending'
-                         ELSE 'unavailable'
-                       END,
-                       CASE WHEN target.source_is_zh THEN 'source_zh' ELSE NULL END,
-                       CASE WHEN target.source_is_zh THEN target.source_title ELSE NULL END,
-                       NULL, NULL, 0, '[]'::jsonb,
-                       CASE WHEN NOT target.source_is_zh AND %s THEN %s ELSE NULL END,
-                       NULL, NULL, NULL,
-                       CASE
-                         WHEN NOT target.source_is_zh AND NOT %s
-                           THEN 'news_title_translation_not_configured'
-                         ELSE NULL
-                       END,
-                       CASE
-                         WHEN target.source_is_zh OR NOT %s THEN %s
-                         ELSE NULL
-                       END,
-                       %s, %s
-                  FROM targets target
-                ON CONFLICT (
-                  story_id, source_title_fingerprint, locale,
-                  workflow_version, prompt_version
-                ) DO UPDATE
-                   SET source_raw_title_fingerprint =
-                         EXCLUDED.source_raw_title_fingerprint,
-                       updated_at_ms = EXCLUDED.updated_at_ms
-                 WHERE news_story_title_translations.source_raw_title_fingerprint
-                       <> EXCLUDED.source_raw_title_fingerprint
-                """,
-                (
-                    target_payload,
-                    locale,
-                    workflow_version,
-                    prompt_version,
-                    bool(configured),
-                    bool(configured),
-                    int(now_ms),
-                    bool(configured),
-                    bool(configured),
-                    int(now_ms),
-                    int(now_ms),
-                    int(now_ms),
-                ),
-            )
-            inserted_or_rebound = int(cursor.rowcount or 0)
-
-            transitioned += int(
-                self.conn.execute(
-                    """
-                    WITH targets AS (
-                      SELECT *
-                        FROM jsonb_to_recordset(%s) AS target(
-                          story_id text,
-                          source_title_fingerprint text,
-                          source_is_zh boolean
-                        )
-                    )
-                    UPDATE news_story_title_translations translation
-                       SET status = 'ready',
-                           result_kind = 'source_zh',
-                           translated_title = translation.source_title,
-                           next_attempt_at_ms = NULL,
-                           last_error = NULL,
-                           completed_at_ms = %s,
-                           updated_at_ms = %s
-                      FROM targets target
-                     WHERE translation.story_id = target.story_id
-                       AND translation.source_title_fingerprint =
-                           target.source_title_fingerprint
-                       AND translation.locale = %s
-                       AND translation.workflow_version = %s
-                       AND translation.prompt_version = %s
-                       AND target.source_is_zh
-                       AND translation.status IN (
-                         'pending', 'retry_wait', 'unavailable'
-                       )
-                       AND translation.attempt_count = 0
-                    """,
-                    (
-                        target_payload,
-                        int(now_ms),
-                        int(now_ms),
-                        locale,
-                        workflow_version,
-                        prompt_version,
-                    ),
-                ).rowcount
-                or 0
-            )
-            if configured:
-                transitioned += int(
-                    self.conn.execute(
-                        """
-                        WITH targets AS (
-                          SELECT *
-                            FROM jsonb_to_recordset(%s) AS target(
-                              story_id text,
-                              source_title_fingerprint text,
-                              source_is_zh boolean
-                            )
-                        )
-                        UPDATE news_story_title_translations translation
-                           SET status = 'pending',
-                               next_attempt_at_ms = %s,
-                               last_error = NULL,
-                               completed_at_ms = NULL,
-                               updated_at_ms = %s
-                          FROM targets target
-                         WHERE translation.story_id = target.story_id
-                           AND translation.source_title_fingerprint =
-                               target.source_title_fingerprint
-                           AND translation.locale = %s
-                           AND translation.workflow_version = %s
-                           AND translation.prompt_version = %s
-                           AND NOT target.source_is_zh
-                           AND translation.status = 'unavailable'
-                           AND translation.last_error =
-                               'news_title_translation_not_configured'
-                           AND translation.attempt_count < %s
-                        """,
-                        (
-                            target_payload,
-                            int(now_ms),
-                            int(now_ms),
-                            locale,
-                            workflow_version,
-                            prompt_version,
-                            int(max_attempts),
-                        ),
-                    ).rowcount
-                    or 0
-                )
-            else:
-                transitioned += int(
-                    self.conn.execute(
-                        """
-                        WITH targets AS (
-                          SELECT *
-                            FROM jsonb_to_recordset(%s) AS target(
-                              story_id text,
-                              source_title_fingerprint text,
-                              source_is_zh boolean
-                            )
-                        )
-                        UPDATE news_story_title_translations translation
-                           SET status = 'unavailable',
-                               next_attempt_at_ms = NULL,
-                               last_error =
-                                 'news_title_translation_not_configured',
-                               completed_at_ms = %s,
-                               updated_at_ms = %s
-                          FROM targets target
-                         WHERE translation.story_id = target.story_id
-                           AND translation.source_title_fingerprint =
-                               target.source_title_fingerprint
-                           AND translation.locale = %s
-                           AND translation.workflow_version = %s
-                           AND translation.prompt_version = %s
-                           AND NOT target.source_is_zh
-                           AND translation.status IN ('pending', 'retry_wait')
-                        """,
-                        (
-                            target_payload,
-                            int(now_ms),
-                            int(now_ms),
-                            locale,
-                            workflow_version,
-                            prompt_version,
-                        ),
-                    ).rowcount
-                    or 0
-                )
-
-        pruned = int(
-            self.conn.execute(
-                """
-                DELETE FROM news_story_title_translations translation
-                 WHERE translation.status <> 'running'
-                   AND translation.updated_at_ms < %s
-                   AND NOT EXISTS (
-                     SELECT 1
-                       FROM news_stories story
-                      WHERE story.story_id = translation.story_id
-                        AND translation.locale = %s
-                        AND translation.workflow_version = %s
-                        AND translation.prompt_version = %s
-                        AND translation.source_raw_title_fingerprint = encode(
-                          sha256(convert_to(story.representative_title, 'UTF8')),
-                          'hex'
-                        )
-                        AND EXISTS (
-                          SELECT 1
-                            FROM news_story_members member
-                            JOIN news_items item
-                              ON item.item_id = member.item_id
-                           WHERE member.story_id = story.story_id
-                             AND jsonb_typeof(
-                               item.provider_metadata -> 'score'
-                             ) = 'number'
-                             AND (
-                               item.provider_metadata ->> 'score'
-                             )::numeric > %s
-                        )
-                   )
-                """,
-                (
-                    int(now_ms) - int(retention_ms),
-                    locale,
-                    workflow_version,
-                    prompt_version,
-                    _TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD,
-                ),
-            ).rowcount
-            or 0
-        )
-        return {
-            "eligible": len(targets),
-            "recovered": recovered,
-            "inserted_or_rebound": inserted_or_rebound,
-            "transitioned": transitioned,
-            "pruned": pruned,
-        }
-
-    def peek_story_title_translation_target(
-        self,
-        *,
-        now_ms: int,
-        locale: str,
-        workflow_version: str,
-        prompt_version: str,
-    ) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT translation.*
-              FROM news_story_title_translations translation
-              JOIN news_stories story
-                ON story.story_id = translation.story_id
-               AND translation.source_raw_title_fingerprint = encode(
-                 sha256(convert_to(story.representative_title, 'UTF8')),
-                 'hex'
-               )
-             WHERE translation.locale = %s
-               AND translation.workflow_version = %s
-               AND translation.prompt_version = %s
-               AND translation.status IN ('pending', 'retry_wait')
-               AND translation.next_attempt_at_ms <= %s
-               AND EXISTS (
-                 SELECT 1
-                   FROM news_story_members member
-                   JOIN news_items item ON item.item_id = member.item_id
-                  WHERE member.story_id = story.story_id
-                    AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                    AND (item.provider_metadata ->> 'score')::numeric > %s
-               )
-             ORDER BY story.last_published_at_ms DESC,
-                      translation.next_attempt_at_ms,
-                      translation.story_id
-             LIMIT 1
-            """,
-            (
-                locale,
-                workflow_version,
-                prompt_version,
-                int(now_ms),
-                _TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD,
-            ),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def claim_story_title_translation(
-        self,
-        *,
-        story_id: str,
-        source_title_fingerprint: str,
-        locale: str,
-        workflow_version: str,
-        prompt_version: str,
-        lease_owner: str,
-        lease_token: str,
-        lease_expires_at_ms: int,
-        now_ms: int,
-        max_attempts: int,
-    ) -> dict[str, Any] | None:
-        if max_attempts != 3:
-            raise ValueError("news_title_translation_retry_policy_invalid")
-        row = self.conn.execute(
-            """
-            SELECT translation.*, story.representative_title AS current_raw_title
-              FROM news_story_title_translations translation
-              JOIN news_stories story
-                ON story.story_id = translation.story_id
-               AND translation.source_raw_title_fingerprint = encode(
-                 sha256(convert_to(story.representative_title, 'UTF8')),
-                 'hex'
-               )
-             WHERE translation.story_id = %s
-               AND translation.source_title_fingerprint = %s
-               AND translation.locale = %s
-               AND translation.workflow_version = %s
-               AND translation.prompt_version = %s
-               AND translation.status IN ('pending', 'retry_wait')
-               AND translation.next_attempt_at_ms <= %s
-               AND translation.attempt_count < %s
-               AND EXISTS (
-                 SELECT 1
-                   FROM news_story_members member
-                   JOIN news_items item ON item.item_id = member.item_id
-                  WHERE member.story_id = story.story_id
-                    AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                    AND (item.provider_metadata ->> 'score')::numeric > %s
-               )
-             FOR UPDATE OF translation SKIP LOCKED
-            """,
-            (
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-                int(now_ms),
-                int(max_attempts),
-                _TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD,
-            ),
-        ).fetchone()
-        if row is None:
-            return None
-        current_source_title = normalize_news_display_title(row["current_raw_title"])
-        if (
-            current_source_title != str(row["source_title"])
-            or story_title_fingerprint(current_source_title) != source_title_fingerprint
-        ):
-            return None
-        attempts = [dict(value) for value in list(row["attempts"] or [])]
-        attempts.append({"attempted_at_ms": int(now_ms), "outcome": "started"})
-        claimed = self.conn.execute(
-            """
-            UPDATE news_story_title_translations
-               SET status = 'running',
-                   attempt_count = attempt_count + 1,
-                   attempts = %s,
-                   next_attempt_at_ms = NULL,
-                   lease_owner = %s,
-                   lease_token = %s,
-                   lease_expires_at_ms = %s,
-                   last_error = NULL,
-                   completed_at_ms = NULL,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND source_title_fingerprint = %s
-               AND locale = %s
-               AND workflow_version = %s
-               AND prompt_version = %s
-               AND status IN ('pending', 'retry_wait')
-            RETURNING *
-            """,
-            (
-                Jsonb(attempts),
-                lease_owner,
-                lease_token,
-                int(lease_expires_at_ms),
-                int(now_ms),
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-            ),
-        ).fetchone()
-        return dict(claimed) if claimed is not None else None
-
-    def complete_story_title_translation(
-        self,
-        *,
-        story_id: str,
-        source_title_fingerprint: str,
-        locale: str,
-        workflow_version: str,
-        prompt_version: str,
-        lease_owner: str,
-        lease_token: str,
-        title_zh: str,
-        provider: str,
-        model: str,
-        now_ms: int,
-    ) -> bool:
-        normalized_title = str(title_zh or "").strip()
-        if normalize_news_display_text(normalized_title) != normalized_title or not looks_zh_cn_title(normalized_title):
-            raise ValueError("news_title_translation_result_invalid")
-        if not str(provider or "").strip() or not str(model or "").strip():
-            raise ValueError("news_title_translation_provenance_required")
-        row = self.conn.execute(
-            """
-            SELECT attempt_count, attempts
-              FROM news_story_title_translations
-             WHERE story_id = %s
-               AND source_title_fingerprint = %s
-               AND locale = %s
-               AND workflow_version = %s
-               AND prompt_version = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_token = %s
-             FOR UPDATE
-            """,
-            (
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-                lease_owner,
-                lease_token,
-            ),
-        ).fetchone()
-        if row is None:
-            return False
-        attempts = _finish_story_title_translation_attempt(
-            row["attempts"],
-            attempt_count=int(row["attempt_count"]),
-            now_ms=now_ms,
-            outcome="succeeded",
-        )
-        cursor = self.conn.execute(
-            """
-            UPDATE news_story_title_translations
-               SET status = 'ready',
-                   result_kind = 'translated',
-                   translated_title = %s,
-                   provider = %s,
-                   model = %s,
-                   attempts = %s,
-                   next_attempt_at_ms = NULL,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   last_error = NULL,
-                   completed_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND source_title_fingerprint = %s
-               AND locale = %s
-               AND workflow_version = %s
-               AND prompt_version = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_token = %s
-            """,
-            (
-                normalized_title,
-                str(provider).strip(),
-                str(model).strip(),
-                Jsonb(attempts),
-                int(now_ms),
-                int(now_ms),
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-                lease_owner,
-                lease_token,
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def fail_story_title_translation(
-        self,
-        *,
-        story_id: str,
-        source_title_fingerprint: str,
-        locale: str,
-        workflow_version: str,
-        prompt_version: str,
-        lease_owner: str,
-        lease_token: str,
+        claim: Mapping[str, Any],
         error_code: str,
-        retryable: bool,
-        retry_delays_ms: Sequence[int],
-        max_attempts: int,
         now_ms: int,
-    ) -> bool:
-        if max_attempts != 3 or len(retry_delays_ms) != max_attempts - 1:
-            raise ValueError("news_title_translation_retry_policy_invalid")
-        normalized_error = _public_story_title_translation_error(error_code)
-        row = self.conn.execute(
-            """
-            SELECT attempt_count, attempts
-              FROM news_story_title_translations
-             WHERE story_id = %s
-               AND source_title_fingerprint = %s
-               AND locale = %s
-               AND workflow_version = %s
-               AND prompt_version = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_token = %s
-             FOR UPDATE
-            """,
-            (
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-                lease_owner,
-                lease_token,
-            ),
-        ).fetchone()
-        if row is None:
-            return False
-        attempt_count = int(row["attempt_count"])
-        attempts = _finish_story_title_translation_attempt(
-            row["attempts"],
-            attempt_count=attempt_count,
+    ) -> str | None:
+        return brief_store.fail_brief_run(
+            self,
+            claim=claim,
+            error_code=error_code,
             now_ms=now_ms,
-            outcome="failed",
-            error_code=normalized_error,
         )
-        if retryable and attempt_count < max_attempts:
-            status = "retry_wait"
-            next_attempt_at_ms = int(now_ms) + int(retry_delays_ms[attempt_count - 1])
-            completed_at_ms = None
-        else:
-            status = "failed" if retryable else "unavailable"
-            next_attempt_at_ms = None
-            completed_at_ms = int(now_ms)
-        cursor = self.conn.execute(
-            """
-            UPDATE news_story_title_translations
-               SET status = %s,
-                   attempts = %s,
-                   next_attempt_at_ms = %s,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   last_error = %s,
-                   completed_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND source_title_fingerprint = %s
-               AND locale = %s
-               AND workflow_version = %s
-               AND prompt_version = %s
-               AND status = 'running'
-               AND lease_owner = %s
-               AND lease_token = %s
-            """,
-            (
-                status,
-                Jsonb(attempts),
-                next_attempt_at_ms,
-                normalized_error,
-                completed_at_ms,
-                int(now_ms),
-                story_id,
-                source_title_fingerprint,
-                locale,
-                workflow_version,
-                prompt_version,
-                lease_owner,
-                lease_token,
-            ),
-        )
-        return bool(cursor.rowcount)
+
+    def get_brief(self, *, now_ms: int) -> dict[str, Any]:
+        return brief_store.get_brief(self, now_ms=now_ms)
 
     # News Story push ----------------------------------------------------------
 
@@ -3662,188 +2189,11 @@ class NewsRepository:
 
     # Health -------------------------------------------------------------------
 
-    def story_title_translation_health_snapshot(
-        self,
-        *,
-        now_ms: int,
-        configured: bool,
-        locale: str = TITLE_TRANSLATION_LOCALE,
-        workflow_version: str = TITLE_TRANSLATION_WORKFLOW_VERSION,
-        prompt_version: str = TITLE_TRANSLATION_PROMPT_VERSION,
-    ) -> dict[str, Any]:
-        aggregate = self.conn.execute(
-            """
-            WITH eligible AS MATERIALIZED (
-              SELECT story.story_id,
-                     story.last_published_at_ms,
-                     encode(
-                       sha256(convert_to(story.representative_title, 'UTF8')),
-                       'hex'
-                     ) AS source_raw_title_fingerprint
-                FROM news_stories story
-               WHERE EXISTS (
-                 SELECT 1
-                   FROM news_story_members member
-                   JOIN news_items item ON item.item_id = member.item_id
-                  WHERE member.story_id = story.story_id
-                    AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                    AND (item.provider_metadata ->> 'score')::numeric > %s
-               )
-            ), current_targets AS (
-              SELECT eligible.*,
-                     translation.status,
-                     translation.last_error,
-                     translation.created_at_ms,
-                     translation.completed_at_ms
-                FROM eligible
-                LEFT JOIN news_story_title_translations translation
-                  ON translation.story_id = eligible.story_id
-                 AND translation.source_raw_title_fingerprint =
-                     eligible.source_raw_title_fingerprint
-                 AND translation.locale = %s
-                 AND translation.workflow_version = %s
-                 AND translation.prompt_version = %s
-            )
-            SELECT count(*) AS eligible_count,
-                   count(*) FILTER (WHERE status = 'ready') AS ready_count,
-                   count(*) FILTER (
-                     WHERE status IS NULL OR status IN ('pending', 'running')
-                   ) AS pending_count,
-                   count(*) FILTER (WHERE status = 'retry_wait') AS retry_count,
-                   count(*) FILTER (WHERE status = 'failed') AS failed_count,
-                   count(*) FILTER (WHERE status = 'unavailable')
-                     AS unavailable_count,
-                   count(*) FILTER (
-                     WHERE status = 'unavailable'
-                       AND last_error = 'news_title_translation_not_configured'
-                   ) AS not_configured_count,
-                   min(created_at_ms) FILTER (
-                     WHERE status IN ('pending', 'running', 'retry_wait')
-                   ) AS oldest_pending_at_ms,
-                   max(completed_at_ms) FILTER (WHERE status = 'ready')
-                     AS latest_success_at_ms
-              FROM current_targets
-            """,
-            (
-                _TITLE_TRANSLATION_PROVIDER_SCORE_THRESHOLD,
-                locale,
-                workflow_version,
-                prompt_version,
-            ),
-        ).fetchone()
-        rolling = self.conn.execute(
-            """
-            WITH samples AS (
-              SELECT attempt ->> 'outcome' AS outcome,
-                     CASE
-                       WHEN jsonb_typeof(attempt -> 'duration_ms') = 'number'
-                         THEN (attempt ->> 'duration_ms')::numeric
-                       ELSE NULL
-                     END AS duration_ms,
-                     nullif(attempt ->> 'error_code', '') AS error_code
-                FROM news_story_title_translations translation
-                CROSS JOIN LATERAL jsonb_array_elements(
-                  translation.attempts
-                ) attempt
-               WHERE translation.locale = %s
-                 AND translation.workflow_version = %s
-                 AND translation.prompt_version = %s
-                 AND jsonb_typeof(attempt -> 'attempted_at_ms') = 'number'
-                 AND (attempt ->> 'attempted_at_ms')::numeric
-                     BETWEEN %s AND %s
-            ), failures AS (
-              SELECT coalesce(
-                       error_code,
-                       'news_title_translation_unknown_failure'
-                     ) AS failure_code,
-                     count(*) AS failure_count
-                FROM samples
-               WHERE outcome = 'failed'
-               GROUP BY 1
-            )
-            SELECT count(*) AS attempted,
-                   count(*) FILTER (WHERE outcome = 'succeeded') AS succeeded,
-                   percentile_cont(0.95) WITHIN GROUP (
-                     ORDER BY duration_ms
-                   ) FILTER (
-                     WHERE duration_ms IS NOT NULL AND duration_ms >= 0
-                   ) AS latency_p95_ms,
-                   coalesce(
-                     (SELECT jsonb_object_agg(failure_code, failure_count)
-                        FROM failures),
-                     '{}'::jsonb
-                   ) AS failure_counts
-              FROM samples
-            """,
-            (
-                locale,
-                workflow_version,
-                prompt_version,
-                int(now_ms) - _SLO_WINDOW_MS,
-                int(now_ms),
-            ),
-        ).fetchone()
-        eligible_count = int(aggregate["eligible_count"] or 0)
-        ready_count = int(aggregate["ready_count"] or 0)
-        pending_count = int(aggregate["pending_count"] or 0)
-        retry_count = int(aggregate["retry_count"] or 0)
-        failed_count = int(aggregate["failed_count"] or 0)
-        unavailable_count = int(aggregate["unavailable_count"] or 0)
-        not_configured_count = int(aggregate["not_configured_count"] or 0)
-        oldest_pending_at_ms = aggregate["oldest_pending_at_ms"]
-        reasons: list[str] = []
-        configuration_missing = bool(not configured and not_configured_count > 0)
-        if configuration_missing:
-            reasons.append("title_translation_not_configured")
-        if failed_count:
-            reasons.append("title_translation_failed")
-        if unavailable_count and not configuration_missing:
-            reasons.append("title_translation_unavailable")
-        status = (
-            "degraded"
-            if configuration_missing or failed_count or unavailable_count
-            else "warming"
-            if pending_count or retry_count
-            else "ready"
-        )
-        attempted = int(rolling["attempted"] or 0)
-        succeeded = int(rolling["succeeded"] or 0)
-        latency_value = rolling["latency_p95_ms"]
-        failure_counts: Counter[str] = Counter()
-        for error_code, count in dict(rolling["failure_counts"] or {}).items():
-            failure_counts[_public_story_title_translation_error(error_code)] += int(count)
-        return {
-            "status": status,
-            "reasons": reasons,
-            "configured": bool(configured),
-            "locale": locale,
-            "workflow_version": workflow_version,
-            "prompt_version": prompt_version,
-            "eligible_count": eligible_count,
-            "ready_count": ready_count,
-            "pending_count": pending_count,
-            "retry_count": retry_count,
-            "failed_count": failed_count,
-            "unavailable_count": unavailable_count,
-            "oldest_pending_at_ms": (int(oldest_pending_at_ms) if oldest_pending_at_ms is not None else None),
-            "latest_success_at_ms": (
-                int(aggregate["latest_success_at_ms"]) if aggregate["latest_success_at_ms"] is not None else None
-            ),
-            "rolling_24h": {
-                "attempted": attempted,
-                "succeeded": succeeded,
-                "success_ratio": succeeded / attempted if attempted else None,
-                "latency_p95_ms": ceil(latency_value) if latency_value is not None else None,
-                "failure_counts": dict(sorted(failure_counts.items())),
-            },
-        }
-
     def health_snapshot(
         self,
         *,
         now_ms: int,
         push_enabled: bool = False,
-        title_translation_configured: bool = False,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
         workers_state: str | None = None,
@@ -3893,7 +2243,7 @@ class NewsRepository:
             """,
             (int(now_ms) - _STORY_ACTIVE_WINDOW_MS,),
         ).fetchone()
-        brief = self.get_brief(now_ms=now_ms, history_limit=1)
+        brief = self.get_brief(now_ms=now_ms)
         ingest_reasons: list[str] = []
         opennews_payload = dict(opennews) if opennews is not None else None
         if opennews_payload is None:
@@ -3954,16 +2304,12 @@ class NewsRepository:
 
         brief_status = (
             "ready"
-            if brief["state"] in {"ready", "insufficient_material"}
+            if brief["state"] == "current"
             else "degraded"
-            if brief["state"] in {"stale_fallback", "failed"}
+            if brief["state"] in {"degraded", "last_known_good"}
             else "warming"
         )
         brief_reasons = [] if brief_status == "ready" else [f"public_brief_{brief['state']}"]
-        title_translation = self.story_title_translation_health_snapshot(
-            now_ms=now_ms,
-            configured=title_translation_configured,
-        )
         push_snapshot = self.push_health_snapshot(now_ms=now_ms)
         oldest_waiting_since_at_ms = push_snapshot.pop("_oldest_waiting_since_at_ms")
         push_stalled = bool(
@@ -4070,14 +2416,12 @@ class NewsRepository:
                 "publication_id": (brief["publication"]["publication_id"] if brief["publication"] else None),
                 "latest_run": brief["latest_run"],
             },
-            "translation": title_translation,
             "push": push_payload,
         }
         statuses = [
             ingest_status,
             story_status,
             brief_status,
-            str(title_translation["status"]),
         ]
         if push_enabled:
             statuses.append(push_status)
@@ -4102,8 +2446,8 @@ class NewsRepository:
 def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "story_id": str(row["story_id"]),
-        "title": normalize_news_display_title(row["representative_title"]),
-        "description": normalize_news_display_text(row["representative_description"]),
+        "title": str(row["representative_title"]),
+        "description": str(row["representative_description"]),
         "url": str(row["representative_url"]) if row["representative_url"] else None,
         "source_id": str(row["representative_source_id"]),
         "source_name": str(row["representative_source_name"]),
@@ -4154,79 +2498,11 @@ def _public_push_delivery_state(selected: Mapping[str, Any] | None) -> str | Non
     return "pending"
 
 
-def _public_story_title_translation(
-    *,
-    story: Mapping[str, Any],
-    selected: Mapping[str, Any] | None,
-    translation: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    evidence = selected.get("provider_evidence") if selected is not None else None
-    score = evidence.get("provider_score") if isinstance(evidence, Mapping) else None
-    if not _numeric_provider_score(score) or float(cast(int | float, score)) <= 70:
-        return None
-    source_title = str(story["title"])
-    fingerprint = story_title_fingerprint(source_title)
-    public_state = "pending"
-    title_zh: str | None = None
-    if (
-        translation is not None
-        and str(translation.get("source_title") or "") == source_title
-        and str(translation.get("source_title_fingerprint") or "") == fingerprint
-    ):
-        private_state = str(translation.get("status") or "")
-        if private_state == "ready" and str(translation.get("translated_title") or "").strip():
-            public_state = "ready"
-            title_zh = str(translation["translated_title"])
-        elif private_state in {"failed", "unavailable"}:
-            public_state = private_state
-    return {
-        "state": public_state,
-        "title_zh": title_zh,
-        "source_title": source_title,
-        "source_title_fingerprint": fingerprint,
-        "locale": TITLE_TRANSLATION_LOCALE,
-        "workflow_version": TITLE_TRANSLATION_WORKFLOW_VERSION,
-        "prompt_version": TITLE_TRANSLATION_PROMPT_VERSION,
-    }
-
-
 def _public_push_error(value: str) -> str:
     normalized = str(value or "").strip().lower()
     if re.fullmatch(r"[a-z0-9_]{1,120}", normalized):
         return normalized
     return "news_story_push_delivery_error"
-
-
-def _public_story_title_translation_error(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    if re.fullmatch(r"[a-z0-9_]{1,120}", normalized):
-        return normalized
-    return "news_title_translation_error"
-
-
-def _finish_story_title_translation_attempt(
-    value: object,
-    *,
-    attempt_count: int,
-    now_ms: int,
-    outcome: str,
-    error_code: str | None = None,
-) -> list[dict[str, Any]]:
-    if outcome not in {"succeeded", "failed"}:
-        raise ValueError("news_title_translation_attempt_outcome_invalid")
-    attempts = [dict(attempt) for attempt in cast(Sequence[Mapping[str, Any]], value or [])]
-    if len(attempts) != attempt_count or not attempts or attempts[-1].get("outcome") != "started":
-        raise RuntimeError("news_title_translation_attempt_ledger_invalid")
-    attempted_at_ms = int(attempts[-1].get("attempted_at_ms") or now_ms)
-    completed = {
-        "attempted_at_ms": attempted_at_ms,
-        "outcome": outcome,
-        "duration_ms": max(0, int(now_ms) - attempted_at_ms),
-    }
-    if outcome == "failed":
-        completed["error_code"] = _public_story_title_translation_error(error_code)
-    attempts[-1] = completed
-    return attempts
 
 
 def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -4248,57 +2524,6 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "category": str(row["category"]),
         "importance_score": int(row["importance_score"]),
         "importance_factors": dict(row["importance_factors"]),
-    }
-
-
-def _brief_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "publication_id": str(row["publication_id"]),
-        "fingerprint": str(row["fingerprint"]),
-        "evidence_cutoff_at_ms": int(row["evidence_cutoff_at_ms"]),
-        "published_at_ms": int(row["published_at_ms"]),
-        "provider": str(row["provider"]),
-        "model": str(row["model"]),
-        "prompt_version": str(row["prompt_version"]),
-        "workflow_version": str(row["workflow_version"]),
-        "schema_version": str(row["schema_version"]),
-        "locale": str(row["locale"]),
-        "selected_story_ids": list(row["selected_story_ids"]),
-        "lead": str(row["lead"]),
-        "lines": list(row["lines"]),
-        "sources": list(row["sources"]),
-        "validation": dict(row["validation"]),
-    }
-
-
-def _brief_run_payload(
-    row: Mapping[str, Any],
-    *,
-    now_ms: int,
-) -> dict[str, Any]:
-    status = str(row["status"])
-    last_error = row["last_error"]
-    if status == "running" and (
-        row["lease_expires_at_ms"] is None
-        or int(row["lease_expires_at_ms"]) <= now_ms
-        or row["heartbeat_at_ms"] is None
-        or int(row["heartbeat_at_ms"]) <= now_ms - _BRIEF_LEASE_MS
-    ):
-        status = "failed"
-        last_error = last_error or "brief_lease_expired"
-    return {
-        "run_id": str(row["run_id"]),
-        "fingerprint": str(row["fingerprint"]),
-        "status": status,
-        "attempt_count": int(row["attempt_count"]),
-        "candidate_story_count": int(row["candidate_story_count"]),
-        "candidate_source_count": int(row["candidate_source_count"]),
-        "heartbeat_at_ms": row["heartbeat_at_ms"],
-        "lease_expires_at_ms": row["lease_expires_at_ms"],
-        "last_error": last_error,
-        "created_at_ms": int(row["created_at_ms"]),
-        "updated_at_ms": int(row["updated_at_ms"]),
-        "completed_at_ms": row["completed_at_ms"],
     }
 
 

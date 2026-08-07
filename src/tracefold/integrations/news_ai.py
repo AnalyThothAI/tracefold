@@ -245,7 +245,11 @@ class ProviderChainNewsBriefPublisher:
             except httpx.HTTPError:
                 if attempt >= 2:
                     return None
-                self._sleep(2**attempt)
+                wait = float(2**attempt)
+                remaining = max(0.0, deadline - self._monotonic() - 5.0)
+                if wait >= remaining:
+                    return None
+                self._sleep(wait)
                 continue
             if response.status_code < 400:
                 break
@@ -258,7 +262,10 @@ class ProviderChainNewsBriefPublisher:
             if retry_after is not None and retry_after >= remaining:
                 return None
             bounded_hint = min(retry_after, 10.0) if retry_after is not None else 0.0
-            self._sleep(max(float(2**attempt), bounded_hint))
+            wait = max(float(2**attempt), bounded_hint)
+            if wait >= remaining:
+                return None
+            self._sleep(wait)
         if response is None or response.status_code >= 400:
             return None
         try:

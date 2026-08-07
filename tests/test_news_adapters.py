@@ -202,6 +202,36 @@ def test_unreachable_retry_after_fails_over_without_sleeping() -> None:
     assert result.provider == "openrouter"
 
 
+def test_retry_backoff_that_consumes_the_remainder_fails_over_without_sleeping() -> None:
+    hosts: list[str] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        if request.url.host == "ollama.test":
+            raise httpx.ConnectError("offline", request=request)
+        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+
+    publisher = ProviderChainNewsBriefPublisher(
+        ollama_base_url="https://ollama.test/v1",
+        openrouter_api_key="openrouter-secret",
+        groq_api_key=None,
+        total_timeout_seconds=5.5,
+        transport=httpx.MockTransport(handler),
+        monotonic=lambda: 0.0,
+        sleep=sleeps.append,
+    )
+    try:
+        result = publisher.publish((_story(),), date_iso="2026-08-07")
+    finally:
+        publisher.close()
+
+    assert hosts == ["ollama.test", "openrouter.ai"]
+    assert sleeps == []
+    assert result.brief_kind == "l1"
+    assert result.provider == "openrouter"
+
+
 def test_l2_receives_only_the_shared_sixty_second_budget_remainder() -> None:
     now = 0.0
     request_timeouts: list[float] = []

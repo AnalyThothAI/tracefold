@@ -257,7 +257,10 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                 str(member["item_id"]),
             ),
         )
-        canonical_key = hashlib.sha256(str(earliest["normalized_title"]).encode()).hexdigest()
+        canonical_title = str(earliest["normalized_title"])
+        if not canonical_title:
+            canonical_title = f"untrackable:{earliest['reporting_origin']}:{earliest['title']}"
+        canonical_key = hashlib.sha256(canonical_title.encode()).hexdigest()
         story_id = canonical_key
         representative = min(
             members,

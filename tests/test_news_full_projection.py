@@ -67,6 +67,22 @@ def test_story_id_is_exact_sha256_of_earliest_normalized_title() -> None:
     )
 
 
+def test_empty_normalized_titles_use_the_public_per_item_sentinel_identity() -> None:
+    projection = compute_news_story_projection(
+        _snapshot(
+            _row("emoji", "👑👑👑", published_at_ms=10, reporting_origin="aeyakovenko"),
+            _row("punctuation", "!!!", published_at_ms=11, reporting_origin="reuters"),
+        )
+    )
+
+    story_ids = {story["canonical_title"]: story["story_id"] for story in projection["stories"]}
+    assert story_ids == {
+        "👑👑👑": hashlib.sha256("untrackable:aeyakovenko:👑👑👑".encode()).hexdigest(),
+        "!!!": hashlib.sha256(b"untrackable:reuters:!!!").hexdigest(),
+    }
+    assert len(projection["memberships"]) == 2
+
+
 def test_source_count_uses_reporting_origin_not_acquisition_source() -> None:
     projection = compute_news_story_projection(
         _snapshot(
