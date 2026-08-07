@@ -26,7 +26,6 @@ _NEWS_TABLES_AFTER_OPENNEWS_HARD_CUT = (
     | {
         "news_push_state",
         "news_push_deliveries",
-        "news_story_title_translations",
     }
 ) - {"news_source_memberships"}
 
