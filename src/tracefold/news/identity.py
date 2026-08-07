@@ -1,7 +1,8 @@
 """WorldMonitor-compatible lexical Story identity.
 
-This is a direct Python port of WorldMonitor ``shared/story-identity.js`` at
-commit f73de5b7dde76ff292f800d7d06f3529d2178d43.  It is intentionally the only
+This is a direct Python port of WorldMonitor ``shared/story-identity.js`` and
+the caller-owned canonical hash normalizer at commit
+``0e8785c43e6a693990a14181ae0a16066c15fc8c``.  It is intentionally the only
 answer to "are these titles the same story?" inside Tracefold News.
 """
 
@@ -19,6 +20,7 @@ DIM: Final = 512
 STORY_SIMILARITY_THRESHOLD: Final = 0.615
 MAX_CANDIDATE_BUCKET: Final = 250
 MAX_IDENTITY_CHARS: Final = 300
+MAX_CANONICAL_TITLE_CHARS: Final = 120
 
 WEIGHT_TOKEN: Final = 2.0
 WEIGHT_BIGRAM: Final = 1.5
@@ -31,12 +33,20 @@ CONTAINMENT_RESCUE_RATIO: Final = 0.9
 CONTAINMENT_RESCUE_SCORE: Final = 0.9
 
 _ATTRIBUTION_SUFFIX_RES = (
-    re.compile(r"\s*[-–—|]\s*[\w\s.]+\.(?:com|org|net|co\.uk)\s*$", re.IGNORECASE),
+    re.compile(r"\s*[-–—|]\s*[A-Za-z0-9_\s.]+\.(?:com|org|net|co\.uk)\s*$", re.IGNORECASE),
     re.compile(
         r"\s*[-–—|]\s*(?:reuters|ap news|bbc|cnn|al jazeera|france 24|dw news|"
         r"pbs newshour|cbs news|nbc|abc|associated press|the guardian|nos nieuws|"
         r"tagesschau|cnbc|the national)\s*$",
         re.IGNORECASE,
+    ),
+)
+_CANONICAL_ATTRIBUTION_SUFFIX_RES = (
+    re.compile(r"\s*[-–—]\s*[A-Za-z0-9_\s.]+\.(?:com|org|net|co\.uk)\s*$"),
+    re.compile(
+        r"\s*[-–—]\s*(?:reuters|ap news|bbc|cnn|al jazeera|france 24|dw news|"
+        r"pbs newshour|cbs news|nbc|abc|associated press|the guardian|nos nieuws|"
+        r"tagesschau|cnbc|the national)\s*$"
     ),
 )
 
@@ -55,13 +65,42 @@ def strip_attribution_suffix(text: str) -> str:
     return result
 
 
+def _utf16_slice(text: str, stop: int) -> str:
+    encoded = text.encode("utf-16-le", errors="surrogatepass")
+    return encoded[: max(0, stop) * 2].decode("utf-16-le", errors="surrogatepass")
+
+
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _utf16_ngrams(text: str, width: int) -> tuple[str, ...]:
+    encoded = text.encode("utf-16-le", errors="surrogatepass")
+    unit_count = len(encoded) // 2
+    return tuple(
+        encoded[index * 2 : (index + width) * 2].decode("utf-16-le", errors="surrogatepass")
+        for index in range(max(0, unit_count - width + 1))
+    )
+
+
 @lru_cache(maxsize=8192)
 def normalize_story_text(text: str) -> str:
-    chars = (
-        char.lower() if unicodedata.category(char).startswith(("L", "N")) or char.isspace() else " "
-        for char in str(text or "")
-    )
+    lowered = str(text or "").lower()
+    chars = (char if unicodedata.category(char).startswith(("L", "N")) or char.isspace() else " " for char in lowered)
     return " ".join("".join(chars).split())
+
+
+@lru_cache(maxsize=8192)
+def normalize_story_canonical_title(text: str) -> str:
+    """Mirror list-feed-digest's caller-owned titleHash normalizer."""
+
+    normalized = str(text or "").lower()
+    for pattern in _CANONICAL_ATTRIBUTION_SUFFIX_RES:
+        normalized = pattern.sub("", normalized)
+    normalized = "".join(
+        char for char in normalized if unicodedata.category(char).startswith(("L", "N")) or char.isspace()
+    )
+    return _utf16_slice(" ".join(normalized.split()), MAX_CANONICAL_TITLE_CHARS)
 
 
 def _is_non_ascii(token: str) -> bool:
@@ -71,25 +110,25 @@ def _is_non_ascii(token: str) -> bool:
 @lru_cache(maxsize=8192)
 def candidate_tokens(text: str) -> frozenset[str]:
     result: set[str] = set()
-    clamped = strip_attribution_suffix(text)[:MAX_IDENTITY_CHARS]
+    clamped = _utf16_slice(strip_attribution_suffix(text), MAX_IDENTITY_CHARS)
     for token in normalize_story_text(clamped).split():
         if _is_non_ascii(token):
             result.add(token)
-            result.update(token[index : index + 2] for index in range(max(0, len(token) - 1)))
-        elif len(token) >= 3:
+            result.update(_utf16_ngrams(token, 2))
+        elif _utf16_length(token) >= 3:
             result.add(token)
     return frozenset(result)
 
 
 def _content_tokens(text: str) -> list[tuple[str, float]]:
     kept: list[tuple[str, float]] = []
-    clamped = strip_attribution_suffix(text)[:MAX_IDENTITY_CHARS]
+    clamped = _utf16_slice(strip_attribution_suffix(text), MAX_IDENTITY_CHARS)
     for raw in clamped.split():
         clean = "".join(char for char in raw if unicodedata.category(char).startswith(("L", "N")))
         if not clean:
             continue
         token = clean.lower()
-        if not _is_non_ascii(token) and len(token) < 3:
+        if not _is_non_ascii(token) and _utf16_length(token) < 3:
             continue
         has_digit = any(unicodedata.category(char).startswith("N") for char in clean)
         capitalized = bool(clean) and unicodedata.category(clean[0]) == "Lu"
@@ -137,14 +176,14 @@ def story_vector(text: str) -> StoryVector | None:
             _add_feature(uniform, bigram, WEIGHT_BIGRAM)
             _add_feature(boosted, bigram, WEIGHT_BIGRAM)
         if _is_non_ascii(token):
-            for char_index in range(max(0, len(token) - 1)):
-                feature = f"c2:{token[char_index : char_index + 2]}"
+            for gram in _utf16_ngrams(token, 2):
+                feature = f"c2:{gram}"
                 _add_feature(uniform, feature, WEIGHT_CHARGRAM)
                 _add_feature(boosted, feature, WEIGHT_CHARGRAM)
-        if len(token) >= 4:
+        if _utf16_length(token) >= 4:
             padded = f"<{token}>"
-            for char_index in range(max(0, len(padded) - 3)):
-                feature = f"c4:{padded[char_index : char_index + 4]}"
+            for gram in _utf16_ngrams(padded, 4):
+                feature = f"c4:{gram}"
                 _add_feature(uniform, feature, WEIGHT_CHARGRAM)
                 _add_feature(boosted, feature, WEIGHT_CHARGRAM)
     normalized_uniform = _l2_normalize(uniform)
@@ -300,6 +339,7 @@ __all__ = [
     "cluster_texts",
     "cosine_similarity",
     "is_same_story",
+    "normalize_story_canonical_title",
     "normalize_story_text",
     "story_similarity",
     "story_vector",

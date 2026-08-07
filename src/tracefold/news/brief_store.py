@@ -33,12 +33,20 @@ def peek_brief_candidate(repository: Any, *, now_ms: int) -> dict[str, Any] | No
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
     selection = _selection(conn)
-    if selection is None or not list(selection["top_stories"]):
+    if selection is None:
         return None
     target = target_fingerprint(str(selection["selection_fingerprint"]))
     current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
     if current is None:
         raise RuntimeError("news_brief_current_missing")
+    if not list(selection["top_stories"]):
+        _activate_empty_target(
+            conn,
+            current=current,
+            target_fingerprint_value=target,
+            now_ms=now_ms,
+        )
+        return None
     if current["target_fingerprint"] != target:
         if current["latest_run_id"] is not None:
             conn.execute(
@@ -296,6 +304,20 @@ def publish_brief(
     now_ms: int,
 ) -> str | None:
     conn = repository.conn
+    active_selection = conn.execute(
+        """
+        SELECT selection_fingerprint
+          FROM news_brief_selection_current
+         WHERE singleton_key = true
+         FOR SHARE
+        """
+    ).fetchone()
+    if (
+        active_selection is None
+        or str(active_selection["selection_fingerprint"]) != str(claim["selection_fingerprint"])
+        or target_fingerprint(str(active_selection["selection_fingerprint"])) != str(claim["target_fingerprint"])
+    ):
+        return None
     run = conn.execute(
         """
         SELECT * FROM news_brief_runs
@@ -430,6 +452,61 @@ def _lead_eligible(story: Mapping[str, Any]) -> bool:
 
 def _run_id(target: str) -> str:
     return f"brief_run_{target[:32]}"
+
+
+def _activate_empty_target(
+    conn: Any,
+    *,
+    current: Mapping[str, Any],
+    target_fingerprint_value: str,
+    now_ms: int,
+) -> None:
+    if current["target_fingerprint"] != target_fingerprint_value and current["latest_run_id"] is not None:
+        conn.execute(
+            """
+            UPDATE news_brief_runs
+               SET status = 'retry_wait', model_outcome = 'none',
+                   pointer_action = 'none', next_due_at_ms = %s,
+                   lease_owner = NULL, lease_token = NULL,
+                   lease_expires_at_ms = NULL,
+                   completed_at_ms = %s, updated_at_ms = %s
+             WHERE run_id = %s AND status = 'running'
+            """,
+            (
+                now_ms + BRIEF_RETRY_MS,
+                now_ms,
+                now_ms,
+                str(current["latest_run_id"]),
+            ),
+        )
+    healthy = _healthy_current_publication(conn)
+    publication_id = str(healthy["publication_id"]) if healthy is not None else None
+    conn.execute(
+        """
+        UPDATE news_brief_current
+           SET publication_id = %s,
+               target_fingerprint = %s,
+               latest_run_id = NULL,
+               pending_first_dirty_at_ms = NULL,
+               pending_due_at_ms = NULL,
+               updated_at_ms = %s
+         WHERE singleton_key = true
+           AND (
+             publication_id IS DISTINCT FROM %s
+             OR target_fingerprint IS DISTINCT FROM %s
+             OR latest_run_id IS NOT NULL
+             OR pending_first_dirty_at_ms IS NOT NULL
+             OR pending_due_at_ms IS NOT NULL
+           )
+        """,
+        (
+            publication_id,
+            target_fingerprint_value,
+            now_ms,
+            publication_id,
+            target_fingerprint_value,
+        ),
+    )
 
 
 def _finish_without_model(

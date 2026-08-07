@@ -9,6 +9,7 @@ from tracefold.news import (
     classify_by_keyword,
     cluster_texts,
     has_historical_marker,
+    normalize_story_canonical_title,
     normalize_story_text,
     story_similarity,
     story_vector,
@@ -263,6 +264,26 @@ def test_candidate_tokens_and_normalization_match_worldmonitor() -> None:
     assert "rates" in tokens
     assert "日本" in tokens
     assert normalize_story_text("  Fed — holds,  rates!  ") == "fed holds rates"
+
+
+def test_worldmonitor_lowercases_before_filtering_combining_marks() -> None:
+    assert normalize_story_text("İ") == "i"
+    assert cluster_texts(("İ", "i")) == [[0, 1]]
+
+
+def test_worldmonitor_identity_clamp_counts_utf16_code_units() -> None:
+    prefix = "😀" * 151
+    left = prefix + " Iran threatens to close Strait of Hormuz"
+    right = prefix + " Iran threatens to close the Strait of Hormuz"
+
+    assert story_similarity(left, right) == 0
+    assert cluster_texts((left, right)) == [[0], [1]]
+
+
+def test_canonical_story_hash_normalizer_is_distinct_from_component_normalization() -> None:
+    title = "Alpha-Beta!!! - Reuters"
+    assert normalize_story_text(title) == "alpha beta reuters"
+    assert normalize_story_canonical_title(title) == "alphabeta"
 
 
 def test_cluster_membership_is_order_independent() -> None:

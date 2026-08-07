@@ -83,6 +83,25 @@ def test_empty_normalized_titles_use_the_public_per_item_sentinel_identity() -> 
     assert len(projection["memberships"]) == 2
 
 
+def test_canonical_hash_collisions_keep_components_and_story_ids_unique() -> None:
+    projection = compute_news_story_projection(
+        _snapshot(
+            _row("hyphenated", "Alpha-Beta!!!", published_at_ms=10, reporting_origin="reuters"),
+            _row("joined", "AlphaBeta???", published_at_ms=11, reporting_origin="ap"),
+            _row("emoji-1", "👑👑👑", published_at_ms=12, reporting_origin="aeyakovenko"),
+            _row("emoji-2", "👑👑👑", published_at_ms=13, reporting_origin="aeyakovenko"),
+        )
+    )
+
+    stories = projection["stories"]
+    story_ids = [story["story_id"] for story in stories]
+    assert len(stories) == 4
+    assert len(set(story_ids)) == 4
+    assert len(projection["memberships"]) == 4
+    assert hashlib.sha256(b"alphabeta").hexdigest() in story_ids
+    assert hashlib.sha256("untrackable:aeyakovenko:👑👑👑".encode()).hexdigest() in story_ids
+
+
 def test_source_count_uses_reporting_origin_not_acquisition_source() -> None:
     projection = compute_news_story_projection(
         _snapshot(

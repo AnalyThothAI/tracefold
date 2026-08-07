@@ -24,6 +24,7 @@ from tracefold.news import (
     compose_none_brief,
     opennews_source,
     parse_opennews_message,
+    target_fingerprint,
 )
 from tracefold.platform.config.settings import Settings
 
@@ -569,6 +570,188 @@ def test_changed_selection_fences_an_inflight_target_before_late_publication() -
         assert public["publication"] is None
         assert public["latest_run"] is None
         assert public["target_fingerprint"] != candidate["target_fingerprint"]
+    finally:
+        conn.close()
+
+
+def test_publish_rejects_a_selection_that_changed_during_model_io_without_a_peek() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_source(source, now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _report(
+                        record_id="cas-reuters",
+                        title="Iran and Israel announce ceasefire talks after overnight attacks",
+                        origin="Reuters",
+                        published_at_ms=NOW_MS - 60_000,
+                    ),
+                    _report(
+                        record_id="cas-ap",
+                        title="Iran and Israel announce ceasefire talks after overnight attacks",
+                        origin="AP",
+                        published_at_ms=NOW_MS - 50_000,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+            assert repository.peek_brief_candidate(now_ms=NOW_MS) is None
+
+        due_ms = NOW_MS + 600_000
+        with conn.transaction():
+            candidate = repository.peek_brief_candidate(now_ms=due_ms)
+            assert candidate is not None
+            prepared = repository.prepare_brief_run(
+                target_fingerprint=str(candidate["target_fingerprint"]),
+                lease_owner="brief-worker",
+                lease_token="selection-cas-lease",
+                now_ms=due_ms,
+            )
+            assert prepared is not None and not prepared["completed_without_model"]
+            assert repository.start_brief_model(
+                run_id=str(prepared["claim"]["run_id"]),
+                lease_owner="brief-worker",
+                lease_token="selection-cas-lease",
+                now_ms=due_ms + 1,
+            )
+
+        changed_ms = due_ms + 10_000
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _report(
+                        record_id="cas-bbc",
+                        title="Major earthquake kills dozens and triggers coastal emergency",
+                        origin="BBC",
+                        published_at_ms=changed_ms - 1_000,
+                    ),
+                ),
+                observed_at_ms=changed_ms,
+            )
+            repository.rebuild_stories(now_ms=changed_ms)
+
+        active = conn.execute(
+            "SELECT selection_fingerprint FROM news_brief_selection_current WHERE singleton_key=true"
+        ).fetchone()
+        assert active["selection_fingerprint"] != prepared["claim"]["selection_fingerprint"]
+        with conn.transaction():
+            published = repository.publish_brief(
+                claim=prepared["claim"],
+                selection=prepared["selection"],
+                result=_healthy_result(list(prepared["top_stories"])),
+                now_ms=changed_ms + 1,
+            )
+
+        assert published is None
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 0
+    finally:
+        conn.close()
+
+
+def test_empty_selection_preserves_the_whole_healthy_publication_as_lkg_without_a_run() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_source(source, now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _report(
+                        record_id="empty-reuters",
+                        title="Iran and Israel announce ceasefire talks after overnight attacks",
+                        origin="Reuters",
+                        published_at_ms=NOW_MS - 60_000,
+                    ),
+                    _report(
+                        record_id="empty-ap",
+                        title="Iran and Israel announce ceasefire talks after overnight attacks",
+                        origin="AP",
+                        published_at_ms=NOW_MS - 50_000,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+            repository.rebuild_stories(now_ms=NOW_MS)
+            assert repository.peek_brief_candidate(now_ms=NOW_MS) is None
+
+        due_ms = NOW_MS + 600_000
+        with conn.transaction():
+            candidate = repository.peek_brief_candidate(now_ms=due_ms)
+            assert candidate is not None
+            prepared = repository.prepare_brief_run(
+                target_fingerprint=str(candidate["target_fingerprint"]),
+                lease_owner="brief-worker",
+                lease_token="empty-lkg-lease",
+                now_ms=due_ms,
+            )
+            assert prepared is not None and not prepared["completed_without_model"]
+            assert repository.start_brief_model(
+                run_id=str(prepared["claim"]["run_id"]),
+                lease_owner="brief-worker",
+                lease_token="empty-lkg-lease",
+                now_ms=due_ms + 1,
+            )
+            healthy_publication_id = repository.publish_brief(
+                claim=prepared["claim"],
+                selection=prepared["selection"],
+                result=_healthy_result(list(prepared["top_stories"])),
+                now_ms=due_ms + 2,
+            )
+        healthy = repository.get_brief(now_ms=due_ms + 2)
+        assert healthy_publication_id is not None
+
+        empty_turn_ms = NOW_MS + 13 * 3_600_000
+        with conn.transaction():
+            repository.rebuild_stories(now_ms=empty_turn_ms)
+            selection = conn.execute("SELECT * FROM news_brief_selection_current WHERE singleton_key=true").fetchone()
+            assert selection["top_stories"] == []
+            assert repository.peek_brief_candidate(now_ms=empty_turn_ms) is None
+
+        public = repository.get_brief(now_ms=empty_turn_ms)
+        assert public["state"] == "last_known_good"
+        assert public["publication"] == healthy["publication"]
+        assert public["publication"]["publication_id"] == healthy_publication_id
+        assert public["target_fingerprint"] == target_fingerprint(selection["selection_fingerprint"])
+        assert public["latest_run"] is None
+        assert public["pending_due_at_ms"] is None
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 1
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_runs").fetchone()["count"] == 1
+    finally:
+        conn.close()
+
+
+def test_initial_empty_selection_is_durably_unavailable_without_a_run() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        with conn.transaction():
+            repository.sync_source(opennews_source(), now_ms=NOW_MS)
+            repository.rebuild_stories(now_ms=NOW_MS)
+            selection = conn.execute("SELECT * FROM news_brief_selection_current WHERE singleton_key=true").fetchone()
+            assert selection["top_stories"] == []
+            assert repository.peek_brief_candidate(now_ms=NOW_MS) is None
+
+        public = repository.get_brief(now_ms=NOW_MS)
+        assert public == {
+            "state": "unavailable",
+            "target_fingerprint": target_fingerprint(selection["selection_fingerprint"]),
+            "pending_due_at_ms": None,
+            "publication": None,
+            "latest_run": None,
+        }
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_publications").fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM news_brief_runs").fetchone()["count"] == 0
     finally:
         conn.close()
 

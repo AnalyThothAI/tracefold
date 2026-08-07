@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from tracefold.news.classification import SEVERITY_VALUES, classify_by_keyword
-from tracefold.news.identity import cluster_texts, normalize_story_text
+from tracefold.news.identity import (
+    cluster_texts,
+    normalize_story_canonical_title,
+    normalize_story_text,
+)
 from tracefold.news.models import STORY_IDENTITY_VERSION, EventCategory, ThreatLevel
 from tracefold.news.ranking import (
     PUBLIC_SELECTOR_VERSION,
@@ -195,6 +199,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
     stories: list[dict[str, Any]] = []
     memberships: list[dict[str, str]] = []
     public_clusters: list[dict[str, Any]] = []
+    claimed_story_ids: set[str] = set()
     for cluster_index, indices in enumerate(clusters):
         members = [rows[index] for index in indices]
         origins = {str(member["reporting_origin"]) for member in members}
@@ -249,19 +254,34 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                 }
             )
 
-        earliest = min(
-            members,
-            key=lambda member: (
-                int(member["published_at_ms"]),
-                str(member["normalized_title"]),
-                str(member["item_id"]),
-            ),
-        )
-        canonical_title = str(earliest["normalized_title"])
-        if not canonical_title:
+        canonical_members = [(normalize_story_canonical_title(str(member["title"])), member) for member in members]
+        trackable_members = [(title, member) for title, member in canonical_members if title]
+        if trackable_members:
+            canonical_title, earliest = min(
+                trackable_members,
+                key=lambda pair: (
+                    int(pair[1]["published_at_ms"]),
+                    pair[0],
+                    str(pair[1]["item_id"]),
+                ),
+            )
+        else:
+            earliest = min(
+                members,
+                key=lambda member: (
+                    int(member["published_at_ms"]),
+                    str(member["reporting_origin"]),
+                    str(member["title"]),
+                    str(member["item_id"]),
+                ),
+            )
             canonical_title = f"untrackable:{earliest['reporting_origin']}:{earliest['title']}"
         canonical_key = hashlib.sha256(canonical_title.encode()).hexdigest()
-        story_id = canonical_key
+        story_id = _claim_unique_story_id(
+            canonical_key=canonical_key,
+            earliest=earliest,
+            claimed_story_ids=claimed_story_ids,
+        )
         representative = min(
             members,
             key=lambda member: (
@@ -400,6 +420,28 @@ def rebuild_all_news_for_maintenance(*, db: Any, now_ms: int) -> dict[str, Any]:
 
 def _require_bounded_snapshot(snapshot: NewsProjectionSnapshot) -> None:
     _require_bounded_story_rows(snapshot.rows)
+
+
+def _claim_unique_story_id(
+    *,
+    canonical_key: str,
+    earliest: Mapping[str, Any],
+    claimed_story_ids: set[str],
+) -> str:
+    story_id = canonical_key
+    if story_id in claimed_story_ids:
+        story_id = _stable_hash(
+            {
+                "canonical_key": canonical_key,
+                "reporting_origin": str(earliest["reporting_origin"]),
+                "title": str(earliest["title"]),
+                "item_id": str(earliest["item_id"]),
+            }
+        )
+        if story_id in claimed_story_ids:
+            raise RuntimeError("news_story_identity_hash_collision")
+    claimed_story_ids.add(story_id)
+    return story_id
 
 
 def _stable_hash(value: object) -> str:

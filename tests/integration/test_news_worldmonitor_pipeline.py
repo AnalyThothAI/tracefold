@@ -512,6 +512,73 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
         conn.close()
 
 
+def test_story_hash_collisions_preserve_complete_postgres_membership() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        frames = (
+            ("hyphenated", "Alpha-Beta!!!", "Reuters", None),
+            ("joined", "AlphaBeta???", "AP", None),
+            ("emoji-1", "👑👑👑", "Twitter", "aeyakovenko"),
+            ("emoji-2", "👑👑👑", "Twitter", "aeyakovenko"),
+        )
+        parsed_events = []
+        for index, (record_id, title, news_type, author) in enumerate(frames):
+            event = parse_opennews_message(
+                {
+                    "method": "news.update",
+                    "params": {
+                        "id": record_id,
+                        "text": title,
+                        "newsType": news_type,
+                        "engineType": "news",
+                        "ts": NOW_MS + index,
+                        **({"source": author} if author else {}),
+                    },
+                }
+            )
+            assert event is not None
+            parsed_events.append(event)
+        events = tuple(parsed_events)
+
+        with conn.transaction():
+            repository.sync_source(source, now_ms=NOW_MS + len(events))
+            repository.record_opennews_events(
+                source=source,
+                events=events,
+                observed_at_ms=NOW_MS + len(events),
+            )
+            rebuilt = repository.rebuild_stories(now_ms=NOW_MS + len(events))
+
+        ownership = conn.execute(
+            """
+            SELECT count(*) AS membership_count,
+                   count(DISTINCT member.story_id) AS story_count,
+                   count(DISTINCT story.canonical_key) AS canonical_key_count
+              FROM news_story_members member
+              JOIN news_stories story ON story.story_id = member.story_id
+            """
+        ).fetchone()
+        assert rebuilt["projection_status"] == "rebuilt"
+        assert ownership == {
+            "membership_count": 4,
+            "story_count": 4,
+            "canonical_key_count": 2,
+        }
+        assert (
+            repository._story_invariant_counts(
+                item_ids=[
+                    row["item_id"] for row in conn.execute("SELECT item_id FROM news_items ORDER BY item_id").fetchall()
+                ]
+            )["total"]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
 def test_live_success_preserves_incomplete_recovery_diagnostic_until_gap_closes() -> None:
     conn = connect_postgres_test(read_only=False)
     try:

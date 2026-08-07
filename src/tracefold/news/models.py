@@ -5,7 +5,7 @@ from typing import Any, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-STORY_IDENTITY_VERSION = "worldmonitor_story_identity_f73de5b7"
+STORY_IDENTITY_VERSION = "worldmonitor_story_identity_0e8785c_utf16_collision_v2"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_f73de5b7"
 IMPORTANCE_VERSION = "worldmonitor_importance_f73de5b7_reporting_origin"
 BRIEF_PROMPT_VERSION = "worldmonitor_public_insights_prompt_0e8785c"
