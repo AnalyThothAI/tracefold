@@ -9,11 +9,13 @@ from typing import Any, cast
 
 from tracefold.news.classification import SEVERITY_VALUES, classify_by_keyword
 from tracefold.news.identity import cluster_texts, normalize_story_text
-from tracefold.news.models import EventCategory, ThreatLevel
+from tracefold.news.models import STORY_IDENTITY_VERSION, EventCategory, ThreatLevel
 from tracefold.news.ranking import (
+    PUBLIC_SELECTOR_VERSION,
     diplomacy_entity_keys,
     importance_factors,
     promote_diplomacy_severity,
+    select_top_stories,
 )
 from tracefold.news.sources import reporting_origin_tier
 from tracefold.news.story_store import (
@@ -40,6 +42,37 @@ _CATEGORY_ORDER: tuple[EventCategory, ...] = (
     "infrastructure",
     "tech",
     "general",
+)
+_PUBLIC_TOP_STORY_FIELDS: tuple[str, ...] = (
+    "story_id",
+    "primary_title",
+    "primary_source",
+    "primary_link",
+    "primary_published_at_ms",
+    "source_count",
+    "unique_source_count",
+    "sources",
+    "last_updated_ms",
+    "member_titles",
+    "source_tier",
+    "upstream_importance_score",
+    "entity_corroboration",
+    "corroboration_source_count",
+    "importance_score",
+    "effective_importance_score",
+    "is_alert",
+    "threat_level",
+    "category",
+)
+_PUBLIC_STORY_CATEGORIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("war", "attack", "missile", "troops", "airstrike", "combat", "military"), "conflict", "critical"),
+    (("killed", "dead", "casualties", "massacre", "shooting"), "violence", "high"),
+    (("protest", "uprising", "riot", "unrest", "coup"), "unrest", "high"),
+    (("sanctions", "tensions", "escalation", "threat"), "geopolitical", "elevated"),
+    (("crisis", "emergency", "disaster", "collapse"), "crisis", "high"),
+    (("earthquake", "flood", "hurricane", "wildfire", "tsunami"), "natural_disaster", "elevated"),
+    (("election", "vote", "parliament", "legislation"), "political", "moderate"),
+    (("market", "economy", "trade", "tariff", "inflation"), "economic", "moderate"),
 )
 
 
@@ -161,6 +194,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
     item_updates: list[dict[str, Any]] = []
     stories: list[dict[str, Any]] = []
     memberships: list[dict[str, str]] = []
+    public_clusters: list[dict[str, Any]] = []
     for cluster_index, indices in enumerate(clusters):
         members = [rows[index] for index in indices]
         origins = {str(member["reporting_origin"]) for member in members}
@@ -279,6 +313,61 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
         story["state_fingerprint"] = _stable_hash(story)
         stories.append(story)
         memberships.extend({"story_id": story_id, "item_id": str(member["item_id"])} for member in members)
+        tier_by_origin: dict[str, int] = {}
+        for member in members:
+            origin = str(member["reporting_origin"]).strip()
+            if not origin:
+                continue
+            tier_by_origin[origin] = min(
+                tier_by_origin.get(origin, int(member["effective_tier"])),
+                int(member["effective_tier"]),
+            )
+        ordered_origins = sorted(tier_by_origin, key=lambda origin: (tier_by_origin[origin], origin))
+        public_category, public_threat_level = _categorize_public_story(str(representative["title"]))
+        public_clusters.append(
+            {
+                "story_id": story_id,
+                "primary_title": str(representative["title"]),
+                "primary_source": str(representative["reporting_origin"]).strip(),
+                "primary_link": representative.get("canonical_url"),
+                "primary_published_at_ms": int(representative["published_at_ms"]),
+                "source_count": len(members),
+                "unique_source_count": len(ordered_origins),
+                "sources": ordered_origins,
+                "last_updated_ms": last_published_at_ms,
+                "member_titles": [str(member["title"]) for member in members if str(member["title"])],
+                "source_tier": min(tier_by_origin.values(), default=4),
+                "upstream_importance_score": max(int(member["importance_score"]) for member in members),
+                "entity_corroboration": False,
+                "corroboration_source_count": 0,
+                "is_alert": any(str(member["level"]) in {"critical", "high"} for member in members),
+                "threat_level": public_threat_level,
+                "category": public_category,
+                "threat": {
+                    "level": str(representative["level"]),
+                    "source": str(representative["classification_source"]),
+                },
+            }
+        )
+
+    selection_stats: dict[str, int | bool] = {}
+    selected = select_top_stories(
+        sorted(public_clusters, key=lambda cluster: str(cluster["story_id"])),
+        now_ms=snapshot.scoring_epoch_ms,
+        stats=selection_stats,
+    )
+    selection_payload = {
+        "projection_revision": snapshot.input_fingerprint,
+        "selector_evaluated_at_ms": snapshot.scoring_epoch_ms,
+        "top_stories": [{field: cluster[field] for field in _PUBLIC_TOP_STORY_FIELDS} for cluster in selected],
+        "selection_stats": selection_stats,
+        "selector_version": PUBLIC_SELECTOR_VERSION,
+        "identity_version": STORY_IDENTITY_VERSION,
+    }
+    selection_snapshot = {
+        **selection_payload,
+        "selection_fingerprint": _stable_hash(selection_payload),
+    }
     return {
         "input_fingerprint": snapshot.input_fingerprint,
         "temporary_clusters": len(clusters),
@@ -288,6 +377,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
             memberships,
             key=lambda row: (str(row["story_id"]), str(row["item_id"])),
         ),
+        "selection_snapshot": selection_snapshot,
     }
 
 
@@ -322,6 +412,14 @@ def _mode(values: Sequence[str], order: Sequence[str]) -> str:
         (value for value, count in counts.items() if count == highest),
         key=lambda value: (index.get(value, len(index)), value),
     )
+
+
+def _categorize_public_story(title: str) -> tuple[str, str]:
+    lowered = title.lower()
+    for keywords, category, threat_level in _PUBLIC_STORY_CATEGORIES:
+        if any(keyword in lowered for keyword in keywords):
+            return category, threat_level
+    return "general", "moderate"
 
 
 __all__ = [

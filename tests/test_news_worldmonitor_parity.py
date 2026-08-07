@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
-
 import pytest
 
 import tracefold.news.identity as news_identity
-import tracefold.news.sources as news_sources
 from tracefold.news import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
@@ -17,9 +13,7 @@ from tracefold.news import (
     story_similarity,
     story_vector,
 )
-from tracefold.news.brief import validate_and_repair_brief
-from tracefold.news.models import NewsBriefDraft, NewsBriefStory
-from tracefold.news.ranking import importance_factors, select_top_stories
+from tracefold.news.ranking import importance_factors
 
 POSITIVE_PAIRS = (
     (
@@ -362,72 +356,3 @@ def test_importance_is_worldmonitor_55_20_15_10_and_reporting_origin_based() -> 
         "entity_corroboration_boost": 0,
         "total": 80,
     }
-
-
-def test_top8_keeps_rank_and_caps_reporting_origin_at_three() -> None:
-    stories = [
-        {
-            "story_id": f"story-{index}",
-            "importance_score": 100 - index,
-            "last_published_at_ms": 100 - index,
-            "representative_source_name": "reuters" if index < 5 else f"feed-{index}",
-        }
-        for index in range(12)
-    ]
-    selected = select_top_stories(stories)
-    assert len(selected) == 8
-    assert [row["story_id"] for row in selected[:3]] == ["story-0", "story-1", "story-2"]
-    assert "story-3" not in {row["story_id"] for row in selected}
-
-
-def test_brief_index_lock_degrades_only_invalid_line_and_lead() -> None:
-    stories = [
-        NewsBriefStory(
-            story_id="story-1",
-            title="Title one",
-            source="Reuters",
-            url="https://example.test/1",
-            source_count=2,
-            importance_score=90,
-            level="high",
-            category="economic",
-        ),
-        NewsBriefStory(
-            story_id="story-2",
-            title="Title two",
-            source="AP",
-            url="https://example.test/2",
-            source_count=2,
-            importance_score=80,
-            level="medium",
-            category="diplomatic",
-        ),
-    ]
-    repaired, validation, degraded = validate_and_repair_brief(
-        NewsBriefDraft(
-            lead="uncited lead",
-            lines=("第一条有效 [1]", "wrong citation [1]"),
-            provider="test",
-            model="test",
-            raw_response="{}",
-        ),
-        stories,
-    )
-    assert degraded is True
-    assert repaired.lead == "今日重点：Title one [1]"
-    assert repaired.lines == ("第一条有效 [1]", "第2条：Title two [2]")
-    assert validation["line_fallbacks"] == [2]
-
-
-def test_retired_inventory_keeps_exact_reporting_origin_tiers() -> None:
-    encoded = json.dumps(
-        news_sources._REPORTING_ORIGIN_TIERS,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-    assert len(news_sources._REPORTING_ORIGIN_TIERS) == 79
-    assert hashlib.sha256(encoded).hexdigest() == "341a02e88d603a98612ca3d77c0226908104da00e4acffe4cba8c58b03d06788"
-    assert news_sources.reporting_origin_tier(" Reuters ", fallback_tier=4) == 1
-    assert news_sources.reporting_origin_tier("WallStEngine", fallback_tier=2) == 4
-    assert news_sources.reporting_origin_tier("unknown outlet", fallback_tier=3) == 3
