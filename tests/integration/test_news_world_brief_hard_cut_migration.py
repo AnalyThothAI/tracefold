@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
 import pytest
 from alembic import command
 from psycopg.errors import CheckViolation
+from psycopg.types.json import Jsonb
 
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
@@ -92,6 +98,66 @@ BRIEF_TABLE_COLUMNS = {
 }
 
 
+def _content_fingerprint(fact: dict[str, object]) -> str:
+    payload = {
+        key: fact[key]
+        for key in (
+            "title",
+            "description",
+            "canonical_url",
+            "reporting_origin",
+            "published_at_ms",
+            "language",
+        )
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _reset_to_0245() -> tuple[Any, Any]:
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+    finally:
+        conn.close()
+    command.upgrade(config, "20260807_0245")
+    return config, connect_postgres_test(read_only=False)
+
+
+def _push_ledger_snapshot(conn: Any) -> dict[str, Any]:
+    state_rows = [dict(row) for row in conn.execute("SELECT * FROM news_push_state ORDER BY singleton_key").fetchall()]
+    delivery_rows = [
+        dict(row) for row in conn.execute("SELECT * FROM news_push_deliveries ORDER BY story_id").fetchall()
+    ]
+
+    def snapshot(rows: list[dict[str, object]]) -> dict[str, Any]:
+        encoded = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return {
+            "row_count": len(rows),
+            "content_hash": hashlib.sha256(encoded.encode()).hexdigest(),
+        }
+
+    return {
+        "state": snapshot(state_rows),
+        "deliveries": {
+            **snapshot(delivery_rows),
+            "statuses": [
+                {
+                    "story_id": row["story_id"],
+                    "status": row["status"],
+                    "translation_status": row["translation_status"],
+                }
+                for row in delivery_rows
+            ],
+        },
+    }
+
+
 def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -133,6 +199,159 @@ def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
     assert tables == NEWS_TABLES
     assert {"normalized_title", "brief_excluded"}.isdisjoint(item_columns)
     assert brief_columns == BRIEF_TABLE_COLUMNS
+
+
+def test_world_brief_hard_cut_matches_the_canonical_opennews_fact_adapter() -> None:
+    config, conn = _reset_to_0245()
+    frames = (
+        {
+            "id": "twitter-wrapper",
+            "text": (
+                "<b>Bitcoin &amp; markets rally</b><BR/>"
+                "Detailed market context spans more than forty characters for readers.<br/>"
+                "https://example.com/body"
+            ),
+            "description": "",
+            "newsType": "Twitter",
+            "source": " @WireAuthor ",
+            "engineType": "news",
+            "link": "https://example.com/twitter-story",
+            "ts": 123,
+        },
+        {
+            "id": "explicit-news-type",
+            "text": "<i>Reuters confirms policy decision</i><br/>This remaining block must not win.",
+            "description": "Explicit Reuters context is longer than forty characters and wins over body text.",
+            "newsType": "Reuters",
+            "source": "@IgnoredWrapperAuthor",
+            "engineType": "news",
+            "link": "https://reuters.example/policy?utm_source=ignored&id=7",
+            "ts": 124,
+        },
+        {
+            "id": "url-host-fallback",
+            "text": (
+                "Host fallback headline<br>Host-derived context is longer than forty characters for canonical evidence."
+            ),
+            "description": "",
+            "newsType": "",
+            "source": "@NotAWrapper",
+            "engineType": "news",
+            "link": "HTTPS://Updates.Example.NET/world/?utm_campaign=ignored&item=9",
+            "ts": 125,
+        },
+        {
+            "id": "opennews-fallback",
+            "text": "OpenNews fallback headline",
+            "description": "too short",
+            "newsType": "",
+            "engineType": "news",
+            "link": "",
+            "ts": 126,
+        },
+    )
+    expected: dict[str, dict[str, object]] = {}
+    try:
+        conn.execute(
+            """
+            INSERT INTO news_sources(
+              source_id, name, tier, lang, enabled, consecutive_failures,
+              created_at_ms, updated_at_ms, source_kind, live_connected,
+              gap_unclosed, gap_version
+            ) VALUES (
+              'news-opennews', 'OpenNews', 2, 'en', true, 0,
+              0, 0, 'opennews', false, false, 0
+            )
+            """
+        )
+        # A valid 0245 row already contains either newsType, URL host, or
+        # ``opennews``. Remove the old CHECK only in this fixture to prove the
+        # migration also repairs a retained pre-contract empty origin instead
+        # of discarding its Item/Push identity.
+        conn.execute("ALTER TABLE news_items DROP CONSTRAINT news_items_reporting_origin_check")
+        for index, params in enumerate(frames):
+            event = parse_opennews_message({"method": "news.update", "params": params})
+            assert event is not None and event.entry is not None
+            entry = event.entry
+            item_id = f"item-{params['id']}"
+            expected_fact: dict[str, object] = {
+                "item_id": item_id,
+                "title": entry.title,
+                "description": entry.description,
+                "canonical_url": entry.link,
+                "reporting_origin": entry.reporting_origin,
+                "published_at_ms": entry.published_at_ms,
+                "language": "en",
+            }
+            expected_fact["content_fingerprint"] = _content_fingerprint(expected_fact)
+            expected[item_id] = expected_fact
+            retained_origin = {
+                "twitter-wrapper": "twitter",
+                "explicit-news-type": " ReUtErS ",
+                "url-host-fallback": "",
+                "opennews-fallback": "",
+            }[str(params["id"])]
+            conn.execute(
+                """
+                INSERT INTO news_items(
+                  item_id, source_id, source_item_key, provider_record_id,
+                  provider_metadata, canonical_url, reporting_origin,
+                  title, normalized_title, description, lang, published_at_ms,
+                  first_observed_at_ms, last_observed_at_ms, content_fingerprint,
+                  level, category, classification_source, classification_confidence,
+                  importance_score, importance_factors, brief_excluded,
+                  active, created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item_id)s, 'news-opennews', %(provider_record_id)s, %(provider_record_id)s,
+                  %(provider_metadata)s, %(canonical_url)s, %(reporting_origin)s,
+                  %(title)s, 'legacy-normalized-title', %(description)s, 'en', %(published_at_ms)s,
+                  %(observed_at_ms)s, %(observed_at_ms)s, 'legacy-fingerprint',
+                  'info', 'general', 'keyword', 1, 0, '{}'::jsonb, false,
+                  true, %(observed_at_ms)s, %(observed_at_ms)s
+                )
+                """,
+                {
+                    "item_id": item_id,
+                    "provider_record_id": str(params["id"]),
+                    "provider_metadata": Jsonb(event.provider_metadata),
+                    "canonical_url": entry.link,
+                    "reporting_origin": retained_origin,
+                    "title": str(params["text"]),
+                    "description": str(params["description"]),
+                    "published_at_ms": int(entry.published_at_ms or 0),
+                    "observed_at_ms": 200 + index,
+                },
+            )
+        conn.execute(
+            """
+            ALTER TABLE news_items
+              ADD CONSTRAINT news_items_reporting_origin_check
+              CHECK (btrim(reporting_origin) <> '') NOT VALID
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    command.upgrade(config, "head")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        facts = {
+            str(row["item_id"]): dict(row)
+            for row in conn.execute(
+                """
+                SELECT item_id, title, description, canonical_url,
+                       reporting_origin, published_at_ms, lang AS language,
+                       content_fingerprint
+                  FROM news_items
+                 ORDER BY item_id
+                """
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert facts == expected
 
 
 def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> None:
@@ -255,6 +474,21 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
               '{"title":"original push title"}'::jsonb,
               NULL, NULL, 'not_requested', 'retry_wait', 1, 200,
               NULL, NULL, NULL, NULL, 'provider_unavailable', NULL, 124, 125
+            );
+            INSERT INTO news_push_deliveries(
+              story_id, selected_item_id, provider_score,
+              threshold_observed_at_ms, source_payload,
+              delivery_payload, payload_fingerprint, translation_status,
+              status, delivery_attempts, next_attempt_at_ms,
+              lease_owner, lease_token, lease_expires_at_ms,
+              receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (
+              repeat('c', 64), 'item-retained', 91, 125,
+              '{"title":"sealed historical source"}'::jsonb,
+              '{"text":"sealed push"}'::jsonb, repeat('d', 64),
+              'translated', 'sent', 1, NULL,
+              NULL, NULL, NULL, '{"message_id":"abc"}'::jsonb,
+              NULL, 130, 125, 130
             )
             """
         )
@@ -268,12 +502,7 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
             final_reason="old_failure",
             now_ms=126,
         )
-        push_before = conn.execute(
-            """
-            SELECT (SELECT to_jsonb(state) FROM news_push_state state) AS state,
-                   (SELECT to_jsonb(delivery) FROM news_push_deliveries delivery) AS delivery
-            """
-        ).fetchone()
+        push_before = _push_ledger_snapshot(conn)
         conn.commit()
     finally:
         conn.close()
@@ -289,12 +518,7 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
              WHERE item_id='item-retained'
             """
         ).fetchone()
-        push_after = conn.execute(
-            """
-            SELECT (SELECT to_jsonb(state) FROM news_push_state state) AS state,
-                   (SELECT to_jsonb(delivery) FROM news_push_deliveries delivery) AS delivery
-            """
-        ).fetchone()
+        push_after = _push_ledger_snapshot(conn)
         old_state_counts = conn.execute(
             """
             SELECT
@@ -334,6 +558,20 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
         "updated_at_ms": 125,
     }
     assert push_after == push_before
+    assert push_before["state"]["row_count"] == 1
+    assert push_before["deliveries"]["row_count"] == 2
+    assert push_before["deliveries"]["statuses"] == [
+        {
+            "story_id": "b" * 64,
+            "status": "retry_wait",
+            "translation_status": "not_requested",
+        },
+        {
+            "story_id": "c" * 64,
+            "status": "sent",
+            "translation_status": "translated",
+        },
+    ]
     assert old_state_counts == {
         "stories": 0,
         "members": 0,
@@ -515,9 +753,26 @@ def test_world_brief_hard_cut_fails_atomically_instead_of_deleting_an_unusable_f
               '{}'::jsonb, NULL, 'opennews', '<br><b></b>', 'old-admitted-token',
               '', 'en', 1, 1, 1, 'old-fingerprint', 'info', 'general',
               'keyword', 1, 0, '{}'::jsonb, false, true, 1, 1
+            );
+            UPDATE news_push_state
+               SET baseline_at_ms=1, updated_at_ms=1
+             WHERE singleton_key='current';
+            INSERT INTO news_push_deliveries(
+              story_id, selected_item_id, provider_score,
+              threshold_observed_at_ms, source_payload,
+              delivery_payload, payload_fingerprint, translation_status,
+              status, delivery_attempts, next_attempt_at_ms,
+              lease_owner, lease_token, lease_expires_at_ms,
+              receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (
+              repeat('f', 64), 'unusable-item', 88, 1,
+              '{"title":"sealed unusable source"}'::jsonb,
+              NULL, NULL, 'not_requested', 'retry_wait', 1, 2,
+              NULL, NULL, NULL, NULL, 'provider_unavailable', NULL, 1, 1
             )
             """
         )
+        push_before = _push_ledger_snapshot(conn)
         conn.commit()
     finally:
         conn.close()
@@ -532,6 +787,7 @@ def test_world_brief_hard_cut_fails_atomically_instead_of_deleting_an_unusable_f
     try:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         retained = conn.execute("SELECT title FROM news_items WHERE item_id='unusable-item'").fetchone()
+        push_after = _push_ledger_snapshot(conn)
         translation_table = conn.execute("SELECT to_regclass('news_story_title_translations') AS name").fetchone()[
             "name"
         ]
@@ -540,4 +796,7 @@ def test_world_brief_hard_cut_fails_atomically_instead_of_deleting_an_unusable_f
 
     assert version == "20260807_0245"
     assert retained == {"title": "<br><b></b>"}
+    assert push_after == push_before
+    assert push_after["state"]["row_count"] == 1
+    assert push_after["deliveries"]["row_count"] == 1
     assert translation_table == "news_story_title_translations"

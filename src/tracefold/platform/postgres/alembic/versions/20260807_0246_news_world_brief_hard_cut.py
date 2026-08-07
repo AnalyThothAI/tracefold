@@ -11,6 +11,7 @@ import html
 import json
 import re
 from collections.abc import Mapping
+from urllib.parse import urlsplit
 
 import sqlalchemy as sa
 from alembic import op
@@ -54,6 +55,43 @@ def _canonical_description(*, explicit: object, remaining_blocks: tuple[str, ...
     return description[:_MAX_DESCRIPTION_LEN]
 
 
+def _text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or "\x00" in text:
+        return ""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return text
+
+
+def _canonical_reporting_origin(
+    *,
+    retained_origin: object,
+    canonical_url: str | None,
+    provider_metadata: object,
+) -> str:
+    """Frozen 0246 copy of the OpenNews newsType/origin precedence."""
+
+    news_type = _text(retained_origin)
+    if news_type.casefold() == "twitter" and isinstance(provider_metadata, Mapping):
+        author = _text(provider_metadata.get("source")).lower()
+        if author:
+            return author
+    explicit = news_type.lower()
+    if explicit:
+        return explicit
+    if canonical_url:
+        try:
+            hostname = str(urlsplit(canonical_url).hostname or "").lower()
+        except ValueError:
+            hostname = ""
+        if hostname:
+            return hostname
+    return "opennews"
+
+
 def _content_fingerprint(
     *,
     title: str,
@@ -79,16 +117,20 @@ def _normalize_retained_opennews_facts() -> None:
     """One-time canonicalization without importing mutable runtime code."""
 
     conn = op.get_bind()
-    rows = conn.execute(
-        sa.text(
-            """
+    rows = (
+        conn.execute(
+            sa.text(
+                """
             SELECT item_id, canonical_url, reporting_origin, title, description,
                    lang, published_at_ms, provider_metadata
               FROM news_items
              ORDER BY item_id
             """
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     updates: list[dict[str, object]] = []
     rejected_item_count = 0
     for row in rows:
@@ -102,13 +144,13 @@ def _normalize_retained_opennews_facts() -> None:
             remaining_blocks=blocks[1:],
             title=title,
         )
-        reporting_origin = str(row["reporting_origin"] or "opennews").strip().lower() or "opennews"
         metadata = row["provider_metadata"]
-        if reporting_origin.casefold() == "twitter" and isinstance(metadata, Mapping):
-            author = str(metadata.get("source") or "").strip().lower()
-            if author:
-                reporting_origin = author
         canonical_url = str(row["canonical_url"]) if row["canonical_url"] is not None else None
+        reporting_origin = _canonical_reporting_origin(
+            retained_origin=row["reporting_origin"],
+            canonical_url=canonical_url,
+            provider_metadata=metadata,
+        )
         language = str(row["lang"])
         published_at_ms = int(row["published_at_ms"])
         updates.append(
