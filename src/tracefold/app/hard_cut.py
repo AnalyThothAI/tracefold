@@ -14,7 +14,7 @@ from tracefold.market import (
     rebuild_all_profiles_for_maintenance,
     rebuild_all_token_radar_for_maintenance,
 )
-from tracefold.news import rebuild_all_news_for_maintenance
+from tracefold.news.projection import rebuild_all_news_for_maintenance
 from tracefold.platform.postgres.postgres_audit import (
     PostgresOperationalAudit,
     ProjectionValidationAudit,

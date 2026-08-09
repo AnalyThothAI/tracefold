@@ -14,12 +14,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from psycopg.types.json import Jsonb
 
 from . import brief_store
-from .classification import classify_by_keyword
 from .models import (
     CLASSIFIER_VERSION,
     IMPORTANCE_VERSION,
     STORY_IDENTITY_VERSION,
     NewsBriefSynthesisResult,
+    NewsFeedFetch,
     NewsSourceDefinition,
 )
 from .opennews import OpenNewsEvent
@@ -69,7 +69,7 @@ def _canonical_url(value: str) -> str:
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, query, ""))
 
 
-def _opennews_content_fingerprint(
+def _news_item_content_fingerprint(
     *,
     title: str,
     description: str,
@@ -86,6 +86,26 @@ def _opennews_content_fingerprint(
             "reporting_origin": reporting_origin,
             "published_at_ms": published_at_ms,
             "language": language,
+        }
+    )
+
+
+def _rss_source_item_key(
+    *,
+    guid: str | None,
+    canonical_url: str | None,
+    title: str,
+    published_at_ms: int,
+) -> str:
+    normalized_guid = str(guid or "").strip()
+    if normalized_guid:
+        return f"guid:{normalized_guid}"
+    if canonical_url:
+        return f"url:{canonical_url}"
+    return "entry:" + _sha256_json(
+        {
+            "title": title,
+            "published_at_ms": int(published_at_ms),
         }
     )
 
@@ -219,94 +239,553 @@ class NewsRepository:
 
     # Source inventory and acquisition -----------------------------------------
 
-    def sync_source(self, source: NewsSourceDefinition, *, now_ms: int) -> None:
-        self.conn.execute(
+    def sync_sources(self, sources: Sequence[NewsSourceDefinition], *, now_ms: int) -> int:
+        """Reconcile the complete code-owned physical source inventory."""
+
+        source_ids = [source.source_id for source in sources]
+        writes = 0
+        for source in sources:
+            is_rss = source.source_kind == "rss"
+            cursor = self.conn.execute(
+                """
+                INSERT INTO news_sources (
+                  source_id, name, tier, lang, enabled, source_kind,
+                  feed_url, refresh_interval_seconds, next_fetch_at_ms,
+                  created_at_ms, updated_at_ms
+                )
+                VALUES (
+                  %(source_id)s, %(name)s, %(tier)s, %(lang)s,
+                  %(enabled)s, %(source_kind)s, %(feed_url)s,
+                  %(refresh_interval_seconds)s, %(next_fetch_at_ms)s,
+                  %(now_ms)s, %(now_ms)s
+                )
+                ON CONFLICT (source_id) DO UPDATE SET
+                  name = EXCLUDED.name,
+                  tier = EXCLUDED.tier,
+                  lang = EXCLUDED.lang,
+                  enabled = EXCLUDED.enabled,
+                  source_kind = EXCLUDED.source_kind,
+                  feed_url = EXCLUDED.feed_url,
+                  refresh_interval_seconds = EXCLUDED.refresh_interval_seconds,
+                  next_fetch_at_ms = CASE
+                    WHEN news_sources.feed_url IS DISTINCT FROM EXCLUDED.feed_url
+                      OR news_sources.enabled IS DISTINCT FROM EXCLUDED.enabled
+                      THEN EXCLUDED.next_fetch_at_ms
+                    ELSE news_sources.next_fetch_at_ms
+                  END,
+                  etag = CASE
+                    WHEN news_sources.feed_url IS DISTINCT FROM EXCLUDED.feed_url
+                      THEN NULL
+                    ELSE news_sources.etag
+                  END,
+                  last_modified = CASE
+                    WHEN news_sources.feed_url IS DISTINCT FROM EXCLUDED.feed_url
+                      THEN NULL
+                    ELSE news_sources.last_modified
+                  END,
+                  claim_token = CASE
+                    WHEN news_sources.feed_url IS DISTINCT FROM EXCLUDED.feed_url
+                      THEN NULL
+                    ELSE news_sources.claim_token
+                  END,
+                  claim_lease_expires_at_ms = CASE
+                    WHEN news_sources.feed_url IS DISTINCT FROM EXCLUDED.feed_url
+                      THEN NULL
+                    ELSE news_sources.claim_lease_expires_at_ms
+                  END,
+                  updated_at_ms = EXCLUDED.updated_at_ms
+                WHERE (
+                  news_sources.name,
+                  news_sources.tier,
+                  news_sources.lang,
+                  news_sources.enabled,
+                  news_sources.source_kind,
+                  news_sources.feed_url,
+                  news_sources.refresh_interval_seconds
+                ) IS DISTINCT FROM (
+                  EXCLUDED.name,
+                  EXCLUDED.tier,
+                  EXCLUDED.lang,
+                  EXCLUDED.enabled,
+                  EXCLUDED.source_kind,
+                  EXCLUDED.feed_url,
+                  EXCLUDED.refresh_interval_seconds
+                )
+                """,
+                {
+                    "source_id": source.source_id,
+                    "name": source.name,
+                    "tier": source.tier,
+                    "lang": source.lang,
+                    "enabled": source.enabled,
+                    "source_kind": source.source_kind,
+                    "feed_url": source.feed_url if is_rss else None,
+                    "refresh_interval_seconds": source.refresh_interval_seconds if is_rss else None,
+                    "next_fetch_at_ms": int(now_ms) if is_rss else None,
+                    "now_ms": int(now_ms),
+                },
+            )
+            writes += int(cursor.rowcount or 0)
+        if source_ids:
+            cursor = self.conn.execute(
+                """
+                UPDATE news_sources
+                   SET enabled = false,
+                       claim_token = NULL,
+                       claim_lease_expires_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE enabled AND NOT (source_id = ANY(%s))
+                """,
+                (int(now_ms), source_ids),
+            )
+        else:
+            cursor = self.conn.execute(
+                """
+                UPDATE news_sources
+                   SET enabled = false,
+                       claim_token = NULL,
+                       claim_lease_expires_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE enabled
+                """,
+                (int(now_ms),),
+            )
+        return writes + int(cursor.rowcount or 0)
+
+    def claim_due_rss_source(
+        self,
+        *,
+        now_ms: int,
+        claim_token: str,
+        lease_expires_at_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
             """
-            INSERT INTO news_sources (
-              source_id, name, tier, lang, enabled, source_kind,
-              created_at_ms, updated_at_ms
+            WITH candidate AS (
+              SELECT source_id
+                FROM news_sources
+               WHERE enabled
+                 AND source_kind = 'rss'
+                 AND next_fetch_at_ms <= %(now_ms)s
+                 AND (
+                   claim_token IS NULL
+                   OR claim_lease_expires_at_ms <= %(now_ms)s
+                 )
+               ORDER BY next_fetch_at_ms, source_id
+               LIMIT 1
+               FOR UPDATE SKIP LOCKED
             )
-            VALUES (
-              %(source_id)s, %(name)s, %(tier)s, %(lang)s,
-              %(enabled)s, %(source_kind)s, %(now_ms)s, %(now_ms)s
-            )
-            ON CONFLICT (source_id) DO UPDATE SET
-              name = EXCLUDED.name,
-              tier = EXCLUDED.tier,
-              lang = EXCLUDED.lang,
-              enabled = EXCLUDED.enabled,
-              source_kind = EXCLUDED.source_kind,
-              updated_at_ms = EXCLUDED.updated_at_ms
-            WHERE (
-              news_sources.name,
-              news_sources.tier,
-              news_sources.lang,
-              news_sources.enabled,
-              news_sources.source_kind
-            ) IS DISTINCT FROM (
-              EXCLUDED.name,
-              EXCLUDED.tier,
-              EXCLUDED.lang,
-              EXCLUDED.enabled,
-              EXCLUDED.source_kind
-            )
+            UPDATE news_sources AS source
+               SET claim_token = %(claim_token)s,
+                   claim_lease_expires_at_ms = %(lease_expires_at_ms)s,
+                   last_fetch_started_at_ms = %(now_ms)s,
+                   updated_at_ms = %(now_ms)s
+              FROM candidate
+             WHERE source.source_id = candidate.source_id
+            RETURNING source.source_id, source.name, source.tier, source.lang,
+                      source.feed_url, source.refresh_interval_seconds,
+                      source.etag, source.last_modified,
+                      source.claim_token::text AS claim_token,
+                      source.claim_lease_expires_at_ms
             """,
-            {**source.model_dump(), "now_ms": now_ms},
-        )
+            {
+                "now_ms": int(now_ms),
+                "claim_token": claim_token,
+                "lease_expires_at_ms": int(lease_expires_at_ms),
+            },
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def record_rss_fetch(
+        self,
+        *,
+        source: NewsSourceDefinition,
+        claim_token: str,
+        fetch: NewsFeedFetch,
+        finished_at_ms: int,
+    ) -> dict[str, int] | None:
+        """Publish one successful current feed snapshot behind its claim fence."""
+
+        if source.source_kind != "rss":
+            raise ValueError("rss_source_required")
+        claimed = self.conn.execute(
+            """
+            SELECT refresh_interval_seconds
+              FROM news_sources
+             WHERE source_id = %s
+               AND source_kind = 'rss'
+               AND claim_token = %s
+               AND claim_lease_expires_at_ms > %s
+             FOR UPDATE
+            """,
+            (source.source_id, claim_token, int(finished_at_ms)),
+        ).fetchone()
+        if claimed is None:
+            return None
+
+        gate_counts = Counter({str(key): int(value) for key, value in fetch.gate_counts.items()})
+        refresh_interval_seconds = int(claimed["refresh_interval_seconds"])
+        next_fetch_at_ms = int(finished_at_ms) + refresh_interval_seconds * 1_000
+        if fetch.not_modified:
+            self.conn.execute(
+                """
+                UPDATE news_sources
+                   SET etag = COALESCE(%s, etag),
+                       last_modified = COALESCE(%s, last_modified),
+                       last_fetch_finished_at_ms = %s,
+                       last_success_at_ms = %s,
+                       last_http_status = %s,
+                       consecutive_failures = 0,
+                       last_error = NULL,
+                       last_outcome = 'not_modified',
+                       last_rejection_counts = %s,
+                       last_items_seen = %s,
+                       last_items_accepted = 0,
+                       next_fetch_at_ms = %s,
+                       claim_token = NULL,
+                       claim_lease_expires_at_ms = NULL,
+                       updated_at_ms = %s
+                 WHERE source_id = %s AND claim_token = %s
+                """,
+                (
+                    fetch.etag,
+                    fetch.last_modified,
+                    int(finished_at_ms),
+                    int(finished_at_ms),
+                    int(fetch.status_code),
+                    Jsonb(dict(gate_counts)),
+                    int(fetch.entries_seen),
+                    next_fetch_at_ms,
+                    int(finished_at_ms),
+                    source.source_id,
+                    claim_token,
+                ),
+            )
+            return {"items_inserted": 0, "items_updated": 0, "items_deactivated": 0}
+
+        accepted: dict[str, dict[str, Any]] = {}
+        cutoff_ms = int(finished_at_ms) - _ACTIVE_WINDOW_MS
+        for source_position, entry in enumerate(fetch.entries):
+            title = str(entry.title or "").strip()
+            published_at_ms = entry.published_at_ms
+            if not title or published_at_ms is None:
+                raise RuntimeError("rss_parser_acceptance_invariant")
+            if int(published_at_ms) < cutoff_ms:
+                gate_counts["stale_age"] += 1
+                continue
+            canonical_url = _canonical_url(str(entry.link or "")) or None
+            source_item_key = _rss_source_item_key(
+                guid=entry.guid,
+                canonical_url=canonical_url,
+                title=title,
+                published_at_ms=int(published_at_ms),
+            )
+            if source_item_key in accepted:
+                gate_counts["duplicate_item_key"] += 1
+                continue
+            description = str(entry.description or "").strip()
+            language = str(entry.language or source.lang).strip() or source.lang
+            accepted[source_item_key] = {
+                "item_id": deterministic_id("news_item", source.source_id, source_item_key),
+                "source_id": source.source_id,
+                "source_item_key": source_item_key,
+                "source_position": source_position,
+                "canonical_url": canonical_url,
+                "reporting_origin": source.name,
+                "title": title,
+                "description": description,
+                "lang": language,
+                "published_at_ms": int(published_at_ms),
+                "observed_at_ms": int(finished_at_ms),
+                "content_fingerprint": _news_item_content_fingerprint(
+                    title=title,
+                    description=description,
+                    canonical_url=canonical_url,
+                    reporting_origin=source.name,
+                    published_at_ms=int(published_at_ms),
+                    language=language,
+                ),
+            }
+
+        inserted = 0
+        updated = 0
+        for values in accepted.values():
+            outcome = self.conn.execute(
+                """
+                INSERT INTO news_items AS current_item (
+                  item_id, source_id, source_item_key, source_position, canonical_url,
+                  reporting_origin, title, description, lang,
+                  published_at_ms, first_observed_at_ms, last_observed_at_ms,
+                  content_fingerprint, active,
+                  created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item_id)s, %(source_id)s, %(source_item_key)s,
+                  %(source_position)s,
+                  %(canonical_url)s, %(reporting_origin)s, %(title)s,
+                  %(description)s, %(lang)s, %(published_at_ms)s,
+                  %(observed_at_ms)s, %(observed_at_ms)s,
+                  %(content_fingerprint)s, true, %(observed_at_ms)s,
+                  %(observed_at_ms)s
+                )
+                ON CONFLICT (source_id, source_item_key) DO UPDATE SET
+                  source_position = EXCLUDED.source_position,
+                  canonical_url = EXCLUDED.canonical_url,
+                  reporting_origin = EXCLUDED.reporting_origin,
+                  title = EXCLUDED.title,
+                  description = EXCLUDED.description,
+                  lang = EXCLUDED.lang,
+                  published_at_ms = EXCLUDED.published_at_ms,
+                  last_observed_at_ms = EXCLUDED.last_observed_at_ms,
+                  content_fingerprint = EXCLUDED.content_fingerprint,
+                  level = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.level END,
+                  category = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.category END,
+                  classification_source = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.classification_source END,
+                  classification_confidence = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.classification_confidence END,
+                  importance_score = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN 0 ELSE current_item.importance_score END,
+                  importance_factors = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN '{}'::jsonb ELSE current_item.importance_factors END,
+                  active = true,
+                  updated_at_ms = EXCLUDED.updated_at_ms
+                WHERE current_item.content_fingerprint
+                        IS DISTINCT FROM EXCLUDED.content_fingerprint
+                   OR current_item.source_position
+                        IS DISTINCT FROM EXCLUDED.source_position
+                   OR NOT current_item.active
+                RETURNING (xmax = 0) AS inserted
+                """,
+                values,
+            ).fetchone()
+            if outcome is None:
+                continue
+            if bool(outcome["inserted"]):
+                inserted += 1
+            else:
+                updated += 1
+
+        accepted_item_ids = [str(value["item_id"]) for value in accepted.values()]
+        if accepted_item_ids:
+            deactivated = self.conn.execute(
+                """
+                UPDATE news_items
+                   SET active = false, updated_at_ms = %s
+                 WHERE source_id = %s
+                   AND active
+                   AND NOT (item_id = ANY(%s))
+                """,
+                (int(finished_at_ms), source.source_id, accepted_item_ids),
+            )
+        else:
+            deactivated = self.conn.execute(
+                """
+                UPDATE news_items
+                   SET active = false, updated_at_ms = %s
+                 WHERE source_id = %s AND active
+                """,
+                (int(finished_at_ms), source.source_id),
+            )
+
         self.conn.execute(
             """
             UPDATE news_sources
-               SET enabled = false, updated_at_ms = %s
-             WHERE enabled AND source_id <> %s
+               SET etag = COALESCE(%s, etag),
+                   last_modified = COALESCE(%s, last_modified),
+                   last_fetch_finished_at_ms = %s,
+                   last_success_at_ms = %s,
+                   last_http_status = %s,
+                   consecutive_failures = 0,
+                   last_error = NULL,
+                   last_outcome = 'success',
+                   last_rejection_counts = %s,
+                   last_items_seen = %s,
+                   last_items_accepted = %s,
+                   next_fetch_at_ms = %s,
+                   claim_token = NULL,
+                   claim_lease_expires_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE source_id = %s AND claim_token = %s
             """,
-            (now_ms, source.source_id),
+            (
+                fetch.etag,
+                fetch.last_modified,
+                int(finished_at_ms),
+                int(finished_at_ms),
+                int(fetch.status_code),
+                Jsonb(dict(gate_counts)),
+                int(fetch.entries_seen),
+                len(accepted),
+                next_fetch_at_ms,
+                int(finished_at_ms),
+                source.source_id,
+                claim_token,
+            ),
         )
+        return {
+            "items_inserted": inserted,
+            "items_updated": updated,
+            "items_deactivated": int(deactivated.rowcount or 0),
+        }
 
-    def opennews_recovery_state(self, *, source_id: str) -> tuple[int | None, str | None, int]:
+    def record_rss_failure(
+        self,
+        *,
+        source_id: str,
+        claim_token: str,
+        finished_at_ms: int,
+        error_code: str,
+        status_code: int | None,
+    ) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_sources
+               SET last_fetch_finished_at_ms = %s,
+                   last_http_status = %s,
+                   consecutive_failures = consecutive_failures + 1,
+                   last_error = %s,
+                   last_outcome = 'failed',
+                   next_fetch_at_ms = %s + refresh_interval_seconds * 1000,
+                   claim_token = NULL,
+                   claim_lease_expires_at_ms = NULL,
+                   updated_at_ms = %s
+             WHERE source_id = %s
+               AND source_kind = 'rss'
+               AND claim_token = %s
+            """,
+            (
+                int(finished_at_ms),
+                status_code,
+                str(error_code)[:500],
+                int(finished_at_ms),
+                int(finished_at_ms),
+                source_id,
+                claim_token,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def expire_items(self, *, now_ms: int) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_items AS item
+               SET active = false, updated_at_ms = %s
+              FROM news_sources AS source
+             WHERE source.source_id = item.source_id
+               AND item.active
+               AND (
+                 (
+                   source.source_kind = 'rss'
+                   AND item.published_at_ms < %s
+                 )
+                 OR (
+                   source.source_kind = 'opennews'
+                   AND item.published_at_ms < %s
+                 )
+               )
+            """,
+            (
+                int(now_ms),
+                int(now_ms) - _ACTIVE_WINDOW_MS,
+                int(now_ms) - _STORY_ACTIVE_WINDOW_MS,
+            ),
+        )
+        return int(cursor.rowcount or 0)
+
+    def opennews_last_recovery_attempt(self, *, source_id: str) -> int | None:
         row = self.conn.execute(
             """
             SELECT GREATEST(
-                     COALESCE(source.last_fetch_started_at_ms, 0),
-                     COALESCE(source.last_fetch_finished_at_ms, 0),
-                     COALESCE(source.last_recovery_at_ms, 0)
-                   ) AS last_attempt_at_ms,
-                   COALESCE(
-                     source.gap_boundary_provider_record_id,
-                     (
-                       SELECT item.provider_record_id
-                         FROM news_items item
-                        WHERE item.source_id = source.source_id
-                        ORDER BY item.last_observed_at_ms DESC, item.item_id DESC
-                        LIMIT 1
-                     )
-                   ) AS recovery_boundary_provider_record_id,
-                   source.gap_version
-              FROM news_sources source
-             WHERE source.source_id = %s AND source.source_kind = 'opennews'
+                     COALESCE(last_fetch_started_at_ms, 0),
+                     COALESCE(last_fetch_finished_at_ms, 0),
+                     COALESCE(last_recovery_at_ms, 0)
+                   ) AS last_attempt_at_ms
+              FROM news_sources
+             WHERE source_id = %s AND source_kind = 'opennews'
             """,
             (source_id,),
         ).fetchone()
-        if row is None:
-            return None, None, 0
-        last_attempt_at_ms = int(row["last_attempt_at_ms"] or 0)
-        boundary_provider_record_id = row["recovery_boundary_provider_record_id"]
-        return (
-            last_attempt_at_ms if last_attempt_at_ms > 0 else None,
-            str(boundary_provider_record_id) if boundary_provider_record_id is not None else None,
-            int(row["gap_version"]),
-        )
+        if row is None or int(row["last_attempt_at_ms"] or 0) <= 0:
+            return None
+        return int(row["last_attempt_at_ms"])
 
     def mark_opennews_recovery_attempt(self, *, source_id: str, started_at_ms: int) -> None:
         self.conn.execute(
             """
             UPDATE news_sources
                SET last_fetch_started_at_ms = %s,
-                   gap_unclosed = true,
+                   last_outcome = 'recovery_running',
                    updated_at_ms = %s
              WHERE source_id = %s AND source_kind = 'opennews'
             """,
-            (started_at_ms, started_at_ms, source_id),
+            (int(started_at_ms), int(started_at_ms), source_id),
         )
+
+    def record_opennews_recovery_page(
+        self,
+        *,
+        source: NewsSourceDefinition,
+        events: Sequence[OpenNewsEvent],
+        observed_at_ms: int,
+        recovery_started_at_ms: int,
+    ) -> dict[str, Any]:
+        report_ids = [event.provider_record_id for event in events if event.observation_kind == "report"]
+        existing_ids: set[str] = set()
+        if report_ids:
+            existing_ids = {
+                str(row["provider_record_id"])
+                for row in self.conn.execute(
+                    """
+                    SELECT provider_record_id
+                      FROM news_items
+                     WHERE source_id = %s
+                       AND provider_record_id = ANY(%s)
+                    """,
+                    (source.source_id, report_ids),
+                ).fetchall()
+            }
+        prefix: list[OpenNewsEvent] = []
+        stop_reason: str | None = None
+        cutoff_ms = int(observed_at_ms) - _STORY_ACTIVE_WINDOW_MS
+        for event in events:
+            if event.observation_kind == "report":
+                if event.provider_record_id in existing_ids:
+                    stop_reason = "existing_provider_record"
+                    break
+                if (
+                    event.entry is not None
+                    and event.entry.published_at_ms is not None
+                    and int(event.entry.published_at_ms) < cutoff_ms
+                ):
+                    stop_reason = "twelve_hour_cutoff"
+                    break
+            prefix.append(event)
+        outcome = self.record_opennews_events(
+            source=source,
+            events=prefix,
+            observed_at_ms=observed_at_ms,
+            recovery_started_at_ms=recovery_started_at_ms,
+        )
+        return {
+            **outcome,
+            "events_seen": len(events),
+            "overlap_complete": stop_reason is not None,
+            "stop_reason": stop_reason,
+        }
 
     def record_opennews_events(
         self,
@@ -386,14 +865,14 @@ class NewsRepository:
                 continue
             if entry is None or published_at_ms is None:
                 raise RuntimeError("opennews_report_invariant")
-            if published_at_ms < observed_at_ms - _ACTIVE_WINDOW_MS:
+            if published_at_ms < observed_at_ms - _STORY_ACTIVE_WINDOW_MS:
                 rejections["stale_age"] += 1
                 continue
 
             reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
             description = str(entry.description or "").strip()
             language = entry.language or source.lang
-            content_fingerprint = _opennews_content_fingerprint(
+            content_fingerprint = _news_item_content_fingerprint(
                 title=title,
                 description=description,
                 canonical_url=canonical_url,
@@ -402,7 +881,6 @@ class NewsRepository:
                 language=language,
             )
             item_id = deterministic_id("news_item", source.source_id, event.provider_record_id)
-            classification = classify_by_keyword(title, now_ms=observed_at_ms)
             values = {
                 "item_id": item_id,
                 "source_id": source.source_id,
@@ -420,10 +898,6 @@ class NewsRepository:
                 "published_at_ms": published_at_ms,
                 "observed_at_ms": observed_at_ms,
                 "content_fingerprint": content_fingerprint,
-                "level": classification.level,
-                "category": classification.category,
-                "classification_source": classification.source,
-                "classification_confidence": classification.confidence,
             }
             cursor = self.conn.execute(
                 """
@@ -433,10 +907,7 @@ class NewsRepository:
                   canonical_url, reporting_origin, title,
                   description, lang, published_at_ms,
                   first_observed_at_ms, last_observed_at_ms,
-                  content_fingerprint, level, category,
-                  classification_source, classification_confidence,
-                  importance_score, importance_factors,
-                  active, created_at_ms, updated_at_ms
+                  content_fingerprint, active, created_at_ms, updated_at_ms
                 ) VALUES (
                   %(item_id)s, %(source_id)s, %(source_item_key)s,
                   %(provider_record_id)s, %(provider_metadata)s,
@@ -445,8 +916,6 @@ class NewsRepository:
                   %(description)s, %(lang)s,
                   %(published_at_ms)s, %(observed_at_ms)s,
                   %(observed_at_ms)s, %(content_fingerprint)s,
-                  %(level)s, %(category)s, %(classification_source)s,
-                  %(classification_confidence)s, 0, '{}'::jsonb,
                   true, %(observed_at_ms)s,
                   %(observed_at_ms)s
                 )
@@ -470,10 +939,30 @@ class NewsRepository:
                   published_at_ms = EXCLUDED.published_at_ms,
                   last_observed_at_ms = EXCLUDED.last_observed_at_ms,
                   content_fingerprint = EXCLUDED.content_fingerprint,
-                  level = EXCLUDED.level,
-                  category = EXCLUDED.category,
-                  classification_source = EXCLUDED.classification_source,
-                  classification_confidence = EXCLUDED.classification_confidence,
+                  level = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.level END,
+                  category = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.category END,
+                  classification_source = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.classification_source END,
+                  classification_confidence = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN NULL ELSE current_item.classification_confidence END,
+                  importance_score = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN 0 ELSE current_item.importance_score END,
+                  importance_factors = CASE
+                    WHEN current_item.content_fingerprint
+                           IS DISTINCT FROM EXCLUDED.content_fingerprint
+                      THEN '{}'::jsonb ELSE current_item.importance_factors END,
                   active = true,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE current_item.content_fingerprint IS DISTINCT FROM EXCLUDED.content_fingerprint
@@ -494,40 +983,34 @@ class NewsRepository:
             else:
                 updated += 1
 
-        if recovery_started_at_ms is not None:
-            self.conn.execute(
-                """
-                UPDATE news_sources
-                   SET last_fetch_started_at_ms = %s,
-                       last_fetch_finished_at_ms = %s,
-                       last_recovery_at_ms = %s,
-                       last_success_at_ms = %s,
-                       last_http_status = 200,
-                       consecutive_failures = 0,
-                       last_error = NULL,
-                       updated_at_ms = %s
-                 WHERE source_id = %s
-                """,
-                (
-                    int(recovery_started_at_ms),
-                    int(observed_at_ms),
-                    int(observed_at_ms),
-                    int(observed_at_ms),
-                    int(observed_at_ms),
-                    source.source_id,
-                ),
-            )
-        elif events:
+        if recovery_started_at_ms is None and events:
             self.conn.execute(
                 """
                 UPDATE news_sources
                    SET last_live_at_ms = %s,
                        last_success_at_ms = %s,
-                       last_error = NULL,
+                       last_outcome = CASE
+                         WHEN last_outcome IN (
+                           'recovery_running', 'recovery_failed',
+                           'recovery_window_exhausted'
+                         ) THEN last_outcome
+                         ELSE 'live_success'
+                       END,
+                       last_rejection_counts = %s,
+                       last_items_seen = %s,
+                       last_items_accepted = %s,
                        updated_at_ms = %s
                  WHERE source_id = %s
                 """,
-                (observed_at_ms, observed_at_ms, observed_at_ms, source.source_id),
+                (
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    Jsonb(dict(rejections)),
+                    len(events),
+                    inserted + updated,
+                    int(observed_at_ms),
+                    source.source_id,
+                ),
             )
         return {
             "events_seen": len(events),
@@ -559,65 +1042,91 @@ class NewsRepository:
         connected: bool,
         now_ms: int,
         error_code: str | None,
-        gap_unclosed: bool,
-        gap_boundary_provider_record_id: str | None,
-        expected_gap_version: int | None,
-    ) -> tuple[str | None, int] | None:
-        row = self.conn.execute(
+    ) -> bool:
+        cursor = self.conn.execute(
             """
-            UPDATE news_sources AS source
+            UPDATE news_sources
                SET live_connected = %(connected)s,
                    last_live_at_ms = CASE
                      WHEN %(connected)s THEN %(now_ms)s
                      ELSE last_live_at_ms
                    END,
+                   last_outcome = CASE
+                     WHEN %(error_code)s::text IS NOT NULL THEN 'live_failed'
+                     ELSE last_outcome
+                   END,
                    last_error = CASE
-                     WHEN %(gap_unclosed)s AND %(error_code)s::text IS NULL
-                       THEN source.last_error
-                     ELSE %(error_code)s::text
+                     WHEN %(error_code)s::text IS NOT NULL
+                       THEN %(error_code)s::text
+                     ELSE last_error
                    END,
-                   gap_unclosed = %(gap_unclosed)s,
-                   gap_boundary_provider_record_id = CASE
-                     WHEN %(gap_unclosed)s THEN COALESCE(
-                       source.gap_boundary_provider_record_id,
-                       %(gap_boundary_provider_record_id)s,
-                       (
-                         SELECT item.provider_record_id
-                           FROM news_items item
-                          WHERE item.source_id = source.source_id
-                          ORDER BY item.last_observed_at_ms DESC, item.item_id DESC
-                          LIMIT 1
-                       )
-                     )
-                     ELSE NULL
-                   END,
-                   gap_version = source.gap_version + CASE WHEN %(gap_unclosed)s THEN 1 ELSE 0 END,
                    updated_at_ms = %(now_ms)s
-             WHERE source.source_id = %(source_id)s
-               AND source.source_kind = 'opennews'
-               AND (
-                 %(gap_unclosed)s
-                 OR source.gap_version = %(expected_gap_version)s
-               )
-             RETURNING source.gap_boundary_provider_record_id, source.gap_version
+             WHERE source_id = %(source_id)s
+               AND source_kind = 'opennews'
             """,
             {
                 "connected": connected,
-                "now_ms": now_ms,
-                "error_code": error_code,
-                "gap_unclosed": gap_unclosed,
-                "gap_boundary_provider_record_id": gap_boundary_provider_record_id,
-                "expected_gap_version": expected_gap_version,
+                "now_ms": int(now_ms),
+                "error_code": str(error_code)[:500] if error_code else None,
                 "source_id": source_id,
             },
-        ).fetchone()
-        if row is None:
-            return None
-        boundary = row["gap_boundary_provider_record_id"]
-        return (
-            str(boundary) if boundary is not None else None,
-            int(row["gap_version"]),
         )
+        return bool(cursor.rowcount)
+
+    def complete_opennews_recovery(
+        self,
+        *,
+        source_id: str,
+        started_at_ms: int,
+        finished_at_ms: int,
+        window_exhausted: bool,
+        items_seen: int,
+        items_accepted: int,
+        rejection_counts: Mapping[str, int],
+    ) -> bool:
+        outcome = "recovery_window_exhausted" if window_exhausted else "recovery_success"
+        error_code = "opennews_recovery_window_exhausted" if window_exhausted else None
+        cursor = self.conn.execute(
+            """
+            UPDATE news_sources
+               SET last_fetch_finished_at_ms = %s,
+                   last_recovery_at_ms = %s,
+                   last_success_at_ms = CASE
+                     WHEN %s THEN last_success_at_ms
+                     ELSE %s
+                   END,
+                   last_http_status = 200,
+                   consecutive_failures = CASE
+                     WHEN %s THEN consecutive_failures + 1
+                     ELSE 0
+                   END,
+                   last_outcome = %s,
+                   last_error = %s,
+                   last_rejection_counts = %s,
+                   last_items_seen = %s,
+                   last_items_accepted = %s,
+                   updated_at_ms = %s
+             WHERE source_id = %s
+               AND source_kind = 'opennews'
+               AND last_fetch_started_at_ms = %s
+            """,
+            (
+                int(finished_at_ms),
+                int(finished_at_ms),
+                bool(window_exhausted),
+                int(finished_at_ms),
+                bool(window_exhausted),
+                outcome,
+                error_code,
+                Jsonb(dict(rejection_counts)),
+                int(items_seen),
+                int(items_accepted),
+                int(finished_at_ms),
+                source_id,
+                int(started_at_ms),
+            ),
+        )
+        return bool(cursor.rowcount)
 
     def record_opennews_recovery_failure(
         self,
@@ -636,7 +1145,7 @@ class NewsRepository:
                    last_http_status = %s,
                    consecutive_failures = consecutive_failures + 1,
                    last_error = %s,
-                   gap_unclosed = true,
+                   last_outcome = 'recovery_failed',
                    updated_at_ms = %s
              WHERE source_id = %s AND source_kind = 'opennews'
             """,
@@ -685,38 +1194,6 @@ class NewsRepository:
             self,
             now_ms=now_ms,
             error_code=error_code,
-        )
-
-    def rebuild_stories(self, *, now_ms: int) -> dict[str, Any]:
-        from .projection import (
-            NewsProjectionSnapshot,
-            _require_bounded_snapshot,
-            compute_news_story_projection,
-        )
-
-        payload = self.load_story_projection(now_ms=now_ms)
-        snapshot = NewsProjectionSnapshot(
-            input_fingerprint=str(payload["input_fingerprint"]),
-            cutoff_ms=int(payload["cutoff_ms"]),
-            scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
-            current_input_fingerprint=(
-                str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
-            ),
-            rows=tuple(dict(row) for row in payload["rows"]),
-        )
-        _require_bounded_snapshot(snapshot)
-        if snapshot.unchanged:
-            return {
-                "projection_status": "unchanged_input",
-                "items": len(snapshot.rows),
-                "stories": 0,
-                "rows_written": 0,
-            }
-        projection = compute_news_story_projection(snapshot)
-        return self.publish_story_projection(
-            snapshot=snapshot,
-            projection=projection,
-            now_ms=now_ms,
         )
 
     def _story_invariant_counts(
@@ -786,58 +1263,6 @@ class NewsRepository:
             "invalid_story_aggregate_count": invalid_aggregates,
             "total": invalid_owners + invalid_aggregates,
         }
-
-    def refresh_projection_summary_for_maintenance(self, *, now_ms: int) -> None:
-        invariants = self._story_invariant_counts()
-        self.conn.execute(
-            """
-            UPDATE news_projection_summary
-               SET active_item_count = (
-                     SELECT count(*) FROM news_items WHERE active
-                   ),
-                   active_story_count = (
-                     SELECT count(*) FROM news_stories
-                   ),
-                   unmaterialized_item_count = (
-                     SELECT count(*)
-                     FROM news_items item
-                     WHERE item.active
-                       AND NOT EXISTS (
-                         SELECT 1
-                         FROM news_story_members member
-                         WHERE member.item_id = item.item_id
-                       )
-                   ),
-                   invalid_owner_count = %s,
-                   invalid_story_aggregate_count = %s,
-                   newest_item_at_ms = (
-                     SELECT published_at_ms
-                     FROM news_items
-                     WHERE active
-                     ORDER BY published_at_ms DESC, item_id
-                     LIMIT 1
-                   ),
-                   newest_story_at_ms = (
-                     SELECT last_published_at_ms
-                     FROM news_stories
-                     ORDER BY last_published_at_ms DESC,
-                              importance_score DESC,
-                              story_id
-                     LIMIT 1
-                   ),
-                   last_material_change_at_ms = (
-                     SELECT max(updated_at_ms)
-                     FROM news_stories
-                   ),
-                   updated_at_ms = %s
-             WHERE singleton_key = 'current'
-            """,
-            (
-                invariants["invalid_owner_count"],
-                invariants["invalid_story_aggregate_count"],
-                int(now_ms),
-            ),
-        )
 
     # Read contract ------------------------------------------------------------
 
@@ -1211,27 +1636,43 @@ class NewsRepository:
         params: list[Any] = []
         if cursor:
             decoded = _cursor_decode(cursor)
-            if decoded.get("v") != 1 or decoded.get("kind") != "sources":
+            if decoded.get("v") != 2 or decoded.get("kind") != "sources":
                 raise ValueError("news_sources_cursor_invalid")
             try:
+                role_order = int(decoded["role_order"])
                 tier = int(decoded["tier"])
                 name = str(decoded["name"])
                 source_id = str(decoded["source_id"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("news_sources_cursor_invalid") from exc
-            where.append("(s.tier, s.name, s.source_id) > (%s, %s, %s)")
-            params.extend([tier, name, source_id])
+            if role_order not in {0, 1}:
+                raise ValueError("news_sources_cursor_invalid")
+            where.append(
+                """
+                (
+                  CASE WHEN s.source_kind = 'opennews' THEN 0 ELSE 1 END,
+                  s.tier, s.name, s.source_id
+                ) > (%s, %s, %s, %s)
+                """
+            )
+            params.extend([role_order, tier, name, source_id])
         params.append(limit + 1)
         rows = self.conn.execute(
             f"""
             SELECT s.source_id, s.name, s.source_kind, s.tier,
-                   s.enabled, s.live_connected, s.last_live_at_ms,
-                   s.last_recovery_at_ms, s.gap_unclosed,
+                   s.enabled, s.feed_url, s.refresh_interval_seconds,
+                   s.next_fetch_at_ms, s.claim_lease_expires_at_ms,
+                   s.last_fetch_started_at_ms, s.last_fetch_finished_at_ms,
+                   s.live_connected, s.last_live_at_ms,
+                   s.last_recovery_at_ms,
                    s.last_success_at_ms, s.last_http_status,
-                   s.consecutive_failures, s.last_error
-              FROM news_sources s
+                   s.consecutive_failures, s.last_outcome, s.last_error,
+                   s.last_rejection_counts, s.last_items_seen,
+                   s.last_items_accepted
+             FROM news_sources s
              WHERE {" AND ".join(where)}
-             ORDER BY s.tier, s.name, s.source_id
+             ORDER BY CASE WHEN s.source_kind = 'opennews' THEN 0 ELSE 1 END,
+                      s.tier, s.name, s.source_id
              LIMIT %s
             """,
             params,
@@ -1243,8 +1684,9 @@ class NewsRepository:
             last = page[-1]
             next_cursor = _cursor_encode(
                 {
-                    "v": 1,
+                    "v": 2,
                     "kind": "sources",
+                    "role_order": 0 if str(last["source_kind"]) == "opennews" else 1,
                     "tier": int(last["tier"]),
                     "name": str(last["name"]),
                     "source_id": str(last["source_id"]),
@@ -1267,14 +1709,14 @@ class NewsRepository:
     def prepare_brief_run(
         self,
         *,
-        target_fingerprint: str,
+        slot_at_ms: int,
         lease_owner: str,
         lease_token: str,
         now_ms: int,
     ) -> dict[str, Any] | None:
         return brief_store.prepare_brief_run(
             self,
-            target_fingerprint_value=target_fingerprint,
+            slot_at_ms=slot_at_ms,
             lease_owner=lease_owner,
             lease_token=lease_token,
             now_ms=now_ms,
@@ -1283,14 +1725,14 @@ class NewsRepository:
     def start_brief_model(
         self,
         *,
-        run_id: str,
+        slot_at_ms: int,
         lease_owner: str,
         lease_token: str,
         now_ms: int,
     ) -> bool:
         return brief_store.start_brief_model(
             self,
-            run_id=run_id,
+            slot_at_ms=slot_at_ms,
             lease_owner=lease_owner,
             lease_token=lease_token,
             now_ms=now_ms,
@@ -1299,18 +1741,16 @@ class NewsRepository:
     def release_brief_claim(
         self,
         *,
-        run_id: str,
+        slot_at_ms: int,
         lease_owner: str,
         lease_token: str,
-        due_at_ms: int,
         now_ms: int,
     ) -> bool:
         return brief_store.release_brief_claim(
             self,
-            run_id=run_id,
+            slot_at_ms=slot_at_ms,
             lease_owner=lease_owner,
             lease_token=lease_token,
-            due_at_ms=due_at_ms,
             now_ms=now_ms,
         )
 
@@ -1318,14 +1758,12 @@ class NewsRepository:
         self,
         *,
         claim: Mapping[str, Any],
-        selection: Mapping[str, Any],
         result: NewsBriefSynthesisResult,
         now_ms: int,
     ) -> str | None:
         return brief_store.publish_brief(
             self,
             claim=claim,
-            selection=selection,
             result=result,
             now_ms=now_ms,
         )
@@ -2179,6 +2617,7 @@ class NewsRepository:
         self,
         *,
         now_ms: int,
+        rss_enabled: bool,
         push_enabled: bool = False,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
@@ -2190,13 +2629,29 @@ class NewsRepository:
         opennews = self.conn.execute(
             """
             SELECT source_id, name, live_connected, last_live_at_ms,
-                   last_recovery_at_ms, gap_unclosed, last_error,
+                   last_recovery_at_ms, last_error, last_outcome,
                    last_http_status, last_success_at_ms,
-                   consecutive_failures
+                   consecutive_failures, last_rejection_counts,
+                   last_items_seen, last_items_accepted
               FROM news_sources
              WHERE source_kind = 'opennews' AND enabled
              ORDER BY source_id
              LIMIT 1
+            """
+        ).fetchone()
+        rss = self.conn.execute(
+            """
+            SELECT count(*) AS source_count,
+                   count(*) FILTER (WHERE last_success_at_ms IS NOT NULL)
+                     AS successful_source_count,
+                   count(*) FILTER (WHERE last_error IS NOT NULL)
+                     AS failed_source_count,
+                   count(*) FILTER (WHERE claim_token IS NOT NULL)
+                     AS claimed_source_count,
+                   min(next_fetch_at_ms) AS next_due_at_ms,
+                   max(last_success_at_ms) AS latest_success_at_ms
+              FROM news_sources
+             WHERE source_kind = 'rss' AND enabled
             """
         ).fetchone()
         story = self.conn.execute(
@@ -2206,7 +2661,6 @@ class NewsRepository:
                    last_material_change_at_ms,
                    active_item_count,
                    newest_item_at_ms,
-                   unmaterialized_item_count,
                    invalid_owner_count,
                    invalid_story_aggregate_count,
                    last_attempt_at_ms,
@@ -2216,57 +2670,50 @@ class NewsRepository:
              WHERE singleton_key = 'current'
             """
         ).fetchone()
-        unmaterialized_snapshot = self.conn.execute(
-            """
-            SELECT count(*) AS item_count,
-                   min(item.first_observed_at_ms) AS oldest_observed_at_ms
-              FROM news_items item
-              JOIN news_sources source ON source.source_id = item.source_id
-              LEFT JOIN news_story_members member ON member.item_id = item.item_id
-             WHERE source.enabled
-               AND item.published_at_ms >= %s
-               AND member.item_id IS NULL
-            """,
-            (int(now_ms) - _STORY_ACTIVE_WINDOW_MS,),
-        ).fetchone()
         brief = self.get_brief(now_ms=now_ms)
         ingest_reasons: list[str] = []
         opennews_payload = dict(opennews) if opennews is not None else None
+        rss_payload = {
+            "enabled": bool(rss_enabled),
+            "source_count": int(rss["source_count"] or 0),
+            "successful_source_count": int(rss["successful_source_count"] or 0),
+            "failed_source_count": int(rss["failed_source_count"] or 0),
+            "claimed_source_count": int(rss["claimed_source_count"] or 0),
+            "next_due_at_ms": rss["next_due_at_ms"],
+            "latest_success_at_ms": rss["latest_success_at_ms"],
+        }
         if opennews_payload is None:
             ingest_status = "degraded"
-            ingest_reasons.append("opennews_not_configured")
-        elif opennews_payload["last_success_at_ms"] is None:
-            ingest_status = "warming"
-            ingest_reasons.append("opennews_no_items_yet")
-        elif not bool(opennews_payload["live_connected"]):
-            ingest_status = "degraded"
-            ingest_reasons.append("opennews_disconnected")
-        elif bool(opennews_payload["gap_unclosed"]):
-            ingest_status = "degraded"
-            ingest_reasons.append("opennews_gap_unclosed")
+            ingest_reasons.append("opennews_primary_missing")
         elif opennews_payload["last_error"] is not None:
             ingest_status = "degraded"
-            ingest_reasons.append("opennews_error")
+            ingest_reasons.append("opennews_primary_error")
+        elif opennews_payload["last_success_at_ms"] is None:
+            ingest_status = "warming"
+            ingest_reasons.append("opennews_primary_no_success_yet")
+        elif not bool(opennews_payload["live_connected"]):
+            ingest_status = "degraded"
+            ingest_reasons.append("opennews_primary_disconnected")
         else:
             ingest_status = "ready"
 
-        unmaterialized = int(unmaterialized_snapshot["item_count"] or 0)
-        oldest_unmaterialized_at_ms = unmaterialized_snapshot["oldest_observed_at_ms"]
+        if rss_enabled:
+            if rss_payload["source_count"] == 0:
+                ingest_reasons.append("public_rss_corroboration_catalog_empty")
+            elif rss_payload["successful_source_count"] == 0:
+                ingest_reasons.append(
+                    "public_rss_corroboration_unavailable"
+                    if rss_payload["failed_source_count"]
+                    else "public_rss_corroboration_warming"
+                )
+            elif rss_payload["failed_source_count"]:
+                ingest_reasons.append("public_rss_corroboration_partial_failures")
+
         invalid_owners = int(story["invalid_owner_count"] or 0)
         invalid_aggregates = int(story["invalid_story_aggregate_count"] or 0)
         active_stories = int(story["active_count"] or 0)
         story_last_success_at_ms = int(story["last_success_at_ms"] or 0) or None
         story_reasons: list[str] = []
-        story_stalled = bool(
-            unmaterialized
-            and oldest_unmaterialized_at_ms is not None
-            and int(now_ms) - int(oldest_unmaterialized_at_ms) > _NEWS_STALL_AFTER_MS
-        )
-        story_recovering = bool(unmaterialized and not story_stalled)
-        if story_stalled:
-            story_reasons.append("story_projection_stalled")
-        elif story_recovering:
-            story_reasons.append("active_items_unmaterialized")
         if invalid_owners:
             story_reasons.append("current_item_owner_invalid")
         if invalid_aggregates:
@@ -2279,9 +2726,9 @@ class NewsRepository:
         if workers_reason is not None and workers_state in {"recovering", "stalled"}:
             story_reasons.append(str(workers_reason))
 
-        if story_stalled or runtime_stalled or invalid_owners or invalid_aggregates or story["last_error"] is not None:
+        if runtime_stalled or invalid_owners or invalid_aggregates or story["last_error"] is not None:
             story_status = "degraded"
-        elif story_recovering or runtime_recovering or active_stories == 0:
+        elif runtime_recovering or active_stories == 0:
             story_status = "warming"
             if active_stories == 0:
                 story_reasons.append("no_active_stories_yet")
@@ -2370,6 +2817,7 @@ class NewsRepository:
             "ingest": {
                 "status": ingest_status,
                 "reasons": ingest_reasons,
+                "rss": rss_payload,
                 "opennews": opennews_payload,
             },
             "story": {
@@ -2380,10 +2828,6 @@ class NewsRepository:
                 "newest_item_at_ms": story["newest_item_at_ms"],
                 "newest_story_at_ms": story["newest_story_at_ms"],
                 "last_material_change_at_ms": story["last_material_change_at_ms"],
-                "unmaterialized_item_count": unmaterialized,
-                "oldest_unmaterialized_at_ms": (
-                    int(oldest_unmaterialized_at_ms) if oldest_unmaterialized_at_ms is not None else None
-                ),
                 "invalid_owner_count": invalid_owners,
                 "invalid_story_aggregate_count": invalid_aggregates,
                 "invariant_error_count": invalid_owners + invalid_aggregates,
@@ -2398,7 +2842,8 @@ class NewsRepository:
                 "status": brief_status,
                 "reasons": brief_reasons,
                 "public_state": brief["state"],
-                "target_fingerprint": brief["target_fingerprint"],
+                "slot_at_ms": brief["slot_at_ms"],
+                "next_due_at_ms": brief["next_due_at_ms"],
                 "publication_id": (brief["publication"]["publication_id"] if brief["publication"] else None),
                 "latest_run": brief["latest_run"],
             },
@@ -2414,7 +2859,7 @@ class NewsRepository:
         overall = "degraded" if "degraded" in statuses else "warming" if "warming" in statuses else "ready"
         operating_state = (
             "stalled"
-            if story_stalled or runtime_stalled or push_stalled
+            if runtime_stalled or push_stalled
             else "recovering"
             if overall != "ready" or (push_enabled and (push_snapshot["pending_count"] or push_snapshot["retry_count"]))
             else "live"
@@ -2511,22 +2956,6 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "importance_score": int(row["importance_score"]),
         "importance_factors": dict(row["importance_factors"]),
     }
-
-
-def _story_facet_counter(value: Any) -> Counter[tuple[str, str]]:
-    rows = value if isinstance(value, list) else []
-    counts: Counter[tuple[str, str]] = Counter()
-    for raw in rows:
-        row = dict(raw)
-        counts[("category", str(row["category"]))] += 1
-        counts[("level", str(row["level"]))] += 1
-    return counts
-
-
-def _source_facet_counter(value: Any) -> Counter[str]:
-    rows = value if isinstance(value, list) else []
-    pairs = {(str(dict(raw)["story_id"]), str(dict(raw)["source_id"])) for raw in rows}
-    return Counter(source_id for _, source_id in pairs)
 
 
 __all__ = ["NewsRepository", "deterministic_id"]

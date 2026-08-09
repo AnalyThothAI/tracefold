@@ -35,7 +35,7 @@ from tracefold.market import (
     TokenRadarRepository,
     TokenTargetRepository,
 )
-from tracefold.news import NewsRepository
+from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.persisted_live import PersistedLiveEventRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,

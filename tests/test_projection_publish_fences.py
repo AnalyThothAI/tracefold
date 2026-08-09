@@ -88,13 +88,11 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
         "_upsert_stories",
         "_replace_memberships",
         "_delete_absent_stories",
-        "_replace_facets",
     ):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
-        cutoff_ms=0,
         scoring_epoch_ms=0,
         current_input_fingerprint=None,
         rows=(
@@ -109,6 +107,7 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
             "stories": [],
             "memberships": [],
             "item_updates": [],
+            "population_item_ids": ["snapshot-b", "snapshot-a"],
             "selection_snapshot": _selection_snapshot("snapshot-fingerprint"),
         },
         now_ms=3,
@@ -161,7 +160,9 @@ def test_news_story_load_captures_the_publish_fence_before_moving_facts() -> Non
                             "description": "Policy makers held rates steady.",
                             "published_at_ms": 1,
                             "content_fingerprint": "content-fingerprint",
+                            "source_position": None,
                             "tier": 1,
+                            "source_kind": "opennews",
                         }
                     ]
                 )
@@ -189,13 +190,11 @@ def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: 
         "_upsert_stories",
         "_replace_memberships",
         "_delete_absent_stories",
-        "_replace_facets",
     ):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
-        cutoff_ms=0,
         scoring_epoch_ms=0,
         current_input_fingerprint="previous-fingerprint",
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
@@ -228,13 +227,11 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
         "_upsert_stories",
         "_replace_memberships",
         "_delete_absent_stories",
-        "_replace_facets",
     ):
         monkeypatch.setattr(story_store, helper, unexpected_write)
 
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
-        cutoff_ms=0,
         scoring_epoch_ms=0,
         current_input_fingerprint="previous-fingerprint",
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
@@ -263,12 +260,10 @@ def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeyp
         "_upsert_stories",
         "_replace_memberships",
         "_delete_absent_stories",
-        "_replace_facets",
     ):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
-        cutoff_ms=0,
         scoring_epoch_ms=0,
         current_input_fingerprint=None,
         rows=({"item_id": "snapshot", "published_at_ms": 1},),

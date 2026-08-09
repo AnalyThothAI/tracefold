@@ -9,18 +9,18 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
+from tests.support.news import rebuild_news_projection
 from tracefold.app.repositories import repositories_for_connection
-from tracefold.news import (
-    NewsInterface,
+from tracefold.news import push as push_module
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.push import (
     NewsPushDeliveryError,
     NewsPushReceipt,
-    NewsRepository,
     NewsStoryPush,
     PreparedNewsPush,
-    opennews_source,
-    parse_opennews_message,
 )
-from tracefold.news import push as push_module
+from tracefold.news.repository import NewsRepository
+from tracefold.news.sources import opennews_source
 
 BASE_MS = 1_785_560_400_000
 
@@ -77,8 +77,12 @@ def _annotation(record_id: str, *, score: float):
 def _seed_source(conn: Any) -> NewsRepository:
     repository = NewsRepository(conn)
     with conn.transaction():
-        repository.sync_source(opennews_source(), now_ms=BASE_MS)
+        repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
     return repository
+
+
+def _push_health(conn: Any, *, now_ms: int) -> dict[str, Any]:
+    return NewsRepository(conn).push_health_snapshot(now_ms=now_ms)
 
 
 def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() -> None:
@@ -105,7 +109,7 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
                 events=events,
                 observed_at_ms=BASE_MS + 10,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 10)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 10)
         tie_ids = [
             str(row["item_id"])
             for row in conn.execute(
@@ -137,7 +141,7 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         assert evidence["provider_metadata"]["signal"] == "long"
         assert set(evidence) >= {"item_id", "url", "provider_metadata"}
 
-        feed = NewsInterface(repository).get_feed()
+        feed = repository.list_feed()
         scored_story = next(story for story in feed["stories"] if story["title"] == title)
         no_score_story = next(
             story for story in feed["stories"] if story["title"] == "Volcano closes an airport runway"
@@ -154,7 +158,7 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         }
         assert no_score_story["provider_evidence"] is None
 
-        detail = NewsInterface(repository).get_story(story_id=scored_story["story_id"])
+        detail = repository.get_story(story_id=scored_story["story_id"])
         assert detail is not None
         assert detail["provider_evidence"] == scored_story["provider_evidence"]
     finally:
@@ -179,13 +183,13 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
                 ),
                 observed_at_ms=BASE_MS + 10,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 10)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 10)
 
         initial = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
         assert initial["threshold_observed_at_ms"] == BASE_MS + 10
 
         with conn.transaction():
-            repository.rebuild_stories(now_ms=BASE_MS + 7_200_000)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 7_200_000)
         after_story_write = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
         assert after_story_write["threshold_observed_at_ms"] == BASE_MS + 10
 
@@ -245,7 +249,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
                 ),
                 observed_at_ms=BASE_MS + 3,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 3)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 3)
 
         initial = next(iter(repository.story_provider_evidence().values()))
         story_id = initial["story_id"]
@@ -268,7 +272,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
         selected_later = repository.story_provider_evidence()[story_id]
         assert selected_later["provider_evidence"]["provider_score"] == 90
         assert selected_later["push_delivery_status"] == "sent"
-        detail = NewsInterface(repository).get_story(story_id=story_id)
+        detail = repository.get_story(story_id=story_id)
         assert detail is not None
         assert detail["push_delivery_state"] == "sent"
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 6)) == {
@@ -298,7 +302,7 @@ def test_first_reconcile_suppresses_existing_eligible_story() -> None:
                 ),
                 observed_at_ms=BASE_MS + 2,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 2)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 2)
         runtime = _runtime(conn, delivery=_Delivery())
 
         result = asyncio.run(runtime.reconcile(now_ms=BASE_MS + 10))
@@ -310,7 +314,7 @@ def test_first_reconcile_suppresses_existing_eligible_story() -> None:
         assert state["baseline_at_ms"] == BASE_MS + 10
         assert delivery == {"status": "suppressed", "translation_status": "not_requested"}
         assert progressed is False
-        health = asyncio.run(runtime.health_snapshot(now_ms=BASE_MS + 10))
+        health = _push_health(conn, now_ms=BASE_MS + 10)
         assert health["status"] == "ready"
         assert health["initialized"] is True
         assert health["suppressed_count"] == 1
@@ -342,7 +346,7 @@ def test_late_recovery_score_does_not_push_a_stale_article() -> None:
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
 
         recovered_at_ms = BASE_MS + push_module.PUSH_SOURCE_FRESHNESS_MS + 2
         with conn.transaction():
@@ -389,7 +393,7 @@ def test_unfrozen_candidate_that_ages_out_is_suppressed(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         assert asyncio.run(runtime.reconcile(now_ms=clock["now_ms"])) == {
             "inserted": 1,
             "suppressed": 0,
@@ -452,7 +456,7 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))
         assert asyncio.run(runtime.turn()) is False
         assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 0
@@ -479,7 +483,7 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
         assert first["delivery_payload"]["card"]["original_title"] == ("Issuer files for a new exchange product")
         assert first["delivery_payload"]["card"]["url"] is None
         assert first["delivery_payload"]["card"]["provider_evidence"]["score"] == 71
-        retry_health = asyncio.run(runtime.health_snapshot(now_ms=clock["now_ms"]))
+        retry_health = _push_health(conn, now_ms=clock["now_ms"])
         assert retry_health["status"] == "degraded"
         assert retry_health["retry_count"] == 1
         frozen_payload = first["delivery_payload"]
@@ -504,7 +508,7 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
         assert delivery.prepare_calls == 1
         assert delivery.payloads == [frozen_payload, frozen_payload]
         assert delivery.idempotency_keys == [first["story_id"], first["story_id"]]
-        completed_health = asyncio.run(runtime.health_snapshot(now_ms=clock["now_ms"]))
+        completed_health = _push_health(conn, now_ms=clock["now_ms"])
         assert completed_health["status"] == "ready"
         assert completed_health["sent_count"] == 1
 
@@ -547,7 +551,7 @@ def test_frozen_retry_that_ages_out_is_suppressed_before_network_submit(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
 
         assert asyncio.run(runtime.turn()) is True
@@ -623,7 +627,7 @@ def test_candidate_that_ages_out_during_prepare_is_suppressed(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS + 100))
 
         assert asyncio.run(runtime.turn())
@@ -673,7 +677,7 @@ def test_cancelled_prepare_releases_unfrozen_claim(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
 
         with pytest.raises(asyncio.CancelledError):
@@ -731,7 +735,7 @@ def test_cancelled_translation_dispatch_is_fenced_and_restart_uses_original(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
 
         with pytest.raises(asyncio.CancelledError):
@@ -779,7 +783,7 @@ def test_cancelled_translation_dispatch_is_fenced_and_restart_uses_original(
         }
         assert restarted.interrupted_translation_attempts == [attempted_at_ms]
         assert restarted.translation_dispatches == 0
-        health = asyncio.run(recovered.health_snapshot(now_ms=clock["now_ms"] + 1))
+        health = _push_health(conn, now_ms=clock["now_ms"] + 1)
         assert health["translation_24h"] == {
             "attempted": 1,
             "succeeded": 0,
@@ -825,7 +829,7 @@ def test_completed_translation_that_ages_out_keeps_frozen_metrics(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS + 100))
 
         assert asyncio.run(runtime.turn()) is True
@@ -939,7 +943,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
                 ),
                 observed_at_ms=BASE_MS,
             )
-            repository.rebuild_stories(now_ms=BASE_MS)
+            rebuild_news_projection(repository, now_ms=BASE_MS)
 
         initial_evidence = repository.story_provider_evidence()
         assert len(initial_evidence) == 1
@@ -958,7 +962,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
         # already-selected high-score Item stays current under a new Story ID.
         after_expiry_ms = BASE_MS + (2 * hour_ms)
         with conn.transaction():
-            repository.rebuild_stories(now_ms=after_expiry_ms)
+            rebuild_news_projection(repository, now_ms=after_expiry_ms)
         current_evidence = repository.story_provider_evidence()
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
@@ -1030,7 +1034,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
                 ),
                 observed_at_ms=first_projection_ms,
             )
-            repository.rebuild_stories(now_ms=first_projection_ms)
+            rebuild_news_projection(repository, now_ms=first_projection_ms)
 
         initial_evidence = repository.story_provider_evidence()
         assert len(initial_evidence) == 1
@@ -1050,7 +1054,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
         # 12-hour boundary. The fresh selected Article acquires a new Story ID.
         clock["now_ms"] = BASE_MS + 121_000
         with conn.transaction():
-            repository.rebuild_stories(now_ms=clock["now_ms"])
+            rebuild_news_projection(repository, now_ms=clock["now_ms"])
         current_evidence = repository.story_provider_evidence()
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
@@ -1113,7 +1117,7 @@ def test_restarts_catch_up_persisted_render_and_frozen_retry_without_rerendering
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(initial_runtime.reconcile(now_ms=clock["now_ms"]))
         persisted_pending = conn.execute(
             """
@@ -1205,7 +1209,7 @@ def test_chinese_title_is_delivered_unchanged(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
         assert asyncio.run(runtime.turn())
 
@@ -1249,7 +1253,7 @@ def test_japanese_title_is_delivered_unchanged(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
         assert asyncio.run(runtime.turn())
 
@@ -1292,7 +1296,7 @@ def test_non_retryable_delivery_failure_is_terminal(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
         assert asyncio.run(runtime.turn())
 
@@ -1316,7 +1320,7 @@ def test_non_retryable_delivery_failure_is_terminal(
             "last_error": "feishu_signature_rejected",
         }
         assert asyncio.run(runtime.turn()) is False
-        health = asyncio.run(runtime.health_snapshot(now_ms=clock["now_ms"] + 1))
+        health = _push_health(conn, now_ms=clock["now_ms"] + 1)
         assert health["status"] == "degraded"
         assert health["terminal_count"] == 1
     finally:
@@ -1380,7 +1384,7 @@ def test_stale_claim_cannot_mark_delivery_sent_after_lease_is_replaced(
                 ),
                 observed_at_ms=BASE_MS + 1,
             )
-            repository.rebuild_stories(now_ms=BASE_MS + 1)
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
         # The external provider returned success, but another owner replaced
         # the lease before completion. The stale completion must be fenced.

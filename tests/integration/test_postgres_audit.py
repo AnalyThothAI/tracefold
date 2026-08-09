@@ -7,6 +7,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
+    NEWS_TABLES,
     PUBLIC_NO_SQL_ROUTES,
     PUBLIC_ROUTE_QUERY_COVERAGE,
     PostgresOperationalAudit,
@@ -34,6 +35,13 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["projection_schema"]["token_radar_current_rows"] is True
     assert payload["projection_schema"]["token_radar_publication_state"] is True
     assert payload["projection_schema"]["news_projection_summary"] is True
+    assert payload["projection_schema"]["news_brief_current"] is True
+    assert payload["news_schema"] == {
+        "expected_tables": list(NEWS_TABLES),
+        "actual_tables": sorted(NEWS_TABLES),
+        "exact": True,
+    }
+    assert len(payload["news_schema"]["actual_tables"]) == 9
     assert "news_story_title_translations" not in payload["projection_schema"]
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
@@ -63,14 +71,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
     try:
         migrate(conn)
         initial = ProjectionValidationAudit(conn).run(sample=100)
-        conn.execute(
-            """
-            INSERT INTO news_story_facet_counts (
-              facet_type, facet_value, story_count, updated_at_ms
-            )
-            VALUES ('category', 'stale-test-value', 1, 1)
-            """
-        )
+        conn.execute("DELETE FROM news_brief_current")
         stale = ProjectionValidationAudit(conn).run(sample=100)
     finally:
         conn.close()
@@ -78,7 +79,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
     assert initial["ok"] is True
     assert initial["mismatch_count"] == 0
     assert stale["ok"] is False
-    assert stale["checks"]["news_story_facet_mismatch"] == 1
+    assert stale["checks"]["news_brief_current_mismatch"] == 1
 
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
@@ -139,24 +140,25 @@ def test_query_audit_news_status_reads_the_singleton_projection_summary():
 
 
 def test_query_audit_public_news_views_read_only_bounded_models():
-    story_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_story_facets")
-    source_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_source_facets")
     filtered_facets = next(item for item in HOT_QUERIES if item["name"] == "news_feed_filtered_facets")
     brief = next(item for item in HOT_QUERIES if item["name"] == "news_brief")
+    sources = next(item for item in HOT_QUERIES if item["name"] == "news_sources")
 
-    assert "news_story_facet_counts" in story_facets["sql"]
-    assert "FROM news_stories" not in story_facets["sql"]
-    assert "news_source_facet_counts" in source_facets["sql"]
-    assert "news_story_members" not in source_facets["sql"]
+    assert all(item["name"] != "news_feed_story_facets" for item in HOT_QUERIES)
+    assert all(item["name"] != "news_feed_source_facets" for item in HOT_QUERIES)
     assert "news_story_members" in filtered_facets["sql"]
     assert "provider_metadata" in filtered_facets["sql"]
     assert "reporting_origin" in filtered_facets["sql"]
     assert "LIMIT 101" in filtered_facets["sql"]
-    assert "news_brief_selection_current" in brief["sql"]
+    assert "news_brief_current" in brief["sql"]
+    assert "served_payload" in brief["sql"]
+    assert "slot_status" in brief["sql"]
+    assert "publication_id" not in brief["sql"]
+    assert "news_brief_selection_current" not in brief["sql"]
     assert "row_number()" not in brief["sql"].lower()
-    assert "selection_fingerprint" in brief["sql"]
-    assert "top_stories" in brief["sql"]
-    assert "selection.rank" not in brief["sql"]
+    assert "next_fetch_at_ms" in sources["sql"]
+    assert "claim_lease_expires_at_ms" in sources["sql"]
+    assert "gap_unclosed" not in sources["sql"]
 
 
 def test_query_audit_stocks_radar_reads_only_current_projection():

@@ -3,12 +3,11 @@ from __future__ import annotations
 import pytest
 
 import tracefold.news.identity as news_identity
-from tracefold.news import (
+from tracefold.news.classification import classify_by_keyword, has_historical_marker
+from tracefold.news.identity import (
     STORY_SIMILARITY_THRESHOLD,
     candidate_tokens,
-    classify_by_keyword,
     cluster_texts,
-    has_historical_marker,
     normalize_story_canonical_title,
     normalize_story_text,
     story_similarity,

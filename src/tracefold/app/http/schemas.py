@@ -382,14 +382,13 @@ class NewsBriefNoneValidationData(ExactApiSchema):
 
 class NewsBriefPublicationData(ExactApiSchema):
     publication_id: str
+    slot_at_ms: int
     selection_fingerprint: str
-    target_fingerprint: str
     quality: Literal["ok", "degraded"]
     brief_kind: Literal["l1", "l2", "none"]
     world_brief: str
     brief_story_lines: list[NewsBriefStoryLineData]
     top_stories: list[NewsBriefTopStoryData]
-    selected_story_ids: list[str]
     sources: list[NewsBriefSourceData]
     source_age_range: NewsBriefSourceAgeRangeData
     provider: str
@@ -404,21 +403,18 @@ class NewsBriefPublicationData(ExactApiSchema):
     validation: NewsBriefL1ValidationData | NewsBriefL2ValidationData | NewsBriefNoneValidationData
     provenance: NewsBriefProvenanceData
     published_at_ms: int
-    created_at_ms: int
 
 
 class NewsBriefRunData(ExactApiSchema):
-    run_id: str
-    target_fingerprint: str
-    selection_fingerprint: str
-    status: Literal["waiting_input", "running", "retry_wait", "published"]
+    slot_at_ms: int
+    status: Literal["due", "running", "completed"]
     model_outcome: Literal["ok", "l2", "none"] | None
     pointer_action: Literal["advance_ok", "advance_degraded", "preserve_lkg", "none"]
+    attempt_count: int
     failure_count: int
-    next_due_at_ms: int | None
+    next_due_at_ms: int
     lease_expires_at_ms: int | None
     last_error_code: str | None
-    created_at_ms: int
     updated_at_ms: int
     last_attempt_at_ms: int | None
     completed_at_ms: int | None
@@ -426,8 +422,8 @@ class NewsBriefRunData(ExactApiSchema):
 
 class NewsBriefData(ExactApiSchema):
     state: Literal["unavailable", "current", "degraded", "last_known_good"]
-    target_fingerprint: str | None
-    pending_due_at_ms: int | None
+    slot_at_ms: int | None
+    next_due_at_ms: int
     publication: NewsBriefPublicationData | None
     latest_run: NewsBriefRunData | None
 
@@ -435,17 +431,26 @@ class NewsBriefData(ExactApiSchema):
 class NewsSourceData(ExactApiSchema):
     source_id: str
     name: str
-    source_kind: Literal["opennews"]
+    source_kind: Literal["rss", "opennews"]
     tier: int
     enabled: bool
+    feed_url: str | None
+    refresh_interval_seconds: int | None
+    next_fetch_at_ms: int | None
+    claim_lease_expires_at_ms: int | None
+    last_fetch_started_at_ms: int | None
+    last_fetch_finished_at_ms: int | None
     live_connected: bool
     last_live_at_ms: int | None
     last_recovery_at_ms: int | None
-    gap_unclosed: bool
     last_success_at_ms: int | None
     last_http_status: int | None
     consecutive_failures: int
+    last_outcome: str | None
     last_error: str | None
+    last_rejection_counts: dict[str, int]
+    last_items_seen: int
+    last_items_accepted: int
 
 
 class NewsSourcesPageData(ExactApiSchema):
@@ -465,16 +470,30 @@ class NewsOpenNewsStatusData(ExactApiSchema):
     live_connected: bool
     last_live_at_ms: int | None
     last_recovery_at_ms: int | None
-    gap_unclosed: bool
+    last_outcome: str | None
     last_error: str | None
     last_http_status: int | None
     last_success_at_ms: int | None
     consecutive_failures: int
+    last_rejection_counts: dict[str, int]
+    last_items_seen: int
+    last_items_accepted: int
+
+
+class NewsRssStatusData(ExactApiSchema):
+    enabled: bool
+    source_count: int
+    successful_source_count: int
+    failed_source_count: int
+    claimed_source_count: int
+    next_due_at_ms: int | None
+    latest_success_at_ms: int | None
 
 
 class NewsIngestStatusData(ExactApiSchema):
     status: NewsHealthStatus
     reasons: list[str]
+    rss: NewsRssStatusData
     opennews: NewsOpenNewsStatusData | None
 
 
@@ -486,8 +505,6 @@ class NewsStoryStatusData(ExactApiSchema):
     newest_item_at_ms: int | None
     newest_story_at_ms: int | None
     last_material_change_at_ms: int | None
-    unmaterialized_item_count: int
-    oldest_unmaterialized_at_ms: int | None
     invalid_owner_count: int
     invalid_story_aggregate_count: int
     invariant_error_count: int
@@ -503,7 +520,8 @@ class NewsBriefStatusData(ExactApiSchema):
     status: NewsHealthStatus
     reasons: list[str]
     public_state: Literal["unavailable", "current", "degraded", "last_known_good"]
-    target_fingerprint: str | None
+    slot_at_ms: int | None
+    next_due_at_ms: int
     publication_id: str | None
     latest_run: NewsBriefRunData | None
 

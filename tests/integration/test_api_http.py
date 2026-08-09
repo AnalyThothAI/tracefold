@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -34,10 +35,12 @@ from tracefold.news import (
     NewsBriefStoryLine,
     NewsBriefSynthesisResult,
     NewsFeedEntry,
+    NewsFeedFetch,
     OpenNewsEvent,
-    opennews_source,
-    parse_opennews_message,
 )
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
+from tracefold.news.sources import opennews_source, public_rss_sources
 from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
@@ -64,9 +67,68 @@ def _opennews_event(
             description=description,
             published_at_ms=published_at_ms,
             reporting_origin=reporting_origin,
-            raw={},
         ),
     )
+
+
+def _rebuild_news_projection(repos: Any, *, now_ms: int) -> dict[str, Any]:
+    payload = repos.news.load_story_projection(now_ms=now_ms)
+    snapshot = NewsProjectionSnapshot(
+        input_fingerprint=str(payload["input_fingerprint"]),
+        scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
+        current_input_fingerprint=(
+            str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
+        ),
+        rows=tuple(dict(row) for row in payload["rows"]),
+    )
+    if snapshot.unchanged:
+        return {
+            "projection_status": "unchanged_input",
+            "items": len(snapshot.rows),
+            "stories": 0,
+            "rows_written": 0,
+        }
+    projection = compute_news_story_projection(snapshot)
+    return dict(
+        repos.news.publish_story_projection(
+            snapshot=snapshot,
+            projection=projection,
+            now_ms=now_ms,
+        )
+    )
+
+
+def _sync_public_news_sources(repos: Any, *, now_ms: int) -> None:
+    rss_sources = public_rss_sources()
+    repos.news.sync_sources((*rss_sources, opennews_source()), now_ms=now_ms)
+    sources_by_id = {source.source_id: source for source in rss_sources}
+    claim_token = "00000000-0000-0000-0000-000000000038"
+    for index in range(len(rss_sources)):
+        claimed = repos.news.claim_due_rss_source(
+            now_ms=now_ms,
+            claim_token=claim_token,
+            lease_expires_at_ms=now_ms + 10_000,
+        )
+        assert claimed is not None
+        if index == 0:
+            assert repos.news.record_rss_fetch(
+                source=sources_by_id[str(claimed["source_id"])],
+                claim_token=claim_token,
+                fetch=NewsFeedFetch(status_code=200),
+                finished_at_ms=now_ms + 1,
+            ) == {
+                "items_inserted": 0,
+                "items_updated": 0,
+                "items_deactivated": 0,
+            }
+        else:
+            assert repos.news.record_rss_failure(
+                source_id=str(claimed["source_id"]),
+                claim_token=claim_token,
+                finished_at_ms=now_ms + index + 1,
+                error_code="news_rss_http_503",
+                status_code=503,
+            )
 
 
 def test_api_json_response_encodes_decimal_payloads():
@@ -547,13 +609,15 @@ def test_api_search_rejects_malformed_cursor(tmp_path):
 
 
 def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    settings = make_settings(tmp_path)
+    settings.news.rss_enabled = True
+    app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)
     source = opennews_source()
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            _sync_public_news_sources(repos, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -594,28 +658,26 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
-            assert repos.news.peek_brief_candidate(now_ms=now_ms) is None
-            candidate = repos.news.peek_brief_candidate(now_ms=now_ms + 600_000)
+            _rebuild_news_projection(repos, now_ms=now_ms)
+            candidate = repos.news.peek_brief_candidate(now_ms=now_ms)
             assert candidate is not None
             prepared = repos.news.prepare_brief_run(
-                target_fingerprint=candidate["target_fingerprint"],
+                slot_at_ms=candidate["slot_at_ms"],
                 lease_owner="test-runtime",
                 lease_token="test-lease",
-                now_ms=now_ms + 600_000,
+                now_ms=now_ms,
             )
             assert prepared is not None and prepared["completed_without_model"] is False
             claim = prepared["claim"]
             stories = prepared["top_stories"]
             assert repos.news.start_brief_model(
-                run_id=claim["run_id"],
+                slot_at_ms=claim["slot_at_ms"],
                 lease_owner=claim["lease_owner"],
                 lease_token=claim["lease_token"],
-                now_ms=now_ms + 600_001,
+                now_ms=now_ms + 1,
             )
             publication_id = repos.news.publish_brief(
                 claim=claim,
-                selection=prepared["selection"],
                 result=NewsBriefSynthesisResult(
                     brief_kind="l1",
                     quality="ok",
@@ -641,12 +703,18 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                         "line_fallbacks": [],
                     },
                 ),
-                now_ms=now_ms + 600_002,
+                now_ms=now_ms + 2,
             )
             assert publication_id is not None
 
         headers = {"Authorization": "Bearer secret"}
         sources_response = client.get("/api/news/sources", headers=headers)
+        sources_cursor = sources_response.json()["data"]["page"]["next_cursor"]
+        sources_second_response = client.get(
+            "/api/news/sources",
+            params={"cursor": sources_cursor},
+            headers=headers,
+        )
         feed_response = client.get("/api/news/feed", headers=headers)
         latest_feed_response = client.get(
             "/api/news/feed",
@@ -672,7 +740,6 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         )
         retired_responses = [
             client.get("/api/news/stories", headers=headers),
-            client.get("/api/news/brief/history", headers=headers),
             client.post(f"/api/news/stories/{story_id}/analysis-requests", headers=headers),
             client.get("/api/news", headers=headers),
             client.get("/api/news/items/news-1", headers=headers),
@@ -680,12 +747,27 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         ]
 
     assert sources_response.status_code == 200
-    source = sources_response.json()["data"]["items"][0]
-    assert source["source_id"] == "news-opennews"
-    assert source["source_kind"] == "opennews"
-    assert source["last_success_at_ms"] == now_ms
+    assert sources_second_response.status_code == 200
+    source_items = [
+        *sources_response.json()["data"]["items"],
+        *sources_second_response.json()["data"]["items"],
+    ]
+    assert len(source_items) == 180
+    assert source_items[0]["source_kind"] == "opennews"
+    opennews = next(item for item in source_items if item["source_kind"] == "opennews")
+    assert opennews["source_id"] == "news-opennews"
+    assert opennews["last_success_at_ms"] == now_ms
+    rss_items = [item for item in source_items if item["source_kind"] == "rss"]
+    assert len(rss_items) == 179
+    assert all(item["feed_url"].startswith("https://") for item in rss_items)
+    assert sum(item["last_success_at_ms"] is not None for item in rss_items) == 1
     assert sources_response.json()["data"]["page"] == {
-        "returned_count": 1,
+        "returned_count": 100,
+        "has_more": True,
+        "next_cursor": sources_cursor,
+    }
+    assert sources_second_response.json()["data"]["page"] == {
+        "returned_count": 80,
         "has_more": False,
         "next_cursor": None,
     }
@@ -752,7 +834,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert brief_response.status_code == 200
     brief = brief_response.json()["data"]
     assert brief["state"] == "current"
-    assert len(brief["publication"]["selected_story_ids"]) == 3
+    assert len(brief["publication"]["top_stories"]) == 3
     assert brief["publication"]["locale"] == "en"
     assert brief["publication"]["brief_kind"] == "l1"
     assert brief["publication"]["validation"] == {
@@ -764,14 +846,27 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["sources"])
     assert set(brief) == {
         "state",
-        "target_fingerprint",
-        "pending_due_at_ms",
+        "slot_at_ms",
+        "next_due_at_ms",
         "publication",
         "latest_run",
     }
+    assert brief["publication"]["slot_at_ms"] == brief["slot_at_ms"]
+    assert brief["latest_run"]["status"] == "completed"
     assert unchanged_brief.status_code == 304
     assert status_response.status_code == 200
-    disabled_push = status_response.json()["data"]["layers"]["push"]
+    status_layers = status_response.json()["data"]["layers"]
+    assert status_layers["ingest"]["rss"] == {
+        "enabled": True,
+        "source_count": 179,
+        "successful_source_count": 1,
+        "failed_source_count": 178,
+        "claimed_source_count": 0,
+        "next_due_at_ms": now_ms + 1_800_001,
+        "latest_success_at_ms": now_ms + 1,
+    }
+    assert status_layers["ingest"]["opennews"]["source_id"] == "news-opennews"
+    disabled_push = status_layers["push"]
     assert {
         key: disabled_push[key]
         for key in (
@@ -802,7 +897,55 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "sent_count": 0,
         "latest_sent_at_ms": None,
     }
-    assert [response.status_code for response in retired_responses] == [404] * 6
+    assert [response.status_code for response in retired_responses] == [404] * 5
+
+
+def test_api_news_status_treats_default_disabled_rss_as_intentional(tmp_path):
+    settings = make_settings(tmp_path)
+    assert settings.news.rss_enabled is False
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_sources((source,), now_ms=now_ms)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="opennews-only-status",
+                        title="OpenNews primary publishes without RSS enabled",
+                        description="The primary lane remains independently usable.",
+                        published_at_ms=now_ms - 1_000,
+                        reporting_origin="authority",
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            repos.news.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=now_ms,
+                error_code=None,
+            )
+            _rebuild_news_projection(repos, now_ms=now_ms)
+
+        response = client.get("/api/news/status", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    ingest = response.json()["data"]["layers"]["ingest"]
+    assert ingest["status"] == "ready"
+    assert ingest["reasons"] == []
+    assert ingest["rss"] == {
+        "enabled": False,
+        "source_count": 0,
+        "successful_source_count": 0,
+        "failed_source_count": 0,
+        "claimed_source_count": 0,
+        "next_due_at_ms": None,
+        "latest_success_at_ms": None,
+    }
 
 
 def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_path):
@@ -831,13 +974,13 @@ def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_pa
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.sync_sources((source,), now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(event,),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
         feed = client.get("/api/news/feed", headers=headers).json()["data"]
@@ -888,13 +1031,13 @@ def test_api_news_strips_wire_controls_and_prefers_bounded_explicit_description(
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.sync_sources((source,), now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(event,),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
         headers = {"Authorization": "Bearer secret"}
         feed = client.get("/api/news/feed", headers=headers).json()["data"]
         detail = client.get(
@@ -925,7 +1068,7 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            _sync_public_news_sources(repos, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -939,15 +1082,12 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
             repos.news.update_opennews_live_status(
                 source_id=source.source_id,
                 connected=True,
                 now_ms=now_ms,
                 error_code=None,
-                gap_unclosed=False,
-                gap_boundary_provider_record_id=None,
-                expected_gap_version=0,
             )
 
         headers = {"Authorization": "Bearer secret"}
@@ -1098,78 +1238,6 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert disabled_push["latest_sent_at_ms"] == now_ms + 3
 
 
-def test_api_news_status_detects_and_clears_a_stalled_story_projection(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    first_success_at_ms = now_ms - 300_000
-    pending_observed_at_ms = now_ms - 130_000
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=first_success_at_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="status-materialized",
-                        title="Central bank publishes a policy decision",
-                        description="The decision is now public.",
-                        published_at_ms=first_success_at_ms - 1_000,
-                        reporting_origin="authority",
-                    ),
-                ),
-                observed_at_ms=first_success_at_ms,
-            )
-            repos.news.rebuild_stories(now_ms=first_success_at_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="status-waiting",
-                        title="Government announces a separate infrastructure decision",
-                        description="A second current Article is waiting for Story projection.",
-                        published_at_ms=pending_observed_at_ms - 1_000,
-                        reporting_origin="government",
-                    ),
-                ),
-                observed_at_ms=pending_observed_at_ms,
-            )
-            repos.news.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=now_ms,
-                error_code=None,
-                gap_unclosed=False,
-                gap_boundary_provider_record_id=None,
-                expected_gap_version=0,
-            )
-
-        headers = {"Authorization": "Bearer secret"}
-        stalled_response = client.get("/api/news/status", headers=headers)
-
-        with write_repositories() as repos, repos.transaction():
-            repos.news.rebuild_stories(now_ms=now_ms)
-        live_response = client.get("/api/news/status", headers=headers)
-
-    assert stalled_response.status_code == 200
-    stalled = stalled_response.json()["data"]
-    assert stalled["operating_state"] == "stalled"
-    assert stalled["last_success_at_ms"] == first_success_at_ms
-    assert stalled["layers"]["story"]["status"] == "degraded"
-    assert stalled["layers"]["story"]["unmaterialized_item_count"] == 1
-    assert stalled["layers"]["story"]["oldest_unmaterialized_at_ms"] == pending_observed_at_ms
-    assert "story_projection_stalled" in stalled["layers"]["story"]["reasons"]
-
-    assert live_response.status_code == 200
-    live = live_response.json()["data"]
-    assert live["operating_state"] == "recovering"
-    assert live["last_success_at_ms"] == now_ms
-    assert live["layers"]["story"]["unmaterialized_item_count"] == 0
-    assert live["layers"]["story"]["oldest_unmaterialized_at_ms"] is None
-    assert live["layers"]["brief"]["public_state"] == "unavailable"
-
-
 def test_api_news_feed_derives_push_delivery_state_from_selected_provider_evidence(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
@@ -1177,7 +1245,7 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.sync_sources((source,), now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -1200,7 +1268,7 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
         initial = client.get("/api/news/feed", headers=headers).json()["data"]["stories"]
@@ -1272,7 +1340,7 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            _sync_public_news_sources(repos, now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -1287,15 +1355,12 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
             repos.news.update_opennews_live_status(
                 source_id=source.source_id,
                 connected=True,
                 now_ms=now_ms,
                 error_code=None,
-                gap_unclosed=False,
-                gap_boundary_provider_record_id=None,
-                expected_gap_version=0,
             )
             repos.news.initialize_push_baseline(now_ms=now_ms)
             repos.conn.execute(
@@ -1430,7 +1495,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.sync_sources((source,), now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -1458,7 +1523,7 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
         complete = client.get("/api/news/feed", headers=headers)
@@ -1500,7 +1565,7 @@ def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_s
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
-            repos.news.sync_source(source, now_ms=now_ms)
+            repos.news.sync_sources((source,), now_ms=now_ms)
             repos.news.record_opennews_events(
                 source=source,
                 events=(
@@ -1558,7 +1623,7 @@ def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_s
                 ),
                 observed_at_ms=now_ms,
             )
-            repos.news.rebuild_stories(now_ms=now_ms)
+            _rebuild_news_projection(repos, now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
         complete = client.get("/api/news/feed", headers=headers)

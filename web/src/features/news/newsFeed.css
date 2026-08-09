@@ -111,36 +111,6 @@
     font-size: 0.64rem;
   }
 
-  .news-provider-score {
-    color: var(--foreground);
-    font: 0.68rem var(--font-mono);
-  }
-
-  .news-provider-score b {
-    color: var(--primary);
-    font-size: 0.78rem;
-  }
-
-  .news-provider-signal {
-    color: var(--primary);
-    font-weight: 650;
-  }
-
-  .news-story-coins {
-    display: inline-flex;
-    gap: 0.22rem;
-    align-items: center;
-  }
-
-  .news-story-coins b,
-  .news-story-coins small {
-    padding: 0.08rem 0.3rem;
-    border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
-    border-radius: 999px;
-    color: var(--primary);
-    font: 650 0.64rem var(--font-mono);
-  }
-
   .news-original-link,
   .news-primary-link {
     display: inline-flex;
@@ -257,10 +227,6 @@
     .news-view-tabs a {
       flex: 1;
       padding: 0 0.45rem;
-    }
-
-    .news-view-tabs a small {
-      display: none;
     }
 
     .news-filter-bar {

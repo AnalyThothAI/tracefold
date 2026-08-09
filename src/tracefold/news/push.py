@@ -109,17 +109,6 @@ class NewsStoryPush:
             ),
         )
 
-    async def health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        return cast(
-            dict[str, Any],
-            await self.db.run_business(
-                "news_story_push_health",
-                self._health_sync,
-                int(now_ms),
-                operation_timeout_seconds=0.5,
-            ),
-        )
-
     async def close(self) -> None:
         """Close the synchronous delivery adapter through its owning capability."""
 
@@ -527,13 +516,6 @@ class NewsStoryPush:
                     lease_token=lease_token,
                     lease_expires_at_ms=now_ms + _LEASE_MS,
                 ),
-            )
-
-    def _health_sync(self, now_ms: int) -> dict[str, Any]:
-        with self.db.worker_session("news_story_push_health", 0.5) as repos:
-            return cast(
-                dict[str, Any],
-                repos.news.push_health_snapshot(now_ms=now_ms),
             )
 
     def _freeze_payload_sync(

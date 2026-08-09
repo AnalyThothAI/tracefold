@@ -68,9 +68,10 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 },
                 "news": {
                     "enabled": settings.news.enabled,
+                    "rss_enabled": settings.news.rss_enabled,
                     "opennews_token_configured": bool(settings.news.opennews_token),
                     "brief": {
-                        "openrouter_configured": bool(settings.llm.openrouter_api_key),
+                        "direct_configured": bool(settings.llm.api_key),
                         "groq_configured": bool(settings.llm.groq_api_key),
                     },
                     "push": {

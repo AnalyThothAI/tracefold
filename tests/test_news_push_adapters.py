@@ -19,7 +19,7 @@ from tracefold.integrations.feishu import (
 )
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.news import NewsPushDeliveryError
-from tracefold.platform.config.settings import NewsPushSettings, Settings, default_config_yaml
+from tracefold.platform.config.settings import LlmConfig, NewsPushSettings, Settings, default_config_yaml
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
@@ -96,6 +96,46 @@ def test_default_config_keeps_news_push_disabled_and_credentials_empty() -> None
         "feishu_webhook_url": None,
         "feishu_signing_secret": None,
     }
+    assert payload["llm"]["api_key"] is None
+    assert payload["llm"]["base_url"] is None
+    assert payload["llm"]["news_brief_model"] is None
+    assert "openrouter_api_key" not in payload["llm"]
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"api_key": "secret"},
+        {"base_url": "https://deepseek.test/v1"},
+        {"news_brief_model": "deepseek-chat"},
+        {"api_key": "secret", "base_url": "https://deepseek.test/v1"},
+        {"api_key": "secret", "news_brief_model": "deepseek-chat"},
+        {"base_url": "https://deepseek.test/v1", "news_brief_model": "deepseek-chat"},
+    ],
+)
+def test_llm_direct_configuration_is_all_or_none(partial: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="llm_direct_configuration_incomplete"):
+        LlmConfig(**partial)
+
+
+def test_llm_direct_configuration_accepts_empty_or_complete() -> None:
+    assert LlmConfig() == LlmConfig(api_key=None, base_url=None, news_brief_model=None)
+    configured = LlmConfig(
+        api_key="  secret  ",
+        base_url="  https://deepseek.test/v1/  ",
+        news_brief_model="  deepseek-chat  ",
+    )
+
+    assert configured.api_key == "secret"
+    assert configured.base_url == "https://deepseek.test/v1"
+    assert configured.news_brief_model == "deepseek-chat"
+
+
+def test_llm_configuration_rejects_retired_openrouter_field() -> None:
+    with pytest.raises(ValidationError, match="openrouter_api_key") as raised:
+        LlmConfig.model_validate({"openrouter_api_key": "retired-secret"})
+
+    assert "retired-secret" not in str(raised.value)
 
 
 def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatch, tmp_path) -> None:
@@ -119,6 +159,7 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
     code, payload = config_command.handle_config(object())
 
     assert code == 0
+    assert payload["data"]["news"]["rss_enabled"] is False
     assert payload["data"]["news"]["push"] == {
         "enabled": True,
         "feishu_webhook_url_configured": True,
@@ -127,7 +168,7 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
         "translation_configured": True,
     }
     assert payload["data"]["news"]["brief"] == {
-        "openrouter_configured": False,
+        "direct_configured": True,
         "groq_configured": False,
     }
     rendered = json.dumps(payload)
@@ -1023,50 +1064,37 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
 
 
-def test_feishu_news_push_delivers_legacy_frozen_v2_card_unchanged() -> None:
+def test_feishu_news_push_rejects_missing_null_and_stale_schema_without_network() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, json={"code": 0})
 
-    legacy_card = {
-        "schema": "2.0",
-        "config": {"update_multi": True},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": "legacy source facts"},
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "查看原文"},
-                },
-            ]
-        },
-        "header": {
-            "title": {"tag": "plain_text", "content": "旧卡片标题"},
-            "subtitle": {"tag": "plain_text", "content": "高分 News Story"},
-            "template": "blue",
-        },
-    }
-    frozen = {
-        "channel": "feishu",
-        "auth_mode": "signed",
-        "translation": _legacy_news_push_translation(),
-        "card": legacy_card,
-    }
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         "test-secret",
         transport=httpx.MockTransport(handler),
     )
     try:
-        receipt = delivery.deliver(frozen, idempotency_key="legacy-story")
+        frozen = _prepare_payload(delivery, _news_push_source_payload())
+        invalid_payloads = []
+        missing_schema = dict(frozen)
+        missing_schema.pop("schema_version")
+        invalid_payloads.append(missing_schema)
+        invalid_payloads.append({**frozen, "schema_version": None})
+        invalid_payloads.append({**frozen, "schema_version": "news_feishu_delivery_v1"})
+        for payload in invalid_payloads:
+            with pytest.raises(
+                NewsPushDeliveryError,
+                match="news_push_feishu_frozen_schema_invalid",
+            ) as raised:
+                delivery.deliver(payload, idempotency_key="stale-story")
+            assert raised.value.retryable is False
     finally:
         delivery.close()
 
-    assert receipt.provider == "feishu"
-    assert len(requests) == 1
-    assert json.loads(requests[0].content)["card"] == legacy_card
+    assert requests == []
 
 
 @pytest.mark.parametrize(
@@ -1213,7 +1241,11 @@ def test_feishu_news_push_rejects_invalid_frozen_payload_as_terminal() -> None:
     try:
         with pytest.raises(NewsPushDeliveryError) as raised:
             delivery.deliver(
-                {"channel": "feishu", "card": {"schema": "1.0"}},
+                {
+                    "schema_version": "news_feishu_delivery_v2",
+                    "channel": "feishu",
+                    "card": {"schema": "1.0"},
+                },
                 idempotency_key="story-1",
             )
     finally:
@@ -1243,6 +1275,7 @@ def test_feishu_news_push_rejects_missing_or_invalid_frozen_auth_mode_without_ne
         with pytest.raises(NewsPushDeliveryError) as raised:
             delivery.deliver(
                 {
+                    "schema_version": "news_feishu_delivery_v2",
                     "channel": "feishu",
                     "auth_mode": auth_mode,
                     "card": {"schema": "2.0"},
@@ -1290,16 +1323,6 @@ def _news_push_source_payload(
             "first_published_at_ms": 1_785_542_300_000,
             "last_published_at_ms": 1_785_542_400_000,
         },
-    }
-
-
-def _legacy_news_push_translation() -> dict[str, object]:
-    return {
-        "status": "translated",
-        "title_zh": "比特币 ETF 录得资金流入",
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash",
-        "error_code": None,
     }
 
 

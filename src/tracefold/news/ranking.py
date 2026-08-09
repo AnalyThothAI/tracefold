@@ -334,31 +334,6 @@ def promote_diplomacy_severity(
     return level
 
 
-def importance_score(
-    *,
-    level: ThreatLevel,
-    tier: int,
-    corroboration_count: int,
-    published_at_ms: int,
-    now_ms: int,
-    title: str,
-    entity_corroboration_count: int = 0,
-) -> int:
-    """WorldMonitor 55/20/15/10 scoring with narrow boosts."""
-
-    return int(
-        importance_factors(
-            level=level,
-            tier=tier,
-            corroboration_count=corroboration_count,
-            published_at_ms=published_at_ms,
-            now_ms=now_ms,
-            title=title,
-            entity_corroboration_count=entity_corroboration_count,
-        )["total"]
-    )
-
-
 def importance_factors(
     *,
     level: ThreatLevel,
@@ -555,7 +530,6 @@ __all__ = [
     "compute_entity_corroboration",
     "diplomacy_entity_keys",
     "importance_factors",
-    "importance_score",
     "is_brief_lead_eligible",
     "is_top_stories_admissible",
     "promote_diplomacy_severity",

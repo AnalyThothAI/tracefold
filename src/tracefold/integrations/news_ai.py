@@ -12,27 +12,30 @@ from math import isfinite
 
 import httpx
 
-from tracefold.news import (
-    INSIGHTS_SYNTHESIS_GATE,
-    INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
-    INSIGHTS_SYNTHESIS_PARSE,
-    INSIGHTS_SYNTHESIS_PROVIDER,
-    JAVASCRIPT_WHITESPACE_PATTERN,
-    NewsBriefStory,
-    NewsBriefSynthesisResult,
+from tracefold.news import NewsBriefStory, NewsBriefSynthesisResult
+from tracefold.news.brief import (
     brief_system_prompt,
     brief_user_prompt,
     compose_l1_brief,
     compose_l2_brief,
     compose_none_brief,
     is_brief_lead_eligible,
-    javascript_trim,
     parse_brief_synthesis,
-    parse_javascript_number,
     synthesis_system_prompt,
     synthesis_user_prompt,
+)
+from tracefold.news.identity import (
+    JAVASCRIPT_WHITESPACE_PATTERN,
+    javascript_trim,
+    parse_javascript_number,
     utf16_length,
     web_usv_string,
+)
+from tracefold.news.models import (
+    INSIGHTS_SYNTHESIS_GATE,
+    INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
+    INSIGHTS_SYNTHESIS_PARSE,
+    INSIGHTS_SYNTHESIS_PROVIDER,
 )
 
 
@@ -64,13 +67,15 @@ class _BudgetExhausted(RuntimeError):
 
 
 class ProviderChainNewsBriefPublisher:
-    """Pinned public WorldMonitor L1/L2 provider waterfall."""
+    """Pinned WorldMonitor L1/L2 flow over Tracefold's configured provider lanes."""
 
     def __init__(
         self,
         *,
         ollama_base_url: str,
-        openrouter_api_key: str | None,
+        configured_base_url: str | None = None,
+        configured_api_key: str | None = None,
+        configured_model: str | None = None,
         groq_api_key: str | None,
         total_timeout_seconds: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -79,6 +84,16 @@ class ProviderChainNewsBriefPublisher:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         normalized_ollama = str(ollama_base_url or "").strip().rstrip("/")
+        normalized_configured_base_url = str(configured_base_url or "").strip().rstrip("/")
+        normalized_configured_api_key = str(configured_api_key or "").strip()
+        normalized_configured_model = str(configured_model or "").strip()
+        configured_parts = (
+            normalized_configured_base_url,
+            normalized_configured_api_key,
+            normalized_configured_model,
+        )
+        if any(configured_parts) and not all(configured_parts):
+            raise ValueError("news_brief_direct_configuration_incomplete")
         if total_timeout_seconds <= 0:
             raise ValueError("news_brief_total_timeout_invalid")
         self._total_timeout_seconds = float(total_timeout_seconds)
@@ -98,14 +113,14 @@ class ProviderChainNewsBriefPublisher:
                     timeout_seconds=25.0,
                 )
             )
-        if str(openrouter_api_key or "").strip():
+        if all(configured_parts):
             providers.append(
                 _BriefProvider(
-                    name="openrouter",
-                    url="https://openrouter.ai/api/v1/chat/completions",
-                    model="deepseek/deepseek-v4-flash",
+                    name="deepseek",
+                    url=f"{normalized_configured_base_url}/chat/completions",
+                    model=normalized_configured_model,
                     timeout_seconds=20.0,
-                    api_key=str(openrouter_api_key).strip(),
+                    api_key=normalized_configured_api_key,
                 )
             )
         if str(groq_api_key or "").strip():
@@ -239,8 +254,6 @@ class ProviderChainNewsBriefPublisher:
         }
         if provider.name == "ollama":
             body["think"] = False
-        elif provider.name == "openrouter":
-            body["reasoning"] = {"enabled": False}
         headers = _provider_headers(provider)
         response: httpx.Response | None = None
         for attempt in range(3):
@@ -337,9 +350,6 @@ def _provider_headers(provider: _BriefProvider) -> dict[str, str]:
     headers = {"Content-Type": "application/json", "User-Agent": _CHROME_UA}
     if provider.api_key:
         headers["Authorization"] = f"Bearer {provider.api_key}"
-    if provider.name == "openrouter":
-        headers["HTTP-Referer"] = "https://worldmonitor.app"
-        headers["X-Title"] = "World Monitor"
     return headers
 
 

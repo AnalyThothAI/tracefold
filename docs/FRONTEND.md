@@ -86,18 +86,19 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   than 30 seconds without a true current-view HTTP success is unavailable.
   Only health transitions are politely announced; the advancing age is not an
   aria-live stream.
-- **News route.** `/news` is a decision-first scan surface over the flat global
+- **News routes.** `/news` is a decision-first scan surface over the flat global
   Story Feed from `/api/news/feed`; the browser never clusters, scores, selects
-  provider evidence, or reorders. Its three modes are `重点`, `全部`, and
-  `公共全球简报`. The default `重点` request is the fixed current 12-hour population
-  with `provider_score_gt=70`, `sort=latest`, and `limit=25`; the comparison is
-  strict, so a score of 70 is excluded. `全部` removes only the score threshold.
-  Tracefold importance remains an optional server sort. `/news/brief` is the
-  stable shareable public Brief URL and participates in the same mode
-  navigation. It renders one whole immutable current/LKG snapshot, never
-  publication history or a personalized variant. Its server-ordered Top Stories
-  are the primary document; L1 or degraded L2 prose is a separately labelled
-  enhancement and cannot reorder or replace that evidence.
+  provider evidence, or reorders. The public News navigation contains `全球新闻`,
+  `公共全球简报`, `状态`, and `来源`, backed respectively by `/news`,
+  `/news/brief`, `/news/status`, and `/news/sources`. Story detail remains at
+  `/news/stories/:storyId` and carries the same navigation. There is one public
+  product and no personalized or score-threshold mode. Feed requests use the
+  current server population with `sort=latest` and `limit=25`; Tracefold
+  importance remains an optional server sort. `/news/brief` renders one whole
+  atomic current/LKG snapshot, never publication history or a personalized
+  variant. Its server-ordered Top Stories are the primary document; L1 or
+  degraded L2 prose is a separately labelled enhancement and cannot reorder or
+  replace that evidence.
 
   News query, mode, category, deterministic severity, actual reporting origin,
   and sort are URL-owned. Search calls the News Feed with `q`; it does not call
@@ -110,41 +111,40 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   scrolled away, the route preserves the viewport and shows a bounded new-item
   affordance that returns to the top.
 
-  Feed rows are compact reading cards. OpenNews score, localized signal, and
-  deterministic severity lead; actual reporting origin, relative time, and
-  independent-origin count provide context. The canonical persisted headline
-  is primary and is not replaced by reading-layer localization; the browser
-  makes no model call. Only a valid safe plain-text description is shown,
-  clamped to two lines.
-  Coins are limited to three plus a
-  `+N` remainder. Tracefold importance is secondary and its supplied factors
-  live under row-local `为什么重要`. The primary row action opens
+  Feed rows are compact reading cards. Deterministic severity, actual reporting
+  origin, relative time, and independent-origin count provide context. The
+  canonical persisted headline is primary; the browser makes no model call.
+  Only a valid safe plain-text description is shown, clamped to two lines.
+  Provider score, signal, grade, coins, and Push state are not reading-layer
+  decoration. Tracefold importance is secondary and its supplied factors live
+  under row-local `为什么重要`. The primary row action opens
   `/news/stories/:storyId`; a separate link opens original evidence when a
-  valid URL exists and is otherwise omitted. Push state
-  and provider grade do not appear in Feed rows. Missing values are omitted.
+  valid URL exists and is otherwise omitted. Missing values are omitted.
   At 1280×720 the target is at least four to five rows, and at 390×844 about two
   rows, with no horizontal overflow.
 
   `/news/stories/:storyId` reads `/api/news/stories/{story_id}` and is
-  reading-first: canonical headline, OpenNews score/signal, severity,
-  reporting origin/time, independent-origin count, coins, valid description,
-  and representative original link precede related reports. Complete member
+  reading-first: canonical headline, severity, reporting origin/time,
+  independent-origin count, valid description, and representative original
+  link precede related reports. Complete member
   pagination remains reachable. Internal IDs, complete factor math, provider
-  metadata, and aggregation evidence stay under `为什么重要` or
-  `评分与审计证据` disclosures. User-facing language is `新闻事件`, `相关报道`, and
-  `独立来源`; machine terms remain inside audit disclosures. Linkless evidence
-  remains valid; unavailable original-link actions are omitted from the reading
-  layer.
+  metadata, and aggregation evidence do not replace canonical evidence.
+  User-facing language is `新闻事件`, `相关报道`, and `独立来源`; machine terms
+  remain inside audit disclosures. Linkless evidence remains valid; unavailable
+  original-link actions are omitted from the reading layer.
 
-  `/news/status` is not a browser route. The Feed renders compact News health
-  from `/api/news/status` in its header: healthy state is quiet, recovery/stall
-  is reader-facing, and the disclosure surfaces bounded ingest/Story evidence
-  without transport jargon. Brief and Push operational layers remain available
-  in the API/CLI and may be added to the disclosure only when they aid a reader
-  decision. The standalone
-  `/news/sources` browser route and navigation entry are deleted; the
-  `/api/news/sources` operator contract remains available. Feed and Brief poll
-  every 60 seconds with ETag revalidation; a `304` reuses the cached body.
+  `/news/status` reads `/api/news/status` and presents primary OpenNews ingest
+  before public RSS breadth/corroboration, followed by Story, Brief, Push, and
+  translation evidence without creating a second health calculation. RSS
+  displays `未启用` when the server reports its default-off configuration; zero
+  enabled sources is not presented as warming or failure. The Feed
+  also renders compact reader-facing News health in its header.
+  `/news/sources` reads `/api/news/sources`, preserves its OpenNews-first server
+  cursor order across enabled sources, exposes current fetch/outcome evidence, and never introduces
+  client-side source ranking or enablement. The OpenNews inventory card says
+  primary rather than displaying its reporting-origin tier as an acquisition
+  priority. Feed, Brief, Status, and Sources poll every 60 seconds; Feed and
+  Brief retain ETag revalidation and a `304` reuses the cached body.
   There is no archive, revision timeline, read state, favorites, subscriptions,
   per-Story AI panel, push inbox, notification settings, browser model call, or
   adjustable score threshold.
@@ -237,8 +237,8 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/search`, `/stocks`, `/news`, `/news?view=all`,
-   `/news/brief`, `/news/stories/:storyId`, `/macro`, and
+1. Hard-reload `/`, `/search`, `/stocks`, `/news`, `/news/brief`,
+   `/news/status`, `/news/sources`, `/news/stories/:storyId`, `/macro`, and
    `/token/:targetType/:targetId?window=1h` with representative query
    params.
 2. Submit the topbar search and confirm the URL becomes `/search?q=<submitted-query>`.
@@ -251,15 +251,17 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News focus mode
-   requests strict `>70`, latest, 25-row pages; search and origin filters change
-   server results; canonical-headline rows remain readable; Feed health is
-   inline; Story audit evidence starts collapsed; and no `/news/sources`
-   navigation survives. On `/news/brief`, verify Top Stories stay in exact
-   server order, linkless evidence remains visible, L1/L2 is labelled separately,
-   current/degraded/LKG/unavailable states are truthful, and no history or
-   personalized controls appear. Confirm about two News rows remain scannable at
-   390px and at least four at desktop height without horizontal overflow.
+9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News Feed requests
+   latest 25-row pages; search and origin filters change server results;
+   canonical-headline rows remain readable; provider-score/Push decoration is
+   absent; Feed health is inline; and Story audit evidence starts collapsed. On
+   `/news/brief`, verify Top Stories stay in exact server order, citation links
+   open the matching Story, linkless evidence remains visible, L1/L2 is labelled
+   separately, current/degraded/LKG/unavailable states are truthful, and no
+   history or personalized controls appear. Verify `/news/status` shows the four
+   server-owned layers and `/news/sources` preserves server order with reachable
+   pagination. Confirm about two News rows remain scannable at 390px and at
+   least four at desktop height without horizontal overflow.
 10. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps all six
    module summaries, latest fact time, coverage, History Depth, and Data Quality
    readable without horizontal overflow or machine-only labels. Verify each

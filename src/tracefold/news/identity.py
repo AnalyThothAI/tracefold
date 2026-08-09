@@ -368,14 +368,6 @@ def story_similarity(left: str, right: str) -> float:
     return cosine_similarity(story_vector(left), story_vector(right))
 
 
-def is_same_story(
-    left: str,
-    right: str,
-    threshold: float = STORY_SIMILARITY_THRESHOLD,
-) -> bool:
-    return story_similarity(left, right) >= threshold
-
-
 def cluster_texts(
     texts: list[str] | tuple[str, ...],
     *,
@@ -457,7 +449,6 @@ __all__ = [
     "cluster_texts",
     "collapse_javascript_whitespace",
     "cosine_similarity",
-    "is_same_story",
     "javascript_is_letter_or_number",
     "javascript_lower",
     "javascript_starts_with_lowercase_letter",

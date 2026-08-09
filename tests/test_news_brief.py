@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from tracefold.news import brief as brief_module
-from tracefold.news import brief_store as brief_store_module
+import tracefold.news.brief as brief_module
+import tracefold.news.brief_store as brief_store_module
 from tracefold.news.brief import (
     compose_l1_brief,
     compose_l2_brief,
@@ -12,7 +12,6 @@ from tracefold.news.brief import (
     selection_fingerprint,
     synthesis_system_prompt,
     synthesis_user_prompt,
-    target_fingerprint,
     validate_no_hallucinated_proper_nouns,
     verify_citation_indexes,
 )
@@ -647,7 +646,7 @@ def test_dotted_acronym_citation_collapse_is_narrow_and_fail_closed() -> None:
     )
 
 
-def test_source_url_and_all_three_content_identities_are_canonical() -> None:
+def test_source_url_and_current_content_identities_are_canonical() -> None:
     story = _story(
         "story-1",
         "Iran threatens to close Strait of Hormuz",
@@ -673,10 +672,9 @@ def test_source_url_and_all_three_content_identities_are_canonical() -> None:
         "identity_version": "worldmonitor_story_identity_f73de5b7",
     }
     selection = selection_fingerprint(snapshot)
-    target = target_fingerprint(selection)
     payload = {
+        "slot_at_ms": 1_786_928_400_000,
         "selection_fingerprint": selection,
-        "target_fingerprint": target,
         "brief_kind": "l1",
         "quality": "ok",
         "world_brief": "Iran threatens the Strait of Hormuz [1].",
@@ -691,28 +689,25 @@ def test_source_url_and_all_three_content_identities_are_canonical() -> None:
         "provider": "ollama",
         "model": "llama3.1:8b",
         "validation": {"failure_code": None},
-        "created_at_ms": 1,
-        "run_id": "volatile",
+        "published_at_ms": 1_786_928_400_001,
     }
 
     assert selection == "926dbe3c1c0dafae621cfe01cf1b0404c55d6eac99dbe43f060f1b1f81ebaa58"
-    assert target == "be82f7a22b4391bc3f89d25444f5889a4bb1aa1793919d48cd6e459092f7234a"
-    assert publication_id(payload) == "6f92895293a6d60af126a88948a3645e72c176b27d032fed1723206981296126"
-    assert publication_id({**payload, "created_at_ms": 999, "run_id": "another"}) == publication_id(payload)
+    assert publication_id(payload) == "c06acc975f6c679cc72b857ccc5e0ff26c2147b1d234454da65d038bfffb959f"
+    assert publication_id({**payload, "publication_id": "ignored-self-hash"}) == publication_id(payload)
+    assert publication_id({**payload, "published_at_ms": 1_786_928_400_002}) != publication_id(payload)
 
 
-def test_get_brief_reads_current_publication_and_run_from_one_database_snapshot() -> None:
-    target = "t" * 64
+def test_get_brief_reads_served_payload_and_slot_telemetry_from_one_singleton_snapshot() -> None:
     publication = {
         "publication_id": "publication",
+        "slot_at_ms": 0,
         "selection_fingerprint": "s" * 64,
-        "target_fingerprint": target,
         "quality": "ok",
         "brief_kind": "l1",
         "world_brief": "Public brief [1].",
         "brief_story_lines": [],
         "top_stories": [],
-        "selected_story_ids": [],
         "sources": [],
         "source_age_range": {"newest_ms": 1, "oldest_ms": 1},
         "provider": "fixture",
@@ -727,36 +722,40 @@ def test_get_brief_reads_current_publication_and_run_from_one_database_snapshot(
         "validation": {"failure_code": None, "stripped_citations": 0, "line_fallbacks": []},
         "provenance": {},
         "published_at_ms": 1,
-        "created_at_ms": 1,
     }
     run = {
-        "run_id": "run",
-        "target_fingerprint": target,
-        "selection_fingerprint": "s" * 64,
-        "status": "published",
+        "slot_at_ms": 0,
+        "status": "completed",
         "model_outcome": "ok",
         "pointer_action": "advance_ok",
+        "attempt_count": 1,
         "failure_count": 0,
-        "next_due_at_ms": None,
+        "next_due_at_ms": 1_800_000,
         "lease_expires_at_ms": None,
         "last_error_code": None,
-        "created_at_ms": 1,
         "updated_at_ms": 1,
         "last_attempt_at_ms": 1,
         "completed_at_ms": 1,
     }
-    joined = {
-        "current_row": {
-            "target_fingerprint": target,
-            "pending_due_at_ms": None,
-        },
-        "publication_row": publication,
-        "run_row": run,
+    current = {
+        "slot_at_ms": 0,
+        "slot_status": "completed",
+        "next_due_at_ms": 1_800_000,
+        "model_outcome": "ok",
+        "pointer_action": "advance_ok",
+        "attempt_count": 1,
+        "failure_count": 0,
+        "lease_expires_at_ms": None,
+        "last_error_code": None,
+        "updated_at_ms": 1,
+        "last_attempt_at_ms": 1,
+        "completed_at_ms": 1,
+        "served_payload": publication,
     }
 
     class _Cursor:
         def fetchone(self):
-            return joined
+            return current
 
     class _Connection:
         calls = 0
@@ -764,7 +763,7 @@ def test_get_brief_reads_current_publication_and_run_from_one_database_snapshot(
         def execute(self, statement):
             self.calls += 1
             assert self.calls == 1
-            assert "to_jsonb" in statement
+            assert "news_brief_current" in statement
             return _Cursor()
 
     connection = _Connection()
@@ -773,8 +772,8 @@ def test_get_brief_reads_current_publication_and_run_from_one_database_snapshot(
     assert connection.calls == 1
     assert result == {
         "state": "current",
-        "target_fingerprint": target,
-        "pending_due_at_ms": None,
+        "slot_at_ms": 0,
+        "next_due_at_ms": 1_800_000,
         "publication": publication,
         "latest_run": run,
     }

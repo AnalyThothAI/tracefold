@@ -31,6 +31,13 @@ roots. Keep internal modules cohesive and move behavior behind the root
 interface instead of adding forwarding modules, aliases, or compatibility
 packages.
 
+Private application composition and concrete provider adapters may use only
+the exact package-private implementation seams named in the architecture
+harness—for example, to construct an owned repository or reuse a pinned parser
+behind a public protocol. This is implementation wiring, not a caller-facing
+interface: public models/protocols still come from the package root, and new
+private import edges fail until deliberately reviewed and enumerated.
+
 PostgreSQL material facts and public HTTP/WS/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts
 delete the old path and update all consumers in the same change.
@@ -96,29 +103,36 @@ uv run pytest -q \
 ### News WorldMonitor parity evaluation
 
 The public News authority is WorldMonitor commit
-`0e8785c43e6a693990a14181ae0a16066c15fc8c`. Exact differential parity begins
-after Tracefold has adapted OpenNews into a canonical digest-like corpus with
-keyword-sourced threats. It covers shared lexical Story identity, public
-cluster scoring and selection, English L1/L2 synthesis, and whole-payload
-`news:insights:v1` publication/LKG semantics. WorldMonitor's RSS population
-builder, optional cached-classification branch, Dashboard ISQ reorder, and
-personalized Digest Magazine pipeline are reference or excluded surfaces, not
-Tracefold runtime contracts.
+`0e8785c43e6a693990a14181ae0a16066c15fc8c`. Parity includes the public
+`full/en + INTEL_SOURCES` population builder, shared lexical Story identity,
+public cluster scoring/selection, English L1/L2 synthesis, and whole-payload
+current/LKG semantics. The frozen catalog contains exactly 179 physical HTTPS
+feeds, 183 category memberships, 178 reporting-source names, and 17 categories.
+Optional cached classification, Dashboard ISQ reorder, and personalized Digest
+Magazine remain excluded surfaces.
 
-Tracefold retains one complete current 12-hour OpenNews Story closure. One
-provider record becomes one NewsItem: the first logical plaintext block is the
-bounded canonical headline, remaining text is bounded description evidence,
-and reporting origin follows the verified-wrapper/news-type/host/OpenNews
-precedence. Provider AI metadata remains descriptive and may qualify outbound
-Push only; it cannot affect Story identity, public scoring, admission, ordering,
-or Brief. The public seed applies the pinned JavaScript UTF-16
-`title.length > 10` gate and reclusters eligible Items with the same identity
-kernel before selection. The public selector is one global server-owned order with no profile,
-preference, embedding, topic grouping, entity veto, private diversity rule, or
-client-side reorder.
+The pinned checkout contains no OpenNews implementation. OpenNews as the
+primary low-latency lane is therefore an explicit Tracefold input-role
+decision; WorldMonitor parity covers the RSS catalog and parser, shared Story
+kernel, public selector, composer, and no-empty/current-LKG publication
+semantics. Primary acquisition never implies an OpenNews score boost or tier
+override.
 
-`tests/test_news_worldmonitor_parity.py` is the maintained local golden suite.
-It covers positive and negative title pairs, exact-title and containment merges,
+The maintained chain takes the first five RSS/Atom wire entries before gates,
+keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
+before the stable Top 20 per category, and unions the selected physical Items
+with the complete current 12-hour primary OpenNews lane. Provider AI metadata is
+descriptive and may qualify outbound Push only; it cannot affect Story identity,
+public scoring, admission, ordering, or Brief. The public seed applies the
+pinned JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items
+with the same identity kernel before selection. The public selector is one
+global server-owned order with no profile, preference, embedding, topic
+grouping, entity veto, private diversity rule, or client-side reorder.
+
+`tests/test_news_public_sources.py`, `tests/test_news_rss_adapter.py`, and
+`tests/test_news_worldmonitor_parity.py` are the maintained local suites. They
+cover the exact source/membership inventory and order, first-five parser gates,
+positive and negative title pairs, exact-title and containment merges,
 CJK features, hot buckets, order independence, classification, historical
 exclusions, importance rounding, public selector ordering and admission,
 corroborated-lead reservation, and the frozen reporting-origin tier-map digest.
@@ -130,14 +144,16 @@ the sibling use that same golden rather than skipping the lane.
 The identity port also fixes the pinned Node runtime's Unicode 17 letter,
 number, uppercase, and lowercase semantics so host Python Unicode data cannot
 silently change Story IDs.
-The real-PostgreSQL public pipeline suite additionally covers the canonical
-OpenNews adapter, complete Story closure, singleton selection, L1/L2 composer,
-immutable publication, and whole LKG decision. The retired RSS URL/membership
-inventory is not a runtime or parity contract. Run the differential lane with:
+The real-PostgreSQL public pipeline suite additionally covers RSS snapshot
+replacement, canonical OpenNews adaptation/overlap, the physical Story closure,
+singleton selection, L1/L2 composer, half-hour slot finalization, and whole LKG
+decision. Run the differential lane with:
 
 ```bash
 TRACEFOLD_WORLDMONITOR_REPO=/path/to/worldmonitor \
   uv run pytest -q \
+    tests/test_news_public_sources.py \
+    tests/test_news_rss_adapter.py \
     tests/test_news_pinned_worldmonitor_differential.py \
     tests/test_news_worldmonitor_parity.py
 ```
@@ -147,30 +163,36 @@ commit other than `0e8785c43e6a693990a14181ae0a16066c15fc8c` fails. Release
 evidence uses that exact sibling so the frozen-golden fallback is not mistaken
 for a fresh upstream execution.
 
-The release evaluation replays the current production 12-hour NewsItem corpus
-in isolated PostgreSQL. Record the source cutoff; Item, Story,
+The release evaluation explicitly enables RSS before replaying the current
+production RSS/OpenNews NewsItem corpus in isolated PostgreSQL; the runtime
+default remains OpenNews-only. Record the RSS 96-hour and OpenNews 12-hour
+cutoffs; physical Item and category-membership counts; Story,
 singleton/multi-member, reporting-origin, and category counts; every materially
 large cluster; highest-similarity non-merges; selected Top Story evidence and
 drop distribution; and both pinned commits. This is a distribution and parity
 review, not a compression target. The Story turn must remain inside the
 10,000-row, 8 MiB, 25-second, and 60-second freshness boundaries without
-sampling or widening the window.
+sampling or widening either source window.
 
-Cutover acceptance requires one atomic hard cut: exactly thirteen News tables,
-five public News routes, one enabled OpenNews runtime source, one acquisition
-module, one fixed-period Story/selection writer, one native model seam, and no
+Cutover acceptance requires one atomic hard cut: exactly nine News tables,
+five public News routes, one primary low-latency OpenNews lane plus the exact
+opt-in 179-feed public RSS breadth/corroboration catalog, one acquisition module, one
+fixed-period Story/selection writer, one
+native model seam, and no
 old payload, prompt, selector, reading-layer localization, personalized, or
-compatibility path. The primary maintained seam sends representative OpenNews
-frames through real PostgreSQL, the production complete Story projection and public selector,
-fake external model transports, immutable publication, and authenticated
+compatibility path. The primary maintained seam sends representative RSS wire
+responses and OpenNews frames through real PostgreSQL, the production complete
+Story projection and public selector, fake external model transports, the
+half-hour frozen-slot/current-LKG state machine, and authenticated
 `GET /api/news/brief`; repositories, transactions, calculation, selector,
-composer, state machine, and HTTP serialization remain real.
+composer, and HTTP serialization remain real.
 
 Release evidence additionally proves canonical headline/origin normalization
 and repeat-delivery zero writes; complete Story membership and CAS; exact public
 Top Story order and provenance; L1 success or truthful L2/none degradation;
 whole healthy LKG preservation without clock refresh or mixed snapshots;
-bounded retries and fenced claims; no model/network I/O in a database
+the exact Ollama -> configured direct DeepSeek -> Groq order; all-or-none
+direct endpoint/key/model validation; bounded retries and fenced claims; no model/network I/O in a database
 transaction; all five endpoints; generated contracts; and the responsive real
 `/news/brief` route. The page keeps server order, makes Top Stories primary,
 labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no

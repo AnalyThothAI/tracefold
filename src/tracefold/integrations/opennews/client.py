@@ -10,10 +10,9 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
 
-from tracefold.news import (
+from tracefold.news import OpenNewsEvent, OpenNewsExpectedError
+from tracefold.news.opennews import (
     OPENNEWS_REST_LIMIT,
-    OpenNewsEvent,
-    OpenNewsExpectedError,
     parse_opennews_rest_response,
 )
 

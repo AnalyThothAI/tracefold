@@ -1,4 +1,4 @@
-import { newsBriefPath, newsPath, newsStoryPath } from "@shared/routing/paths";
+import { newsPath, newsStoryPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { ArrowLeft, ExternalLink, SlidersHorizontal } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
@@ -10,15 +10,13 @@ import "./newsDetail.css";
 import "./newsBrief.css";
 import "./newsDetailResponsive.css";
 import "./newsFeed.css";
+import { NewsSourcesRoute, NewsStatusRoute } from "./NewsOperationsPage";
+import { NewsSectionTabs } from "./NewsSectionTabs";
 import {
   type BriefPublication,
   type BriefTopStory,
   type NewsBrief,
-  type NewsFeed,
   type NewsLevel,
-  type NewsProviderCoin,
-  type NewsProviderMetadata,
-  type NewsPushDeliveryState,
   type NewsStatus,
   type NewsStory,
   type NewsStoryDetail,
@@ -29,16 +27,12 @@ import {
   useNewsStoryWithToken,
 } from "./useNewsPage";
 
-type NewsPageProps = {
-  brief?: boolean;
-  storyId?: string | null;
-  token: string;
-};
+type NewsPageProps =
+  | { token: string; view: "brief" | "feed" | "sources" | "status" }
+  | { storyId: string; token: string; view: "story" };
 
-type FeedView = "focus" | "all";
 type Facet = { count: number; label?: string; value: string };
 
-const HIGH_SIGNAL_THRESHOLD = 70;
 const DETAIL_TITLE_EXPANSION_THRESHOLD = 56;
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -66,32 +60,24 @@ const LEVEL_LABELS: Record<NewsLevel, string> = {
   info: "信息",
 };
 
-const PUSH_DELIVERY_LABELS: Record<NewsPushDeliveryState, string> = {
-  pending: "推送处理中",
-  sent: "已推送",
-  suppressed: "未推送",
-  failed: "推送失败",
-};
-
-export function NewsPage({ brief = false, token, storyId = null }: NewsPageProps) {
-  if (brief) return <WorldBriefRoute token={token} />;
-  if (storyId) return <StoryRoute storyId={storyId} token={token} />;
-  return <FeedRoute token={token} />;
+export function NewsPage(props: NewsPageProps) {
+  if (props.view === "brief") return <WorldBriefRoute token={props.token} />;
+  if (props.view === "sources") return <NewsSourcesRoute token={props.token} />;
+  if (props.view === "status") return <NewsStatusRoute token={props.token} />;
+  if (props.view === "story") return <StoryRoute storyId={props.storyId} token={props.token} />;
+  return <FeedRoute token={props.token} />;
 }
 
 function FeedRoute({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const view: FeedView = searchParams.get("view") === "all" ? "all" : "focus";
   const q = searchParams.get("q")?.trim() ?? "";
   const category = searchParams.get("category") || null;
   const level = parseLevel(searchParams.get("level"));
   const reportingOrigin = searchParams.get("reporting_origin") || null;
   const sort = searchParams.get("sort") === "importance" ? "importance" : "latest";
-  const providerScoreGt = view === "focus" ? HIGH_SIGNAL_THRESHOLD : null;
   const query = useNewsFeedWithToken(token, {
     category,
     level,
-    providerScoreGt,
     q,
     reportingOrigin,
     sort,
@@ -103,12 +89,10 @@ function FeedRoute({ token }: { token: string }) {
   );
   const firstPage = pages[0];
   const categoryFacets = firstPage?.facets.categories ?? [];
-  const originFacets = getReportingOriginFacets(firstPage);
+  const originFacets = firstPage?.facets.reporting_origins ?? [];
   const hasActiveFilters = Boolean(q || category || level || reportingOrigin);
   const storyListRef = useRef<HTMLDivElement>(null);
-  const feedIdentity = [view, q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join(
-    "\u001f",
-  );
+  const feedIdentity = [q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join("\u001f");
   const storyFeed = useAnchoredStoryFeed(
     storyListRef,
     serverStories,
@@ -123,15 +107,10 @@ function FeedRoute({ token }: { token: string }) {
     q?: string | null;
     reportingOrigin?: string | null;
     sort?: "importance" | "latest";
-    view?: FeedView;
   }) => {
     const params = new URLSearchParams(searchParams);
-    const nextView = changes.view ?? view;
     const nextSort = changes.sort ?? sort;
-    params.set("view", nextView);
     params.set("sort", nextSort);
-    if (nextView === "focus") params.set("provider_score_gt", String(HIGH_SIGNAL_THRESHOLD));
-    else params.delete("provider_score_gt");
     setOptionalParam(params, "q", changes.q === undefined ? q : changes.q);
     setOptionalParam(
       params,
@@ -160,7 +139,7 @@ function FeedRoute({ token }: { token: string }) {
       <header className="news-story-header">
         <div className="news-heading-copy">
           <h1>全球新闻</h1>
-          <p>近 12 小时高信号动态</p>
+          <p>公共来源聚合与新闻事件</p>
         </div>
         <NewsInlineStatus
           error={statusQuery.isError}
@@ -170,7 +149,7 @@ function FeedRoute({ token }: { token: string }) {
       </header>
 
       <div className="news-feed-toolbar">
-        <NewsSectionTabs active={view} searchParams={searchParams} />
+        <NewsSectionTabs active="feed" />
         <NewsFeedControls
           category={category}
           categoryFacets={categoryFacets}
@@ -208,9 +187,7 @@ function FeedRoute({ token }: { token: string }) {
           hint={
             hasActiveFilters
               ? "换个关键词或减少筛选条件后再试。"
-              : view === "focus"
-                ? "当前没有 OpenNews 评分严格高于 70 的新闻。"
-                : "新闻会在下一轮采集后出现。"
+              : "新闻会在下一轮公共来源采集后出现。"
           }
           title={hasActiveFilters ? "没有匹配的新闻" : "暂无新闻"}
         />
@@ -220,7 +197,7 @@ function FeedRoute({ token }: { token: string }) {
           <div className="news-feed-results">
             {storyFeed.count ? (
               <button className="news-new-stories" onClick={storyFeed.reveal} type="button">
-                {storyFeed.count} 条新{view === "focus" ? "重点" : ""}新闻 · 回到顶部
+                {storyFeed.count} 条新新闻 · 回到顶部
               </button>
             ) : null}
             <div className="news-story-list" ref={storyListRef}>
@@ -242,35 +219,6 @@ function FeedRoute({ token }: { token: string }) {
         </PageState.Stale>
       ) : null}
     </section>
-  );
-}
-
-function NewsSectionTabs({
-  active,
-  searchParams,
-}: {
-  active: FeedView | "brief";
-  searchParams: URLSearchParams;
-}) {
-  return (
-    <nav aria-label="新闻视图" className="news-view-tabs">
-      <Link
-        aria-current={active === "focus" ? "page" : undefined}
-        to={{ pathname: newsPath(), search: feedTabSearch(searchParams, "focus") }}
-      >
-        重点
-        <small>OpenNews &gt; 70</small>
-      </Link>
-      <Link
-        aria-current={active === "all" ? "page" : undefined}
-        to={{ pathname: newsPath(), search: feedTabSearch(searchParams, "all") }}
-      >
-        全部
-      </Link>
-      <Link aria-current={active === "brief" ? "page" : undefined} to={newsBriefPath()}>
-        公共全球简报
-      </Link>
-    </nav>
   );
 }
 
@@ -429,13 +377,10 @@ function NewsInlineStatus({
   status?: NewsStatus;
 }) {
   const source = status?.layers.ingest.opennews ?? null;
+  const rss = status?.layers.ingest.rss ?? null;
   const readerStatus = readerFacingNewsStatus(error, status);
   const lastSuccessAt = readerLastSuccessAt(status);
-  const ingestReasons = status?.layers.ingest.reasons ?? [];
-  const recoveringOpenNewsGap = Boolean(source?.live_connected && source.gap_unclosed);
-  const hasIngestWarning = ingestReasons.some(
-    (reason) => !(recoveringOpenNewsGap && reason === "opennews_gap_unclosed"),
-  );
+  const hasIngestWarning = status?.layers.ingest.status === "degraded";
   return (
     <details className="news-inline-status" data-state={readerStatus.state}>
       <summary>
@@ -454,21 +399,50 @@ function NewsInlineStatus({
       <div className="news-status-diagnostics">
         {source ? (
           <section>
-            <h2>新闻数据</h2>
+            <h2>OpenNews 低延迟主采集链</h2>
             <dl>
               <div>
                 <dt>实时连接</dt>
                 <dd>{source.live_connected ? "正常" : "正在恢复"}</dd>
               </div>
               <div>
-                <dt>数据缺口</dt>
-                <dd>{source.gap_unclosed ? "正在补齐" : "已完整"}</dd>
+                <dt>最近补齐</dt>
+                <dd>
+                  {source.last_recovery_at_ms == null
+                    ? "等待首次补齐"
+                    : relativeTime(source.last_recovery_at_ms)}
+                </dd>
               </div>
               <div>
                 <dt>连续失败</dt>
                 <dd>{source.consecutive_failures}</dd>
               </div>
             </dl>
+          </section>
+        ) : null}
+        {rss ? (
+          <section>
+            <h2>公共 RSS 覆盖与交叉印证</h2>
+            {rss.enabled ? (
+              <dl>
+                <div>
+                  <dt>已成功来源</dt>
+                  <dd>
+                    {rss.successful_source_count}/{rss.source_count}
+                  </dd>
+                </div>
+                <div>
+                  <dt>当前失败</dt>
+                  <dd>{rss.failed_source_count}</dd>
+                </div>
+                <div>
+                  <dt>正在采集</dt>
+                  <dd>{rss.claimed_source_count}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p>未启用</p>
+            )}
           </section>
         ) : null}
         {error || source?.last_error || hasIngestWarning || status?.layers.story.reasons.length ? (
@@ -482,13 +456,9 @@ function NewsInlineStatus({
 }
 
 function StoryCard({ story }: { story: NewsStory }) {
-  const providerEvidence = story.provider_evidence;
-  const metadata = providerEvidence?.provider_metadata ?? {};
   const displayTitle = story.title;
   const summary = validSummary(story.description, displayTitle);
   const originalUrl = story.url;
-  const coins = providerCoinSymbols(metadata);
-  const providerScore = numericProviderScore(metadata.score);
   const factors = story.importance_factors;
   const boosts = [
     factors.diplomacy_flashpoint_boost
@@ -503,14 +473,6 @@ function StoryCard({ story }: { story: NewsStory }) {
     <article className="news-story-row" data-story-id={story.story_id}>
       <div className="news-story-primary">
         <header className="news-story-meta">
-          {providerScore != null ? (
-            <span className="news-provider-score">
-              OpenNews <b>{formatPoints(providerScore)}</b>
-            </span>
-          ) : null}
-          {providerScore != null && metadata.signal ? (
-            <span className="news-provider-signal">{localizedSignal(metadata.signal)}</span>
-          ) : null}
           <span className="news-severity" data-level={story.level}>
             {LEVEL_LABELS[story.level]}
           </span>
@@ -526,7 +488,6 @@ function StoryCard({ story }: { story: NewsStory }) {
         </Link>
         {summary ? <p className="news-story-summary">{summary}</p> : null}
         <div className="news-story-signals">
-          <ProviderCoinBadges symbols={coins} />
           {originalUrl ? (
             <a className="news-original-link" href={originalUrl} rel="noreferrer" target="_blank">
               查看原文
@@ -573,6 +534,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
       className="radar-panel news-panel news-detail-shell"
       data-page-archetype="case"
     >
+      <NewsSectionTabs active="story" />
       <header className="news-toolbar">
         <Link className="news-back-link" to={newsPath()}>
           <ArrowLeft aria-hidden />
@@ -629,11 +591,8 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                     <span className="news-eyebrow">确定性排序</span>
                     <h2>Tracefold 重要度 {story.importance_score}</h2>
                   </div>
-                  <PushDeliveryBadge state={story.push_delivery_state} />
                 </div>
-                <p>
-                  评分与 OpenNews 提供方分值相互独立。以下因子由服务端确定性计算，浏览器不重算。
-                </p>
+                <p>以下因子由服务端确定性计算，浏览器不重算。</p>
                 <ImportanceFactorGrid story={story} scoringSource={scoringMember?.source_name} />
               </section>
               <section>
@@ -648,10 +607,10 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                     <dt>评分依据</dt>
                     <dd>{scoringMember?.source_name ?? "评分报道"}</dd>
                     <code>{story.scoring_item_id}</code>
-                    {story.provider_evidence?.url ? (
+                    {scoringMember?.url ? (
                       <a
                         className="news-audit-source-link"
-                        href={story.provider_evidence.url}
+                        href={scoringMember.url}
                         rel="noreferrer"
                         target="_blank"
                       >
@@ -673,10 +632,7 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
 function StoryHero({ story }: { story: NewsStory }) {
   const displayTitle = story.title;
   const summary = validSummary(story.description, displayTitle);
-  const metadata = story.provider_evidence?.provider_metadata ?? {};
   const originalUrl = story.url;
-  const coins = providerCoinSymbols(metadata);
-  const providerScore = numericProviderScore(metadata.score);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const displayTitleOverflows = useTitleOverflow(titleRef, displayTitle);
   const displayTitleIsLong =
@@ -687,13 +643,6 @@ function StoryHero({ story }: { story: NewsStory }) {
         <span data-level={story.level}>{LEVEL_LABELS[story.level]}</span>
         <span>{CATEGORY_LABELS[story.category] ?? story.category}</span>
         <span>{story.source_name}</span>
-        {providerScore != null ? (
-          <span>
-            OpenNews {formatPoints(providerScore)}
-            {metadata.signal ? ` · ${localizedSignal(metadata.signal)}` : ""}
-          </span>
-        ) : null}
-        <ProviderCoinBadges symbols={coins} />
       </div>
       <h1 className="is-clamped" ref={titleRef}>
         {displayTitle}
@@ -731,18 +680,6 @@ function StoryHero({ story }: { story: NewsStory }) {
   );
 }
 
-function ProviderCoinBadges({ symbols }: { symbols: string[] }) {
-  if (!symbols.length) return null;
-  return (
-    <span aria-label="OpenNews 关联代币" className="news-story-coins" role="group">
-      {symbols.slice(0, 3).map((symbol) => (
-        <b key={symbol}>{symbol}</b>
-      ))}
-      {symbols.length > 3 ? <small>+{symbols.length - 3}</small> : null}
-    </span>
-  );
-}
-
 function StoryMemberCard({
   isRepresentative,
   isScoring,
@@ -773,22 +710,8 @@ function StoryMemberCard({
             <ExternalLink aria-hidden />
           </a>
         ) : null}
-        <ProviderEvidenceDisclosure metadata={member.provider_metadata} />
       </div>
     </article>
-  );
-}
-
-function ProviderEvidenceDisclosure({ metadata }: { metadata: NewsProviderMetadata }) {
-  if (!hasProviderMetadata(metadata)) return null;
-  return (
-    <details className="news-provider-disclosure">
-      <summary>OpenNews 元数据</summary>
-      <div>
-        <ProviderFacts metadata={metadata} />
-        <ProviderCoins metadata={metadata} />
-      </div>
-    </details>
   );
 }
 
@@ -843,67 +766,7 @@ function ImportanceFactorGrid({
   );
 }
 
-function PushDeliveryBadge({ state }: { state: NewsPushDeliveryState | null }) {
-  if (state == null) return null;
-  return (
-    <span className="news-push-state" data-state={state}>
-      {PUSH_DELIVERY_LABELS[state]}
-    </span>
-  );
-}
-
-function ProviderFacts({ metadata }: { metadata: NewsProviderMetadata }) {
-  const providerScore = numericProviderScore(metadata.score);
-  if (providerScore == null && !metadata.signal && !metadata.grade && !metadata.source) {
-    return null;
-  }
-  return (
-    <dl className="news-provider-facts">
-      {providerScore != null ? (
-        <div>
-          <dt>OpenNews 评分</dt>
-          <dd>{formatPoints(providerScore)}</dd>
-        </div>
-      ) : null}
-      {metadata.signal ? (
-        <div>
-          <dt>信号</dt>
-          <dd>{localizedSignal(metadata.signal)}</dd>
-        </div>
-      ) : null}
-      {metadata.grade ? (
-        <div>
-          <dt>等级</dt>
-          <dd>{metadata.grade}</dd>
-        </div>
-      ) : null}
-      {metadata.source ? (
-        <div>
-          <dt>提供方来源</dt>
-          <dd>{metadata.source}</dd>
-        </div>
-      ) : null}
-    </dl>
-  );
-}
-
-function ProviderCoins({ metadata }: { metadata: NewsProviderMetadata }) {
-  const coins = metadata.coins ?? [];
-  if (!coins.length) return null;
-  return (
-    <div className="news-provider-coins">
-      <b>关联代币</b>
-      <ul aria-label="OpenNews 关联代币">
-        {coins.map((coin, index) => (
-          <li key={`${coin.symbol}:${coin.market_type}:${index}`}>{formatProviderCoin(coin)}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function WorldBriefRoute({ token }: { token: string }) {
-  const [searchParams] = useSearchParams();
   const query = useNewsBriefWithToken(token);
   const brief = query.data;
   return (
@@ -912,7 +775,7 @@ function WorldBriefRoute({ token }: { token: string }) {
       className="radar-panel news-panel news-detail-shell"
       data-page-archetype="case"
     >
-      <NewsSectionTabs active="brief" searchParams={searchParams} />
+      <NewsSectionTabs active="brief" />
       <header className="news-toolbar news-brief-toolbar">
         <div>
           <span className="news-eyebrow">PUBLIC WORLD BRIEF</span>
@@ -931,7 +794,7 @@ function WorldBriefRoute({ token }: { token: string }) {
       ) : null}
       {brief && !brief.publication ? (
         <PageState.Empty
-          hint={briefUnavailableHint(brief.pending_due_at_ms)}
+          hint={briefUnavailableHint(brief.next_due_at_ms)}
           title="尚无公共全球简报"
         />
       ) : null}
@@ -953,7 +816,7 @@ function BriefDocument({
   return (
     <article className="news-brief-document">
       <header className="news-brief-publication-meta">
-        <span>{state === "last_known_good" ? "完整快照 · 保留展示" : "不可变发布快照"}</span>
+        <span>{state === "last_known_good" ? "完整快照 · 保留展示" : "原子发布快照"}</span>
         <p>发布 {absoluteTime(publication.published_at_ms)}</p>
         <p>
           来源时间 {absoluteTime(publication.source_age_range.oldest_ms)} 至{" "}
@@ -1116,44 +979,6 @@ function validExternalUrl(value: string | null | undefined): string | null {
   return /^https?:\/\//i.test(normalized) ? normalized : null;
 }
 
-function feedTabSearch(searchParams: URLSearchParams, view: FeedView): string {
-  const params = new URLSearchParams(searchParams);
-  params.set("view", view);
-  if (!params.has("sort")) params.set("sort", "latest");
-  if (view === "focus") params.set("provider_score_gt", String(HIGH_SIGNAL_THRESHOLD));
-  else params.delete("provider_score_gt");
-  const value = params.toString();
-  return value ? `?${value}` : "";
-}
-
-function getReportingOriginFacets(page?: NewsFeed): Facet[] {
-  if (!page) return [];
-  const facets = page.facets as NewsFeed["facets"] & { reporting_origins?: unknown };
-  const reportingOrigins = normalizeFacets(facets.reporting_origins);
-  if (reportingOrigins.length) return reportingOrigins;
-  return page.facets.sources.map((facet) => ({
-    count: facet.count,
-    label: facet.label,
-    value: facet.value,
-  }));
-}
-
-function normalizeFacets(value: unknown): Facet[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!isRecord(entry) || typeof entry.value !== "string" || typeof entry.count !== "number") {
-      return [];
-    }
-    return [
-      {
-        count: entry.count,
-        label: typeof entry.label === "string" ? entry.label : undefined,
-        value: entry.value,
-      },
-    ];
-  });
-}
-
 function withSelectedFacet(facets: Facet[], selected: string | null): Facet[] {
   if (!selected || facets.some((facet) => facet.value === selected)) return facets;
   return [{ count: 0, label: selected, value: selected }, ...facets];
@@ -1298,39 +1123,6 @@ function appendNonDeferredTail(
   return appended.length ? [...acceptedStories, ...appended] : acceptedStories;
 }
 
-function providerCoinSymbols(metadata: NewsProviderMetadata): string[] {
-  const seen = new Set<string>();
-  return (metadata.coins ?? []).flatMap((coin) => {
-    const symbol = coin.symbol.trim();
-    const identity = symbol.toLowerCase();
-    if (!symbol || seen.has(identity)) return [];
-    seen.add(identity);
-    return [symbol];
-  });
-}
-
-function numericProviderScore(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function hasProviderMetadata(metadata: NewsProviderMetadata): boolean {
-  return Boolean(
-    numericProviderScore(metadata.score) != null ||
-    metadata.signal ||
-    metadata.grade ||
-    metadata.source ||
-    metadata.coins?.length,
-  );
-}
-
-function localizedSignal(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (["long", "bullish", "positive", "buy"].includes(normalized)) return "偏多";
-  if (["short", "bearish", "negative", "sell"].includes(normalized)) return "偏空";
-  if (["neutral", "hold", "mixed"].includes(normalized)) return "中性";
-  return value;
-}
-
 function readerFacingNewsStatus(
   error: boolean,
   status: NewsStatus | undefined,
@@ -1341,10 +1133,6 @@ function readerFacingNewsStatus(
     return { label: "新闻更新异常", state: "stalled" };
   }
   if (status.layers.ingest.status === "degraded") {
-    const opennews = status.layers.ingest.opennews;
-    if (opennews?.live_connected && opennews.gap_unclosed) {
-      return { label: "历史新闻补齐中", state: "recovering" };
-    }
     return { label: "新闻更新异常", state: "stalled" };
   }
   const factStates = [status.layers.ingest.status, status.layers.story.status];
@@ -1437,18 +1225,4 @@ function absoluteTime(value: number): string {
 
 function formatPoints(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-function formatProviderCoin(coin: NewsProviderCoin): string {
-  const identity = [coin.symbol, coin.market_type, coin.match].filter(Boolean).join(" · ");
-  const annotations = [
-    coin.score != null ? `评分 ${coin.score}` : "",
-    coin.signal ? localizedSignal(coin.signal) : "",
-    coin.grade ? `等级 ${coin.grade}` : "",
-  ].filter(Boolean);
-  return annotations.length ? `${identity} · ${annotations.join(" · ")}` : identity;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

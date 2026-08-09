@@ -43,6 +43,21 @@ describe("News feed density contract", () => {
     expect(cssRule(briefCss, ".news-brief-story")).toContain("overflow-wrap: anywhere");
     expect(cssRule(responsiveCss, ".news-brief-toolbar")).toContain("flex-direction: column");
   });
+
+  it("stacks public Status and Sources without a mobile horizontal scroller", () => {
+    const operationsCss = readSource("src/features/news/newsOperations.css");
+
+    expect(cssRule(operationsCss, ".news-status-layer-grid")).toContain(
+      "grid-template-columns: repeat(2, minmax(0, 1fr))",
+    );
+    expect(operationsCss).toMatch(
+      /@media \(max-width: 767px\)[\s\S]*?\.news-status-layer-grid\s*{[^}]*grid-template-columns:\s*1fr;/,
+    );
+    expect(operationsCss).toMatch(
+      /@media \(max-width: 767px\)[\s\S]*?\.news-source-card > dl[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(operationsCss).not.toContain("overflow-x: auto");
+  });
 });
 
 function readSource(relativePath: string): string {

@@ -6,12 +6,6 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 type NewsSchemas = components["schemas"];
 
 export type NewsLevel = NewsSchemas["NewsStoryData"]["level"];
-export type NewsProviderCoin = NewsSchemas["NewsProviderCoinData"];
-export type NewsProviderMetadata = NewsSchemas["NewsProviderMetadataData"];
-export type NewsProviderEvidence = NewsSchemas["NewsProviderEvidenceData"];
-export type NewsPushDeliveryState = NonNullable<
-  NewsSchemas["NewsStoryData"]["push_delivery_state"]
->;
 export type NewsStory = NewsSchemas["NewsStoryData"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
 export type NewsStoryMember = NewsSchemas["NewsStoryMemberData"];
@@ -19,13 +13,13 @@ export type NewsStoryDetail = NewsSchemas["NewsStoryDetailData"];
 export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
 export type BriefTopStory = NewsSchemas["NewsBriefTopStoryData"];
 export type NewsBrief = NewsSchemas["NewsBriefData"];
-export type NewsOperatingState = NewsSchemas["NewsStatusData"]["operating_state"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
+export type NewsSource = NewsSchemas["NewsSourceData"];
+export type NewsSources = NewsSchemas["NewsSourcesData"];
 
 export type NewsFeedFilters = {
   category: string | null;
   level: NewsLevel | null;
-  providerScoreGt: number | null;
   q: string;
   reportingOrigin: string | null;
   sort: "importance" | "latest";
@@ -39,7 +33,6 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
       filters.category,
       filters.level,
       filters.reportingOrigin,
-      filters.providerScoreGt,
       filters.sort,
     ),
     queryFn: async ({ pageParam }) =>
@@ -50,7 +43,6 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
             filters.category,
             filters.level,
             filters.reportingOrigin,
-            filters.providerScoreGt,
             filters.sort,
             pageParam ?? "first",
           ])}`,
@@ -59,7 +51,6 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
             cursor: pageParam,
             level: filters.level,
             limit: 25,
-            provider_score_gt: filters.providerScoreGt,
             q: filters.q,
             reporting_origin: filters.reportingOrigin,
             sort: filters.sort,
@@ -115,6 +106,23 @@ export const useNewsStatusWithToken = (token: string) =>
           token,
         })
       ).data,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+export const useNewsSourcesWithToken = (token: string) =>
+  useInfiniteQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsSources(),
+    queryFn: async ({ pageParam }) =>
+      (
+        await getApi<NewsSources>("/api/news/sources", {
+          params: { cursor: pageParam, limit: 100 },
+          token,
+        })
+      ).data,
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.page.next_cursor ?? undefined,
     refetchInterval: 60_000,
     staleTime: 30_000,
   });

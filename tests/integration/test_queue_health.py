@@ -21,7 +21,6 @@ ALL_QUEUE_TABLES = (
     "event_anchor_backfill_jobs",
     "macro_document_analysis_jobs",
     "macro_module_frontiers",
-    "news_brief_runs",
     "radar_projection_frontiers",
     "token_discovery_dirty_lookup_keys",
     "token_image_source_dirty_targets",
@@ -66,7 +65,7 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
     assert projection_payload["data"]["status"] == "missing"
 
 
-def test_queue_registry_has_one_truthful_owner_for_all_nine_tables() -> None:
+def test_queue_registry_has_one_truthful_owner_for_all_eight_tables() -> None:
     assert queue_tables_for_owner(None) == ALL_QUEUE_TABLES
     assert queue_tables_for_owner("profile_projection") == ("token_profile_projection_frontiers",)
     assert queue_tables_for_owner("unknown") == ()
@@ -134,24 +133,15 @@ def test_frontier_and_native_job_health_use_eligibility_and_expired_lease_clocks
                 input_fingerprint="sha256:profile-input",
                 version="profile-test-v1",
             )
-            _insert_news_brief_retry(conn)
             _insert_macro_document_jobs(conn)
 
         profile = fetch_queue_table_health(conn, "token_profile_projection_frontiers", now_ms=NOW_MS)
-        brief = fetch_queue_table_health(conn, "news_brief_runs", now_ms=NOW_MS)
         document = fetch_queue_table_health(conn, "macro_document_analysis_jobs", now_ms=NOW_MS)
 
         assert profile["kind"] == "projection_frontier"
         assert profile["queue_depth"] == 1
         assert profile["due_count"] == 1
         assert profile["oldest_due_age_ms"] == 1_000
-
-        assert brief["counts_by_status"] == {"retry_wait": 1}
-        assert brief["queue_depth"] == 1
-        assert brief["due_count"] == 1
-        assert brief["failed_count"] == 1
-        assert brief["max_attempt_count"] == 7
-        assert brief["status"] == "degraded"
 
         assert document["counts_by_status"] == {"claimed": 1, "retryable": 1}
         assert document["queue_depth"] == 2
@@ -176,26 +166,6 @@ def _profile_target(suffix: str, *, due_at_ms: int) -> dict[str, object]:
         "priority": 10,
         "due_at_ms": due_at_ms,
     }
-
-
-def _insert_news_brief_retry(conn) -> None:
-    conn.execute(
-        """
-        INSERT INTO news_brief_runs(
-          run_id, target_fingerprint, selection_fingerprint,
-          status, model_outcome, pointer_action, failure_count,
-          last_error_code, next_due_at_ms,
-          created_at_ms, updated_at_ms, completed_at_ms
-        )
-        VALUES (
-          'brief-run-health', repeat('a', 64), repeat('b', 64),
-          'retry_wait', 'none', 'none', 7,
-          'INSIGHTS_SYNTHESIS_PROVIDER', %(next_due_at_ms)s,
-          1, %(updated_at_ms)s, %(updated_at_ms)s
-        )
-        """,
-        {"next_due_at_ms": NOW_MS - 500, "updated_at_ms": NOW_MS - 500},
-    )
 
 
 def _insert_macro_document_jobs(conn) -> None:

@@ -18,12 +18,15 @@ from tests.postgres_test_utils import (
     prepare_postgres_database,
     reset_postgres_schema,
 )
+from tests.support.news import compute_news_public_clusters, rebuild_news_projection
 from tracefold.app.http.app import create_app
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
-from tracefold.news import NewsBriefStory, NewsRepository, opennews_source, parse_opennews_message
-from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
+from tracefold.news.models import NewsBriefStory
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.ranking import score_public_cluster
-from tracefold.news.sources import _PINNED_SOURCE_TIERS
+from tracefold.news.repository import NewsRepository
+from tracefold.news.sources import _PINNED_SOURCE_TIERS, opennews_source
 from tracefold.platform.config.settings import Settings
 
 PINNED_WORLDMONITOR_HEAD = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
@@ -579,7 +582,7 @@ def _assert_canonical_opennews(events: tuple[Any, ...]) -> None:
 def _assert_story_and_selector_parity(
     conn: Any,
     pinned: dict[str, Any],
-    actual_projection: dict[str, Any],
+    actual_clusters: list[dict[str, Any]],
 ) -> None:
     actual_components = [
         {
@@ -638,7 +641,6 @@ def _assert_story_and_selector_parity(
         assert factors["entity_corroboration_boost"] == min(expected["entityCorroborationCount"], 5) * 4
         assert factors["total"] == expected["importanceScore"]
 
-    actual_clusters = actual_projection["public_clusters"]
     expected_clusters = pinned["clusters"]
     assert len(actual_clusters) == len(expected_clusters)
     for actual, expected in zip(actual_clusters, expected_clusters, strict=True):
@@ -729,12 +731,11 @@ def _assert_story_and_selector_parity(
     assert pinned["selector"]["briefClusterStoryId"] in {story["story_id"] for story in actual_top}
 
 
-def _compute_current_projection(repository: NewsRepository, *, now_ms: int) -> dict[str, Any]:
+def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int) -> list[dict[str, Any]]:
     payload = repository.load_story_projection(now_ms=now_ms)
-    return compute_news_story_projection(
+    public_clusters = compute_news_public_clusters(
         NewsProjectionSnapshot(
             input_fingerprint=str(payload["input_fingerprint"]),
-            cutoff_ms=int(payload["cutoff_ms"]),
             scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
             current_input_fingerprint=(
                 str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
@@ -742,6 +743,7 @@ def _compute_current_projection(repository: NewsRepository, *, now_ms: int) -> d
             rows=tuple(dict(row) for row in payload["rows"]),
         )
     )
+    return public_clusters
 
 
 def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_path: Path) -> None:
@@ -759,10 +761,10 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         repository = NewsRepository(conn)
         source = opennews_source()
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS)
+            repository.sync_sources((source,), now_ms=NOW_MS)
             inserted = repository.record_opennews_events(source=source, events=typed_events, observed_at_ms=NOW_MS)
             replay = repository.record_opennews_events(source=source, events=typed_events, observed_at_ms=NOW_MS)
-            projection = repository.rebuild_stories(now_ms=NOW_MS)
+            projection = rebuild_news_projection(repository, now_ms=NOW_MS)
         assert inserted["items_inserted"] == len(typed_events)
         assert replay["items_inserted"] == 0
         assert replay["items_updated"] == 0
@@ -770,20 +772,17 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         _assert_story_and_selector_parity(
             conn,
             pinned,
-            _compute_current_projection(repository, now_ms=NOW_MS),
+            _compute_current_public_clusters(repository, now_ms=NOW_MS),
         )
 
         with conn.transaction():
-            assert repository.peek_brief_candidate(now_ms=NOW_MS) is None
-        due_ms = NOW_MS + 600_000
-        with conn.transaction():
-            candidate = repository.peek_brief_candidate(now_ms=due_ms)
+            candidate = repository.peek_brief_candidate(now_ms=NOW_MS)
             assert candidate is not None
             prepared = repository.prepare_brief_run(
-                target_fingerprint=str(candidate["target_fingerprint"]),
+                slot_at_ms=int(candidate["slot_at_ms"]),
                 lease_owner="pinned-acceptance",
                 lease_token="healthy",
-                now_ms=due_ms,
+                now_ms=NOW_MS,
             )
         assert prepared is not None and not prepared["completed_without_model"]
         stories = tuple(NewsBriefStory.model_validate(story) for story in prepared["top_stories"])
@@ -799,7 +798,6 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
 
         publisher = ProviderChainNewsBriefPublisher(
             ollama_base_url="https://ollama.test/v1",
-            openrouter_api_key=None,
             groq_api_key=None,
             transport=httpx.MockTransport(healthy_handler),
         )
@@ -824,16 +822,15 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
 
         with conn.transaction():
             assert repository.start_brief_model(
-                run_id=str(prepared["claim"]["run_id"]),
+                slot_at_ms=int(prepared["claim"]["slot_at_ms"]),
                 lease_owner="pinned-acceptance",
                 lease_token="healthy",
-                now_ms=due_ms + 1,
+                now_ms=NOW_MS + 1,
             )
             publication_id = repository.publish_brief(
                 claim=prepared["claim"],
-                selection=prepared["selection"],
                 result=healthy_result,
-                now_ms=due_ms + 2,
+                now_ms=NOW_MS + 2,
             )
         assert publication_id is not None
 
@@ -860,22 +857,20 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         degraded_pinned = _run_pinned_worldmonitor(changed_items, now_ms=next_ms)
         with conn.transaction():
             repository.record_opennews_events(source=source, events=(changed,), observed_at_ms=next_ms)
-            repository.rebuild_stories(now_ms=next_ms)
-            assert repository.peek_brief_candidate(now_ms=next_ms) is None
+            rebuild_news_projection(repository, now_ms=next_ms)
         _assert_story_and_selector_parity(
             conn,
             degraded_pinned,
-            _compute_current_projection(repository, now_ms=next_ms),
+            _compute_current_public_clusters(repository, now_ms=next_ms),
         )
-        degraded_due_ms = next_ms + 600_000
         with conn.transaction():
-            degraded_candidate = repository.peek_brief_candidate(now_ms=degraded_due_ms)
+            degraded_candidate = repository.peek_brief_candidate(now_ms=next_ms)
             assert degraded_candidate is not None
             degraded_prepared = repository.prepare_brief_run(
-                target_fingerprint=str(degraded_candidate["target_fingerprint"]),
+                slot_at_ms=int(degraded_candidate["slot_at_ms"]),
                 lease_owner="pinned-acceptance",
                 lease_token="degraded",
-                now_ms=degraded_due_ms,
+                now_ms=next_ms,
             )
         assert degraded_prepared is not None and not degraded_prepared["completed_without_model"]
         degraded_stories = tuple(NewsBriefStory.model_validate(story) for story in degraded_prepared["top_stories"])
@@ -894,7 +889,6 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
 
         publisher = ProviderChainNewsBriefPublisher(
             ollama_base_url="https://ollama.test/v1",
-            openrouter_api_key=None,
             groq_api_key=None,
             transport=httpx.MockTransport(degraded_handler),
         )
@@ -914,16 +908,15 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
 
         with conn.transaction():
             assert repository.start_brief_model(
-                run_id=str(degraded_prepared["claim"]["run_id"]),
+                slot_at_ms=int(degraded_prepared["claim"]["slot_at_ms"]),
                 lease_owner="pinned-acceptance",
                 lease_token="degraded",
-                now_ms=degraded_due_ms + 1,
+                now_ms=next_ms + 1,
             )
             served_id = repository.publish_brief(
                 claim=degraded_prepared["claim"],
-                selection=degraded_prepared["selection"],
                 result=degraded_result,
-                now_ms=degraded_due_ms + 2,
+                now_ms=next_ms + 2,
             )
         assert served_id == publication_id
 

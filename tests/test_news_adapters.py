@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 import httpx
+import pytest
 
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.news.models import NewsBriefStory
@@ -56,11 +57,11 @@ def _valid_l1() -> str:
 
 
 def test_l1_composer_rejection_advances_exact_public_provider_chain() -> None:
-    requests: list[tuple[str, dict[str, object]]] = []
+    requests: list[tuple[str, dict[str, object], dict[str, str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        requests.append((request.url.host, body))
+        requests.append((request.url.host, body, dict(request.headers)))
         if request.url.host == "ollama.test":
             return _response(
                 json.dumps(
@@ -71,11 +72,13 @@ def test_l1_composer_rejection_advances_exact_public_provider_chain() -> None:
                 ),
                 model="llama3.1:8b",
             )
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
     )
@@ -84,14 +87,65 @@ def test_l1_composer_rejection_advances_exact_public_provider_chain() -> None:
     finally:
         publisher.close()
 
-    assert [host for host, _body in requests] == ["ollama.test", "openrouter.ai"]
+    assert [host for host, _body, _headers in requests] == ["ollama.test", "deepseek.test"]
     assert result.brief_kind == "l1"
-    assert result.provider == "openrouter"
+    assert result.provider == "deepseek"
     assert requests[0][1]["model"] == "llama3.1:8b"
     assert requests[0][1]["think"] is False
     assert requests[0][1]["max_tokens"] == 900
-    assert requests[1][1]["model"] == "deepseek/deepseek-v4-flash"
-    assert requests[1][1]["reasoning"] == {"enabled": False}
+    assert requests[1][1]["model"] == "deepseek-chat"
+    assert "reasoning" not in requests[1][1]
+    assert requests[1][2]["authorization"] == "Bearer deepseek-secret"
+    assert "http-referer" not in requests[1][2]
+    assert "x-title" not in requests[1][2]
+
+
+def test_public_provider_chain_is_strictly_ollama_then_deepseek_then_groq() -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append((str(request.url), str(body["model"])))
+        if request.url.host != "api.groq.com":
+            return httpx.Response(400)
+        return _response(_valid_l1(), model="llama-3.3-70b-versatile")
+
+    publisher = ProviderChainNewsBriefPublisher(
+        ollama_base_url="https://ollama.test/v1",
+        configured_base_url="https://deepseek.test/v1/",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
+        groq_api_key="groq-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = publisher.publish((_story(),), date_iso="2026-08-07")
+    finally:
+        publisher.close()
+
+    assert requests == [
+        ("https://ollama.test/v1/chat/completions", "llama3.1:8b"),
+        ("https://deepseek.test/v1/chat/completions", "deepseek-chat"),
+        ("https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
+    ]
+    assert result.provider == "groq"
+
+
+@pytest.mark.parametrize(
+    "direct",
+    [
+        {"configured_api_key": "secret"},
+        {"configured_base_url": "https://deepseek.test/v1"},
+        {"configured_model": "deepseek-chat"},
+    ],
+)
+def test_provider_chain_rejects_partial_direct_configuration(direct: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="news_brief_direct_configuration_incomplete"):
+        ProviderChainNewsBriefPublisher(
+            ollama_base_url="",
+            groq_api_key=None,
+            **direct,
+        )
 
 
 def test_l2_uses_remaining_chain_without_an_acceptor_and_stays_degraded() -> None:
@@ -117,7 +171,6 @@ def test_l2_uses_remaining_chain_without_an_acceptor_and_stays_degraded() -> Non
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
     )
@@ -157,7 +210,6 @@ def test_same_provider_retries_twice_and_honors_retry_after() -> None:
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
         monotonic=monotonic,
@@ -194,7 +246,6 @@ def test_nonfinite_retry_after_uses_base_backoff_like_javascript_number() -> Non
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
         monotonic=lambda: now,
@@ -218,11 +269,13 @@ def test_invalid_utf8_provider_json_advances_to_the_next_provider() -> None:
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(200, content=b"\xff", headers={"Content-Type": "application/json"})
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
     )
@@ -231,8 +284,8 @@ def test_invalid_utf8_provider_json_advances_to_the_next_provider() -> None:
     finally:
         publisher.close()
 
-    assert hosts == ["ollama.test", "openrouter.ai"]
-    assert result.provider == "openrouter"
+    assert hosts == ["ollama.test", "deepseek.test"]
+    assert result.provider == "deepseek"
 
 
 def test_provider_fetch_follows_redirects_and_accepts_only_2xx() -> None:
@@ -246,7 +299,6 @@ def test_provider_fetch_follows_redirects_and_accepts_only_2xx() -> None:
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(redirect_handler),
     )
@@ -264,11 +316,13 @@ def test_provider_fetch_follows_redirects_and_accepts_only_2xx() -> None:
         status_hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(304)
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(status_handler),
     )
@@ -277,8 +331,8 @@ def test_provider_fetch_follows_redirects_and_accepts_only_2xx() -> None:
     finally:
         publisher.close()
 
-    assert status_hosts == ["ollama.test", "openrouter.ai"]
-    assert non_2xx.provider == "openrouter"
+    assert status_hosts == ["ollama.test", "deepseek.test"]
+    assert non_2xx.provider == "deepseek"
 
 
 def test_provider_json_rejects_nonstandard_nan_like_json_parse() -> None:
@@ -293,11 +347,13 @@ def test_provider_json_rejects_nonstandard_nan_like_json_parse() -> None:
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(200, content=invalid, headers={"Content-Type": "application/json"})
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
     )
@@ -306,8 +362,8 @@ def test_provider_json_rejects_nonstandard_nan_like_json_parse() -> None:
     finally:
         publisher.close()
 
-    assert hosts == ["ollama.test", "openrouter.ai"]
-    assert result.provider == "openrouter"
+    assert hosts == ["ollama.test", "deepseek.test"]
+    assert result.provider == "deepseek"
 
 
 def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
@@ -322,11 +378,13 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return _response(recursive_candidate, model="llama3.1:8b")
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(recursive_handler),
     )
@@ -335,8 +393,8 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
     finally:
         publisher.close()
 
-    assert hosts == ["ollama.test", "openrouter.ai"]
-    assert recursive_result.provider == "openrouter"
+    assert hosts == ["ollama.test", "deepseek.test"]
+    assert recursive_result.provider == "deepseek"
 
     response_hosts: list[str] = []
     deeply_nested_payload = (
@@ -353,11 +411,13 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
         response_hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(200, content=deeply_nested_payload, headers={"Content-Type": "application/json"})
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(response_handler),
     )
@@ -366,8 +426,8 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
     finally:
         publisher.close()
 
-    assert response_hosts == ["ollama.test", "openrouter.ai"]
-    assert response_result.provider == "openrouter"
+    assert response_hosts == ["ollama.test", "deepseek.test"]
+    assert response_result.provider == "deepseek"
 
     nul_hosts: list[str] = []
 
@@ -375,11 +435,13 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
         nul_hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return _response(_valid_l1() + "\x00", model="llama3.1:8b")
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         transport=httpx.MockTransport(nul_handler),
     )
@@ -388,8 +450,8 @@ def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
     finally:
         publisher.close()
 
-    assert nul_hosts == ["ollama.test", "openrouter.ai"]
-    assert nul_result.provider == "openrouter"
+    assert nul_hosts == ["ollama.test", "deepseek.test"]
+    assert nul_result.provider == "deepseek"
 
 
 def test_unreachable_retry_after_fails_over_without_sleeping() -> None:
@@ -400,11 +462,13 @@ def test_unreachable_retry_after_fails_over_without_sleeping() -> None:
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(429, headers={"Retry-After": "7"})
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         total_timeout_seconds=12,
         transport=httpx.MockTransport(handler),
@@ -417,10 +481,10 @@ def test_unreachable_retry_after_fails_over_without_sleeping() -> None:
     finally:
         publisher.close()
 
-    assert hosts == ["ollama.test", "openrouter.ai"]
+    assert hosts == ["ollama.test", "deepseek.test"]
     assert sleeps == []
     assert result.brief_kind == "l1"
-    assert result.provider == "openrouter"
+    assert result.provider == "deepseek"
 
 
 def test_zero_retry_after_matches_pinned_date_fallback_and_preserves_next_provider() -> None:
@@ -432,11 +496,13 @@ def test_zero_retry_after_matches_pinned_date_fallback_and_preserves_next_provid
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             return httpx.Response(429, headers={"Retry-After": "0"})
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         total_timeout_seconds=5.5,
         transport=httpx.MockTransport(handler),
@@ -449,9 +515,9 @@ def test_zero_retry_after_matches_pinned_date_fallback_and_preserves_next_provid
     finally:
         publisher.close()
 
-    assert hosts == ["ollama.test", "openrouter.ai"]
+    assert hosts == ["ollama.test", "deepseek.test"]
     assert sleeps == []
-    assert result.provider == "openrouter"
+    assert result.provider == "deepseek"
 
 
 def test_retry_backoff_that_consumes_the_remainder_terminates_the_chain_after_sleep() -> None:
@@ -471,11 +537,13 @@ def test_retry_backoff_that_consumes_the_remainder_terminates_the_chain_after_sl
         hosts.append(request.url.host)
         if request.url.host == "ollama.test":
             raise httpx.ConnectError("offline", request=request)
-        return _response(_valid_l1(), model="deepseek/deepseek-v4-flash")
+        return _response(_valid_l1(), model="deepseek-chat")
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key="openrouter-secret",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
         groq_api_key=None,
         total_timeout_seconds=5.5,
         transport=httpx.MockTransport(handler),
@@ -505,7 +573,6 @@ def test_transport_valid_minimum_length_uses_javascript_utf16_units() -> None:
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
     )
@@ -530,7 +597,6 @@ def test_provider_text_uses_javascript_newline_cleanup_and_scalar_conversion() -
     )
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(lambda _request: next(candidates)),
     )
@@ -555,7 +621,6 @@ def test_provider_text_uses_javascript_newline_cleanup_and_scalar_conversion() -
     surrogate_candidates = iter((httpx.Response(400), surrogate_response))
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(lambda _request: next(surrogate_candidates)),
     )
@@ -571,7 +636,6 @@ def test_provider_text_uses_javascript_newline_cleanup_and_scalar_conversion() -
 def test_provider_cleanup_uses_javascript_ascii_case_insensitive_tags() -> None:
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(
             lambda _request: _response(f"<thİnk>metadata\n{_valid_l1()}", model="llama3.1:8b")
@@ -608,7 +672,6 @@ def test_l2_receives_only_the_shared_sixty_second_budget_remainder() -> None:
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
         monotonic=monotonic,
@@ -659,7 +722,6 @@ def test_provider_timeout_is_total_wall_clock_not_read_inactivity() -> None:
     thread.start()
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url=f"http://127.0.0.1:{server.server_port}/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         total_timeout_seconds=5.3,
         sleep=lambda _seconds: None,
@@ -692,7 +754,6 @@ def test_provider_timeout_does_not_wait_for_a_cancelled_dns_executor(monkeypatch
     monkeypatch.setattr(socket, "getaddrinfo", slow_getaddrinfo)
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="http://slow-dns.test:9/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         total_timeout_seconds=5.2,
         sleep=lambda _seconds: None,
@@ -718,7 +779,6 @@ def test_no_eligible_cluster_and_provider_exhaustion_are_normal_degraded_results
 
     publisher = ProviderChainNewsBriefPublisher(
         ollama_base_url="https://ollama.test/v1",
-        openrouter_api_key=None,
         groq_api_key=None,
         transport=httpx.MockTransport(handler),
         sleep=lambda _seconds: None,

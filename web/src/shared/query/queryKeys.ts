@@ -21,21 +21,12 @@ export const queryKeys = {
     category: string | null,
     level: string | null,
     reportingOrigin: string | null,
-    providerScoreGt: number | null,
     sort: "importance" | "latest",
-  ) =>
-    [
-      "news-feed",
-      q,
-      category ?? "",
-      level ?? "",
-      reportingOrigin ?? "",
-      providerScoreGt,
-      sort,
-    ] as const,
+  ) => ["news-feed", q, category ?? "", level ?? "", reportingOrigin ?? "", sort] as const,
   newsStory: (storyId: string) => ["news-story", storyId] as const,
   newsBrief: () => ["news-brief"] as const,
   newsStatus: () => ["news-status"] as const,
+  newsSources: () => ["news-sources"] as const,
   targetSocialTimeline: (targetKey: string | null, window: WindowKey) =>
     ["target-social-timeline", targetKey, window] as const,
   targetPosts: (

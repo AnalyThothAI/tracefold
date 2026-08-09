@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from threading import Event
 from typing import Any
 
+import tracefold.news.runtime as news_runtime
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
-from tracefold.news import (
-    NewsInterface,
+from tests.support.news import rebuild_news_projection
+from tracefold.app.repositories import repositories_for_connection
+from tracefold.news import NewsAcquisition, NewsFeedEntry, NewsFeedFetch
+from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.projection import (
     NewsProjectionSnapshot,
-    NewsRepository,
     compute_news_story_projection,
-    opennews_source,
-    parse_opennews_message,
 )
+from tracefold.news.repository import NewsRepository
+from tracefold.news.sources import opennews_source, public_rss_sources
 
 NOW_MS = 1_785_560_400_000
 
@@ -55,7 +61,6 @@ def _event(
 def _projection_snapshot(payload: dict[str, Any]) -> NewsProjectionSnapshot:
     return NewsProjectionSnapshot(
         input_fingerprint=str(payload["input_fingerprint"]),
-        cutoff_ms=int(payload["cutoff_ms"]),
         scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
         current_input_fingerprint=(
             str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") is not None else None
@@ -64,7 +69,402 @@ def _projection_snapshot(payload: dict[str, Any]) -> NewsProjectionSnapshot:
     )
 
 
-def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts() -> None:
+def test_opennews_primary_story_projects_before_any_rss_attempt() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        rss_sources = public_rss_sources()[:2]
+        with conn.transaction():
+            repository.sync_sources((*rss_sources, opennews_source()), now_ms=NOW_MS)
+
+        empty = repository.load_story_projection(now_ms=NOW_MS)
+        assert empty is not None
+        assert empty["rows"] == []
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_event(title="OpenNews primary report reaches Story first", score=None),),
+                observed_at_ms=NOW_MS + 1,
+            )
+
+        ready = repository.load_story_projection(now_ms=NOW_MS + 1)
+        assert ready is not None
+        assert [row["source_kind"] for row in ready["rows"]] == ["opennews"]
+        rss_attempts = conn.execute(
+            """
+            SELECT count(*) FILTER (WHERE last_fetch_started_at_ms IS NOT NULL) AS attempts
+              FROM news_sources
+             WHERE source_kind = 'rss'
+            """
+        ).fetchone()
+        assert rss_attempts["attempts"] == 0
+    finally:
+        conn.close()
+
+
+def test_opennews_items_expire_without_an_enabled_rss_catalog(monkeypatch) -> None:
+    class _Database:
+        def __init__(self, conn: Any) -> None:
+            self.conn = conn
+
+        async def run_business(self, _name, function, /, *args, **kwargs):
+            kwargs.pop("operation_timeout_seconds")
+            return function(*args, **kwargs)
+
+        @contextmanager
+        def worker_session(self, _name: str, _timeout: float) -> Iterator[Any]:
+            yield repositories_for_connection(self.conn)
+
+    class _Reader:
+        def __init__(self) -> None:
+            self.requests = 0
+
+        def fetch_wire(self, **_kwargs):
+            self.requests += 1
+            raise AssertionError("disabled RSS must not issue a request")
+
+        def close(self) -> None:
+            return None
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(_event(title="OpenNews fact expires on the acquisition clock", score=None),),
+                observed_at_ms=NOW_MS,
+            )
+
+        reader = _Reader()
+        expiry_at_ms = NOW_MS + 12 * 60 * 60 * 1_000 + 1
+        monkeypatch.setattr(news_runtime, "_now_ms", lambda: expiry_at_ms)
+        acquisition = NewsAcquisition(
+            db=_Database(conn),
+            finite_operations=object(),
+            rss_sources=(),
+            rss_feed_reader=reader,
+            rss_feed_parser=lambda *_args, **_kwargs: None,
+            opennews_source=source,
+        )
+
+        assert asyncio.run(acquisition.turn()) is False
+        assert reader.requests == 0
+        row = conn.execute(
+            "SELECT active FROM news_items WHERE source_id = %s",
+            (source.source_id,),
+        ).fetchone()
+        assert row["active"] is False
+    finally:
+        conn.close()
+
+
+def test_opennews_only_reconcile_disables_prior_rss_sources_and_releases_claims() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        rss_source = public_rss_sources()[0]
+        with conn.transaction():
+            repository.sync_sources((rss_source, source), now_ms=NOW_MS)
+            claim = repository.claim_due_rss_source(
+                now_ms=NOW_MS,
+                claim_token="00000000-0000-0000-0000-000000000038",
+                lease_expires_at_ms=NOW_MS + 60_000,
+            )
+            assert claim is not None
+            repository.sync_sources((source,), now_ms=NOW_MS + 1)
+
+        rss_row = conn.execute(
+            """
+            SELECT enabled, claim_token, claim_lease_expires_at_ms
+              FROM news_sources
+             WHERE source_id = %s
+            """,
+            (rss_source.source_id,),
+        ).fetchone()
+        assert dict(rss_row) == {
+            "enabled": False,
+            "claim_token": None,
+            "claim_lease_expires_at_ms": None,
+        }
+        inventory = repository.list_sources()
+        assert [item["source_id"] for item in inventory["items"]] == [source.source_id]
+    finally:
+        conn.close()
+
+
+def test_opennews_primary_failure_allows_degraded_rss_only_projection() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        rss_sources = public_rss_sources()[:2]
+        first_token = "00000000-0000-0000-0000-000000000003"
+        with conn.transaction():
+            repository.sync_sources(
+                (*rss_sources, opennews_source()),
+                now_ms=NOW_MS,
+            )
+            claim = repository.claim_due_rss_source(
+                now_ms=NOW_MS,
+                claim_token=first_token,
+                lease_expires_at_ms=NOW_MS + 60_000,
+            )
+            assert claim is not None
+            claimed_source = next(source for source in rss_sources if source.source_id == str(claim["source_id"]))
+            assert repository.record_rss_fetch(
+                source=claimed_source,
+                claim_token=first_token,
+                fetch=NewsFeedFetch(
+                    status_code=200,
+                    entries=(
+                        NewsFeedEntry(
+                            guid="rss-primary-unavailable",
+                            link="https://example.com/rss-primary-unavailable",
+                            title="Public RSS evidence remains available during OpenNews outage",
+                            description="Independent public evidence keeps the product readable.",
+                            published_at_ms=NOW_MS,
+                        ),
+                    ),
+                    entries_seen=1,
+                    etag=None,
+                    last_modified=None,
+                ),
+                finished_at_ms=NOW_MS + 1,
+            )
+            assert repository.update_opennews_live_status(
+                source_id=opennews_source().source_id,
+                connected=False,
+                now_ms=NOW_MS + 1,
+                error_code="opennews_token_missing",
+            )
+
+        ready = repository.load_story_projection(now_ms=NOW_MS + 1)
+        assert ready is not None
+        assert len(ready["rows"]) == 1
+        assert ready["rows"][0]["source_kind"] == "rss"
+        unattempted_source = next(source for source in rss_sources if source != claimed_source)
+        second_state = conn.execute(
+            "SELECT last_fetch_finished_at_ms FROM news_sources WHERE source_id = %s",
+            (unattempted_source.source_id,),
+        ).fetchone()
+        assert second_state["last_fetch_finished_at_ms"] is None
+    finally:
+        conn.close()
+
+
+def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        rss_sources = public_rss_sources()[:2]
+        with conn.transaction():
+            repository.sync_sources(
+                (*rss_sources, source),
+                now_ms=NOW_MS,
+            )
+
+        warming = repository.health_snapshot(now_ms=NOW_MS, rss_enabled=True)
+        assert warming["layers"]["ingest"]["status"] == "warming"
+        assert warming["layers"]["ingest"]["reasons"] == [
+            "opennews_primary_no_success_yet",
+            "public_rss_corroboration_warming",
+        ]
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(_event(title="OpenNews primary live report", score=None),),
+                observed_at_ms=NOW_MS + 1,
+            )
+            repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 1,
+                error_code=None,
+            )
+
+        ready = repository.health_snapshot(now_ms=NOW_MS + 1, rss_enabled=True)
+        assert ready["layers"]["ingest"]["status"] == "ready"
+        assert ready["layers"]["ingest"]["reasons"] == [
+            "public_rss_corroboration_warming",
+        ]
+
+        with conn.transaction():
+            for index in range(2):
+                claim_token = f"00000000-0000-0000-0000-{index + 10:012d}"
+                claim = repository.claim_due_rss_source(
+                    now_ms=NOW_MS + 1,
+                    claim_token=claim_token,
+                    lease_expires_at_ms=NOW_MS + 60_001,
+                )
+                assert claim is not None
+                claimed_source = next(
+                    candidate for candidate in rss_sources if candidate.source_id == str(claim["source_id"])
+                )
+                assert repository.record_rss_fetch(
+                    source=claimed_source,
+                    claim_token=claim_token,
+                    fetch=NewsFeedFetch(
+                        status_code=200,
+                        entries=(
+                            NewsFeedEntry(
+                                guid=f"rss-health-{index}",
+                                link=f"https://example.com/rss-health-{index}",
+                                title=f"Public corroboration report number {index}",
+                                published_at_ms=NOW_MS,
+                            ),
+                        ),
+                        entries_seen=1,
+                    ),
+                    finished_at_ms=NOW_MS + 2,
+                )
+
+        corroborated = repository.health_snapshot(now_ms=NOW_MS + 2, rss_enabled=True)
+        assert corroborated["layers"]["ingest"]["status"] == "ready"
+        assert corroborated["layers"]["ingest"]["reasons"] == []
+
+        with conn.transaction():
+            repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=False,
+                now_ms=NOW_MS + 3,
+                error_code=None,
+            )
+
+        disconnected = repository.health_snapshot(now_ms=NOW_MS + 3, rss_enabled=True)
+        assert disconnected["layers"]["ingest"]["status"] == "degraded"
+        assert disconnected["layers"]["ingest"]["reasons"] == [
+            "opennews_primary_disconnected",
+        ]
+
+        with conn.transaction():
+            repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS + 4,
+                error_code=None,
+            )
+            repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=False,
+                now_ms=NOW_MS + 5,
+                error_code="opennews_live_disconnected",
+            )
+
+        degraded = repository.health_snapshot(now_ms=NOW_MS + 5, rss_enabled=True)
+        assert degraded["layers"]["ingest"]["status"] == "degraded"
+        assert degraded["layers"]["ingest"]["reasons"] == [
+            "opennews_primary_error",
+        ]
+    finally:
+        conn.close()
+
+
+def test_rss_failure_preserves_the_last_successful_item_snapshot() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = public_rss_sources()[0]
+        first_token = "00000000-0000-0000-0000-000000000004"
+        with conn.transaction():
+            repository.sync_sources((source, opennews_source()), now_ms=NOW_MS)
+            claim = repository.claim_due_rss_source(
+                now_ms=NOW_MS,
+                claim_token=first_token,
+                lease_expires_at_ms=NOW_MS + 60_000,
+            )
+            assert claim is not None and claim["source_id"] == source.source_id
+            assert repository.record_rss_fetch(
+                source=source,
+                claim_token=first_token,
+                fetch=NewsFeedFetch(
+                    status_code=200,
+                    entries=(
+                        NewsFeedEntry(
+                            guid="healthy-before-parse-failure",
+                            link="https://example.com/healthy-before-parse-failure",
+                            title="Healthy public report remains current after parse failure",
+                            published_at_ms=NOW_MS,
+                            language="en",
+                            reporting_origin=source.name,
+                        ),
+                    ),
+                    entries_seen=1,
+                ),
+                finished_at_ms=NOW_MS + 1,
+            ) == {
+                "items_inserted": 1,
+                "items_updated": 0,
+                "items_deactivated": 0,
+            }
+
+        before = conn.execute(
+            """
+            SELECT xmin::text AS xmin, ctid::text AS ctid,
+                   content_fingerprint, active, updated_at_ms
+              FROM news_items
+             WHERE source_id = %s
+            """,
+            (source.source_id,),
+        ).fetchone()
+        assert before is not None and before["active"] is True
+
+        second_now_ms = NOW_MS + source.refresh_interval_seconds * 1_000 + 1
+        second_token = "00000000-0000-0000-0000-000000000005"
+        with conn.transaction():
+            claim = repository.claim_due_rss_source(
+                now_ms=second_now_ms,
+                claim_token=second_token,
+                lease_expires_at_ms=second_now_ms + 60_000,
+            )
+            assert claim is not None and claim["source_id"] == source.source_id
+            assert repository.record_rss_failure(
+                source_id=source.source_id,
+                claim_token=second_token,
+                finished_at_ms=second_now_ms + 1,
+                error_code="news_rss_parse_no_entries",
+                status_code=200,
+            )
+
+        after = conn.execute(
+            """
+            SELECT xmin::text AS xmin, ctid::text AS ctid,
+                   content_fingerprint, active, updated_at_ms
+              FROM news_items
+             WHERE source_id = %s
+            """,
+            (source.source_id,),
+        ).fetchone()
+        source_state = conn.execute(
+            """
+            SELECT last_outcome, last_error, last_http_status
+              FROM news_sources
+             WHERE source_id = %s
+            """,
+            (source.source_id,),
+        ).fetchone()
+        assert after == before
+        assert source_state == {
+            "last_outcome": "failed",
+            "last_error": "news_rss_parse_no_entries",
+            "last_http_status": 200,
+        }
+    finally:
+        conn.close()
+
+
+def test_opennews_ingestion_and_story_projection_share_the_12h_boundary() -> None:
     conn = connect_postgres_test(read_only=False)
     hour_ms = 60 * 60 * 1000
     try:
@@ -93,15 +493,16 @@ def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts(
         )
 
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS)
+            repository.sync_sources((source,), now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
                 events=events,
                 observed_at_ms=NOW_MS,
             )
-            repository.rebuild_stories(now_ms=NOW_MS)
+            rebuild_news_projection(repository, now_ms=NOW_MS)
 
-        assert result["items_inserted"] == 3
+        assert result["items_inserted"] == 2
+        assert result["rejected"] == 1
         rows = conn.execute(
             """
             SELECT item.provider_record_id, item.active,
@@ -113,9 +514,68 @@ def test_story_projection_is_complete_for_12h_while_older_articles_remain_facts(
         ).fetchall()
         assert {row["provider_record_id"]: (row["active"], row["has_story"]) for row in rows} == {
             "current-story-item": (True, True),
-            "outside-story-window": (False, False),
             "story-window-boundary": (True, True),
         }
+    finally:
+        conn.close()
+
+
+def test_item_classification_has_one_owner_in_story_projection() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="classification-owner",
+                        title="Military forces launch a major missile attack",
+                        score=90,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+
+        pending = conn.execute(
+            """
+            SELECT level, category, classification_source,
+                   classification_confidence, importance_score,
+                   importance_factors
+              FROM news_items
+             WHERE provider_record_id = 'classification-owner'
+            """
+        ).fetchone()
+        assert pending == {
+            "level": None,
+            "category": None,
+            "classification_source": None,
+            "classification_confidence": None,
+            "importance_score": 0,
+            "importance_factors": {},
+        }
+
+        with conn.transaction():
+            rebuild_news_projection(repository, now_ms=NOW_MS)
+
+        projected = conn.execute(
+            """
+            SELECT level, category, classification_source,
+                   classification_confidence, importance_score,
+                   importance_factors
+              FROM news_items
+             WHERE provider_record_id = 'classification-owner'
+            """
+        ).fetchone()
+        assert projected["level"] == "high"
+        assert projected["category"] == "military"
+        assert projected["classification_source"] == "keyword"
+        assert projected["classification_confidence"] == 0.8
+        assert projected["importance_score"] > 0
+        assert projected["importance_factors"]
     finally:
         conn.close()
 
@@ -127,7 +587,7 @@ def test_story_projection_publishes_captured_input_and_rejects_older_publish_ord
         repository = NewsRepository(conn)
         source = opennews_source()
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS)
+            repository.sync_sources((source,), now_ms=NOW_MS)
             repository.record_opennews_events(
                 source=source,
                 events=(
@@ -139,7 +599,7 @@ def test_story_projection_publishes_captured_input_and_rejects_older_publish_ord
                 ),
                 observed_at_ms=NOW_MS,
             )
-            repository.rebuild_stories(now_ms=NOW_MS)
+            rebuild_news_projection(repository, now_ms=NOW_MS)
 
         with conn.transaction():
             repository.record_opennews_events(
@@ -224,7 +684,7 @@ def test_story_projection_publishes_captured_input_and_rejects_older_publish_ord
         }
 
         with conn.transaction():
-            caught_up = repository.rebuild_stories(now_ms=NOW_MS + 6)
+            caught_up = rebuild_news_projection(repository, now_ms=NOW_MS + 6)
         assert caught_up["projection_status"] == "rebuilt"
         assert (
             conn.execute(
@@ -276,7 +736,7 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert annotation is not None and translation is not None
 
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS)
+            repository.sync_sources((source,), now_ms=NOW_MS)
             first = repository.record_opennews_events(
                 source=source,
                 events=(report,),
@@ -337,13 +797,13 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
                 events=(changed,),
                 observed_at_ms=NOW_MS + 4,
             )
-            repository.rebuild_stories(now_ms=NOW_MS + 4)
+            rebuild_news_projection(repository, now_ms=NOW_MS + 4)
         after = conn.execute("SELECT item_id FROM news_items WHERE provider_record_id='wire-1'").fetchone()
         assert result["items_updated"] == 1
         assert after["item_id"] == before["item_id"]
 
-        story = NewsInterface(repository).get_feed()["stories"][0]
-        detail = NewsInterface(repository).get_story(story_id=story["story_id"])
+        story = repository.list_feed()["stories"][0]
+        detail = repository.get_story(story_id=story["story_id"])
         assert detail is not None
         assert detail["members"][0]["provider_record_id"] == "wire-1"
         assert detail["members"][0]["provider_metadata"]["score"] == 82
@@ -354,45 +814,26 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert "latest_fetch_status" not in sources[0]
 
         with conn.transaction():
-            first_gap = repository.update_opennews_live_status(
+            live_failed = repository.update_opennews_live_status(
                 source_id=source.source_id,
                 connected=True,
                 now_ms=NOW_MS + 5,
                 error_code="opennews_buffer_overflow",
-                gap_unclosed=True,
-                gap_boundary_provider_record_id=None,
-                expected_gap_version=None,
-            )
-            second_gap = repository.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=NOW_MS + 6,
-                error_code="opennews_buffer_overflow",
-                gap_unclosed=True,
-                gap_boundary_provider_record_id="later-dropped-record",
-                expected_gap_version=None,
-            )
-            stale_close = repository.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=NOW_MS + 7,
-                error_code=None,
-                gap_unclosed=False,
-                gap_boundary_provider_record_id="wire-1",
-                expected_gap_version=1,
             )
             repository.mark_opennews_recovery_attempt(
                 source_id=source.source_id,
-                started_at_ms=NOW_MS + 8,
+                started_at_ms=NOW_MS + 6,
             )
-        assert first_gap == ("wire-1", 1)
-        assert second_gap == ("wire-1", 2)
-        assert stale_close is None
-        assert repository.opennews_recovery_state(source_id=source.source_id) == (
-            NOW_MS + 8,
-            "wire-1",
-            2,
-        )
+        assert live_failed is True
+        assert repository.opennews_last_recovery_attempt(source_id=source.source_id) == NOW_MS + 6
+        source_status = conn.execute(
+            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
+            (source.source_id,),
+        ).fetchone()
+        assert dict(source_status) == {
+            "last_outcome": "recovery_running",
+            "last_error": "opennews_buffer_overflow",
+        }
     finally:
         conn.close()
 
@@ -457,7 +898,7 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
         assert all(event is not None for event in canonicalized_text_events)
 
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS)
+            repository.sync_sources((source,), now_ms=NOW_MS)
             result = repository.record_opennews_events(
                 source=source,
                 events=(valid, emoji_only, *canonicalized_text_events),
@@ -544,14 +985,14 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
         events = tuple(parsed_events)
 
         with conn.transaction():
-            repository.sync_source(source, now_ms=NOW_MS + len(events))
+            repository.sync_sources((source,), now_ms=NOW_MS + len(events))
             repository.record_opennews_events(
                 source=source,
                 events=events,
                 observed_at_ms=NOW_MS + len(events),
             )
         with conn.transaction():
-            rebuilt = repository.rebuild_stories(now_ms=NOW_MS + len(events))
+            rebuilt = rebuild_news_projection(repository, now_ms=NOW_MS + len(events))
 
         ownership = conn.execute(
             """
@@ -573,21 +1014,26 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
         conn.close()
 
 
-def test_live_success_preserves_incomplete_recovery_diagnostic_until_gap_closes() -> None:
+def test_live_success_preserves_exhausted_overlap_diagnostic_until_recovery_succeeds() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
         source = opennews_source()
         with conn.transaction():
-            NewsRepository(conn).sync_source(source, now_ms=NOW_MS)
-            opened = NewsRepository(conn).update_opennews_live_status(
+            repository = NewsRepository(conn)
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.mark_opennews_recovery_attempt(
                 source_id=source.source_id,
-                connected=False,
-                now_ms=NOW_MS + 1,
-                error_code="opennews_recovery_window_incomplete",
-                gap_unclosed=True,
-                gap_boundary_provider_record_id="missing-boundary",
-                expected_gap_version=None,
+                started_at_ms=NOW_MS + 1,
+            )
+            exhausted = repository.complete_opennews_recovery(
+                source_id=source.source_id,
+                started_at_ms=NOW_MS + 1,
+                finished_at_ms=NOW_MS + 2,
+                window_exhausted=True,
+                items_seen=220,
+                items_accepted=200,
+                rejection_counts={"future_date": 20},
             )
 
         # A fresh Repository models a restarted Workers process reconnecting live.
@@ -595,40 +1041,102 @@ def test_live_success_preserves_incomplete_recovery_diagnostic_until_gap_closes(
             live = NewsRepository(conn).update_opennews_live_status(
                 source_id=source.source_id,
                 connected=True,
-                now_ms=NOW_MS + 2,
+                now_ms=NOW_MS + 3,
                 error_code=None,
-                gap_unclosed=True,
-                gap_boundary_provider_record_id="missing-boundary",
-                expected_gap_version=None,
             )
-        still_open = conn.execute(
-            "SELECT gap_unclosed, last_error FROM news_sources WHERE source_id = %s",
+        still_exhausted = conn.execute(
+            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
             (source.source_id,),
         ).fetchone()
 
         with conn.transaction():
-            closed = NewsRepository(conn).update_opennews_live_status(
+            recovered_repository = NewsRepository(conn)
+            recovered_repository.mark_opennews_recovery_attempt(
                 source_id=source.source_id,
-                connected=True,
-                now_ms=NOW_MS + 3,
-                error_code=None,
-                gap_unclosed=False,
-                gap_boundary_provider_record_id=None,
-                expected_gap_version=2,
+                started_at_ms=NOW_MS + 4,
             )
-        after_close = conn.execute(
-            "SELECT gap_unclosed, last_error FROM news_sources WHERE source_id = %s",
+            recovered = recovered_repository.complete_opennews_recovery(
+                source_id=source.source_id,
+                started_at_ms=NOW_MS + 4,
+                finished_at_ms=NOW_MS + 5,
+                window_exhausted=False,
+                items_seen=20,
+                items_accepted=10,
+                rejection_counts={},
+            )
+        after_recovery = conn.execute(
+            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
             (source.source_id,),
         ).fetchone()
 
-        assert opened == ("missing-boundary", 1)
-        assert live == ("missing-boundary", 2)
-        assert dict(still_open) == {
-            "gap_unclosed": True,
-            "last_error": "opennews_recovery_window_incomplete",
+        assert exhausted is True
+        assert live is True
+        assert dict(still_exhausted) == {
+            "last_outcome": "recovery_window_exhausted",
+            "last_error": "opennews_recovery_window_exhausted",
         }
-        assert closed == (None, 2)
-        assert dict(after_close) == {"gap_unclosed": False, "last_error": None}
+        assert recovered is True
+        assert dict(after_recovery) == {
+            "last_outcome": "recovery_success",
+            "last_error": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_opennews_recovery_stops_at_the_first_existing_provider_record() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        existing = _event(
+            record_id="existing-overlap",
+            title="Existing overlap report",
+            score=60,
+            published_at_ms=NOW_MS - 60_000,
+        )
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(existing,),
+                observed_at_ms=NOW_MS,
+            )
+            repository.mark_opennews_recovery_attempt(
+                source_id=source.source_id,
+                started_at_ms=NOW_MS + 1,
+            )
+            outcome = repository.record_opennews_recovery_page(
+                source=source,
+                events=(
+                    _event(
+                        record_id="new-before-overlap",
+                        title="New report before overlap",
+                        score=70,
+                        published_at_ms=NOW_MS,
+                    ),
+                    existing,
+                    _event(
+                        record_id="must-not-cross-overlap",
+                        title="Older report beyond overlap",
+                        score=50,
+                        published_at_ms=NOW_MS - 120_000,
+                    ),
+                ),
+                observed_at_ms=NOW_MS + 1,
+                recovery_started_at_ms=NOW_MS + 1,
+            )
+
+        assert outcome["events_seen"] == 3
+        assert outcome["items_inserted"] == 1
+        assert outcome["overlap_complete"] is True
+        assert outcome["stop_reason"] == "existing_provider_record"
+        provider_ids = {
+            str(row["provider_record_id"])
+            for row in conn.execute("SELECT provider_record_id FROM news_items ORDER BY provider_record_id").fetchall()
+        }
+        assert provider_ids == {"existing-overlap", "new-before-overlap"}
     finally:
         conn.close()
 
@@ -664,7 +1172,7 @@ def test_opennews_rest_and_websocket_reports_atomically_merge_during_overlap() -
     try:
         reset_postgres_schema(setup)
         with setup.transaction():
-            NewsRepository(setup).sync_source(source, now_ms=NOW_MS)
+            NewsRepository(setup).sync_sources((source,), now_ms=NOW_MS)
         writer_b_pid = int(writer_b.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
         writer_b.commit()
 

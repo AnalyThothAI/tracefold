@@ -26,7 +26,7 @@ from tracefold.news.ranking import (
     promote_diplomacy_severity,
     select_top_stories,
 )
-from tracefold.news.sources import reporting_origin_tier
+from tracefold.news.sources import public_rss_membership_sources, reporting_origin_tier
 from tracefold.news.story_store import (
     NewsProjectionInputExceeded,
     _require_bounded_story_rows,
@@ -74,6 +74,7 @@ _PUBLIC_TOP_STORY_FIELDS: tuple[str, ...] = (
     "category",
 )
 _PUBLIC_SOURCE_COLLATOR = Collator()
+_MAX_ITEMS_PER_CATEGORY = 20
 _PUBLIC_STORY_CATEGORIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("war", "attack", "missile", "troops", "airstrike", "combat", "military"), "conflict", "critical"),
     (("killed", "dead", "casualties", "massacre", "shooting"), "violence", "high"),
@@ -89,7 +90,6 @@ _PUBLIC_STORY_CATEGORIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
 @dataclass(frozen=True, slots=True)
 class NewsProjectionSnapshot:
     input_fingerprint: str
-    cutoff_ms: int
     scoring_epoch_ms: int
     current_input_fingerprint: str | None
     rows: tuple[dict[str, Any], ...]
@@ -97,6 +97,15 @@ class NewsProjectionSnapshot:
     @property
     def unchanged(self) -> bool:
         return self.current_input_fingerprint == self.input_fingerprint
+
+
+@dataclass(frozen=True, slots=True)
+class _ScoredStoryRows:
+    rows: list[dict[str, Any]]
+    story_members: dict[str, list[dict[str, Any]]]
+    story_anchors: dict[str, dict[str, Any]]
+    story_canonical_keys: dict[str, str]
+    item_updates: list[dict[str, Any]]
 
 
 class NewsProjectionService:
@@ -114,7 +123,6 @@ class NewsProjectionService:
             payload = repos.news.load_story_projection(now_ms=now_ms)
         snapshot = NewsProjectionSnapshot(
             input_fingerprint=str(payload["input_fingerprint"]),
-            cutoff_ms=int(payload["cutoff_ms"]),
             scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
             current_input_fingerprint=(
                 str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
@@ -164,7 +172,200 @@ class NewsProjectionService:
 
 def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str, Any]:
     _require_bounded_snapshot(snapshot)
-    rows = [dict(row) for row in snapshot.rows]
+    rows, capped_rss_rows = _select_public_population(
+        snapshot.rows,
+        now_ms=snapshot.scoring_epoch_ms,
+    )
+    scored = _score_story_rows(rows, now_ms=snapshot.scoring_epoch_ms)
+    rows = scored.rows
+
+    stories: list[dict[str, Any]] = []
+    memberships: list[dict[str, str]] = []
+    for story_id, members in scored.story_members.items():
+        earliest = scored.story_anchors[story_id]
+        source_count = len({str(member["reporting_origin"]) for member in members})
+        representative = min(
+            members,
+            key=lambda member: (
+                int(member["effective_tier"]),
+                -int(member["published_at_ms"]),
+                str(member["normalized_title"]),
+                str(member["item_id"]),
+            ),
+        )
+        scoring = min(
+            members,
+            key=lambda member: (
+                -int(member["importance_score"]),
+                int(member["effective_tier"]),
+                -int(member["published_at_ms"]),
+                str(member["reporting_origin"]),
+                str(member["item_id"]),
+            ),
+        )
+        level = cast(
+            ThreatLevel,
+            max(
+                (str(member["level"]) for member in members),
+                key=lambda value: (SEVERITY_VALUES[cast(ThreatLevel, value)], value),
+            ),
+        )
+        category = cast(
+            EventCategory,
+            _mode([str(member["category"]) for member in members], _CATEGORY_ORDER),
+        )
+        first_published_at_ms = min(int(member["published_at_ms"]) for member in members)
+        last_published_at_ms = max(int(member["published_at_ms"]) for member in members)
+        story = {
+            "story_id": story_id,
+            "canonical_key": scored.story_canonical_keys[story_id],
+            "canonical_title": str(earliest["title"]),
+            "representative_item_id": str(representative["item_id"]),
+            "representative_source_id": str(representative["source_id"]),
+            "representative_title": str(representative["title"]),
+            "representative_url": representative.get("canonical_url"),
+            "representative_description": str(representative["description"]),
+            "scoring_item_id": str(scoring["item_id"]),
+            "level": level,
+            "category": category,
+            "importance_score": int(scoring["importance_score"]),
+            "importance_factors": dict(scoring["importance_factors"]),
+            "item_count": len(members),
+            "source_count": source_count,
+            "first_published_at_ms": first_published_at_ms,
+            "last_published_at_ms": last_published_at_ms,
+        }
+        story["state_fingerprint"] = _stable_hash(story)
+        stories.append(story)
+        memberships.extend({"story_id": story_id, "item_id": str(member["item_id"])} for member in members)
+
+    scored_by_item_id = {str(row["item_id"]): row for row in rows}
+    public_clusters = _build_public_clusters_for_population(
+        rows=rows,
+        capped_rss_rows=capped_rss_rows,
+    )
+
+    selection_stats: dict[str, int | bool] = {}
+    selected = select_top_stories(public_clusters, now_ms=snapshot.scoring_epoch_ms, stats=selection_stats)
+    selection_payload = {
+        "projection_revision": snapshot.input_fingerprint,
+        "selector_evaluated_at_ms": snapshot.scoring_epoch_ms,
+        "top_stories": [{field: cluster[field] for field in _PUBLIC_TOP_STORY_FIELDS} for cluster in selected],
+        "selection_stats": selection_stats,
+        "selector_version": PUBLIC_SELECTOR_VERSION,
+        "identity_version": STORY_IDENTITY_VERSION,
+    }
+    selection_snapshot = {
+        **selection_payload,
+        "selection_fingerprint": _stable_hash(selection_payload),
+    }
+    return {
+        "input_fingerprint": snapshot.input_fingerprint,
+        "population_item_ids": sorted(scored_by_item_id),
+        "item_updates": scored.item_updates,
+        "stories": sorted(stories, key=lambda row: str(row["story_id"])),
+        "memberships": sorted(
+            memberships,
+            key=lambda row: (str(row["story_id"]), str(row["item_id"])),
+        ),
+        "selection_snapshot": selection_snapshot,
+    }
+
+
+def _build_public_clusters_for_population(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    capped_rss_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    scored_by_item_id = {str(row["item_id"]): row for row in rows}
+    public_rows: list[dict[str, Any]] = []
+    for capped_row in capped_rss_rows:
+        physical_row = scored_by_item_id.get(str(capped_row["item_id"]))
+        if physical_row is None:
+            raise RuntimeError("news_population_item_missing")
+        # Preserve WorldMonitor's pre-cap score while binding the public row
+        # to the Story identity produced by the capped physical closure.
+        public_rows.append(
+            {
+                **dict(capped_row),
+                "story_id": physical_row["story_id"],
+                "canonical_key": physical_row["canonical_key"],
+            }
+        )
+    public_rows.extend(dict(row) for row in rows if str(row["source_kind"]) == "opennews")
+    return _build_public_story_clusters(public_rows)
+
+
+def _select_public_population(
+    snapshot_rows: Sequence[Mapping[str, Any]],
+    *,
+    now_ms: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Join primary OpenNews facts with the pinned capped RSS corroboration corpus."""
+
+    physical_rows = [dict(row) for row in snapshot_rows]
+    rss_rows_by_source: dict[str, list[dict[str, Any]]] = {}
+    opennews_rows: list[dict[str, Any]] = []
+    for row in physical_rows:
+        if str(row.get("source_kind")) == "rss":
+            rss_rows_by_source.setdefault(str(row["source_id"]), []).append(row)
+        elif str(row.get("source_kind")) == "opennews":
+            opennews_rows.append(row)
+        else:
+            raise RuntimeError("news_projection_source_kind_invalid")
+    for rows in rss_rows_by_source.values():
+        rows.sort(
+            key=lambda row: (
+                int(row["source_position"]) if row.get("source_position") is not None else 5,
+                str(row["item_id"]),
+            )
+        )
+    opennews_rows.sort(key=lambda row: (int(row["published_at_ms"]), str(row["item_id"])))
+
+    expanded_rss: list[dict[str, Any]] = []
+    for category, source in public_rss_membership_sources():
+        expanded_rss.extend(
+            {**row, "_population_category": category} for row in rss_rows_by_source.get(source.source_id, ())
+        )
+
+    scored_expanded = _score_story_rows(expanded_rss, now_ms=now_ms).rows
+    category_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in scored_expanded:
+        category_rows.setdefault(str(row["_population_category"]), []).append(row)
+    capped_rss: list[dict[str, Any]] = []
+    for rows in category_rows.values():
+        rows.sort(
+            key=lambda row: (
+                -int(row["importance_score"]),
+                -int(row["published_at_ms"]),
+            )
+        )
+        capped_rss.extend(rows[:_MAX_ITEMS_PER_CATEGORY])
+
+    public_item_ids = [str(row["item_id"]) for row in capped_rss]
+    public_item_ids.extend(str(row["item_id"]) for row in opennews_rows)
+    physical_by_id = {str(row["item_id"]): row for row in physical_rows}
+    selected_physical: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item_id in public_item_ids:
+        if item_id in seen:
+            continue
+        physical_row = physical_by_id.get(item_id)
+        if physical_row is None:
+            raise RuntimeError("news_population_item_missing")
+        seen.add(item_id)
+        selected_physical.append(dict(physical_row))
+    return selected_physical, capped_rss
+
+
+def _score_story_rows(
+    source_rows: Sequence[Mapping[str, Any]],
+    *,
+    now_ms: int,
+) -> _ScoredStoryRows:
+    """Run the one pinned identity/classifier/importance kernel over a population."""
+
+    rows = [dict(row) for row in source_rows]
     for row in rows:
         row["normalized_title"] = normalize_story_text(str(row["title"]))
     clusters = cluster_texts([str(row["title"]) for row in rows])
@@ -217,9 +418,9 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
             member["story_id"] = story_id
             member["canonical_key"] = canonical_key
 
-    entity_buckets: dict[str, dict[str, set[str] | set[int]]] = {}
+    entity_buckets: dict[str, dict[str, set[str]]] = {}
     for row in rows:
-        if snapshot.scoring_epoch_ms - int(row["published_at_ms"]) > 86_400_000:
+        if int(now_ms) - int(row["published_at_ms"]) > 86_400_000:
             continue
         origin = str(row["reporting_origin"])
         tier = reporting_origin_tier(origin, fallback_tier=int(row["tier"]))
@@ -228,17 +429,17 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                 entity_key,
                 {"canonical_keys": set(), "origins": set(), "tier12_origins": set()},
             )
-            cast(set[str], bucket["canonical_keys"]).add(str(row["canonical_key"]))
-            cast(set[str], bucket["origins"]).add(origin)
+            bucket["canonical_keys"].add(str(row["canonical_key"]))
+            bucket["origins"].add(origin)
             if tier <= 2:
-                cast(set[str], bucket["tier12_origins"]).add(origin)
+                bucket["tier12_origins"].add(origin)
     entity_signal_by_canonical_key: dict[str, tuple[int, int]] = {}
     for bucket in entity_buckets.values():
-        origins = cast(set[str], bucket["origins"])
+        origins = bucket["origins"]
         if len(origins) < 2:
             continue
-        signal = (len(origins), len(cast(set[str], bucket["tier12_origins"])))
-        for canonical_key in cast(set[str], bucket["canonical_keys"]):
+        signal = (len(origins), len(bucket["tier12_origins"]))
+        for canonical_key in bucket["canonical_keys"]:
             previous = entity_signal_by_canonical_key.get(canonical_key, (0, 0))
             entity_signal_by_canonical_key[canonical_key] = (
                 max(previous[0], signal[0]),
@@ -249,10 +450,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
     for members, source_count, canonical_key in scoring_groups:
         entity_count, tier12_entity_count = entity_signal_by_canonical_key.get(canonical_key, (0, 0))
         for member in members:
-            classification = classify_by_keyword(
-                str(member["title"]),
-                now_ms=snapshot.scoring_epoch_ms,
-            )
+            classification = classify_by_keyword(str(member["title"]), now_ms=int(now_ms))
             tier = reporting_origin_tier(
                 str(member["reporting_origin"]),
                 fallback_tier=int(member["tier"]),
@@ -267,7 +465,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                 tier=tier,
                 corroboration_count=source_count,
                 published_at_ms=int(member["published_at_ms"]),
-                now_ms=snapshot.scoring_epoch_ms,
+                now_ms=int(now_ms),
                 title=str(member["title"]),
                 entity_corroboration_count=entity_count,
             )
@@ -296,70 +494,18 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                     )
                 }
             )
+    return _ScoredStoryRows(
+        rows=rows,
+        story_members=story_members,
+        story_anchors=story_anchors,
+        story_canonical_keys=story_canonical_keys,
+        item_updates=item_updates,
+    )
 
-    stories: list[dict[str, Any]] = []
-    memberships: list[dict[str, str]] = []
-    for story_id, members in story_members.items():
-        earliest = story_anchors[story_id]
-        source_count = len({str(member["reporting_origin"]) for member in members})
-        representative = min(
-            members,
-            key=lambda member: (
-                int(member["effective_tier"]),
-                -int(member["published_at_ms"]),
-                str(member["normalized_title"]),
-                str(member["item_id"]),
-            ),
-        )
-        scoring = min(
-            members,
-            key=lambda member: (
-                -int(member["importance_score"]),
-                int(member["effective_tier"]),
-                -int(member["published_at_ms"]),
-                str(member["reporting_origin"]),
-                str(member["item_id"]),
-            ),
-        )
-        level = cast(
-            ThreatLevel,
-            max(
-                (str(member["level"]) for member in members),
-                key=lambda value: (SEVERITY_VALUES[cast(ThreatLevel, value)], value),
-            ),
-        )
-        category = cast(
-            EventCategory,
-            _mode([str(member["category"]) for member in members], _CATEGORY_ORDER),
-        )
-        first_published_at_ms = min(int(member["published_at_ms"]) for member in members)
-        last_published_at_ms = max(int(member["published_at_ms"]) for member in members)
-        story = {
-            "story_id": story_id,
-            "canonical_key": story_canonical_keys[story_id],
-            "canonical_title": str(earliest["title"]),
-            "representative_item_id": str(representative["item_id"]),
-            "representative_source_id": str(representative["source_id"]),
-            "representative_title": str(representative["title"]),
-            "representative_url": representative.get("canonical_url"),
-            "representative_description": str(representative["description"]),
-            "scoring_item_id": str(scoring["item_id"]),
-            "level": level,
-            "category": category,
-            "importance_score": int(scoring["importance_score"]),
-            "importance_factors": dict(scoring["importance_factors"]),
-            "item_count": len(members),
-            "source_count": source_count,
-            "first_published_at_ms": first_published_at_ms,
-            "last_published_at_ms": last_published_at_ms,
-        }
-        story["state_fingerprint"] = _stable_hash(story)
-        stories.append(story)
-        memberships.extend({"story_id": story_id, "item_id": str(member["item_id"])} for member in members)
 
-    # Keep complete materialized Story ownership above. WorldMonitor's public
-    # seed independently drops short titles before running the same clustering
-    # kernel, so the public evidence components must be derived in that order.
+def _build_public_story_clusters(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Build WorldMonitor's public seed components for selector consumption."""
+
     public_rows = [row for row in rows if utf16_length(str(row["title"])) > 10]
     public_component_indices = cluster_texts([str(row["title"]) for row in public_rows])
     public_clusters: list[dict[str, Any]] = []
@@ -417,34 +563,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
                 },
             }
         )
-
-    selection_stats: dict[str, int | bool] = {}
-    selected = select_top_stories(public_clusters, now_ms=snapshot.scoring_epoch_ms, stats=selection_stats)
-    selection_payload = {
-        "projection_revision": snapshot.input_fingerprint,
-        "selector_evaluated_at_ms": snapshot.scoring_epoch_ms,
-        "top_stories": [{field: cluster[field] for field in _PUBLIC_TOP_STORY_FIELDS} for cluster in selected],
-        "selection_stats": selection_stats,
-        "selector_version": PUBLIC_SELECTOR_VERSION,
-        "identity_version": STORY_IDENTITY_VERSION,
-    }
-    selection_snapshot = {
-        **selection_payload,
-        "selection_fingerprint": _stable_hash(selection_payload),
-    }
-    return {
-        "input_fingerprint": snapshot.input_fingerprint,
-        "temporary_clusters": len(clusters),
-        "temporary_public_clusters": len(public_clusters),
-        "item_updates": item_updates,
-        "public_clusters": public_clusters,
-        "stories": sorted(stories, key=lambda row: str(row["story_id"])),
-        "memberships": sorted(
-            memberships,
-            key=lambda row: (str(row["story_id"]), str(row["item_id"])),
-        ),
-        "selection_snapshot": selection_snapshot,
-    }
+    return public_clusters
 
 
 def rebuild_all_news_for_maintenance(*, db: Any, now_ms: int) -> dict[str, Any]:

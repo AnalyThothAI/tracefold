@@ -1,0 +1,1628 @@
+{
+  "authority_commit": "0e8785c43e6a693990a14181ae0a16066c15fc8c",
+  "variant": "full",
+  "language": "en",
+  "counts": {
+    "physical_feeds": 179,
+    "category_memberships": 183,
+    "reporting_source_names": 178,
+    "categories": 17
+  },
+  "sources": [
+    {
+      "name": "BBC World",
+      "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "Guardian World",
+      "url": "https://www.theguardian.com/world/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "AP News",
+      "url": "https://news.google.com/rss/search?q=site%3Aapnews.com%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "Reuters World",
+      "url": "https://news.google.com/rss/search?q=site%3Areuters.com%20world%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "CNN World",
+      "url": "https://news.google.com/rss/search?q=site%3Acnn.com%20world%20news%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "Trump - Truth Social",
+      "url": "https://trumpstruth.org/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "politics"
+      ]
+    },
+    {
+      "name": "Reuters US",
+      "url": "https://news.google.com/rss/search?q=site%3Areuters.com%20US%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "NPR News",
+      "url": "https://feeds.npr.org/1001/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "PBS NewsHour",
+      "url": "https://www.pbs.org/newshour/feeds/rss/headlines",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "ABC News",
+      "url": "https://feeds.abcnews.com/abcnews/topstories",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "CBS News",
+      "url": "https://www.cbsnews.com/latest/rss/main",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "NBC News",
+      "url": "https://feeds.nbcnews.com/nbcnews/public/news",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "Wall Street Journal",
+      "url": "https://feeds.content.dowjones.io/public/rss/RSSUSnews",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "Politico",
+      "url": "https://rss.politico.com/politics-news.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "The Hill",
+      "url": "https://thehill.com/news/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "Axios",
+      "url": "https://api.axios.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "CBC News",
+      "url": "https://www.cbc.ca/webfeed/rss/rss-world",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "Globe and Mail",
+      "url": "https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/?outputType=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "Global News",
+      "url": "https://globalnews.ca/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "us"
+      ]
+    },
+    {
+      "name": "France 24",
+      "url": "https://www.france24.com/en/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "EuroNews",
+      "url": "https://www.euronews.com/rss?format=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Le Monde",
+      "url": "https://www.lemonde.fr/en/rss/une.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "DW News",
+      "url": "https://rss.dw.com/xml/rss-en-all",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Yle News",
+      "url": "https://yle.fi/rss/news",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "NRK",
+      "url": "https://www.nrk.no/nyheter/siste.rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Aftenposten",
+      "url": "https://www.aftenposten.no/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "DR Nyheder",
+      "url": "https://www.dr.dk/nyheder/service/feeds/allenyheder",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Arctic Today",
+      "url": "https://news.google.com/rss/search?q=site%3Aarctictoday.com%20when%3A14d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Balkan Insight",
+      "url": "https://balkaninsight.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Kyiv Independent",
+      "url": "https://news.google.com/rss/search?q=site%3Akyivindependent.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Ukrinform",
+      "url": "https://news.google.com/rss/search?q=site%3Aukrinform.net%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Suspilne",
+      "url": "https://news.google.com/rss/search?q=site%3Asuspilne.media%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Ukrainska Pravda EN",
+      "url": "https://news.google.com/rss/search?q=site%3Aeuromaidanpress.com%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "NV EN",
+      "url": "https://news.google.com/rss/search?q=site%3Aenglish.nv.ua%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Hromadske EN",
+      "url": "https://news.google.com/rss/search?q=site%3Ahromadske.ua%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "TVN24",
+      "url": "https://tvn24.pl/swiat.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Rzeczpospolita",
+      "url": "https://www.rp.pl/rss_main",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Meduza",
+      "url": "https://meduza.io/rss/en/all",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Moscow Times",
+      "url": "https://www.themoscowtimes.com/rss/news",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Civil.ge",
+      "url": "https://civil.ge/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "OC Media",
+      "url": "https://oc-media.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "JAMnews",
+      "url": "https://jam-news.net/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Azertag",
+      "url": "https://news.google.com/rss/search?q=site%3Aazertag.az%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Armenpress",
+      "url": "https://news.google.com/rss/search?q=site%3Aarmenpress.am%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Zerkalo",
+      "url": "https://news.google.com/rss/search?q=site%3Azerkalo.io%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "ERR News",
+      "url": "https://news.err.ee/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "LRT English",
+      "url": "https://www.lrt.lt/en/news-in-english?rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "LSM English",
+      "url": "https://eng.lsm.lv/rss/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Daily Sabah",
+      "url": "https://www.dailysabah.com/rss/home-page",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Hurriyet",
+      "url": "https://www.hurriyet.com.tr/rss/anasayfa",
+      "lang": "tr",
+      "strategic_default": true,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Polsat News",
+      "url": "https://www.polsatnews.pl/rss/wszystkie.xml",
+      "lang": "pl",
+      "strategic_default": true,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "Kathimerini",
+      "url": "https://news.google.com/rss/search?q=site%3Akathimerini.gr%20when%3A2d&hl=el&gl=GR&ceid=GR:el",
+      "lang": "el",
+      "strategic_default": true,
+      "memberships": [
+        "europe"
+      ]
+    },
+    {
+      "name": "BBC Middle East",
+      "url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Al Jazeera",
+      "url": "https://www.aljazeera.com/xml/rss/all.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Al Arabiya",
+      "url": "https://news.google.com/rss/search?q=site%3Aenglish.alarabiya.net%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Guardian ME",
+      "url": "https://www.theguardian.com/world/middleeast/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Iran International",
+      "url": "https://news.google.com/rss/search?q=site%3Airanintl.com%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Haaretz",
+      "url": "https://news.google.com/rss/search?q=site%3Ahaaretz.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Jerusalem Post",
+      "url": "https://www.jpost.com/rss/rssfeedsheadlines.aspx",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Ynetnews",
+      "url": "https://www.ynetnews.com/Integration/StoryRss3089.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Arab News",
+      "url": "https://news.google.com/rss/search?q=site%3Aarabnews.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "The National",
+      "url": "https://www.thenationalnews.com/arc/outboundfeeds/rss/?outputType=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Oman Observer",
+      "url": "https://www.omanobserver.om/rssFeed/1",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Asharq Business",
+      "url": "https://asharqbusiness.com/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Rudaw",
+      "url": "https://news.google.com/rss/search?q=site%3Arudaw.net%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "middleeast"
+      ]
+    },
+    {
+      "name": "Hacker News",
+      "url": "https://hnrss.org/frontpage",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "tech"
+      ]
+    },
+    {
+      "name": "Ars Technica",
+      "url": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "tech"
+      ]
+    },
+    {
+      "name": "The Verge",
+      "url": "https://www.theverge.com/rss/index.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "tech"
+      ]
+    },
+    {
+      "name": "MIT Tech Review",
+      "url": "https://www.technologyreview.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "tech"
+      ]
+    },
+    {
+      "name": "AI News",
+      "url": "https://news.google.com/rss/search?q=(OpenAI%20OR%20Anthropic%20OR%20Google%20AI%20OR%20%22large%20language%20model%22%20OR%20ChatGPT)%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "ai"
+      ]
+    },
+    {
+      "name": "VentureBeat AI",
+      "url": "https://venturebeat.com/category/ai/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "ai"
+      ]
+    },
+    {
+      "name": "The Verge AI",
+      "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "ai"
+      ]
+    },
+    {
+      "name": "MIT Tech Review",
+      "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "ai"
+      ]
+    },
+    {
+      "name": "ArXiv AI",
+      "url": "https://export.arxiv.org/rss/cs.AI",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "ai"
+      ]
+    },
+    {
+      "name": "CNBC",
+      "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "finance"
+      ]
+    },
+    {
+      "name": "MarketWatch",
+      "url": "https://news.google.com/rss/search?q=site%3Amarketwatch.com%20markets%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "finance"
+      ]
+    },
+    {
+      "name": "Yahoo Finance",
+      "url": "https://finance.yahoo.com/news/rssindex",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "finance"
+      ]
+    },
+    {
+      "name": "Financial Times",
+      "url": "https://www.ft.com/rss/home",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "finance"
+      ]
+    },
+    {
+      "name": "Reuters Business",
+      "url": "https://news.google.com/rss/search?q=site%3Areuters.com%20business%20markets%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "finance"
+      ]
+    },
+    {
+      "name": "Oil & Gas",
+      "url": "https://news.google.com/rss/search?q=(oil%20price%20OR%20OPEC%20OR%20%22natural%20gas%22%20OR%20pipeline%20OR%20LNG)%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "commodities",
+        "energy"
+      ]
+    },
+    {
+      "name": "Gold & Metals",
+      "url": "https://news.google.com/rss/search?q=(%22gold%20price%22%20OR%20%22silver%20price%22%20OR%20%22precious%20metals%22%20OR%20%22copper%20price%22)%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "commodities"
+      ]
+    },
+    {
+      "name": "White House",
+      "url": "https://www.whitehouse.gov/briefings-statements/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "White House Actions",
+      "url": "https://www.whitehouse.gov/presidential-actions/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "State Dept",
+      "url": "https://news.google.com/rss/search?q=(site%3Astate.gov%20OR%20%22State%20Department%22)%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "Pentagon",
+      "url": "https://www.war.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "Federal Reserve",
+      "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "SEC",
+      "url": "https://www.sec.gov/news/pressreleases.rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "UN News",
+      "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "CISA",
+      "url": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "Treasury",
+      "url": "https://news.google.com/rss/search?q=site%3Atreasury.gov%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "DOJ",
+      "url": "https://news.google.com/rss/search?q=site%3Ajustice.gov%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "gov"
+      ]
+    },
+    {
+      "name": "BBC Africa",
+      "url": "https://feeds.bbci.co.uk/news/world/africa/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Africa News",
+      "url": "https://news.google.com/rss/search?q=(Africa%20OR%20Nigeria%20OR%20Kenya%20OR%20%22South%20Africa%22%20OR%20Ethiopia)%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Sahel Crisis",
+      "url": "https://news.google.com/rss/search?q=(Sahel%20OR%20Mali%20OR%20Niger%20OR%20%22Burkina%20Faso%22%20OR%20Wagner)%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "News24",
+      "url": "https://feeds.news24.com/articles/news24/TopStories/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Africanews",
+      "url": "https://www.africanews.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Jeune Afrique",
+      "url": "https://www.jeuneafrique.com/feed/",
+      "lang": "fr",
+      "strategic_default": true,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Premium Times",
+      "url": "https://www.premiumtimesng.com/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Vanguard Nigeria",
+      "url": "https://www.vanguardngr.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Channels TV",
+      "url": "https://www.channelstv.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Daily Trust",
+      "url": "https://dailytrust.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "ThisDay",
+      "url": "https://www.thisdaylive.com/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Radio Tamazuj",
+      "url": "https://www.radiotamazuj.org/en/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "The Reporter Ethiopia",
+      "url": "https://www.thereporterethiopia.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Ethiopia Insight",
+      "url": "https://www.ethiopia-insight.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Dabanga Sudan",
+      "url": "https://www.dabangasudan.org/en/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Hiiraan Online",
+      "url": "https://news.google.com/rss/search?q=site%3Ahiiraan.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "MyJoyOnline",
+      "url": "https://www.myjoyonline.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "Citi Newsroom",
+      "url": "https://news.google.com/rss/search?q=site%3Acitinewsroom.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "RFI Afrique",
+      "url": "https://www.rfi.fr/en/africa/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "africa"
+      ]
+    },
+    {
+      "name": "BBC Latin America",
+      "url": "https://feeds.bbci.co.uk/news/world/latin_america/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "latam"
+      ]
+    },
+    {
+      "name": "Guardian Americas",
+      "url": "https://www.theguardian.com/world/americas/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "latam"
+      ]
+    },
+    {
+      "name": "InSight Crime",
+      "url": "https://insightcrime.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "latam"
+      ]
+    },
+    {
+      "name": "BBC Asia",
+      "url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "The Diplomat",
+      "url": "https://thediplomat.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Reuters Asia",
+      "url": "https://news.google.com/rss/search?q=site%3Areuters.com%20(China%20OR%20Japan%20OR%20Taiwan%20OR%20Korea)%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Japan Today",
+      "url": "https://japantoday.com/feed/atom",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Nikkei Asia",
+      "url": "https://news.google.com/rss/search?q=site%3Aasia.nikkei.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "CNA",
+      "url": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "NDTV",
+      "url": "https://feeds.feedburner.com/ndtvnews-top-stories",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "South China Morning Post",
+      "url": "https://news.google.com/rss/search?q=site%3Ascmp.com%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "The Hindu",
+      "url": "https://www.thehindu.com/feeder/default.rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Asia News",
+      "url": "https://news.google.com/rss/search?q=site%3Aasianews.it%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Xinhua",
+      "url": "https://news.google.com/rss/search?q=site%3Axinhuanet.com%20OR%20Xinhua%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Asahi Shimbun",
+      "url": "https://www.asahi.com/rss/asahi/newsheadlines.rdf",
+      "lang": "ja",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "MIIT (China)",
+      "url": "https://news.google.com/rss/search?q=site%3Amiit.gov.cn%20when%3A7d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+      "lang": "zh",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "MOFCOM (China)",
+      "url": "https://news.google.com/rss/search?q=site%3Amofcom.gov.cn%20when%3A7d&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+      "lang": "zh",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Bangkok Post",
+      "url": "https://news.google.com/rss/search?q=site%3Abangkokpost.com%20when%3A1d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "th",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "VnExpress",
+      "url": "https://vnexpress.net/rss/tin-moi-nhat.rss",
+      "lang": "vi",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Yonhap News",
+      "url": "https://www.yonhapnewstv.co.kr/browse/feed/",
+      "lang": "ko",
+      "strategic_default": true,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Eurasianet",
+      "url": "https://eurasianet.org/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "RFE/RL Central Asia",
+      "url": "https://news.google.com/rss/search?q=site%3Arferl.org%20Central%2BAsia%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "The Astana Times",
+      "url": "https://astanatimes.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "The Times of Central Asia",
+      "url": "https://timesca.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Focus Taiwan",
+      "url": "https://news.google.com/rss/search?q=site%3Afocustaiwan.tw%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Taipei Times",
+      "url": "https://news.google.com/rss/search?q=site%3Ataipeitimes.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Taiwan News",
+      "url": "https://news.google.com/rss/search?q=site%3Ataiwannews.com.tw%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Dawn",
+      "url": "https://www.dawn.com/feeds/home/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Geo News",
+      "url": "https://news.google.com/rss/search?q=site%3Ageo.tv%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Jakarta Post",
+      "url": "https://news.google.com/rss/search?q=site%3Athejakartapost.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Rappler",
+      "url": "https://www.rappler.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "The Star (Malaysia)",
+      "url": "https://news.google.com/rss/search?q=site%3Athestar.com.my%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Irrawaddy",
+      "url": "https://www.irrawaddy.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Island Times (Palau)",
+      "url": "https://islandtimes.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "asia"
+      ]
+    },
+    {
+      "name": "Reuters Energy",
+      "url": "https://news.google.com/rss/search?q=site%3Areuters.com%20energy%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "energy"
+      ]
+    },
+    {
+      "name": "Nuclear Energy",
+      "url": "https://news.google.com/rss/search?q=(%22nuclear%20energy%22%20OR%20%22nuclear%20power%22%20OR%20%22nuclear%20reactor%22)%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "energy"
+      ]
+    },
+    {
+      "name": "Foreign Policy",
+      "url": "https://foreignpolicy.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks",
+        "intel"
+      ]
+    },
+    {
+      "name": "Atlantic Council",
+      "url": "https://www.atlanticcouncil.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks",
+        "intel"
+      ]
+    },
+    {
+      "name": "Foreign Affairs",
+      "url": "https://www.foreignaffairs.com/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks",
+        "intel"
+      ]
+    },
+    {
+      "name": "War on the Rocks",
+      "url": "https://warontherocks.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks"
+      ]
+    },
+    {
+      "name": "CSIS",
+      "url": "https://www.csis.org/rss.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks"
+      ]
+    },
+    {
+      "name": "ISW",
+      "url": "https://news.google.com/rss/search?q=site%3Aunderstandingwar.org%20when%3A2d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "thinktanks"
+      ]
+    },
+    {
+      "name": "CrisisWatch",
+      "url": "https://www.crisisgroup.org/rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "crisis"
+      ]
+    },
+    {
+      "name": "IAEA",
+      "url": "https://www.iaea.org/feeds/topnews",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "crisis"
+      ]
+    },
+    {
+      "name": "WHO",
+      "url": "https://www.who.int/rss-feeds/news-english.xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "crisis"
+      ]
+    },
+    {
+      "name": "Layoffs.fyi",
+      "url": "https://news.google.com/rss/search?q=tech%2Bcompany%2Blayoffs%2Bannounced%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "layoffs"
+      ]
+    },
+    {
+      "name": "TechCrunch Layoffs",
+      "url": "https://techcrunch.com/tag/layoffs/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "layoffs"
+      ]
+    },
+    {
+      "name": "Layoffs News",
+      "url": "https://news.google.com/rss/search?q=(layoffs%20OR%20%22job%20cuts%22%20OR%20%22workforce%20reduction%22)%20when%3A3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "layoffs"
+      ]
+    },
+    {
+      "name": "Defense One",
+      "url": "https://www.defenseone.com/rss/all/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "The War Zone",
+      "url": "https://www.twz.com/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Defense News",
+      "url": "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Breaking Defense",
+      "url": "https://breakingdefense.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Military Times",
+      "url": "https://www.militarytimes.com/arc/outboundfeeds/rss/?outputType=xml",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Task & Purpose",
+      "url": "https://taskandpurpose.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "USNI News",
+      "url": "https://news.google.com/rss/search?q=site:news.usni.org+when:3d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "gCaptain",
+      "url": "https://gcaptain.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Oryx OSINT",
+      "url": "https://www.oryxspioenkop.com/feeds/posts/default?alt=rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Bellingcat",
+      "url": "https://news.google.com/rss/search?q=site%3Abellingcat.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Krebs Security",
+      "url": "https://krebsonsecurity.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Arms Control Assn",
+      "url": "https://news.google.com/rss/search?q=site%3Aarmscontrol.org%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Bulletin of Atomic Scientists",
+      "url": "https://news.google.com/rss/search?q=site%3Athebulletin.org%20when%3A7d&hl=en-US&gl=US&ceid=US:en",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "FAO News",
+      "url": "https://www.fao.org/feeds/fao-newsroom-rss",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "OCCRP",
+      "url": "https://www.occrp.org/en/feed",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "DFRLab",
+      "url": "https://dfrlab.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Lighthouse Reports",
+      "url": "https://www.lighthousereports.com/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "The Sentry",
+      "url": "https://thesentry.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "GITOC",
+      "url": "https://globalinitiative.net/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "VSquare",
+      "url": "https://vsquare.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    },
+    {
+      "name": "Correctiv",
+      "url": "https://correctiv.org/feed/",
+      "lang": "en",
+      "strategic_default": false,
+      "memberships": [
+        "intel"
+      ]
+    }
+  ]
+}

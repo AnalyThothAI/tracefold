@@ -11,7 +11,7 @@ from alembic import command
 from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
 
-from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
+from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.postgres.postgres_migrations import alembic_config
@@ -235,9 +235,11 @@ def _sqlalchemy_test_url() -> str:
 
 
 def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
-    conn = connect_postgres_test(read_only=False)
+    config, conn = _reset_to_0245()
     try:
-        reset_postgres_schema(conn)
+        conn.close()
+        command.upgrade(config, "20260807_0246")
+        conn = connect_postgres_test(read_only=False)
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
         tables = {
             row["tablename"]
@@ -422,7 +424,7 @@ def test_world_brief_hard_cut_matches_the_canonical_opennews_fact_adapter() -> N
     finally:
         conn.close()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260807_0246")
     conn = connect_postgres_test(read_only=False)
     try:
         facts = {
@@ -630,7 +632,7 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
     finally:
         conn.close()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260807_0246")
     conn = connect_postgres_test(read_only=False)
     try:
         item = conn.execute(
@@ -729,9 +731,11 @@ def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> No
 
 
 def test_world_brief_state_accepts_only_discriminated_publication_and_run_shapes() -> None:
-    conn = connect_postgres_test(read_only=False)
+    config, conn = _reset_to_0245()
     try:
-        reset_postgres_schema(conn)
+        conn.close()
+        command.upgrade(config, "20260807_0246")
+        conn = connect_postgres_test(read_only=False)
         conn.execute(
             """
             INSERT INTO news_brief_publications(
@@ -990,7 +994,7 @@ def test_world_brief_hard_cut_fails_atomically_instead_of_deleting_an_unusable_f
         RuntimeError,
         match="news_world_brief_hard_cut_unusable_retained_headline:1",
     ):
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260807_0246")
 
     conn = connect_postgres_test(read_only=False)
     try:

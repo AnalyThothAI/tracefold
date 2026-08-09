@@ -285,7 +285,7 @@ def test_news_hard_cut_moves_bounded_opennews_metadata_to_current_item() -> None
     finally:
         conn.close()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260807_0246")
     conn = connect_postgres_test(read_only=False)
     try:
         tables = {

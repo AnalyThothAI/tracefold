@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tracefold.news import brief as brief_module
+import tracefold.news.brief as brief_module
 from tracefold.news.brief import (
     compose_l1_brief,
     parse_brief_synthesis,
@@ -630,13 +630,15 @@ def test_public_cluster_and_grounding_edges_match_pinned_web_semantics(
             "description": "",
             "published_at_ms": NOW_MS + index,
             "tier": 4,
+            "source_kind": "opennews",
+            "source_position": None,
+            "memberships": (),
         }
         for index, origin in enumerate(SOURCE_ORDER_ORIGINS)
     )
     projection = compute_news_story_projection(
         NewsProjectionSnapshot(
             input_fingerprint="f" * 64,
-            cutoff_ms=NOW_MS,
             scoring_epoch_ms=NOW_MS,
             current_input_fingerprint=None,
             rows=source_rows,

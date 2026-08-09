@@ -616,62 +616,23 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `singleton_key` | `BOOLEAN` | False | `true` |
-| `publication_id` | `TEXT` | True | `None` |
-| `target_fingerprint` | `TEXT` | True | `None` |
-| `latest_run_id` | `TEXT` | True | `None` |
-| `pending_first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `pending_due_at_ms` | `BIGINT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_brief_publications`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `publication_id` | `TEXT` | False | `None` |
-| `selection_fingerprint` | `TEXT` | False | `None` |
-| `target_fingerprint` | `TEXT` | False | `None` |
-| `quality` | `TEXT` | False | `None` |
-| `brief_kind` | `TEXT` | False | `None` |
-| `world_brief` | `TEXT` | False | `None` |
-| `brief_story_lines` | `JSONB` | False | `None` |
-| `top_stories` | `JSONB` | False | `None` |
-| `selected_story_ids` | `JSONB` | False | `None` |
-| `sources` | `JSONB` | False | `None` |
-| `source_age_range` | `JSONB` | False | `None` |
-| `provider` | `TEXT` | False | `None` |
-| `model` | `TEXT` | False | `None` |
-| `prompt_version` | `TEXT` | False | `None` |
-| `workflow_version` | `TEXT` | False | `None` |
-| `composer_version` | `TEXT` | False | `None` |
-| `schema_version` | `TEXT` | False | `None` |
-| `selector_version` | `TEXT` | False | `None` |
-| `identity_version` | `TEXT` | False | `None` |
-| `locale` | `TEXT` | False | `None` |
-| `validation` | `JSONB` | False | `None` |
-| `provenance` | `JSONB` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_brief_runs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `run_id` | `TEXT` | False | `None` |
-| `target_fingerprint` | `TEXT` | False | `None` |
-| `selection_fingerprint` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `model_outcome` | `TEXT` | True | `None` |
-| `pointer_action` | `TEXT` | False | `'none'::text` |
-| `failure_count` | `INTEGER` | False | `0` |
-| `next_due_at_ms` | `BIGINT` | True | `None` |
+| `slot_at_ms` | `BIGINT` | True | `None` |
+| `slot_status` | `TEXT` | False | `None` |
+| `next_due_at_ms` | `BIGINT` | False | `None` |
+| `completed_at_ms` | `BIGINT` | True | `None` |
 | `lease_owner` | `TEXT` | True | `None` |
 | `lease_token` | `TEXT` | True | `None` |
 | `lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `attempt_count` | `INTEGER` | False | `0` |
+| `failure_count` | `INTEGER` | False | `0` |
+| `model_outcome` | `TEXT` | True | `None` |
+| `pointer_action` | `TEXT` | False | `'none'::text` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `last_attempt_at_ms` | `BIGINT` | True | `None` |
+| `active_selection` | `JSONB` | True | `None` |
+| `served_payload` | `JSONB` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `completed_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_brief_selection_current`
 
@@ -703,10 +664,10 @@
 | `first_observed_at_ms` | `BIGINT` | False | `None` |
 | `last_observed_at_ms` | `BIGINT` | False | `None` |
 | `content_fingerprint` | `TEXT` | False | `None` |
-| `level` | `TEXT` | False | `None` |
-| `category` | `TEXT` | False | `None` |
-| `classification_source` | `TEXT` | False | `None` |
-| `classification_confidence` | `DOUBLE PRECISION` | False | `None` |
+| `level` | `TEXT` | True | `None` |
+| `category` | `TEXT` | True | `None` |
+| `classification_source` | `TEXT` | True | `None` |
+| `classification_confidence` | `DOUBLE PRECISION` | True | `None` |
 | `importance_score` | `INTEGER` | False | `0` |
 | `importance_factors` | `JSONB` | False | `'{}'::jsonb` |
 | `active` | `BOOLEAN` | False | `true` |
@@ -715,6 +676,7 @@
 | `provider_record_id` | `TEXT` | True | `None` |
 | `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
 | `provider_score_updated_at_ms` | `BIGINT` | True | `None` |
+| `source_position` | `SMALLINT` | True | `None` |
 
 ## `news_projection_summary`
 
@@ -723,7 +685,6 @@
 | `singleton_key` | `TEXT` | False | `None` |
 | `active_item_count` | `INTEGER` | False | `None` |
 | `active_story_count` | `INTEGER` | False | `None` |
-| `unmaterialized_item_count` | `INTEGER` | False | `None` |
 | `invalid_owner_count` | `INTEGER` | False | `None` |
 | `invalid_story_aggregate_count` | `INTEGER` | False | `None` |
 | `newest_item_at_ms` | `BIGINT` | True | `None` |
@@ -769,14 +730,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_source_facet_counts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `source_id` | `TEXT` | False | `None` |
-| `story_count` | `INTEGER` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_sources`
 
 | Column | Type | Nullable | Default |
@@ -798,9 +751,17 @@
 | `live_connected` | `BOOLEAN` | False | `false` |
 | `last_live_at_ms` | `BIGINT` | True | `None` |
 | `last_recovery_at_ms` | `BIGINT` | True | `None` |
-| `gap_unclosed` | `BOOLEAN` | False | `false` |
-| `gap_boundary_provider_record_id` | `TEXT` | True | `None` |
-| `gap_version` | `BIGINT` | False | `0` |
+| `feed_url` | `TEXT` | True | `None` |
+| `refresh_interval_seconds` | `INTEGER` | True | `None` |
+| `etag` | `TEXT` | True | `None` |
+| `last_modified` | `TEXT` | True | `None` |
+| `next_fetch_at_ms` | `BIGINT` | True | `None` |
+| `claim_token` | `UUID` | True | `None` |
+| `claim_lease_expires_at_ms` | `BIGINT` | True | `None` |
+| `last_outcome` | `TEXT` | True | `None` |
+| `last_rejection_counts` | `JSONB` | False | `'{}'::jsonb` |
+| `last_items_seen` | `INTEGER` | False | `0` |
+| `last_items_accepted` | `INTEGER` | False | `0` |
 
 ## `news_stories`
 
@@ -825,15 +786,6 @@
 | `last_published_at_ms` | `BIGINT` | False | `None` |
 | `state_fingerprint` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_story_facet_counts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `facet_type` | `TEXT` | False | `None` |
-| `facet_value` | `TEXT` | False | `None` |
-| `story_count` | `INTEGER` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_story_members`

@@ -22,7 +22,7 @@ from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
 from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
-from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
+from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
     PUBLIC_NO_SQL_ROUTES,
@@ -1429,8 +1429,9 @@ def _collection_metadata(settings: Any, *, repository_root: Path) -> dict[str, A
             "redacted_enablement": {
                 "collector_enabled": gmgn_stream_enabled(settings),
                 "news_enabled": bool(settings.news.enabled),
+                "news_rss_enabled": bool(settings.news.rss_enabled),
                 "macro_enabled": bool(settings.providers.macro_sources.enabled),
-                "news_brief_openrouter_configured": bool(settings.llm.openrouter_api_key),
+                "news_brief_direct_configured": bool(settings.llm.api_key),
                 "news_brief_groq_configured": bool(settings.llm.groq_api_key),
             },
         },

@@ -6,7 +6,6 @@ from typing import Any, cast
 from psycopg.types.json import Jsonb
 
 from .brief import publication_id as content_publication_id
-from .brief import target_fingerprint
 from .models import (
     BRIEF_COMPOSER_VERSION,
     BRIEF_PROMPT_VERSION,
@@ -20,158 +19,147 @@ from .models import (
     NewsBriefSynthesisResult,
 )
 
-BRIEF_DEBOUNCE_MS = 10 * 60 * 1_000
-BRIEF_RETRY_MS = 30 * 60 * 1_000
+BRIEF_SLOT_MS = 30 * 60 * 1_000
 BRIEF_LEASE_MS = 120 * 1_000
 BRIEF_MAX_FAILURES = 100
 _BRIEF_LOCK_KEY = 727_301_985
 
 
 def peek_brief_candidate(repository: Any, *, now_ms: int) -> dict[str, Any] | None:
-    """Catch the mutable target up to the one frozen Story-owned selection."""
+    """Return only the current UTC half-hour slot when it can be claimed."""
 
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-    selection = _selection(conn)
-    if selection is None:
+    current = _current(conn, lock="UPDATE")
+    live_selection = _selection(conn)
+    slot_at_ms = _slot_at_ms(now_ms)
+    active_slot_at_ms = current["slot_at_ms"]
+    candidate_selection: dict[str, Any] | None
+    if active_slot_at_ms is None or int(active_slot_at_ms) < slot_at_ms:
+        if live_selection is None:
+            return None
+        _open_slot(conn, slot_at_ms=slot_at_ms, now_ms=now_ms)
+        candidate_selection = live_selection
+        active_slot_at_ms = slot_at_ms
+        status = "due"
+    else:
+        candidate_selection = _json_object(current["active_selection"]) or live_selection
+    if int(active_slot_at_ms) != slot_at_ms:
         return None
-    target = target_fingerprint(str(selection["selection_fingerprint"]))
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
-    if current is None:
-        raise RuntimeError("news_brief_current_missing")
-    if not list(selection["top_stories"]):
-        _activate_empty_target(
-            conn,
-            current=current,
-            target_fingerprint_value=target,
-            now_ms=now_ms,
-        )
-        return None
-    run: Mapping[str, Any] | None = None
-    if current["target_fingerprint"] != target:
-        if current["latest_run_id"] is not None:
-            conn.execute(
-                """
-                UPDATE news_brief_runs
-                   SET status = 'retry_wait', model_outcome = 'none',
-                       pointer_action = 'none', next_due_at_ms = %s,
-                       lease_owner = NULL, lease_token = NULL,
-                       lease_expires_at_ms = NULL,
-                       completed_at_ms = %s, updated_at_ms = %s
-                 WHERE run_id = %s AND status = 'running'
-                """,
-                (
-                    now_ms + BRIEF_RETRY_MS,
-                    now_ms,
-                    now_ms,
-                    str(current["latest_run_id"]),
-                ),
-            )
-        run = conn.execute(
-            "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s FOR UPDATE",
-            (target,),
-        ).fetchone()
-        if run is not None:
-            publication_id = _publication_for_reactivated_target(
-                conn,
-                current=current,
-                run=run,
-            )
-            conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET publication_id = %s,
-                       target_fingerprint = %s,
-                       latest_run_id = %s,
-                       pending_first_dirty_at_ms = NULL,
-                       pending_due_at_ms = NULL,
-                       updated_at_ms = %s
-                 WHERE singleton_key = true
-                """,
-                (publication_id, target, str(run["run_id"]), now_ms),
-            )
-        else:
-            pending_first_dirty_at_ms = current["pending_first_dirty_at_ms"]
-            pending_due_at_ms = current["pending_due_at_ms"]
-            if pending_first_dirty_at_ms is None or pending_due_at_ms is None:
-                pending_first_dirty_at_ms = now_ms
-                pending_due_at_ms = now_ms + BRIEF_DEBOUNCE_MS
-            conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET target_fingerprint = %s,
-                       latest_run_id = NULL,
-                       pending_first_dirty_at_ms = %s,
-                       pending_due_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key = true
-                """,
-                (target, pending_first_dirty_at_ms, pending_due_at_ms, now_ms),
-            )
-            return None
-    if run is None:
-        run = conn.execute(
-            "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s",
-            (target,),
-        ).fetchone()
-    if run is None:
-        pending_due_at_ms = current["pending_due_at_ms"]
-        if pending_due_at_ms is None:
-            conn.execute(
-                """
-                UPDATE news_brief_current
-                   SET pending_first_dirty_at_ms = %s,
-                       pending_due_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key = true
-                """,
-                (now_ms, now_ms + BRIEF_DEBOUNCE_MS, now_ms),
-            )
-            return None
-        if int(pending_due_at_ms) > now_ms:
-            return None
-        return {"target_fingerprint": target, "next_due_at_ms": int(pending_due_at_ms)}
 
-    status = str(run["status"])
-    if status == "retry_wait" and int(run["next_due_at_ms"]) <= now_ms:
-        return {"target_fingerprint": target, "next_due_at_ms": int(run["next_due_at_ms"])}
-    if status == "running" and int(run["lease_expires_at_ms"]) <= now_ms:
-        return {"target_fingerprint": target, "next_due_at_ms": int(run["lease_expires_at_ms"])}
+    if candidate_selection is None or not list(candidate_selection["top_stories"]):
+        return None
+
+    if current["slot_at_ms"] is not None and int(current["slot_at_ms"]) == slot_at_ms:
+        status = str(current["slot_status"])
+    if status == "due" and slot_at_ms <= now_ms:
+        return {
+            "slot_at_ms": slot_at_ms,
+            "next_due_at_ms": slot_at_ms,
+        }
+    if (
+        status == "running"
+        and current["lease_expires_at_ms"] is not None
+        and int(current["lease_expires_at_ms"]) <= now_ms
+    ):
+        return {
+            "slot_at_ms": slot_at_ms,
+            "next_due_at_ms": int(current["lease_expires_at_ms"]),
+        }
     return None
 
 
 def prepare_brief_run(
     repository: Any,
     *,
-    target_fingerprint_value: str,
+    slot_at_ms: int,
     lease_owner: str,
     lease_token: str,
     now_ms: int,
 ) -> dict[str, Any] | None:
-    """Claim one frozen target or finish the public no-eligible-lead outcome."""
+    """Claim one slot and freeze its selection exactly once."""
 
     owner = str(lease_owner).strip()
     token = str(lease_token).strip()
     if not owner or not token:
         raise ValueError("news_brief_lease_identity_required")
-    conn = repository.conn
-    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-    selection = _selection(conn)
-    if selection is None or target_fingerprint(str(selection["selection_fingerprint"])) != target_fingerprint_value:
-        return None
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
-    if current is None or current["target_fingerprint"] != target_fingerprint_value:
-        return None
-    stories = list(selection["top_stories"])
-    if not stories:
-        return None
-    run = conn.execute(
-        "SELECT * FROM news_brief_runs WHERE target_fingerprint = %s FOR UPDATE",
-        (target_fingerprint_value,),
-    ).fetchone()
-    if not _run_is_due(run, current=current, now_ms=now_ms):
+    requested_slot_at_ms = int(slot_at_ms)
+    if requested_slot_at_ms != _slot_at_ms(now_ms):
         return None
 
+    conn = repository.conn
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
+    current = _current(conn, lock="UPDATE")
+    if current["slot_at_ms"] is None or int(current["slot_at_ms"]) != requested_slot_at_ms:
+        return None
+
+    status = str(current["slot_status"])
+    if status == "completed":
+        return None
+    if status == "due":
+        if int(current["slot_at_ms"]) > now_ms:
+            return None
+        reclaimed_attempt_count = int(current["attempt_count"] or 0)
+        reclaimed_failure_count = int(current["failure_count"] or 0)
+    elif status == "running":
+        lease_expires_at_ms = current["lease_expires_at_ms"]
+        if lease_expires_at_ms is None or int(lease_expires_at_ms) > now_ms:
+            return None
+        reclaimed_attempt_count = int(current["attempt_count"] or 0)
+        reclaimed_failure_count = min(
+            BRIEF_MAX_FAILURES,
+            int(current["failure_count"] or 0) + (1 if current["last_attempt_at_ms"] is not None else 0),
+        )
+    else:
+        raise RuntimeError("news_brief_slot_status_invalid")
+
+    active_selection = _json_object(current["active_selection"])
+    if active_selection is None:
+        active_selection = _selection(conn)
+    if active_selection is None or not list(active_selection["top_stories"]):
+        return None
+
+    conn.execute(
+        """
+        UPDATE news_brief_current
+           SET slot_status = 'running',
+               lease_owner = %s,
+               lease_token = %s,
+               lease_expires_at_ms = %s,
+               attempt_count = %s,
+               failure_count = %s,
+               model_outcome = NULL,
+               pointer_action = 'none',
+               last_error_code = NULL,
+               last_attempt_at_ms = NULL,
+               completed_at_ms = NULL,
+               active_selection = %s,
+               updated_at_ms = %s
+         WHERE singleton_key = true AND slot_at_ms = %s
+        """,
+        (
+            owner,
+            token,
+            now_ms + BRIEF_LEASE_MS,
+            reclaimed_attempt_count,
+            reclaimed_failure_count,
+            Jsonb(active_selection),
+            now_ms,
+            requested_slot_at_ms,
+        ),
+    )
+
+    claim = {
+        "slot_at_ms": requested_slot_at_ms,
+        "selection_fingerprint": (
+            str(active_selection["selection_fingerprint"])
+            if active_selection["selection_fingerprint"] is not None
+            else None
+        ),
+        "lease_owner": owner,
+        "lease_token": token,
+    }
+    stories = [dict(story) for story in active_selection["top_stories"]]
     if not any(_lead_eligible(story) for story in stories):
         result = NewsBriefSynthesisResult(
             brief_kind="none",
@@ -183,92 +171,18 @@ def prepare_brief_run(
             model="",
             validation={"failure_code": INSIGHTS_SYNTHESIS_MISSING_CLUSTER},
         )
-        _finish_without_model(
+        completed_publication_id = _finish_result(
             conn,
-            selection=selection,
-            target_fingerprint_value=target_fingerprint_value,
+            claim=claim,
             result=result,
-            existing_run=run,
             now_ms=now_ms,
         )
-        return {"completed_without_model": True}
+        return {"completed_without_model": True} if completed_publication_id is not None else None
 
-    run_id = _run_id(target_fingerprint_value)
-    failure_count = int(run["failure_count"] or 0) if run is not None else 0
-    if run is not None and str(run["status"]) == "running":
-        failure_count = min(BRIEF_MAX_FAILURES, failure_count + 1)
-    if run is None:
-        conn.execute(
-            """
-            INSERT INTO news_brief_runs (
-              run_id, target_fingerprint, selection_fingerprint,
-              status, model_outcome, pointer_action, failure_count,
-              next_due_at_ms, lease_owner, lease_token, lease_expires_at_ms,
-              last_error_code, created_at_ms, updated_at_ms,
-              last_attempt_at_ms, completed_at_ms
-            )
-            VALUES (
-              %s, %s, %s, 'running', NULL, 'none', %s,
-              NULL, %s, %s, %s, NULL, %s, %s, NULL, NULL
-            )
-            """,
-            (
-                run_id,
-                target_fingerprint_value,
-                str(selection["selection_fingerprint"]),
-                failure_count,
-                owner,
-                token,
-                now_ms + BRIEF_LEASE_MS,
-                now_ms,
-                now_ms,
-            ),
-        )
-    else:
-        run_id = str(run["run_id"])
-        conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET selection_fingerprint = %s,
-                   status = 'running', model_outcome = NULL,
-                   pointer_action = 'none', failure_count = %s,
-                   next_due_at_ms = NULL,
-                   lease_owner = %s, lease_token = %s,
-                   lease_expires_at_ms = %s,
-                   last_error_code = NULL,
-                   updated_at_ms = %s, completed_at_ms = NULL
-             WHERE run_id = %s
-            """,
-            (
-                str(selection["selection_fingerprint"]),
-                failure_count,
-                owner,
-                token,
-                now_ms + BRIEF_LEASE_MS,
-                now_ms,
-                run_id,
-            ),
-        )
-    conn.execute(
-        """
-        UPDATE news_brief_current
-           SET latest_run_id = %s, updated_at_ms = %s
-         WHERE singleton_key = true AND target_fingerprint = %s
-           AND latest_run_id IS DISTINCT FROM %s
-        """,
-        (run_id, now_ms, target_fingerprint_value, run_id),
-    )
     return {
         "completed_without_model": False,
-        "claim": {
-            "run_id": run_id,
-            "target_fingerprint": target_fingerprint_value,
-            "selection_fingerprint": str(selection["selection_fingerprint"]),
-            "lease_owner": owner,
-            "lease_token": token,
-            "release_due_at_ms": now_ms,
-        },
-        "selection": selection,
+        "claim": claim,
+        "selection": active_selection,
         "top_stories": stories,
     }
 
@@ -276,7 +190,7 @@ def prepare_brief_run(
 def start_brief_model(
     repository: Any,
     *,
-    run_id: str,
+    slot_at_ms: int,
     lease_owner: str,
     lease_token: str,
     now_ms: int,
@@ -285,13 +199,19 @@ def start_brief_model(
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
     cursor = conn.execute(
         """
-        UPDATE news_brief_runs
-           SET last_attempt_at_ms = %s, updated_at_ms = %s
-         WHERE run_id = %s AND status = 'running'
-           AND lease_owner = %s AND lease_token = %s
+        UPDATE news_brief_current
+           SET attempt_count = attempt_count + 1,
+               last_attempt_at_ms = %s,
+               updated_at_ms = %s
+         WHERE singleton_key = true
+           AND slot_at_ms = %s
+           AND slot_status = 'running'
+           AND lease_owner = %s
+           AND lease_token = %s
            AND lease_expires_at_ms > %s
+           AND last_attempt_at_ms IS NULL
         """,
-        (now_ms, now_ms, run_id, lease_owner, lease_token, now_ms),
+        (now_ms, now_ms, int(slot_at_ms), lease_owner, lease_token, now_ms),
     )
     return int(cursor.rowcount or 0) == 1
 
@@ -299,26 +219,31 @@ def start_brief_model(
 def release_brief_claim(
     repository: Any,
     *,
-    run_id: str,
+    slot_at_ms: int,
     lease_owner: str,
     lease_token: str,
-    due_at_ms: int,
     now_ms: int,
 ) -> bool:
+    """Release work that never reached the model without changing the frozen input."""
+
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
     cursor = conn.execute(
         """
-        UPDATE news_brief_runs
-           SET status = 'retry_wait', model_outcome = 'none',
-               pointer_action = 'none', next_due_at_ms = %s,
-               lease_owner = NULL, lease_token = NULL,
-               lease_expires_at_ms = NULL, updated_at_ms = %s
-         WHERE run_id = %s AND status = 'running'
-           AND lease_owner = %s AND lease_token = %s
+        UPDATE news_brief_current
+           SET slot_status = 'due',
+               lease_owner = NULL,
+               lease_token = NULL,
+               lease_expires_at_ms = NULL,
+               updated_at_ms = %s
+         WHERE singleton_key = true
+           AND slot_at_ms = %s
+           AND slot_status = 'running'
+           AND lease_owner = %s
+           AND lease_token = %s
            AND lease_expires_at_ms > %s
         """,
-        (due_at_ms, now_ms, run_id, lease_owner, lease_token, now_ms),
+        (now_ms, int(slot_at_ms), lease_owner, lease_token, now_ms),
     )
     return int(cursor.rowcount or 0) == 1
 
@@ -327,101 +252,57 @@ def publish_brief(
     repository: Any,
     *,
     claim: Mapping[str, Any],
-    selection: Mapping[str, Any],
     result: NewsBriefSynthesisResult,
     now_ms: int,
 ) -> str | None:
+    """Complete a slot against its frozen selection, never the live selection."""
+
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BRIEF_LOCK_KEY,))
-    active_selection = conn.execute(
-        """
-        SELECT selection_fingerprint
-          FROM news_brief_selection_current
-         WHERE singleton_key = true
-         FOR SHARE
-        """
-    ).fetchone()
-    if (
-        active_selection is None
-        or str(active_selection["selection_fingerprint"]) != str(claim["selection_fingerprint"])
-        or target_fingerprint(str(active_selection["selection_fingerprint"])) != str(claim["target_fingerprint"])
-    ):
-        return None
-    current = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
-    if current is None or current["target_fingerprint"] != claim["target_fingerprint"]:
-        return None
-    run = conn.execute(
-        """
-        SELECT * FROM news_brief_runs
-         WHERE run_id = %s AND target_fingerprint = %s
-           AND selection_fingerprint = %s AND status = 'running'
-           AND lease_owner = %s AND lease_token = %s
-           AND lease_expires_at_ms > %s
-         FOR UPDATE
-        """,
-        (
-            str(claim["run_id"]),
-            str(claim["target_fingerprint"]),
-            str(claim["selection_fingerprint"]),
-            str(claim["lease_owner"]),
-            str(claim["lease_token"]),
-            now_ms,
-        ),
-    ).fetchone()
-    if run is None:
-        return None
-    if str(selection["selection_fingerprint"]) != str(claim["selection_fingerprint"]):
-        return None
-    return _finish_model_result(
+    return _finish_result(
         conn,
-        selection=selection,
-        target_fingerprint_value=str(claim["target_fingerprint"]),
+        claim=claim,
         result=result,
-        run=run,
         now_ms=now_ms,
     )
 
 
 def get_brief(repository: Any, *, now_ms: int) -> dict[str, Any]:
-    del now_ms  # State is durable; reads never reinterpret leases into a new product state.
-    conn = repository.conn
-    joined = conn.execute(
-        """
-        SELECT to_jsonb(brief_current) AS current_row,
-               to_jsonb(publication) AS publication_row,
-               to_jsonb(run) AS run_row
-          FROM news_brief_current AS brief_current
-          LEFT JOIN news_brief_publications AS publication
-            ON publication.publication_id = brief_current.publication_id
-          LEFT JOIN news_brief_runs AS run
-            ON run.run_id = brief_current.latest_run_id
-         WHERE brief_current.singleton_key = true
-        """
-    ).fetchone()
-    if joined is None or joined["current_row"] is None:
-        raise RuntimeError("news_brief_current_missing")
-    current = cast(Mapping[str, Any], joined["current_row"])
-    publication_row = cast(Mapping[str, Any] | None, joined["publication_row"])
-    run_row = cast(Mapping[str, Any] | None, joined["run_row"])
-    publication = _publication_payload(publication_row) if publication_row is not None else None
-    run = _run_payload(run_row) if run_row is not None else None
+    del now_ms  # Serving reads never advance slots or reinterpret leases.
+    current = _current(repository.conn)
+    publication = _json_object(current["served_payload"])
     if publication is None:
         state = "unavailable"
-    elif publication["quality"] == "ok" and publication["target_fingerprint"] != current["target_fingerprint"]:
-        state = "last_known_good"
-    elif publication["quality"] == "ok":
+    elif str(publication["quality"]) != "ok":
+        state = "degraded"
+    elif (
+        current["slot_at_ms"] is not None
+        and publication.get("slot_at_ms") == int(current["slot_at_ms"])
+        and str(current["slot_status"]) == "completed"
+        and str(current["model_outcome"]) == "ok"
+    ):
         state = "current"
     else:
-        state = "degraded"
+        state = "last_known_good"
     return {
         "state": state,
-        "target_fingerprint": (
-            str(current["target_fingerprint"]) if current["target_fingerprint"] is not None else None
-        ),
-        "pending_due_at_ms": current["pending_due_at_ms"],
+        "slot_at_ms": int(current["slot_at_ms"]) if current["slot_at_ms"] is not None else None,
+        "next_due_at_ms": int(current["next_due_at_ms"]),
         "publication": publication,
-        "latest_run": run,
+        "latest_run": _run_payload(current) if current["slot_at_ms"] is not None else None,
     }
+
+
+def _current(conn: Any, *, lock: str | None = None) -> Mapping[str, Any]:
+    if lock is None:
+        row = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true").fetchone()
+    elif lock == "UPDATE":
+        row = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
+    else:
+        raise ValueError("news_brief_lock_invalid")
+    if row is None:
+        raise RuntimeError("news_brief_current_missing")
+    return cast(Mapping[str, Any], row)
 
 
 def _selection(conn: Any) -> dict[str, Any] | None:
@@ -429,240 +310,138 @@ def _selection(conn: Any) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
-def _run_is_due(run: Mapping[str, Any] | None, *, current: Mapping[str, Any], now_ms: int) -> bool:
-    if run is None:
-        due = current["pending_due_at_ms"]
-        return due is not None and int(due) <= now_ms
-    status = str(run["status"])
-    if status in {"published", "waiting_input"}:
-        return False
-    if status == "retry_wait":
-        return int(run["next_due_at_ms"]) <= now_ms
-    return status == "running" and int(run["lease_expires_at_ms"]) <= now_ms
+def _open_slot(conn: Any, *, slot_at_ms: int, now_ms: int) -> None:
+    conn.execute(
+        """
+        UPDATE news_brief_current
+           SET slot_at_ms = %s,
+               slot_status = 'due',
+               next_due_at_ms = %s,
+               completed_at_ms = NULL,
+               lease_owner = NULL,
+               lease_token = NULL,
+               lease_expires_at_ms = NULL,
+               attempt_count = 0,
+               failure_count = 0,
+               model_outcome = NULL,
+               pointer_action = 'none',
+               last_error_code = NULL,
+               last_attempt_at_ms = NULL,
+               active_selection = NULL,
+               updated_at_ms = %s
+         WHERE singleton_key = true
+        """,
+        (slot_at_ms, slot_at_ms + BRIEF_SLOT_MS, now_ms),
+    )
+
+
+def _finish_result(
+    conn: Any,
+    *,
+    claim: Mapping[str, Any],
+    result: NewsBriefSynthesisResult,
+    now_ms: int,
+) -> str | None:
+    current = _current(conn, lock="UPDATE")
+    if not _claim_matches(current, claim=claim, now_ms=now_ms):
+        return None
+    active_selection = _json_object(current["active_selection"])
+    if active_selection is None:
+        return None
+    frozen_fingerprint = str(active_selection["selection_fingerprint"])
+    if claim.get("selection_fingerprint") != frozen_fingerprint:
+        return None
+
+    payload = _sealed_payload(
+        selection=active_selection,
+        slot_at_ms=int(claim["slot_at_ms"]),
+        result=result,
+        now_ms=now_ms,
+    )
+    healthy = _healthy_payload(current["served_payload"])
+    if result.quality == "degraded" and healthy is not None:
+        action = "preserve_lkg"
+        served_payload = healthy
+    else:
+        action = "advance_ok" if result.quality == "ok" else "advance_degraded"
+        served_payload = payload
+    successful = result.brief_kind == "l1"
+    attempt_count = int(current["attempt_count"] or 0)
+    if current["last_attempt_at_ms"] is None:
+        attempt_count += 1
+    cursor = conn.execute(
+        """
+        UPDATE news_brief_current
+           SET slot_status = 'completed',
+               next_due_at_ms = %s,
+               completed_at_ms = %s,
+               lease_owner = NULL,
+               lease_token = NULL,
+               lease_expires_at_ms = NULL,
+               attempt_count = %s,
+               failure_count = %s,
+               model_outcome = %s,
+               pointer_action = %s,
+               last_error_code = %s,
+               served_payload = %s,
+               updated_at_ms = %s
+         WHERE singleton_key = true
+           AND slot_at_ms = %s
+           AND slot_status = 'running'
+           AND lease_owner = %s
+           AND lease_token = %s
+        """,
+        (
+            int(claim["slot_at_ms"]) + BRIEF_SLOT_MS,
+            now_ms,
+            attempt_count,
+            (
+                int(current["failure_count"] or 0)
+                if successful
+                else min(BRIEF_MAX_FAILURES, int(current["failure_count"] or 0) + 1)
+            ),
+            "ok" if successful else result.brief_kind,
+            action,
+            None if successful else _safe_error_code(result.validation.get("failure_code")),
+            Jsonb(served_payload),
+            now_ms,
+            int(claim["slot_at_ms"]),
+            str(claim["lease_owner"]),
+            str(claim["lease_token"]),
+        ),
+    )
+    if int(cursor.rowcount or 0) != 1:
+        return None
+    return str(served_payload["publication_id"])
+
+
+def _claim_matches(current: Mapping[str, Any], *, claim: Mapping[str, Any], now_ms: int) -> bool:
+    return bool(
+        current["slot_at_ms"] is not None
+        and int(current["slot_at_ms"]) == int(claim["slot_at_ms"])
+        and str(current["slot_status"]) == "running"
+        and str(current["lease_owner"]) == str(claim["lease_owner"])
+        and str(current["lease_token"]) == str(claim["lease_token"])
+        and current["lease_expires_at_ms"] is not None
+        and int(current["lease_expires_at_ms"]) > now_ms
+    )
 
 
 def _lead_eligible(story: Mapping[str, Any]) -> bool:
     return int(story.get("unique_source_count") or 0) >= 2 or story.get("entity_corroboration") is True
 
 
-def _run_id(target: str) -> str:
-    return f"brief_run_{target[:32]}"
-
-
-def _activate_empty_target(
-    conn: Any,
-    *,
-    current: Mapping[str, Any],
-    target_fingerprint_value: str,
-    now_ms: int,
-) -> None:
-    if current["target_fingerprint"] != target_fingerprint_value and current["latest_run_id"] is not None:
-        conn.execute(
-            """
-            UPDATE news_brief_runs
-               SET status = 'retry_wait', model_outcome = 'none',
-                   pointer_action = 'none', next_due_at_ms = %s,
-                   lease_owner = NULL, lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   completed_at_ms = %s, updated_at_ms = %s
-             WHERE run_id = %s AND status = 'running'
-            """,
-            (
-                now_ms + BRIEF_RETRY_MS,
-                now_ms,
-                now_ms,
-                str(current["latest_run_id"]),
-            ),
-        )
-    healthy = _healthy_current_publication(conn)
-    publication_id = str(healthy["publication_id"]) if healthy is not None else None
-    conn.execute(
-        """
-        UPDATE news_brief_current
-           SET publication_id = %s,
-               target_fingerprint = %s,
-               latest_run_id = NULL,
-               pending_first_dirty_at_ms = NULL,
-               pending_due_at_ms = NULL,
-               updated_at_ms = %s
-         WHERE singleton_key = true
-           AND (
-             publication_id IS DISTINCT FROM %s
-             OR target_fingerprint IS DISTINCT FROM %s
-             OR latest_run_id IS NOT NULL
-             OR pending_first_dirty_at_ms IS NOT NULL
-             OR pending_due_at_ms IS NOT NULL
-           )
-        """,
-        (
-            publication_id,
-            target_fingerprint_value,
-            now_ms,
-            publication_id,
-            target_fingerprint_value,
-        ),
-    )
-
-
-def _finish_without_model(
-    conn: Any,
-    *,
-    selection: Mapping[str, Any],
-    target_fingerprint_value: str,
-    result: NewsBriefSynthesisResult,
-    existing_run: Mapping[str, Any] | None,
-    now_ms: int,
-) -> None:
-    run_id = str(existing_run["run_id"]) if existing_run is not None else _run_id(target_fingerprint_value)
-    healthy = _healthy_current_publication(conn)
-    action = "preserve_lkg" if healthy is not None else "advance_degraded"
-    payload = _sealed_payload(
-        selection=selection,
-        target_fingerprint_value=target_fingerprint_value,
-        result=result,
-        now_ms=now_ms,
-    )
-    served_publication_id = (
-        str(healthy["publication_id"]) if healthy is not None else _insert_publication(conn, payload)
-    )
-    conn.execute(
-        """
-        INSERT INTO news_brief_runs (
-          run_id, target_fingerprint, selection_fingerprint,
-          status, model_outcome, pointer_action, failure_count,
-          next_due_at_ms, lease_owner, lease_token, lease_expires_at_ms,
-          last_error_code, created_at_ms, updated_at_ms,
-          last_attempt_at_ms, completed_at_ms
-        )
-        VALUES (%s, %s, %s, 'waiting_input', 'none', %s, %s,
-                NULL, NULL, NULL, NULL, %s, %s, %s, NULL, %s)
-        ON CONFLICT (target_fingerprint) DO UPDATE SET
-          selection_fingerprint = EXCLUDED.selection_fingerprint,
-          status = 'waiting_input', model_outcome = 'none',
-          pointer_action = EXCLUDED.pointer_action,
-          failure_count = EXCLUDED.failure_count,
-          next_due_at_ms = NULL,
-          lease_owner = NULL, lease_token = NULL, lease_expires_at_ms = NULL,
-          last_error_code = EXCLUDED.last_error_code,
-          updated_at_ms = EXCLUDED.updated_at_ms,
-          completed_at_ms = EXCLUDED.completed_at_ms
-        """,
-        (
-            run_id,
-            target_fingerprint_value,
-            str(selection["selection_fingerprint"]),
-            action,
-            min(BRIEF_MAX_FAILURES, int(existing_run["failure_count"] or 0) + 1) if existing_run is not None else 1,
-            INSIGHTS_SYNTHESIS_MISSING_CLUSTER,
-            now_ms,
-            now_ms,
-            now_ms,
-        ),
-    )
-    conn.execute(
-        """
-        UPDATE news_brief_current
-           SET publication_id = %s,
-               latest_run_id = %s,
-               pending_first_dirty_at_ms = NULL,
-               pending_due_at_ms = NULL,
-               updated_at_ms = %s
-         WHERE singleton_key = true AND target_fingerprint = %s
-           AND (
-             publication_id IS DISTINCT FROM %s
-             OR latest_run_id IS DISTINCT FROM %s
-             OR pending_first_dirty_at_ms IS NOT NULL
-             OR pending_due_at_ms IS NOT NULL
-           )
-        """,
-        (
-            served_publication_id,
-            run_id,
-            now_ms,
-            target_fingerprint_value,
-            served_publication_id,
-            run_id,
-        ),
-    )
-
-
-def _finish_model_result(
-    conn: Any,
-    *,
-    selection: Mapping[str, Any],
-    target_fingerprint_value: str,
-    result: NewsBriefSynthesisResult,
-    run: Mapping[str, Any],
-    now_ms: int,
-) -> str:
-    healthy = _healthy_current_publication(conn)
-    payload = _sealed_payload(
-        selection=selection,
-        target_fingerprint_value=target_fingerprint_value,
-        result=result,
-        now_ms=now_ms,
-    )
-    if result.quality == "degraded" and healthy is not None:
-        action = "preserve_lkg"
-        served_publication_id = str(healthy["publication_id"])
-    else:
-        action = "advance_ok" if result.quality == "ok" else "advance_degraded"
-        served_publication_id = _insert_publication(conn, payload)
-    successful = result.brief_kind == "l1"
-    conn.execute(
-        """
-        UPDATE news_brief_runs
-           SET status = %s, model_outcome = %s, pointer_action = %s,
-               failure_count = %s, next_due_at_ms = %s,
-               lease_owner = NULL, lease_token = NULL, lease_expires_at_ms = NULL,
-               last_error_code = %s,
-               completed_at_ms = %s, updated_at_ms = %s
-         WHERE run_id = %s
-        """,
-        (
-            "published" if successful else "retry_wait",
-            "ok" if successful else result.brief_kind,
-            action,
-            0 if successful else min(BRIEF_MAX_FAILURES, int(run["failure_count"] or 0) + 1),
-            None if successful else now_ms + BRIEF_RETRY_MS,
-            None if successful else _safe_error_code(result.validation.get("failure_code")),
-            now_ms,
-            now_ms,
-            str(run["run_id"]),
-        ),
-    )
-    conn.execute(
-        """
-        UPDATE news_brief_current
-           SET publication_id = %s,
-               latest_run_id = %s,
-               pending_first_dirty_at_ms = NULL,
-               pending_due_at_ms = NULL,
-               updated_at_ms = %s
-         WHERE singleton_key = true AND target_fingerprint = %s
-           AND (
-             publication_id IS DISTINCT FROM %s
-             OR latest_run_id IS DISTINCT FROM %s
-             OR pending_first_dirty_at_ms IS NOT NULL
-             OR pending_due_at_ms IS NOT NULL
-           )
-        """,
-        (
-            served_publication_id,
-            str(run["run_id"]),
-            now_ms,
-            target_fingerprint_value,
-            served_publication_id,
-            str(run["run_id"]),
-        ),
-    )
-    return served_publication_id
+def _slot_at_ms(now_ms: int) -> int:
+    normalized = int(now_ms)
+    if normalized < 0:
+        raise ValueError("news_brief_clock_invalid")
+    return normalized - (normalized % BRIEF_SLOT_MS)
 
 
 def _sealed_payload(
     *,
     selection: Mapping[str, Any],
-    target_fingerprint_value: str,
+    slot_at_ms: int,
     result: NewsBriefSynthesisResult,
     now_ms: int,
 ) -> dict[str, Any]:
@@ -676,15 +455,15 @@ def _sealed_payload(
     ):
         raise ValueError("news_brief_l1_selection_lock_invalid")
     primary_times = [int(story["primary_published_at_ms"]) for story in top_stories]
+    selection_fingerprint_value = str(selection["selection_fingerprint"])
     payload: dict[str, Any] = {
-        "selection_fingerprint": str(selection["selection_fingerprint"]),
-        "target_fingerprint": target_fingerprint_value,
+        "slot_at_ms": int(slot_at_ms),
+        "selection_fingerprint": selection_fingerprint_value,
         "quality": result.quality,
         "brief_kind": result.brief_kind,
         "world_brief": result.world_brief,
         "brief_story_lines": [line.model_dump(mode="json") for line in result.brief_story_lines],
         "top_stories": top_stories,
-        "selected_story_ids": [str(story["story_id"]) for story in top_stories],
         "sources": [source.model_dump(mode="json") for source in result.sources],
         "source_age_range": {"newest_ms": max(primary_times), "oldest_ms": min(primary_times)},
         "provider": result.provider,
@@ -703,94 +482,18 @@ def _sealed_payload(
             "selection_stats": dict(selection["selection_stats"]),
         },
         "published_at_ms": now_ms,
-        "created_at_ms": now_ms,
     }
     payload["publication_id"] = content_publication_id(payload)
     return payload
 
 
-def _insert_publication(conn: Any, payload: Mapping[str, Any]) -> str:
-    conn.execute(
-        """
-        INSERT INTO news_brief_publications (
-          publication_id, selection_fingerprint, target_fingerprint,
-          quality, brief_kind, world_brief, brief_story_lines,
-          top_stories, selected_story_ids, sources, source_age_range,
-          provider, model, prompt_version, workflow_version,
-          composer_version, schema_version, selector_version,
-          identity_version, locale, validation, provenance,
-          published_at_ms, created_at_ms
-        ) VALUES (
-          %(publication_id)s, %(selection_fingerprint)s, %(target_fingerprint)s,
-          %(quality)s, %(brief_kind)s, %(world_brief)s, %(brief_story_lines)s,
-          %(top_stories)s, %(selected_story_ids)s, %(sources)s, %(source_age_range)s,
-          %(provider)s, %(model)s, %(prompt_version)s, %(workflow_version)s,
-          %(composer_version)s, %(schema_version)s, %(selector_version)s,
-          %(identity_version)s, %(locale)s, %(validation)s, %(provenance)s,
-          %(published_at_ms)s, %(created_at_ms)s
-        )
-        ON CONFLICT (publication_id) DO NOTHING
-        """,
-        {
-            **dict(payload),
-            "brief_story_lines": Jsonb(payload["brief_story_lines"]),
-            "top_stories": Jsonb(payload["top_stories"]),
-            "selected_story_ids": Jsonb(payload["selected_story_ids"]),
-            "sources": Jsonb(payload["sources"]),
-            "source_age_range": Jsonb(payload["source_age_range"]),
-            "validation": Jsonb(payload["validation"]),
-            "provenance": Jsonb(payload["provenance"]),
-        },
-    )
-    return str(payload["publication_id"])
+def _healthy_payload(value: object) -> dict[str, Any] | None:
+    payload = _json_object(value)
+    return payload if payload is not None and payload.get("quality") == "ok" else None
 
 
-def _healthy_current_publication(conn: Any) -> Mapping[str, Any] | None:
-    return cast(
-        Mapping[str, Any] | None,
-        conn.execute(
-            """
-            SELECT publication.*
-              FROM news_brief_current current
-              JOIN news_brief_publications publication
-                ON publication.publication_id = current.publication_id
-             WHERE current.singleton_key = true AND publication.quality = 'ok'
-            """
-        ).fetchone(),
-    )
-
-
-def _publication_for_reactivated_target(
-    conn: Any,
-    *,
-    current: Mapping[str, Any],
-    run: Mapping[str, Any],
-) -> str | None:
-    if str(run["status"]) != "published":
-        healthy = _healthy_current_publication(conn)
-        if healthy is not None:
-            return str(healthy["publication_id"])
-    publication = conn.execute(
-        """
-        SELECT publication_id
-          FROM news_brief_publications
-         WHERE target_fingerprint = %s
-           AND selection_fingerprint = %s
-           AND quality = %s
-         ORDER BY published_at_ms DESC, publication_id
-         LIMIT 1
-        """,
-        (
-            str(run["target_fingerprint"]),
-            str(run["selection_fingerprint"]),
-            "ok" if str(run["status"]) == "published" else "degraded",
-        ),
-    ).fetchone()
-    if publication is not None:
-        return str(publication["publication_id"])
-    if str(run["status"]) == "published":
-        raise RuntimeError("news_brief_published_run_missing_publication")
-    return str(current["publication_id"]) if current["publication_id"] is not None else None
+def _json_object(value: object) -> dict[str, Any] | None:
+    return dict(cast(Mapping[str, Any], value)) if isinstance(value, Mapping) else None
 
 
 def _safe_error_code(value: object) -> str:
@@ -804,67 +507,31 @@ def _safe_error_code(value: object) -> str:
     return normalized if normalized in allowed else INSIGHTS_SYNTHESIS_PROVIDER
 
 
-def _publication_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    list_fields = {"brief_story_lines", "top_stories", "selected_story_ids", "sources"}
-    object_fields = {"source_age_range", "validation", "provenance"}
-    return {
-        key: list(row[key]) if key in list_fields else dict(row[key]) if key in object_fields else row[key]
-        for key in (
-            "publication_id",
-            "selection_fingerprint",
-            "target_fingerprint",
-            "quality",
-            "brief_kind",
-            "world_brief",
-            "brief_story_lines",
-            "top_stories",
-            "selected_story_ids",
-            "sources",
-            "source_age_range",
-            "provider",
-            "model",
-            "prompt_version",
-            "workflow_version",
-            "composer_version",
-            "schema_version",
-            "selector_version",
-            "identity_version",
-            "locale",
-            "validation",
-            "provenance",
-            "published_at_ms",
-            "created_at_ms",
-        )
-    }
-
-
 def _run_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    payload = {
         key: row[key]
         for key in (
-            "run_id",
-            "target_fingerprint",
-            "selection_fingerprint",
-            "status",
+            "slot_at_ms",
             "model_outcome",
             "pointer_action",
+            "attempt_count",
             "failure_count",
             "next_due_at_ms",
             "lease_expires_at_ms",
             "last_error_code",
-            "created_at_ms",
-            "updated_at_ms",
             "last_attempt_at_ms",
             "completed_at_ms",
+            "updated_at_ms",
         )
     }
+    payload["status"] = row["slot_status"]
+    return payload
 
 
 __all__ = [
-    "BRIEF_DEBOUNCE_MS",
     "BRIEF_LEASE_MS",
     "BRIEF_MAX_FAILURES",
-    "BRIEF_RETRY_MS",
+    "BRIEF_SLOT_MS",
     "get_brief",
     "peek_brief_candidate",
     "prepare_brief_run",

@@ -127,8 +127,8 @@ def test_news_contract_hard_cuts_title_translation_and_old_brief_aggregates() ->
     assert not {name for name in components if "TitleTranslation" in name}
     assert set(brief_properties) == {
         "state",
-        "target_fingerprint",
-        "pending_due_at_ms",
+        "slot_at_ms",
+        "next_due_at_ms",
         "publication",
         "latest_run",
     }

@@ -65,17 +65,16 @@ class StorageConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     api_key: str | None = None
-    base_url: str = ""
-    openrouter_api_key: str | None = None
+    base_url: str | None = None
     groq_api_key: str | None = None
-    news_brief_model: str = "deepseek-chat"
+    news_brief_model: str | None = None
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
 
-    @field_validator("api_key", "openrouter_api_key", "groq_api_key", mode="before")
+    @field_validator("api_key", "groq_api_key", "news_brief_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -85,20 +84,24 @@ class LlmConfig(BaseModel):
 
     @field_validator("base_url", mode="before")
     @classmethod
-    def parse_base_url(cls, value: Any) -> str:
-        return str(value or "").strip().rstrip("/")
+    def parse_optional_base_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().rstrip("/")
+        return normalized or None
 
-    @field_validator(
-        "news_brief_model",
-        "macro_document_analysis_model",
-        mode="before",
-    )
+    @field_validator("macro_document_analysis_model", mode="before")
     @classmethod
     def parse_model(cls, value: Any) -> str:
         normalized = str(value or "").strip()
         if not normalized:
             raise ValueError("llm model is required")
         return normalized
+
+    @model_validator(mode="after")
+    def require_complete_direct_configuration(self) -> LlmConfig:
+        configured = (self.api_key, self.base_url, self.news_brief_model)
+        if any(configured) and not all(configured):
+            raise ValueError("llm_direct_configuration_incomplete")
+        return self
 
 
 class GmgnConfig(BaseModel):
@@ -275,6 +278,7 @@ class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = True
+    rss_enabled: bool = False
     opennews_token: str | None = None
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
 
@@ -398,10 +402,9 @@ storage:
 
 llm:
   api_key:
-  base_url: ""
-  openrouter_api_key:
+  base_url:
   groq_api_key:
-  news_brief_model: "deepseek-chat"
+  news_brief_model:
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
 
@@ -439,6 +442,7 @@ providers:
 
 news:
   enabled: true
+  rss_enabled: false
   opennews_token:
   push:
     enabled: false

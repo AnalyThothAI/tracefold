@@ -82,16 +82,16 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_stories",
     "news_story_members",
     "news_projection_summary",
-    "news_story_facet_counts",
-    "news_source_facet_counts",
     "news_brief_selection_current",
-    "news_brief_runs",
-    "news_brief_publications",
     "news_brief_current",
     "news_push_state",
     "news_push_deliveries",
 }
 LEGACY_NEWS_TABLES = {
+    "news_story_facet_counts",
+    "news_source_facet_counts",
+    "news_brief_runs",
+    "news_brief_publications",
     "news_fetch_runs",
     "news_provider_items",
     "news_item_entities",
@@ -154,6 +154,28 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'news_sources'
+                """
+            ).fetchall()
+        }
+        news_projection_summary_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'news_projection_summary'
+                """
+            ).fetchall()
+        }
+        news_brief_current_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'news_brief_current'
                 """
             ).fetchall()
         }
@@ -394,9 +416,53 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "live_connected",
         "last_live_at_ms",
         "last_recovery_at_ms",
-        "gap_unclosed",
-        "gap_boundary_provider_record_id",
-        "gap_version",
+        "feed_url",
+        "refresh_interval_seconds",
+        "etag",
+        "last_modified",
+        "next_fetch_at_ms",
+        "claim_token",
+        "claim_lease_expires_at_ms",
+        "last_outcome",
+        "last_rejection_counts",
+        "last_items_seen",
+        "last_items_accepted",
+        "created_at_ms",
+        "updated_at_ms",
+    }
+    assert news_projection_summary_columns == {
+        "singleton_key",
+        "active_item_count",
+        "active_story_count",
+        "invalid_owner_count",
+        "invalid_story_aggregate_count",
+        "newest_item_at_ms",
+        "newest_story_at_ms",
+        "last_material_change_at_ms",
+        "updated_at_ms",
+        "input_fingerprint",
+        "projection_version",
+        "last_attempt_at_ms",
+        "last_error",
+        "last_success_at_ms",
+    }
+    assert news_brief_current_columns == {
+        "singleton_key",
+        "slot_at_ms",
+        "slot_status",
+        "next_due_at_ms",
+        "completed_at_ms",
+        "lease_owner",
+        "lease_token",
+        "lease_expires_at_ms",
+        "attempt_count",
+        "failure_count",
+        "model_outcome",
+        "pointer_action",
+        "last_error_code",
+        "last_attempt_at_ms",
+        "active_selection",
+        "served_payload",
         "created_at_ms",
         "updated_at_ms",
     }
@@ -439,7 +505,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260807_0246"
+    assert version == latest_migration_version() == "20260809_0247"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -464,7 +530,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260807_0246"
+    assert version == latest_migration_version() == "20260809_0247"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -843,7 +909,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260807_0246"
+        assert version == latest_migration_version() == "20260809_0247"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

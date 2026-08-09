@@ -38,9 +38,20 @@ PROJECTION_TABLES = (
     "stocks_radar_current_rows",
     "stocks_radar_publication_state",
     "news_projection_summary",
-    "news_story_facet_counts",
-    "news_source_facet_counts",
     "news_brief_selection_current",
+    "news_brief_current",
+)
+
+NEWS_TABLES = (
+    "news_sources",
+    "news_items",
+    "news_stories",
+    "news_story_members",
+    "news_projection_summary",
+    "news_brief_selection_current",
+    "news_brief_current",
+    "news_push_state",
+    "news_push_deliveries",
 )
 
 FOREIGN_KEY_CONSTRAINTS = {
@@ -229,27 +240,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "params": (),
     },
     {
-        "name": "news_feed_story_facets",
-        "sql": """
-            SELECT facet_type, facet_value, story_count
-            FROM news_story_facet_counts
-            ORDER BY facet_type, story_count DESC, facet_value
-            LIMIT 101
-        """,
-        "params": (),
-    },
-    {
-        "name": "news_feed_source_facets",
-        "sql": """
-            SELECT sources.source_id, facets.story_count
-            FROM news_source_facet_counts facets
-            JOIN news_sources sources ON sources.source_id = facets.source_id
-            ORDER BY facets.story_count DESC, sources.name, sources.source_id
-            LIMIT 101
-        """,
-        "params": (),
-    },
-    {
         "name": "news_feed_filtered_facets",
         "sql": """
             WITH filtered_stories AS MATERIALIZED (
@@ -309,25 +299,26 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "news_brief",
         "sql": """
-            SELECT current.publication_id,
-                   selection.selection_fingerprint,
-                   selection.top_stories
-            FROM news_brief_current current
-            LEFT JOIN news_brief_selection_current selection
-              ON selection.singleton_key
-            WHERE current.singleton_key
-            LIMIT 1
+            SELECT current.slot_at_ms, current.slot_status,
+                   current.next_due_at_ms, current.model_outcome,
+                   current.pointer_action, current.served_payload,
+                   current.updated_at_ms
+              FROM news_brief_current current
+             WHERE current.singleton_key
+             LIMIT 1
         """,
         "params": (),
     },
     {
         "name": "news_sources",
         "sql": """
-            SELECT source_id, live_connected, last_recovery_at_ms,
-                   gap_unclosed, last_error
+            SELECT source_id, source_kind, tier, name,
+                   live_connected, last_recovery_at_ms,
+                   next_fetch_at_ms, claim_lease_expires_at_ms,
+                   last_outcome, last_error
             FROM news_sources
-            WHERE enabled AND source_kind = 'opennews'
-            ORDER BY source_id
+            WHERE enabled
+            ORDER BY tier, name, source_id
             LIMIT 101
         """,
         "params": (),
@@ -539,18 +530,27 @@ class PostgresOperationalAudit:
     def run(self) -> dict[str, Any]:
         counts = self._counts(CORE_TABLES)
         projection_schema = self._table_presence(PROJECTION_TABLES)
+        actual_news_tables = self._news_tables()
+        news_schema = {
+            "expected_tables": list(NEWS_TABLES),
+            "actual_tables": sorted(actual_news_tables),
+            "exact": actual_news_tables == set(NEWS_TABLES),
+        }
         foreign_key_checks = self._foreign_key_checks()
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
         orphan_count = sum(int(value) for value in foreign_key_checks.values())
         return {
-            "ok": migration_ready and orphan_count == 0 and all(projection_schema.values()),
+            "ok": (
+                migration_ready and orphan_count == 0 and all(projection_schema.values()) and bool(news_schema["exact"])
+            ),
             "engine": "postgresql",
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
             "counts": counts,
             "projection_schema": projection_schema,
+            "news_schema": news_schema,
             "foreign_key_checks": foreign_key_checks,
         }
 
@@ -578,6 +578,18 @@ class PostgresOperationalAudit:
             (table_name,),
         ).fetchone()
         return row is not None
+
+    def _news_tables(self) -> set[str]:
+        rows = self.conn.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+              AND left(table_name, 5) = 'news_'
+            """
+        ).fetchall()
+        return {str(row["table_name"]) for row in rows}
 
     def _foreign_key_checks(self) -> dict[str, int]:
         rows = self.conn.execute(
@@ -775,48 +787,6 @@ class ProjectionValidationAudit:
                  OR current.state_fingerprint
                       IS DISTINCT FROM expected.state_fingerprint
             ),
-            story_facet_expected AS (
-              SELECT 'category'::text AS facet_type,
-                     category AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              GROUP BY category
-              UNION ALL
-              SELECT 'level'::text AS facet_type,
-                     level AS facet_value,
-                     count(*)::integer AS story_count
-              FROM news_stories
-              GROUP BY level
-            ),
-            story_facet_mismatch AS (
-              SELECT count(*)::integer AS count
-              FROM story_facet_expected expected
-              FULL OUTER JOIN news_story_facet_counts current
-                ON current.facet_type = expected.facet_type
-               AND current.facet_value = expected.facet_value
-              WHERE expected.facet_value IS NULL
-                 OR current.facet_value IS NULL
-                 OR current.story_count IS DISTINCT FROM expected.story_count
-            ),
-            source_facet_expected AS (
-              SELECT item.source_id,
-                     count(DISTINCT member.story_id)::integer AS story_count
-              FROM news_story_members member
-              JOIN news_stories story
-                ON story.story_id = member.story_id
-              JOIN news_items item
-                ON item.item_id = member.item_id
-              GROUP BY item.source_id
-            ),
-            source_facet_mismatch AS (
-              SELECT count(*)::integer AS count
-              FROM source_facet_expected expected
-              FULL OUTER JOIN news_source_facet_counts current
-                ON current.source_id = expected.source_id
-              WHERE expected.source_id IS NULL
-                 OR current.source_id IS NULL
-                 OR current.story_count IS DISTINCT FROM expected.story_count
-            ),
             brief_mismatch AS (
               SELECT count(*)::integer AS count
               FROM news_brief_selection_current current
@@ -825,16 +795,32 @@ class ProjectionValidationAudit:
                  OR jsonb_typeof(current.top_stories) <> 'array'
                  OR jsonb_array_length(current.top_stories) > 8
                  OR jsonb_typeof(current.selection_stats) <> 'object'
+            ),
+            brief_current_mismatch AS (
+              SELECT CASE
+                       WHEN count(*) <> 1 THEN 1
+                       ELSE count(*) FILTER (
+                         WHERE NOT singleton_key
+                            OR slot_status NOT IN ('due', 'running', 'completed')
+                            OR (
+                              active_selection IS NOT NULL
+                              AND jsonb_typeof(active_selection) <> 'object'
+                            )
+                            OR (
+                              served_payload IS NOT NULL
+                              AND jsonb_typeof(served_payload) <> 'object'
+                            )
+                       )::integer
+                     END AS count
+                FROM news_brief_current
             )
             SELECT
               (SELECT count FROM stock_mismatch)
                 AS stocks_radar_current_mismatch,
-              (SELECT count FROM story_facet_mismatch)
-                AS news_story_facet_mismatch,
-              (SELECT count FROM source_facet_mismatch)
-                AS news_source_facet_mismatch,
               (SELECT count FROM brief_mismatch)
-                AS news_brief_selection_snapshot_mismatch
+                AS news_brief_selection_snapshot_mismatch,
+              (SELECT count FROM brief_current_mismatch)
+                AS news_brief_current_mismatch
             """
         ).fetchone()
         bounded_checks = {str(name): int(value or 0) for name, value in dict(bounded_models or {}).items()}

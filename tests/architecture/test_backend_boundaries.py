@@ -12,6 +12,27 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
     "news": {"news", "platform"},
     "macro": {"macro", "market", "platform"},
 }
+# Exact private seams for the composition root and concrete adapters. They are
+# implementation collaborators of the three public News capabilities, not
+# product callers or compatibility interfaces; every new edge must be named.
+ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
+    "src/tracefold/app/hard_cut.py": {"tracefold.news.projection"},
+    "src/tracefold/app/repositories.py": {"tracefold.news.repository"},
+    "src/tracefold/app/workers.py": {
+        "tracefold.news.push",
+        "tracefold.news.sources",
+    },
+    "src/tracefold/app/workers_runtime_collector.py": {"tracefold.news.projection"},
+    "src/tracefold/integrations/news_ai.py": {
+        "tracefold.news.brief",
+        "tracefold.news.identity",
+        "tracefold.news.models",
+    },
+    "src/tracefold/integrations/news_feeds/rss.py": {
+        "tracefold.news.identity",
+    },
+    "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
+}
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {
     "attempt_id",
     "computed_at_ms",
@@ -66,6 +87,12 @@ RETIRED_NEWS_RUNTIME_MARKERS = (
     "/api/news/brief/history",
     "/analysis/requests",
     "/news/items",
+    "NewsInterface",
+    "news_story_source_facets",
+    "news_story_category_facets",
+    "news_brief_runs",
+    "news_brief_publications",
+    "refresh_projection_summary_for_maintenance",
 )
 
 
@@ -163,15 +190,19 @@ def test_integrations_do_not_depend_on_app() -> None:
     assert violations == []
 
 
-def test_external_consumers_use_business_package_roots_only() -> None:
+def test_external_consumers_use_declared_business_interfaces() -> None:
     violations: list[str] = []
     for package in BUSINESS_PACKAGES:
         prefix = f"tracefold.{package}."
         for path in _python_files(SRC):
             if path.relative_to(SRC).parts[0] == package:
                 continue
+            relative = path.relative_to(ROOT).as_posix()
+            allowed_internal_seams = ALLOWED_INTERNAL_BUSINESS_IMPORTS.get(relative, set())
             violations.extend(
-                f"{path.relative_to(ROOT)} -> {imported}" for imported in _imports(path) if imported.startswith(prefix)
+                f"{path.relative_to(ROOT)} -> {imported}"
+                for imported in _imports(path)
+                if imported.startswith(prefix) and imported not in allowed_internal_seams
             )
     assert violations == []
 

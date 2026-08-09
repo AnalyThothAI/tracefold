@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -9,16 +8,16 @@ from psycopg.types.json import Jsonb
 
 from .brief import selection_fingerprint
 from .models import CLASSIFIER_VERSION, IMPORTANCE_VERSION, STORY_IDENTITY_VERSION
+from .sources import public_rss_sources
 
-# OpenNews is a high-volume aggregate, unlike WorldMonitor's per-feed input
-# (which is capped before clustering).  Keep the live Story closure within a
-# fixed, complete window that the 25-second CPU budget can actually sustain;
-# the acquisition repository still retains valid Article facts for 96 hours.
-ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
+RSS_ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
+OPENNEWS_ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
 SCORING_EPOCH_MS = 60 * 60 * 1000
 NEWS_STORY_INPUT_ROW_CAP = 10_000
 NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
-STORY_PROJECTION_VERSION = f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:12h-full-window-v3"
+STORY_PROJECTION_VERSION = (
+    f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:rss96h-membership-top20-opennews12h-v1"
+)
 _PIPELINE_LOCK_KEY = 727_301_984
 
 
@@ -35,7 +34,8 @@ def _require_bounded_story_rows(rows: Sequence[Mapping[str, Any]]) -> None:
 
 
 def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
-    cutoff_ms = int(now_ms) - ACTIVE_WINDOW_MS
+    rss_cutoff_ms = int(now_ms) - RSS_ACTIVE_WINDOW_MS
+    opennews_cutoff_ms = int(now_ms) - OPENNEWS_ACTIVE_WINDOW_MS
     scoring_epoch_ms = int(now_ms) - (int(now_ms) % SCORING_EPOCH_MS)
     # This is the publish CAS baseline. Read it before the moving fact window;
     # the reverse order can pair old facts with a newer published fingerprint.
@@ -55,12 +55,19 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
                  + octet_length(item.content_fingerprint)
                  + 12
                ), 0) AS minimum_input_bytes
-          FROM news_items item
+         FROM news_items item
           JOIN news_sources source ON source.source_id = item.source_id
          WHERE source.enabled
-           AND item.published_at_ms >= %s
+           AND item.active
+           AND (
+             (source.source_kind = 'rss' AND item.published_at_ms >= %s)
+             OR (
+               source.source_kind = 'opennews'
+               AND item.published_at_ms >= %s
+             )
+           )
         """,
-        (cutoff_ms,),
+        (rss_cutoff_ms, opennews_cutoff_ms),
     ).fetchone()
     item_count = int(bounds["item_count"] or 0)
     if item_count > NEWS_STORY_INPUT_ROW_CAP:
@@ -74,30 +81,44 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
             SELECT item.item_id, item.source_id, item.canonical_url,
                    item.reporting_origin, item.title, item.description,
                    item.published_at_ms, item.content_fingerprint,
-                   source.tier
+                   item.source_position, source.tier, source.source_kind
               FROM news_items item
               JOIN news_sources source ON source.source_id = item.source_id
              WHERE source.enabled
-               AND item.published_at_ms >= %s
-             ORDER BY item.published_at_ms, item.item_id
+               AND item.active
+               AND (
+                 (source.source_kind = 'rss' AND item.published_at_ms >= %s)
+                 OR (
+                   source.source_kind = 'opennews'
+                   AND item.published_at_ms >= %s
+                 )
+               )
+             ORDER BY source.source_kind, item.source_id,
+                      item.source_position NULLS LAST, item.item_id
              LIMIT %s
             """,
-            (cutoff_ms, NEWS_STORY_INPUT_ROW_CAP + 1),
+            (rss_cutoff_ms, opennews_cutoff_ms, NEWS_STORY_INPUT_ROW_CAP + 1),
         ).fetchall()
     ]
+    memberships_by_source_id = {source.source_id: source.memberships for source in public_rss_sources()}
     rows = [
         {
-            key: row[key]
-            for key in (
-                "item_id",
-                "source_id",
-                "canonical_url",
-                "reporting_origin",
-                "title",
-                "description",
-                "published_at_ms",
-                "tier",
-            )
+            **{
+                key: row[key]
+                for key in (
+                    "item_id",
+                    "source_id",
+                    "canonical_url",
+                    "reporting_origin",
+                    "title",
+                    "description",
+                    "published_at_ms",
+                    "source_position",
+                    "tier",
+                    "source_kind",
+                )
+            },
+            "memberships": memberships_by_source_id.get(str(row["source_id"]), ()),
         }
         for row in loaded_rows
     ]
@@ -113,6 +134,9 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
                     int(row["published_at_ms"]),
                     str(row["reporting_origin"]),
                     int(row["tier"]),
+                    str(row["source_kind"]),
+                    row["source_position"],
+                    list(memberships_by_source_id.get(str(row["source_id"]), ())),
                 ]
                 for row in loaded_rows
             ],
@@ -120,7 +144,6 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
     )
     return {
         "input_fingerprint": input_fingerprint,
-        "cutoff_ms": cutoff_ms,
         "scoring_epoch_ms": scoring_epoch_ms,
         "current_input_fingerprint": (summary["input_fingerprint"] if summary is not None else None),
         "rows": rows,
@@ -137,7 +160,6 @@ def publish_story_projection(
     _require_bounded_story_rows(snapshot.rows)
     conn = repository.conn
     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PIPELINE_LOCK_KEY,))
-    snapshot_item_ids = sorted({str(row["item_id"]) for row in snapshot.rows})
     summary = conn.execute(
         """
         SELECT input_fingerprint FROM news_projection_summary
@@ -160,12 +182,15 @@ def publish_story_projection(
             "rows_written": 0,
         }
 
+    population_item_ids = sorted({str(item_id) for item_id in projection.get("population_item_ids", [])})
+    snapshot_by_item_id = {str(row["item_id"]): row for row in snapshot.rows}
+    if any(item_id not in snapshot_by_item_id for item_id in population_item_ids):
+        raise RuntimeError("news_projection_population_item_missing")
     stories = [dict(row) for row in projection.get("stories", [])]
     memberships = [dict(row) for row in projection.get("memberships", [])]
     item_updates = [dict(row) for row in projection.get("item_updates", [])]
     item_writes = _publish_items(
         conn,
-        cutoff_ms=int(snapshot.cutoff_ms),
         item_updates=item_updates,
         now_ms=now_ms,
     )
@@ -173,25 +198,22 @@ def publish_story_projection(
     membership_writes = _replace_memberships(conn, memberships=memberships)
     story_writes += _delete_absent_stories(conn, stories=stories)
     invariants = repository._story_invariant_counts(
-        item_ids=snapshot_item_ids,
+        item_ids=population_item_ids,
     )
     if invariants["total"]:
         raise RuntimeError(
             "news_story_invariant_failed:" + json.dumps(invariants, sort_keys=True, separators=(",", ":"))
         )
-    bounded_writes = _replace_facets(
-        conn,
-        stories=stories,
-        memberships=memberships,
-        now_ms=now_ms,
-    )
-    bounded_writes += _replace_brief_selection(
+    bounded_writes = _replace_brief_selection(
         conn,
         selection=projection["selection_snapshot"],
         now_ms=now_ms,
     )
     material_writes = item_writes + story_writes + membership_writes + bounded_writes
-    newest_item = max((int(row["published_at_ms"]) for row in snapshot.rows), default=None)
+    newest_item = max(
+        (int(snapshot_by_item_id[item_id]["published_at_ms"]) for item_id in population_item_ids),
+        default=None,
+    )
     newest_story = max(
         (int(row["last_published_at_ms"]) for row in stories),
         default=None,
@@ -201,8 +223,7 @@ def publish_story_projection(
             """
             UPDATE news_projection_summary
                SET active_item_count=%s, active_story_count=%s,
-                   unmaterialized_item_count=0, invalid_owner_count=0,
-                   invalid_story_aggregate_count=0,
+                   invalid_owner_count=0, invalid_story_aggregate_count=0,
                    newest_item_at_ms=%s, newest_story_at_ms=%s,
                    last_material_change_at_ms=(
                      CASE WHEN %s THEN %s ELSE last_material_change_at_ms END
@@ -213,7 +234,7 @@ def publish_story_projection(
              WHERE singleton_key='current'
             """,
             (
-                len(snapshot.rows),
+                len(population_item_ids),
                 len(stories),
                 newest_item,
                 newest_story,
@@ -230,8 +251,7 @@ def publish_story_projection(
     )
     return {
         "projection_status": "rebuilt",
-        "items": len(snapshot.rows),
-        "temporary_clusters": int(projection.get("temporary_clusters", 0)),
+        "items": len(population_item_ids),
         "stories": len(stories),
         "story_writes": story_writes,
         "membership_writes": membership_writes,
@@ -305,31 +325,10 @@ def _replace_brief_selection(
 def _publish_items(
     conn: Any,
     *,
-    cutoff_ms: int,
     item_updates: Sequence[Mapping[str, Any]],
     now_ms: int,
 ) -> int:
-    writes = int(
-        conn.execute(
-            """
-            UPDATE news_items item
-               SET active=(
-                 item.published_at_ms >= %s AND EXISTS (
-                   SELECT 1 FROM news_sources source
-                    WHERE source.source_id=item.source_id AND source.enabled
-                 )
-               )
-             WHERE item.active IS DISTINCT FROM (
-               item.published_at_ms >= %s AND EXISTS (
-                 SELECT 1 FROM news_sources source
-                  WHERE source.source_id=item.source_id AND source.enabled
-               )
-             )
-            """,
-            (cutoff_ms, cutoff_ms),
-        ).rowcount
-        or 0
-    )
+    writes = 0
     for item in item_updates:
         writes += int(
             conn.execute(
@@ -459,66 +458,3 @@ def _delete_absent_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]]) -
         ).rowcount
         or 0
     )
-
-
-def _replace_facets(
-    conn: Any,
-    *,
-    stories: Sequence[Mapping[str, Any]],
-    memberships: Sequence[Mapping[str, Any]],
-    now_ms: int,
-) -> int:
-    story_counts: Counter[tuple[str, str]] = Counter()
-    for story in stories:
-        story_counts[("category", str(story["category"]))] += 1
-        story_counts[("level", str(story["level"]))] += 1
-    source_by_item = {
-        str(row["item_id"]): str(row["source_id"])
-        for row in conn.execute("SELECT item_id, source_id FROM news_items WHERE active").fetchall()
-    }
-    story_sources: dict[str, set[str]] = {}
-    for member in memberships:
-        source_id = source_by_item.get(str(member["item_id"]))
-        if source_id is not None:
-            story_sources.setdefault(str(member["story_id"]), set()).add(source_id)
-    source_counts: Counter[str] = Counter()
-    for source_ids in story_sources.values():
-        source_counts.update(source_ids)
-    existing_story = {
-        (str(row["facet_type"]), str(row["facet_value"])): int(row["story_count"])
-        for row in conn.execute("SELECT facet_type, facet_value, story_count FROM news_story_facet_counts").fetchall()
-    }
-    existing_source = {
-        str(row["source_id"]): int(row["story_count"])
-        for row in conn.execute("SELECT source_id, story_count FROM news_source_facet_counts").fetchall()
-    }
-    writes = 0
-    if dict(story_counts) != existing_story:
-        writes += int(conn.execute("DELETE FROM news_story_facet_counts").rowcount or 0)
-        for (facet_type, facet_value), count in sorted(story_counts.items()):
-            writes += int(
-                conn.execute(
-                    """
-                    INSERT INTO news_story_facet_counts(
-                      facet_type, facet_value, story_count, updated_at_ms
-                    ) VALUES (%s, %s, %s, %s)
-                    """,
-                    (facet_type, facet_value, count, now_ms),
-                ).rowcount
-                or 0
-            )
-    if dict(source_counts) != existing_source:
-        writes += int(conn.execute("DELETE FROM news_source_facet_counts").rowcount or 0)
-        for source_id, count in sorted(source_counts.items()):
-            writes += int(
-                conn.execute(
-                    """
-                    INSERT INTO news_source_facet_counts(
-                      source_id, story_count, updated_at_ms
-                    ) VALUES (%s, %s, %s)
-                    """,
-                    (source_id, count, now_ms),
-                ).rowcount
-                or 0
-            )
-    return writes

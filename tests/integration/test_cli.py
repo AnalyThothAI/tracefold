@@ -139,7 +139,11 @@ def write_runtime_config(home: Path, *, db_path: Path, ws_token: str | None = No
         payload["ws_token"] = ws_token
     payload["gmgn"] = {"api_key": "gmgn-test", "openapi_base_url": "https://openapi.gmgn.ai"}
     if llm:
-        payload["llm"] = {"api_key": "sk-test"}
+        payload["llm"] = {
+            "api_key": "sk-test",
+            "base_url": "https://deepseek.test/v1",
+            "news_brief_model": "deepseek-chat",
+        }
     path = app_home / "config.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
@@ -330,6 +334,8 @@ class CliTests(unittest.TestCase):
         settings = Settings.model_validate(payload)
 
         self.assertTrue(settings.news.enabled)
+        self.assertFalse(settings.news.rss_enabled)
+        self.assertFalse(payload["news"]["rss_enabled"])
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
 

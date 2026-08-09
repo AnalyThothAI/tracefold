@@ -27,7 +27,7 @@ existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
 existing database passwords. The generated config has a new WebSocket token
 but no live provider/model/webhook credential, and `news.push.enabled` is
-false.
+false. `news.rss_enabled` is also false.
 
 The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
@@ -38,15 +38,15 @@ Top-level `handles`, top-level `notifications`, and `news.sources` are retired
 inputs. Any equivalent retired key fails
 validation; there is no alias, merge, or generated-source fallback.
 
-`llm` contains operator-owned provider credentials: `api_key`, `base_url`, and
-`news_brief_model` for the remaining global OpenAI-compatible consumers, plus
-optional `openrouter_api_key` and `groq_api_key` for the public News Brief
-waterfall. News Brief itself uses the code-owned Ollama endpoint and model
-first, then the configured OpenRouter and Groq credentials; it does not read
-the global provider fields. The global fields remain available to the optional
-News Push title-presentation adapter and other current consumers. Model
-execution policy, provider order, endpoints/models, timeouts, token budgets,
-cadence, leases, retries, and reservations are code-owned.
+`llm.api_key`, `llm.base_url`, and `llm.news_brief_model` are one direct
+DeepSeek configuration. They are all absent or all present; a partial triple
+fails validation, and Tracefold never supplies an implicit endpoint or model.
+The public News Brief waterfall is the code-owned Ollama endpoint/model, this
+configured direct DeepSeek slot, then optional Groq when
+`llm.groq_api_key` is present. News Push title translation reuses exactly the
+same direct triple and has no provider fallback. Model execution policy,
+provider order, Groq endpoint/model, timeouts, token budgets, cadence, leases,
+retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
 `news.opennews_token` is the operator-owned secret for the production News
@@ -54,14 +54,18 @@ source. It is reported only as the redacted boolean
 `news.opennews_token_configured`. When absent, News reports
 `opennews_token_missing`; no substitute credential path is used.
 
+`news.rss_enabled` is the sole public RSS activation switch and defaults to
+`false`. CLI diagnostics report the effective boolean. There is no source list,
+nested RSS configuration, environment override, or compatibility alias.
+
 `news.push` contains only `enabled`, `feishu_webhook_url`, and optional
 `feishu_signing_secret`. Enabling push requires the webhook, which must be the
 supported Feishu HTTPS custom-bot v2 boundary. If a non-empty signing secret is
 present, delivery includes the computed `timestamp` and `sign`; if absent,
 delivery is unsigned and includes neither field. Optional title translation
-reuses the existing global `llm.api_key`, effective `llm.base_url`, and
-`llm.news_brief_model`; there is no `news.push.translation` block or second
-copy of the provider credential. CLI diagnostics expose only configured
+reuses the direct DeepSeek `llm.api_key`, `llm.base_url`, and
+`llm.news_brief_model`; there is no `news.push.translation` block, second
+credential, inferred endpoint, or fallback provider. CLI diagnostics expose only configured
 booleans for Feishu and translation: `translation_enabled` derives from Push
 enablement plus the global LLM credential, while `translation_configured`
 reports that global credential availability. Each frozen internal delivery envelope
@@ -71,8 +75,8 @@ Threshold, cadence, deadlines, retries, translation target, 7.5-second request
 timeout, 8-second total translation budget, 500-grapheme input ceiling,
 validation, and card policy are code-owned. This Push translation remains an
 outbound presentation adapter and does not enter the serial model arbiter. For one fresh
-non-Chinese title it sends only that title in at most one request to the global
-OpenAI-compatible provider and never switches providers or retries. After
+non-Chinese title it sends only that title in at most one request to the
+configured direct DeepSeek provider and never switches providers or retries. After
 resource admission, a durable `attempted` fence is committed immediately before
 submission. If the process stops before the outcome is frozen, recovery sends
 the original-title fallback (or suppresses it when stale) without another model
@@ -150,7 +154,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | OpenNews current facts/source health, deterministic Story read model, and one public immutable World Brief snapshot |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | public WorldMonitor RSS plus OpenNews current facts, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
@@ -180,11 +184,10 @@ The News public surface is exactly five read-only routes:
 
 - `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&reporting_origin={reporting_origin}&provider_score_gt={score}&q={query}&sort={importance|latest}&limit={limit}&cursor={cursor}`
   returns one flat global Story page. `importance` remains the API default;
-  page size remains 50 by default and is capped at 100. Omitting the three new
-  parameters preserves the complete Feed population and prior ordering for
-  non-browser consumers. `provider_score_gt` is a strict comparison against
-  the backend-selected maximum numeric OpenNews score; the browser's fixed
-  high-signal view sends exactly `70`. `reporting_origin` is a normalized exact
+  page size remains 50 by default and is capped at 100. Omitting filters returns
+  the complete materialized Story population. `provider_score_gt` is a strict
+  comparison against the backend-selected maximum numeric OpenNews score;
+  `reporting_origin` is a normalized exact
   match. `q` is normalized server-side search over the canonical title and
   description, reporting origin, provider source, and coin symbols. All search
   and filters run before deterministic
@@ -207,37 +210,38 @@ The News public surface is exactly five read-only routes:
   representative URLs are nullable for linkless dispatches. An expired Story
   ID returns not found; there is no archived Story contract, revision timeline,
   or per-Story AI analysis.
-- `GET /api/news/brief` returns exactly one whole immutable public Insights
-  snapshot or no publication. `state` is `unavailable`, `current`, `degraded`,
-  or `last_known_good`; bounded target/latest-run telemetry remains separate.
-  The publication seals the server-ordered `top_stories`, selected IDs,
+- `GET /api/news/brief` returns exactly one whole sealed public Insights
+  payload or no payload. `state` is `unavailable`, `current`, `degraded`,
+  or `last_known_good`; bounded current-slot telemetry remains separate.
+  The payload seals its UTC half-hour slot, server-ordered `top_stories`,
   member-title/distinct-source evidence, selection-drop statistics, primary
   source-age range, L1/L2/none content, source slots, versions, validation, and
   provenance. It does not return publication history or request-time Story
   joins. A degraded run never replaces or refreshes a healthy whole LKG.
-- `GET /api/news/sources` returns the one enabled code-owned runtime source,
-  OpenNews, and its
-  live connection, last recovery, current error, and unclosed-gap status.
+- `GET /api/news/sources` returns primary OpenNews first, followed by the
+  enabled code-owned public RSS breadth/corroboration sources, with source kind, feed
+  schedule/claim state, latest outcome, bounded rejection/item counts, and
+  OpenNews live/overlap status. Its opaque cursor is bound to that server order.
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, public Brief, and outbound push state. It also
   exposes the operator-facing `live`, `recovering`, or `stalled` state and the
-  last successful Story publication clock. Current 12-hour Articles that have
-  not yet entered any Story membership are measured directly; an oldest such
-  first-materialization wait over 120 seconds is stalled rather than falsely
-  reported ready. This counter does not claim to represent every in-place
-  mutation of an already materialized Article.
+  last successful Story publication clock. Ingest health is driven by the
+  OpenNews primary lane and reports RSS breadth/corroboration
+  enablement plus totals/success/failure/claims as additional evidence; Story health reports
+  only projection clocks, counts, and invariant failures.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
 Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
-The React `/news` client deliberately requests `provider_score_gt=70`,
-`sort=latest`, and `limit=25` for its default `focus` mode. That product default
-does not change the absent-parameter Feed API behavior described above.
+The React `/news` surface is public Feed plus Brief. It keeps server order and
+does not add a personalized or provider-score-only default view.
 
-NewsItem identity is `(source_id, provider_record_id)`. OpenNews reports upsert
-one canonical current fact. The title is the first non-empty logical plaintext
+NewsItem identity is `(source_id, source_item_key)`. RSS identity prefers GUID,
+then canonical URL, then a deterministic title/publication-time key. OpenNews
+uses provider record ID as its source item key and overlap identity. OpenNews
+reports upsert one canonical current fact. The title is the first non-empty logical plaintext
 block, capped at 500 JavaScript UTF-16 code units; a clamp that splits a
 surrogate pair is converted with Web scalar-value replacement before storage.
 A cleaned explicit description wins; otherwise remaining blocks form the
@@ -255,9 +259,9 @@ does not affect Story identity, classification, importance, Feed ordering, or
 Brief. A numeric provider score may qualify the already projected Story for
 the separate outbound push state machine. The timestamp at which the current
 numeric score value changed is persisted separately from Story-owned
-`updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is the full SHA-256
-of the earliest normalized title in
-the complete current 12-hour cluster using WorldMonitor-compatible identity.
+`updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is
+the full SHA-256 of the earliest normalized title in the selected physical
+RSS/OpenNews component using WorldMonitor-compatible identity.
 Story IDs identify the exact shared lexical components; `canonical_key` keeps
 the caller-owned public `titleHash` used for first-stage signals. Separate
 components may share that public tracking hash while retaining distinct Story
@@ -266,27 +270,42 @@ the pinned JavaScript UTF-16 `title.length > 10` gate before rerunning the same
 clustering kernel. A short bridge can therefore split one complete Story into
 multiple selector candidates that map back to the same Story ID. No additional
 semantic merge rule is exposed.
-Valid Article facts can remain admitted for up to 96 hours independently of
-current Story membership. Corroboration counts
-distinct reporting origins, not acquisition paths, memberships, or repeated
-observations. Keyword classification and importance are deterministic and
-fully sufficient without AI.
+The code-owned source catalog is the pinned WorldMonitor
+`full/en + INTEL_SOURCES` public population: exactly 179 physical HTTPS feeds,
+183 category memberships, 178 reporting-source names, and 17 categories. The
+RSS/Atom parser considers the first five wire entries before any gate. A kept
+entry requires a title and a parseable publication time no more than one hour
+in the future; a link is optional and retained only when HTTP(S). Successful
+fetches atomically replace one source snapshot. If none of those first five
+entries has a title, parsing fails instead of publishing a successful empty
+snapshot. Unchanged snapshots write zero NewsItem facts, failures preserve the
+prior snapshot, and RSS facts expire at 96 hours. The reader follows at most two
+redirects itself; the initial URL and every redirect target must be public HTTPS
+and every resolved address must be globally routable before a request is sent.
 
-The complete current 12-hour Story closure uses only the canonical title for
-the pinned WorldMonitor lexical identity. The public seed then filters short
-titles and reclusters eligible Items with that same identity before deriving
-cluster evidence, second-stage importance/admissibility score, 16-hour
-effective recency, maximum-three primary-source cap, and corroborated-lead
-reservation. It selects at most eight Stories in stable server order and
-reports admissibility, source-cap, and overflow drops. There is no personalized
-filtering, embedding, topic grouping, entity veto, client ISQ reorder, or
-guaranteed topic/multi-source quota.
+Story calculation joins the primary 12-hour OpenNews facts with RSS facts
+expanded in pinned category-major membership order, runs lexical clustering,
+keyword classification, corroboration, and
+importance before the stable top-20 cap in each category, then forms a physical
+union of the capped RSS Items plus all current 12-hour OpenNews Items. The
+materialized Story/member closure contains each physical Item once. The public
+seed retains duplicate category memberships, so public `source_count` can
+exceed `unique_source_count`; the latter is the distinct reporting-origin
+count. It then applies the JavaScript UTF-16 `title.length > 10` gate,
+reclusters with the same kernel, and derives second-stage
+importance/admissibility, 16-hour effective recency, the maximum-three
+primary-source cap, and corroborated-lead reservation. It selects at most eight
+Stories in stable server order and reports admissibility, source-cap, and
+overflow drops. There is no personalization, embedding, topic grouping,
+entity veto, client reorder, or guaranteed topic/multi-source quota.
 
 L1 receives only ordered primary headlines, primary sources, and distinct
 source counts. Every provider response must pass the same citation-scoped
 composer used for publication; rejection advances the waterfall
-`Ollama llama3.1:8b -> OpenRouter deepseek/deepseek-v4-flash (reasoning off)
--> Groq llama-3.3-70b-versatile`. L1 and the corroboration-gated single-headline
+`Ollama llama3.1:8b -> configured direct DeepSeek -> Groq
+llama-3.3-70b-versatile`. The direct slot uses the exact configured endpoint,
+key, and model triple; partial configuration is rejected and no URL/model is
+inferred. L1 and the corroboration-gated single-headline
 L2 fallback share one 60-second budget. An L1 publication is `quality=ok` with
 one indexed line and one source slot per Top Story. L2 or no-text output is
 `quality=degraded`; L2 has no Story lines and at most one valid source. Empty
@@ -295,19 +314,27 @@ no eligible lead makes no model call. That target records `brief_kind=none` and
 can advance its complete degraded Top Story snapshot only when no healthy LKG
 exists.
 
-`selection_fingerprint` binds the complete selection snapshot;
-`target_fingerprint` adds prompt/workflow/composer/schema/locale versions; and
-`publication_id` hashes the complete sealed publication payload, excluding its
-own ID, database clocks, and mutable run telemetry. One mutable run per target
-uses `waiting_input`, `running`, `retry_wait`, or `published`, a 10-minute
-new-target debounce, 30-minute degraded retry cadence, and one 120-second fenced
-lease. Model outcome and pointer action are separate. Identical selection or
-publication payload replay writes zero serving rows; the same target may later
-advance from a content-addressed degraded snapshot to healthy L1.
+`selection_fingerprint` binds the complete current selection snapshot.
+Brief persistence is exactly `news_brief_selection_current` plus
+`news_brief_current`, both singleton rows. UTC half-hour slot identity is the
+only run identity. Story publication does not wait for RSS bootstrap. An empty
+Top Story selection is not claimable, makes no model call, and cannot complete
+a slot or replace the served payload; if OpenNews or RSS later supplies an
+eligible Story in the same half hour, that selection can still be frozen. A
+claim freezes the complete non-empty selection in the current row, uses one
+120-second fenced lease, and finalizes only that frozen selection even if live
+Story selection changes meanwhile. The current slot is attempted first;
+restart never replays every missed slot. `publication_id` hashes the complete
+sealed served payload except its own ID. The current row also owns bounded
+attempt/failure/outcome/pointer telemetry and the whole current/LKG payload.
+Healthy output advances it; degraded output preserves a healthy whole LKG and
+otherwise advances one complete degraded payload. There is no target
+fingerprint, run table, publication table, publication history, or
+compatibility reader.
 
 `/api/news/status` exposes four independent News health layers: `ingest`,
 `story`, `brief`, and `push`. Brief reports the same public state, current
-target/publication identity, and bounded latest-run telemetry. Push reports
+slot/publication identity, and bounded latest-run telemetry. Push reports
 disabled/configured, baseline,
 pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
 error evidence without exposing secrets or card content. Its nested
@@ -320,15 +347,21 @@ persisted numeric-score fact clock, completed samples whose latency exceeded
 Deterministic Story
 cards remain readable while Brief or push is unavailable.
 
-Production News uses one code-owned OpenNews WSS stream plus bounded,
-gap-triggered REST recovery after initial connection, reconnect, or queue
-overflow. A healthy WSS session makes no periodic REST call, and Workers
-schedule no second acquisition lane. Persisted source state enforces a five-minute
-minimum interval between recovery attempts. One recovery reads sequential
-100-item pages from page 1, stops when it finds the persisted boundary, and is
-capped at 11 pages; the 31-day theoretical ceiling is 98,208 REST calls. An
-exhausted page budget keeps the gap open instead of claiming complete recovery.
-Gap closure is fenced by the persisted gap version.
+Production News always runs the OpenNews primary low-latency lane. The sole RSS
+switch is `news.rss_enabled`; it defaults to `false`, and only `true` schedules
+the exact code-owned public RSS breadth/corroboration catalog. When false,
+reconciliation disables prior RSS rows and releases their claims,
+`/api/news/sources` serves OpenNews only, Story uses its current OpenNews
+population, and status returns `rss.enabled=false` without an RSS degradation
+reason. OpenNews uses one WSS
+stream for current facts and bounded REST overlap after initial connection,
+reconnect, or queue overflow. REST reads newest-first from page 1, at most
+eleven 100-item pages, and stops at the first existing provider record or the
+12-hour cutoff. Each RSS turn claims at most one due source and persists its
+conditional-fetch and bounded outcome state. There is no persisted gap flag,
+boundary, version, or unbounded recovery lane. OpenNews acquisition priority
+does not alter deterministic Story scoring, selector ordering, or its
+reporting-origin tier.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,
@@ -458,9 +491,10 @@ Migrations `20260801_0235` and `20260801_0236` are irreversible: they remove
 retired News acquisition and Macro derived/control history while preserving
 current items, material facts, acquisition targets, Fed document analysis, and
 the six module rows.
-`20260801_0237` adds the durable OpenNews recovery boundary, and
-`20260801_0238` adds the News push baseline and delivery ledger. Applying either
-migration does not send a message; delivery begins only after an explicit
+Historical migration `20260801_0237` added an OpenNews recovery boundary;
+current migration `20260809_0247` removes it in favor of bounded 12-hour
+overlap. `20260801_0238` adds the News push baseline and delivery ledger.
+Applying these migrations does not send a message; delivery begins only after an explicit
 webhook-backed push configuration and the first enabled reconcile establishes
 its baseline. Signing is optional. `20260807_0246` is the irreversible public
 World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
@@ -468,7 +502,11 @@ retired Story display-title translation table and incompatible Brief state,
 removes `normalized_title`/`brief_excluded`, rebuilds Story state, and installs
 the singleton selection plus discriminated L1/L2/none publication schema. It
 preserves the existing Story Push ledgers, pending/retry deliveries, and
-freshness fences. There is no mixed-schema reader or compatibility view.
+freshness fences. `20260809_0247` installs the pinned public RSS source state,
+removes the facet and former Brief run/publication tables, creates the
+half-hour `news_brief_current` singleton, clears rebuildable Story/selection
+state, and deletes incompatible Push payload rows. The live News schema is
+exactly nine tables and has no mixed-schema reader or compatibility view.
 
 ### Token images
 

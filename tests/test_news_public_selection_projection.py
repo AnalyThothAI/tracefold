@@ -29,13 +29,15 @@ def _row(
         "description": "",
         "published_at_ms": published_at_ms,
         "tier": 4,
+        "source_kind": "opennews",
+        "source_position": None,
+        "memberships": (),
     }
 
 
 def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> None:
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="f" * 64,
-        cutoff_ms=NOW_MS - 12 * 60 * 60_000,
         scoring_epoch_ms=NOW_MS,
         current_input_fingerprint=None,
         rows=(
@@ -135,7 +137,6 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
 def test_public_rank_recency_uses_newest_member_not_older_high_tier_primary() -> None:
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="e" * 64,
-        cutoff_ms=NOW_MS - 12 * 60 * 60_000,
         scoring_epoch_ms=NOW_MS,
         current_input_fingerprint=None,
         rows=(
@@ -165,7 +166,6 @@ def test_public_rank_recency_uses_newest_member_not_older_high_tier_primary() ->
 def test_empty_story_turn_still_emits_the_single_empty_selector_authority() -> None:
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="0" * 64,
-        cutoff_ms=NOW_MS - 12 * 60 * 60_000,
         scoring_epoch_ms=NOW_MS,
         current_input_fingerprint=None,
         rows=(),

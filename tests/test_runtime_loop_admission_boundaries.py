@@ -96,6 +96,29 @@ def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:
     assert started_at[1] - started_at[0] >= 0.20
 
 
+def test_news_brief_candidate_uses_the_utc_slot_as_its_only_target_key() -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "news_brief_peek"
+            return {"slot_at_ms": 1_800_000, "next_due_at_ms": 1_800_000}
+
+    async def scenario() -> ModelCandidate | None:
+        candidate = NewsBriefCandidate(
+            db=_Database(),
+            model_adapter=object(),
+            publisher=object(),
+            runtime_id="runtime-1",
+        )
+        return await candidate.peek(now_ms=1_800_001)
+
+    assert asyncio.run(scenario()) == ModelCandidate(
+        kind="news_brief",
+        target_key="1800000",
+        due_at_ms=1_800_000,
+        stable_order=20,
+    )
+
+
 def test_news_brief_prepare_watchdog_covers_both_bounded_database_sessions() -> None:
     class _Database:
         def __init__(self) -> None:

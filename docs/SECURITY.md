@@ -46,6 +46,15 @@ OpenNews original headline and freezes any translation only inside its delivery
 envelope. The six Macro modules are also deterministic views
 over persisted facts.
 
+When `news.rss_enabled` is explicitly true, News RSS acquisition accepts only
+the code-owned HTTPS catalog. The Adapter
+does not use automatic redirects: it follows at most two hops and, before every
+request, rejects credentials in the URL, non-HTTPS targets, local/reserved host
+forms, failed or empty DNS results, and any resolved address that is not
+globally routable. Feed failures preserve the previous current facts until the
+normal 96-hour expiry; malformed or unsafe-redirect responses cannot publish
+an empty replacement snapshot.
+
 `news.opennews_token` is an operator-owned secret. Configuration diagnostics
 expose only a configured boolean. OpenNews transport exceptions, current
 metadata, logs, generated artifacts, and public source/status responses must
@@ -69,15 +78,15 @@ redirects. The frozen delivery payload records only the non-secret `auth_mode`
 signature. A retry whose frozen mode differs from current configuration is
 terminal before network submission.
 
-News Push title translation reuses the operator-owned global `llm.api_key`,
-effective `llm.base_url`, and `llm.news_brief_model`; there is no
-`news.push.translation` secret or second copy of the credential. When
-translation is available, only the selected title is sent to that configured
-provider; coins, score, URL, description, Story data, Feishu webhook, and
+News Push title translation reuses the operator-owned direct DeepSeek
+`llm.api_key`, `llm.base_url`, and `llm.news_brief_model`; there is no
+`news.push.translation` secret, second copy, inferred endpoint/model, or
+fallback provider. When translation is available, only the selected title is
+sent to DeepSeek; coins, score, URL, description, Story data, Feishu webhook, and
 signing secret are never included. Configuration diagnostics expose only
-`translation_enabled`, derived from Push enablement plus the global LLM
-credential, and `translation_configured`, derived from that global credential
-availability. The provider URL and key never enter logs, public status,
+`translation_enabled`, derived from Push enablement plus the direct triple, and
+`translation_configured`, derived from that triple's availability. The
+provider URL and key never enter logs, public status,
 generated artifacts, or frozen payloads. Frozen presentation metadata is
 non-secret and bounded: headline mode, target language, adapter kind, engine,
 prompt version, sanitized fallback code, and—only for dispatched translation
@@ -89,14 +98,14 @@ description/body, provider AI metadata, unrelated corpus context, user profile,
 preference, personalized filter, Push/Feishu material, or source credential.
 L2 receives only the one eligible primary headline. Both have no provider
 fetch, filesystem, shell, or arbitrary database capability. Every accepted L1
-response passes the same citation/proper-noun/number/date gates used for
-publication before an immutable snapshot is inserted; raw responses and
-prompts are never persisted.
+response passes the same citation/proper-noun/number/date gates used before the
+sealed payload replaces the Brief current singleton; raw responses and prompts
+are never persisted.
 
-News Brief uses the code-owned local Ollama endpoint first and only the
-operator-owned `llm.openrouter_api_key` and `llm.groq_api_key` for its optional
-remote providers. It never reads the global `llm.api_key`, `llm.base_url`, or
-`llm.news_brief_model`. Diagnostics expose only configured booleans and bounded
+News Brief uses the code-owned local Ollama endpoint first, the same configured
+direct DeepSeek endpoint/key/model triple second, and optional Groq last. The
+direct triple must be entirely present or entirely absent; no implicit URL or
+model is supplied. Diagnostics expose only configured booleans and bounded
 provider/model labels, failure codes, and clocks; they never probe or expose an
 endpoint, key, Authorization header, Retry-After contents, prompt, or response.
 

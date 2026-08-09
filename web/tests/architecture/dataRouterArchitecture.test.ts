@@ -99,12 +99,14 @@ describe("data router architecture", () => {
     expect(macroBarrel).not.toContain("useMacroQuery");
   });
 
-  it("does not keep the retired news item route", () => {
+  it("keeps only the current public News route family", () => {
     const routerSource = readSource("routes/router.tsx");
 
     expect(routerSource).toContain('path: "news/stories/:storyId"');
+    expect(routerSource).toContain('path: "news/brief"');
+    expect(routerSource).toContain('path: "news/status"');
+    expect(routerSource).toContain('path: "news/sources"');
     expect(routerSource).not.toContain('path: "news/items/:newsItemId"');
-    expect(routerSource).not.toContain('path: "news/sources"');
   });
 
   it("does not keep the retired Signal Lab page routes or navigation target", () => {

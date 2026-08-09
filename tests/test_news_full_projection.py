@@ -5,14 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from tracefold.news import projection as projection_module
+import tracefold.news.projection as projection_module
+from tests.support.news import compute_news_public_clusters
 from tracefold.news.identity import normalize_story_text
 from tracefold.news.projection import (
     NewsProjectionInputExceeded,
     NewsProjectionSnapshot,
     compute_news_story_projection,
 )
-from tracefold.news.repository import NewsRepository
+from tracefold.news.sources import public_rss_sources
 from tracefold.news.story_store import (
     NEWS_STORY_INPUT_BYTES_CAP,
     NEWS_STORY_INPUT_ROW_CAP,
@@ -38,17 +39,43 @@ def _row(
         "description": "",
         "published_at_ms": published_at_ms,
         "tier": tier,
+        "source_kind": "opennews",
+        "source_position": None,
+        "memberships": (),
     }
 
 
 def _snapshot(*rows: dict[str, object]) -> NewsProjectionSnapshot:
     return NewsProjectionSnapshot(
         input_fingerprint="a" * 64,
-        cutoff_ms=1,
         scoring_epoch_ms=2_000_000_000_000,
         current_input_fingerprint=None,
         rows=rows,
     )
+
+
+def _rss_row(
+    item_id: str,
+    *,
+    source_index: int,
+    source_position: int,
+    title: str,
+    published_at_ms: int,
+) -> dict[str, object]:
+    source = public_rss_sources()[source_index]
+    return {
+        "item_id": item_id,
+        "source_id": source.source_id,
+        "canonical_url": f"https://example.test/{item_id}",
+        "reporting_origin": source.name,
+        "title": title,
+        "description": "",
+        "published_at_ms": published_at_ms,
+        "tier": source.tier,
+        "source_kind": "rss",
+        "source_position": source_position,
+        "memberships": source.memberships,
+    }
 
 
 def test_story_id_is_exact_sha256_of_earliest_normalized_title() -> None:
@@ -198,12 +225,67 @@ def test_public_seed_stage_reclusters_after_short_bridge_is_removed() -> None:
 
     assert len(projection["stories"]) == 1
     assert projection["stories"][0]["item_count"] == 3
-    assert [cluster["member_titles"] for cluster in projection["public_clusters"]] == [
+    public_stories = projection["selection_snapshot"]["top_stories"]
+    assert [cluster["member_titles"] for cluster in public_stories] == [
         ["Iran attack"],
         ["Iran crisis"],
     ]
-    assert {cluster["story_id"] for cluster in projection["public_clusters"]} == {projection["stories"][0]["story_id"]}
+    assert {cluster["story_id"] for cluster in public_stories} == {projection["stories"][0]["story_id"]}
     assert projection["selection_snapshot"]["selection_stats"]["considered"] == 2
+
+
+def test_public_population_caps_each_rss_category_and_joins_opennews_primary_once() -> None:
+    sources = public_rss_sources()
+    politics_indexes = [index for index, source in enumerate(sources) if source.memberships == ("politics",)][:5]
+    assert len(politics_indexes) == 5
+    rows = [
+        _rss_row(
+            f"rss-{index}",
+            source_index=politics_indexes[index // 5],
+            source_position=index % 5,
+            title=f"Public policy report number {index} from capital",
+            published_at_ms=2_000_000_000_000 - index,
+        )
+        for index in range(25)
+    ]
+    rows.append(
+        _row(
+            "opennews-primary",
+            "OpenNews primary public report",
+            published_at_ms=2_000_000_000_000,
+            reporting_origin="Independent Wire",
+        )
+    )
+
+    projection = compute_news_story_projection(_snapshot(*rows))
+
+    assert len(projection["population_item_ids"]) == 21
+    assert "opennews-primary" in projection["population_item_ids"]
+    assert len({member["item_id"] for member in projection["memberships"]}) == 21
+
+
+def test_duplicate_rss_memberships_expand_public_count_but_not_physical_story_membership() -> None:
+    sources = public_rss_sources()
+    duplicate_index = next(index for index, source in enumerate(sources) if len(source.memberships) == 2)
+    row = _rss_row(
+        "duplicate-membership",
+        source_index=duplicate_index,
+        source_position=0,
+        title="Oil market reports major supply disruption today",
+        published_at_ms=2_000_000_000_000,
+    )
+
+    snapshot = _snapshot(row)
+    projection = compute_news_story_projection(snapshot)
+    public_clusters = compute_news_public_clusters(snapshot)
+
+    assert projection["population_item_ids"] == ["duplicate-membership"]
+    assert projection["memberships"] == [
+        {"story_id": projection["stories"][0]["story_id"], "item_id": "duplicate-membership"}
+    ]
+    assert len(public_clusters) == 1
+    assert public_clusters[0]["source_count"] == 2
+    assert public_clusters[0]["unique_source_count"] == 1
 
 
 def test_source_count_uses_reporting_origin_not_acquisition_source() -> None:
@@ -384,24 +466,22 @@ def test_bounded_story_snapshot_rejects_input_over_the_byte_cap() -> None:
         projection_module._require_bounded_snapshot(_snapshot(oversized))
 
 
-def test_repository_rebuild_cannot_bypass_the_story_input_cap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repository = NewsRepository(None)
-    monkeypatch.setattr(
-        repository,
-        "load_story_projection",
-        lambda *, now_ms: {
-            "input_fingerprint": "over-cap",
-            "cutoff_ms": now_ms,
-            "scoring_epoch_ms": now_ms,
-            "current_input_fingerprint": None,
-            "rows": ({"item_id": str(index)} for index in range(NEWS_STORY_INPUT_ROW_CAP + 1)),
-        },
-    )
-
+def test_repository_rebuild_cannot_bypass_the_story_input_cap() -> None:
     with pytest.raises(NewsProjectionInputExceeded, match="news_story_input_row_cap"):
-        repository.rebuild_stories(now_ms=1_000)
+        compute_news_story_projection(
+            NewsProjectionSnapshot(
+                input_fingerprint="over-cap",
+                scoring_epoch_ms=1_000,
+                current_input_fingerprint=None,
+                rows=tuple(
+                    {
+                        "item_id": str(index),
+                        "source_kind": "opennews",
+                    }
+                    for index in range(NEWS_STORY_INPUT_ROW_CAP + 1)
+                ),
+            )
+        )
 
 
 def test_story_load_rejects_the_cap_plus_one_sentinel_before_returning() -> None:

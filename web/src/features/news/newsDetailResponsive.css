@@ -21,7 +21,6 @@
       flex: 1;
     }
 
-    .news-provider-facts,
     .news-factor-grid,
     .news-story-identity-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));

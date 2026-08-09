@@ -222,10 +222,6 @@
     text-decoration: none;
   }
 
-  .news-view-tabs a small {
-    font: 0.62rem var(--font-mono);
-  }
-
   .news-view-tabs a[aria-current="page"] {
     background: color-mix(in srgb, var(--primary) 13%, var(--background));
     color: var(--foreground);

@@ -24,7 +24,7 @@ from tracefold.app.workers_runtime_collector import (
     _validate_sample,
     validate_workers_runtime_collection,
 )
-from tracefold.news import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
+from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_audit import (
@@ -49,8 +49,9 @@ def test_loopback_probe_never_uses_operator_system_proxy() -> None:
 def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch, tmp_path: Path) -> None:
     settings = Settings(
         llm={
-            "api_key": "push-translation-only",
-            "openrouter_api_key": None,
+            "api_key": "deepseek-secret",
+            "base_url": "https://deepseek.test/v1",
+            "news_brief_model": "deepseek-chat",
             "groq_api_key": "groq-secret",
         }
     )
@@ -61,7 +62,8 @@ def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch,
     enablement = metadata["configuration"]["redacted_enablement"]
 
     assert "model_configured" not in enablement
-    assert enablement["news_brief_openrouter_configured"] is False
+    assert enablement["news_rss_enabled"] is False
+    assert enablement["news_brief_direct_configured"] is True
     assert enablement["news_brief_groq_configured"] is True
 
 

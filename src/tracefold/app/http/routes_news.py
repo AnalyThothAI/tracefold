@@ -14,7 +14,6 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.news import NewsInterface
 
 router = APIRouter()
 _FeedEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsFeedData]
@@ -55,7 +54,7 @@ def get_news_feed(
     runtime = _authenticated_runtime(request)
     try:
         with runtime.repositories() as repos:
-            data = _news_interface(repos).get_feed(
+            data = repos.news.list_feed(
                 category=category or None,
                 level=level or None,
                 source_id=source_id or None,
@@ -91,8 +90,8 @@ def get_news_story(
     runtime = _authenticated_runtime(request)
     try:
         with runtime.repositories() as repos:
-            data = _news_interface(repos).get_story(
-                story_id=story_id,
+            data = repos.news.get_story(
+                story_id=story_id.strip(),
                 members_limit=members_limit,
                 members_cursor=members_cursor or None,
             )
@@ -112,7 +111,7 @@ def get_news_world_brief(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = _news_interface(repos).get_world_brief(now_ms=int(time.time() * 1000))
+        data = repos.news.get_brief(now_ms=int(time.time() * 1000))
     return _etagged(data, request, envelope=_BriefEnvelope)
 
 
@@ -126,7 +125,7 @@ def get_news_sources(
     runtime = _authenticated_runtime(request)
     try:
         with runtime.repositories() as repos:
-            data = _news_interface(repos).get_sources(
+            data = repos.news.list_sources(
                 limit=limit,
                 cursor=cursor or None,
             )
@@ -146,8 +145,9 @@ def get_news_status(request: Request) -> JSONResponse:
             repos.conn,
             now_ms=now_ms,
         )
-        data = _news_interface(repos).health(
+        data = repos.news.health_snapshot(
             now_ms=now_ms,
+            rss_enabled=runtime.settings.news.rss_enabled,
             push_enabled=push_settings.enabled,
             feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
             feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
@@ -155,10 +155,6 @@ def get_news_status(request: Request) -> JSONResponse:
             workers_reason=workers_reason,
         )
     return _validated_json(_StatusEnvelope, {"ok": True, "data": data})
-
-
-def _news_interface(repos: Any) -> NewsInterface:
-    return NewsInterface(repos.news)
 
 
 def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, str | None]:

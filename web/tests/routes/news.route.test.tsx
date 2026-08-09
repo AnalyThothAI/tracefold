@@ -36,4 +36,30 @@ describe("news route", () => {
       );
     });
   });
+
+  it.each([
+    ["/news/status", "新闻运行状态", "/api/news/status"],
+    ["/news/sources", "公开新闻来源", "/api/news/sources"],
+  ] as const)("hard-loads the public News view at %s", async (path, heading, endpoint) => {
+    renderAppRoute(path);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(endpoint, expect.any(Object)));
+  });
+
+  it("navigates among Feed, Brief, Status, and Sources with stable public URLs", async () => {
+    renderAppRoute("/news");
+    await screen.findByRole("heading", { name: "全球新闻" });
+
+    fireEvent.click(screen.getByRole("link", { name: "状态" }));
+    expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "来源" }));
+    expect(await screen.findByRole("heading", { name: "公开新闻来源" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "公共全球简报" }));
+    await waitFor(() =>
+      expect(apiMock.readApi).toHaveBeenCalledWith("/api/news/brief", expect.any(Object)),
+    );
+  });
 });

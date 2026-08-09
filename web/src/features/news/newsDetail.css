@@ -30,11 +30,6 @@
     border-radius: 999px;
   }
 
-  .news-story-badges > .news-story-coins {
-    padding: 0;
-    border: 0;
-  }
-
   .news-story-badges [data-level="critical"] {
     border-color: color-mix(in srgb, var(--destructive) 55%, var(--border));
     color: var(--destructive);
@@ -237,70 +232,10 @@
     height: 0.75rem;
   }
 
-  .news-provider-disclosure > summary,
   .news-audit-disclosure > summary {
     color: var(--muted-foreground);
     cursor: pointer;
     font: 0.7rem var(--font-mono);
-  }
-
-  .news-provider-disclosure > div {
-    display: grid;
-    gap: 0.55rem;
-    margin-top: 0.55rem;
-    padding: 0.65rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-  }
-
-  .news-provider-facts {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0.4rem;
-    margin: 0;
-  }
-
-  .news-provider-facts div {
-    min-width: 0;
-  }
-
-  .news-provider-facts dt,
-  .news-provider-coins > b {
-    color: var(--muted-foreground);
-    font-size: 0.62rem;
-    font-weight: 500;
-  }
-
-  .news-provider-facts dd {
-    overflow-wrap: anywhere;
-    margin: 0.18rem 0 0;
-    font: 650 0.7rem var(--font-mono);
-  }
-
-  .news-provider-coins {
-    display: grid;
-    gap: 0.35rem;
-  }
-
-  .news-provider-coins > span {
-    color: var(--muted-foreground);
-    font-size: 0.68rem;
-  }
-
-  .news-provider-coins ul {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-provider-coins li {
-    padding: 0.25rem 0.4rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    font: 0.64rem var(--font-mono);
   }
 
   .news-audit-disclosure {
@@ -330,25 +265,6 @@
     gap: 1rem;
     align-items: flex-start;
     justify-content: space-between;
-  }
-
-  .news-push-state {
-    width: fit-content;
-    padding: 0.1rem 0.38rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted-foreground);
-    font: 650 0.64rem var(--font-mono);
-  }
-
-  .news-push-state[data-state="sent"] {
-    border-color: color-mix(in srgb, var(--success) 50%, var(--border));
-    color: var(--success);
-  }
-
-  .news-push-state[data-state="failed"] {
-    border-color: color-mix(in srgb, var(--destructive) 50%, var(--border));
-    color: var(--destructive);
   }
 
   .news-factor-grid {

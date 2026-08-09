@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 from uuid import uuid4
 
@@ -13,6 +13,9 @@ from .models import (
     NewsBriefPublisher,
     NewsBriefStory,
     NewsBriefSynthesisResult,
+    NewsFeedExpectedError,
+    NewsFeedFetch,
+    NewsFeedReader,
     NewsSourceDefinition,
 )
 from .opennews import OpenNewsEvent, OpenNewsExpectedError, parse_opennews_message
@@ -23,6 +26,8 @@ _OPENNEWS_BUFFER_CAPACITY = 256
 _OPENNEWS_RECONNECT_SECONDS = 3.0
 _OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS = 5 * 60
 _OPENNEWS_RECOVERY_MAX_PAGES = 11
+_RSS_CLAIM_LEASE_SECONDS = 60
+_RSS_FETCH_TIMEOUT_SECONDS = 25.0
 
 
 class _BriefClaimLost(RuntimeError):
@@ -34,51 +39,132 @@ class _BriefStartAdmissionTimeout(RuntimeError):
 
 
 class NewsAcquisition:
-    """One OpenNews live/recovery runtime."""
+    """Primary OpenNews live/overlap ingest plus bounded public RSS corroboration."""
 
     def __init__(
         self,
         *,
         db: Any,
         finite_operations: Any,
+        rss_sources: Sequence[NewsSourceDefinition],
+        rss_feed_reader: NewsFeedReader,
+        rss_feed_parser: Callable[..., NewsFeedFetch],
         opennews_source: NewsSourceDefinition,
         opennews_rest_client: Any | None = None,
         opennews_ws_client: Any | None = None,
     ) -> None:
         self.db = db
         self.finite_operations = finite_operations
+        self.rss_sources = tuple(rss_sources)
+        self.rss_feed_reader = rss_feed_reader
+        self.rss_feed_parser = rss_feed_parser
         self.opennews_source = opennews_source
         self.opennews_rest_client = opennews_rest_client
         self.opennews_ws_client = opennews_ws_client
+        if any(source.source_kind != "rss" for source in self.rss_sources):
+            raise ValueError("news_rss_source_kind_invalid")
+        if len({source.source_id for source in self.rss_sources}) != len(self.rss_sources):
+            raise ValueError("news_rss_source_ids_must_be_unique")
+        if self.opennews_source.source_kind != "opennews":
+            raise ValueError("opennews_source_required")
+        if (self.opennews_rest_client is None) is not (self.opennews_ws_client is None):
+            raise ValueError("opennews_clients_must_be_paired")
+        self._rss_sources_by_id = {source.source_id: source for source in self.rss_sources}
         self._opennews_queue: asyncio.Queue[OpenNewsEvent] = asyncio.Queue(maxsize=_OPENNEWS_BUFFER_CAPACITY)
         self._opennews_recovery_requested = asyncio.Event()
         self._opennews_connected = False
-        self._opennews_gap_unclosed = True
         self._opennews_last_recovery_attempt_at_ms: int | None = None
-        self._opennews_gap_boundary_provider_record_id: str | None = None
-        self._opennews_gap_version = 0
 
     @property
     def opennews_enabled(self) -> bool:
         return self.opennews_rest_client is not None and self.opennews_ws_client is not None
 
     async def reconcile(self) -> None:
-        last_attempt_at_ms, gap_boundary_provider_record_id, gap_version = await self.db.run_business(
+        last_attempt_at_ms = await self.db.run_business(
             "news_source_reconcile",
             self._reconcile_sync,
             operation_timeout_seconds=3.0,
         )
         self._opennews_last_recovery_attempt_at_ms = int(last_attempt_at_ms) if last_attempt_at_ms is not None else None
-        self._opennews_gap_boundary_provider_record_id = (
-            str(gap_boundary_provider_record_id) if gap_boundary_provider_record_id is not None else None
-        )
-        self._opennews_gap_version = int(gap_version)
-        if self.opennews_rest_client is None or self.opennews_ws_client is None:
+        if self.opennews_enabled:
+            self._opennews_recovery_requested.set()
+        else:
             await self._update_opennews_status(
                 connected=False,
                 error_code="opennews_token_missing",
-                gap_unclosed=True,
             )
+
+    async def turn(self) -> bool | None:
+        """Expire bounded Article facts, then process at most one due RSS source."""
+
+        now_ms = _now_ms()
+        claim_token = uuid4().hex
+        try:
+            claim = await self.db.run_business(
+                "news_rss_claim",
+                self._claim_rss_sync,
+                now_ms,
+                claim_token,
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
+        if claim is None:
+            return False
+
+        source_id = str(claim["source_id"])
+        source = self._rss_sources_by_id.get(source_id)
+        if source is None:
+            raise RuntimeError("news_rss_claim_source_not_in_catalog")
+        try:
+            fetch = await self.finite_operations.run(
+                "news_rss_fetch",
+                self._fetch_rss_sync,
+                source,
+                claim.get("etag"),
+                claim.get("last_modified"),
+                timeout_seconds=_RSS_FETCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ResourceAdmissionTimeout:
+            recorded = await self._record_rss_failure(
+                source_id=source_id,
+                claim_token=claim_token,
+                error_code="news_rss_admission_timeout",
+                status_code=None,
+            )
+            return True if recorded else None
+        except ResourceOperationOverrun:
+            recorded = await self._record_rss_failure(
+                source_id=source_id,
+                claim_token=claim_token,
+                error_code="news_rss_total_timeout",
+                status_code=None,
+            )
+            return True if recorded else None
+        except NewsFeedExpectedError as exc:
+            recorded = await self._record_rss_failure(
+                source_id=source_id,
+                claim_token=claim_token,
+                error_code=exc.code,
+                status_code=cast(int | None, getattr(exc, "status_code", None)),
+            )
+            return True if recorded else None
+
+        try:
+            published = await self.db.run_business(
+                "news_rss_publish",
+                self._record_rss_fetch_sync,
+                source,
+                claim_token,
+                fetch,
+                _now_ms(),
+                operation_timeout_seconds=3.0,
+            )
+        except ResourceAdmissionTimeout:
+            return None
+        return True if published is not None else None
 
     async def run_opennews(self, *, stop_event: asyncio.Event) -> None:
         if self.opennews_rest_client is None or self.opennews_ws_client is None:
@@ -92,8 +178,7 @@ class NewsAcquisition:
                     group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
             except* ResourceAdmissionTimeout:
                 self._opennews_connected = False
-                self._opennews_gap_unclosed = True
-                self._opennews_recovery_requested.clear()
+                self._opennews_recovery_requested.set()
             if not stop_event.is_set():
                 await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
 
@@ -105,11 +190,9 @@ class NewsAcquisition:
             try:
                 await client.connect()
                 self._opennews_connected = True
-                self._opennews_gap_unclosed = True
                 await self._update_opennews_status(
                     connected=True,
                     error_code=None,
-                    gap_unclosed=True,
                 )
                 self._opennews_recovery_requested.set()
                 while not stop_event.is_set():
@@ -125,25 +208,20 @@ class NewsAcquisition:
                     try:
                         self._opennews_queue.put_nowait(event)
                     except asyncio.QueueFull:
-                        self._opennews_gap_unclosed = True
-                        if self._opennews_gap_boundary_provider_record_id is None:
-                            self._opennews_gap_boundary_provider_record_id = event.provider_record_id
                         await self._update_opennews_status(
                             connected=True,
                             error_code="opennews_buffer_overflow",
-                            gap_unclosed=True,
                         )
                         self._opennews_recovery_requested.set()
             except asyncio.CancelledError:
                 raise
             except OpenNewsExpectedError as exc:
                 self._opennews_connected = False
-                self._opennews_gap_unclosed = True
                 await self._update_opennews_status(
                     connected=False,
                     error_code=exc.code,
-                    gap_unclosed=True,
                 )
+                self._opennews_recovery_requested.set()
             finally:
                 await client.close()
             if not stop_event.is_set():
@@ -152,7 +230,6 @@ class NewsAcquisition:
         await self._update_opennews_status(
             connected=False,
             error_code=None,
-            gap_unclosed=self._opennews_gap_unclosed,
         )
 
     async def _opennews_publish_loop(self, stop_event: asyncio.Event) -> None:
@@ -172,16 +249,13 @@ class NewsAcquisition:
             try:
                 await self.db.run_business(
                     "opennews_live_publish",
-                    self._publish_opennews_sync,
+                    self._record_opennews_events_sync,
                     tuple(events),
                     _now_ms(),
-                    None,
                     operation_timeout_seconds=3.0,
                 )
             except BaseException:
-                self._opennews_gap_unclosed = True
-                if self._opennews_gap_boundary_provider_record_id is None:
-                    self._opennews_gap_boundary_provider_record_id = events[0].provider_record_id
+                self._opennews_recovery_requested.set()
                 raise
 
     async def _opennews_recovery_loop(self, stop_event: asyncio.Event) -> None:
@@ -205,8 +279,6 @@ class NewsAcquisition:
                     return
             self._opennews_recovery_requested.clear()
             started_at_ms = _now_ms()
-            self._opennews_last_recovery_attempt_at_ms = started_at_ms
-            recovery_gap_version = self._opennews_gap_version
             try:
                 await self.db.run_business(
                     "opennews_recovery_start",
@@ -214,7 +286,11 @@ class NewsAcquisition:
                     started_at_ms,
                     operation_timeout_seconds=3.0,
                 )
-                recovery_covered_gap = False
+                self._opennews_last_recovery_attempt_at_ms = started_at_ms
+                items_seen = 0
+                items_accepted = 0
+                rejected = 0
+                overlap_complete = False
                 for page in range(1, _OPENNEWS_RECOVERY_MAX_PAGES + 1):
                     try:
                         events = await self.finite_operations.run(
@@ -225,44 +301,39 @@ class NewsAcquisition:
                         )
                     except ResourceOperationOverrun:
                         raise OpenNewsExpectedError("opennews_rest_timeout") from None
-                    await self.db.run_business(
+                    outcome = await self.db.run_business(
                         "opennews_recovery_publish",
-                        self._publish_opennews_sync,
+                        self._record_opennews_recovery_page_sync,
                         tuple(events[:100]),
-                        _now_ms(),
                         started_at_ms,
                         operation_timeout_seconds=3.0,
                     )
-                    recovery_covered_gap = _opennews_recovery_covers_boundary(
-                        events,
-                        boundary_provider_record_id=self._opennews_gap_boundary_provider_record_id,
+                    items_seen += int(outcome["events_seen"])
+                    items_accepted += (
+                        int(outcome["items_inserted"])
+                        + int(outcome["items_updated"])
+                        + int(outcome["metadata_updated"])
                     )
-                    if recovery_covered_gap:
+                    rejected += int(outcome["rejected"])
+                    overlap_complete = bool(outcome["overlap_complete"])
+                    if overlap_complete:
                         break
-                if recovery_covered_gap:
-                    gap_closed = await self._update_opennews_status(
-                        connected=self._opennews_connected,
-                        error_code=None,
-                        gap_unclosed=False,
-                        expected_gap_version=recovery_gap_version,
-                    )
-                    if gap_closed and self._opennews_gap_version == recovery_gap_version:
-                        self._opennews_gap_unclosed = False
-                        self._opennews_gap_boundary_provider_record_id = None
-                    else:
-                        self._opennews_gap_unclosed = True
-                        self._opennews_recovery_requested.set()
-                else:
-                    self._opennews_gap_unclosed = True
-                    await self._update_opennews_status(
-                        connected=self._opennews_connected,
-                        error_code="opennews_recovery_window_incomplete",
-                        gap_unclosed=True,
-                    )
+                completed = await self.db.run_business(
+                    "opennews_recovery_complete",
+                    self._complete_opennews_recovery_sync,
+                    started_at_ms,
+                    _now_ms(),
+                    not overlap_complete,
+                    items_seen,
+                    items_accepted,
+                    {"rejected": rejected},
+                    operation_timeout_seconds=3.0,
+                )
+                if not completed or not overlap_complete:
+                    self._opennews_recovery_requested.set()
             except asyncio.CancelledError:
                 raise
             except OpenNewsExpectedError as exc:
-                self._opennews_gap_unclosed = True
                 await self.db.run_business(
                     "opennews_recovery_failure",
                     self._record_opennews_recovery_failure_sync,
@@ -271,18 +342,18 @@ class NewsAcquisition:
                     exc,
                     operation_timeout_seconds=3.0,
                 )
-                await self._update_opennews_status(
-                    connected=self._opennews_connected,
-                    error_code=exc.code,
-                    gap_unclosed=True,
-                )
                 if exc.code != "opennews_auth_failed":
                     self._opennews_recovery_requested.set()
             except ResourceAdmissionTimeout:
-                self._opennews_gap_unclosed = True
                 self._opennews_recovery_requested.set()
 
     async def close(self) -> None:
+        await self.finite_operations.run(
+            "news_rss_reader_close",
+            self.rss_feed_reader.close,
+            timeout_seconds=5.0,
+            allow_shutdown=True,
+        )
         if self.opennews_ws_client is not None:
             await self.opennews_ws_client.close()
         if self.opennews_rest_client is not None:
@@ -293,14 +364,105 @@ class NewsAcquisition:
                 allow_shutdown=True,
             )
 
-    def _reconcile_sync(self) -> tuple[int | None, str | None, int]:
+    def _reconcile_sync(self) -> int | None:
         with self.db.worker_session("news_source_reconcile", 3.0) as repos, repos.transaction():
-            repos.news.sync_source(self.opennews_source, now_ms=_now_ms())
+            repos.news.sync_sources(
+                (*self.rss_sources, self.opennews_source),
+                now_ms=_now_ms(),
+            )
             return cast(
-                tuple[int | None, str | None, int],
-                repos.news.opennews_recovery_state(
-                    source_id=self.opennews_source.source_id,
+                int | None,
+                repos.news.opennews_last_recovery_attempt(source_id=self.opennews_source.source_id),
+            )
+
+    def _claim_rss_sync(
+        self,
+        now_ms: int,
+        claim_token: str,
+    ) -> dict[str, Any] | None:
+        with self.db.worker_session("news_rss_claim", 3.0) as repos, repos.transaction():
+            repos.news.expire_items(now_ms=now_ms)
+            return cast(
+                dict[str, Any] | None,
+                repos.news.claim_due_rss_source(
+                    now_ms=now_ms,
+                    claim_token=claim_token,
+                    lease_expires_at_ms=now_ms + _RSS_CLAIM_LEASE_SECONDS * 1_000,
                 ),
+            )
+
+    def _fetch_rss_sync(
+        self,
+        source: NewsSourceDefinition,
+        etag: object,
+        last_modified: object,
+    ) -> NewsFeedFetch:
+        wire = self.rss_feed_reader.fetch_wire(
+            source=source,
+            etag=str(etag) if etag is not None else None,
+            last_modified=str(last_modified) if last_modified is not None else None,
+        )
+        return self.rss_feed_parser(wire, now_ms=_now_ms())
+
+    def _record_rss_fetch_sync(
+        self,
+        source: NewsSourceDefinition,
+        claim_token: str,
+        fetch: NewsFeedFetch,
+        finished_at_ms: int,
+    ) -> dict[str, int] | None:
+        with self.db.worker_session("news_rss_publish", 3.0) as repos, repos.transaction():
+            return cast(
+                dict[str, int] | None,
+                repos.news.record_rss_fetch(
+                    source=source,
+                    claim_token=claim_token,
+                    fetch=fetch,
+                    finished_at_ms=finished_at_ms,
+                ),
+            )
+
+    async def _record_rss_failure(
+        self,
+        *,
+        source_id: str,
+        claim_token: str,
+        error_code: str,
+        status_code: int | None,
+    ) -> bool:
+        try:
+            return bool(
+                await self.db.run_business(
+                    "news_rss_failure",
+                    self._record_rss_failure_sync,
+                    source_id,
+                    claim_token,
+                    _now_ms(),
+                    error_code,
+                    status_code,
+                    operation_timeout_seconds=3.0,
+                )
+            )
+        except ResourceAdmissionTimeout:
+            return False
+
+    def _record_rss_failure_sync(
+        self,
+        source_id: str,
+        claim_token: str,
+        finished_at_ms: int,
+        error_code: str,
+        status_code: int | None,
+    ) -> bool:
+        with self.db.worker_session("news_rss_failure", 3.0) as repos, repos.transaction():
+            return bool(
+                repos.news.record_rss_failure(
+                    source_id=source_id,
+                    claim_token=claim_token,
+                    finished_at_ms=finished_at_ms,
+                    error_code=error_code,
+                    status_code=status_code,
+                )
             )
 
     async def _update_opennews_status(
@@ -308,32 +470,18 @@ class NewsAcquisition:
         *,
         connected: bool,
         error_code: str | None,
-        gap_unclosed: bool,
-        expected_gap_version: int | None = None,
     ) -> bool:
-        if not gap_unclosed and expected_gap_version is None:
-            expected_gap_version = self._opennews_gap_version
-        state = await self.db.run_business(
-            "opennews_status",
-            self._update_opennews_status_sync,
-            self.opennews_source.source_id,
-            connected,
-            _now_ms(),
-            error_code,
-            gap_unclosed,
-            self._opennews_gap_boundary_provider_record_id,
-            expected_gap_version,
-            operation_timeout_seconds=3.0,
+        return bool(
+            await self.db.run_business(
+                "opennews_status",
+                self._update_opennews_status_sync,
+                self.opennews_source.source_id,
+                connected,
+                _now_ms(),
+                error_code,
+                operation_timeout_seconds=3.0,
+            )
         )
-        if state is None:
-            return False
-        boundary_provider_record_id, gap_version = state
-        self._opennews_gap_version = max(self._opennews_gap_version, int(gap_version))
-        if gap_unclosed:
-            self._opennews_gap_unclosed = True
-            if isinstance(boundary_provider_record_id, str):
-                self._opennews_gap_boundary_provider_record_id = boundary_provider_record_id
-        return True
 
     def _update_opennews_status_sync(
         self,
@@ -341,29 +489,21 @@ class NewsAcquisition:
         connected: bool,
         now_ms: int,
         error_code: str | None,
-        gap_unclosed: bool,
-        gap_boundary_provider_record_id: str | None,
-        expected_gap_version: int | None,
-    ) -> tuple[str | None, int] | None:
+    ) -> bool:
         with self.db.worker_session("opennews_status", 3.0) as repos, repos.transaction():
-            return cast(
-                tuple[str | None, int] | None,
+            return bool(
                 repos.news.update_opennews_live_status(
                     source_id=source_id,
                     connected=connected,
                     now_ms=now_ms,
                     error_code=error_code,
-                    gap_unclosed=gap_unclosed,
-                    gap_boundary_provider_record_id=gap_boundary_provider_record_id,
-                    expected_gap_version=expected_gap_version,
                 ),
             )
 
-    def _publish_opennews_sync(
+    def _record_opennews_events_sync(
         self,
         events: Sequence[OpenNewsEvent],
         observed_at_ms: int,
-        recovery_started_at_ms: int | None,
     ) -> dict[str, int]:
         with self.db.worker_session("opennews_publish", 3.0) as repos, repos.transaction():
             return cast(
@@ -372,6 +512,21 @@ class NewsAcquisition:
                     source=self.opennews_source,
                     events=events,
                     observed_at_ms=observed_at_ms,
+                ),
+            )
+
+    def _record_opennews_recovery_page_sync(
+        self,
+        events: Sequence[OpenNewsEvent],
+        recovery_started_at_ms: int,
+    ) -> dict[str, Any]:
+        with self.db.worker_session("opennews_recovery_publish", 3.0) as repos, repos.transaction():
+            return cast(
+                dict[str, Any],
+                repos.news.record_opennews_recovery_page(
+                    source=self.opennews_source,
+                    events=events,
+                    observed_at_ms=recovery_started_at_ms,
                     recovery_started_at_ms=recovery_started_at_ms,
                 ),
             )
@@ -381,6 +536,28 @@ class NewsAcquisition:
             repos.news.mark_opennews_recovery_attempt(
                 source_id=self.opennews_source.source_id,
                 started_at_ms=started_at_ms,
+            )
+
+    def _complete_opennews_recovery_sync(
+        self,
+        started_at_ms: int,
+        finished_at_ms: int,
+        window_exhausted: bool,
+        items_seen: int,
+        items_accepted: int,
+        rejection_counts: dict[str, int],
+    ) -> bool:
+        with self.db.worker_session("opennews_recovery_complete", 3.0) as repos, repos.transaction():
+            return bool(
+                repos.news.complete_opennews_recovery(
+                    source_id=self.opennews_source.source_id,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                    window_exhausted=window_exhausted,
+                    items_seen=items_seen,
+                    items_accepted=items_accepted,
+                    rejection_counts=rejection_counts,
+                )
             )
 
     def _record_opennews_recovery_failure_sync(
@@ -428,7 +605,7 @@ class NewsBriefCandidate:
             return None
         return ModelCandidate(
             kind="news_brief",
-            target_key=str(row["target_fingerprint"]),
+            target_key=str(row["slot_at_ms"]),
             due_at_ms=int(row["next_due_at_ms"]),
             stable_order=self.stable_order,
         )
@@ -546,11 +723,11 @@ class NewsBriefCandidate:
         with self.db.worker_session("news_brief_peek", 0.5) as repos, repos.transaction():
             return cast(dict[str, Any] | None, repos.news.peek_brief_candidate(now_ms=now_ms))
 
-    def _prepare_sync(self, target_fingerprint_value: str) -> dict[str, Any] | None:
+    def _prepare_sync(self, slot_at_ms: str) -> dict[str, Any] | None:
         now_ms = _now_ms()
         with self.db.worker_session("news_brief_prepare", 3.0) as repos, repos.transaction():
             prepared = repos.news.prepare_brief_run(
-                target_fingerprint=target_fingerprint_value,
+                slot_at_ms=int(slot_at_ms),
                 lease_owner=self.lease_owner,
                 lease_token=uuid4().hex,
                 now_ms=now_ms,
@@ -566,7 +743,7 @@ class NewsBriefCandidate:
         with self.db.worker_session("news_brief_start_model", 0.5) as repos, repos.transaction():
             return bool(
                 repos.news.start_brief_model(
-                    run_id=str(claim["run_id"]),
+                    slot_at_ms=int(claim["slot_at_ms"]),
                     lease_owner=str(claim["lease_owner"]),
                     lease_token=str(claim["lease_token"]),
                     now_ms=_now_ms(),
@@ -577,10 +754,9 @@ class NewsBriefCandidate:
         with self.db.worker_session("news_brief_release_prework", 0.5) as repos, repos.transaction():
             return bool(
                 repos.news.release_brief_claim(
-                    run_id=str(claim["run_id"]),
+                    slot_at_ms=int(claim["slot_at_ms"]),
                     lease_owner=str(claim["lease_owner"]),
                     lease_token=str(claim["lease_token"]),
-                    due_at_ms=int(claim["release_due_at_ms"]),
                     now_ms=_now_ms(),
                 )
             )
@@ -598,7 +774,6 @@ class NewsBriefCandidate:
                 str | None,
                 repos.news.publish_brief(
                     claim=prepared["claim"],
-                    selection=prepared["selection"],
                     result=generated,
                     now_ms=_now_ms(),
                 ),
@@ -618,23 +793,6 @@ def _opennews_recovery_delay_seconds(
         return 0.0
     next_attempt_at_ms = int(last_attempt_at_ms) + int(_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS * 1_000)
     return max(0.0, (next_attempt_at_ms - int(now_ms)) / 1_000)
-
-
-def _opennews_recovery_covers_boundary(
-    events: Sequence[OpenNewsEvent],
-    *,
-    boundary_provider_record_id: str | None,
-) -> bool:
-    report_ids = [
-        event.provider_record_id
-        for event in events
-        if event.observation_kind == "report" and event.entry is not None and event.entry.published_at_ms is not None
-    ]
-    if not report_ids:
-        return False
-    if boundary_provider_record_id is None:
-        return True
-    return boundary_provider_record_id in report_ids
 
 
 async def _receive_or_stop(client: Any, *, stop_event: asyncio.Event) -> Any | None:

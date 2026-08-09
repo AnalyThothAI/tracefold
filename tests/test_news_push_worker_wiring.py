@@ -9,7 +9,8 @@ import pytest
 
 from tracefold.app import workers
 from tracefold.app.market_providers import AssetMarketProviders
-from tracefold.news import NewsPushReceipt, NewsStoryPush
+from tracefold.news import NewsPushReceipt
+from tracefold.news.push import NewsStoryPush
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -104,10 +105,9 @@ def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
     settings = Settings(
         upstream={"channels": []},
         llm={
-            "api_key": "push-translation-only",
-            "base_url": "https://translation.test/v1",
-            "news_brief_model": "push-translation-model",
-            "openrouter_api_key": "openrouter-secret",
+            "api_key": "deepseek-secret",
+            "base_url": "https://deepseek.test/v1",
+            "news_brief_model": "deepseek-chat",
             "groq_api_key": "groq-secret",
         },
         news={"enabled": True},
@@ -130,11 +130,53 @@ def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
     assert publisher_kwargs == [
         {
             "ollama_base_url": "http://host.docker.internal:11434/v1",
-            "openrouter_api_key": "openrouter-secret",
+            "configured_base_url": "https://deepseek.test/v1",
+            "configured_api_key": "deepseek-secret",
+            "configured_model": "deepseek-chat",
             "groq_api_key": "groq-secret",
             "total_timeout_seconds": 60.0,
         }
     ]
+
+
+@pytest.mark.parametrize(("rss_enabled", "expected_source_count"), ((False, 0), (True, 179)))
+def test_rss_catalog_is_wired_only_when_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    rss_enabled: bool,
+    expected_source_count: int,
+) -> None:
+    class _BriefPublisher:
+        def __init__(self, **_kwargs: Any) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
+    monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
+    settings = Settings(
+        upstream={"channels": []},
+        news={"enabled": True, "rss_enabled": rss_enabled},
+        providers={"binance": {"enabled": False}, "macro_sources": {"enabled": False}},
+    )
+
+    components = asyncio.run(
+        workers._wire_components(
+            settings=settings,
+            db=object(),  # type: ignore[arg-type]
+            telemetry=object(),  # type: ignore[arg-type]
+            finite=object(),  # type: ignore[arg-type]
+            model_adapter=object(),  # type: ignore[arg-type]
+            cpu=object(),  # type: ignore[arg-type]
+            runtime_id=f"runtime-rss-{rss_enabled}",
+        )
+    )
+
+    assert components.news is not None
+    assert len(components.news.rss_sources) == expected_source_count
+    # The acquisition turn remains scheduled for deterministic Item expiry,
+    # but an empty catalog cannot produce an RSS network claim.
+    assert any(getattr(turn, "__self__", None) is components.news for turn, _idle in components.due_turns)
 
 
 def test_startup_reconcile_initializes_push_even_without_candidates() -> None:

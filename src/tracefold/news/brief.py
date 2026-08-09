@@ -24,11 +24,6 @@ from .identity import (
     web_usv_string,
 )
 from .models import (
-    BRIEF_COMPOSER_VERSION,
-    BRIEF_PROMPT_VERSION,
-    BRIEF_SCHEMA_VERSION,
-    BRIEF_WORKFLOW_VERSION,
-    NEWS_LOCALE,
     NewsBriefSource,
     NewsBriefStory,
     NewsBriefStoryLine,
@@ -818,45 +813,8 @@ def selection_fingerprint(snapshot: Mapping[str, Any]) -> str:
     return _canonical_hash(canonical)
 
 
-def target_fingerprint(
-    selection_fingerprint_value: str,
-    *,
-    prompt_version: str = BRIEF_PROMPT_VERSION,
-    workflow_version: str = BRIEF_WORKFLOW_VERSION,
-    composer_version: str = BRIEF_COMPOSER_VERSION,
-    schema_version: str = BRIEF_SCHEMA_VERSION,
-    locale: str = NEWS_LOCALE,
-) -> str:
-    return _canonical_hash(
-        {
-            "selection_fingerprint": selection_fingerprint_value,
-            "prompt_version": prompt_version,
-            "workflow_version": workflow_version,
-            "composer_version": composer_version,
-            "schema_version": schema_version,
-            "locale": locale,
-        }
-    )
-
-
 def publication_id(payload: Mapping[str, Any]) -> str:
-    excluded = {
-        "publication_id",
-        "created_at_ms",
-        "published_at_ms",
-        "updated_at_ms",
-        "run_id",
-        "status",
-        "model_outcome",
-        "pointer_action",
-        "failure_count",
-        "next_due_at_ms",
-        "lease_owner",
-        "lease_token",
-        "lease_expires_at_ms",
-        "last_error_code",
-    }
-    return _canonical_hash({key: value for key, value in payload.items() if key not in excluded})
+    return _canonical_hash({key: value for key, value in payload.items() if key != "publication_id"})
 
 
 def _canonical_hash(payload: Mapping[str, Any]) -> str:
@@ -1398,7 +1356,6 @@ __all__ = [
     "selection_fingerprint",
     "synthesis_system_prompt",
     "synthesis_user_prompt",
-    "target_fingerprint",
     "validate_no_hallucinated_proper_nouns",
     "verify_citation_indexes",
 ]

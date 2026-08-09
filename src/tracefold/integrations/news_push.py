@@ -367,8 +367,7 @@ class FeishuNewsPushDelivery:
                     "news_push_feishu_frozen_channel_invalid",
                     retryable=False,
                 )
-            schema_version = payload.get("schema_version")
-            if schema_version not in {None, _DELIVERY_SCHEMA_VERSION}:
+            if payload.get("schema_version") != _DELIVERY_SCHEMA_VERSION:
                 raise NewsPushDeliveryError(
                     "news_push_feishu_frozen_schema_invalid",
                     retryable=False,

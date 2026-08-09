@@ -32,6 +32,14 @@ export function newsBriefPath(): string {
   return "/news/brief";
 }
 
+export function newsStatusPath(): string {
+  return "/news/status";
+}
+
+export function newsSourcesPath(): string {
+  return "/news/sources";
+}
+
 export function stocksPath({
   window = "1h",
 }: {

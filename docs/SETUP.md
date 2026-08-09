@@ -75,17 +75,18 @@ valid.
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
 
-- absent `news.opennews_token` produces `opennews_token_missing`; it does not
-  invent News or switch to another acquisition source;
+- absent `news.opennews_token` produces `opennews_token_missing` for the
+  primary low-latency OpenNews lane. RSS defaults off; operators may explicitly
+  set `news.rss_enabled: true` to add the public breadth/corroboration catalog;
 - absent GMGN/OKX credentials leave their authenticated profile, discovery, or
   market lanes unavailable, while configured keyless sources keep their own
   independent behavior;
 - the public Brief always has its code-owned Ollama first provider and
-  deterministic degraded Top Stories. Absent optional OpenRouter/Groq keys can
-  reduce synthesis availability but does not empty the public selection;
-- absent the separate global model credential leaves optional News Push title
-  translation unavailable; Push still sends the selected Item's original
-  OpenNews headline;
+  deterministic degraded Top Stories. An absent direct DeepSeek triple or
+  optional Groq key can reduce synthesis availability but does not empty the
+  public selection;
+- absent the direct DeepSeek triple leaves optional News Push title translation
+  unavailable; Push still sends the selected Item's original OpenNews headline;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
@@ -97,9 +98,10 @@ the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency.
-Optional translation reuses `llm.api_key`, the effective `llm.base_url`, and
-`llm.news_brief_model`; it has no independent endpoint, key, model, or provider
-fallback chain. It makes one bounded attempt and sends the frozen original
+Optional translation reuses the direct DeepSeek `llm.api_key`, `llm.base_url`,
+and `llm.news_brief_model`; it has no independent endpoint, key, model, or
+provider fallback chain. That triple must be entirely present or entirely
+absent. Translation makes one bounded attempt and sends the frozen original
 immediately on failure.
 
 An unsigned operator configuration uses the existing generated fields; do not
@@ -113,6 +115,7 @@ llm:
 
 news:
   enabled: true
+  rss_enabled: false
   opennews_token: "<operator secret>"
   push:
     enabled: true
@@ -122,35 +125,46 @@ news:
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With Push enabled, a configured
-global `llm.api_key` enables the one-attempt presentation translation, which
-uses the effective `llm.base_url` and `llm.news_brief_model` from that same
-global block; do not add a `news.push.translation` block or duplicate the
-credential. The target language, 7.5-second request timeout, 8-second total
+direct DeepSeek triple enables the one-attempt presentation translation; do
+not add a `news.push.translation` block or duplicate the credential. The target
+language, 7.5-second request timeout, 8-second total
 budget, no-retry policy, and title limits are code-owned.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
 lane, including GMGN OpenAPI for exact token profiles and OKX provider settings
 for discovery, market data, or DEX WebSocket paths.
-The `llm` block owns operator credentials: `api_key` plus `base_url` for the
-current OpenAI-compatible provider, and optional `openrouter_api_key` and
-`groq_api_key` for the News Brief provider fallback. Worker timeouts, token
-budgets, cadence, and resource limits are code-owned; there is no
-environment-variable credential path. Story Push reuses only `api_key`, the
-effective `base_url`, and `news_brief_model` for its outbound title-presentation
-adapter; it does not use the News Brief fallback chain or enter the serial model
-arbiter.
+The `llm` block owns one all-or-none direct DeepSeek triple—`api_key`,
+`base_url`, and `news_brief_model`—plus optional `groq_api_key`. The Brief order
+is Ollama, configured direct DeepSeek, then Groq. Worker timeouts, token budgets,
+cadence, and resource limits are code-owned; there is no environment-variable
+credential path or inferred DeepSeek URL/model. Story Push reuses only that
+direct triple for its outbound title-presentation adapter; it does not use
+Ollama or Groq and does not enter the serial model arbiter.
 
-News correctness does not depend on the model. The OpenNews WSS receiver, REST
-recovery, and publisher share one acquisition module and the sole writer of
-Article/provider facts. A healthy WSS connection never polls REST periodically;
-one bounded REST recovery attempt is requested only after initial connection,
-reconnect, or queue overflow, may read at most 11 sequential pages, and has a
-persisted five-minute minimum interval between attempts.
-A fixed 60-second writer owns the complete current 12-hour Story projection
-(while valid Article facts remain admissible for up to 96 hours),
-and the single-capacity native-state model arbiter owns World Brief. Push is a
-separate News-owned delivery state machine with a code-owned 10-second
+News correctness does not depend on the model. The code-owned public
+WorldMonitor catalog contributes 179 physical RSS feeds and 183 category
+memberships when `news.rss_enabled: true`; the switch defaults to `false`.
+Disabled startup reconciliation removes RSS from the active source inventory
+and releases prior claims, while the acquisition clock still expires old facts
+without making RSS requests. When enabled, one bounded turn conditionally fetches at most one due feed and
+atomically replaces its accepted first-five snapshot; failures preserve the
+last successful snapshot until the 96-hour floor. The primary OpenNews WSS
+receiver, newest-first 12-hour REST overlap, and publisher share the same
+acquisition module. REST is requested after
+initial connection, reconnect, or queue overflow, reads at most 11 sequential
+pages, and stops at the first existing provider record or the 12-hour cutoff;
+there is no persisted gap state. RSS provides public breadth and independent
+corroboration; acquisition role does not change deterministic Story ranking.
+A fixed 60-second writer owns the membership-expanded RSS Top-20-per-category
+plus OpenNews physical Story/selection projection,
+and the single-capacity native-state model arbiter owns World Brief. On the
+first post-migration start, the Story writer can publish current OpenNews facts
+before any RSS attempt. An empty Top Story selection is not claimable and does
+not complete or overwrite the current Brief slot; normal 60-second PostgreSQL
+polling makes a later non-empty selection in the same half hour eligible, with
+no wake service or compatibility path.
+Push is a separate News-owned delivery state machine with a code-owned 10-second
 persisted-evidence reconcile: initial
 enablement suppresses the current eligible baseline, later strict
 score-greater-than-70 crossings freeze one highest-scored Item and send one
@@ -266,12 +280,14 @@ rather than archived. Migrations `20260801_0235` and `20260801_0236`
 irreversibly delete retired News acquisition history and Macro publication,
 per-attempt, and stored intermediate history while preserving current items,
 facts, targets, document analyses, and module rows.
-Migration `20260801_0237` adds the persisted OpenNews recovery boundary and
+Historical migration `20260801_0237` added an OpenNews recovery boundary;
+current migration `20260809_0247` removes that state, installs public RSS
+source scheduling, and hard-cuts Brief persistence to two singleton tables.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
 records a no-backfill baseline; the code-owned 15-minute live-alert window also
-prevents later REST recovery from sending stale articles.
+prevents later REST overlap from sending stale articles.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a

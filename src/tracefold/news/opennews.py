@@ -117,7 +117,6 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
             description=description,
             published_at_ms=_timestamp_ms(params.get("ts")),
             reporting_origin=_reporting_origin(params, canonical_url=canonical_url),
-            raw={},
         )
     return OpenNewsEvent(
         provider_record_id=provider_record_id,

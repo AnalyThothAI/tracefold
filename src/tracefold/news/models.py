@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -54,13 +55,24 @@ class ExactNewsModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class NewsFeedExpectedError(RuntimeError):
+    """A bounded public-feed failure safe for durable source retry."""
+
+    def __init__(self, code: str) -> None:
+        self.code = str(code)
+        super().__init__(self.code)
+
+
 class NewsSourceDefinition(ExactNewsModel):
     source_id: str
     name: str
     tier: int = Field(ge=1, le=4)
     lang: str = "en"
-    source_kind: Literal["opennews"] = "opennews"
+    source_kind: Literal["rss", "opennews"]
     enabled: bool = True
+    feed_url: str | None = None
+    memberships: tuple[str, ...] = ()
+    refresh_interval_seconds: int = Field(default=1800, ge=1)
 
     @field_validator(
         "source_id",
@@ -75,6 +87,37 @@ class NewsSourceDefinition(ExactNewsModel):
             raise ValueError("news_source_text_required")
         return normalized
 
+    @field_validator("feed_url", mode="before")
+    @classmethod
+    def normalize_feed_url(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("memberships", mode="before")
+    @classmethod
+    def normalize_memberships(cls, value: Any) -> tuple[str, ...]:
+        if not isinstance(value, list | tuple):
+            raise ValueError("news_source_memberships_invalid")
+        memberships = tuple(str(item or "").strip().lower() for item in value)
+        if any(not item for item in memberships) or len(set(memberships)) != len(memberships):
+            raise ValueError("news_source_memberships_invalid")
+        return memberships
+
+    @model_validator(mode="after")
+    def enforce_source_shape(self) -> Self:
+        if self.source_kind == "opennews":
+            if self.feed_url is not None or self.memberships:
+                raise ValueError("opennews_source_shape_invalid")
+            return self
+        parsed = urlsplit(str(self.feed_url or "").strip())
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise ValueError("news_rss_feed_url_invalid")
+        if not self.memberships:
+            raise ValueError("news_rss_memberships_required")
+        return self
+
 
 class NewsFeedEntry(ExactNewsModel):
     guid: str | None = None
@@ -84,7 +127,28 @@ class NewsFeedEntry(ExactNewsModel):
     published_at_ms: int | None = None
     language: str | None = None
     reporting_origin: str | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class NewsFeedFetch(ExactNewsModel):
+    status_code: int
+    entries: tuple[NewsFeedEntry, ...] = ()
+    entries_seen: int = Field(default=0, ge=0)
+    gate_counts: dict[str, int] = Field(default_factory=dict)
+    etag: str | None = None
+    last_modified: str | None = None
+    not_modified: bool = False
+
+
+class NewsFeedReader(Protocol):
+    def fetch_wire(
+        self,
+        *,
+        source: NewsSourceDefinition,
+        etag: str | None,
+        last_modified: str | None,
+    ) -> object: ...
+
+    def close(self) -> None: ...
 
 
 class NewsClassification(ExactNewsModel):
@@ -199,6 +263,9 @@ __all__ = [
     "NewsBriefSynthesisResult",
     "NewsClassification",
     "NewsFeedEntry",
+    "NewsFeedExpectedError",
+    "NewsFeedFetch",
+    "NewsFeedReader",
     "NewsSourceDefinition",
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",

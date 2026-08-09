@@ -40,18 +40,6 @@ _STATUS_QUEUE_SPECS = {
         due_column="next_run_at_ms",
         lease_column="leased_until_ms",
     ),
-    "news_brief_runs": StatusQueueSpec(
-        owner_key="news_brief",
-        table="news_brief_runs",
-        waiting_statuses=("retry_wait",),
-        running_statuses=("running",),
-        retry_statuses=("retry_wait",),
-        terminal_statuses=(),
-        due_column="next_due_at_ms",
-        lease_column="lease_expires_at_ms",
-        running_age_column="updated_at_ms",
-        attempt_count_column="failure_count",
-    ),
     "macro_document_analysis_jobs": StatusQueueSpec(
         owner_key="macro_document_analysis",
         table="macro_document_analysis_jobs",

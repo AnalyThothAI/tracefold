@@ -6456,16 +6456,9 @@
               }
             ]
           },
-          "pending_due_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pending Due At Ms"
+          "next_due_at_ms": {
+            "title": "Next Due At Ms",
+            "type": "integer"
           },
           "publication": {
             "anyOf": [
@@ -6477,6 +6470,17 @@
               }
             ]
           },
+          "slot_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot At Ms"
+          },
           "state": {
             "enum": [
               "unavailable",
@@ -6486,23 +6490,12 @@
             ],
             "title": "State",
             "type": "string"
-          },
-          "target_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Fingerprint"
           }
         },
         "required": [
           "state",
-          "target_fingerprint",
-          "pending_due_at_ms",
+          "slot_at_ms",
+          "next_due_at_ms",
           "publication",
           "latest_run"
         ],
@@ -6629,10 +6622,6 @@
             "title": "Composer Version",
             "type": "string"
           },
-          "created_at_ms": {
-            "title": "Created At Ms",
-            "type": "integer"
-          },
           "identity_version": {
             "title": "Identity Version",
             "type": "string"
@@ -6677,13 +6666,6 @@
             "title": "Schema Version",
             "type": "string"
           },
-          "selected_story_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Selected Story Ids",
-            "type": "array"
-          },
           "selection_fingerprint": {
             "title": "Selection Fingerprint",
             "type": "string"
@@ -6691,6 +6673,10 @@
           "selector_version": {
             "title": "Selector Version",
             "type": "string"
+          },
+          "slot_at_ms": {
+            "title": "Slot At Ms",
+            "type": "integer"
           },
           "source_age_range": {
             "$ref": "#/components/schemas/NewsBriefSourceAgeRangeData"
@@ -6701,10 +6687,6 @@
             },
             "title": "Sources",
             "type": "array"
-          },
-          "target_fingerprint": {
-            "title": "Target Fingerprint",
-            "type": "string"
           },
           "top_stories": {
             "items": {
@@ -6738,14 +6720,13 @@
         },
         "required": [
           "publication_id",
+          "slot_at_ms",
           "selection_fingerprint",
-          "target_fingerprint",
           "quality",
           "brief_kind",
           "world_brief",
           "brief_story_lines",
           "top_stories",
-          "selected_story_ids",
           "sources",
           "source_age_range",
           "provider",
@@ -6759,8 +6740,7 @@
           "locale",
           "validation",
           "provenance",
-          "published_at_ms",
-          "created_at_ms"
+          "published_at_ms"
         ],
         "title": "NewsBriefPublicationData",
         "type": "object"
@@ -6768,6 +6748,10 @@
       "NewsBriefRunData": {
         "additionalProperties": false,
         "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
           "completed_at_ms": {
             "anyOf": [
               {
@@ -6778,10 +6762,6 @@
               }
             ],
             "title": "Completed At Ms"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
-            "type": "integer"
           },
           "failure_count": {
             "title": "Failure Count",
@@ -6837,15 +6817,8 @@
             "title": "Model Outcome"
           },
           "next_due_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Due At Ms"
+            "title": "Next Due At Ms",
+            "type": "integer"
           },
           "pointer_action": {
             "enum": [
@@ -6857,26 +6830,17 @@
             "title": "Pointer Action",
             "type": "string"
           },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "selection_fingerprint": {
-            "title": "Selection Fingerprint",
-            "type": "string"
+          "slot_at_ms": {
+            "title": "Slot At Ms",
+            "type": "integer"
           },
           "status": {
             "enum": [
-              "waiting_input",
+              "due",
               "running",
-              "retry_wait",
-              "published"
+              "completed"
             ],
             "title": "Status",
-            "type": "string"
-          },
-          "target_fingerprint": {
-            "title": "Target Fingerprint",
             "type": "string"
           },
           "updated_at_ms": {
@@ -6885,17 +6849,15 @@
           }
         },
         "required": [
-          "run_id",
-          "target_fingerprint",
-          "selection_fingerprint",
+          "slot_at_ms",
           "status",
           "model_outcome",
           "pointer_action",
+          "attempt_count",
           "failure_count",
           "next_due_at_ms",
           "lease_expires_at_ms",
           "last_error_code",
-          "created_at_ms",
           "updated_at_ms",
           "last_attempt_at_ms",
           "completed_at_ms"
@@ -7010,6 +6972,10 @@
               }
             ]
           },
+          "next_due_at_ms": {
+            "title": "Next Due At Ms",
+            "type": "integer"
+          },
           "public_state": {
             "enum": [
               "unavailable",
@@ -7038,6 +7004,17 @@
             "title": "Reasons",
             "type": "array"
           },
+          "slot_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot At Ms"
+          },
           "status": {
             "enum": [
               "ready",
@@ -7046,24 +7023,14 @@
             ],
             "title": "Status",
             "type": "string"
-          },
-          "target_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Fingerprint"
           }
         },
         "required": [
           "status",
           "reasons",
           "public_state",
-          "target_fingerprint",
+          "slot_at_ms",
+          "next_due_at_ms",
           "publication_id",
           "latest_run"
         ],
@@ -7622,6 +7589,9 @@
             "title": "Reasons",
             "type": "array"
           },
+          "rss": {
+            "$ref": "#/components/schemas/NewsRssStatusData"
+          },
           "status": {
             "enum": [
               "ready",
@@ -7635,6 +7605,7 @@
         "required": [
           "status",
           "reasons",
+          "rss",
           "opennews"
         ],
         "title": "NewsIngestStatusData",
@@ -7646,10 +7617,6 @@
           "consecutive_failures": {
             "title": "Consecutive Failures",
             "type": "integer"
-          },
-          "gap_unclosed": {
-            "title": "Gap Unclosed",
-            "type": "boolean"
           },
           "last_error": {
             "anyOf": [
@@ -7673,6 +7640,14 @@
             ],
             "title": "Last Http Status"
           },
+          "last_items_accepted": {
+            "title": "Last Items Accepted",
+            "type": "integer"
+          },
+          "last_items_seen": {
+            "title": "Last Items Seen",
+            "type": "integer"
+          },
           "last_live_at_ms": {
             "anyOf": [
               {
@@ -7684,6 +7659,17 @@
             ],
             "title": "Last Live At Ms"
           },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
           "last_recovery_at_ms": {
             "anyOf": [
               {
@@ -7694,6 +7680,13 @@
               }
             ],
             "title": "Last Recovery At Ms"
+          },
+          "last_rejection_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Last Rejection Counts",
+            "type": "object"
           },
           "last_success_at_ms": {
             "anyOf": [
@@ -7725,11 +7718,14 @@
           "live_connected",
           "last_live_at_ms",
           "last_recovery_at_ms",
-          "gap_unclosed",
+          "last_outcome",
           "last_error",
           "last_http_status",
           "last_success_at_ms",
-          "consecutive_failures"
+          "consecutive_failures",
+          "last_rejection_counts",
+          "last_items_seen",
+          "last_items_accepted"
         ],
         "title": "NewsOpenNewsStatusData",
         "type": "object"
@@ -8155,9 +8151,78 @@
         "title": "NewsPushTranslation24hData",
         "type": "object"
       },
+      "NewsRssStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed_source_count": {
+            "title": "Claimed Source Count",
+            "type": "integer"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "failed_source_count": {
+            "title": "Failed Source Count",
+            "type": "integer"
+          },
+          "latest_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Success At Ms"
+          },
+          "next_due_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due At Ms"
+          },
+          "source_count": {
+            "title": "Source Count",
+            "type": "integer"
+          },
+          "successful_source_count": {
+            "title": "Successful Source Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "source_count",
+          "successful_source_count",
+          "failed_source_count",
+          "claimed_source_count",
+          "next_due_at_ms",
+          "latest_success_at_ms"
+        ],
+        "title": "NewsRssStatusData",
+        "type": "object"
+      },
       "NewsSourceData": {
         "additionalProperties": false,
         "properties": {
+          "claim_lease_expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Lease Expires At Ms"
+          },
           "consecutive_failures": {
             "title": "Consecutive Failures",
             "type": "integer"
@@ -8166,9 +8231,16 @@
             "title": "Enabled",
             "type": "boolean"
           },
-          "gap_unclosed": {
-            "title": "Gap Unclosed",
-            "type": "boolean"
+          "feed_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feed Url"
           },
           "last_error": {
             "anyOf": [
@@ -8181,6 +8253,28 @@
             ],
             "title": "Last Error"
           },
+          "last_fetch_finished_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fetch Finished At Ms"
+          },
+          "last_fetch_started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Fetch Started At Ms"
+          },
           "last_http_status": {
             "anyOf": [
               {
@@ -8191,6 +8285,14 @@
               }
             ],
             "title": "Last Http Status"
+          },
+          "last_items_accepted": {
+            "title": "Last Items Accepted",
+            "type": "integer"
+          },
+          "last_items_seen": {
+            "title": "Last Items Seen",
+            "type": "integer"
           },
           "last_live_at_ms": {
             "anyOf": [
@@ -8203,6 +8305,17 @@
             ],
             "title": "Last Live At Ms"
           },
+          "last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Outcome"
+          },
           "last_recovery_at_ms": {
             "anyOf": [
               {
@@ -8213,6 +8326,13 @@
               }
             ],
             "title": "Last Recovery At Ms"
+          },
+          "last_rejection_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Last Rejection Counts",
+            "type": "object"
           },
           "last_success_at_ms": {
             "anyOf": [
@@ -8233,12 +8353,37 @@
             "title": "Name",
             "type": "string"
           },
+          "next_fetch_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Fetch At Ms"
+          },
+          "refresh_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Interval Seconds"
+          },
           "source_id": {
             "title": "Source Id",
             "type": "string"
           },
           "source_kind": {
-            "const": "opennews",
+            "enum": [
+              "rss",
+              "opennews"
+            ],
             "title": "Source Kind",
             "type": "string"
           },
@@ -8253,14 +8398,23 @@
           "source_kind",
           "tier",
           "enabled",
+          "feed_url",
+          "refresh_interval_seconds",
+          "next_fetch_at_ms",
+          "claim_lease_expires_at_ms",
+          "last_fetch_started_at_ms",
+          "last_fetch_finished_at_ms",
           "live_connected",
           "last_live_at_ms",
           "last_recovery_at_ms",
-          "gap_unclosed",
           "last_success_at_ms",
           "last_http_status",
           "consecutive_failures",
-          "last_error"
+          "last_outcome",
+          "last_error",
+          "last_rejection_counts",
+          "last_items_seen",
+          "last_items_accepted"
         ],
         "title": "NewsSourceData",
         "type": "object"
@@ -8972,17 +9126,6 @@
             ],
             "title": "Newest Story At Ms"
           },
-          "oldest_unmaterialized_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest Unmaterialized At Ms"
-          },
           "reasons": {
             "items": {
               "type": "string"
@@ -8998,10 +9141,6 @@
             ],
             "title": "Status",
             "type": "string"
-          },
-          "unmaterialized_item_count": {
-            "title": "Unmaterialized Item Count",
-            "type": "integer"
           }
         },
         "required": [
@@ -9012,8 +9151,6 @@
           "newest_item_at_ms",
           "newest_story_at_ms",
           "last_material_change_at_ms",
-          "unmaterialized_item_count",
-          "oldest_unmaterialized_at_ms",
           "invalid_owner_count",
           "invalid_story_aggregate_count",
           "invariant_error_count",

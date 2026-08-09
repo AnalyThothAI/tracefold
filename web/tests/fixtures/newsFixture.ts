@@ -3,6 +3,8 @@ import type {
   BriefTopStory,
   NewsBrief,
   NewsFeed,
+  NewsSource,
+  NewsSources,
   NewsStatus,
   NewsStory,
   NewsStoryDetail,
@@ -155,7 +157,6 @@ export function newsBriefPublicationFixture(
       { n: 2, text: "A typhoon makes landfall near a major port [2]" },
     ],
     composer_version: "news-public-insights-composer-v1",
-    created_at_ms: NEWS_NOW_MS,
     identity_version: "news-story-identity-v2",
     locale: "en",
     model: "llama3.1:8b",
@@ -177,9 +178,9 @@ export function newsBriefPublicationFixture(
     published_at_ms: NEWS_NOW_MS,
     quality: "ok",
     schema_version: "news-public-insights-v1",
-    selected_story_ids: topStories.map((story) => story.story_id),
     selection_fingerprint: "b".repeat(64),
     selector_version: "news-public-selector-v1",
+    slot_at_ms: NEWS_NOW_MS - (NEWS_NOW_MS % 1_800_000),
     source_age_range: {
       newest_ms: NEWS_NOW_MS - 900_000,
       oldest_ms: NEWS_NOW_MS - 2_400_000,
@@ -198,7 +199,6 @@ export function newsBriefPublicationFixture(
         url: "",
       },
     ],
-    target_fingerprint: "c".repeat(64),
     top_stories: topStories,
     validation: {
       failure_code: null,
@@ -244,25 +244,23 @@ export function newsGlobalBriefFixture(overrides: Partial<NewsBrief> = {}): News
   const publication = newsBriefPublicationFixture();
   return {
     latest_run: {
+      attempt_count: 1,
       completed_at_ms: NEWS_NOW_MS,
-      created_at_ms: NEWS_NOW_MS,
       failure_count: 0,
       last_attempt_at_ms: NEWS_NOW_MS - 5_000,
       last_error_code: null,
       lease_expires_at_ms: null,
       model_outcome: "ok",
-      next_due_at_ms: null,
+      next_due_at_ms: publication.slot_at_ms + 1_800_000,
       pointer_action: "advance_ok",
-      run_id: "brief-run",
-      selection_fingerprint: publication.selection_fingerprint,
-      status: "published",
-      target_fingerprint: publication.target_fingerprint,
+      slot_at_ms: publication.slot_at_ms,
+      status: "completed",
       updated_at_ms: NEWS_NOW_MS,
     },
-    pending_due_at_ms: null,
+    next_due_at_ms: publication.slot_at_ms + 1_800_000,
     publication,
+    slot_at_ms: publication.slot_at_ms,
     state: "current",
-    target_fingerprint: publication.target_fingerprint,
     ...overrides,
   };
 }
@@ -273,11 +271,12 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     layers: {
       brief: {
         latest_run: null,
+        next_due_at_ms: NEWS_NOW_MS + 1_800_000,
         public_state: "current",
         publication_id: "brief-publication",
         reasons: [],
+        slot_at_ms: NEWS_NOW_MS - (NEWS_NOW_MS % 1_800_000),
         status: "ready",
-        target_fingerprint: "brief-fingerprint",
       },
       ingest: {
         opennews: {
@@ -285,14 +284,26 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
           live_connected: true,
           last_live_at_ms: NEWS_NOW_MS,
           last_recovery_at_ms: NEWS_NOW_MS - 60_000,
-          gap_unclosed: false,
           last_error: null,
           last_http_status: 200,
+          last_items_accepted: 5,
+          last_items_seen: 5,
+          last_outcome: "recovery_complete",
+          last_rejection_counts: {},
           last_success_at_ms: NEWS_NOW_MS - 60_000,
           name: "OpenNews",
           source_id: "news-opennews",
         },
         reasons: [],
+        rss: {
+          claimed_source_count: 0,
+          enabled: true,
+          failed_source_count: 0,
+          latest_success_at_ms: NEWS_NOW_MS - 30_000,
+          next_due_at_ms: NEWS_NOW_MS + 60_000,
+          source_count: 179,
+          successful_source_count: 179,
+        },
         status: "ready",
       },
       push: {
@@ -344,10 +355,8 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
         last_success_at_ms: NEWS_NOW_MS - 60_000,
         newest_item_at_ms: NEWS_NOW_MS - 30_000,
         newest_story_at_ms: NEWS_NOW_MS - 30_000,
-        oldest_unmaterialized_at_ms: null,
         reasons: [],
         status: "ready",
-        unmaterialized_item_count: 0,
       },
     },
     measured_at_ms: NEWS_NOW_MS,
@@ -357,4 +366,57 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     ...overrides,
   };
   return status;
+}
+
+export function newsSourceFixture(overrides: Partial<NewsSource> = {}): NewsSource {
+  return {
+    claim_lease_expires_at_ms: null,
+    consecutive_failures: 0,
+    enabled: true,
+    feed_url: "https://feeds.example.com/world.xml",
+    last_error: null,
+    last_fetch_finished_at_ms: NEWS_NOW_MS - 30_000,
+    last_fetch_started_at_ms: NEWS_NOW_MS - 31_000,
+    last_http_status: 200,
+    last_items_accepted: 5,
+    last_items_seen: 24,
+    last_live_at_ms: null,
+    last_outcome: "success",
+    last_recovery_at_ms: null,
+    last_rejection_counts: { item_cap: 19 },
+    last_success_at_ms: NEWS_NOW_MS - 30_000,
+    live_connected: false,
+    name: "Example World",
+    next_fetch_at_ms: NEWS_NOW_MS + 60_000,
+    refresh_interval_seconds: 300,
+    source_id: "wm-world-example",
+    source_kind: "rss",
+    tier: 1,
+    ...overrides,
+  };
+}
+
+export function newsSourcesFixture(overrides: Partial<NewsSources> = {}): NewsSources {
+  return {
+    items: [
+      newsSourceFixture(),
+      newsSourceFixture({
+        feed_url: null,
+        last_fetch_finished_at_ms: null,
+        last_fetch_started_at_ms: null,
+        last_live_at_ms: NEWS_NOW_MS - 5_000,
+        last_outcome: "live_item",
+        last_recovery_at_ms: NEWS_NOW_MS - 60_000,
+        last_rejection_counts: {},
+        live_connected: true,
+        name: "OpenNews",
+        next_fetch_at_ms: null,
+        refresh_interval_seconds: null,
+        source_id: "news-opennews",
+        source_kind: "opennews",
+      }),
+    ],
+    page: { has_more: false, next_cursor: null, returned_count: 2 },
+    ...overrides,
+  };
 }

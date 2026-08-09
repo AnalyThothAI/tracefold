@@ -4,6 +4,7 @@ import { marketContextFixture, marketObservationFixture } from "@tests/fixtures/
 import {
   newsFeedFixture,
   newsGlobalBriefFixture,
+  newsSourcesFixture,
   newsStatusFixture,
   newsStoryDetailFixture,
   newsStoryFixture,
@@ -52,6 +53,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/target-posts") return fulfill(route, targetPostsData(url));
     if (path === "/api/news/feed") return fulfill(route, newsFeedData());
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
+    if (path === "/api/news/sources") return fulfill(route, newsSourcesFixture());
     if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
     if (path === "/api/news/brief") return fulfill(route, newsGlobalBriefFixture());
     if (path === "/api/stocks-radar") return fulfill(route, stocksRadarData(url));

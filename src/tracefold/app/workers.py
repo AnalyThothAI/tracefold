@@ -31,6 +31,7 @@ from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentA
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
+from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
 from tracefold.macro import (
@@ -60,9 +61,9 @@ from tracefold.news import (
     NewsAcquisition,
     NewsBriefCandidate,
     NewsStoryProjection,
-    NewsStoryPush,
-    opennews_source,
 )
+from tracefold.news.push import NewsStoryPush
+from tracefold.news.sources import opennews_source, public_rss_sources
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
@@ -83,6 +84,7 @@ _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
 _NEWS_PUSH_IDLE_SECONDS = 5.0
+_NEWS_RSS_IDLE_SECONDS = 30.0
 _NEWS_PUSH_RECONCILE_SECONDS = 10.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
@@ -738,6 +740,7 @@ async def _wire_components(
     model_candidates: list[Any] = []
     if settings.news.enabled:
         source = opennews_source()
+        rss_sources = public_rss_sources() if settings.news.rss_enabled else ()
         opennews_rest = OpenNewsRestClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         opennews_ws = (
             OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
@@ -745,6 +748,9 @@ async def _wire_components(
         news = NewsAcquisition(
             db=db,
             finite_operations=finite,
+            rss_sources=rss_sources,
+            rss_feed_reader=RssFeedReader(),
+            rss_feed_parser=parse_rss_feed_wire,
             opennews_source=source,
             opennews_rest_client=opennews_rest,
             opennews_ws_client=opennews_ws,
@@ -755,13 +761,18 @@ async def _wire_components(
             model_adapter=model_adapter,
             publisher=ProviderChainNewsBriefPublisher(
                 ollama_base_url=_NEWS_OLLAMA_BASE_URL,
-                openrouter_api_key=settings.llm.openrouter_api_key,
+                configured_base_url=settings.llm.base_url,
+                configured_api_key=settings.llm.api_key,
+                configured_model=settings.llm.news_brief_model,
                 groq_api_key=settings.llm.groq_api_key,
                 total_timeout_seconds=_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS,
             ),
             runtime_id=runtime_id,
             stable_order=20,
         )
+        # The acquisition turn always advances bounded Item expiry. With RSS
+        # disabled it has no claimable source and performs no network request.
+        due_turns.append((news.turn, _NEWS_RSS_IDLE_SECONDS))
         model_candidates.append(news_brief)
         if settings.news.push.enabled:
             webhook_url = settings.news.push.feishu_webhook_url
@@ -778,9 +789,7 @@ async def _wire_components(
                     signing_secret=signing_secret,
                     finite_operations=finite,
                     translation_enabled=translation_enabled,
-                    translation_base_url=(
-                        settings.llm.base_url or "https://api.deepseek.com/v1" if translation_enabled else None
-                    ),
+                    translation_base_url=(settings.llm.base_url if translation_enabled else None),
                     translation_api_key=translation_api_key,
                     translation_engine=(settings.llm.news_brief_model if translation_enabled else None),
                 ),

@@ -7,17 +7,15 @@ import httpx
 import pytest
 from websockets.exceptions import ConcurrencyError, ProtocolError
 
+import tracefold.news.runtime as news_runtime
+from tracefold.integrations.news_feeds import NewsFeedAcquisitionError, NewsFeedWire, parse_rss_feed_wire
 from tracefold.integrations.opennews import client as opennews_client
-from tracefold.news import (
-    NewsAcquisition,
-    OpenNewsExpectedError,
-    parse_opennews_message,
-    parse_opennews_rest_response,
-)
-from tracefold.news import runtime as news_runtime
+from tracefold.news import NewsAcquisition, OpenNewsExpectedError
+from tracefold.news.models import NewsSourceDefinition
+from tracefold.news.opennews import parse_opennews_message, parse_opennews_rest_response
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -32,10 +30,15 @@ def test_opennews_source_is_the_production_source() -> None:
         "lang": "en",
         "source_kind": "opennews",
         "enabled": True,
+        "feed_url": None,
+        "memberships": (),
+        "refresh_interval_seconds": 1800,
     }
 
 
 def test_opennews_token_is_trimmed_and_optional() -> None:
+    assert NewsSettings().rss_enabled is False
+    assert NewsSettings(rss_enabled=True).rss_enabled is True
     assert NewsSettings(opennews_token="  secret  ").opennews_token == "secret"
     assert NewsSettings(opennews_token="  ").opennews_token is None
 
@@ -196,7 +199,6 @@ def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
         "grade": "A",
         "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
     }
-    assert event.entry.raw == {}
 
 
 def test_rest_report_keeps_observed_top_level_numeric_score() -> None:
@@ -681,110 +683,359 @@ def test_invalid_rest_shape_fails_closed() -> None:
         parse_opennews_rest_response({"data": "not-a-list"})
 
 
-def test_recovery_is_event_driven_and_keeps_a_three_hour_disconnect_gap(monkeypatch) -> None:
+class _InlineFiniteOperations:
+    async def run(self, _operation_name, function, /, *args, **kwargs):
+        kwargs.pop("timeout_seconds")
+        kwargs.pop("allow_shutdown", None)
+        return function(*args, **kwargs)
+
+
+class _FeedReader:
+    def __init__(self, result: NewsFeedWire | BaseException) -> None:
+        self.result = result
+        self.requests: list[tuple[str | None, str | None]] = []
+        self.closed = False
+
+    def fetch_wire(self, *, source, etag, last_modified):
+        del source
+        self.requests.append((etag, last_modified))
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _rss_source() -> NewsSourceDefinition:
+    return NewsSourceDefinition(
+        source_id="news-rss-test",
+        name="Public Wire",
+        tier=2,
+        source_kind="rss",
+        feed_url="https://news.example.org/feed.xml",
+        memberships=("politics",),
+    )
+
+
+def _rss_wire() -> NewsFeedWire:
+    return NewsFeedWire(
+        status_code=200,
+        source_name="Public Wire",
+        source_lang="en",
+        body=b"""
+            <rss><channel><item>
+              <title>Public policy update</title>
+              <link>https://news.example.org/update</link>
+              <pubDate>Sat, 09 Aug 2026 00:00:00 GMT</pubDate>
+            </item></channel></rss>
+        """,
+        etag='"new"',
+        last_modified="Sat, 09 Aug 2026 00:00:00 GMT",
+        not_modified=False,
+    )
+
+
+def _acquisition(
+    *,
+    db,
+    reader: _FeedReader | None = None,
+    finite_operations=None,
+    rest_client=None,
+    websocket_client=None,
+) -> NewsAcquisition:
+    return NewsAcquisition(
+        db=db,
+        finite_operations=finite_operations or _InlineFiniteOperations(),
+        rss_sources=(_rss_source(),),
+        rss_feed_reader=reader or _FeedReader(_rss_wire()),
+        rss_feed_parser=parse_rss_feed_wire,
+        opennews_source=opennews_source(),
+        opennews_rest_client=rest_client,
+        opennews_ws_client=websocket_client,
+    )
+
+
+def test_rss_turn_claims_fetches_parses_and_publishes_one_due_source() -> None:
     class _Database:
         def __init__(self) -> None:
-            self.recovery_batches: list[tuple] = []
-            self.gap_version = 0
+            self.operations: list[str] = []
+            self.published = None
 
         async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-            if operation_name == "opennews_recovery_publish":
-                self.recovery_batches.append(tuple(args[0]))
-            if operation_name == "opennews_status":
-                gap_unclosed = bool(args[4])
-                if gap_unclosed:
-                    self.gap_version += 1
-                    return args[5], self.gap_version
-                if args[6] != self.gap_version:
-                    return None
-                return None, self.gap_version
-            return {}
+            self.operations.append(operation_name)
+            if operation_name == "news_rss_claim":
+                return {
+                    "source_id": "news-rss-test",
+                    "etag": '"old"',
+                    "last_modified": "Fri, 08 Aug 2026 00:00:00 GMT",
+                }
+            if operation_name == "news_rss_publish":
+                self.published = args
+                return {"items_inserted": 1}
+            raise AssertionError(operation_name)
 
-    class _FiniteOperations:
-        async def run(self, _operation_name, function, /, *args, **_kwargs):
-            return await function(*args)
+    database = _Database()
+    reader = _FeedReader(_rss_wire())
 
-    class _RestClient:
-        def __init__(self, event) -> None:
-            self.event = event
-            self.calls = 0
+    assert asyncio.run(_acquisition(db=database, reader=reader).turn()) is True
+    assert database.operations == ["news_rss_claim", "news_rss_publish"]
+    assert reader.requests == [('"old"', "Fri, 08 Aug 2026 00:00:00 GMT")]
+    assert database.published is not None
+    source, _claim_token, fetch, _finished_at_ms = database.published
+    assert source.source_id == "news-rss-test"
+    assert [entry.title for entry in fetch.entries] == ["Public policy update"]
 
-        async def fetch_page(self, page):
-            assert page == 1
-            self.calls += 1
-            return (self.event,)
 
-    class _WebSocketClient:
+def test_rss_turn_records_bounded_expected_failure_and_releases_the_claim() -> None:
+    class _Database:
         def __init__(self) -> None:
-            self.connect_calls = 0
-            self.disconnect = asyncio.Event()
+            self.failure = None
 
-        async def connect(self) -> None:
-            self.connect_calls += 1
+        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+            if operation_name == "news_rss_claim":
+                return {"source_id": "news-rss-test", "etag": None, "last_modified": None}
+            if operation_name == "news_rss_failure":
+                self.failure = args
+                return True
+            raise AssertionError(operation_name)
 
-        async def receive(self):
-            if self.connect_calls == 1:
-                await self.disconnect.wait()
-                raise OpenNewsExpectedError("opennews_websocket_disconnected")
-            await asyncio.Future()
+    database = _Database()
+    reader = _FeedReader(NewsFeedAcquisitionError("news_rss_http_503", status_code=503))
 
-        async def close(self) -> None:
-            return None
+    assert asyncio.run(_acquisition(db=database, reader=reader).turn()) is True
+    assert database.failure is not None
+    source_id, claim_token, _finished_at_ms, error_code, status_code = database.failure
+    assert source_id == "news-rss-test"
+    assert claim_token
+    assert (error_code, status_code) == ("news_rss_http_503", 503)
 
-    async def wait_until(predicate) -> None:
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while not predicate():
-            if asyncio.get_running_loop().time() >= deadline:
-                raise AssertionError("OpenNews runtime condition timed out")
-            await asyncio.sleep(0.001)
 
-    async def scenario() -> tuple[int, int, list[tuple]]:
-        published_at_ms = int(time.time() * 1_000) - (3 * 60 * 60 * 1_000)
-        recovered = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "three-hour-gap",
-                    "text": "Recovery must keep a three-hour-old report",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": published_at_ms,
-                },
-            }
-        )
-        assert recovered is not None
-        database = _Database()
-        rest = _RestClient(recovered)
-        websocket = _WebSocketClient()
-        acquisition = NewsAcquisition(
-            db=database,
-            finite_operations=_FiniteOperations(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=rest,
-            opennews_ws_client=websocket,
-        )
+def test_rss_turn_is_idle_when_no_source_is_due() -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "news_rss_claim"
+
+    assert asyncio.run(_acquisition(db=_Database()).turn()) is False
+
+
+def test_default_disabled_rss_turn_performs_no_feed_request() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            self.operations.append(operation_name)
+            assert operation_name == "news_rss_claim"
+
+    database = _Database()
+    reader = _FeedReader(_rss_wire())
+    acquisition = NewsAcquisition(
+        db=database,
+        finite_operations=_InlineFiniteOperations(),
+        rss_sources=(),
+        rss_feed_reader=reader,
+        rss_feed_parser=parse_rss_feed_wire,
+        opennews_source=opennews_source(),
+    )
+
+    assert asyncio.run(acquisition.turn()) is False
+    assert database.operations == ["news_rss_claim"]
+    assert reader.requests == []
+
+
+def _report(provider_record_id: str):
+    event = parse_opennews_message(
+        {
+            "method": "news.update",
+            "params": {
+                "id": provider_record_id,
+                "text": provider_record_id,
+                "newsType": "Reuters",
+                "engineType": "news",
+                "ts": int(time.time() * 1_000) - 1_000,
+            },
+        }
+    )
+    assert event is not None
+    return event
+
+
+def test_opennews_overlap_starts_at_newest_page_and_stops_on_repository_overlap(monkeypatch) -> None:
+    async def scenario() -> tuple[list[int], list[list[str]], list[bool]]:
         stop_event = asyncio.Event()
-        task = asyncio.create_task(acquisition.run_opennews(stop_event=stop_event))
-        try:
-            await wait_until(lambda: rest.calls == 1 and websocket.connect_calls == 1)
-            await asyncio.sleep(0.02)
-            assert rest.calls == 1
-            websocket.disconnect.set()
-            await wait_until(lambda: rest.calls == 2 and websocket.connect_calls == 2)
-            await asyncio.sleep(0.02)
-            assert rest.calls == 2
-        finally:
-            stop_event.set()
-            await asyncio.wait_for(task, timeout=2.0)
-        return rest.calls, websocket.connect_calls, database.recovery_batches
 
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
+        class _Database:
+            def __init__(self) -> None:
+                self.batches: list[list[str]] = []
+                self.completions: list[bool] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    return None
+                if operation_name == "opennews_recovery_publish":
+                    ids = [event.provider_record_id for event in args[0]]
+                    self.batches.append(ids)
+                    return {
+                        "events_seen": len(ids),
+                        "items_inserted": len(ids),
+                        "items_updated": 0,
+                        "metadata_updated": 0,
+                        "rejected": 0,
+                        "overlap_complete": len(self.batches) == 3,
+                    }
+                if operation_name == "opennews_recovery_complete":
+                    self.completions.append(bool(args[2]))
+                    stop_event.set()
+                    return True
+                raise AssertionError(operation_name)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            def fetch_page(self, page):
+                self.pages.append(page)
+                return (_report(f"page-{page}"),)
+
+        database = _Database()
+        rest = _RestClient()
+        acquisition = _acquisition(
+            db=database,
+            rest_client=rest,
+            websocket_client=object(),
+        )
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return rest.pages, database.batches, database.completions
+
     monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-    rest_calls, connect_calls, batches = asyncio.run(scenario())
 
-    assert rest_calls == 2
-    assert connect_calls == 2
-    assert [batch[0].provider_record_id for batch in batches] == ["three-hour-gap", "three-hour-gap"]
+    assert asyncio.run(scenario()) == (
+        [1, 2, 3],
+        [["page-1"], ["page-2"], ["page-3"]],
+        [False],
+    )
+
+
+def test_opennews_exhaustion_is_current_then_a_later_overlap_clears_it(monkeypatch) -> None:
+    async def scenario() -> tuple[list[int], list[bool]]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.publish_calls = 0
+                self.completions: list[bool] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    return None
+                if operation_name == "opennews_recovery_publish":
+                    self.publish_calls += 1
+                    return {
+                        "events_seen": 1,
+                        "items_inserted": 1,
+                        "items_updated": 0,
+                        "metadata_updated": 0,
+                        "rejected": 0,
+                        "overlap_complete": self.publish_calls == 12,
+                    }
+                if operation_name == "opennews_recovery_complete":
+                    self.completions.append(bool(args[2]))
+                    if len(self.completions) == 2:
+                        stop_event.set()
+                    return True
+                raise AssertionError(operation_name)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            def fetch_page(self, page):
+                self.pages.append(page)
+                return (_report(f"attempt-{len(self.pages)}-page-{page}"),)
+
+        database = _Database()
+        rest = _RestClient()
+        acquisition = _acquisition(
+            db=database,
+            rest_client=rest,
+            websocket_client=object(),
+        )
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return rest.pages, database.completions
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    pages, completions = asyncio.run(scenario())
+    assert pages == [*range(1, 12), 1]
+    assert completions == [True, False]
+
+
+def test_opennews_recovery_failure_stays_durable_without_a_status_clear(monkeypatch) -> None:
+    async def scenario() -> list[tuple[str, str | None]]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.operations: list[tuple[str, str | None]] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                code = args[2].code if operation_name == "opennews_recovery_failure" else None
+                self.operations.append((operation_name, code))
+                if operation_name == "opennews_recovery_failure":
+                    stop_event.set()
+
+        class _OverrunFinite:
+            async def run(self, *_args, **_kwargs):
+                raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
+
+        class _RestClient:
+            def fetch_page(self, _page):
+                raise AssertionError("the bounded executor owns this call")
+
+        database = _Database()
+        acquisition = _acquisition(
+            db=database,
+            finite_operations=_OverrunFinite(),
+            rest_client=_RestClient(),
+            websocket_client=object(),
+        )
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return database.operations
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == [
+        ("opennews_recovery_start", None),
+        ("opennews_recovery_failure", "opennews_rest_timeout"),
+    ]
+
+
+def test_opennews_live_publish_does_not_clear_the_overlap_outcome() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            self.operations.append(operation_name)
+            return {"items_inserted": 1}
+
+    async def scenario() -> tuple[list[str], bool]:
+        database = _Database()
+        acquisition = _acquisition(db=database)
+        acquisition._opennews_queue.put_nowait(_report("live-1"))
+        stop_event = asyncio.Event()
+        stop_event.set()
+        await acquisition._opennews_publish_loop(stop_event)
+        return database.operations, acquisition._opennews_recovery_requested.is_set()
+
+    assert asyncio.run(scenario()) == (["opennews_live_publish"], False)
 
 
 def test_recovery_has_a_five_minute_persisted_cooldown() -> None:
@@ -803,215 +1054,17 @@ def test_recovery_has_a_five_minute_persisted_cooldown() -> None:
     )
 
 
-def test_recovery_only_closes_a_gap_when_the_page_contains_its_provider_boundary() -> None:
-    def report(provider_record_id: str):
-        event = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": provider_record_id,
-                    "text": provider_record_id,
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert event is not None
-        return event
-
-    missing_boundary = tuple(report(f"burst-{index}") for index in range(100))
-    covering = (report("gap-boundary"), *missing_boundary[:99])
-
-    assert news_runtime._opennews_recovery_covers_boundary(
-        covering,
-        boundary_provider_record_id="gap-boundary",
-    )
-    assert not news_runtime._opennews_recovery_covers_boundary(
-        missing_boundary,
-        boundary_provider_record_id="gap-boundary",
-    )
-    assert news_runtime._opennews_recovery_covers_boundary(
-        missing_boundary,
-        boundary_provider_record_id=None,
-    )
-
-
-def test_recovery_paginates_until_the_persisted_boundary(monkeypatch) -> None:
-    def report(provider_record_id: str):
-        event = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": provider_record_id,
-                    "text": provider_record_id,
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert event is not None
-        return event
-
-    async def scenario() -> tuple[list[int], list[list[str]], bool, str | None]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.published: list[list[str]] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    return None
-                if operation_name == "opennews_recovery_publish":
-                    self.published.append([event.provider_record_id for event in args[0]])
-                    return {}
-                if operation_name == "opennews_status":
-                    assert args[4] is False
-                    assert args[6] == 7
-                    stop_event.set()
-                    return None, 7
-                raise AssertionError(operation_name)
-
-        class _FiniteOperations:
-            async def run(self, _operation_name, function, /, *args, **_kwargs):
-                return await function(*args)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.pages: list[int] = []
-
-            async def fetch_page(self, page):
-                self.pages.append(page)
-                provider_record_id = "gap-boundary" if page == 4 else f"page-{page}"
-                return (report(provider_record_id),)
-
-        database = _Database()
-        rest = _RestClient()
-        acquisition = NewsAcquisition(
-            db=database,
-            finite_operations=_FiniteOperations(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=rest,
-            opennews_ws_client=object(),
-        )
-        acquisition._opennews_gap_boundary_provider_record_id = "gap-boundary"
-        acquisition._opennews_gap_version = 7
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return (
-            rest.pages,
-            database.published,
-            acquisition._opennews_gap_unclosed,
-            acquisition._opennews_gap_boundary_provider_record_id,
-        )
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (
-        [1, 2, 3, 4],
-        [["page-1"], ["page-2"], ["page-3"], ["gap-boundary"]],
-        False,
-        None,
-    )
-
-
-def test_recovery_stops_after_eleven_pages_without_false_closure(monkeypatch) -> None:
-    def report(provider_record_id: str):
-        event = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": provider_record_id,
-                    "text": provider_record_id,
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert event is not None
-        return event
-
-    async def scenario() -> tuple[list[int], int, list[str], bool, str | None]:
-        stop_event = asyncio.Event()
-        incomplete = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.publish_count = 0
-                self.status_errors: list[str] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    return None
-                if operation_name == "opennews_recovery_publish":
-                    self.publish_count += 1
-                    return {}
-                if operation_name == "opennews_status":
-                    assert args[4] is True
-                    self.status_errors.append(args[3])
-                    incomplete.set()
-                    return args[5], 8
-                raise AssertionError(operation_name)
-
-        class _FiniteOperations:
-            async def run(self, _operation_name, function, /, *args, **_kwargs):
-                return await function(*args)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.pages: list[int] = []
-
-            async def fetch_page(self, page):
-                self.pages.append(page)
-                return (report(f"page-{page}"),)
-
-        database = _Database()
-        rest = _RestClient()
-        acquisition = NewsAcquisition(
-            db=database,
-            finite_operations=_FiniteOperations(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=rest,
-            opennews_ws_client=object(),
-        )
-        acquisition._opennews_gap_boundary_provider_record_id = "missing-boundary"
-        acquisition._opennews_gap_version = 7
-        acquisition._opennews_recovery_requested.set()
-
-        task = asyncio.create_task(acquisition._opennews_recovery_loop(stop_event))
-        try:
-            await asyncio.wait_for(incomplete.wait(), timeout=1.0)
-            await asyncio.sleep(0.01)
-        finally:
-            stop_event.set()
-            await asyncio.wait_for(task, timeout=1.0)
-        return (
-            rest.pages,
-            database.publish_count,
-            database.status_errors,
-            acquisition._opennews_gap_unclosed,
-            acquisition._opennews_gap_boundary_provider_record_id,
-        )
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (
-        list(range(1, 12)),
-        11,
-        ["opennews_recovery_window_incomplete"],
-        True,
-        "missing-boundary",
-    )
-
-
 def test_recovery_page_budget_stays_below_one_hundred_thousand_calls_per_month() -> None:
     attempts_in_31_days = (31 * 24 * 60 * 60) // news_runtime._OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS
 
     assert attempts_in_31_days * news_runtime._OPENNEWS_RECOVERY_MAX_PAGES == 98_208
+
+
+def test_news_acquisition_has_no_gap_state_machine() -> None:
+    acquisition = _acquisition(db=object())
+
+    assert not any(name.startswith("_opennews_gap") for name in vars(acquisition))
+    assert not hasattr(news_runtime, "_opennews_recovery_covers_boundary")
 
 
 def test_healthy_opennews_idle_keeps_the_same_websocket(monkeypatch) -> None:
@@ -1040,245 +1093,6 @@ def test_healthy_opennews_idle_keeps_the_same_websocket(monkeypatch) -> None:
     assert websocket.ping_calls == 1
 
 
-def test_recovery_admission_timeout_keeps_the_gap_scheduled(monkeypatch) -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            if operation_name == "opennews_status":
-                raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
-            return {}
-
-    class _FiniteOperations:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def run(self, _operation_name, function, /, *args, **_kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                raise ResourceAdmissionTimeout("test_opennews_admission_timeout")
-            return await function(*args)
-
-    class _RestClient:
-        def __init__(self, event, stop_event) -> None:
-            self.event = event
-            self.stop_event = stop_event
-            self.calls = 0
-
-        async def fetch_page(self, page):
-            assert page == 1
-            self.calls += 1
-            self.stop_event.set()
-            return (self.event,)
-
-    async def scenario() -> tuple[int, int, str | None]:
-        gap_started_at_ms = int(time.time() * 1_000)
-        recovered = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "recovered-after-admission",
-                    "text": "Recovery survives admission pressure",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": gap_started_at_ms - 1,
-                },
-            }
-        )
-        assert recovered is not None
-        stop_event = asyncio.Event()
-        finite = _FiniteOperations()
-        rest = _RestClient(recovered, stop_event)
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=finite,
-            opennews_source=opennews_source(),
-            opennews_rest_client=rest,
-            opennews_ws_client=object(),
-        )
-        acquisition._opennews_gap_boundary_provider_record_id = recovered.provider_record_id
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(
-            acquisition._opennews_recovery_loop(stop_event),
-            timeout=1.0,
-        )
-        return (
-            finite.calls,
-            rest.calls,
-            acquisition._opennews_gap_boundary_provider_record_id,
-        )
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (2, 1, "recovered-after-admission")
-
-
-def test_recovery_operation_overrun_stays_inside_the_opennews_lane(monkeypatch) -> None:
-    async def scenario() -> tuple[int, int, bool, str | None, list[str], list[str | None]]:
-        stop_event = asyncio.Event()
-        failure_codes: list[str] = []
-        status_codes: list[str | None] = []
-        recovered = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "recovered-after-overrun",
-                    "text": "Recovery survives a bounded operation overrun",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert recovered is not None
-
-        class _Database:
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name in {"opennews_recovery_start", "opennews_recovery_publish"}:
-                    return None
-                if operation_name == "opennews_recovery_failure":
-                    failure_codes.append(args[2].code)
-                    return None
-                if operation_name == "opennews_status":
-                    status_codes.append(args[3])
-                    if args[4] is True:
-                        return args[5], 1
-                    assert args[6] == 1
-                    stop_event.set()
-                    return None, 1
-                raise AssertionError(operation_name)
-
-        class _FiniteOperations:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            async def run(self, _operation_name, function, /, *args, **_kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
-                return await function(*args)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            async def fetch_page(self, page):
-                assert page == 1
-                self.calls += 1
-                return (recovered,)
-
-        finite = _FiniteOperations()
-        rest = _RestClient()
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=finite,
-            opennews_source=opennews_source(),
-            opennews_rest_client=rest,
-            opennews_ws_client=object(),
-        )
-        acquisition._opennews_gap_boundary_provider_record_id = recovered.provider_record_id
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return (
-            finite.calls,
-            rest.calls,
-            acquisition._opennews_gap_unclosed,
-            acquisition._opennews_gap_boundary_provider_record_id,
-            failure_codes,
-            status_codes,
-        )
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (
-        2,
-        1,
-        False,
-        None,
-        ["opennews_rest_timeout"],
-        ["opennews_rest_timeout", None],
-    )
-
-
-def test_recovery_does_not_hide_programming_errors(monkeypatch) -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "opennews_recovery_start"
-
-    class _FiniteOperations:
-        async def run(self, _operation_name, _function, /, *_args, **_kwargs):
-            raise AssertionError("programming bug")
-
-    class _RestClient:
-        async def fetch_page(self, _page):
-            raise AssertionError("provider should not be reached")
-
-    async def scenario() -> None:
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=_FiniteOperations(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=_RestClient(),
-            opennews_ws_client=object(),
-        )
-        acquisition._opennews_recovery_requested.set()
-
-        with pytest.raises(AssertionError, match="programming bug"):
-            await acquisition._opennews_recovery_loop(asyncio.Event())
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    asyncio.run(scenario())
-
-
-def test_opennews_status_admission_pressure_restarts_only_opennews(monkeypatch) -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "opennews_status"
-            raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
-
-    class _WebSocketClient:
-        def __init__(self) -> None:
-            self.connect_calls = 0
-            self.close_calls = 0
-
-        async def connect(self) -> None:
-            self.connect_calls += 1
-
-        async def receive(self):
-            await asyncio.Future()
-
-        async def close(self) -> None:
-            self.close_calls += 1
-
-    async def scenario() -> tuple[int, int]:
-        websocket = _WebSocketClient()
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=object(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=object(),
-            opennews_ws_client=websocket,
-        )
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(acquisition.run_opennews(stop_event=stop_event))
-        deadline = asyncio.get_running_loop().time() + 1.0
-        while websocket.connect_calls < 2:
-            if asyncio.get_running_loop().time() >= deadline:
-                raise AssertionError("OpenNews did not restart after database admission pressure")
-            await asyncio.sleep(0.001)
-        stop_event.set()
-        await asyncio.wait_for(task, timeout=1.0)
-        return websocket.connect_calls, websocket.close_calls
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
-
-    connect_calls, close_calls = asyncio.run(scenario())
-
-    assert connect_calls >= 2
-    assert close_calls == connect_calls
-
-
 def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
     class _Client:
         def __init__(self) -> None:
@@ -1303,200 +1117,3 @@ def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
         await asyncio.wait_for(client.cancelled.wait(), timeout=1.0)
 
     asyncio.run(scenario())
-
-
-def test_opennews_publish_admission_pressure_retains_gap_boundary() -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "opennews_live_publish"
-            raise ResourceAdmissionTimeout("test_opennews_publish_admission_timeout")
-
-    async def scenario() -> tuple[bool, str | None]:
-        event = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "publish-gap-boundary",
-                    "text": "Database pressure must retain the live gap boundary",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert event is not None
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=object(),
-            opennews_source=opennews_source(),
-        )
-        acquisition._opennews_queue.put_nowait(event)
-
-        with pytest.raises(ResourceAdmissionTimeout, match="test_opennews_publish_admission_timeout"):
-            await acquisition._opennews_publish_loop(asyncio.Event())
-        return acquisition._opennews_gap_unclosed, acquisition._opennews_gap_boundary_provider_record_id
-
-    assert asyncio.run(scenario()) == (True, "publish-gap-boundary")
-
-
-def test_opennews_sibling_failure_retains_dequeued_publish_boundary(monkeypatch) -> None:
-    async def scenario() -> str | None:
-        publish_started = asyncio.Event()
-        stop_event = asyncio.Event()
-
-        class _Database:
-            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-                if operation_name == "opennews_status":
-                    await publish_started.wait()
-                    stop_event.set()
-                    raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
-                if operation_name == "opennews_live_publish":
-                    publish_started.set()
-                    await asyncio.Future()
-                raise AssertionError(operation_name)
-
-        class _WebSocketClient:
-            async def connect(self) -> None:
-                return None
-
-            async def receive(self):
-                await asyncio.Future()
-
-            async def close(self) -> None:
-                return None
-
-        event = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "cancelled-publish-boundary",
-                    "text": "Sibling cancellation must retain the dequeued boundary",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": 1_000_000_012_000,
-                },
-            }
-        )
-        assert event is not None
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=object(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=object(),
-            opennews_ws_client=_WebSocketClient(),
-        )
-        acquisition._opennews_queue.put_nowait(event)
-
-        await asyncio.wait_for(acquisition.run_opennews(stop_event=stop_event), timeout=1.0)
-        return acquisition._opennews_gap_boundary_provider_record_id
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
-
-    assert asyncio.run(scenario()) == "cancelled-publish-boundary"
-
-
-def test_opennews_restart_waits_for_persisted_gap_before_recovery(monkeypatch) -> None:
-    async def scenario() -> tuple[int, int]:
-        first_recovery_started = asyncio.Event()
-        second_status_started = asyncio.Event()
-        release_second_status = asyncio.Event()
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.status_calls = 0
-                self.recovery_start_calls = 0
-
-            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    self.recovery_start_calls += 1
-                    first_recovery_started.set()
-                    await asyncio.Future()
-                if operation_name == "opennews_status":
-                    self.status_calls += 1
-                    if self.status_calls == 1:
-                        await first_recovery_started.wait()
-                        raise ResourceAdmissionTimeout("test_opennews_status_admission_timeout")
-                    if self.status_calls == 2:
-                        second_status_started.set()
-                        await release_second_status.wait()
-                    return None, self.status_calls
-                raise AssertionError(operation_name)
-
-        class _WebSocketClient:
-            async def connect(self) -> None:
-                return None
-
-            async def receive(self):
-                await asyncio.Future()
-
-            async def close(self) -> None:
-                return None
-
-        database = _Database()
-        acquisition = NewsAcquisition(
-            db=database,
-            finite_operations=object(),
-            opennews_source=opennews_source(),
-            opennews_rest_client=object(),
-            opennews_ws_client=_WebSocketClient(),
-        )
-        acquisition._opennews_recovery_requested.set()
-        task = asyncio.create_task(acquisition.run_opennews(stop_event=stop_event))
-
-        await asyncio.wait_for(second_status_started.wait(), timeout=1.0)
-        await asyncio.sleep(0.01)
-        recovery_starts_before_status = database.recovery_start_calls
-        stop_event.set()
-        release_second_status.set()
-        await asyncio.wait_for(task, timeout=1.0)
-        return recovery_starts_before_status, database.recovery_start_calls
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.001)
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (1, 1)
-
-
-def test_late_gap_status_restores_memory_after_an_older_close() -> None:
-    async def scenario() -> tuple[bool, bool, int, str | None]:
-        status_started = asyncio.Event()
-        release_status = asyncio.Event()
-
-        class _Database:
-            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-                assert operation_name == "opennews_status"
-                status_started.set()
-                await release_status.wait()
-                return "gap-boundary", 2
-
-        acquisition = NewsAcquisition(
-            db=_Database(),
-            finite_operations=object(),
-            opennews_source=opennews_source(),
-        )
-        acquisition._opennews_gap_version = 1
-        acquisition._opennews_gap_boundary_provider_record_id = "gap-boundary"
-        status_task = asyncio.create_task(
-            acquisition._update_opennews_status(
-                connected=True,
-                error_code="opennews_buffer_overflow",
-                gap_unclosed=True,
-            )
-        )
-        await status_started.wait()
-
-        acquisition._opennews_gap_unclosed = False
-        acquisition._opennews_recovery_requested.clear()
-        release_status.set()
-        await status_task
-        acquisition._opennews_recovery_requested.set()
-
-        return (
-            acquisition._opennews_gap_unclosed,
-            acquisition._opennews_recovery_requested.is_set(),
-            acquisition._opennews_gap_version,
-            acquisition._opennews_gap_boundary_provider_record_id,
-        )
-
-    assert asyncio.run(scenario()) == (True, True, 2, "gap-boundary")
