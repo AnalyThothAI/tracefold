@@ -323,10 +323,11 @@ def _select_public_population(
     opennews_rows.sort(key=lambda row: (int(row["published_at_ms"]), str(row["item_id"])))
 
     expanded_rss: list[dict[str, Any]] = []
-    for category, source in public_rss_membership_sources():
-        expanded_rss.extend(
-            {**row, "_population_category": category} for row in rss_rows_by_source.get(source.source_id, ())
-        )
+    if rss_rows_by_source:
+        for category, source in public_rss_membership_sources():
+            expanded_rss.extend(
+                {**row, "_population_category": category} for row in rss_rows_by_source.get(source.source_id, ())
+            )
 
     scored_expanded = _score_story_rows(expanded_rss, now_ms=now_ms).rows
     category_rows: dict[str, list[dict[str, Any]]] = {}

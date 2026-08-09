@@ -78,6 +78,21 @@ def _rss_row(
     }
 
 
+def test_opennews_only_projection_does_not_load_the_rss_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_catalog_read() -> tuple[object, ...]:
+        raise AssertionError("RSS catalog must stay dormant for an OpenNews-only projection")
+
+    monkeypatch.setattr(projection_module, "public_rss_membership_sources", unexpected_catalog_read)
+
+    projection = compute_news_story_projection(
+        _snapshot(
+            _row("opennews-only", "Central bank holds rates steady", published_at_ms=10, reporting_origin="Reuters")
+        )
+    )
+
+    assert len(projection["stories"]) == 1
+
+
 def test_story_id_is_exact_sha256_of_earliest_normalized_title() -> None:
     earliest_title = "Fed holds rates steady"
     projection = compute_news_story_projection(

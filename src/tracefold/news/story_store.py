@@ -100,7 +100,12 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
             (rss_cutoff_ms, opennews_cutoff_ms, NEWS_STORY_INPUT_ROW_CAP + 1),
         ).fetchall()
     ]
-    memberships_by_source_id = {source.source_id: source.memberships for source in public_rss_sources()}
+    rss_source_ids = {str(row["source_id"]) for row in loaded_rows if str(row["source_kind"]) == "rss"}
+    memberships_by_source_id = (
+        {source.source_id: source.memberships for source in public_rss_sources() if source.source_id in rss_source_ids}
+        if rss_source_ids
+        else {}
+    )
     rows = [
         {
             **{

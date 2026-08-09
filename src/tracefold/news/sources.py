@@ -10,7 +10,7 @@ from typing import Any, Final, cast
 from .models import NewsSourceDefinition
 
 WORLDMONITOR_PUBLIC_SOURCE_COMMIT: Final = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
-WORLDMONITOR_PUBLIC_SOURCE_CATALOG_SHA256: Final = "483b68c3cab85bba0ef7258476dcf89d1439687c36449e46e4432b2e7125a979"
+WORLDMONITOR_PUBLIC_SOURCE_CATALOG_SHA256: Final = "9c7dd530429c10f99825cf9277061821236ccb3848d736d5d1cdc6b98c23041e"
 OPENNEWS_SOURCE_ID: Final = "news-opennews"
 
 _CATALOG_PATH: Final = Path(__file__).with_name("worldmonitor_public_sources.json")

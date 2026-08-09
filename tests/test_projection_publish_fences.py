@@ -119,8 +119,15 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
     }
 
 
-def test_news_story_load_captures_the_publish_fence_before_moving_facts() -> None:
+def test_news_story_load_captures_the_publish_fence_before_moving_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
+
+    def unexpected_catalog_read() -> tuple[object, ...]:
+        raise AssertionError("RSS catalog must stay dormant for an OpenNews-only snapshot")
+
+    monkeypatch.setattr(story_store, "public_rss_sources", unexpected_catalog_read)
 
     class _LoadCursor:
         def __init__(
