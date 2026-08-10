@@ -6,7 +6,12 @@ import { useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 
 import type { TargetRef } from "../../../domain/tokenTarget";
-import { mergeTokenCasePostPages, useTokenCase, useTokenCasePosts } from "../api/useTokenCase";
+import {
+  mergeTokenCasePostPages,
+  useTokenCase,
+  useTokenCasePosts,
+  useTriggerTargetPost,
+} from "../api/useTokenCase";
 import { buildTokenCaseViewModel } from "../model/buildTokenCaseViewModel";
 import {
   parseTokenCaseRouteState,
@@ -36,6 +41,20 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
     initialPosts,
   });
   const mergedPosts = mergeTokenCasePostPages(postsQuery.data?.pages);
+  const evidencePosts = mergedPosts ?? dossier?.posts ?? null;
+  const focusedEventId = routeState.focus === "trigger" ? routeState.triggerEventId : null;
+  const triggerAlreadyLoaded = Boolean(
+    focusedEventId && evidencePosts?.items.some((post) => post.event_id === focusedEventId),
+  );
+  const shouldLookupTrigger = Boolean(
+    dossier && focusedEventId && evidencePosts && !triggerAlreadyLoaded,
+  );
+  const triggerQuery = useTriggerTargetPost({
+    token,
+    target,
+    eventId: focusedEventId,
+    enabled: shouldLookupTrigger,
+  });
   const subscribedTargets = useMemo(() => (target ? [target] : []), [target]);
   useMarketSubscription(subscribedTargets);
 
@@ -70,6 +89,12 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
     posts: mergedPosts,
     isLoadingPosts: postsQuery.isLoading,
     isFetchingNextPage: postsQuery.isFetchingNextPage,
+    focusedPost: triggerQuery.data ?? null,
+    focusedEventLoading: shouldLookupTrigger && triggerQuery.isPending,
+    focusedEventUnavailable:
+      shouldLookupTrigger &&
+      !triggerQuery.isPending &&
+      (triggerQuery.isError || !triggerQuery.data),
   });
 
   return (

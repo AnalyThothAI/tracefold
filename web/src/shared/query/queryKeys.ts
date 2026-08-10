@@ -1,15 +1,14 @@
 import type { TokenPostRange, WindowKey } from "@lib/types";
-import type { TokenRadarVenueFilter } from "@lib/venue";
 
 export const queryKeys = {
   bootstrap: () => ["bootstrap"] as const,
   status: () => ["status"] as const,
-  tokenRadarRoot: () => ["token-radar"] as const,
-  tokenRadar: (window: WindowKey, venue: TokenRadarVenueFilter, limit: number) =>
-    ["token-radar", window, venue, limit] as const,
+  tokenRadar: () => ["token-radar"] as const,
   tokenCaseRoot: () => ["token-case"] as const,
   tokenCase: (targetKey: string | null, window: WindowKey, postsLimit: number) =>
     ["token-case", targetKey, window, postsLimit] as const,
+  triggerTargetPost: (targetKey: string | null, eventId: string | null) =>
+    ["trigger-target-post", targetKey, eventId] as const,
   searchInspect: (token: string, q: string, window: WindowKey) =>
     ["search-inspect", token, q, window] as const,
   stocksRadar: (window: WindowKey, limit: number) => ["stocks-radar", window, limit] as const,

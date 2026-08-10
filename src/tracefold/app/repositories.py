@@ -22,8 +22,6 @@ from tracefold.market import (
     IntentResolutionRepository,
     MarketTickCurrentRepository,
     MarketTickRepository,
-    RadarProjectionSourceRepository,
-    RadarSourceEdgeRepository,
     RegistryRepository,
     TokenEvidenceRepository,
     TokenImageAssetRepository,
@@ -32,7 +30,7 @@ from tracefold.market import (
     TokenIntentRepository,
     TokenProfileCurrentRepository,
     TokenProfileSourceQuery,
-    TokenRadarRepository,
+    TokenRadarCurrentRepository,
     TokenTargetRepository,
 )
 from tracefold.news.repository import NewsRepository
@@ -71,9 +69,7 @@ class RepositorySession:
     event_anchor_jobs: EventAnchorBackfillJobRepository
     token_intent_lookup: TokenIntentLookupRepository
     event_tokens: EventTokenProjectionQuery
-    radar_projection_sources: RadarProjectionSourceRepository
-    radar_source_edges: RadarSourceEdgeRepository
-    token_radar: TokenRadarRepository
+    token_radar_current: TokenRadarCurrentRepository
     token_targets: TokenTargetRepository
     news: NewsRepository
     macro: MacroRepository
@@ -136,12 +132,7 @@ def repositories_for_connection(
         event_anchor_jobs=EventAnchorBackfillJobRepository(conn),
         token_intent_lookup=TokenIntentLookupRepository(conn),
         event_tokens=EventTokenProjectionQuery(conn),
-        radar_projection_sources=RadarProjectionSourceRepository(conn),
-        radar_source_edges=RadarSourceEdgeRepository(
-            conn,
-            projection_transition_observer=projection_transition_observer,
-        ),
-        token_radar=TokenRadarRepository(conn),
+        token_radar_current=TokenRadarCurrentRepository(conn),
         token_targets=TokenTargetRepository(conn),
         news=NewsRepository(conn),
         macro=MacroRepository(conn),

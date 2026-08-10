@@ -11,31 +11,24 @@ test.beforeEach(({}, testInfo) => {
   test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only layout contract");
 });
 
-test("mobile shell exposes sidebar route nav and keeps Radar task-local", async ({ page }) => {
+test("mobile shell exposes route navigation around compact Radar", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");
-
   await expectMobileTopbarContract(page);
 
   const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" });
-  await expect(sidebarTrigger).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
-
   await sidebarTrigger.click();
-  const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(primaryNavigation).toBeVisible();
-  await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toBeVisible();
-  await expect(primaryNavigation.getByRole("link", { name: "Stocks" })).toBeVisible();
-  await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toBeVisible();
+  const navigation = page.getByRole("navigation", { name: "Primary navigation" });
+  await expect(navigation.getByRole("link", { name: "Radar" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Stocks" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Macro" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(primaryNavigation).toBeHidden();
 
-  await expect(page.locator(".live-task-nav")).toHaveCount(0);
-  await expect(page.getByText(/实时信号 Tape/i)).toHaveCount(0);
-  await expect(page.getByTestId("radar-content-status")).toBeVisible();
-  await expect(page.getByTestId("radar-content-status")).toContainText(/最新内容 \d/);
+  await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
+  await expect(page.getByText("1 eligible")).toBeVisible();
+  await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expectNoDocumentHorizontalOverflow(page);
-  await expectNoNestedHorizontalOverflow(page, [".topbar", ".radar-toolbar"]);
+  await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
 
   await page.getByLabel("global search").fill("test-token");
   await page.getByLabel("global search").press("Enter");
@@ -43,72 +36,48 @@ test("mobile shell exposes sidebar route nav and keeps Radar task-local", async 
   await expectNoUnhandledApiRequests(page);
 });
 
-test("mobile radar list remains reachable without reserved task-nav space", async ({ page }) => {
-  await installMockApi(page);
-  await page.goto("/?window=24h");
+test("mobile capped Radar remains reachable and two-line", async ({ page }) => {
+  await installMockApi(page, { radarItemCount: 8 });
+  await page.goto("/");
 
-  await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
-  await expect(page.locator(".live-task-nav")).toHaveCount(0);
-  await expect(page.locator(".token-radar-row")).toHaveCount(8);
-
+  const items = page.locator(".live-radar-item");
+  await expect(items).toHaveCount(8);
+  await expect(items.first().locator(":scope > div")).toHaveCount(2);
   const layout = await page.evaluate(() => {
     const center = document.querySelector<HTMLElement>(".center-column");
     const livePage = document.querySelector<HTMLElement>(".live-page");
-    const radarPanel = document.querySelector<HTMLElement>(".radar-panel");
-    const tokenTable = document.querySelector<HTMLElement>(".token-radar-table");
+    const queue = document.querySelector<HTMLElement>(".live-radar-queue");
+    const items = document.querySelector<HTMLElement>(".live-radar-items");
     return {
       centerMaxScroll: center ? center.scrollHeight - center.clientHeight : null,
       livePageGridRows: livePage ? getComputedStyle(livePage).gridTemplateRows : null,
-      tokenTableMaxScroll: tokenTable ? tokenTable.scrollHeight - tokenTable.clientHeight : null,
-      radarPanelOverflowY: radarPanel ? getComputedStyle(radarPanel).overflowY : null,
+      itemsMaxScroll: items ? items.scrollHeight - items.clientHeight : null,
+      queueOverflowY: queue ? getComputedStyle(queue).overflowY : null,
     };
   });
-
   expect(layout.centerMaxScroll).toBe(0);
-  expect(layout.tokenTableMaxScroll).toBeGreaterThan(0);
+  expect(layout.itemsMaxScroll).toBeGreaterThan(0);
   expect(layout.livePageGridRows?.trim().split(/\s+/)).toHaveLength(1);
-  expect(layout.radarPanelOverflowY).toBe("hidden");
+  expect(layout.queueOverflowY).toBe("hidden");
 
   await expectScrollableToLastMeaningfulElement(
     page,
-    ".token-radar-table",
-    ".token-radar-row:last-of-type",
+    ".live-radar-items",
+    ".live-radar-item:last-of-type",
   );
   await expectNoDocumentHorizontalOverflow(page);
-  await expectNoNestedHorizontalOverflow(page, [".topbar", ".token-radar-row"]);
+  await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("mobile radar row click reaches token detail without task-nav interception", async ({
-  page,
-}) => {
-  await installMockApi(page);
-  await page.goto("/?window=24h");
+test("mobile Radar Case action remains reachable on the final item", async ({ page }) => {
+  await installMockApi(page, { radarItemCount: 8 });
+  await page.goto("/");
 
-  const rows = page.locator(".token-radar-row");
-  await expect(rows).toHaveCount(8);
-  const lastRow = rows.last();
-  await lastRow.scrollIntoViewIfNeeded();
-
-  const hitTest = await lastRow.evaluate((row) => {
-    const rect = row.getBoundingClientRect();
-    const element = document.elementFromPoint(
-      rect.left + rect.width / 2,
-      rect.top + rect.height / 2,
-    );
-    return {
-      rowContainsHit: element ? row.contains(element) : false,
-      hitClassName: element instanceof HTMLElement ? element.className : "",
-      hitTagName: element?.tagName ?? "",
-    };
-  });
-  expect(hitTest).toMatchObject({
-    rowContainsHit: true,
-  });
-
-  await lastRow.click();
-  await expect(page).toHaveURL(/\/token\/Asset\/asset%3Adex%3Aeth%3A/);
+  const lastItem = page.locator(".live-radar-item").last();
+  await lastItem.scrollIntoViewIfNeeded();
+  await lastItem.getByRole("link", { name: "Open Token Case" }).click();
+  await expect(page).toHaveURL(/focus=trigger&trigger_event_id=event-upeg-8$/);
   await expectNoUnhandledApiRequests(page);
 });
 
@@ -127,7 +96,6 @@ async function expectMobileTopbarContract(page: Page) {
         .trim(),
     ),
   ]);
-
   expect(mobileTopbarHeightToken).toBe("50px");
   expect(topbarRect.height).toBeCloseTo(50, 0);
   expect(topbarRect.bottom).toBeLessThanOrEqual(centerColumnRect.top + 0.5);
@@ -176,10 +144,4 @@ function expectRectContained(rect: Rect, container: Rect, name: string) {
   expect(rect.right, `${name} right should fit inside .topbar`).toBeLessThanOrEqual(
     container.right + 0.5,
   );
-}
-
-declare global {
-  interface Window {
-    __routeBackSentinel?: string;
-  }
 }

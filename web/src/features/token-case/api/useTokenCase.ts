@@ -17,6 +17,39 @@ type UseTokenCasePostsArgs = UseTokenCaseArgs & {
   initialPosts?: TokenCasePostsData | null;
 };
 
+export function useTriggerTargetPost({
+  token,
+  target,
+  eventId,
+  enabled,
+}: {
+  token: string;
+  target: TargetRef | null;
+  eventId: string | null;
+  enabled: boolean;
+}) {
+  return useQuery({
+    queryKey: queryKeys.triggerTargetPost(target ? targetRefKey(target) : null, eventId),
+    queryFn: async () => {
+      const response = await getApi<TokenCasePostsData>("/api/target-posts", {
+        token,
+        params: {
+          target_type: target?.target_type,
+          target_id: target?.target_id,
+          window: "24h",
+          range: "all_history",
+          event_id: eventId,
+          limit: 1,
+        },
+      });
+      return response.data.items.find((post) => post.event_id === eventId) ?? null;
+    },
+    enabled: Boolean(token && target && eventId && enabled),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 export function useTokenCase({ token, target, window, postsLimit = 24 }: UseTokenCaseArgs) {
   return useQuery({
     queryKey: queryKeys.tokenCase(target ? targetRefKey(target) : null, window, postsLimit),

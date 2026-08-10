@@ -15,7 +15,7 @@ from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.macro.projection import MacroProjectionService
 from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
 from tracefold.market.profiles.profile_projection import ProfileProjectionService
-from tracefold.market.radar.microbatch import RadarMicroBatchService
+from tracefold.market.radar.current_worker import TokenRadarCurrentService
 from tracefold.news.projection import NewsProjectionService
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -23,7 +23,7 @@ from tracefold.platform.resource import ResourceAdmissionTimeout
 @pytest.mark.parametrize(
     ("service_type", "worker_name", "kwargs"),
     [
-        (RadarMicroBatchService, "radar_projection", {}),
+        (TokenRadarCurrentService, "token_radar_current", {}),
         (MacroProjectionService, "macro_projection", {}),
         (NewsProjectionService, "news_story_projection", {}),
         (ProfileProjectionService, "profile_projection", {"active_profile_provider_ids": ()}),
@@ -157,11 +157,6 @@ def test_projection_transitions_are_discarded_on_outer_or_nested_rollback() -> N
 
 def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() -> None:
     cases = (
-        (
-            RadarMicroBatchService,
-            {},
-            "radar_maintenance_rebuild",
-        ),
         (
             MacroProjectionService,
             {},

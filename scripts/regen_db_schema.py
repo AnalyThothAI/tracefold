@@ -96,11 +96,17 @@ RETIRED_TABLES_AT_HEAD = frozenset(
         "token_flow_window_snapshots",
         "token_mention_semantics",
         "token_radar_publications",
+        "token_radar_current_rows",
+        "token_radar_publication_state",
         "token_radar_source_dirty_events",
         "token_radar_storage_maintenance_runs",
+        "token_radar_target_features",
+        "token_radar_target_first_seen",
         "token_score_evaluations",
         "token_social_bucket_authors",
         "token_social_buckets",
+        "radar_projection_frontiers",
+        "radar_source_edges",
     }
 )
 

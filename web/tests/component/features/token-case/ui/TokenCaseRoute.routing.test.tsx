@@ -18,6 +18,21 @@ beforeEach(() => {
   resetApiMock(apiMock);
   apiMock.readApiImpl = async (path) => {
     if (path === "/api/token-case") return ok(routeTokenCaseFixture());
+    if (path === "/api/target-posts") {
+      const dossier = routeTokenCaseFixture();
+      return ok({
+        ...dossier.posts,
+        query: { ...dossier.posts.query, range: "all_history" },
+        items: [
+          {
+            ...dossier.posts.items[0],
+            event_id: "event-trigger-only",
+            author_handle: "triggerauthor",
+            text: "Trigger evidence fetched from the target-bound history.",
+          },
+        ],
+      });
+    }
     throw new Error(`unexpected path ${path}`);
   };
   server.use(...apiHandlers(apiMock));
@@ -63,13 +78,16 @@ function renderAt(url: string) {
 }
 
 describe("TokenCaseRoute", () => {
-  it("loads the token-case dossier for the route target without token-radar", async () => {
-    renderAt(`/token/Asset/${encodeURIComponent(targetId)}?window=24h`);
+  it("loads the token-case dossier without legacy Radar metrics", async () => {
+    renderAt(
+      `/token/Asset/${encodeURIComponent(targetId)}?window=24h&focus=trigger&trigger_event_id=event-hansa-3`,
+    );
 
     expect(await screen.findByRole("region", { name: /Token case/i })).toBeInTheDocument();
-    expect(screen.getByText("#3")).toBeInTheDocument();
-    expect(screen.getByText("resolved")).toBeInTheDocument();
-    expect(screen.getByText("watch")).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: "Trigger evidence" })).toHaveTextContent(
+      "Expansion leg forming",
+    );
+    expect(screen.queryByText("radar rank")).not.toBeInTheDocument();
 
     await waitFor(() => {
       expect(apiMock.getApi).toHaveBeenCalledWith(
@@ -87,5 +105,29 @@ describe("TokenCaseRoute", () => {
     expect(apiMock.getApi.mock.calls.filter(([path]) => path === "/api/token-radar")).toHaveLength(
       0,
     );
+  });
+
+  it("fetches a focused trigger missing from the first Case page by event id", async () => {
+    renderAt(
+      `/token/Asset/${encodeURIComponent(targetId)}?window=24h&focus=trigger&trigger_event_id=event-trigger-only`,
+    );
+
+    expect(await screen.findByRole("article", { name: "Trigger evidence" })).toHaveTextContent(
+      "Trigger evidence fetched from the target-bound history.",
+    );
+    await waitFor(() => {
+      expect(apiMock.getApi).toHaveBeenCalledWith(
+        "/api/target-posts",
+        expect.objectContaining({
+          params: expect.objectContaining({
+            target_type: "Asset",
+            target_id: targetId,
+            range: "all_history",
+            event_id: "event-trigger-only",
+            limit: 1,
+          }),
+        }),
+      );
+    });
   });
 });

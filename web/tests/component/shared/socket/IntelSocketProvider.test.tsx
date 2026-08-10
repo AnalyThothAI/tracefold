@@ -1,11 +1,12 @@
-import type { ApiResponse, AssetFlowData, LiveMarketUpdatePayload } from "@lib/types";
+import type { ApiResponse, LiveMarketUpdatePayload, TokenCaseDossier } from "@lib/types";
 import { queryKeys } from "@shared/query/queryKeys";
 import { IntelSocketProvider } from "@shared/socket/IntelSocketProvider";
 import { normalizeMarketTargets } from "@shared/socket/marketTargets";
 import { useSocketSnapshot } from "@shared/socket/socketContext";
 import { useMarketSubscription } from "@shared/socket/useMarketSubscription";
-import { act, cleanup, screen, waitFor } from "@testing-library/react";
-import { tokenRadarFixture, tokenRadarRowFixture } from "@tests/fixtures/appRouteFixtures";
+import { act, cleanup, waitFor } from "@testing-library/react";
+import { tokenRadarFixture } from "@tests/fixtures/appRouteFixtures";
+import { tokenCaseFixture } from "@tests/fixtures/tokenCaseFixture";
 import { renderWithProviders } from "@tests/render/renderWithProviders";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -34,12 +35,9 @@ vi.mock("reconnecting-websocket", () => {
     }
 
     emit(type: string, event: unknown = {}) {
-      for (const listener of this.listeners.get(type) ?? []) {
-        listener(event);
-      }
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
     }
   }
-
   return { default: MockReconnectingWebSocket };
 });
 
@@ -64,32 +62,30 @@ describe("IntelSocketProvider", () => {
     ]);
   });
 
-  it("subscribes only to explicit market targets and patches live market updates", async () => {
-    const row = tokenRadarRowFixture();
+  it("subscribes to an explicit Case target and patches only the Token Case cache", async () => {
+    const dossier = tokenCaseFixture();
     const target = {
-      target_id: row.resolution.target_id!,
-      target_type: row.resolution.target_type!,
+      target_id: dossier.target.target_id!,
+      target_type: dossier.target.target_type!,
     };
     const view = renderWithProviders(
       <IntelSocketProvider token="secret">
         <SocketProbe target={target} />
       </IntelSocketProvider>,
     );
-    view.queryClient.setQueryData<ApiResponse<AssetFlowData>>(
-      queryKeys.tokenRadar("1h", "all", 48),
-      {
-        ok: true,
-        data: tokenRadarFixture({ targets: [row] }),
-      },
-    );
+    const caseKey = queryKeys.tokenCase(`${target.target_type}:${target.target_id}`, "1h", 24);
+    view.queryClient.setQueryData<ApiResponse<TokenCaseDossier>>(caseKey, {
+      ok: true,
+      data: dossier,
+    });
+    const radarSnapshot = tokenRadarFixture();
+    view.queryClient.setQueryData(queryKeys.tokenRadar(), radarSnapshot);
     const socket = websocketHarness.instances[0];
-    expect(socket).toBeDefined();
 
     act(() => {
       socket.emit("open");
       socket.emit("message", { data: JSON.stringify({ type: "ready" }) });
     });
-
     await waitFor(() => {
       expect(sentMessages(socket)).toContainEqual({
         type: "subscribe",
@@ -97,16 +93,6 @@ describe("IntelSocketProvider", () => {
         replay: 0,
       });
     });
-
-    act(() => {
-      socket.emit("message", {
-        data: JSON.stringify({
-          type: "event",
-          event: { event_id: "ignored-event" },
-        }),
-      });
-    });
-    expect(screen.getByTestId("socket-snapshot-keys")).not.toHaveTextContent("eventItems");
 
     const update: LiveMarketUpdatePayload = {
       type: "live_market_update",
@@ -125,14 +111,13 @@ describe("IntelSocketProvider", () => {
         },
       },
     };
-    act(() => {
-      socket.emit("message", { data: JSON.stringify(update) });
-    });
+    act(() => socket.emit("message", { data: JSON.stringify(update) }));
 
-    const cached = view.queryClient.getQueryData<ApiResponse<AssetFlowData>>(
-      queryKeys.tokenRadar("1h", "all", 48),
-    );
-    expect(cached?.data.targets[0]?.factor_snapshot.market?.decision_latest?.price_usd).toBe(42);
+    expect(
+      view.queryClient.getQueryData<ApiResponse<TokenCaseDossier>>(caseKey)?.data.market_live
+        .price_usd,
+    ).toBe(42);
+    expect(view.queryClient.getQueryData(queryKeys.tokenRadar())).toBe(radarSnapshot);
   });
 });
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,22 @@ def test_generated_docs_are_bounded_and_reproducible() -> None:
     generated = DOCS / "generated"
     actual = {path.relative_to(generated).as_posix() for path in generated.rglob("*") if path.is_file()}
     assert actual == GENERATED_FILES
+
+
+def test_make_check_runs_database_free_generated_drift_checks() -> None:
+    result = subprocess.run(
+        ["make", "--dry-run", "check"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    assert {line.strip() for line in result.stdout.splitlines() if "scripts/regen_" in line} == {
+        "uv run python scripts/regen_cli_help.py --check",
+        "uv run python scripts/regen_score_versions.py --check",
+        "uv run python scripts/regen_ws_protocol.py --check",
+    }
 
 
 def test_current_documentation_links_resolve() -> None:

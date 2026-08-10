@@ -27,7 +27,7 @@ from tracefold.market.provider_contracts import (
     DexTokenQuoteRequest,
     MarketProviderExpectedError,
 )
-from tracefold.market.radar.constants import TOKEN_RADAR_PROJECTION_VERSION, WINDOW_MS
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
@@ -93,8 +93,7 @@ class MarketTickPoll:
         exclude_keys = tuple(sorted(self._recent_attempts))
         with self.db.worker_session("market_tick_poll") as repos:
             rows = repos.registry.ranked_market_targets(
-                projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-                since_ms=now_ms - WINDOW_MS["24h"],
+                since_ms=now_ms - PRODUCT_WINDOW_MS["24h"],
                 target_types=("chain_token", "cex_symbol"),
                 limit=self.batch_size,
                 exclude_keys=exclude_keys,
@@ -102,8 +101,7 @@ class MarketTickPoll:
             if not rows and exclude_keys:
                 self._recent_attempts.clear()
                 rows = repos.registry.ranked_market_targets(
-                    projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-                    since_ms=now_ms - WINDOW_MS["24h"],
+                    since_ms=now_ms - PRODUCT_WINDOW_MS["24h"],
                     target_types=("chain_token", "cex_symbol"),
                     limit=self.batch_size,
                 )

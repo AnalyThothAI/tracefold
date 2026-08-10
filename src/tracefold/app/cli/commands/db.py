@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from tracefold.app.cutover import execute_hard_cut
 from tracefold.app.repositories import postgres_connection
-from tracefold.market import TOKEN_RADAR_PROJECTION_VERSION
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import PostgresOperationalAudit, PostgresQueryAudit
 from tracefold.platform.postgres.postgres_client import (
@@ -18,17 +15,6 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 
 def handle_db(args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
-    if args.db_command == "hard-cut":
-        password_file = Path(args.bootstrap_password_file).expanduser()
-        if not password_file.is_absolute():
-            password_file = settings.app_home / password_file
-        data = execute_hard_cut(
-            settings=settings,
-            bootstrap_dsn=args.bootstrap_dsn,
-            bootstrap_password_file=password_file,
-        )
-        return 0, {"ok": True, "data": data}
-
     if args.db_command == "migrate":
         dsn = local_docker_host_dsn(
             with_password_from_file(
@@ -51,10 +37,7 @@ def handle_db(args: object) -> tuple[int, dict[str, Any]]:
 
     if args.db_command == "query-audit":
         with postgres_connection(settings, role="serve") as conn:
-            audit = PostgresQueryAudit(
-                conn,
-                token_radar_projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-            ).run(analyze=bool(args.analyze))
+            audit = PostgresQueryAudit(conn).run(analyze=bool(args.analyze))
         return (0 if audit.get("ok") else 1), {"ok": bool(audit.get("ok")), "data": audit}
 
     return 2, {"ok": False, "error": f"unknown db command: {args.db_command}"}

@@ -1,4 +1,9 @@
-export { mergeTokenCasePostPages, useTokenCase, useTokenCasePosts } from "./api/useTokenCase";
+export {
+  mergeTokenCasePostPages,
+  useTokenCase,
+  useTokenCasePosts,
+  useTriggerTargetPost,
+} from "./api/useTokenCase";
 export { buildTokenCaseViewModel } from "./model/buildTokenCaseViewModel";
 export {
   parseTokenCaseRouteState,

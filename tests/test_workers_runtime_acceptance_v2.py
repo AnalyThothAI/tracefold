@@ -33,6 +33,7 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
+_DEADLINE_DOMAINS = ("radar", *_FRONTIER_DOMAINS)
 
 _AUTHORIZATION_URL = "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965794"
 _AUTHORIZED_BY = "aaurix"
@@ -591,6 +592,15 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             "process_rss_bytes": 256 * 1024 * 1024,
             "container_memory_bytes": 512 * 1024 * 1024,
         },
+        "serve_container": {
+            "container_id": "serve-container-test",
+            "image_id": "image-test",
+            "image_revision": commit,
+            "restart_count": 0,
+            "running": True,
+            "oom_killed": False,
+            "host_process_id": 5679,
+        },
         "postgres": {
             "worker_connections": 4,
             "lock_wait_count": 0,
@@ -611,12 +621,37 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             },
             **({"query_audit": _query_audit()} if sequence == 0 else {}),
         },
+        "token_radar_api": {
+            "unconditional": {
+                "status": 200,
+                "latency_ms": 10.0,
+                "bytes": 1024,
+                "items": 1,
+                "etag_sha256": "b" * 64,
+                "data_sha256": "c" * 64,
+            },
+            "conditional": {
+                "status": 304,
+                "latency_ms": 5.0,
+                "bytes": 0,
+                "etag_sha256": "b" * 64,
+            },
+        },
+        "token_radar_database": {
+            "before": {"data_sha256": "c" * 64, "items": 1},
+            "after": {"data_sha256": "c" * 64, "items": 1},
+        },
         "telemetry": {
             "metric_families": sorted(
                 {
                     "tracefold_worker_projection_deadline_misses",
-                    "tracefold_worker_projection_soft_slo_overruns",
                     "tracefold_worker_projection_transitions",
+                    "tracefold_worker_processing_seconds",
+                    "tracefold_worker_jobs",
+                    "tracefold_worker_last_run_timestamp_seconds",
+                    "tracefold_worker_projection_rows",
+                    "tracefold_worker_projection_bytes",
+                    "tracefold_worker_projection_cache",
                     "tracefold_worker_resource_active",
                     "tracefold_worker_resource_admission_seconds",
                     "tracefold_worker_resource_service_seconds",
@@ -629,9 +664,32 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
                 "model_adapter": 0.0,
                 "cpu_process": 0.0,
             },
-            "projection_deadline_misses_total": {domain: 0.0 for domain in domains},
-            "projection_soft_slo_overruns_total": {domain: 0.0 for domain in domains},
+            "projection_deadline_misses_total": {domain: 0.0 for domain in _DEADLINE_DOMAINS},
             "projection_transitions_total": {domain: {"arrival": 0.0, "completion": 0.0} for domain in domains},
+            "last_run_timestamp_seconds": {
+                "token_radar_current": at_ms / 1_000 - float(sequence % 3) * 10.0,
+            },
+            "projection_rows": [
+                {
+                    "labels": {"worker": "token_radar_current", "stage": stage},
+                    "value": float(value),
+                }
+                for stage, value in (("input", 12), ("eligible", 3), ("public", 3))
+            ],
+            "projection_bytes": [
+                {
+                    "labels": {"worker": "token_radar_current", "direction": direction},
+                    "value": float(value),
+                }
+                for direction, value in (("input", 1024), ("output", 512))
+            ],
+            "processing_seconds": _processing_rows(count=sequence // 3 + 1),
+            "jobs_total": [
+                {
+                    "labels": {"worker": "token_radar_current", "status": "published"},
+                    "value": float(sequence // 3 + 1),
+                }
+            ],
             "resource_service": _resource_rows(
                 "service",
                 count=sequence + 1,
@@ -644,6 +702,28 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             ),
         },
     }
+
+
+def _processing_rows(*, count: int) -> list[dict]:
+    return [
+        {
+            "name": "tracefold_worker_processing_seconds_bucket",
+            "labels": {"worker": "token_radar_current", "le": boundary},
+            "value": float(count),
+        }
+        for boundary in ("2.0", "5.0", "+Inf")
+    ] + [
+        {
+            "name": "tracefold_worker_processing_seconds_count",
+            "labels": {"worker": "token_radar_current"},
+            "value": float(count),
+        },
+        {
+            "name": "tracefold_worker_processing_seconds_sum",
+            "labels": {"worker": "token_radar_current"},
+            "value": float(count),
+        },
+    ]
 
 
 def _resource_rows(kind: str, *, count: int, seconds: float) -> list[dict]:

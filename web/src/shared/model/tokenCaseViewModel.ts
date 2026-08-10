@@ -28,9 +28,6 @@ export type TokenCasePostEvent = {
     tone: TokenCaseTone;
   } | null;
   quality: {
-    score: number | null;
-    scoreLabel: string;
-    reasons: string[];
     contributions: Array<{ label: string; value: string; reason: string }>;
   };
 };
@@ -75,6 +72,8 @@ export type TokenCaseViewModel = {
   metrics: TokenCaseMetric[];
   timeline: {
     items: TokenCasePostEvent[];
+    focusedEventId: string | null;
+    focusStatus: "found" | "loading" | "unavailable" | null;
     hasMore: boolean;
     isLoading: boolean;
     isFetchingNextPage: boolean;

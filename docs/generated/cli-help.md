@@ -6,10 +6,10 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,init,config,db,macro,recent,search,asset-flow,ops} ...
+                 {serve,workers,init,config,db,macro,recent,search,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,macro,recent,search,asset-flow,ops}
+  {serve,workers,init,config,db,macro,recent,search,ops}
     serve               run the read-only HTTP, frontend, and WebSocket
                         runtime
     workers             run the ingestion, projection, provider, and model
@@ -20,8 +20,6 @@ positional arguments:
     macro               Macro acquisition and current-module commands
     recent              print recent stored events
     search              search stored tweets by query text
-    asset-flow          rank resolved assets and unresolved attention
-                        candidates
     ops                 maintenance commands
 
 options:
@@ -29,16 +27,55 @@ options:
 
 ```
 
+## `serve`
+
+```
+usage: tracefold serve [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `workers`
+
+```
+usage: tracefold workers [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `init`
+
+```
+usage: tracefold init [-h] [--force]
+
+options:
+  -h, --help  show this help message and exit
+  --force     overwrite existing config.yaml
+
+```
+
+## `config`
+
+```
+usage: tracefold config [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
 ## `db`
 
 ```
-usage: tracefold db [-h] {migrate,hard-cut,health,audit,query-audit} ...
+usage: tracefold db [-h] {migrate,health,audit,query-audit} ...
 
 positional arguments:
-  {migrate,hard-cut,health,audit,query-audit}
+  {migrate,health,audit,query-audit}
     migrate             apply PostgreSQL migrations
-    hard-cut            execute the maintenance-window schema/read-model hard
-                        cut
     health              check PostgreSQL liveness and migration version
     audit               run PostgreSQL count, FK, and projection schema audit
     query-audit         explain PostgreSQL hot read paths
@@ -48,15 +85,140 @@ options:
 
 ```
 
+## `db migrate`
+
+```
+usage: tracefold db migrate [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `db health`
+
+```
+usage: tracefold db health [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `db audit`
+
+```
+usage: tracefold db audit [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `db query-audit`
+
+```
+usage: tracefold db query-audit [-h] [--analyze]
+
+options:
+  -h, --help  show this help message and exit
+  --analyze   run EXPLAIN ANALYZE with buffers
+
+```
+
+## `macro`
+
+```
+usage: tracefold macro [-h] {backfill,backfill-professional,status} ...
+
+positional arguments:
+  {backfill,backfill-professional,status}
+    backfill            execute an explicit dataset backfill
+    backfill-professional
+                        execute the code-owned professional Macro history
+                        policy
+    status              print acquisition and current-module status
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `macro backfill`
+
+```
+usage: tracefold macro backfill [-h] --dataset DATASET --start START --end END
+
+options:
+  -h, --help         show this help message and exit
+  --dataset DATASET  Dataset Registry id
+  --start START      history start date (YYYY-MM-DD)
+  --end END          history end date (YYYY-MM-DD)
+
+```
+
+## `macro backfill-professional`
+
+```
+usage: tracefold macro backfill-professional [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `macro status`
+
+```
+usage: tracefold macro status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `recent`
+
+```
+usage: tracefold recent [-h] [--limit LIMIT] [--handles HANDLES] [--ca CA]
+                        [--chain CHAIN] [--symbol SYMBOL]
+
+options:
+  -h, --help         show this help message and exit
+  --limit LIMIT
+  --handles HANDLES
+  --ca CA            filter by token contract address
+  --chain CHAIN      chain for contract address filters
+  --symbol SYMBOL    filter by cashtag symbol
+
+```
+
+## `search`
+
+```
+usage: tracefold search [-h] [--window {5m,1h,4h,24h}] [--limit LIMIT]
+                        [--cursor CURSOR]
+                        [query]
+
+positional arguments:
+  query
+
+options:
+  -h, --help            show this help message and exit
+  --window {5m,1h,4h,24h}
+  --limit LIMIT
+  --cursor CURSOR       opaque cursor returned by a prior search page
+
+```
+
 ## `ops`
 
 ```
 usage: tracefold ops [-h]
-                     {hard-cut-rebuild,seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics} ...
+                     {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,radar-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent} ...
 
 positional arguments:
-  {hard-cut-rebuild,seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,projection-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent,factor-diagnostics}
-    hard-cut-rebuild    rebuild and audit all hard-cut current read models
+  {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,radar-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent}
     seal-workers-runtime-acceptance
                         validate and seal a complete Workers Runtime V2
                         acceptance bundle
@@ -66,7 +228,7 @@ positional arguments:
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
-    projection-status   print Token Radar publication state
+    radar-status        print compact Token Radar singleton status
     queue-inspect       inspect worker queue terminal evidence
     queue-resolve       resolve worker queue terminal evidence
     queue-resolve-bucket
@@ -99,10 +261,252 @@ positional arguments:
                         rebuild recent token evidence, intents, resolutions,
                         and lookup keys
     audit-token-intent  inspect token intent evidence and resolution
-    factor-diagnostics  inspect token factor distribution health for latest
-                        radar rows
 
 options:
   -h, --help            show this help message and exit
+
+```
+
+## `ops seal-workers-runtime-acceptance`
+
+```
+usage: tracefold ops seal-workers-runtime-acceptance [-h] (--bundle BUNDLE |
+                                                     --template)
+
+options:
+  -h, --help       show this help message and exit
+  --bundle BUNDLE  directory containing evidence.json and supporting evidence
+                   files
+  --template       print a deliberately non-passing evidence.json template
+
+```
+
+## `ops collect-workers-runtime-acceptance`
+
+```
+usage: tracefold ops collect-workers-runtime-acceptance [-h] --bundle BUNDLE
+
+options:
+  -h, --help       show this help message and exit
+  --bundle BUNDLE  new absolute evidence directory outside the repository
+                   checkout
+
+```
+
+## `ops rebuild-market-current`
+
+```
+usage: tracefold ops rebuild-market-current [-h]
+                                            [--after-target-type AFTER_TARGET_TYPE]
+                                            [--after-target-id AFTER_TARGET_ID]
+                                            [--limit LIMIT] --execute
+
+options:
+  -h, --help            show this help message and exit
+  --after-target-type AFTER_TARGET_TYPE
+  --after-target-id AFTER_TARGET_ID
+  --limit LIMIT
+  --execute
+
+```
+
+## `ops radar-status`
+
+```
+usage: tracefold ops radar-status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `ops queue-inspect`
+
+```
+usage: tracefold ops queue-inspect [-h] [--owner OWNER]
+                                   [--source-table SOURCE_TABLE]
+                                   [--status {terminal,active}]
+                                   [--reason-bucket REASON_BUCKET]
+                                   [--limit LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --owner OWNER
+  --source-table SOURCE_TABLE
+  --status {terminal,active}
+  --reason-bucket REASON_BUCKET
+  --limit LIMIT
+
+```
+
+## `ops queue-resolve`
+
+```
+usage: tracefold ops queue-resolve [-h] --terminal-id TERMINAL_ID
+                                   --action {retry,quarantine,archive}
+                                   --reason REASON --execute
+
+options:
+  -h, --help            show this help message and exit
+  --terminal-id TERMINAL_ID
+  --action {retry,quarantine,archive}
+  --reason REASON
+  --execute
+
+```
+
+## `ops queue-resolve-bucket`
+
+```
+usage: tracefold ops queue-resolve-bucket [-h] --owner OWNER
+                                          --source-table SOURCE_TABLE
+                                          --reason-bucket REASON_BUCKET
+                                          --action {retry,quarantine,archive}
+                                          --reason REASON [--limit LIMIT]
+                                          (--dry-run | --execute)
+
+options:
+  -h, --help            show this help message and exit
+  --owner OWNER
+  --source-table SOURCE_TABLE
+  --reason-bucket REASON_BUCKET
+  --action {retry,quarantine,archive}
+  --reason REASON
+  --limit LIMIT
+  --dry-run
+  --execute
+
+```
+
+## `ops reconcile-event-anchor-jobs`
+
+```
+usage: tracefold ops reconcile-event-anchor-jobs [-h] [--limit LIMIT]
+                                                 [--execute]
+
+options:
+  -h, --help     show this help message and exit
+  --limit LIMIT
+  --execute
+
+```
+
+## `ops validate-projections`
+
+```
+usage: tracefold ops validate-projections [-h] [--sample SAMPLE]
+
+options:
+  -h, --help       show this help message and exit
+  --sample SAMPLE
+
+```
+
+## `ops sync-binance-usdt-perp-universe`
+
+```
+usage: tracefold ops sync-binance-usdt-perp-universe [-h] (--dry-run |
+                                                     --execute)
+
+options:
+  -h, --help  show this help message and exit
+  --dry-run
+  --execute
+
+```
+
+## `ops sync-binance-cex-profiles`
+
+```
+usage: tracefold ops sync-binance-cex-profiles [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `ops sync-us-equity-symbols`
+
+```
+usage: tracefold ops sync-us-equity-symbols [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `ops run-resolution-refresh`
+
+```
+usage: tracefold ops run-resolution-refresh [-h] [--limit LIMIT]
+                                            [--reprocess-limit REPROCESS_LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --limit LIMIT
+  --reprocess-limit REPROCESS_LIMIT
+
+```
+
+## `ops refresh-asset-profiles`
+
+```
+usage: tracefold ops refresh-asset-profiles [-h] [--limit LIMIT]
+
+options:
+  -h, --help     show this help message and exit
+  --limit LIMIT
+
+```
+
+## `ops mirror-token-images`
+
+```
+usage: tracefold ops mirror-token-images [-h] [--limit LIMIT]
+
+options:
+  -h, --help     show this help message and exit
+  --limit LIMIT
+
+```
+
+## `ops reprocess-token-intents`
+
+```
+usage: tracefold ops reprocess-token-intents [-h] [--window {5m,1h,4h,24h}]
+                                             [--limit LIMIT]
+                                             [--lookup-key LOOKUP_KEY]
+
+options:
+  -h, --help            show this help message and exit
+  --window {5m,1h,4h,24h}
+  --limit LIMIT
+  --lookup-key LOOKUP_KEY
+
+```
+
+## `ops rebuild-token-intents`
+
+```
+usage: tracefold ops rebuild-token-intents [-h] [--window {5m,1h,4h,24h}]
+                                           [--limit LIMIT]
+
+options:
+  -h, --help            show this help message and exit
+  --window {5m,1h,4h,24h}
+  --limit LIMIT
+
+```
+
+## `ops audit-token-intent`
+
+```
+usage: tracefold ops audit-token-intent [-h] (--event-id EVENT_ID |
+                                        --intent-id INTENT_ID)
+
+options:
+  -h, --help            show this help message and exit
+  --event-id EVENT_ID
+  --intent-id INTENT_ID
 
 ```

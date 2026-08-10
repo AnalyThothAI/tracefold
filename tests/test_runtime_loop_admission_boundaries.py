@@ -28,7 +28,6 @@ from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     MarketProviderExpectedError,
 )
-from tracefold.market.radar.projection_worker import RadarProjectionCandidate
 from tracefold.news.push import NewsPushDeliveryError, NewsStoryPush, _payload_fingerprint
 from tracefold.news.runtime import NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
@@ -748,13 +747,8 @@ def test_release_prework_admission_timeout_uses_lease_recovery() -> None:
     resolution = object.__new__(ResolutionRefresh)
     resolution.db = database
 
-    radar = object.__new__(RadarProjectionCandidate)
-    radar.db = database
-    radar.service = SimpleNamespace(release_prework=lambda: None)
-
     async def scenario() -> None:
         assert await resolution._release_prework([{}]) is False
-        assert await radar._release_prework(SimpleNamespace(targets=())) is False
 
     asyncio.run(scenario())
 

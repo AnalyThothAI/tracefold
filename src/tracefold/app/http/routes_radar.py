@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+import hashlib
+import json
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
@@ -12,36 +14,51 @@ from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.validators import (
     _limit,
     _target_type,
-    _token_radar_venue,
     _window,
 )
-from tracefold.market import AssetFlowService, StocksRadarService, TokenProfileReadModel, live_market_snapshot
+from tracefold.market import StocksRadarService, live_market_snapshot, served_token_radar_snapshot
 
 router = APIRouter()
+_TokenRadarEnvelope = api_schemas.ApiEnvelope[api_schemas.TokenRadarData]
+_TOKEN_RADAR_OPENAPI_HEADERS: dict[str, dict[str, object]] = {
+    "Cache-Control": {
+        "description": "Requires revalidation before reuse.",
+        "schema": {"type": "string"},
+    },
+    "ETag": {
+        "description": "Strong validator for the complete served snapshot.",
+        "schema": {"type": "string"},
+    },
+}
 
 
-@router.get("/token-radar", response_model=api_schemas.ApiEnvelope[api_schemas.TokenRadarData])
-def token_radar(
-    request: Request,
-    window: Annotated[str, Query()] = "1h",
-    limit: Annotated[int, Query()] = 20,
-    venue: Annotated[str, Query()] = "all",
-) -> JSONResponse:
-    _reject_removed_scope(request)
+@router.get(
+    "/token-radar",
+    response_model=_TokenRadarEnvelope,
+    responses={
+        200: {"headers": _TOKEN_RADAR_OPENAPI_HEADERS},
+        304: {"description": "Not Modified", "headers": _TOKEN_RADAR_OPENAPI_HEADERS},
+    },
+    openapi_extra={
+        "parameters": [
+            {
+                "in": "header",
+                "name": "If-None-Match",
+                "required": False,
+                "schema": {
+                    "title": "If-None-Match",
+                    "type": "string",
+                },
+            }
+        ]
+    },
+)
+def token_radar(request: Request) -> Response:
+    _validate_token_radar_query(request)
     runtime = _authenticated_runtime(request)
-    parsed_window = _window(window)
-    parsed_venue = _token_radar_venue(venue)
-    data = _token_radar_data(
-        runtime,
-        window=parsed_window,
-        limit=_limit(limit),
-        venue=parsed_venue,
-        now_ms=_now_ms(),
-    )
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.TokenRadarData],
-        {"ok": True, "data": {"window": parsed_window, "venue": parsed_venue, **data}},
-    )
+    with runtime.repositories() as repos:
+        data = served_token_radar_snapshot(repos.token_radar_current.current())
+    return _etagged_token_radar(data, request)
 
 
 @router.get("/stocks-radar", response_model=api_schemas.ApiEnvelope[api_schemas.StocksRadarData])
@@ -94,28 +111,23 @@ def live_market(
     )
 
 
-def _token_radar_data(
-    runtime: Any,
-    *,
-    window: str,
-    limit: int,
-    venue: str,
-    now_ms: int,
-) -> dict[str, Any]:
-    with runtime.repositories() as repos:
-        profiles = TokenProfileReadModel(token_profiles=repos.token_profiles)
-        data = AssetFlowService(
-            token_radar=repos.token_radar,
-            profiles=profiles,
-        ).asset_flow(
-            window=window,
-            limit=limit,
-            venue=venue,
-            now_ms=now_ms,
-        )
-        return data
-
-
 def _reject_removed_scope(request: Request) -> None:
     if "scope" in request.query_params:
         raise ApiBadRequest("unsupported_query_param", field="scope")
+
+
+def _validate_token_radar_query(request: Request) -> None:
+    for name in request.query_params:
+        if name != "token":
+            raise ApiBadRequest("unsupported_query_param", field=name)
+
+
+def _etagged_token_radar(data: dict[str, object], request: Request) -> Response:
+    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    etag = f'"{hashlib.sha256(encoded).hexdigest()}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    response = _validated_json(_TokenRadarEnvelope, {"ok": True, "data": data})
+    response.headers.update(headers)
+    return response

@@ -21,6 +21,7 @@ from tracefold.market import (
     TokenProfileReadModel,
     TokenTargetCursorError,
     TokenTargetPostsCursorError,
+    TokenTargetPostsQueryError,
     TokenTargetPostsRangeError,
     TokenTargetPostsService,
     TokenTargetSocialTimelineService,
@@ -92,7 +93,6 @@ def search_inspect(
             search_query=SearchEventsQuery(repos.conn),
             targets=repos.token_targets,
             profiles=profiles,
-            token_radar=repos.token_radar,
             market_candles=_market_candles_service(),
         ).inspect(
             q,
@@ -127,7 +127,6 @@ def token_case(
             data = TokenCaseService(
                 targets=repos.token_targets,
                 profiles=TokenProfileReadModel(token_profiles=repos.token_profiles),
-                token_radar=repos.token_radar,
                 market_candles=_market_candles_service(),
             ).dossier(
                 target_type=parsed_target_type,
@@ -157,6 +156,7 @@ def target_posts(
     post_range: Annotated[str, Query(alias="range")] = "current_window",
     limit: Annotated[int, Query()] = 50,
     cursor: Annotated[str, Query()] = "",
+    event_id: Annotated[str, Query()] = "",
 ) -> JSONResponse:
     _reject_removed_scope(request)
     runtime = _authenticated_runtime(request)
@@ -175,6 +175,7 @@ def target_posts(
                 post_range=_post_range(post_range),
                 limit=_limit(limit),
                 cursor=cursor or None,
+                event_id=event_id or None,
             )
     except TokenTargetPostsRangeError:
         return _validated_json(
@@ -186,6 +187,16 @@ def target_posts(
         return _validated_json(
             api_schemas.ApiEnvelope[api_schemas.TargetPostsData],
             {"ok": False, "error": "invalid_cursor"},
+            status_code=400,
+        )
+    except TokenTargetPostsQueryError:
+        return _validated_json(
+            api_schemas.ApiEnvelope[api_schemas.TargetPostsData],
+            {
+                "ok": False,
+                "error": "incompatible_query_params",
+                "field": "cursor",
+            },
             status_code=400,
         )
     return _validated_json(

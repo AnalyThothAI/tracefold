@@ -10,7 +10,7 @@ describe("buildTokenCaseViewModel", () => {
 
     const vm = buildTokenCaseViewModel({
       dossier,
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
       posts: dossier.posts,
       isLoadingPosts: false,
       isFetchingNextPage: false,
@@ -18,49 +18,14 @@ describe("buildTokenCaseViewModel", () => {
 
     expect(vm.hero.title).toContain("$HANSA");
     expect(vm.hero.subtitle).toContain("solana");
-    expect(vm.metrics.map((metric) => metric.key)).toEqual([
-      "mentions",
-      "radar-rank",
-      "radar-lane",
-      "radar-decision",
-    ]);
-    expect(vm.metrics.find((metric) => metric.key === "radar-rank")).toMatchObject({
-      value: "#3",
-      detail: "current 1h row",
-      tone: "info",
-    });
-    expect(vm.metrics.find((metric) => metric.key === "radar-lane")?.value).toBe("resolved");
-    expect(vm.metrics.find((metric) => metric.key === "radar-decision")?.value).toBe("watch");
-    expect(vm.metrics.find((metric) => metric.key === "confidence")).toBeUndefined();
-    expect(vm.metrics.find((metric) => metric.key === "readiness")).toBeUndefined();
-    expect(vm.metrics.find((metric) => metric.key === "authors")).toBeUndefined();
-    expect(vm.metrics.find((metric) => metric.key === "radar-decision")).toMatchObject({
-      detail: "rank score 70",
-      tone: "info",
-    });
+    expect(vm.metrics.map((metric) => metric.key)).toEqual(["mentions", "authors"]);
+    expect(vm.metrics.map((metric) => metric.key)).not.toContain("radar-rank");
     expect(vm.hero.logoUrl).toBe(HANSA_TOKEN_IMAGE_URL);
     expect(vm.timeline.items[0]).toMatchObject({ phase: "expansion", role: "early_amplifier" });
     expect(vm.timeline.items[0].pills).toEqual([]);
     expect(vm.timeline.items[0].pills.map((pill) => pill.label)).not.toContain("PQ 82");
     expect(vm.market.status).toBe("missing");
     expect(vm.dataGaps).toEqual([]);
-  });
-
-  it("shows explicit not listed facts when no current Radar row exists", () => {
-    const dossier = tokenCaseFixture();
-    dossier.current_radar = null;
-
-    const vm = buildTokenCaseViewModel({
-      dossier,
-      route: { window: "4h" },
-    });
-
-    expect(vm.metrics.map((metric) => [metric.key, metric.value])).toEqual([
-      ["mentions", "18"],
-      ["radar-rank", "not listed"],
-      ["radar-lane", "not listed"],
-      ["radar-decision", "not listed"],
-    ]);
   });
 
   it("surfaces event-level token prices in timeline pills", () => {
@@ -89,7 +54,7 @@ describe("buildTokenCaseViewModel", () => {
           ],
         },
       },
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
     });
 
     expect(vm.timeline.items[0].pills.map((pill) => pill.label)).toContain("$0.00042");
@@ -126,7 +91,7 @@ describe("buildTokenCaseViewModel", () => {
           ],
         },
       },
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
     });
 
     expect(vm.timeline.items[0].market).toEqual({
@@ -142,7 +107,7 @@ describe("buildTokenCaseViewModel", () => {
 
     const vm = buildTokenCaseViewModel({
       dossier,
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
       posts: dossier.posts,
       isLoadingPosts: false,
       isFetchingNextPage: false,
@@ -163,7 +128,7 @@ describe("buildTokenCaseViewModel", () => {
           error: null,
         },
       },
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
       posts: dossier.posts,
     });
 
@@ -185,7 +150,7 @@ describe("buildTokenCaseViewModel", () => {
           open_interest_usd: 12_400_000,
         },
       },
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
       posts: dossier.posts,
     });
 

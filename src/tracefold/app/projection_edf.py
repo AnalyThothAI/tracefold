@@ -9,7 +9,6 @@ from tracefold.platform.projection import ProjectionCandidate
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 _IDLE_POLL_SECONDS = 0.250
-_RADAR_SOFT_TURN_SLO_SECONDS = 5.0
 
 
 async def run_projection_edf(
@@ -43,11 +42,7 @@ async def run_projection_edf(
                 item[0].shard_key,
             ),
         )
-        turn_started_at = time.monotonic()
         progressed = await candidate.execute(shard)
-        turn_seconds = time.monotonic() - turn_started_at
-        if shard.domain == "radar" and turn_seconds > _RADAR_SOFT_TURN_SLO_SECONDS and telemetry is not None:
-            telemetry.record_projection_soft_slo_overrun(shard.domain)
         if progressed:
             completed_at_ms = _now_ms()
             if completed_at_ms > shard.deadline_at_ms and telemetry is not None:

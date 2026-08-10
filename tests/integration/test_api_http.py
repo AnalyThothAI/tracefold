@@ -9,7 +9,6 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from tests.integration.test_token_radar_idempotency import _run_radar_projection, _SingleConnectionDB
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
@@ -28,7 +27,12 @@ from tracefold.market import (
     TwitterEvent,
     market_tick_id,
     parse_gmgn_token_payload,
-    rebuild_all_token_radar_for_maintenance,
+)
+from tracefold.market.radar.reducer import reduce_token_radar
+from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
+from tracefold.market.radar.stocks_current import (
+    StocksRadarCurrentRepository,
+    reduce_stocks_radar,
 )
 from tracefold.news import (
     NewsBriefSource,
@@ -422,32 +426,14 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
     base_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     conn = connect_postgres_test(read_only=False)
     try:
-        for attempt in range(1_000):
-            frontier = conn.execute(
-                """
-                SELECT target_type, target_id, window_key, venue
-                FROM radar_projection_frontiers
-                WHERE status = 'dirty'
-                ORDER BY deadline_at_ms, target_type, target_id,
-                         window_key, venue
-                LIMIT 1
-                """
-            ).fetchone()
-            conn.commit()
-            if frontier is None:
-                return
-            result = _run_radar_projection(
-                conn,
-                window=str(frontier["window_key"]),
-                now_ms=base_now_ms + attempt,
-                venue=str(frontier["venue"]),
-            )
-            assert result["projection_status"] in {
-                "published",
-                "unchanged",
-                "deleted",
-            }
-        raise AssertionError("radar projection frontiers did not drain")
+        repository = TokenRadarCurrentRepository(conn)
+        reduced = reduce_token_radar(
+            repository.load_material_inputs(now_ms=base_now_ms),
+            now_ms=base_now_ms,
+        )
+        with conn.transaction():
+            result = repository.publish(reduced, evaluation_at_ms=base_now_ms)
+        assert result["status"] in {"published", "unchanged", "recovered"}
     finally:
         conn.close()
 
@@ -1804,7 +1790,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
             params={"q": "$PEPE", "limit": 5, "window": "24h"},
             headers=headers,
         )
-        asset_flow = client.get("/api/token-radar?window=5m&limit=5", headers=headers)
+        radar = client.get("/api/token-radar", headers=headers)
         account_alerts = client.get("/api/account-alerts?window=24h&limit=5", headers=headers)
 
     assert recent.status_code == 200
@@ -1835,23 +1821,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
     assert inspect_data["token_result"]["profile"]["status"] == "pending"
     assert inspect_data["token_result"]["profile"]["provider"] is None
     assert inspect_data["token_result"]["market_live"]["status"] in {"missing", "unsupported", "ready"}
-    current_radar = inspect_data["token_result"]["current_radar"]
-    assert current_radar is not None
-    assert set(current_radar) == {
-        "intent",
-        "radar",
-        "resolution",
-        "quality",
-        "factor_snapshot",
-    }
-    assert current_radar["factor_snapshot"]["subject"]["symbol"] == "PEPE"
-    assert current_radar["radar"]["lane"] == "resolved"
-    assert current_radar["radar"]["rank"] >= 1
-    assert current_radar["factor_snapshot"]["composite"]["recommended_decision"] in {
-        "discard",
-        "watch",
-        "high_alert",
-    }
+    assert "current_radar" not in inspect_data["token_result"]
     legacy_market_field = "market_overlay"
     assert legacy_market_field not in inspect_data["token_result"]
     assert "radar_item" not in inspect_data["token_result"]
@@ -1859,14 +1829,13 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
     assert "discussion_digest" not in inspect_data["token_result"]
     assert "narrative_admission" not in inspect_data["token_result"]
 
-    assert asset_flow.status_code == 200
-    radar_row = asset_flow.json()["data"]["targets"][0]
-    assert radar_row["factor_snapshot"]["subject"]["symbol"] == "PEPE"
-    assert {"target", "attention", "market", "score", "data_health", "source_event_ids"}.isdisjoint(radar_row)
-    assert radar_row["profile"]["status"] == "pending"
-    assert radar_row["profile"]["provider"] is None
-    assert "discussion_digest" not in radar_row
-    assert "narrative_admission" not in radar_row
+    assert radar.status_code == 200
+    assert radar.json()["data"] == {
+        "schema_version": "token_radar_snapshot_v1",
+        "evidence_as_of_ms": now_ms - 1_000,
+        "eligible_total": 0,
+        "items": [],
+    }
 
     assert account_alerts.status_code == 404
 
@@ -1897,18 +1866,15 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
 
         response = client.get(
             "/api/token-radar",
-            params={"window": "5m", "limit": 20},
             headers={"Authorization": "Bearer secret"},
         )
 
     assert response.status_code == 200
     data = response.json()["data"]
-    public_rows = [*data["targets"], *data["attention"]]
-    assert public_rows
-    assert all(row["factor_snapshot"]["subject"]["target_id"] for row in public_rows)
-    assert "NEWTOKEN" not in {row["factor_snapshot"]["subject"]["symbol"] for row in public_rows}
-    assert data["projection"]["unresolved"]["identity_missing_count"] == 0
-    assert "NEWTOKEN" not in data["projection"]["unresolved"]["sample_symbols"]
+    assert data["schema_version"] == "token_radar_snapshot_v1"
+    assert data["eligible_total"] == 0
+    assert data["items"] == []
+    assert data["evidence_as_of_ms"] == now_ms - 1_000
 
 
 def test_live_market_reads_durable_current_without_gateway(tmp_path):
@@ -1977,7 +1943,7 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
     now_ms = int(time.time() * 1000)
 
     with TestClient(app) as client:
-        with write_repositories() as repos:
+        with write_repositories() as repos, repos.transaction():
             repos.registry.upsert_us_equity_symbol(
                 symbol="AAPL",
                 exchange="NASDAQ",
@@ -2020,10 +1986,13 @@ def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quot
 
         conn = connect_postgres_test(read_only=False)
         try:
-            rebuild_all_token_radar_for_maintenance(
-                db=_SingleConnectionDB(conn),
-                now_ms=now_ms,
-            )
+            repository = StocksRadarCurrentRepository(conn)
+            with conn.transaction():
+                reduced = reduce_stocks_radar(
+                    repository.load_material_inputs(now_ms=now_ms),
+                    now_ms=now_ms,
+                )
+                repository.publish(reduced, now_ms=now_ms)
         finally:
             conn.close()
 
@@ -2092,21 +2061,132 @@ def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
     assert [response.status_code for response in deleted] == [404, 404, 404, 404, 404, 404, 404]
 
 
-def test_api_token_radar_rejects_removed_scope(tmp_path):
+def test_api_token_radar_rejects_all_product_queries_but_keeps_auth_token(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
-        responses = [
-            client.get("/api/token-radar", params={"window": "5m", "scope": scope}, headers=headers)
-            for scope in ("all", "matched")
-        ]
+        names = ("window", "venue", "limit", "scope", "arbitrary")
+        responses = [client.get("/api/token-radar", params={name: "value"}, headers=headers) for name in names]
+        auth_query = client.get("/api/token-radar", params={"token": "secret"})
 
-    assert [response.status_code for response in responses] == [400, 400]
+    assert [response.status_code for response in responses] == [400] * len(names)
     assert [response.json() for response in responses] == [
-        {"ok": False, "error": "unsupported_query_param", "field": "scope"},
-        {"ok": False, "error": "unsupported_query_param", "field": "scope"},
+        {"ok": False, "error": "unsupported_query_param", "field": name} for name in names
     ]
+    assert auth_query.status_code == 200
+
+
+def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
+    now_ms = int(time.time() * 1_000)
+    settings = make_settings(tmp_path)
+    reduced = reduce_token_radar(
+        [
+            {
+                "target_type": "Asset",
+                "target_id": "asset:test",
+                "symbol": "TEST",
+                "chain": "eip155:1",
+                "exchange": None,
+                "address": "0xtest",
+                "resolution_status": "EXACT",
+                "event_id": f"trigger-{index}",
+                "received_at_ms": now_ms - (3 - index) * 60_000,
+                "author_handle": f"author-{index}",
+                "text": f"independent text {index}",
+                "signal_price_usd": None,
+                "latest_price_usd": None,
+                "latest_price_observed_at_ms": None,
+            }
+            for index in range(3)
+        ],
+        now_ms=now_ms,
+    )
+    with write_repositories() as repos, repos.transaction():
+        result = TokenRadarCurrentRepository(repos.conn).publish(
+            reduced,
+            evaluation_at_ms=now_ms,
+        )
+    assert result["status"] == "published"
+    app = create_app(settings=settings)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/token-radar",
+            headers={"Authorization": "Bearer secret"},
+        )
+        not_modified = client.get(
+            "/api/token-radar",
+            headers={
+                "Authorization": "Bearer secret",
+                "If-None-Match": response.headers["etag"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "data": reduced.snapshot}
+    assert response.headers["cache-control"] == "private, no-cache"
+    assert response.headers["etag"].startswith('"')
+    assert not_modified.status_code == 304
+    assert not not_modified.content
+    assert not_modified.headers["etag"] == response.headers["etag"]
+
+
+def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
+    now_ms = int(time.time() * 1_000)
+    settings = make_settings(tmp_path)
+    reduced = reduce_token_radar(
+        [
+            {
+                "target_type": "Asset",
+                "target_id": f"asset:perf:{target_index}",
+                "symbol": f"P{target_index}",
+                "chain": "eip155:1",
+                "exchange": None,
+                "address": f"0x{target_index:040x}",
+                "resolution_status": "EXACT",
+                "event_id": f"perf-{target_index}-{event_index}",
+                "received_at_ms": now_ms - (3 - event_index) * 60_000,
+                "author_handle": f"author-{target_index}-{event_index}",
+                "text": f"independent evidence {target_index} {event_index}",
+                "signal_price_usd": None,
+                "latest_price_usd": None,
+                "latest_price_observed_at_ms": None,
+            }
+            for target_index in range(8)
+            for event_index in range(3)
+        ],
+        now_ms=now_ms,
+    )
+    assert len(reduced.snapshot["items"]) == 8
+    with write_repositories() as repos, repos.transaction():
+        TokenRadarCurrentRepository(repos.conn).publish(reduced, evaluation_at_ms=now_ms)
+
+    app = create_app(settings=settings)
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        first = client.get("/api/token-radar", headers=headers)
+        assert first.status_code == 200
+        cached_headers = {**headers, "If-None-Match": first.headers["etag"]}
+        for _ in range(20):
+            assert client.get("/api/token-radar", headers=headers).status_code == 200
+            assert client.get("/api/token-radar", headers=cached_headers).status_code == 304
+
+        success_ms: list[float] = []
+        cached_ms: list[float] = []
+        for _ in range(200):
+            started = time.perf_counter()
+            response = client.get("/api/token-radar", headers=headers)
+            success_ms.append((time.perf_counter() - started) * 1_000)
+            assert response.status_code == 200
+
+            started = time.perf_counter()
+            response = client.get("/api/token-radar", headers=cached_headers)
+            cached_ms.append((time.perf_counter() - started) * 1_000)
+            assert response.status_code == 304
+
+    assert sorted(success_ms)[189] <= 100
+    assert sorted(cached_ms)[189] <= 50
 
 
 def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):
@@ -2150,7 +2230,7 @@ def test_api_token_case_returns_dossier_for_resolved_asset(tmp_path):
     assert body["ok"] is True
     assert body["data"]["target"]["target_type"] == "Asset"
     assert "market_live" in body["data"]
-    assert body["data"]["current_radar"] is None
+    assert "current_radar" not in body["data"]
     assert body["data"]["timeline"]["market_candles"]["target_type"] == "Asset"
     assert "radar_item" not in body["data"]
     legacy_market_field = "market_overlay"
@@ -2239,7 +2319,8 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
 
     with TestClient(app) as client:
         base_ms = int(time.time() * 1000)
-        rebuild_now_ms = base_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
+        target_type = ""
+        target_id = ""
         for index in range(3):
             event = make_token_event(
                 f"event-pepe-post-{index}",
@@ -2249,16 +2330,10 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
                 text=f"$PEPE post {index}",
                 received_at_ms=base_ms - index * 1_000,
             )
-            ingest_event(event)
-        rebuild_token_radar(client, now_ms=rebuild_now_ms)
-
-        asset_flow = client.get(
-            "/api/token-radar",
-            params={"window": "5m", "limit": 5},
-            headers={"Authorization": "Bearer secret"},
-        ).json()["data"]["targets"][0]
-        target_type = asset_flow["factor_snapshot"]["subject"]["target_type"]
-        target_id = asset_flow["factor_snapshot"]["subject"]["target_id"]
+            ingested = ingest_event(event)
+            resolution = next(row for row in ingested.token_resolutions if row["resolution_status"] == "EXACT")
+            target_type = str(resolution["target_type"])
+            target_id = str(resolution["target_id"])
 
         missing = client.get("/api/target-posts?window=5m", headers={"Authorization": "Bearer secret"})
         first_page = client.get(
@@ -2274,6 +2349,27 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
                 "window": "5m",
                 "limit": 2,
                 "cursor": first_page.json()["data"]["next_cursor"],
+            },
+            headers={"Authorization": "Bearer secret"},
+        )
+        exact_trigger = client.get(
+            "/api/target-posts",
+            params={
+                "target_type": target_type,
+                "target_id": target_id,
+                "event_id": "event-pepe-post-0",
+                "range": "all_history",
+                "limit": 1,
+            },
+            headers={"Authorization": "Bearer secret"},
+        )
+        incompatible_exact = client.get(
+            "/api/target-posts",
+            params={
+                "target_type": target_type,
+                "target_id": target_id,
+                "event_id": "event-pepe-post-0",
+                "cursor": "cursor",
             },
             headers={"Authorization": "Bearer secret"},
         )
@@ -2296,6 +2392,19 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
     assert "score" not in first_body["items"][0]
     assert second_page.status_code == 200
     assert second_page.json()["data"]["returned_count"] == 1
+    assert exact_trigger.status_code == 200
+    exact_data = exact_trigger.json()["data"]
+    assert exact_data["returned_count"] == 1
+    assert exact_data["total_count"] == 1
+    assert exact_data["has_more"] is False
+    assert exact_data["next_cursor"] is None
+    assert [item["event_id"] for item in exact_data["items"]] == ["event-pepe-post-0"]
+    assert incompatible_exact.status_code == 400
+    assert incompatible_exact.json() == {
+        "ok": False,
+        "error": "incompatible_query_params",
+        "field": "cursor",
+    }
 
 
 def test_api_target_posts_rejects_malformed_cursor(tmp_path):
@@ -2345,7 +2454,8 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
 
     with TestClient(app) as client:
         base_ms = int(time.time() * 1000)
-        rebuild_now_ms = base_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
+        target_type = ""
+        target_id = ""
         for index in range(3):
             event = make_token_event(
                 f"event-pepe-timeline-{index}",
@@ -2355,16 +2465,10 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
                 text=f"$PEPE timeline mcap liquidity {index}",
                 received_at_ms=base_ms - index * 30_000,
             )
-            ingest_event(event)
-        rebuild_token_radar(client, now_ms=rebuild_now_ms)
-
-        asset_flow = client.get(
-            "/api/token-radar",
-            params={"window": "5m", "limit": 5},
-            headers={"Authorization": "Bearer secret"},
-        ).json()["data"]["targets"][0]
-        target_type = asset_flow["factor_snapshot"]["subject"]["target_type"]
-        target_id = asset_flow["factor_snapshot"]["subject"]["target_id"]
+            ingested = ingest_event(event)
+            resolution = next(row for row in ingested.token_resolutions if row["resolution_status"] == "EXACT")
+            target_type = str(resolution["target_type"])
+            target_id = str(resolution["target_id"])
 
         missing = client.get("/api/target-social-timeline?window=5m", headers={"Authorization": "Bearer secret"})
         response = client.get(
@@ -2412,7 +2516,11 @@ def test_api_rejects_removed_1m_window(tmp_path):
         )
 
     assert response.status_code == 400
-    assert response.json() == {"ok": False, "error": "invalid_window", "field": "window"}
+    assert response.json() == {
+        "ok": False,
+        "error": "unsupported_query_param",
+        "field": "window",
+    }
 
 
 def test_api_target_posts_requires_target_identity(tmp_path):

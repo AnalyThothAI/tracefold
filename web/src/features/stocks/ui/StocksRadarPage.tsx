@@ -98,29 +98,29 @@ function StockRow({ row }: { row: StockRadarRow }) {
         </strong>
       </span>
 
-      <span className="stock-mentions-cell" data-radar-metric="heat">
+      <span className="stock-mentions-cell">
         <b className={row.attention.mentions > 0 ? "stock-score-hot" : "stock-score-warn"}>
           {compactNumber(row.attention.mentions)}
         </b>
         <small>all source posts</small>
       </span>
 
-      <span className="stock-authors-cell" data-radar-metric="quality">
+      <span className="stock-authors-cell">
         <b>{compactNumber(row.attention.unique_authors)}</b>
         <small>unique authors</small>
       </span>
 
-      <span className="stock-latest-cell" data-radar-metric="propagation">
+      <span className="stock-latest-cell">
         <b>{row.latest_event.author_handle ? `@${row.latest_event.author_handle}` : "-"}</b>
         <small>{formatRelativeTime(row.latest_event.received_at_ms)} ago</small>
       </span>
 
-      <span className="stock-price-cell" data-radar-metric="market">
+      <span className="stock-price-cell">
         <b>{formatTokenPriceUsd(row.quote.price)}</b>
         <small>{row.quote.provider_symbol || row.target.symbol || "US equity"}</small>
       </span>
 
-      <span className="stock-move-cell" data-radar-metric="timing">
+      <span className="stock-move-cell">
         <span className="stock-move-line">
           {direction === "up" ? <ArrowUpRight aria-hidden /> : null}
           {direction === "down" ? <ArrowDownRight aria-hidden /> : null}

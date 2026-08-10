@@ -22,6 +22,9 @@ export type BuildTokenCaseViewModelArgs = {
   posts?: TokenCasePostsData | null;
   isLoadingPosts?: boolean;
   isFetchingNextPage?: boolean;
+  focusedPost?: TokenPostItem | null;
+  focusedEventLoading?: boolean;
+  focusedEventUnavailable?: boolean;
 };
 
 export function buildTokenCaseViewModel({
@@ -30,6 +33,9 @@ export function buildTokenCaseViewModel({
   posts,
   isLoadingPosts = false,
   isFetchingNextPage = false,
+  focusedPost = null,
+  focusedEventLoading = false,
+  focusedEventUnavailable = false,
 }: BuildTokenCaseViewModelArgs): TokenCaseViewModel {
   const target = dossier.target;
   const profileIdentity = dossier.profile?.identity;
@@ -42,6 +48,19 @@ export function buildTokenCaseViewModel({
   const market = buildMarketView(dossier);
   const livePrice = numberValue(dossier.market_live.price_usd);
   const timelineItems = mergedPosts.items.map((post) => buildPostEvent(post, livePrice));
+  const focusedEventId = route.focus === "trigger" ? route.triggerEventId : null;
+  if (focusedPost && !timelineItems.some((item) => item.id === focusedPost.event_id)) {
+    timelineItems.unshift(buildPostEvent(focusedPost, livePrice));
+  }
+  const focusStatus = focusedEventId
+    ? timelineItems.some((item) => item.id === focusedEventId)
+      ? "found"
+      : focusedEventLoading
+        ? "loading"
+        : focusedEventUnavailable
+          ? "unavailable"
+          : "loading"
+    : null;
 
   return {
     target: {
@@ -67,9 +86,11 @@ export function buildTokenCaseViewModel({
         : null,
       actions: heroActions(dossier),
     },
-    metrics: tokenCaseMetrics(dossier, route),
+    metrics: tokenCaseMetrics(dossier),
     timeline: {
       items: timelineItems,
+      focusedEventId,
+      focusStatus,
       hasMore: mergedPosts.has_more,
       isLoading: isLoadingPosts,
       isFetchingNextPage,
@@ -80,18 +101,7 @@ export function buildTokenCaseViewModel({
   };
 }
 
-function tokenCaseMetrics(
-  dossier: TokenCaseDossier,
-  route: TokenCaseRouteState,
-): TokenCaseViewModel["metrics"] {
-  const currentRadar = dossier.current_radar;
-  const rank = currentRadar?.radar.rank;
-  const lane = cleanText(currentRadar?.radar.lane);
-  const decision = currentRadar?.factor_snapshot.composite.recommended_decision;
-  const rankScore = numberValue(currentRadar?.factor_snapshot.composite.rank_score);
-  const listedDetail = `current ${route.window} row`;
-  const missingDetail = `no current ${route.window} row`;
-
+function tokenCaseMetrics(dossier: TokenCaseDossier): TokenCaseViewModel["metrics"] {
   return [
     {
       key: "mentions",
@@ -101,44 +111,16 @@ function tokenCaseMetrics(
       tone: dossier.timeline.summary.posts > 0 ? "health" : "neutral",
     },
     {
-      key: "radar-rank",
-      label: "radar rank",
-      value: rank === null || rank === undefined ? "not listed" : `#${rank}`,
-      detail: currentRadar ? listedDetail : missingDetail,
-      tone: currentRadar ? "info" : "neutral",
-    },
-    {
-      key: "radar-lane",
-      label: "radar lane",
-      value: lane ?? "not listed",
-      detail: currentRadar ? `quality ${currentRadar.quality.status}` : missingDetail,
-      tone: currentRadar ? "info" : "neutral",
-    },
-    {
-      key: "radar-decision",
-      label: "radar decision",
-      value: decision ?? "not listed",
-      detail:
-        currentRadar && rankScore !== null
-          ? `rank score ${compactNumber(rankScore)}`
-          : currentRadar
-            ? "rank score unavailable"
-            : missingDetail,
-      tone:
-        decision === "high_alert"
-          ? "opportunity"
-          : decision === "discard"
-            ? "risk"
-            : currentRadar
-              ? "info"
-              : "neutral",
+      key: "authors",
+      label: "authors",
+      value: compactNumber(dossier.timeline.summary.authors),
+      detail: `${compactNumber(dossier.timeline.summary.effective_authors)} effective`,
+      tone: dossier.timeline.summary.authors > 0 ? "health" : "neutral",
     },
   ];
 }
 
 function buildPostEvent(post: TokenPostItem, livePriceUsd: number | null): TokenCasePostEvent {
-  const score = numberValue(post.post_quality.score);
-  const reasons = post.post_quality.reasons ?? [];
   return {
     id: post.event_id,
     handle: cleanText(post.author_handle),
@@ -151,9 +133,6 @@ function buildPostEvent(post: TokenPostItem, livePriceUsd: number | null): Token
     pills: postPills(post),
     market: buildPostMarket(post, livePriceUsd),
     quality: {
-      score,
-      scoreLabel: score === null ? "PQ -" : `PQ ${Math.round(score)}`,
-      reasons,
       contributions: post.post_quality.contributions.slice(0, 3).map((contribution) => ({
         label: contribution.feature.replaceAll("_", " "),
         value: formatContributionValue(contribution.value),

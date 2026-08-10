@@ -6,7 +6,7 @@ from typing import Any
 
 from tracefold.market.capture.evidence_repository import decode_event_row
 from tracefold.market.identity.chain_identity import canonical_chain_address
-from tracefold.market.radar.constants import TOKEN_RADAR_RESOLVER_POLICY_VERSION
+from tracefold.market.identity.resolver_policy import TOKEN_RESOLVER_POLICY_VERSION
 from tracefold.platform.validation import require_nonnegative_int
 
 _SUBSTRING_QUERY_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -242,7 +242,7 @@ class SearchEventsQuery:
         params: list[Any] = []
         for candidate in target_candidates:
             params.extend([candidate["target_type"], candidate["target_id"], candidate.get("symbol")])
-        params.extend([TOKEN_RADAR_RESOLVER_POLICY_VERSION, since_ms, row_limit])
+        params.extend([TOKEN_RESOLVER_POLICY_VERSION, since_ms, row_limit])
         rows = self.conn.execute(
             f"""
             WITH target_candidates(target_type, target_id, target_symbol) AS (
@@ -309,7 +309,7 @@ class SearchEventsQuery:
         after_event_id = str(after["event_id"]) if after else None
         params.extend(
             [
-                TOKEN_RADAR_RESOLVER_POLICY_VERSION,
+                TOKEN_RESOLVER_POLICY_VERSION,
                 since_ms,
                 after_rank,
                 after_rank,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,7 +8,6 @@ import pytest
 from tracefold.macro.projection_worker import MacroProjectionCandidate
 from tracefold.market.profiles.profile_source_ids import GMGN_DEX_PROFILE_PROVIDER
 from tracefold.market.profiles.token_profile_current_worker import ProfileProjectionCandidate
-from tracefold.market.radar.projection_worker import RadarProjectionCandidate
 from tracefold.platform.projection import ProjectionShard
 
 
@@ -18,11 +16,7 @@ class _Cpu:
         del args, kwargs
         if on_submitted is not None:
             on_submitted()
-        return {
-            "radar_projection_features": [],
-            "radar_projection_rank": [],
-            "radar_projection_hydration": {},
-        }.get(operation_name, {})
+        return {}
 
 
 def _candidate(candidate_type: Any, *, db: Any) -> Any:
@@ -59,12 +53,6 @@ class _AdmissionBlockingDb:
             on_submitted()
         if operation_name == "macro_projection_load":
             return {"status": "ready"}
-        if operation_name == "radar_projection_load":
-            return []
-        if operation_name == "radar_projection_rank_input":
-            return {}
-        if operation_name == "radar_projection_hydration_input":
-            return {}
         if operation_name.endswith("_release_prework"):
             return len(getattr(self.claim, "targets", (True,)))
         return {}
@@ -73,7 +61,6 @@ class _AdmissionBlockingDb:
 @pytest.mark.parametrize(
     "candidate_type",
     (
-        RadarProjectionCandidate,
         ProfileProjectionCandidate,
         MacroProjectionCandidate,
     ),
@@ -116,13 +103,6 @@ def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_ty
             object(),
             "profile_projection_publish",
             "profile_projection_release_prework",
-        ),
-        (
-            RadarProjectionCandidate,
-            ProjectionShard("radar", '{"venue":"all","window":"1h"}', 100, 10),
-            SimpleNamespace(targets=(object(),)),
-            "radar_projection_publish",
-            "radar_projection_release_prework",
         ),
     ),
 )

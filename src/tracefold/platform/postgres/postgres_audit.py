@@ -7,7 +7,6 @@ from typing import Any
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
 
-TOKEN_RADAR_PROJECTION_VERSION_PARAM = "token_radar_projection_version"
 SEARCH_CUTOFF_AT_MS_PARAM = "search_cutoff_at_ms"
 SEARCH_AUDIT_WINDOW_MS = 24 * 60 * 60 * 1000
 MAX_READ_RETURN_AMPLIFICATION = 20.0
@@ -26,14 +25,11 @@ CORE_TABLES = (
     "token_intents",
     "token_intent_evidence",
     "token_intent_resolutions",
-    "token_radar_current_rows",
-    "token_radar_publication_state",
-    "token_radar_target_first_seen",
+    "token_radar_current",
 )
 
 PROJECTION_TABLES = (
-    "token_radar_current_rows",
-    "token_radar_publication_state",
+    "token_radar_current",
     "stock_attention_target_features",
     "stocks_radar_current_rows",
     "stocks_radar_publication_state",
@@ -63,15 +59,6 @@ FOREIGN_KEY_CONSTRAINTS = {
         "token_intent_resolutions_intent_id_fkey",
     ),
 }
-TOKEN_RADAR_ORPHAN_CHECK = """
-    SELECT COUNT(*) AS count
-    FROM token_radar_current_rows child
-    LEFT JOIN token_intents parent ON parent.intent_id = child.intent_id
-    WHERE child.venue = 'all'
-      AND parent.intent_id IS NULL
-"""
-
-
 HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "readiness_schema",
@@ -152,29 +139,11 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "token_radar_latest",
         "sql": """
-            WITH ranked AS (
-              SELECT current_rows.row_id, current_rows.lane, current_rows.rank,
-                     row_number() OVER (
-                       PARTITION BY current_rows.lane
-                       ORDER BY current_rows.rank
-                     ) AS lane_rank
-              FROM token_radar_current_rows current_rows
-              JOIN token_radar_publication_state state
-                ON state.projection_version = current_rows.projection_version
-               AND state."window" = current_rows."window"
-               AND state.venue = current_rows.venue
-              WHERE current_rows.projection_version = %(token_radar_projection_version)s
-                AND current_rows."window" = '5m'
-                AND current_rows.venue = 'all'
-                AND state.current_generation_id IS NOT NULL
-            )
-            SELECT row_id
-            FROM ranked
-            WHERE lane_rank <= 50
-            ORDER BY lane DESC, rank
-            LIMIT 100
+            SELECT schema_version, evidence_as_of_ms, served_payload
+            FROM token_radar_current
+            WHERE singleton_key = true
         """,
-        "params": {TOKEN_RADAR_PROJECTION_VERSION_PARAM: None},
+        "params": (),
     },
     {
         "name": "token_profile_target",
@@ -462,7 +431,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
-    "/api/token-radar": ("token_radar_latest", "token_profile_target"),
+    "/api/token-radar": ("token_radar_latest",),
     "/api/stocks-radar": ("stocks_radar_recent",),
     "/api/live-market": ("live_market_current",),
     "/api/search": ("search_v2_lexical", "search_v2_substring"),
@@ -473,7 +442,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     "/api/token-case": (
         "token_profile_target",
-        "token_radar_latest",
         "target_posts_recent",
     ),
     "/api/target-posts": ("target_posts_recent",),
@@ -615,8 +583,6 @@ class PostgresOperationalAudit:
             name: int(not validated.get(constraint_identity, False))
             for name, constraint_identity in FOREIGN_KEY_CONSTRAINTS.items()
         }
-        row = self.conn.execute(TOKEN_RADAR_ORPHAN_CHECK).fetchone()
-        checks["token_radar_current_rows_missing_intents"] = int(row["count"] if row else 0)
         return checks
 
     def _migration_version(self) -> str | None:
@@ -629,11 +595,9 @@ class PostgresQueryAudit:
         self,
         conn: Any,
         *,
-        token_radar_projection_version: str | None = None,
         now_ms: int | None = None,
     ):
         self.conn = conn
-        self.token_radar_projection_version = token_radar_projection_version
         resolved_now_ms = int(now_ms if now_ms is not None else time.time() * 1_000)
         self.search_cutoff_at_ms = resolved_now_ms - SEARCH_AUDIT_WINDOW_MS
 
@@ -694,8 +658,6 @@ class PostgresQueryAudit:
         if not isinstance(params, dict):
             return params
         bound = dict(params)
-        if TOKEN_RADAR_PROJECTION_VERSION_PARAM in bound:
-            bound[TOKEN_RADAR_PROJECTION_VERSION_PARAM] = self.token_radar_projection_version
         if SEARCH_CUTOFF_AT_MS_PARAM in bound:
             bound[SEARCH_CUTOFF_AT_MS_PARAM] = self.search_cutoff_at_ms
         return bound
@@ -713,41 +675,48 @@ class ProjectionValidationAudit:
         row = self.conn.execute(
             """
             WITH sampled_radar_rows AS (
-              SELECT row_id, intent_id, target_type, target_id
-              FROM token_radar_current_rows
-              WHERE venue = 'all'
-              ORDER BY computed_at_ms DESC, rank ASC
+              SELECT item
+              FROM token_radar_current current
+              CROSS JOIN LATERAL jsonb_array_elements(current.served_payload -> 'items') item
+              WHERE current.singleton_key = true
               LIMIT %s
             ),
             reference_counts AS (
               SELECT
                 COUNT(*) AS checked_count,
-                COUNT(*) FILTER (WHERE intents.intent_id IS NULL) AS missing_intent_count,
                 COUNT(*) FILTER (
-                  WHERE sampled_radar_rows.target_type = 'Asset'
-                    AND sampled_radar_rows.target_id IS NOT NULL
-                    AND sampled_radar_rows.target_id <> ''
-                    AND assets.asset_id IS NULL
-                ) AS missing_asset_count
+                  WHERE NULLIF(item ->> 'trigger_event_id', '') IS NULL
+                     OR NULLIF(item #>> '{target,target_id}', '') IS NULL
+                     OR item #>> '{target,target_type}' NOT IN ('Asset', 'CexToken')
+                     OR event.event_id IS NULL
+                     OR (
+                       item #>> '{target,target_type}' = 'Asset'
+                       AND asset.asset_id IS NULL
+                     )
+                     OR (
+                       item #>> '{target,target_type}' = 'CexToken'
+                       AND cex.cex_token_id IS NULL
+                     )
+                ) AS mismatch_count
               FROM sampled_radar_rows
-              LEFT JOIN token_intents AS intents
-                ON intents.intent_id = sampled_radar_rows.intent_id
-              LEFT JOIN registry_assets AS assets
-                ON sampled_radar_rows.target_type = 'Asset'
-               AND assets.asset_id = sampled_radar_rows.target_id
+              LEFT JOIN events event
+                ON event.event_id = sampled_radar_rows.item ->> 'trigger_event_id'
+              LEFT JOIN registry_assets asset
+                ON sampled_radar_rows.item #>> '{target,target_type}' = 'Asset'
+               AND asset.asset_id = sampled_radar_rows.item #>> '{target,target_id}'
+              LEFT JOIN cex_tokens cex
+                ON sampled_radar_rows.item #>> '{target,target_type}' = 'CexToken'
+               AND cex.cex_token_id = sampled_radar_rows.item #>> '{target,target_id}'
             ),
             latest_radar AS (
-              SELECT MAX(computed_at_ms) AS computed_at_ms
-              FROM token_radar_current_rows
-              WHERE venue = 'all'
+              SELECT evaluation_at_ms AS computed_at_ms
+              FROM token_radar_current
+              WHERE singleton_key = true
             )
             SELECT
               latest_radar.computed_at_ms,
               COALESCE(reference_counts.checked_count, 0) AS checked_count,
-              (
-                COALESCE(reference_counts.missing_intent_count, 0)
-                + COALESCE(reference_counts.missing_asset_count, 0)
-              ) AS mismatch_count
+              COALESCE(reference_counts.mismatch_count, 0) AS mismatch_count
             FROM reference_counts
             CROSS JOIN latest_radar
             """,
@@ -758,7 +727,34 @@ class ProjectionValidationAudit:
         latest_computed_at_ms = row["computed_at_ms"] if row else None
         bounded_models = self.conn.execute(
             """
-            WITH stock_expected_ranked AS (
+            WITH radar_mismatch AS (
+              SELECT CASE
+                       WHEN count(*) <> 1 THEN 1
+                       ELSE count(*) FILTER (
+                         WHERE NOT singleton_key
+                            OR schema_version <> 'token_radar_snapshot_v1'
+                            OR (
+                              latest_attempt_status = 'ready'
+                              AND state_fingerprint IS NULL
+                            )
+                            OR (
+                              state_fingerprint IS NOT NULL
+                              AND (
+                                NULLIF(btrim(ruleset_version), '') IS NULL
+                                OR ruleset_fingerprint !~ '^sha256:[0-9a-f]{64}$'
+                              )
+                            )
+                            OR served_payload ->> 'schema_version'
+                                 <> 'token_radar_snapshot_v1'
+                            OR jsonb_typeof(served_payload -> 'items') <> 'array'
+                            OR jsonb_array_length(served_payload -> 'items') > 8
+                            OR COALESCE((served_payload ->> 'eligible_total')::bigint, -1)
+                                 < jsonb_array_length(served_payload -> 'items')
+                       )::integer
+                     END AS count
+              FROM token_radar_current
+            ),
+            stock_expected_ranked AS (
               SELECT
                 window_key,
                 target_id,
@@ -815,6 +811,8 @@ class ProjectionValidationAudit:
                 FROM news_brief_current
             )
             SELECT
+              (SELECT count FROM radar_mismatch)
+                AS token_radar_current_mismatch,
               (SELECT count FROM stock_mismatch)
                 AS stocks_radar_current_mismatch,
               (SELECT count FROM brief_mismatch)
@@ -833,7 +831,7 @@ class ProjectionValidationAudit:
             "checked_count": checked_count,
             "mismatch_count": mismatch_count,
             "checks": {
-                "token_radar_current_rows_missing_refs": missing_refs,
+                "token_radar_current_missing_refs": missing_refs,
                 **bounded_checks,
             },
         }

@@ -151,7 +151,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
-| Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity facts, and current Token Radar rows |
+| Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, profile, and market facts owned by those readers |
 | Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
 | News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | public WorldMonitor RSS plus OpenNews current facts, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
@@ -161,22 +161,44 @@ There is no CEX OI/detail product API. Generic exchange facts and provider adapt
 
 ### Token Radar
 
-`/api/token-radar` serves `token_radar_current_rows` selected by stable
-product/window keys. Each public row exposes `factor_snapshot` as the sole
-target, market, attention, score, decision, and source-event payload; it does
-not duplicate those sections at row level. Factor subjects use exactly
-`target_type`, `target_id`, `symbol`, `target_market_type`, `chain`, `address`,
-and `pricefeed_id`. The transparent factor families are `social_heat`,
-`social_propagation`, and `timing_risk`. `gates`, `normalization`, and
-`composite` use their producer-defined fixed fields, and decisions are exactly
-`discard`, `watch`, or `high_alert`. The endpoint never falls back to
-historical runs, source-event dirty rows, provider calls, identity aliases, or
-alternate decision labels.
+`GET /api/token-radar` reads the one `token_radar_current` current/LKG
+singleton. It has no product query parameter: `window`, `venue`, `limit`,
+`scope`, sorting, filtering, and pagination are rejected rather than ignored or
+aliased. The existing authentication `token` query remains an authentication
+transport, not a Radar option.
 
-Radar, Stocks, Search, Asset Flow, and Token Case use one provider-neutral
-population. Radar reads accept window and venue where declared by OpenAPI, but
-no population `scope`; a retired `scope` query parameter is rejected with
-`400 unsupported_query_param` instead of being ignored or aliased.
+The exact data payload is one `token_radar_snapshot_v1` object:
+
+```json
+{
+  "schema_version": "token_radar_snapshot_v1",
+  "evidence_as_of_ms": 0,
+  "eligible_total": 0,
+  "items": []
+}
+```
+
+`items` contains at most eight entries in server-owned order. Each entry has
+exactly canonical `target` identity (`target_type`, `target_id`, `symbol`, and
+nullable `chain`, `exchange`, `address`); one `trigger_event_id` and
+`triggered_at_ms`; `why_now` current/prior 1-hour mention counts and their
+difference; `evidence` new-independent-author count, independent-text
+count, time to the required author, and duplicate share; `market` status
+`confirmed|unavailable` plus nullable price change since the trigger; and one
+nullable `counter_evidence` reason code, exactly
+`market_confirmation_unavailable|null`. `eligible_total` counts the complete
+eligible population before the maximum-eight selection. Order is primarily
+newest trigger first with stable fact-key ties.
+
+The response has `Cache-Control: private, no-cache` and a strong ETag bound to
+the complete served snapshot. A matching `If-None-Match` returns `304` with no
+body. The endpoint never calls a provider, recalculates the reducer, hydrates a
+profile, returns source-event lists, or falls back to the retired row/factor
+contract. Scores, ranks, decisions, factor families, gates, normalization,
+security judgments, windows, venues, and compatibility fields do not exist.
+Search and Token Case remain independent fact readers; a Radar link may focus
+the exact trigger Event in Token Case, but Radar current state is not copied
+into the dossier.
 
 ### News
 
@@ -537,7 +559,8 @@ per event or filter. Event replay and event pushes require at least one `cas`
 or `symbols` filter; an empty event filter returns and broadcasts no events.
 `market_targets` remains an independent subscription for
 `live_market_update` pushes. Push message families are `event` and
-`live_market_update`.
+`live_market_update`. Token Radar never registers `market_targets` and has no
+WebSocket patch path; Token Case may subscribe only its active target.
 
 Worker progress is recovered by bounded database catch-up. Provider frames are never emitted as business facts before persistence.
 
@@ -546,24 +569,18 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 `uv run tracefold --help` is the exact CLI source of truth. Stable top-level families are:
 
 - service/config: `serve`, `workers`, `init`, `config`;
-- database: `db migrate|hard-cut|health|audit|query-audit`;
+- database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
-- read models: `recent`, `search`, `asset-flow`;
+- read models: `recent`, `search`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
 
-`queue-inspect`, `projection-status`, `factor-diagnostics`,
-`validate-projections`, and `audit-token-intent` are strict Serve-role reads.
+`queue-inspect`, `radar-status`, `validate-projections`, and
+`audit-token-intent` are strict Serve-role reads.
 They do not acquire the maintenance lock, so operators can inspect the running
 singleton without interrupting it. Repair and rebuild commands remain
 exclusive maintenance operations.
-
-`db hard-cut --execute` is the current operator-authorized in-place migration
-path. It requires the legacy bootstrap DSN/password file, refuses active
-Tracefold runtime sessions, and has no snapshot-confirmation or restore flag.
-Failure stays inside the maintenance boundary and is repaired forward on the
-current database.
 
 `ops collect-workers-runtime-acceptance --bundle <absolute-path>` is a
 read-only production observer with a fixed 1,800-second interval, 181 samples,
@@ -581,10 +598,9 @@ diagnostic: it invokes no provider/model and writes nothing.
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
 News steady state and explicit maintenance use the same complete current
-12-hour WorldMonitor calculation from persisted NewsItems. Token Radar
-contract and distribution checks use `projection-status`,
-`validate-projections`, and `factor-diagnostics`; the CLI does not carry a
-second copy of the factor contract.
+12-hour WorldMonitor calculation from persisted NewsItems. `radar-status`
+reports only the current singleton clocks, fingerprints, bounded counts, and
+last attempt; it never returns the retired factor payload.
 
 One-shot maintenance commands construct only the dependencies required by the
 named domain operation and invoke that bounded operation directly. The

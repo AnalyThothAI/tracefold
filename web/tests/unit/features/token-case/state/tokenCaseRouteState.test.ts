@@ -8,6 +8,8 @@ describe("tokenCaseRouteState", () => {
   it("uses defaults when params are omitted", () => {
     expect(parseTokenCaseRouteState(new URLSearchParams())).toEqual({
       window: "24h",
+      focus: null,
+      triggerEventId: null,
     });
   });
 
@@ -16,6 +18,8 @@ describe("tokenCaseRouteState", () => {
       parseTokenCaseRouteState(new URLSearchParams("window=24h&scope=watched&postSort=watched")),
     ).toEqual({
       window: "24h",
+      focus: null,
+      triggerEventId: null,
     });
   });
 
@@ -24,6 +28,8 @@ describe("tokenCaseRouteState", () => {
       parseTokenCaseRouteState(new URLSearchParams("window=7d&scope=private&postSort=quality")),
     ).toEqual({
       window: "24h",
+      focus: null,
+      triggerEventId: null,
     });
   });
 
@@ -31,15 +37,32 @@ describe("tokenCaseRouteState", () => {
     expect(
       serializeTokenCaseRouteState({
         window: "24h",
+        focus: null,
+        triggerEventId: null,
       }).toString(),
     ).toBe("");
   });
 
-  it("serializes only the window in stable order", () => {
+  it("round-trips trigger focus after the Case window", () => {
     expect(
       serializeTokenCaseRouteState({
         window: "1h",
+        focus: "trigger",
+        triggerEventId: "event-1",
       }).toString(),
-    ).toBe("window=1h");
+    ).toBe("window=1h&focus=trigger&trigger_event_id=event-1");
+    expect(
+      parseTokenCaseRouteState(
+        new URLSearchParams("window=1h&focus=trigger&trigger_event_id=event-1"),
+      ),
+    ).toEqual({ window: "1h", focus: "trigger", triggerEventId: "event-1" });
+  });
+
+  it("ignores incomplete trigger focus", () => {
+    expect(parseTokenCaseRouteState(new URLSearchParams("focus=trigger"))).toEqual({
+      window: "24h",
+      focus: null,
+      triggerEventId: null,
+    });
   });
 });

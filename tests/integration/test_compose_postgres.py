@@ -11,12 +11,11 @@ from tests.postgres_test_utils import connect_postgres_test
 POSTGRES_IMAGE = "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
 
 
-def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
+def test_compose_separates_migration_serve_and_workers() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
     services = compose["services"]
 
     assert set(services) == {
-        "cutover",
         "migrate",
         "postgres",
         "serve",
@@ -56,7 +55,7 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
         },
         "secrets": ["github_token"],
     }
-    for role in ("cutover", "migrate", "serve", "workers"):
+    for role in ("migrate", "serve", "workers"):
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
 
@@ -71,12 +70,6 @@ def test_compose_separates_serve_workers_and_explicit_cutover() -> None:
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
     assert services["workers"]["ports"] == ["${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"]
-    assert services["cutover"]["profiles"] == ["maintenance"]
-    assert services["cutover"]["command"] == [
-        "tracefold",
-        "db",
-        "hard-cut",
-    ]
 
 
 def test_compose_declares_host_role_password_files_as_postgres_init_secrets() -> None:

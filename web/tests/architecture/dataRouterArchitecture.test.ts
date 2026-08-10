@@ -75,11 +75,7 @@ describe("data router architecture", () => {
   });
 
   it("keeps eager shell dependencies from importing page-exporting search barrels", () => {
-    const eagerShellSources = [
-      "features/live/model/tokenRadarDetailLink.ts",
-      "features/live/shell.ts",
-      "routes/shellChromeData.ts",
-    ].map(readSource);
+    const eagerShellSources = ["routes/shellChromeData.ts"].map(readSource);
 
     expect(
       eagerShellSources.flatMap(importSpecifiers).filter((source) => source === "@features/search"),

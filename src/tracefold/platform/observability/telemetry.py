@@ -15,6 +15,7 @@ class TelemetryRegistry:
             "tracefold_worker_processing_seconds",
             "Worker processing duration in seconds.",
             ("worker",),
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.0, 5.0),
             registry=self.registry,
         )
         self.jobs_total = Counter(
@@ -59,6 +60,12 @@ class TelemetryRegistry:
             ("worker", "stage"),
             registry=self.registry,
         )
+        self.projection_bytes = Gauge(
+            "tracefold_worker_projection_bytes",
+            "Bytes observed at bounded projection boundaries.",
+            ("worker", "direction"),
+            registry=self.registry,
+        )
         self.projection_cache_total = Counter(
             "tracefold_worker_projection_cache_total",
             "Change-driven projection cache outcomes.",
@@ -69,12 +76,6 @@ class TelemetryRegistry:
             "tracefold_worker_projection_deadline_misses_total",
             "Projection shards completed after their freshness deadline.",
             ("worker", "domain"),
-            registry=self.registry,
-        )
-        self.projection_soft_slo_overruns_total = Counter(
-            "tracefold_worker_projection_soft_slo_overruns_total",
-            "Projection turns exceeding a domain soft service-level objective.",
-            ("domain",),
             registry=self.registry,
         )
         self.projection_transitions_total = Counter(
@@ -150,6 +151,12 @@ class TelemetryRegistry:
             stage=_label(stage),
         ).set(max(0, int(rows)))
 
+    def set_projection_bytes(self, worker: str, direction: str, byte_count: int) -> None:
+        self.projection_bytes.labels(
+            worker=_label(worker),
+            direction=_label(direction),
+        ).set(max(0, int(byte_count)))
+
     def record_projection_cache(self, worker: str, outcome: str) -> None:
         self.projection_cache_total.labels(
             worker=_label(worker),
@@ -165,9 +172,6 @@ class TelemetryRegistry:
             worker=_label(worker),
             domain=_label(domain),
         ).inc()
-
-    def record_projection_soft_slo_overrun(self, domain: str) -> None:
-        self.projection_soft_slo_overruns_total.labels(domain=_label(domain)).inc()
 
     def record_projection_transition(self, domain: str, transition: str, count: int = 1) -> None:
         normalized_count = int(count)

@@ -3615,7 +3615,6 @@ export interface components {
         };
         /** TokenCaseData */
         TokenCaseData: {
-            current_radar: components["schemas"]["TokenRadarFactRowData"] | null;
             /** Market Live */
             market_live: {
                 [key: string]: unknown;
@@ -3637,313 +3636,80 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** TokenFactorCompositeData */
-        TokenFactorCompositeData: {
-            family_scores: components["schemas"]["TokenFactorFamilyValuesData"];
-            /** Rank Score */
-            rank_score: number;
-            /** Raw Alpha Score */
-            raw_alpha_score: number;
-            /**
-             * Recommended Decision
-             * @enum {string}
-             */
-            recommended_decision: "discard" | "watch" | "high_alert";
-        };
-        /** TokenFactorFamiliesData */
-        TokenFactorFamiliesData: {
-            social_heat: components["schemas"]["TokenFactorFamilyData"];
-            social_propagation: components["schemas"]["TokenFactorFamilyData"];
-            timing_risk: components["schemas"]["TokenFactorFamilyData"];
-        };
-        /** TokenFactorFamilyData */
-        TokenFactorFamilyData: {
-            /** Data Health */
-            data_health: string;
-            /** Factors */
-            factors: {
-                [key: string]: unknown;
-            };
-            /** Facts */
-            facts: {
-                [key: string]: unknown;
-            };
-            /** Raw Score */
-            raw_score: number;
-            /** Score */
-            score: number;
-            /** Weight */
-            weight: number;
-        };
-        /** TokenFactorFamilyValuesData */
-        TokenFactorFamilyValuesData: {
-            /** Social Heat */
-            social_heat: number;
-            /** Social Propagation */
-            social_propagation: number;
-            /** Timing Risk */
-            timing_risk: number;
-        };
-        /** TokenFactorGatesData */
-        TokenFactorGatesData: {
-            /** Blocked Reasons */
-            blocked_reasons: string[];
-            /** Eligible For High Alert */
-            eligible_for_high_alert: boolean;
-            /**
-             * Max Decision
-             * @enum {string}
-             */
-            max_decision: "discard" | "watch" | "high_alert";
-            /** Risk Reasons */
-            risk_reasons: string[];
-        };
-        /** TokenFactorMarketData */
-        TokenFactorMarketData: {
-            /** Capture Method */
-            capture_method?: string | null;
-            /** Capture Reason */
-            capture_reason?: string | null;
-            /** Decision Latest */
-            decision_latest: {
-                [key: string]: unknown;
-            } | null;
-            /** Event Anchor */
-            event_anchor: {
-                [key: string]: unknown;
-            } | null;
-            readiness: components["schemas"]["TokenFactorMarketReadinessData"];
-            /** Tick Lag Ms */
-            tick_lag_ms?: number | null;
-        };
-        /** TokenFactorMarketReadinessData */
-        TokenFactorMarketReadinessData: {
-            /** Anchor Status */
-            anchor_status: string;
-            /** Dex Floor Status */
-            dex_floor_status: string;
-            /** Latest Status */
-            latest_status: string;
-            /** Missing Fields */
-            missing_fields: string[];
-            /** Stale Fields */
-            stale_fields: string[];
-        };
-        /** TokenFactorNormalizationData */
-        TokenFactorNormalizationData: {
-            /** Alpha Rank */
-            alpha_rank: number | null;
-            /** Cohort */
-            cohort: {
-                [key: string]: unknown;
-            };
-            /** Cohort Status */
-            cohort_status: string;
-            factor_ranks: components["schemas"]["TokenFactorRankValuesData"];
-            /** Status */
-            status: string;
-        };
-        /** TokenFactorProvenanceData */
-        TokenFactorProvenanceData: {
-            /** Computed At Ms */
-            computed_at_ms: number;
-            /** Source Event Ids */
-            source_event_ids: string[];
-        };
-        /** TokenFactorRankValuesData */
-        TokenFactorRankValuesData: {
-            /** Social Heat */
-            social_heat: number | null;
-            /** Social Propagation */
-            social_propagation: number | null;
-            /** Timing Risk */
-            timing_risk: number | null;
-        };
-        /** TokenFactorSnapshotData */
-        TokenFactorSnapshotData: {
-            composite: components["schemas"]["TokenFactorCompositeData"];
-            /** Data Health */
-            data_health: {
-                [key: string]: unknown;
-            };
-            families: components["schemas"]["TokenFactorFamiliesData"];
-            gates: components["schemas"]["TokenFactorGatesData"];
-            market: components["schemas"]["TokenFactorMarketData"];
-            normalization: components["schemas"]["TokenFactorNormalizationData"];
-            provenance: components["schemas"]["TokenFactorProvenanceData"];
+        /** TokenRadarData */
+        TokenRadarData: {
+            /** Eligible Total */
+            eligible_total: number;
+            /** Evidence As Of Ms */
+            evidence_as_of_ms: number;
+            /** Items */
+            items: components["schemas"]["TokenRadarItemData"][];
             /**
              * Schema Version
              * @constant
              */
-            schema_version: "token_factor_snapshot_v5_provider_neutral";
-            subject: components["schemas"]["TokenFactorSubjectData"];
+            schema_version: "token_radar_snapshot_v1";
         };
-        /** TokenFactorSubjectData */
-        TokenFactorSubjectData: {
-            /** Address */
-            address: string | null;
-            /** Chain */
-            chain: string | null;
-            /** Pricefeed Id */
-            pricefeed_id: string | null;
-            /** Symbol */
-            symbol: string | null;
-            /** Target Id */
-            target_id: string | null;
-            /** Target Market Type */
-            target_market_type: string | null;
-            /** Target Type */
-            target_type: string | null;
+        /** TokenRadarEvidenceData */
+        TokenRadarEvidenceData: {
+            /** Duplicate Share */
+            duplicate_share: number;
+            /** Independent Text Count */
+            independent_text_count: number;
+            /** New Independent Author Count */
+            new_independent_author_count: number;
+            /** Time To Nth Author Ms */
+            time_to_nth_author_ms: number;
         };
-        /** TokenRadarAnchorCoverageData */
-        TokenRadarAnchorCoverageData: {
-            /** Missing */
-            missing: number;
-            /** Ready */
-            ready: number;
-            /** Status */
-            status: string;
-            /** Total */
-            total: number;
+        /** TokenRadarItemData */
+        TokenRadarItemData: {
+            /** Counter Evidence */
+            counter_evidence: "market_confirmation_unavailable" | null;
+            evidence: components["schemas"]["TokenRadarEvidenceData"];
+            market: components["schemas"]["TokenRadarMarketData"];
+            target: components["schemas"]["TokenRadarTargetData"];
+            /** Trigger Event Id */
+            trigger_event_id: string;
+            /** Triggered At Ms */
+            triggered_at_ms: number;
+            why_now: components["schemas"]["TokenRadarWhyNowData"];
         };
-        /** TokenRadarData */
-        TokenRadarData: {
-            /** Attention */
-            attention: components["schemas"]["TokenRadarRowData"][];
-            projection: components["schemas"]["TokenRadarProjectionData"];
-            /** Targets */
-            targets: components["schemas"]["TokenRadarRowData"][];
-            /** Venue */
-            venue: string;
-            /** Window */
-            window: string;
-        };
-        /** TokenRadarFactRowData */
-        TokenRadarFactRowData: {
-            factor_snapshot: components["schemas"]["TokenFactorSnapshotData"];
-            intent: components["schemas"]["TokenRadarIntentData"];
-            quality: components["schemas"]["TokenRadarQualityData"];
-            radar: components["schemas"]["TokenRadarMetaData"];
-            resolution: components["schemas"]["TokenRadarResolutionData"];
-        };
-        /** TokenRadarIntentData */
-        TokenRadarIntentData: {
-            /** Display Name */
-            display_name?: string | null;
-            /** Display Symbol */
-            display_symbol?: string | null;
-            /** Event Id */
-            event_id: string;
-            /** Evidence */
-            evidence: unknown[];
-            /** Intent Id */
-            intent_id: string;
-        };
-        /** TokenRadarMetaData */
-        TokenRadarMetaData: {
-            /** Computed At Ms */
-            computed_at_ms?: number | null;
-            /** Lane */
-            lane?: string | null;
-            /** Listed At Ms */
-            listed_at_ms?: number | null;
-            /** Rank */
-            rank?: number | null;
-            /** Source Max Received At Ms */
-            source_max_received_at_ms?: number | null;
-        };
-        /** TokenRadarProjectionData */
-        TokenRadarProjectionData: {
-            anchor_coverage: components["schemas"]["TokenRadarAnchorCoverageData"];
-            /** Computed At Ms */
-            computed_at_ms: number | null;
-            /** Degraded Reasons */
-            degraded_reasons: string[];
-            /** Error */
-            error: string | null;
-            /** Latest Attempt Status */
-            latest_attempt_status: string;
-            /**
-             * Quality Status
-             * @enum {string}
-             */
-            quality_status: "ready" | "degraded" | "insufficient" | "failed";
-            /** Reason */
-            reason: string | null;
-            /** Row Count */
-            row_count: number;
-            /**
-             * Source
-             * @constant
-             */
-            source: "token_radar_current_rows";
-            /** Source Frontier Ms */
-            source_frontier_ms: number | null;
-            /** Source Max Received At Ms */
-            source_max_received_at_ms: number;
-            /** Source Rows */
-            source_rows: number;
+        /** TokenRadarMarketData */
+        TokenRadarMarketData: {
+            /** Price Change Since Signal */
+            price_change_since_signal: number | null;
             /**
              * Status
              * @enum {string}
              */
-            status: "fresh" | "stale" | "pending" | "failed";
-            unresolved: components["schemas"]["TokenRadarUnresolvedData"];
-            /** Venue */
-            venue: string;
-            /** Version */
-            version: string;
+            status: "confirmed" | "unavailable";
         };
-        /** TokenRadarQualityData */
-        TokenRadarQualityData: {
-            /** Degraded Reasons */
-            degraded_reasons: string[];
-            /** Status */
-            status: string;
-        };
-        /** TokenRadarResolutionData */
-        TokenRadarResolutionData: {
-            /** Candidate Ids */
-            candidate_ids: string[];
-            /** Discovery */
-            discovery: {
-                [key: string]: unknown;
-            }[];
-            /** Lookup Keys */
-            lookup_keys: string[];
-            /** Pricefeed Id */
-            pricefeed_id: string | null;
-            /** Reason Codes */
-            reason_codes: string[];
-            /** Status */
-            status: string;
+        /** TokenRadarTargetData */
+        TokenRadarTargetData: {
+            /** Address */
+            address: string | null;
+            /** Chain */
+            chain: string | null;
+            /** Exchange */
+            exchange: string | null;
+            /** Symbol */
+            symbol: string;
             /** Target Id */
-            target_id: string | null;
-            /** Target Type */
-            target_type: string | null;
+            target_id: string;
+            /**
+             * Target Type
+             * @enum {string}
+             */
+            target_type: "Asset" | "CexToken";
         };
-        /** TokenRadarRowData */
-        TokenRadarRowData: {
-            factor_snapshot: components["schemas"]["TokenFactorSnapshotData"];
-            intent: components["schemas"]["TokenRadarIntentData"];
-            /** Profile */
-            profile?: {
-                [key: string]: unknown;
-            } | null;
-            quality: components["schemas"]["TokenRadarQualityData"];
-            radar: components["schemas"]["TokenRadarMetaData"];
-            resolution: components["schemas"]["TokenRadarResolutionData"];
-        };
-        /** TokenRadarUnresolvedData */
-        TokenRadarUnresolvedData: {
-            /** Ambiguous Count */
-            ambiguous_count: number;
-            /** Identity Missing Count */
-            identity_missing_count: number;
-            /** Nil Count */
-            nil_count: number;
-            /** Sample Symbols */
-            sample_symbols: string[];
+        /** TokenRadarWhyNowData */
+        TokenRadarWhyNowData: {
+            /** Current Mentions */
+            current_mentions: number;
+            /** Mention Delta */
+            mention_delta: number;
+            /** Prior Mentions */
+            prior_mentions: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -4524,6 +4290,7 @@ export interface operations {
                 range?: string;
                 limit?: number;
                 cursor?: string;
+                event_id?: string;
             };
             header?: never;
             path?: never;
@@ -4622,12 +4389,10 @@ export interface operations {
     };
     token_radar_api_token_radar_get: {
         parameters: {
-            query?: {
-                window?: string;
-                limit?: number;
-                venue?: string;
+            query?: never;
+            header?: {
+                "If-None-Match"?: string;
             };
-            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -4636,20 +4401,26 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Strong validator for the complete served snapshot. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TokenRadarData_"];
                 };
             };
-            /** @description Validation Error */
-            422: {
+            /** @description Not Modified */
+            304: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Strong validator for the complete served snapshot. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };

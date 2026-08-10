@@ -9,9 +9,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.integration.test_token_radar_idempotency import (
-    _run_radar_projection,
-)
 from tests.postgres_test_utils import connect_postgres_test, prepare_postgres_database
 from tests.support.db_seeds import (
     assert_count_at_least,
@@ -32,6 +29,7 @@ from tests.support.hot_path_runtime import (
     backend_hot_path_settings,
 )
 from tests.support.provider_fixtures import load_provider_fixture
+from tests.support.token_radar import run_token_radar_current
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
 from tracefold.app.market_providers import AssetMarketProviders
@@ -105,15 +103,11 @@ def test_complete_backend_hot_path_to_token_radar(
 
         conn = connect_postgres_test(read_only=False)
         try:
-            radar_result = _run_radar_projection(
-                conn,
-                window="1h",
-                now_ms=FIXED_NOW_MS + 2_000,
-            )
+            radar_result = run_token_radar_current(conn, now_ms=FIXED_NOW_MS + 2_000)
         finally:
             conn.close()
-        assert radar_result["rows_written"] >= 1
-        _assert_counts({"token_radar_current_rows": 1})
+        assert radar_result == {"status": "published", "rows_written": 1}
+        _assert_counts({"token_radar_current": 1})
 
         _publish_healthy_workers_runtime(worker_db)
         with TestClient(app) as client:
@@ -148,10 +142,12 @@ def _assert_http_surfaces(client: TestClient) -> None:
     assert recent.status_code == 200, recent.text
     assert EVENT_ID in json.dumps(recent.json(), default=str)
 
-    radar = client.get("/api/token-radar", params={"window": "1h", "limit": 10}, headers=auth_headers())
+    radar = client.get("/api/token-radar", headers=auth_headers())
     assert radar.status_code == 200, radar.text
-    radar_text = json.dumps(radar.json(), default=str)
-    assert SYMBOL in radar_text
+    radar_payload = radar.json()["data"]
+    assert radar_payload["schema_version"] == "token_radar_snapshot_v1"
+    assert radar_payload["eligible_total"] == 0
+    assert radar_payload["items"] == []
 
 
 def _assert_websocket_surfaces(

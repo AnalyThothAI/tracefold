@@ -30,6 +30,8 @@ export function SearchTokenIntelPage({
         dossier: result,
         route: {
           window: routeState.window,
+          focus: null,
+          triggerEventId: null,
         },
         posts: searchPosts,
         isLoadingPosts: false,

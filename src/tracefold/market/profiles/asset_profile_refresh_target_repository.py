@@ -215,7 +215,7 @@ class AssetProfileRefreshTargetRepository:
             error_code="asset_profile_inactive_provider_delete_count_invalid",
         )
 
-    def enqueue_missing_token_radar_current_targets_for_ops(
+    def enqueue_missing_identity_assets_for_ops(
         self,
         *,
         provider: str,
@@ -233,44 +233,39 @@ class AssetProfileRefreshTargetRepository:
         rows = self.conn.execute(
             """
             WITH eligible AS (
-              SELECT DISTINCT ON (current_rows.identity_id)
+              SELECT
                 'Asset' AS target_type,
-                current_rows.identity_id AS target_id,
-                current_rows.factor_snapshot_json #>> '{subject,chain}' AS chain_id,
-                current_rows.factor_snapshot_json #>> '{subject,address}' AS address,
-                current_rows.factor_snapshot_json #>> '{subject,symbol}' AS symbol,
-                current_rows.source_max_received_at_ms AS source_watermark_ms
-              FROM token_radar_current_rows current_rows
-              WHERE current_rows.target_type_key = 'Asset'
-                AND current_rows.venue = 'all'
-                AND current_rows.identity_id IS NOT NULL
-                AND btrim(current_rows.identity_id) <> ''
-                AND current_rows.source_max_received_at_ms > 0
-                AND COALESCE(current_rows.factor_snapshot_json #>> '{subject,chain}', '') <> ''
-                AND COALESCE(current_rows.factor_snapshot_json #>> '{subject,address}', '') <> ''
+                registry.asset_id AS target_id,
+                registry.chain_id,
+                registry.address,
+                identity.canonical_symbol AS symbol,
+                GREATEST(registry.updated_at_ms, identity.updated_at_ms) AS source_watermark_ms
+              FROM registry_assets registry
+              JOIN asset_identity_current identity ON identity.asset_id = registry.asset_id
+              WHERE registry.status IN ('candidate', 'canonical')
                 AND NOT EXISTS (
                   SELECT 1
                   FROM asset_profiles source_cache
                   WHERE source_cache.provider = %(provider)s
-                    AND source_cache.asset_id = current_rows.identity_id
+                    AND source_cache.asset_id = registry.asset_id
                 )
                 AND NOT EXISTS (
                   SELECT 1
                   FROM asset_profile_refresh_targets queue
                   WHERE queue.provider = %(provider)s
                     AND queue.target_type = 'Asset'
-                    AND queue.target_id = current_rows.identity_id
+                    AND queue.target_id = registry.asset_id
                 )
-              ORDER BY current_rows.identity_id,
-                       current_rows.source_max_received_at_ms DESC,
-                       current_rows.computed_at_ms DESC
             )
             SELECT *
             FROM eligible
             ORDER BY source_watermark_ms DESC, target_id ASC
             LIMIT %(limit)s
             """,
-            {"provider": parsed_provider, "limit": bounded_limit},
+            {
+                "provider": parsed_provider,
+                "limit": bounded_limit,
+            },
         ).fetchall()
         targets = [
             {
@@ -289,7 +284,7 @@ class AssetProfileRefreshTargetRepository:
         ]
         enqueue_result = self.enqueue_targets(
             targets,
-            reason="token_radar_current_backfill",
+            reason="identity_asset_backfill",
             now_ms=now_ms,
         )
         return {

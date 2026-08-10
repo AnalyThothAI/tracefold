@@ -16,6 +16,11 @@
   border-color: var(--accent-border);
 }
 
+.card[data-focused="true"] {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 .timeGutter {
   display: grid;
   align-content: start;

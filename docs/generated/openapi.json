@@ -10535,16 +10535,6 @@
       "TokenCaseData": {
         "additionalProperties": false,
         "properties": {
-          "current_radar": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TokenRadarFactRowData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "market_live": {
             "additionalProperties": true,
             "title": "Market Live",
@@ -10583,284 +10573,135 @@
           "profile",
           "timeline",
           "posts",
-          "market_live",
-          "current_radar"
+          "market_live"
         ],
         "title": "TokenCaseData",
         "type": "object"
       },
-      "TokenFactorCompositeData": {
+      "TokenRadarData": {
         "additionalProperties": false,
         "properties": {
-          "family_scores": {
-            "$ref": "#/components/schemas/TokenFactorFamilyValuesData"
+          "eligible_total": {
+            "minimum": 0.0,
+            "title": "Eligible Total",
+            "type": "integer"
           },
-          "rank_score": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Rank Score"
+          "evidence_as_of_ms": {
+            "minimum": 0.0,
+            "title": "Evidence As Of Ms",
+            "type": "integer"
           },
-          "raw_alpha_score": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Raw Alpha Score"
-          },
-          "recommended_decision": {
-            "enum": [
-              "discard",
-              "watch",
-              "high_alert"
-            ],
-            "title": "Recommended Decision",
-            "type": "string"
-          }
-        },
-        "required": [
-          "raw_alpha_score",
-          "rank_score",
-          "family_scores",
-          "recommended_decision"
-        ],
-        "title": "TokenFactorCompositeData",
-        "type": "object"
-      },
-      "TokenFactorFamiliesData": {
-        "additionalProperties": false,
-        "properties": {
-          "social_heat": {
-            "$ref": "#/components/schemas/TokenFactorFamilyData"
-          },
-          "social_propagation": {
-            "$ref": "#/components/schemas/TokenFactorFamilyData"
-          },
-          "timing_risk": {
-            "$ref": "#/components/schemas/TokenFactorFamilyData"
-          }
-        },
-        "required": [
-          "social_heat",
-          "social_propagation",
-          "timing_risk"
-        ],
-        "title": "TokenFactorFamiliesData",
-        "type": "object"
-      },
-      "TokenFactorFamilyData": {
-        "additionalProperties": false,
-        "properties": {
-          "data_health": {
-            "title": "Data Health",
-            "type": "string"
-          },
-          "factors": {
-            "additionalProperties": true,
-            "title": "Factors",
-            "type": "object"
-          },
-          "facts": {
-            "additionalProperties": true,
-            "title": "Facts",
-            "type": "object"
-          },
-          "raw_score": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Raw Score"
-          },
-          "score": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Score"
-          },
-          "weight": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Weight"
-          }
-        },
-        "required": [
-          "raw_score",
-          "score",
-          "weight",
-          "data_health",
-          "facts",
-          "factors"
-        ],
-        "title": "TokenFactorFamilyData",
-        "type": "object"
-      },
-      "TokenFactorFamilyValuesData": {
-        "additionalProperties": false,
-        "properties": {
-          "social_heat": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Social Heat"
-          },
-          "social_propagation": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Social Propagation"
-          },
-          "timing_risk": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Timing Risk"
-          }
-        },
-        "required": [
-          "social_heat",
-          "social_propagation",
-          "timing_risk"
-        ],
-        "title": "TokenFactorFamilyValuesData",
-        "type": "object"
-      },
-      "TokenFactorGatesData": {
-        "additionalProperties": false,
-        "properties": {
-          "blocked_reasons": {
+          "items": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/TokenRadarItemData"
             },
-            "title": "Blocked Reasons",
+            "maxItems": 8,
+            "title": "Items",
             "type": "array"
           },
-          "eligible_for_high_alert": {
-            "title": "Eligible For High Alert",
-            "type": "boolean"
-          },
-          "max_decision": {
-            "enum": [
-              "discard",
-              "watch",
-              "high_alert"
-            ],
-            "title": "Max Decision",
+          "schema_version": {
+            "const": "token_radar_snapshot_v1",
+            "title": "Schema Version",
             "type": "string"
-          },
-          "risk_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Risk Reasons",
-            "type": "array"
           }
         },
         "required": [
-          "eligible_for_high_alert",
-          "max_decision",
-          "blocked_reasons",
-          "risk_reasons"
+          "schema_version",
+          "evidence_as_of_ms",
+          "eligible_total",
+          "items"
         ],
-        "title": "TokenFactorGatesData",
+        "title": "TokenRadarData",
         "type": "object"
       },
-      "TokenFactorMarketData": {
+      "TokenRadarEvidenceData": {
         "additionalProperties": false,
         "properties": {
-          "capture_method": {
+          "duplicate_share": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Duplicate Share",
+            "type": "number"
+          },
+          "independent_text_count": {
+            "minimum": 0.0,
+            "title": "Independent Text Count",
+            "type": "integer"
+          },
+          "new_independent_author_count": {
+            "minimum": 0.0,
+            "title": "New Independent Author Count",
+            "type": "integer"
+          },
+          "time_to_nth_author_ms": {
+            "minimum": 0.0,
+            "title": "Time To Nth Author Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "new_independent_author_count",
+          "independent_text_count",
+          "time_to_nth_author_ms",
+          "duplicate_share"
+        ],
+        "title": "TokenRadarEvidenceData",
+        "type": "object"
+      },
+      "TokenRadarItemData": {
+        "additionalProperties": false,
+        "properties": {
+          "counter_evidence": {
             "anyOf": [
               {
+                "const": "market_confirmation_unavailable",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Capture Method"
+            "title": "Counter Evidence"
           },
-          "capture_reason": {
+          "evidence": {
+            "$ref": "#/components/schemas/TokenRadarEvidenceData"
+          },
+          "market": {
+            "$ref": "#/components/schemas/TokenRadarMarketData"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TokenRadarTargetData"
+          },
+          "trigger_event_id": {
+            "title": "Trigger Event Id",
+            "type": "string"
+          },
+          "triggered_at_ms": {
+            "minimum": 0.0,
+            "title": "Triggered At Ms",
+            "type": "integer"
+          },
+          "why_now": {
+            "$ref": "#/components/schemas/TokenRadarWhyNowData"
+          }
+        },
+        "required": [
+          "target",
+          "trigger_event_id",
+          "triggered_at_ms",
+          "why_now",
+          "evidence",
+          "market",
+          "counter_evidence"
+        ],
+        "title": "TokenRadarItemData",
+        "type": "object"
+      },
+      "TokenRadarMarketData": {
+        "additionalProperties": false,
+        "properties": {
+          "price_change_since_signal": {
             "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Capture Reason"
-          },
-          "decision_latest": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Decision Latest"
-          },
-          "event_anchor": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Event Anchor"
-          },
-          "readiness": {
-            "$ref": "#/components/schemas/TokenFactorMarketReadinessData"
-          },
-          "tick_lag_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
               {
                 "type": "number"
               },
@@ -10868,227 +10709,25 @@
                 "type": "null"
               }
             ],
-            "title": "Tick Lag Ms"
-          }
-        },
-        "required": [
-          "event_anchor",
-          "decision_latest",
-          "readiness"
-        ],
-        "title": "TokenFactorMarketData",
-        "type": "object"
-      },
-      "TokenFactorMarketReadinessData": {
-        "additionalProperties": false,
-        "properties": {
-          "anchor_status": {
-            "title": "Anchor Status",
-            "type": "string"
-          },
-          "dex_floor_status": {
-            "title": "Dex Floor Status",
-            "type": "string"
-          },
-          "latest_status": {
-            "title": "Latest Status",
-            "type": "string"
-          },
-          "missing_fields": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Missing Fields",
-            "type": "array"
-          },
-          "stale_fields": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Stale Fields",
-            "type": "array"
-          }
-        },
-        "required": [
-          "anchor_status",
-          "latest_status",
-          "dex_floor_status",
-          "missing_fields",
-          "stale_fields"
-        ],
-        "title": "TokenFactorMarketReadinessData",
-        "type": "object"
-      },
-      "TokenFactorNormalizationData": {
-        "additionalProperties": false,
-        "properties": {
-          "alpha_rank": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Alpha Rank"
-          },
-          "cohort": {
-            "additionalProperties": true,
-            "title": "Cohort",
-            "type": "object"
-          },
-          "cohort_status": {
-            "title": "Cohort Status",
-            "type": "string"
-          },
-          "factor_ranks": {
-            "$ref": "#/components/schemas/TokenFactorRankValuesData"
+            "title": "Price Change Since Signal"
           },
           "status": {
+            "enum": [
+              "confirmed",
+              "unavailable"
+            ],
             "title": "Status",
             "type": "string"
           }
         },
         "required": [
           "status",
-          "cohort_status",
-          "cohort",
-          "factor_ranks",
-          "alpha_rank"
+          "price_change_since_signal"
         ],
-        "title": "TokenFactorNormalizationData",
+        "title": "TokenRadarMarketData",
         "type": "object"
       },
-      "TokenFactorProvenanceData": {
-        "additionalProperties": false,
-        "properties": {
-          "computed_at_ms": {
-            "title": "Computed At Ms",
-            "type": "integer"
-          },
-          "source_event_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Event Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "source_event_ids",
-          "computed_at_ms"
-        ],
-        "title": "TokenFactorProvenanceData",
-        "type": "object"
-      },
-      "TokenFactorRankValuesData": {
-        "additionalProperties": false,
-        "properties": {
-          "social_heat": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Social Heat"
-          },
-          "social_propagation": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Social Propagation"
-          },
-          "timing_risk": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Timing Risk"
-          }
-        },
-        "required": [
-          "social_heat",
-          "social_propagation",
-          "timing_risk"
-        ],
-        "title": "TokenFactorRankValuesData",
-        "type": "object"
-      },
-      "TokenFactorSnapshotData": {
-        "additionalProperties": false,
-        "properties": {
-          "composite": {
-            "$ref": "#/components/schemas/TokenFactorCompositeData"
-          },
-          "data_health": {
-            "additionalProperties": true,
-            "title": "Data Health",
-            "type": "object"
-          },
-          "families": {
-            "$ref": "#/components/schemas/TokenFactorFamiliesData"
-          },
-          "gates": {
-            "$ref": "#/components/schemas/TokenFactorGatesData"
-          },
-          "market": {
-            "$ref": "#/components/schemas/TokenFactorMarketData"
-          },
-          "normalization": {
-            "$ref": "#/components/schemas/TokenFactorNormalizationData"
-          },
-          "provenance": {
-            "$ref": "#/components/schemas/TokenFactorProvenanceData"
-          },
-          "schema_version": {
-            "const": "token_factor_snapshot_v5_provider_neutral",
-            "title": "Schema Version",
-            "type": "string"
-          },
-          "subject": {
-            "$ref": "#/components/schemas/TokenFactorSubjectData"
-          }
-        },
-        "required": [
-          "schema_version",
-          "subject",
-          "market",
-          "gates",
-          "data_health",
-          "families",
-          "normalization",
-          "composite",
-          "provenance"
-        ],
-        "title": "TokenFactorSnapshotData",
-        "type": "object"
-      },
-      "TokenFactorSubjectData": {
+      "TokenRadarTargetData": {
         "additionalProperties": false,
         "properties": {
           "address": {
@@ -11113,7 +10752,7 @@
             ],
             "title": "Chain"
           },
-          "pricefeed_id": {
+          "exchange": {
             "anyOf": [
               {
                 "type": "string"
@@ -11122,578 +10761,61 @@
                 "type": "null"
               }
             ],
-            "title": "Pricefeed Id"
+            "title": "Exchange"
           },
           "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
+            "title": "Symbol",
+            "type": "string"
           },
           "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Id"
-          },
-          "target_market_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Market Type"
+            "title": "Target Id",
+            "type": "string"
           },
           "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "Asset",
+              "CexToken"
             ],
-            "title": "Target Type"
+            "title": "Target Type",
+            "type": "string"
           }
         },
         "required": [
           "target_type",
           "target_id",
           "symbol",
-          "target_market_type",
           "chain",
-          "address",
-          "pricefeed_id"
+          "exchange",
+          "address"
         ],
-        "title": "TokenFactorSubjectData",
+        "title": "TokenRadarTargetData",
         "type": "object"
       },
-      "TokenRadarAnchorCoverageData": {
+      "TokenRadarWhyNowData": {
         "additionalProperties": false,
         "properties": {
-          "missing": {
-            "title": "Missing",
+          "current_mentions": {
+            "minimum": 0.0,
+            "title": "Current Mentions",
             "type": "integer"
           },
-          "ready": {
-            "title": "Ready",
+          "mention_delta": {
+            "minimum": 0.0,
+            "title": "Mention Delta",
             "type": "integer"
           },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "total": {
-            "title": "Total",
+          "prior_mentions": {
+            "minimum": 0.0,
+            "title": "Prior Mentions",
             "type": "integer"
           }
         },
         "required": [
-          "status",
-          "ready",
-          "missing",
-          "total"
+          "current_mentions",
+          "prior_mentions",
+          "mention_delta"
         ],
-        "title": "TokenRadarAnchorCoverageData",
-        "type": "object"
-      },
-      "TokenRadarData": {
-        "additionalProperties": false,
-        "properties": {
-          "attention": {
-            "items": {
-              "$ref": "#/components/schemas/TokenRadarRowData"
-            },
-            "title": "Attention",
-            "type": "array"
-          },
-          "projection": {
-            "$ref": "#/components/schemas/TokenRadarProjectionData"
-          },
-          "targets": {
-            "items": {
-              "$ref": "#/components/schemas/TokenRadarRowData"
-            },
-            "title": "Targets",
-            "type": "array"
-          },
-          "venue": {
-            "title": "Venue",
-            "type": "string"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          }
-        },
-        "required": [
-          "window",
-          "venue",
-          "targets",
-          "attention",
-          "projection"
-        ],
-        "title": "TokenRadarData",
-        "type": "object"
-      },
-      "TokenRadarFactRowData": {
-        "additionalProperties": false,
-        "properties": {
-          "factor_snapshot": {
-            "$ref": "#/components/schemas/TokenFactorSnapshotData"
-          },
-          "intent": {
-            "$ref": "#/components/schemas/TokenRadarIntentData"
-          },
-          "quality": {
-            "$ref": "#/components/schemas/TokenRadarQualityData"
-          },
-          "radar": {
-            "$ref": "#/components/schemas/TokenRadarMetaData"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/TokenRadarResolutionData"
-          }
-        },
-        "required": [
-          "intent",
-          "radar",
-          "resolution",
-          "quality",
-          "factor_snapshot"
-        ],
-        "title": "TokenRadarFactRowData",
-        "type": "object"
-      },
-      "TokenRadarIntentData": {
-        "additionalProperties": false,
-        "properties": {
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "display_symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Symbol"
-          },
-          "event_id": {
-            "title": "Event Id",
-            "type": "string"
-          },
-          "evidence": {
-            "items": {},
-            "title": "Evidence",
-            "type": "array"
-          },
-          "intent_id": {
-            "title": "Intent Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "intent_id",
-          "event_id",
-          "evidence"
-        ],
-        "title": "TokenRadarIntentData",
-        "type": "object"
-      },
-      "TokenRadarMetaData": {
-        "additionalProperties": false,
-        "properties": {
-          "computed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Computed At Ms"
-          },
-          "lane": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lane"
-          },
-          "listed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Listed At Ms"
-          },
-          "rank": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank"
-          },
-          "source_max_received_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Max Received At Ms"
-          }
-        },
-        "title": "TokenRadarMetaData",
-        "type": "object"
-      },
-      "TokenRadarProjectionData": {
-        "additionalProperties": false,
-        "properties": {
-          "anchor_coverage": {
-            "$ref": "#/components/schemas/TokenRadarAnchorCoverageData"
-          },
-          "computed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Computed At Ms"
-          },
-          "degraded_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Degraded Reasons",
-            "type": "array"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "latest_attempt_status": {
-            "title": "Latest Attempt Status",
-            "type": "string"
-          },
-          "quality_status": {
-            "enum": [
-              "ready",
-              "degraded",
-              "insufficient",
-              "failed"
-            ],
-            "title": "Quality Status",
-            "type": "string"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "row_count": {
-            "title": "Row Count",
-            "type": "integer"
-          },
-          "source": {
-            "const": "token_radar_current_rows",
-            "title": "Source",
-            "type": "string"
-          },
-          "source_frontier_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Frontier Ms"
-          },
-          "source_max_received_at_ms": {
-            "title": "Source Max Received At Ms",
-            "type": "integer"
-          },
-          "source_rows": {
-            "title": "Source Rows",
-            "type": "integer"
-          },
-          "status": {
-            "enum": [
-              "fresh",
-              "stale",
-              "pending",
-              "failed"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "unresolved": {
-            "$ref": "#/components/schemas/TokenRadarUnresolvedData"
-          },
-          "venue": {
-            "title": "Venue",
-            "type": "string"
-          },
-          "version": {
-            "title": "Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "version",
-          "source",
-          "venue",
-          "reason",
-          "latest_attempt_status",
-          "row_count",
-          "source_rows",
-          "source_max_received_at_ms",
-          "source_frontier_ms",
-          "computed_at_ms",
-          "error",
-          "anchor_coverage",
-          "quality_status",
-          "degraded_reasons",
-          "unresolved"
-        ],
-        "title": "TokenRadarProjectionData",
-        "type": "object"
-      },
-      "TokenRadarQualityData": {
-        "additionalProperties": false,
-        "properties": {
-          "degraded_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Degraded Reasons",
-            "type": "array"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "degraded_reasons"
-        ],
-        "title": "TokenRadarQualityData",
-        "type": "object"
-      },
-      "TokenRadarResolutionData": {
-        "additionalProperties": false,
-        "properties": {
-          "candidate_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Candidate Ids",
-            "type": "array"
-          },
-          "discovery": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Discovery",
-            "type": "array"
-          },
-          "lookup_keys": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Lookup Keys",
-            "type": "array"
-          },
-          "pricefeed_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pricefeed Id"
-          },
-          "reason_codes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Reason Codes",
-            "type": "array"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Id"
-          },
-          "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Type"
-          }
-        },
-        "required": [
-          "status",
-          "target_type",
-          "target_id",
-          "pricefeed_id",
-          "reason_codes",
-          "candidate_ids",
-          "lookup_keys",
-          "discovery"
-        ],
-        "title": "TokenRadarResolutionData",
-        "type": "object"
-      },
-      "TokenRadarRowData": {
-        "additionalProperties": false,
-        "properties": {
-          "factor_snapshot": {
-            "$ref": "#/components/schemas/TokenFactorSnapshotData"
-          },
-          "intent": {
-            "$ref": "#/components/schemas/TokenRadarIntentData"
-          },
-          "profile": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profile"
-          },
-          "quality": {
-            "$ref": "#/components/schemas/TokenRadarQualityData"
-          },
-          "radar": {
-            "$ref": "#/components/schemas/TokenRadarMetaData"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/TokenRadarResolutionData"
-          }
-        },
-        "required": [
-          "intent",
-          "radar",
-          "resolution",
-          "quality",
-          "factor_snapshot"
-        ],
-        "title": "TokenRadarRowData",
-        "type": "object"
-      },
-      "TokenRadarUnresolvedData": {
-        "additionalProperties": false,
-        "properties": {
-          "ambiguous_count": {
-            "title": "Ambiguous Count",
-            "type": "integer"
-          },
-          "identity_missing_count": {
-            "title": "Identity Missing Count",
-            "type": "integer"
-          },
-          "nil_count": {
-            "title": "Nil Count",
-            "type": "integer"
-          },
-          "sample_symbols": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Sample Symbols",
-            "type": "array"
-          }
-        },
-        "required": [
-          "identity_missing_count",
-          "nil_count",
-          "ambiguous_count",
-          "sample_symbols"
-        ],
-        "title": "TokenRadarUnresolvedData",
+        "title": "TokenRadarWhyNowData",
         "type": "object"
       },
       "ValidationError": {
@@ -12789,6 +11911,16 @@
               "title": "Cursor",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "event_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Event Id",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -12980,32 +12112,11 @@
         "operationId": "token_radar_api_token_radar_get",
         "parameters": [
           {
-            "in": "query",
-            "name": "window",
+            "in": "header",
+            "name": "If-None-Match",
             "required": false,
             "schema": {
-              "default": "1h",
-              "title": "Window",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 20,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "venue",
-            "required": false,
-            "schema": {
-              "default": "all",
-              "title": "Venue",
+              "title": "If-None-Match",
               "type": "string"
             }
           }
@@ -13019,17 +12130,38 @@
                 }
               }
             },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong validator for the complete served snapshot.",
+                "schema": {
+                  "type": "string"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong validator for the complete served snapshot.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Token Radar",

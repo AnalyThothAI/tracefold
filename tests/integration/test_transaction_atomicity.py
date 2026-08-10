@@ -13,7 +13,6 @@ from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
     MarketTick,
     MarketTickPersistenceService,
-    RegistryRepository,
     market_tick_id,
 )
 from tracefold.platform.postgres import postgres_client
@@ -106,7 +105,7 @@ def test_repository_session_transaction_owns_database_transaction() -> None:
     assert conn.events == ["begin", "body", "commit"]
 
 
-def test_market_tick_persistence_rolls_back_fact_current_and_downstream_dirty_target() -> None:
+def test_market_tick_persistence_rolls_back_fact_and_current_projection() -> None:
     setup_conn = connect_postgres_test(read_only=False)
     pool = create_pool(
         postgres_test_dsn(),
@@ -118,15 +117,8 @@ def test_market_tick_persistence_rolls_back_fact_current_and_downstream_dirty_ta
     )
     now_ms = 1_900_000_000_000
     tick = _market_tick(observed_at_ms=now_ms)
-    asset_id = "asset:solana:token:atomicity"
     try:
-        _delete_market_tick_target(setup_conn, tick, asset_id=asset_id)
-        asset = RegistryRepository(setup_conn).upsert_chain_asset(
-            chain_id="solana",
-            address="atomicity",
-            observed_at_ms=now_ms - 1,
-        )
-        assert asset["asset_id"] == asset_id
+        _delete_market_tick_target(setup_conn, tick)
         setup_conn.commit()
 
         bundle = _worker_pool_bundle(pool)
@@ -151,20 +143,10 @@ def test_market_tick_persistence_rolls_back_fact_current_and_downstream_dirty_ta
             """,
             (tick.target_type, tick.target_id),
         ).fetchone()
-        dirty_count = setup_conn.execute(
-            """
-            SELECT count(*) AS row_count
-            FROM radar_projection_frontiers
-            WHERE target_type = 'Asset' AND target_id = %s
-            """,
-            (asset_id,),
-        ).fetchone()
         assert tick_count["row_count"] == 0
         assert current_count["row_count"] == 0
-        assert dirty_count["row_count"] == 0
     finally:
-        _delete_market_tick_target(setup_conn, tick, asset_id=asset_id)
-        setup_conn.execute("DELETE FROM registry_assets WHERE asset_id = %s", (asset_id,))
+        _delete_market_tick_target(setup_conn, tick)
         setup_conn.commit()
         setup_conn.close()
         pool.close()
@@ -186,14 +168,10 @@ class FakeTransactionConnection:
             self.events.append("commit")
 
 
-def _delete_market_tick_target(conn: Any, tick: MarketTick, *, asset_id: str) -> None:
+def _delete_market_tick_target(conn: Any, tick: MarketTick) -> None:
     conn.execute(
         "DELETE FROM market_tick_current WHERE target_type = %s AND target_id = %s",
         (tick.target_type, tick.target_id),
-    )
-    conn.execute(
-        "DELETE FROM radar_projection_frontiers WHERE target_type = 'Asset' AND target_id = %s",
-        (asset_id,),
     )
     conn.execute(
         "DELETE FROM market_ticks WHERE target_type = %s AND target_id = %s",

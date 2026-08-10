@@ -3,10 +3,10 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from tracefold.market.identity.resolver_policy import TOKEN_RESOLVER_POLICY_VERSION
 from tracefold.market.identity.token_fact_inputs import DeterministicResolution, MentionKeys
-from tracefold.market.radar.constants import TOKEN_RADAR_RESOLVER_POLICY_VERSION
 
-RESOLVER_POLICY_VERSION = TOKEN_RADAR_RESOLVER_POLICY_VERSION
+RESOLVER_POLICY_VERSION = TOKEN_RESOLVER_POLICY_VERSION
 MIN_DOMINANT_MARKET_CAP_USD = Decimal("250000")
 MIN_DOMINANT_HOLDERS = Decimal("1000")
 MIN_DOMINANT_LIQUIDITY_USD = Decimal("100000")

@@ -66,9 +66,8 @@ bootstrap runs only during PostgreSQL `initdb`: it creates the non-login owner
 plus Serve, Workers, and migrate roles, then revokes the temporary bootstrap
 login before ordinary migration. It never attempts to reinterpret or hard-cut
 an unknown non-empty volume. Existing deployments must already have the
-least-privilege roles, or use their explicitly authorized maintenance/cutover
-path; startup fails closed when the migrate role or schema contract is not
-valid.
+least-privilege roles; startup fails closed when the migrate role or schema
+contract is not valid.
 
 ### Credential-dependent capabilities
 
@@ -185,7 +184,7 @@ Useful live-data smoke checks:
 uv run tracefold config
 uv run tracefold ops refresh-asset-profiles --limit 5
 uv run tracefold ops mirror-token-images --limit 50
-uv run tracefold asset-flow --window 1h --limit 20
+uv run tracefold ops radar-status
 ```
 
 The first command confirms the real config paths. The profile refresh command
@@ -286,6 +285,12 @@ facts, targets, document analyses, and module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
 current migration `20260809_0247` removes that state, installs public RSS
 source scheduling, and hard-cuts Brief persistence to two singleton tables.
+Token Radar migration `20260810_0249` removes the retired Radar projection
+tables and temporary replay-only schema, then installs the compact singleton.
+It preserves material Events, intents, resolutions, identities, and market
+facts. Stop Serve and Workers while an existing database crosses this revision;
+after migration, start only the new runtime. A fresh database migrates directly
+to head.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -322,35 +327,16 @@ non-zero for a failed/missing migration, stopped or unhealthy required
 container, failed Serve or Workers readiness endpoint, or missing HTML console.
 Use `make logs` for the bounded startup evidence named by a failure.
 
-### Authorized Issue #33 in-place hard cut
+### Token Radar derived-state reset
 
-Normal `migrate` uses `tracefold_migrate`, so an existing deployment must
-provision the new roles through the explicit maintenance profile first. For
-the current operator-authorized Issue #33 cut, stop the old Workers before
-entering this maintenance path. The cut runs in place without a backup,
-snapshot, or restore drill and fixes forward on failure.
+For the one-time Token Radar `0248` to `0249` transition, build the new image
+first, stop Serve and Workers, run the ordinary one-shot migration service, and
+verify that material fact counts and identities are unchanged before starting
+the new runtime. The migration is transactional: failure leaves the old schema
+in place. After it succeeds, fix forward with the new code; old Radar runtime
+code and tables are not retained.
 
-```bash
-uv run tracefold init
-docker compose up -d postgres
-docker compose --profile maintenance run --rm cutover \
-  tracefold db hard-cut \
-  --bootstrap-dsn postgresql://tracefold_app@postgres:5432/tracefold \
-  --bootstrap-password-file /run/secrets/postgres_password \
-  --execute
-docker compose up -d
-```
-
-The hard-cut command acquires the exclusive maintenance gate, refuses visible
-Tracefold runtime sessions, migrates to head, provisions role passwords,
-rebuilds and audits Radar/News/Macro/current Profile, and only then changes
-`tracefold_app` to `NOLOGIN`. A failure remains in maintenance for fix-forward
-on the current database; there is no restore path for this authorized cut.
-Because the legacy bootstrap superuser login is deliberately revoked,
-cluster-owner recovery afterward requires local/container PostgreSQL
-administration rather than the old network credential.
-
-After a successful one-time cutover, use the ordinary lifecycle again:
+Use the ordinary lifecycle after the transition:
 
 ```bash
 make up

@@ -864,45 +864,6 @@
 | `operator_action_at_ms` | `BIGINT` | True | `None` |
 | `final_reason_bucket` | `TEXT` | False | `'other'::text` |
 
-## `radar_projection_frontiers`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `window_key` | `TEXT` | False | `None` |
-| `venue` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `deadline_at_ms` | `BIGINT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `transient_failure_count` | `INTEGER` | False | `0` |
-| `input_fingerprint` | `TEXT` | True | `None` |
-| `projection_version` | `TEXT` | False | `None` |
-| `claimed_by` | `UUID` | True | `None` |
-| `claimed_until_ms` | `BIGINT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `claimed_input_fingerprint` | `TEXT` | True | `None` |
-| `claimed_projection_version` | `TEXT` | True | `None` |
-
-## `radar_source_edges`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `window_key` | `TEXT` | False | `None` |
-| `venue` | `TEXT` | False | `None` |
-| `source_kind` | `TEXT` | False | `None` |
-| `source_id` | `TEXT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-| `input_fingerprint` | `TEXT` | False | `None` |
-| `payload_json` | `JSONB` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `raw_frames`
 
 | Column | Type | Nullable | Default |
@@ -1202,122 +1163,26 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `token_radar_current_rows`
+## `token_radar_current`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `row_id` | `TEXT` | False | `None` |
-| `projection_version` | `TEXT` | False | `None` |
-| `window` | `TEXT` | False | `None` |
-| `lane` | `TEXT` | False | `None` |
-| `target_type_key` | `TEXT` | False | `None` |
-| `identity_id` | `TEXT` | False | `None` |
-| `computed_at_ms` | `BIGINT` | False | `None` |
-| `source_max_received_at_ms` | `BIGINT` | False | `None` |
-| `rank` | `BIGINT` | False | `None` |
-| `rank_score` | `DOUBLE PRECISION` | False | `None` |
-| `intent_id` | `TEXT` | True | `None` |
-| `event_id` | `TEXT` | True | `None` |
-| `target_type` | `TEXT` | True | `None` |
-| `target_id` | `TEXT` | True | `None` |
-| `pricefeed_id` | `TEXT` | True | `None` |
-| `intent_json` | `JSONB` | False | `'{}'::jsonb` |
-| `resolution_json` | `JSONB` | False | `'{}'::jsonb` |
-| `factor_snapshot_json` | `JSONB` | False | `'{}'::jsonb` |
-| `factor_version` | `TEXT` | False | `None` |
-| `decision` | `TEXT` | False | `None` |
-| `data_health_json` | `JSONB` | False | `'{}'::jsonb` |
-| `source_event_ids_json` | `JSONB` | False | `'[]'::jsonb` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `listed_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `generation_id` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-| `source_frontier_ms` | `BIGINT` | False | `None` |
-| `quality_status` | `TEXT` | False | `None` |
-| `degraded_reasons_json` | `JSONB` | False | `'[]'::jsonb` |
-| `venue` | `TEXT` | False | `'all'::text` |
-
-## `token_radar_publication_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `projection_version` | `TEXT` | False | `None` |
-| `window` | `TEXT` | False | `None` |
-| `venue` | `TEXT` | False | `'all'::text` |
-| `current_generation_id` | `TEXT` | True | `None` |
-| `current_published_at_ms` | `BIGINT` | True | `None` |
-| `current_source_frontier_ms` | `BIGINT` | True | `None` |
-| `current_row_count` | `BIGINT` | False | `0` |
-| `current_source_rows` | `BIGINT` | False | `0` |
-| `latest_attempt_generation_id` | `TEXT` | True | `None` |
-| `latest_attempt_status` | `TEXT` | False | `None` |
-| `latest_attempt_started_at_ms` | `BIGINT` | True | `None` |
-| `latest_attempt_finished_at_ms` | `BIGINT` | True | `None` |
-| `latest_attempt_error` | `TEXT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `token_radar_target_features`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `projection_version` | `TEXT` | False | `None` |
-| `window` | `TEXT` | False | `None` |
-| `lane` | `TEXT` | False | `None` |
-| `target_type_key` | `TEXT` | False | `None` |
-| `identity_id` | `TEXT` | False | `None` |
-| `target_type` | `TEXT` | True | `None` |
-| `target_id` | `TEXT` | True | `None` |
-| `pricefeed_id` | `TEXT` | True | `None` |
-| `latest_event_received_at_ms` | `BIGINT` | False | `None` |
-| `latest_market_observed_at_ms` | `BIGINT` | True | `None` |
-| `attention_score` | `DOUBLE PRECISION` | False | `0` |
-| `market_score` | `DOUBLE PRECISION` | False | `0` |
-| `credibility_score` | `DOUBLE PRECISION` | False | `0` |
-| `rank_score` | `DOUBLE PRECISION` | False | `0` |
-| `factor_snapshot_json` | `JSONB` | False | `'{}'::jsonb` |
-| `source_event_ids_json` | `JSONB` | False | `'[]'::jsonb` |
-| `source_intent_ids_json` | `JSONB` | False | `'[]'::jsonb` |
-| `source_resolution_ids_json` | `JSONB` | False | `'[]'::jsonb` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `last_scored_at_ms` | `BIGINT` | False | `None` |
+| `singleton_key` | `BOOLEAN` | False | `true` |
+| `schema_version` | `TEXT` | False | `None` |
+| `ruleset_version` | `TEXT` | True | `None` |
+| `ruleset_fingerprint` | `TEXT` | True | `None` |
+| `input_fingerprint` | `TEXT` | True | `None` |
+| `state_fingerprint` | `TEXT` | True | `None` |
+| `evidence_as_of_ms` | `BIGINT` | False | `0` |
+| `evaluation_at_ms` | `BIGINT` | False | `0` |
+| `input_rows` | `INTEGER` | False | `0` |
+| `input_bytes` | `BIGINT` | False | `0` |
+| `latest_attempt_status` | `TEXT` | False | `'never'::text` |
+| `latest_error_code` | `TEXT` | True | `None` |
+| `failure_count` | `INTEGER` | False | `0` |
+| `served_payload` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `social_heat_raw_score` | `DOUBLE PRECISION` | True | `None` |
-| `social_heat_weight` | `DOUBLE PRECISION` | False | `0` |
-| `social_propagation_raw_score` | `DOUBLE PRECISION` | True | `None` |
-| `social_propagation_weight` | `DOUBLE PRECISION` | False | `0` |
-| `timing_risk_raw_score` | `DOUBLE PRECISION` | True | `None` |
-| `timing_risk_weight` | `DOUBLE PRECISION` | False | `0` |
-| `cohort_high_confidence_mentions` | `INTEGER` | False | `0` |
-| `cohort_kol_mentions` | `INTEGER` | False | `0` |
-| `cohort_followup_authors` | `INTEGER` | False | `0` |
-| `cohort_first_seen_global_24h` | `BOOLEAN` | False | `false` |
-| `cohort_symbol` | `TEXT` | False | `''::text` |
-| `social_heat_mentions_1h` | `INTEGER` | False | `0` |
-| `social_propagation_mentions` | `INTEGER` | False | `0` |
-| `social_heat_latest_seen_ms` | `BIGINT` | True | `None` |
-| `raw_composite_score` | `DOUBLE PRECISION` | True | `None` |
-| `recommended_decision` | `TEXT` | False | `'discard'::text` |
-| `gates_max_decision` | `TEXT` | False | `'discard'::text` |
-| `intent_json` | `JSONB` | False | `None` |
-| `resolution_json` | `JSONB` | False | `None` |
-
-## `token_radar_target_first_seen`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `projection_version` | `TEXT` | False | `None` |
-| `window` | `TEXT` | False | `None` |
-| `target_type_key` | `TEXT` | False | `None` |
-| `identity_id` | `TEXT` | False | `None` |
-| `first_seen_ms` | `BIGINT` | False | `None` |
-| `last_seen_ms` | `BIGINT` | False | `None` |
-| `first_row_id` | `TEXT` | True | `None` |
-| `latest_row_id` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `venue` | `TEXT` | False | `'all'::text` |
 
 ## `us_equity_symbols`
 

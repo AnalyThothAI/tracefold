@@ -419,7 +419,6 @@ class RegistryRepository:
     def ranked_market_targets(
         self,
         *,
-        projection_version: str,
         since_ms: int,
         target_types: tuple[str, ...],
         limit: int,
@@ -433,38 +432,25 @@ class RegistryRepository:
         excluded_target_ids = [str(target_id) for _, target_id in exclude_keys]
         rows = self.conn.execute(
             """
-            WITH latest_sets AS MATERIALIZED (
-              SELECT
-                "window",
-                venue,
-                current_published_at_ms
-              FROM token_radar_publication_state
-              WHERE projection_version = %s
-                AND venue = 'all'
-                AND current_published_at_ms >= %s
-                AND latest_attempt_status = 'ready'
-            ),
-            active_targets AS MATERIALIZED (
-              SELECT DISTINCT ON (rows.target_type, rows.target_id)
-                rows.target_type,
-                rows.target_id,
-                rows.pricefeed_id,
-                latest_sets.current_published_at_ms AS computed_at_ms,
-                rows.source_max_received_at_ms,
-                rows.rank_score
-              FROM latest_sets
-              JOIN token_radar_current_rows rows
-               ON rows.projection_version = %s
-               AND rows."window" = latest_sets."window"
-               AND rows.venue = latest_sets.venue
-              WHERE rows.target_type IN ('Asset', 'CexToken')
-                AND rows.target_id IS NOT NULL
+            WITH active_targets AS MATERIALIZED (
+              SELECT DISTINCT ON (resolution.target_type, resolution.target_id)
+                resolution.target_type,
+                resolution.target_id,
+                event.received_at_ms AS computed_at_ms,
+                event.received_at_ms::double precision AS score
+              FROM token_intent_resolutions resolution
+              JOIN token_intents intent ON intent.intent_id = resolution.intent_id
+              JOIN events event ON event.event_id = intent.event_id
+              WHERE resolution.is_current = true
+                AND resolution.resolution_status IN ('EXACT', 'UNIQUE_BY_CONTEXT')
+                AND resolution.target_type IN ('Asset', 'CexToken')
+                AND resolution.target_id IS NOT NULL
+                AND event.received_at_ms >= %s
               ORDER BY
-                rows.target_type,
-                rows.target_id,
-                rows.rank_score DESC,
-                rows.source_max_received_at_ms DESC,
-                rows.computed_at_ms DESC
+                resolution.target_type,
+                resolution.target_id,
+                event.received_at_ms DESC,
+                event.event_id ASC
             ),
             live_targets AS (
               SELECT
@@ -475,9 +461,9 @@ class RegistryRepository:
                 NULL::text AS native_market_id,
                 NULL::text AS quote_symbol,
                 'okx' AS provider,
-                active_targets.pricefeed_id,
+                NULL::text AS pricefeed_id,
                 active_targets.computed_at_ms,
-                active_targets.rank_score AS score
+                active_targets.score
               FROM active_targets
               JOIN registry_assets ON registry_assets.asset_id = active_targets.target_id
               WHERE active_targets.target_type = 'Asset'
@@ -487,28 +473,18 @@ class RegistryRepository:
               UNION ALL
               SELECT
                 'cex_symbol' AS target_type,
-                COALESCE(selected_pricefeed.provider, preferred_pricefeed.provider)
-                  || ':' ||
-                COALESCE(selected_pricefeed.native_market_id, preferred_pricefeed.native_market_id)
+                preferred_pricefeed.provider || ':' || preferred_pricefeed.native_market_id
                   AS target_id,
                 NULL::text AS chain_id,
                 NULL::text AS address,
-                COALESCE(selected_pricefeed.native_market_id, preferred_pricefeed.native_market_id) AS native_market_id,
-                COALESCE(selected_pricefeed.quote_symbol, preferred_pricefeed.quote_symbol) AS quote_symbol,
-                COALESCE(selected_pricefeed.provider, preferred_pricefeed.provider) AS provider,
-                COALESCE(selected_pricefeed.pricefeed_id, preferred_pricefeed.pricefeed_id) AS pricefeed_id,
+                preferred_pricefeed.native_market_id AS native_market_id,
+                preferred_pricefeed.quote_symbol AS quote_symbol,
+                preferred_pricefeed.provider AS provider,
+                preferred_pricefeed.pricefeed_id AS pricefeed_id,
                 active_targets.computed_at_ms,
-                active_targets.rank_score AS score
+                active_targets.score
               FROM active_targets
               JOIN cex_tokens ON cex_tokens.cex_token_id = active_targets.target_id
-              LEFT JOIN price_feeds selected_pricefeed
-                ON selected_pricefeed.pricefeed_id = active_targets.pricefeed_id
-               AND selected_pricefeed.subject_type = 'CexToken'
-               AND selected_pricefeed.subject_id = active_targets.target_id
-               AND selected_pricefeed.provider = 'binance'
-               AND selected_pricefeed.feed_type = 'cex_swap'
-               AND selected_pricefeed.quote_symbol = 'USDT'
-               AND selected_pricefeed.status = 'canonical'
               LEFT JOIN LATERAL (
                 SELECT pricefeed_id, provider, native_market_id, quote_symbol
                 FROM price_feeds
@@ -548,9 +524,7 @@ class RegistryRepository:
             LIMIT %s
             """,
             (
-                projection_version,
                 int(since_ms),
-                projection_version,
                 list(parsed_target_types),
                 excluded_target_types,
                 excluded_target_ids,

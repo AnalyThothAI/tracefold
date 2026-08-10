@@ -80,6 +80,57 @@ def test_openapi_ts_matches_committed_artefact(tmp_path: Path) -> None:
 
 
 @pytest.mark.contract
+def test_token_radar_contract_declares_conditional_get() -> None:
+    from tracefold.app.http.app import create_app
+    from tracefold.platform.config.settings import Settings
+
+    operation = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()["paths"]["/api/token-radar"][
+        "get"
+    ]
+
+    assert operation["parameters"] == [
+        {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": False,
+            "schema": {
+                "title": "If-None-Match",
+                "type": "string",
+            },
+        }
+    ]
+    assert operation["responses"] == {
+        "200": {
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiEnvelope_TokenRadarData_"}}},
+            "description": "Successful Response",
+            "headers": {
+                "Cache-Control": {
+                    "description": "Requires revalidation before reuse.",
+                    "schema": {"type": "string"},
+                },
+                "ETag": {
+                    "description": "Strong validator for the complete served snapshot.",
+                    "schema": {"type": "string"},
+                },
+            },
+        },
+        "304": {
+            "description": "Not Modified",
+            "headers": {
+                "Cache-Control": {
+                    "description": "Requires revalidation before reuse.",
+                    "schema": {"type": "string"},
+                },
+                "ETag": {
+                    "description": "Strong validator for the complete served snapshot.",
+                    "schema": {"type": "string"},
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.contract
 def test_news_routes_publish_exact_named_data_contracts() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings

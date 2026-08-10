@@ -31,18 +31,6 @@
   letter-spacing: 0;
 }
 
-.toolbar {
-  display: flex;
-  max-width: 100%;
-  flex-wrap: wrap;
-  gap: 3px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  background: var(--surface-canvas);
-  padding: 3px;
-}
-
-.toolbar button,
 .loadMore {
   min-height: 28px;
   border-radius: 3px;
@@ -52,23 +40,19 @@
   cursor: pointer;
 }
 
-.toolbar button {
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-subtle);
-  padding: 0 9px;
-  white-space: nowrap;
-}
-
-.toolbar button[aria-pressed="true"] {
-  background: var(--signal-info-soft);
-  color: var(--signal-info);
-}
-
 .events {
   display: grid;
   gap: 8px;
+}
+
+.focusStatus {
+  margin: 0;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-primary);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .empty {

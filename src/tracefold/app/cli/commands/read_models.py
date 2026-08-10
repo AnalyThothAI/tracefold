@@ -4,16 +4,13 @@ from typing import Any
 
 from tracefold.app.repositories import repositories
 from tracefold.market import (
-    TOKEN_RADAR_DEFAULT_VENUE,
-    AssetFlowService,
     SearchCursorError,
     SearchEventsQuery,
     SearchService,
-    TokenProfileReadModel,
 )
 from tracefold.platform.config.settings import load_settings
 
-READ_MODEL_COMMANDS = frozenset({"recent", "search", "asset-flow"})
+READ_MODEL_COMMANDS = frozenset({"recent", "search"})
 
 
 def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
@@ -57,26 +54,8 @@ def handle_read_model(args: object) -> tuple[int, dict[str, Any]]:
                 },
             )
 
-        if command == "asset-flow":
-            data = AssetFlowService(
-                token_radar=repos.token_radar,
-                profiles=TokenProfileReadModel(token_profiles=repos.token_profiles),
-            ).asset_flow(
-                window=args.window,
-                limit=args.limit,
-                venue=TOKEN_RADAR_DEFAULT_VENUE,
-                now_ms=_now_ms(),
-            )
-            return 0, {"ok": True, "data": {"window": args.window, **data}}
-
     return 2, {"ok": False, "error": f"unknown read model command: {command}"}
 
 
 def _handle_set(raw: str) -> set[str]:
     return {item.strip().lstrip("@").lower() for item in raw.split(",") if item.strip()}
-
-
-def _now_ms() -> int:
-    import time
-
-    return int(time.time() * 1000)

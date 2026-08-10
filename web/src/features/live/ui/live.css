@@ -9,68 +9,31 @@
     overflow: hidden;
   }
 
-  .live-radar-surface {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr);
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .radar-panel {
+  .live-radar-queue {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    border-right: 0;
-    background:
-      linear-gradient(180deg, rgba(241, 234, 214, 0.025), transparent 220px), var(--surface-root);
+    background: var(--surface-root);
   }
 
-  .radar-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto;
-    align-items: center;
-    gap: 16px;
-    min-width: 0;
-    min-height: 60px;
-    border-bottom: 1px solid rgba(154, 159, 146, 0.14);
-    padding: 10px 16px;
+  .live-radar-queue--delayed {
+    grid-template-rows: auto auto minmax(0, 1fr);
   }
 
-  .radar-toolbar-primary {
+  .live-radar-header {
     display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 12px;
     min-width: 0;
-  }
-
-  .radar-scan-title {
-    display: flex;
+    height: 60px;
     align-items: baseline;
-    gap: 10px;
-    min-width: 0;
+    gap: 12px;
+    contain: strict;
+    border-bottom: 1px solid var(--border-faint);
+    padding: 14px 16px;
   }
 
-  .radar-scan-title > span {
-    overflow: hidden;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .radar-toolbar h2 {
-    position: static;
-    width: auto;
-    height: auto;
-    overflow: visible;
-    clip: auto;
-    flex: 0 0 auto;
+  .live-radar-header h1 {
     margin: 0;
     color: var(--text-primary);
     font-family: var(--font-sans);
@@ -78,157 +41,159 @@
     line-height: 1.15;
   }
 
-  .radar-content-status {
-    display: inline-flex;
-    align-items: center;
-    flex: 0 0 auto;
-    gap: 7px;
-    min-width: 0;
+  .live-radar-header span,
+  .live-radar-header time {
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
-    line-height: 1.2;
-    white-space: nowrap;
   }
 
-  .radar-content-status-dot {
-    width: 7px;
-    height: 7px;
-    flex: 0 0 auto;
-    border-radius: 50%;
-    background: var(--text-subtle);
-    box-shadow: 0 0 0 3px rgba(154, 159, 146, 0.08);
+  .live-radar-header time {
+    margin-left: auto;
   }
 
-  .radar-content-status[data-health="healthy"] {
-    color: var(--signal-positive);
-  }
-
-  .radar-content-status[data-health="healthy"] .radar-content-status-dot {
-    background: var(--signal-positive);
-    box-shadow: 0 0 0 3px var(--signal-positive-soft);
-  }
-
-  .radar-content-status[data-health="delayed"] {
+  .live-radar-delay {
+    margin: 0;
+    border-bottom: 1px solid var(--signal-caution-border);
+    background: var(--signal-caution-soft);
     color: var(--signal-caution);
-  }
-
-  .radar-content-status[data-health="delayed"] .radar-content-status-dot {
-    background: var(--signal-caution);
-    box-shadow: 0 0 0 3px var(--signal-caution-soft);
-  }
-
-  .radar-content-status[data-health="unavailable"] {
-    color: var(--signal-negative);
-  }
-
-  .radar-content-status[data-health="unavailable"] .radar-content-status-dot {
-    background: var(--signal-negative);
-    box-shadow: 0 0 0 3px var(--signal-negative-soft);
-  }
-
-  .toolbar-controls {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .token-radar-venue-filter {
-    display: flex;
-    gap: 4px;
-    border: 1px solid rgba(154, 159, 146, 0.14);
-    border-radius: var(--radius-md);
-    background: rgba(3, 4, 3, 0.58);
-    padding: 3px;
-  }
-
-  .token-radar-venue-filter button {
-    min-width: 44px;
-    height: 27px;
-    border: 0;
-    border-radius: 5px;
-    color: var(--text-muted);
-    background: transparent;
-    padding: 0 9px;
+    padding: 7px 16px;
     font-family: var(--font-mono);
     font-size: 11px;
   }
 
-  .token-radar-venue-filter button.active {
-    color: #ffd184;
-    background: rgba(217, 154, 40, 0.16);
+  .live-radar-content {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    contain: strict;
   }
 
-  .token-radar-table {
-    height: auto;
-    max-height: none;
+  .live-radar-items {
+    position: relative;
     min-height: 0;
     overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    margin: 0;
     padding: 10px 12px 12px;
+    list-style: none;
   }
 
-  @media (max-width: 860px) {
-    .radar-toolbar {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto;
-      gap: 10px;
-      min-height: 0;
-      padding: 10px;
-    }
+  .live-radar-empty {
+    position: absolute;
+    z-index: 1;
+    top: 10px;
+    right: 12px;
+    left: 12px;
+    display: block;
+    min-width: 0;
+  }
 
-    .toolbar-controls {
-      width: 100%;
-      max-width: 100%;
-      overflow: hidden;
-    }
+  .live-radar-empty--inactive,
+  .live-radar-item--empty {
+    pointer-events: none;
+  }
 
-    .token-radar-venue-filter {
-      display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      width: 100%;
-      min-width: 0;
-    }
+  .live-radar-item {
+    min-width: 0;
+    contain: layout paint;
+    border: 1px solid var(--border-faint);
+    border-left: 3px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    padding: 10px 12px;
+  }
 
-    .token-radar-venue-filter button {
-      min-width: 0;
-      padding-inline: 4px;
-    }
+  .live-radar-item-primary {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .live-radar-item-primary > span {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .live-radar-item-primary a {
+    flex: 0 0 auto;
+    border: 1px solid var(--accent-border);
+    border-radius: 4px;
+    background: var(--accent-soft);
+    color: var(--accent-primary);
+    padding: 5px 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-decoration: none;
+  }
+
+  .live-radar-item-primary a:hover,
+  .live-radar-item-primary a:focus-visible {
+    border-color: var(--accent-primary);
+  }
+
+  .live-radar-item-evidence {
+    min-width: 0;
+    margin-top: 6px;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @media (max-width: 767px) {
-    .radar-toolbar {
+    .live-radar-header {
+      height: 52px;
       gap: 8px;
+      padding: 12px 10px;
     }
 
-    .radar-toolbar-primary {
-      gap: 8px;
-    }
-
-    .radar-scan-title {
-      gap: 7px;
-    }
-
-    .radar-toolbar h2 {
+    .live-radar-header h1 {
       font-size: 18px;
     }
 
-    .radar-content-status {
-      font-size: 10px;
+    .live-radar-header time {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .toolbar-controls {
+    .live-radar-items {
+      gap: 7px;
+      padding: 8px;
+    }
+
+    .live-radar-empty {
+      top: 8px;
+      right: 8px;
+      left: 8px;
+    }
+
+    .live-radar-item {
+      padding: 9px;
+    }
+
+    .live-radar-item-primary {
+      gap: 7px;
+    }
+
+    .live-radar-item-evidence {
       overflow-x: auto;
-    }
-
-    .token-radar-table {
-      height: auto;
-      max-height: none;
-      min-height: 0;
-      overflow: auto;
     }
   }
 }

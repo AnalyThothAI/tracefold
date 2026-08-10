@@ -46,6 +46,13 @@ OpenNews original headline and freezes any translation only inside its delivery
 envelope. The six Macro modules are also deterministic views
 over persisted facts.
 
+Token Radar does not publish a honeypot, contract, holder, liquidity, Smart
+Money, or token-safety judgment. Removing those former product gates does not
+relax application security: HTTP/WebSocket authentication, exact request
+validation, secret handling, PostgreSQL role/transaction integrity, migration
+confirmation, and source-fact provenance remain mandatory and are not Radar
+configuration.
+
 When `news.rss_enabled` is explicitly true, News RSS acquisition accepts only
 the code-owned HTTPS catalog. The Adapter
 does not use automatic redirects: it follows at most two hops and, before every

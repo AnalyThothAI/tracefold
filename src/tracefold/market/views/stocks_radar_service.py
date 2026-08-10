@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.market.views.stocks_radar_query import StocksRadarQuery
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.validation import require_nonnegative_int
-
-from .asset_flow_service import WINDOW_MS
 
 
 class StocksRadarService:
@@ -25,7 +24,7 @@ class StocksRadarService:
         now_ms: int,
     ) -> dict[str, Any]:
         parsed_limit = require_nonnegative_int(limit, error_code="stocks_radar_limit_required")
-        since_ms = int(now_ms) - WINDOW_MS[window]
+        since_ms = int(now_ms) - PRODUCT_WINDOW_MS[window]
         rows = self.stock_rows_query.stock_rows(
             window=window,
             limit=parsed_limit,

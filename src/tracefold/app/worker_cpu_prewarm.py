@@ -6,8 +6,7 @@ import sys
 _WORKER_CPU_MODULES = (
     "tracefold.macro.projection",
     "tracefold.market.profiles.profile_projection",
-    "tracefold.market.radar.microbatch",
-    "tracefold.market.radar.projection_worker",
+    "tracefold.market.radar.current_worker",
     "tracefold.news.projection",
 )
 

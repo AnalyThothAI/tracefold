@@ -82,7 +82,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]
 #         the pattern `f"WHERE {' AND '.join(clauses)}"` where clauses is filled with
 #         hardcoded strings + %s placeholders is a safe dynamic-filter pattern for psycopg.
 # - S105/S106: "possible password" fires on version strings, filename defaults, redaction
-#         strings (TOKEN_RADAR_PROJECTION_VERSION, "password_file", "token_resolution_status");
+#         strings ("password_file", "token_resolution_status");
 #         no actual credentials are hardcoded in the src/ tree.
 # - RUF001: codebase has intentional Chinese fullwidth characters in constant/model strings
 #         (e.g. Chinese punctuation in user-visible prompts); not copy-paste accidents.

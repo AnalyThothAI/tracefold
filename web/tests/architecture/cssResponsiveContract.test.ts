@@ -49,12 +49,11 @@ describe("responsive CSS contract", () => {
     const liveCss = readFileSync(liveCssPath, "utf8");
     const rules = findRules(liveCss);
     const livePageRules = rules.filter((rule) => selectorContains(rule.selector, ".live-page"));
-    const radarPanelRules = rules.filter((rule) => selectorContains(rule.selector, ".radar-panel"));
-    const radarToolbarRules = rules.filter((rule) =>
-      selectorContains(rule.selector, ".radar-toolbar"),
+    const radarQueueRules = rules.filter((rule) =>
+      selectorContains(rule.selector, ".live-radar-queue"),
     );
-    const radarToolbarPrimaryRules = rules.filter((rule) =>
-      selectorContains(rule.selector, ".radar-toolbar-primary"),
+    const radarItemsRules = rules.filter((rule) =>
+      selectorContains(rule.selector, ".live-radar-items"),
     );
 
     expect(
@@ -66,34 +65,30 @@ describe("responsive CSS contract", () => {
       ".live-page must reserve exactly one full-height Radar row",
     ).toBe(true);
     expect(
-      radarPanelRules.some(
+      radarQueueRules.some(
         (rule) =>
+          selectorContains(rule.selector, ".live-radar-queue") &&
+          !selectorContains(rule.selector, ".live-radar-queue--delayed") &&
           declarationValue(rule.body, "grid-template-rows") === "auto minmax(0, 1fr)" &&
           declarationValue(rule.body, "overflow") === "hidden",
       ),
-      ".radar-panel must bound its header and token-row scroller",
+      ".live-radar-queue must bound its header and queue scroller without an empty delay row",
     ).toBe(true);
     expect(
-      radarToolbarRules.some(
+      rules.some(
         (rule) =>
-          declarationValue(rule.body, "grid-template-columns") === "minmax(0, 1fr) auto" &&
-          declarationValue(rule.body, "grid-template-rows") === "auto",
+          selectorContains(rule.selector, ".live-radar-queue--delayed") &&
+          declarationValue(rule.body, "grid-template-rows") === "auto auto minmax(0, 1fr)",
       ),
-      ".radar-toolbar must stay compact on wide screens",
+      ".live-radar-queue must add a bounded row only while delay status is visible",
     ).toBe(true);
     expect(
-      radarToolbarRules.some(
+      radarItemsRules.some(
         (rule) =>
-          declarationValue(rule.body, "grid-template-columns") === "minmax(0, 1fr)" &&
-          declarationValue(rule.body, "grid-template-rows") === "auto auto",
+          declarationValue(rule.body, "overflow") === "auto" &&
+          declarationValue(rule.body, "min-height") === "0",
       ),
-      ".radar-toolbar must stack controls below the title group on narrow screens",
-    ).toBe(true);
-    expect(
-      radarToolbarPrimaryRules.some(
-        (rule) => declarationValue(rule.body, "justify-content") === "flex-start",
-      ),
-      ".radar-toolbar-primary must keep content age beside the title and case count",
+      ".live-radar-items must own the bounded queue scroll",
     ).toBe(true);
   });
 
@@ -228,7 +223,7 @@ describe("responsive CSS contract", () => {
     expect(
       offenders,
       [
-        "Live Token Radar must use token-radar-* selectors owned by live.css.",
+        "Live Radar must use live-radar-* selectors owned by live.css.",
         "Stocks must own stock-radar-* selectors in stocks.css.",
         "Shared RadarControls must own radar-controls-* selectors in shared/ui/RadarControls.css.",
       ].join("\n"),

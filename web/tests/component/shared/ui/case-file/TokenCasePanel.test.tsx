@@ -8,7 +8,7 @@ describe("TokenCasePanel", () => {
   it("renders the shared token case anatomy", () => {
     const vm = buildTokenCaseViewModel({
       dossier: tokenCaseFixture(),
-      route: { window: "1h" },
+      route: { window: "1h", focus: null, triggerEventId: null },
     });
 
     render(<TokenCasePanel vm={vm} onLoadMorePosts={vi.fn()} onWindowChange={vi.fn()} />);

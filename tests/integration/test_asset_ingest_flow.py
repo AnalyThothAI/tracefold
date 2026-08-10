@@ -39,7 +39,6 @@ def open_ingest(tmp_path):
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
         token_intent_lookup=repos.token_intent_lookup,
-        radar_source_edges=repos.radar_source_edges,
         persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,
@@ -142,7 +141,7 @@ def test_ingest_unknown_chain_ca_is_retained_as_unresolved_asset(tmp_path):
     assert result.token_resolutions[0]["target_id"] is None
 
 
-def test_ingest_capture_tick_updates_current_and_enqueues_token_radar(tmp_path):
+def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_path):
     conn, repos, ingest = open_ingest(tmp_path)
     event = make_event(
         "event-capture-dirty",
@@ -153,20 +152,17 @@ def test_ingest_capture_tick_updates_current_and_enqueues_token_radar(tmp_path):
         with repos.transaction():
             prepared, resolutions, capture_result = _prepared_capture(ingest, event)
             result = ingest.commit_prepared_event(prepared, resolutions=resolutions, captures=[capture_result])
-        asset_id = _asset_identity_id(resolutions)
         current_row = repos.market_tick_current.get(
             target_type=capture_result.tick.target_type,
             target_id=capture_result.tick.target_id,
         )
-        dirty_rows = conn.execute(
+        radar_row = conn.execute(
             """
-            SELECT window_key, venue, status
-            FROM radar_projection_frontiers
-            WHERE target_type = 'Asset' AND target_id = %s
-            ORDER BY window_key
-            """,
-            (asset_id,),
-        ).fetchall()
+            SELECT latest_attempt_status, served_payload
+            FROM token_radar_current
+            WHERE singleton_key = true
+            """
+        ).fetchone()
         live_row = conn.execute(
             """
             SELECT event_kind, payload_json
@@ -181,15 +177,14 @@ def test_ingest_capture_tick_updates_current_and_enqueues_token_radar(tmp_path):
     assert result.inserted is True
     assert current_row is not None
     assert current_row["tick_id"] == capture_result.tick.tick_id
-    assert len(dirty_rows) == 4
-    assert {row["venue"] for row in dirty_rows} == {"all"}
-    assert {row["status"] for row in dirty_rows} == {"dirty"}
+    assert radar_row["latest_attempt_status"] == "never"
+    assert radar_row["served_payload"]["items"] == []
     assert live_row is not None
     assert live_row["event_kind"] == "event"
     assert live_row["payload_json"]["event"]["event_id"] == event.event_id
 
 
-def test_ingest_capture_tick_current_and_downstream_dirty_roll_back_with_event_transaction(tmp_path):
+def test_ingest_capture_tick_current_rolls_back_with_event_transaction(tmp_path):
     conn, repos, ingest = open_ingest(tmp_path)
     event = make_event(
         "event-capture-rollback",
@@ -213,14 +208,12 @@ def test_ingest_capture_tick_current_and_downstream_dirty_roll_back_with_event_t
             target_type=capture_result.tick.target_type,
             target_id=capture_result.tick.target_id,
         )
-        dirty_row = conn.execute("SELECT * FROM radar_projection_frontiers").fetchone()
     finally:
         conn.close()
 
     assert event_row is None
     assert tick_row is None
     assert current_row is None
-    assert dirty_row is None
 
 
 def test_ingest_event_and_persisted_live_journal_roll_back_together(
@@ -332,10 +325,6 @@ def _prepared_capture(ingest: IngestService, event):
         created_at_ms=event.received_at_ms,
     )
     return prepared, resolutions, CaptureResult(tick=tick, capture=capture)
-
-
-def _asset_identity_id(resolutions) -> str:
-    return str(next(item.target_id for item in resolutions if item.target_type == "Asset" and item.target_id))
 
 
 def _capture_tick(market_resolution: dict[str, object], *, observed_at_ms: int) -> MarketTick:

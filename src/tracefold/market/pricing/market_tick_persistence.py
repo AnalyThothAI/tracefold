@@ -51,7 +51,7 @@ class MarketTickPersistenceService:
         inserted_rows = self.repos.market_ticks.insert_ticks_returning_rows(materialized)
         latest_rows = _latest_rows_by_target(inserted_rows)
         current_rows = self._advance_current(latest_rows)
-        product_targets = self._mark_changed_targets(current_rows, now_ms=now_ms)
+        product_targets = self._product_targets(current_rows)
         live_market_rows = [
             {
                 **row,
@@ -87,7 +87,7 @@ class MarketTickPersistenceService:
         self.repos.require_transaction(operation="market_tick_current_rebuild")
         latest_rows = self.repos.market_ticks.latest_target_ticks_after(after=after, limit=limit)
         current_rows = self._advance_current(latest_rows)
-        self._mark_changed_targets(current_rows, now_ms=now_ms)
+        self._product_targets(current_rows)
         next_cursor = None
         if latest_rows:
             last = latest_rows[-1]
@@ -108,23 +108,14 @@ class MarketTickPersistenceService:
             if self.repos.market_tick_current.upsert_current_from_tick(row)
         ]
 
-    def _mark_changed_targets(
+    def _product_targets(
         self,
         current_rows: list[dict[str, Any]],
-        *,
-        now_ms: int,
     ) -> dict[tuple[str, str], tuple[str, str]]:
         changed_targets = _target_keys(current_rows)
         product_targets: dict[tuple[str, str], tuple[str, str]] = (
             self.repos.registry.product_targets_for_market_targets(changed_targets)
         )
-        changed_product_targets = list(dict.fromkeys(product_targets.values()))
-        if changed_product_targets:
-            self.repos.radar_source_edges.mark_market_targets(
-                changed_product_targets,
-                now_ms=int(now_ms),
-                input_fingerprint="|".join(sorted(str(row["tick_id"]) for row in current_rows)),
-            )
         return product_targets
 
 

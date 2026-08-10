@@ -11,9 +11,8 @@ from tracefold.market.views.search_aliases import (
     fuzzy_canonical_symbol_for_query,
     target_symbols_for_or_query,
 )
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.validation import require_nonnegative_int
-
-from .asset_flow_service import WINDOW_MS
 
 RRF_K = 60.0
 ROUTE_WEIGHTS = {
@@ -163,7 +162,7 @@ def _target_intent(intent: SearchIntent) -> SearchIntent:
 def _since_ms(*, window: str, now_ms: int | None) -> int:
     resolved_now_ms = int(now_ms or time.time() * 1000)
     try:
-        window_ms = WINDOW_MS[window]
+        window_ms = PRODUCT_WINDOW_MS[window]
     except KeyError as exc:
         raise SearchWindowError(window) from exc
     return resolved_now_ms - window_ms

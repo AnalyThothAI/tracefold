@@ -252,7 +252,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'token_radar_current_rows'
+                  AND table_name = 'token_radar_current'
                 """
             ).fetchall()
         }
@@ -303,6 +303,12 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                         "token_profile_current_dirty_targets",
                         "token_radar_dirty_targets",
                         "token_radar_rank_source_events",
+                        "token_radar_current_rows",
+                        "token_radar_publication_state",
+                        "token_radar_target_features",
+                        "token_radar_target_first_seen",
+                        "radar_projection_frontiers",
+                        "radar_source_edges",
                     ],
                 ),
             ).fetchall()
@@ -358,6 +364,14 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 """
             ).fetchall()
         }
+        terminal_owner_constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+              FROM pg_constraint
+             WHERE conrelid = 'queue_terminal_events'::regclass
+               AND conname = 'queue_terminal_events_owner_key_check'
+            """
+        ).fetchone()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     finally:
         conn.close()
@@ -369,8 +383,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "token_intent_resolutions",
         "market_ticks",
         "enriched_events",
-        "token_radar_current_rows",
-        "token_radar_publication_state",
+        "token_radar_current",
         "stock_attention_target_features",
         "stocks_radar_current_rows",
         "stocks_radar_publication_state",
@@ -471,21 +484,28 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert {"heat_tier", "terminal_reason"} <= asset_profile_refresh_target_columns
     assert {"matched_handles_json", "is_watched", "matched_at_ms"}.isdisjoint(event_columns)
     assert "is_watched" not in event_entity_columns
-    assert {"scope", "social_heat_watched_mentions", "cohort_public_followup_authors"}.isdisjoint(radar_feature_columns)
-    assert "cohort_followup_authors" in radar_feature_columns
-    assert "scope" not in radar_current_columns
-    assert "scope" not in radar_publication_columns
-    assert "scope" not in radar_first_seen_columns
-    assert {
-        "claimed_input_fingerprint",
-        "claimed_projection_version",
-    } <= radar_frontier_columns
-    assert {
-        "pending_first_dirty_at_ms",
-        "pending_deadline_at_ms",
-        "pending_input_fingerprint",
-        "pending_projection_version",
-    }.isdisjoint(radar_frontier_columns)
+    assert radar_feature_columns == set()
+    assert radar_publication_columns == set()
+    assert radar_first_seen_columns == set()
+    assert radar_frontier_columns == set()
+    assert radar_current_columns == {
+        "singleton_key",
+        "schema_version",
+        "ruleset_version",
+        "ruleset_fingerprint",
+        "input_fingerprint",
+        "state_fingerprint",
+        "evidence_as_of_ms",
+        "evaluation_at_ms",
+        "input_rows",
+        "input_bytes",
+        "latest_attempt_status",
+        "latest_error_code",
+        "failure_count",
+        "served_payload",
+        "created_at_ms",
+        "updated_at_ms",
+    }
     assert retired_projection_tables == set()
     assert performance_indexes == {
         "idx_asset_identity_evidence_profile_source",
@@ -496,8 +516,6 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert resolution_lookup_index is not None
     assert "INCLUDE (event_id)" in resolution_lookup_index["indexdef"]
     assert projection_eligibility_indexes == {
-        "idx_radar_projection_frontiers_microbatch_eligible",
-        "idx_radar_projection_frontiers_expired_claim",
         "idx_macro_module_frontiers_eligible",
         "idx_token_profile_projection_frontiers_eligible",
     }
@@ -505,7 +523,9 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
     }
-    assert version == latest_migration_version() == "20260809_0247"
+    assert terminal_owner_constraint is not None
+    assert "radar_projection" not in terminal_owner_constraint["definition"]
+    assert version == latest_migration_version() == "20260810_0249"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -530,7 +550,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260809_0247"
+    assert version == latest_migration_version() == "20260810_0249"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -909,7 +929,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260809_0247"
+        assert version == latest_migration_version() == "20260810_0249"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

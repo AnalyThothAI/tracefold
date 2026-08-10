@@ -215,7 +215,7 @@ def _enqueue_missing_asset_profile_targets(
             ) as repos,
             repos.transaction(),
         ):
-            result = repos.asset_profile_refresh_targets.enqueue_missing_token_radar_current_targets_for_ops(
+            result = repos.asset_profile_refresh_targets.enqueue_missing_identity_assets_for_ops(
                 provider=profile_source.provider,
                 now_ms=now_ms,
                 limit=limit,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tracefold.macro import MacroReason
 
@@ -1498,219 +1499,71 @@ class TokenCaseData(ExactApiSchema):
     timeline: JsonObject
     posts: JsonObject
     market_live: JsonObject
-    current_radar: TokenRadarFactRowData | None
 
 
-class TokenRadarIntentData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    intent_id: str
-    event_id: str
-    display_symbol: str | None = None
-    display_name: str | None = None
-    evidence: list[Any]
-
-
-class TokenRadarMetaData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    lane: str | None = None
-    rank: int | None = None
-    listed_at_ms: int | None = None
-    computed_at_ms: int | None = None
-    source_max_received_at_ms: int | None = None
-
-
-class TokenRadarResolutionData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    status: str
-    target_type: str | None
-    target_id: str | None
-    pricefeed_id: str | None
-    reason_codes: list[str]
-    candidate_ids: list[str]
-    lookup_keys: list[str]
-    discovery: list[JsonObject]
-
-
-class TokenRadarQualityData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    status: str
-    degraded_reasons: list[str]
-
-
-class TokenFactorSubjectData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    target_type: str | None
-    target_id: str | None
-    symbol: str | None
-    target_market_type: str | None
+class TokenRadarTargetData(ExactApiSchema):
+    target_type: Literal["Asset", "CexToken"]
+    target_id: str
+    symbol: str
     chain: str | None
+    exchange: str | None
     address: str | None
-    pricefeed_id: str | None
 
 
-class TokenFactorMarketReadinessData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
+class TokenRadarWhyNowData(ExactApiSchema):
+    current_mentions: int = Field(ge=0)
+    prior_mentions: int = Field(ge=0)
+    mention_delta: int = Field(ge=0)
 
-    anchor_status: str
-    latest_status: str
-    dex_floor_status: str
-    missing_fields: list[str]
-    stale_fields: list[str]
-
-
-class TokenFactorMarketData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    event_anchor: JsonObject | None
-    decision_latest: JsonObject | None
-    readiness: TokenFactorMarketReadinessData
-    capture_method: str | None = None
-    capture_reason: str | None = None
-    tick_lag_ms: int | float | None = None
+    @model_validator(mode="after")
+    def validate_delta(self) -> TokenRadarWhyNowData:
+        if self.current_mentions - self.prior_mentions != self.mention_delta:
+            raise ValueError("token_radar_mention_delta_invalid")
+        return self
 
 
-class TokenFactorFamilyData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    raw_score: int | float
-    score: int | float
-    weight: int | float
-    data_health: str
-    facts: JsonObject
-    factors: JsonObject
+class TokenRadarEvidenceData(ExactApiSchema):
+    new_independent_author_count: int = Field(ge=0)
+    independent_text_count: int = Field(ge=0)
+    time_to_nth_author_ms: int = Field(ge=0)
+    duplicate_share: float = Field(ge=0, le=1)
 
 
-class TokenFactorFamiliesData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
+class TokenRadarMarketData(ExactApiSchema):
+    status: Literal["confirmed", "unavailable"]
+    price_change_since_signal: float | None
 
-    social_heat: TokenFactorFamilyData
-    social_propagation: TokenFactorFamilyData
-    timing_risk: TokenFactorFamilyData
-
-
-class TokenFactorGatesData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    eligible_for_high_alert: bool
-    max_decision: Literal["discard", "watch", "high_alert"]
-    blocked_reasons: list[str]
-    risk_reasons: list[str]
+    @model_validator(mode="after")
+    def validate_market_state(self) -> TokenRadarMarketData:
+        if self.status == "confirmed":
+            if self.price_change_since_signal is None or not math.isfinite(self.price_change_since_signal):
+                raise ValueError("token_radar_confirmed_market_change_required")
+        elif self.price_change_since_signal is not None:
+            raise ValueError("token_radar_unavailable_market_change_forbidden")
+        return self
 
 
-class TokenFactorFamilyValuesData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    social_heat: int | float
-    social_propagation: int | float
-    timing_risk: int | float
-
-
-class TokenFactorRankValuesData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    social_heat: int | float | None
-    social_propagation: int | float | None
-    timing_risk: int | float | None
-
-
-class TokenFactorNormalizationData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    status: str
-    cohort_status: str
-    cohort: JsonObject
-    factor_ranks: TokenFactorRankValuesData
-    alpha_rank: int | float | None
-
-
-class TokenFactorCompositeData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    raw_alpha_score: int | float
-    rank_score: int | float
-    family_scores: TokenFactorFamilyValuesData
-    recommended_decision: Literal["discard", "watch", "high_alert"]
-
-
-class TokenFactorProvenanceData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    source_event_ids: list[str]
-    computed_at_ms: int
-
-
-class TokenFactorSnapshotData(ApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["token_factor_snapshot_v5_provider_neutral"]
-    subject: TokenFactorSubjectData
-    market: TokenFactorMarketData
-    gates: TokenFactorGatesData
-    data_health: JsonObject
-    families: TokenFactorFamiliesData
-    normalization: TokenFactorNormalizationData
-    composite: TokenFactorCompositeData
-    provenance: TokenFactorProvenanceData
-
-
-class TokenRadarFactRowData(ExactApiSchema):
-    model_config = ConfigDict(extra="forbid")
-
-    intent: TokenRadarIntentData
-    radar: TokenRadarMetaData
-    resolution: TokenRadarResolutionData
-    quality: TokenRadarQualityData
-    factor_snapshot: TokenFactorSnapshotData
-
-
-class TokenRadarRowData(TokenRadarFactRowData):
-    profile: JsonObject | None = None
-
-
-class TokenRadarAnchorCoverageData(ExactApiSchema):
-    status: str
-    ready: int
-    missing: int
-    total: int
-
-
-class TokenRadarUnresolvedData(ExactApiSchema):
-    identity_missing_count: int
-    nil_count: int
-    ambiguous_count: int
-    sample_symbols: list[str]
-
-
-class TokenRadarProjectionData(ExactApiSchema):
-    status: Literal["fresh", "stale", "pending", "failed"]
-    version: str
-    source: Literal["token_radar_current_rows"]
-    venue: str
-    reason: str | None
-    latest_attempt_status: str
-    row_count: int
-    source_rows: int
-    source_max_received_at_ms: int
-    source_frontier_ms: int | None
-    computed_at_ms: int | None
-    error: str | None
-    anchor_coverage: TokenRadarAnchorCoverageData
-    quality_status: Literal["ready", "degraded", "insufficient", "failed"]
-    degraded_reasons: list[str]
-    unresolved: TokenRadarUnresolvedData
+class TokenRadarItemData(ExactApiSchema):
+    target: TokenRadarTargetData
+    trigger_event_id: str
+    triggered_at_ms: int = Field(ge=0)
+    why_now: TokenRadarWhyNowData
+    evidence: TokenRadarEvidenceData
+    market: TokenRadarMarketData
+    counter_evidence: Literal["market_confirmation_unavailable"] | None
 
 
 class TokenRadarData(ExactApiSchema):
-    window: str
-    venue: str
-    targets: list[TokenRadarRowData]
-    attention: list[TokenRadarRowData]
-    projection: TokenRadarProjectionData
+    schema_version: Literal["token_radar_snapshot_v1"]
+    evidence_as_of_ms: int = Field(ge=0)
+    eligible_total: int = Field(ge=0)
+    items: list[TokenRadarItemData] = Field(max_length=8)
+
+    @model_validator(mode="after")
+    def validate_selection_count(self) -> TokenRadarData:
+        if self.eligible_total < len(self.items):
+            raise ValueError("token_radar_eligible_total_invalid")
+        return self
 
 
 class StocksRadarQueryData(ExactApiSchema):

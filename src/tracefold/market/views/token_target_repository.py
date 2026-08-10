@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.market.radar.constants import TOKEN_RADAR_RESOLVER_POLICY_VERSION
+from tracefold.market.identity.resolver_policy import TOKEN_RESOLVER_POLICY_VERSION
 from tracefold.platform.validation import require_nonnegative_int
 
 
@@ -151,7 +151,7 @@ class TokenTargetRepository:
             "tir.resolver_policy_version = %s",
             "events.received_at_ms >= %s",
         ]
-        params: list[Any] = [target_type, target_id, TOKEN_RADAR_RESOLVER_POLICY_VERSION, int(since_ms)]
+        params: list[Any] = [target_type, target_id, TOKEN_RESOLVER_POLICY_VERSION, int(since_ms)]
         if cursor is not None:
             cursor_ms, cursor_event_id = cursor
             clauses.append("(events.received_at_ms, events.event_id) < (%s, %s)")
@@ -302,7 +302,7 @@ class TokenTargetRepository:
             source_event_ids,
             target_type,
             target_id,
-            TOKEN_RADAR_RESOLVER_POLICY_VERSION,
+            TOKEN_RESOLVER_POLICY_VERSION,
         ]
         params.append(row_limit)
         rows = self.conn.execute(

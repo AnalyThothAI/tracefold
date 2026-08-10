@@ -160,12 +160,14 @@ def test_retained_worker_metric_names_and_labels_have_no_framework_dependency() 
     telemetry = TelemetryRegistry()
     telemetry.record_transaction_seconds("projection_edf", 0.1)
     telemetry.set_projection_rows("projection_edf", "source", 10)
+    telemetry.set_projection_bytes("token_radar_current", "output", 20_480)
     telemetry.record_projection_cache("projection_edf", "hit")
     telemetry.set_queue_oldest_delay_seconds("news_acquisition", "sources", 2.0)
 
     metrics = telemetry.render_prometheus_text()
     assert 'tracefold_worker_transaction_seconds_count{worker="projection_edf"} 1.0' in metrics
     assert 'tracefold_worker_projection_rows{stage="source",worker="projection_edf"} 10.0' in metrics
+    assert 'tracefold_worker_projection_bytes{direction="output",worker="token_radar_current"} 20480.0' in metrics
     assert 'tracefold_worker_projection_cache_total{outcome="hit",worker="projection_edf"} 1.0' in metrics
     assert 'tracefold_worker_queue_oldest_delay_seconds{queue="sources",worker="news_acquisition"} 2.0' in metrics
 

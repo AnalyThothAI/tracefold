@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.market.pricing.message_price_payload import message_price_payload
-from tracefold.market.radar.post_text_quality import post_quality_score
+from tracefold.market.views.post_text_quality import post_quality_score
 
 
 def token_target_post_payload(

@@ -36,6 +36,10 @@ def _components(
         async def reconcile(self) -> None:
             return None
 
+    class _RadarCurrent:
+        async def sample(self) -> None:
+            return None
+
     return workers_module._Components(
         providers=market_providers_module.AssetMarketProviders(),
         asset_profile_refresh=_AssetProfileRefresh(),
@@ -48,6 +52,7 @@ def _components(
         macro_turns=(),
         due_turns=due_turns,
         market_poll=None,
+        radar_current=_RadarCurrent(),
         projections=(),
         models=(),
         document_model=None,

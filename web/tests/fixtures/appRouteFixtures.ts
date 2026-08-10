@@ -1,13 +1,10 @@
+import type { TokenRadarSnapshot } from "@features/live";
 import type {
-  AssetFlowData,
-  AssetFlowRow,
   OpenApiStatusData,
   SearchInspectData,
   TokenPostsData,
   TokenSocialTimelineData,
 } from "@lib/types";
-
-import { marketContextFixture, marketObservationFixture } from "./marketFixtures";
 
 const NOW = 1_777_770_000_000;
 const RADAR_ADDRESS = "0x6982508145454Ce325dDbE47a25d4ec3d2311933";
@@ -37,217 +34,42 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         unavailable_reason: null,
       },
     },
-    providers: {
-      status: "ok",
-      reasons: [],
-      items: [],
-    },
+    providers: { status: "ok", reasons: [], items: [] },
     ...overrides,
   };
 }
 
-export function tokenRadarFixture(overrides: Partial<AssetFlowData> = {}): AssetFlowData {
+export function tokenRadarFixture(overrides: Partial<TokenRadarSnapshot> = {}): TokenRadarSnapshot {
   return {
-    window: "1h",
-    venue: "all",
-    targets: [],
-    attention: [],
-    projection: {
-      status: "fresh",
-      version: "token-radar-route-fixture",
-      source: "token_radar_current_rows",
-      venue: "all",
-      reason: null,
-      latest_attempt_status: "ready",
-      row_count: 0,
-      source_rows: 0,
-      source_max_received_at_ms: 0,
-      source_frontier_ms: null,
-      computed_at_ms: NOW,
-      error: null,
-      anchor_coverage: { status: "fresh", ready: 0, missing: 0, total: 0 },
-      quality_status: "ready",
-      degraded_reasons: [],
-      unresolved: {
-        identity_missing_count: 0,
-        nil_count: 0,
-        ambiguous_count: 0,
-        sample_symbols: [],
-      },
-    },
+    schema_version: "token_radar_snapshot_v1",
+    evidence_as_of_ms: NOW,
+    eligible_total: 1,
+    items: [tokenRadarItemFixture()],
     ...overrides,
   };
 }
 
-export function tokenRadarRowFixture(): AssetFlowRow {
-  const attention = {
-    mentions_5m: 2,
-    mentions_1h: 4,
-    mentions_4h: 4,
-    mentions_24h: 4,
-    mentions_window: 4,
-    unique_authors: 3,
-    latest_seen_ms: NOW,
-    previous_mentions: 0,
-    mention_delta: 4,
-    mention_delta_pct: null,
-    z_score: null,
-    new_burst_score: 80,
-    stream_share: 0,
-    baseline_status: "insufficient_history",
-    baseline_sample_count: 0,
-  };
-  const market = marketContextFixture({
-    event_anchor: marketObservationFixture({
-      target_type: "Asset",
-      target_id: RADAR_TARGET_ID,
-      source: "event_anchor",
-      provider: "gmgn_dex_quote",
-      price_usd: 0.001,
-      market_cap_usd: 60_490,
-      liquidity_usd: 250_000,
-      observed_at_ms: NOW - 60_000,
-      received_at_ms: NOW - 60_000,
-    }),
-    decision_latest: marketObservationFixture({
-      target_type: "Asset",
-      target_id: RADAR_TARGET_ID,
-      source: "decision_latest",
-      provider: "okx_dex_price",
-      price_usd: 0.00112,
-      market_cap_usd: 66_000,
-      liquidity_usd: 250_000,
-      observed_at_ms: NOW,
-      received_at_ms: NOW,
-    }),
-  });
+export function tokenRadarItemFixture() {
   return {
-    intent: {
-      intent_id: `intent:${RADAR_TARGET_ID}`,
-      event_id: "event-upeg-1",
-      display_symbol: "UPEG",
-      display_name: null,
-      evidence: [],
-    },
-    radar: {
-      lane: "resolved",
-      rank: 1,
-      listed_at_ms: NOW - 60_000,
-      computed_at_ms: NOW,
-      source_max_received_at_ms: NOW,
-    },
-    resolution: {
-      status: "EXACT",
-      target_type: "Asset",
-      target_id: RADAR_TARGET_ID,
-      pricefeed_id: null,
-      reason_codes: ["CHAIN_ADDRESS_EXACT"],
-      candidate_ids: [RADAR_TARGET_ID],
-      lookup_keys: [],
-      discovery: [],
-    },
-    factor_snapshot: radarFactorSnapshot(attention, market),
-    quality: { status: "ready", degraded_reasons: [] },
-  };
-}
-
-function radarFactorSnapshot(
-  attention: Record<string, number | string | null>,
-  market: ReturnType<typeof marketContextFixture>,
-): AssetFlowRow["factor_snapshot"] {
-  return {
-    schema_version: "token_factor_snapshot_v5_provider_neutral",
-    subject: {
-      target_type: "Asset",
+    target: {
+      target_type: "Asset" as const,
       target_id: RADAR_TARGET_ID,
       symbol: "UPEG",
       chain: "eip155:1",
+      exchange: null,
       address: RADAR_ADDRESS,
-      target_market_type: "dex",
-      pricefeed_id: null,
     },
-    market,
-    gates: {
-      eligible_for_high_alert: true,
-      max_decision: "high_alert",
-      blocked_reasons: [],
-      risk_reasons: [],
+    trigger_event_id: "event-upeg-1",
+    triggered_at_ms: NOW - 60_000,
+    why_now: { current_mentions: 7, prior_mentions: 2, mention_delta: 5 },
+    evidence: {
+      new_independent_author_count: 4,
+      independent_text_count: 5,
+      time_to_nth_author_ms: 90_000,
+      duplicate_share: 0.08,
     },
-    data_health: { identity: "ready", market: "ready", social: "ready", alpha: "ready" },
-    families: {
-      social_heat: radarFactorFamily(86, 0.55, {
-        mentions_5m: attention.mentions_5m,
-        mentions_1h: attention.mentions_1h,
-        mentions_4h: attention.mentions_4h,
-        mentions_24h: attention.mentions_24h,
-        unique_authors: attention.unique_authors,
-        latest_seen_ms: attention.latest_seen_ms,
-        previous_mentions: attention.previous_mentions,
-        mention_delta: attention.mention_delta,
-        mention_delta_pct: attention.mention_delta_pct,
-        z_score: attention.z_score,
-        new_burst_score: attention.new_burst_score,
-        stream_share: attention.stream_share,
-        baseline_status: attention.baseline_status,
-        baseline_sample_count: attention.baseline_sample_count,
-        status: "rising",
-      }),
-      social_propagation: radarFactorFamily(72, 0.45, {
-        mentions: attention.mentions_window,
-        independent_authors: attention.unique_authors,
-        duplicate_text_share: 0,
-        informative_post_count: attention.mentions_window,
-      }),
-      timing_risk: radarFactorFamily(50, 0, {
-        social_signal_start_ms: NOW - 60_000,
-        price_change_since_social_pct: 0.12,
-        price_change_before_social_pct: null,
-      }),
-    },
-    normalization: {
-      status: "ready",
-      cohort_status: "ready",
-      cohort: { window: "1h" },
-      factor_ranks: {
-        social_heat: 0.86,
-        social_propagation: 0.72,
-        timing_risk: 0.5,
-      },
-      alpha_rank: 4,
-    },
-    composite: {
-      raw_alpha_score: 79,
-      rank_score: 79,
-      recommended_decision: "high_alert",
-      family_scores: {
-        social_heat: 86,
-        social_propagation: 72,
-        timing_risk: 50,
-      },
-    },
-    provenance: { source_event_ids: ["event-upeg-1", "event-upeg-2"], computed_at_ms: NOW },
-  } as AssetFlowRow["factor_snapshot"];
-}
-
-function radarFactorFamily(score: number, weight: number, facts: Record<string, unknown>) {
-  return {
-    raw_score: score,
-    score,
-    weight,
-    facts,
-    factors: {
-      primary: {
-        family: "route_fixture",
-        key: "primary",
-        raw_value: score,
-        score,
-        confidence: 0.95,
-        data_health: "ready",
-        source_refs: [],
-        risk_flags: [],
-      },
-    },
-    data_health: "ready",
+    market: { status: "confirmed" as const, price_change_since_signal: 0.12 },
+    counter_evidence: null,
   };
 }
 

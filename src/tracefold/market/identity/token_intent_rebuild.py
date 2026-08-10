@@ -12,7 +12,7 @@ from tracefold.market.identity.identity_evidence_policy import (
 from tracefold.market.identity.token_evidence_builder import build_token_evidence
 from tracefold.market.identity.token_intent_builder import build_token_intents
 from tracefold.market.identity.token_intent_resolver import TokenIntentResolver
-from tracefold.market.radar.constants import WINDOW_MS
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 
 
 def rebuild_recent_token_intents(
@@ -22,7 +22,7 @@ def rebuild_recent_token_intents(
     window: str,
     limit: int,
 ) -> dict[str, Any]:
-    since_ms = int(now_ms) - WINDOW_MS[window]
+    since_ms = int(now_ms) - PRODUCT_WINDOW_MS[window]
     rows = EventRebuildQuery(repos.conn).recent_events(since_ms=since_ms, limit=limit)
 
     rebuilt_events = 0

@@ -128,7 +128,6 @@ def _ingest_service(conn: Any) -> IngestService:
         market_tick_current=repos.market_tick_current,
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
-        radar_source_edges=repos.radar_source_edges,
         persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=300_000,

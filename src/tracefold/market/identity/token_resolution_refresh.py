@@ -5,7 +5,7 @@ from typing import Any
 from tracefold.market.identity.token_intent_resolver import (
     TokenIntentResolver,
 )
-from tracefold.market.radar.constants import WINDOW_MS
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 
 TOKEN_REPROCESS_WINDOW = "24h"
 
@@ -40,7 +40,7 @@ def reprocess_token_intent_page(
     after_intent_id: str | None = None,
 ) -> dict[str, Any]:
     repos.require_transaction(operation="token_resolution_refresh")
-    since_ms = int(now_ms) - WINDOW_MS[window]
+    since_ms = int(now_ms) - PRODUCT_WINDOW_MS[window]
     if lookup_keys:
         intents = repos.token_intent_lookup.recent_intents_for_lookup_keys(
             lookup_keys,
@@ -58,7 +58,6 @@ def reprocess_token_intent_page(
     )
     reprocessed = 0
     resolved = 0
-    touched_event_ids: set[str] = set()
     discovery_lookup_keys: set[str] = set()
     evidence_by_intent = repos.token_evidence.evidence_for_intents([str(intent["intent_id"]) for intent in intents])
     for intent in intents:
@@ -69,7 +68,6 @@ def reprocess_token_intent_page(
             decision_time_ms=now_ms,
             persist=True,
         )
-        touched_event_ids.add(str(decision.event_id))
         repos.token_intent_lookup.replace_lookup_keys(
             intent_id=decision.intent_id,
             event_id=decision.event_id,
@@ -90,19 +88,11 @@ def reprocess_token_intent_page(
             reason="resolution_refresh_unresolved",
             now_ms=now_ms,
         )
-    radar_edge_mutations = sum(
-        repos.radar_source_edges.sync_event(
-            event_id=event_id,
-            now_ms=now_ms,
-        )
-        for event_id in sorted(touched_event_ids)
-    )
     return {
         "window": window,
         "lookup_keys": lookup_keys or [],
         "reprocessed_intents": reprocessed,
         "resolved_intents": resolved,
-        "radar_edge_mutations": radar_edge_mutations,
         "since_ms": since_ms,
         "has_more": has_more,
         "next_after_intent_id": str(intents[-1]["intent_id"]) if has_more and intents else None,

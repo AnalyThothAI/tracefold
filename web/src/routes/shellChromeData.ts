@@ -4,9 +4,7 @@ import {
   type CockpitShellProps,
   type SearchShellProps,
 } from "@features/cockpit";
-import { useLiveRouteState } from "@features/live/shell";
-import type { WindowKey } from "@lib/types";
-import { searchPath } from "@shared/routing/paths";
+import { searchPath, stocksPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useSocketSnapshot } from "@shared/socket/socketContext";
 import { useQueryClient } from "@tanstack/react-query";
@@ -17,8 +15,6 @@ export type ShellRouteContext = {
   bootstrapError: boolean;
   bootstrapLoading: boolean;
   token: string;
-  updateWindow: (window: WindowKey) => void;
-  windowKey: WindowKey;
 };
 
 export type ShellChromeData = {
@@ -31,19 +27,15 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const liveRoute = useLiveRouteState();
   const statusQuery = useCockpitStatusQuery({ token: session.token });
   const socketSnapshot = useSocketSnapshot();
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
-  const windowKey = liveRoute.window;
   const routeContext: ShellRouteContext = {
     bootstrapError: session.bootstrapError,
     bootstrapLoading: session.bootstrapLoading,
     token,
-    updateWindow: liveRoute.updateWindow,
-    windowKey,
   };
   const handleHotkey = (event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
@@ -56,13 +48,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     if (isTyping) {
       return;
     }
-    if (!shouldHandleLiveWindowHotkey(location.pathname, event.key)) {
+    if (!shouldHandleStocksWindowHotkey(location.pathname, event.key)) {
       return;
     }
-    if (event.key === "1") liveRoute.updateWindow("5m");
-    if (event.key === "2") liveRoute.updateWindow("1h");
-    if (event.key === "3") liveRoute.updateWindow("4h");
-    if (event.key === "4") liveRoute.updateWindow("24h");
+    const windows = { "1": "5m", "2": "1h", "3": "4h", "4": "24h" } as const;
+    navigate(stocksPath({ window: windows[event.key as keyof typeof windows] }));
   };
   const searchTargetsNews = shouldRouteTopbarSearchToNews(location.pathname);
   const currentSearchQuery = new URLSearchParams(location.search).get("q") ?? "";
@@ -125,10 +115,10 @@ export function shouldRouteTopbarSearchToNews(pathname: string): boolean {
   return path === "/news" || path.startsWith("/news/");
 }
 
-export function shouldHandleLiveWindowHotkey(pathname: string, key: string): boolean {
+export function shouldHandleStocksWindowHotkey(pathname: string, key: string): boolean {
   if (!["1", "2", "3", "4"].includes(key)) {
     return false;
   }
   const path = pathname.split("?")[0] ?? pathname;
-  return path === "/" || path.startsWith("/stocks");
+  return path === "/stocks" || path.startsWith("/stocks/");
 }

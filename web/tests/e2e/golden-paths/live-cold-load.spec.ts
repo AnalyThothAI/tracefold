@@ -7,150 +7,91 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-test("cold live load renders one full-height Radar with local content age", async ({ page }) => {
+test("cold Radar load renders the compact change-first queue", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/");
-  const viewport = page.viewportSize();
-  expect(viewport).not.toBeNull();
-
-  const radarRow = page.getByRole("article", { name: "Token Radar item $UPEG" });
-  await expect(radarRow).toBeVisible();
-  await expect(radarRow.getByRole("link", { name: "Open token item $UPEG" })).toBeVisible();
-  await expect(radarRow.getByText("4 帖 · 3 作者")).toBeVisible();
-  const propagation = radarRow.locator('[data-case-section="propagation"]');
-  await expect(propagation).toContainText("72 / 100");
-  await expect(propagation).toContainText("4 informative · 0% duplicate");
-  await expect(radarRow.locator(".market-move.up", { hasText: "+12%" })).toBeVisible();
-  await expect(radarRow.locator('[data-radar-metric="market"]')).toContainText("liq$250K");
-  await expect(radarRow.locator('[data-radar-metric="market"]')).toContainText("vol$250K");
-  await expect(radarRow.locator('[data-radar-metric="market"]')).toContainText("holders1K");
-  await expect(radarRow.getByRole("link", { name: "GMGN" })).toBeVisible();
-  await expect(radarRow.getByText("profile")).toHaveCount(0);
-  await expect(radarRow.getByText("unverified")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /sort by holders/i })).toHaveCount(0);
-  if ((viewport?.width ?? 0) >= 768) {
-    await expect(page.getByRole("button", { name: /sort by market/i })).toBeVisible();
-  } else {
-    await expect(page.getByRole("button", { name: /sort by market/i })).toHaveCount(0);
-  }
-  const radarWindowControls = page.getByLabel("radar window");
-  await expect(radarWindowControls.getByRole("radio", { name: "1h" })).toHaveAttribute(
-    "data-state",
-    "on",
-  );
-  await expect(page.getByLabel("token flow scope")).toHaveCount(0);
-  await expect(page).toHaveURL(/\/$/);
-
-  const shellBox = await page.locator(".cockpit-shell").boundingBox();
-  expect(shellBox).not.toBeNull();
-  expect(Math.round(shellBox?.x ?? -1)).toBe(0);
-  expect(Math.round(shellBox?.y ?? -1)).toBe(0);
-  expect(Math.round(shellBox?.width ?? 0)).toBe(viewport?.width);
-  expect(Math.round(shellBox?.height ?? 0)).toBe(viewport?.height);
-
-  const rowBox = await radarRow.boundingBox();
-  expect(rowBox).not.toBeNull();
-  if ((viewport?.width ?? 0) >= 768) {
-    expect(Math.round(rowBox?.height ?? 0)).toBeLessThanOrEqual(72);
-    expect(Math.round(rowBox?.height ?? 0)).toBeGreaterThanOrEqual(56);
-  } else {
-    expect(Math.round(rowBox?.height ?? 0)).toBeGreaterThanOrEqual(56);
-  }
-
-  if ((viewport?.width ?? 0) >= 1_000) {
-    const scoreHeaderBox = await page.locator(".radar-head-cell.score").boundingBox();
-    const scoreCellBox = await radarRow.locator(".radar-score-cell").boundingBox();
-    const listedHeaderBox = await page.locator(".radar-head-cell.listed").boundingBox();
-    const listedActionBox = await radarRow.locator(".radar-listed-action-cell").boundingBox();
-    expect(scoreHeaderBox).not.toBeNull();
-    expect(scoreCellBox).not.toBeNull();
-    expect(listedHeaderBox).not.toBeNull();
-    expect(listedActionBox).not.toBeNull();
-    expect(
-      Math.abs(
-        Math.round((scoreHeaderBox?.x ?? 0) + (scoreHeaderBox?.width ?? 0)) -
-          Math.round((scoreCellBox?.x ?? 0) + (scoreCellBox?.width ?? 0)),
-      ),
-    ).toBeLessThanOrEqual(2);
-    expect(Math.round(scoreCellBox?.x ?? 0)).toBeLessThan(Math.round(listedActionBox?.x ?? 0));
-    expect(
-      Math.abs(
-        Math.round((listedHeaderBox?.x ?? 0) + (listedHeaderBox?.width ?? 0)) -
-          Math.round((listedActionBox?.x ?? 0) + (listedActionBox?.width ?? 0)),
-      ),
-    ).toBeLessThanOrEqual(2);
-  }
-
-  const primaryBox = await page.locator(".radar-toolbar-primary").boundingBox();
-  const controlsBox = await page.getByLabel("token radar scan controls").boundingBox();
-  const titleBox = await page.locator(".radar-scan-title").boundingBox();
-  const statusBox = await page.getByTestId("radar-content-status").boundingBox();
-  expect(primaryBox).not.toBeNull();
-  expect(controlsBox).not.toBeNull();
-  expect(titleBox).not.toBeNull();
-  expect(statusBox).not.toBeNull();
-  expect(statusBox!.x).toBeGreaterThanOrEqual(titleBox!.x + titleBox!.width);
-  expect(statusBox!.x - (titleBox!.x + titleBox!.width)).toBeLessThanOrEqual(20);
-  if ((viewport?.width ?? 0) > 860) {
-    const toolbarBox = await page.locator(".radar-toolbar").boundingBox();
-    expect(toolbarBox).not.toBeNull();
-    expect(
-      Math.abs(primaryBox!.y + primaryBox!.height / 2 - (controlsBox!.y + controlsBox!.height / 2)),
-    ).toBeLessThanOrEqual(2);
-    expect(primaryBox!.x + primaryBox!.width).toBeLessThanOrEqual(controlsBox!.x);
-    expect(toolbarBox!.height).toBeLessThanOrEqual(64);
-  } else {
-    expect(primaryBox!.y + primaryBox!.height).toBeLessThanOrEqual(controlsBox!.y + 1);
-  }
-  await expect(page.getByTestId("radar-content-status")).toHaveAttribute("data-health", "healthy");
-  await expect(page.getByTestId("radar-content-status")).toContainText(/最新内容 \d/);
-  await expect(page.locator(".detail-task-panel")).toHaveCount(0);
-  await expect(page.locator(".detail-drawer")).toHaveCount(0);
-  await expect(page.getByText(/实时信号 Tape/i)).toHaveCount(0);
-  await expect(page.locator(".live-task-nav")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Lab" })).toHaveCount(0);
-  await expectNoDocumentHorizontalOverflow(page);
-  await expectNoNestedHorizontalOverflow(page, [".topbar", ".radar-toolbar", ".token-radar-row"]);
-  await expectNoUnhandledApiRequests(page);
-});
-
-test("radar row click reaches token detail without hit-test interception", async ({ page }) => {
-  await installMockApi(page);
-  await page.goto("/");
-
-  const radarRow = page.getByRole("article", { name: "Token Radar item $UPEG" });
-  await expect(radarRow).toBeVisible();
-
-  const hitTest = await radarRow.evaluate((row) => {
-    const rect = row.getBoundingClientRect();
-    const element = document.elementFromPoint(
-      rect.left + rect.width / 2,
-      rect.top + rect.height / 2,
-    );
-    return {
-      rowContainsHit: element ? row.contains(element) : false,
-      hitClassName: element instanceof HTMLElement ? element.className : "",
-      hitTagName: element?.tagName ?? "",
-    };
+  const radarRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/token-radar") radarRequests.push(url.search);
   });
-  expect(hitTest).toMatchObject({ rowContainsHit: true });
+  await page.goto("/");
 
-  await radarRow.click();
-  await expect(page).toHaveURL(/\/token\/Asset\/asset%3Adex%3Aeth%3A/);
+  await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
+  await expect(page.getByText("1 eligible")).toBeVisible();
+  const item = page.locator(".live-radar-item").first();
+  await expect(item.getByText("+5", { exact: true })).toBeVisible();
+  await expect(item.getByText("$UPEG", { exact: true })).toBeVisible();
+  await expect(item.getByText("mentions 2→7", { exact: true })).toBeVisible();
+  await expect(item.getByText("4 new authors", { exact: true })).toBeVisible();
+  await expect(item.getByText("12% since signal", { exact: false })).toBeVisible();
+  await expect(item.locator("img, details, button")).toHaveCount(0);
+  await expect(page.getByLabel("radar window")).toHaveCount(0);
+  await expect(page.getByLabel("token radar venue filter")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /sort/i })).toHaveCount(0);
+  await expect(item.getByRole("link", { name: "Open Token Case" })).toHaveAttribute(
+    "href",
+    /\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
+  );
+  expect(radarRequests).toEqual([""]);
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(500);
+  await expectNoDocumentHorizontalOverflow(page);
+  await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("full-height Radar keeps the final row reachable without a task bar", async ({ page }) => {
+test("Radar's single action opens a Case focused on the trigger", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/?window=24h");
+  await page.goto("/");
 
-  await expect(page.locator(".token-radar-row")).toHaveCount(8);
-  await expect(page.locator(".live-task-nav")).toHaveCount(0);
+  const item = page.locator(".live-radar-item").first();
+  await item.getByRole("link", { name: "Open Token Case" }).click();
+
+  await expect(page).toHaveURL(
+    /\/token\/Asset\/asset%3Adex%3Aeth%3A.*\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
+  );
+  await expect(page.getByRole("article", { name: "Trigger evidence" })).toBeVisible();
+  await expectNoUnhandledApiRequests(page);
+});
+
+test("the capped eight-item Radar keeps its final item reachable", async ({ page }) => {
+  await installMockApi(page, { radarItemCount: 8 });
+  await page.goto("/");
+
+  await expect(page.locator(".live-radar-item")).toHaveCount(8);
   await expectScrollableToLastMeaningfulElement(
     page,
-    ".token-radar-table",
-    ".token-radar-row:last-of-type",
+    ".live-radar-items",
+    ".live-radar-item:last-of-type",
   );
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(500);
   await expectNoDocumentHorizontalOverflow(page);
+  await expectNoUnhandledApiRequests(page);
+});
+
+test("a full snapshot refresh stays below the 50ms browser long-task gate", async ({ page }) => {
+  await page.clock.install({ time: new Date(1_777_746_300_000) });
+  await page.addInitScript(() => {
+    const target = window as typeof window & { __radarLongTasks?: number[] };
+    target.__radarLongTasks = [];
+    new PerformanceObserver((entries) => {
+      target.__radarLongTasks?.push(...entries.getEntries().map((entry) => entry.duration));
+    }).observe({ type: "longtask", buffered: true });
+  });
+  await installMockApi(page, { radarItemCount: 1, radarRefreshItemCount: 8 });
+  await page.goto("/");
+  await expect(page.locator(".live-radar-item")).toHaveCount(1);
+  await page.evaluate(() => {
+    (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks = [];
+  });
+
+  await page.clock.fastForward(30_000);
+  await expect(page.locator(".live-radar-item")).toHaveCount(8);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
+
+  const longTasks = await page.evaluate(
+    () => (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks ?? [],
+  );
+  expect(longTasks.filter((duration) => duration > 50)).toEqual([]);
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(500);
   await expectNoUnhandledApiRequests(page);
 });

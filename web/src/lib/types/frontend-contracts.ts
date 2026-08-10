@@ -5,10 +5,8 @@ export type ApiResponse<T> = {
 };
 
 export type WindowKey = "5m" | "1h" | "4h" | "24h";
-export type Decision = "driver" | "watch" | "investigate" | "discard";
 export type TimelineBucket = "30s" | "5m" | "15m" | "1h";
 export type TokenPostRange = "current_window" | "since_ignition" | "all_history";
-export type TokenDetailMode = "compact" | "replay";
 
 export type BootstrapData = {
   ws_token: string;
@@ -215,7 +213,6 @@ export type TokenCaseDossier = {
   timeline: TokenCaseSocialTimelineData;
   posts: TokenCasePostsData;
   market_live: LiveMarketSnapshot;
-  current_radar: TokenRadarFactRow | null;
 };
 
 export type SearchTokenResult = TokenCaseDossier;
@@ -254,14 +251,6 @@ export type SearchInspectData = {
   ambiguous_result: SearchAmbiguousResult | null;
 };
 
-export type TokenRadarIntentBlock = {
-  intent_id: string;
-  event_id: string;
-  display_symbol?: string | null;
-  display_name?: string | null;
-  evidence: unknown[];
-};
-
 export type MarketObservationSnapshot = {
   target_type?: string | null;
   target_id?: string | null;
@@ -287,93 +276,6 @@ export type MarketReadiness = {
   dex_floor_status: "ready" | "missing_fields" | "not_applicable" | string;
   missing_fields: string[];
   stale_fields: string[];
-};
-
-export type MarketContext = {
-  event_anchor: MarketObservationSnapshot | null;
-  decision_latest: MarketObservationSnapshot | null;
-  readiness: MarketReadiness;
-  capture_method?: string | null;
-  capture_reason?: string | null;
-  tick_lag_ms?: number | null;
-};
-
-export type TokenRadarRowMeta = {
-  lane?: "resolved" | "attention" | string | null;
-  rank?: number | null;
-  listed_at_ms?: number | null;
-  computed_at_ms?: number | null;
-  source_max_received_at_ms?: number | null;
-};
-
-export type TokenRadarFactRow = {
-  intent: TokenRadarIntentBlock;
-  radar: TokenRadarRowMeta;
-  resolution: {
-    status: "EXACT" | "UNIQUE_BY_CONTEXT" | "NIL" | "AMBIGUOUS" | string;
-    target_type: string | null;
-    target_id: string | null;
-    pricefeed_id: string | null;
-    reason_codes: string[];
-    candidate_ids: string[];
-    lookup_keys: string[];
-    discovery: TokenDiscoveryAudit[];
-  };
-  factor_snapshot: TokenFactorSnapshot;
-  quality: {
-    status: string;
-    degraded_reasons: string[];
-  };
-};
-
-export type AssetFlowRow = TokenRadarFactRow & {
-  profile?: TokenProfileBlock | null;
-};
-
-export type TokenDiscoveryAudit = {
-  lookup_key?: string | null;
-  lookup_type?: string | null;
-  status?: "running" | "found" | "not_found" | "error" | string | null;
-  candidate_count?: number | null;
-  last_lookup_at_ms?: number | null;
-  next_refresh_at_ms?: number | null;
-  last_error?: string | null;
-  error_count?: number | null;
-};
-
-export type AssetFlowData = {
-  window: WindowKey;
-  venue: string;
-  targets: AssetFlowRow[];
-  attention: AssetFlowRow[];
-  projection: {
-    status: "fresh" | "stale" | "pending" | string;
-    version: string;
-    source: string;
-    venue: string;
-    reason: string | null;
-    latest_attempt_status: string;
-    row_count: number;
-    source_rows: number;
-    source_max_received_at_ms: number;
-    source_frontier_ms: number | null;
-    computed_at_ms: number | null;
-    error: string | null;
-    anchor_coverage: {
-      status: string;
-      ready: number;
-      missing: number;
-      total: number;
-    };
-    quality_status: "ready" | "degraded" | "insufficient" | "failed" | string;
-    degraded_reasons: string[];
-    unresolved: {
-      identity_missing_count: number;
-      nil_count: number;
-      ambiguous_count: number;
-      sample_symbols: string[];
-    };
-  };
 };
 
 export type StockQuoteSnapshot = {
@@ -431,6 +333,8 @@ export type StocksRadarData = {
   };
 };
 
+// Token Case exposes post-quality evidence independently of retired Radar
+// admission/decision blocks.
 export type ScoreContribution = {
   feature: string;
   value: number;
@@ -452,175 +356,6 @@ export type ScoreBlock = {
   data_health?: Record<string, unknown>;
 };
 
-export type TokenIdentityBlock = {
-  identity_key: string;
-  identity_status: "resolved_ca" | string;
-  target_type?: string | null;
-  target_id?: string | null;
-  asset_id?: string | null;
-  asset_type?: string | null;
-  venue_type?: string | null;
-  exchange?: string | null;
-  inst_id?: string | null;
-  inst_type?: string | null;
-  chain?: string | null;
-  address?: string | null;
-  symbol?: string | null;
-  resolution_reasons?: string[];
-  lookup_keys?: string[];
-  candidate_count?: number;
-  discovery_status?: string | null;
-};
-
-export type TokenMarketBlock = {
-  event_anchor: MarketObservationSnapshot | null;
-  decision_latest: MarketObservationSnapshot | null;
-  readiness: MarketReadiness;
-  market_status: "fresh" | "partial" | "stale" | "missing" | string;
-  price?: number | null;
-  price_status?: string | null;
-  market_cap?: number | null;
-  market_cap_status?: string | null;
-  liquidity?: number | null;
-  liquidity_status?: string | null;
-  pool_status?: "ready" | "missing" | string;
-  holder_count?: number | null;
-  holder_count_status?: string | null;
-  volume_24h?: number | null;
-  volume_24h_status?: string | null;
-  provider?: string | null;
-  snapshot_age_ms?: number | null;
-  snapshot_received_at_ms?: number | null;
-  social_signal_start_ms?: number | null;
-  reference_ms?: number | null;
-  price_at_social_start?: number | null;
-  price_at_reference?: number | null;
-  price_change_since_social_pct?: number | null;
-  price_before_social_start?: number | null;
-  price_change_before_social_pct?: number | null;
-  price_at_first_snapshot?: number | null;
-  first_snapshot_observed_at_ms?: number | null;
-  price_change_since_first_snapshot_pct?: number | null;
-  market_observation_status?:
-    | "ready"
-    | "pending"
-    | "running"
-    | "provider_not_configured"
-    | "provider_not_found"
-    | "provider_error"
-    | "rate_limited"
-    | "dead"
-    | string;
-  price_change_status:
-    | "ready"
-    | "pending_observation"
-    | "insufficient_history"
-    | "missing_market"
-    | "provider_not_configured"
-    | "provider_not_found"
-    | "provider_error"
-    | "rate_limited"
-    | "dead"
-    | string;
-};
-
-export type TokenFlowBlock = {
-  window: WindowKey;
-  window_start_ms?: number | null;
-  window_end_ms?: number | null;
-  mentions: number;
-  direct_mentions?: number;
-  symbol_mentions?: number;
-  weighted_mentions?: number;
-  avg_attribution_confidence?: number;
-  previous_mentions: number;
-  mention_delta: number;
-  mention_delta_pct?: number | null;
-  z_score?: number | null;
-  new_burst_score?: number | null;
-  stream_dominance: number;
-  baseline_status: "ready" | "insufficient_history" | string;
-  baseline_sample_count: number;
-};
-
-export type SocialHeatBlock = ScoreBlock & {
-  window: WindowKey;
-  mentions: number;
-  mentions_5m: number;
-  mentions_1h: number;
-  mentions_4h: number;
-  mentions_24h: number;
-  weighted_mentions: number;
-  previous_mentions: number;
-  mention_delta: number;
-  mention_delta_pct?: number | null;
-  z_score?: number | null;
-  new_burst_score?: number | null;
-  stream_share: number;
-  status: "cold" | "rising" | "burst" | "new_burst" | "insufficient_history" | string;
-};
-
-export type DiscussionQualityBlock = ScoreBlock & {
-  evidence_specificity: number;
-  avg_post_quality: number;
-  avg_attribution_confidence: number;
-  duplicate_text_share: number;
-  informative_post_count: number;
-};
-
-export type PropagationBlock = ScoreBlock & {
-  independent_authors: number;
-  effective_authors: number;
-  new_authors: number;
-  top_author_share: number;
-  duplicate_text_share: number;
-  author_entropy: number;
-  reproduction_rate?: number | null;
-  phase: "seed" | "ignition" | "expansion" | "concentration" | "fade" | string;
-  top_authors: Array<{
-    handle?: string | null;
-    count?: number;
-    posts?: number;
-    followers?: number | null;
-    role?: string | null;
-  }>;
-};
-
-export type TradeabilityBlock = ScoreBlock & {
-  identity_tradeable: boolean;
-  market_fresh: boolean;
-  market_cap_present: boolean;
-  liquidity_present: boolean;
-  pool_present: boolean;
-  hard_risks?: string[];
-};
-
-export type TimingBlock = {
-  score: number;
-  score_version: string;
-  status: "neutral" | "market_pending" | "market_unavailable" | "chase_risk";
-  social_signal_start_ms?: number | null;
-  price_change_since_social_pct?: number | null;
-  price_change_before_social_pct?: number | null;
-  market_observation_status?: string | null;
-  chase_risk: boolean;
-  reasons: string[];
-  risks: string[];
-  contributions?: ScoreContribution[];
-  risk_caps?: RiskCap[];
-};
-
-export type OpportunityBlock = ScoreBlock & {
-  decision: Decision;
-  decision_priority?: number;
-  hard_risks?: string[];
-  components: {
-    heat: number;
-    propagation: number;
-    timing: number;
-  };
-};
-
 export type TokenPostsQuery = {
   target_type?: string | null;
   target_id?: string | null;
@@ -636,26 +371,6 @@ export type TokenSocialTimelineParams = {
 
 export type TokenSocialTimelineQuery = TokenSocialTimelineParams & {
   bucket: TimelineBucket;
-};
-
-export type TokenFlowItem = {
-  identity: TokenIdentityBlock;
-  market: TokenMarketBlock;
-  flow: TokenFlowBlock;
-  social_heat: SocialHeatBlock;
-  discussion_quality: DiscussionQualityBlock;
-  propagation: PropagationBlock;
-  tradeability: TradeabilityBlock;
-  timing: TimingBlock;
-  opportunity: OpportunityBlock;
-  profile?: TokenProfileBlock | null;
-  factor_data_health?: TokenFactorSnapshot["data_health"];
-  factor_gates?: TokenFactorSnapshot["gates"];
-  factor_normalization?: TokenFactorSnapshot["normalization"];
-  radar?: TokenRadarRowMeta;
-  evidence_total_count: number;
-  posts_query: TokenPostsQuery;
-  timeline_query: TokenSocialTimelineParams;
 };
 
 export type TokenPostItem = {
@@ -704,11 +419,6 @@ export type TokenPostsData = {
   has_more: boolean;
   next_cursor?: string | null;
   items: TokenPostItem[];
-};
-
-export type TokenFlowData = {
-  window: WindowKey;
-  items: TokenFlowItem[];
 };
 
 export type TokenTimelineBucket = {
@@ -868,92 +578,6 @@ export type TokenSocialTimelineData = {
   returned_count: number;
   has_more: boolean;
   next_cursor?: string | null;
-};
-
-export type FactorPoint = {
-  family: string;
-  key: string;
-  raw_value?: unknown;
-  score?: number | null;
-  confidence?: number | null;
-  data_health?: string | null;
-  freshness_ms?: number | null;
-  source_refs?: string[];
-  risk_flags?: string[];
-};
-
-export type TokenFactorFamilyKey = "social_heat" | "social_propagation" | "timing_risk";
-
-export type TokenFactorFamily = {
-  raw_score: number;
-  score: number;
-  weight: number;
-  facts: Record<string, unknown>;
-  factors: Record<string, FactorPoint>;
-  data_health: string;
-};
-
-export type TokenFactorSnapshot = {
-  schema_version: "token_factor_snapshot_v5_provider_neutral";
-  subject: {
-    target_type: string | null;
-    target_id: string | null;
-    symbol: string | null;
-    target_market_type: string | null;
-    chain: string | null;
-    address: string | null;
-    pricefeed_id: string | null;
-  };
-  market: MarketContext;
-  gates: {
-    eligible_for_high_alert: boolean;
-    max_decision: "discard" | "watch" | "high_alert";
-    blocked_reasons: string[];
-    risk_reasons: string[];
-  };
-  data_health: {
-    identity: string;
-    market: string;
-    social: string;
-    alpha: string;
-    [key: string]: unknown;
-  };
-  families: Record<TokenFactorFamilyKey, TokenFactorFamily>;
-  normalization: {
-    status: string;
-    cohort_status: string;
-    cohort: Record<string, unknown>;
-    factor_ranks: Record<TokenFactorFamilyKey, number | null>;
-    alpha_rank: number | null;
-  };
-  composite: {
-    raw_alpha_score: number;
-    rank_score: number;
-    recommended_decision: "discard" | "watch" | "high_alert";
-    family_scores: Record<TokenFactorFamilyKey, number>;
-  };
-  provenance: {
-    source_event_ids: string[];
-    computed_at_ms: number;
-  };
-};
-
-export type SourceEventDetail = {
-  event_id: string;
-  timestamp_ms: number;
-  source_provider: string;
-  channel: string;
-  action: "tweet" | "quote" | "repost" | "reply" | string;
-  author_handle: string | null;
-  author_name: string | null;
-  author_followers: number | null;
-  text_clean: string | null;
-  canonical_url: string | null;
-};
-
-export type SourceEventsByIdsData = {
-  events: SourceEventDetail[];
-  not_found: string[];
 };
 
 export type EnrichmentJobsData = {

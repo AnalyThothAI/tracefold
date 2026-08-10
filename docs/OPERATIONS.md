@@ -41,7 +41,7 @@ creates a non-login owner plus the separate Serve, Workers, and migrate roles
 from their mode-`0600` password files, revokes the bootstrap login, and only
 then permits migration. It is not a periodic reconciler and will not mutate an
 unknown non-empty cluster. Such a cluster must already satisfy the role/schema
-contract or use an independently authorized maintenance cutover.
+contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
@@ -86,15 +86,15 @@ tracefold workers
   -> one pinned singleton session / business DB executor 2 / control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
   -> spawn-only Pebble ProcessPool 1
-  -> acquisition clocks + one fixed-period News Story writer
-     + one EDF projection coordinator
+  -> acquisition clocks + fixed-period News Story, Token Radar, and Stocks Radar writers
+     + one EDF projection coordinator for Macro/Profile
   -> one serial native-state model arbiter
 ```
 
 Every acquisition/projection/model task uses a short claim transaction,
 bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
-coordinator polls typed Radar, Macro, and Profile candidates and runs one
+coordinator polls typed Macro and Profile candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
 After every productive shard turn it yields cooperatively and immediately
 rereads every typed frontier head. Failed and idle shard turns wait on the fixed
@@ -144,41 +144,38 @@ round trip. Every SQL statement and multi-statement repository operation is
 therefore covered by the native database deadline; the async caller adds only a
 bounded completion grace before treating an unfinished future as fatal.
 
-One Radar semantic shard claims at most four targets and is capped at 10,000
-input rows/4 MiB and 1 MiB output. Claim, load, CPU, and publication phases use
-their native DB or CPU deadlines plus bounded completion grace. There is no
-aggregate fatal projection-turn watchdog: five seconds is a soft Radar latency
-observation only. Overflow is split deterministically or quarantined as
-`shard_oversized`; it is never sampled or truncated. Projection claim leases
-cover their legal phase envelopes: Radar is 45 seconds, Profile and Macro are
-30 seconds each. The fixed-period News Story writer has no frontier lease and
-retains its 25-second operation budget.
-The explicit maintenance rebuild keeps the existing 120-second maintenance
-transaction budget; it does not relax steady phase deadlines.
+Token Radar is one fixed-period 30-second reducer turn outside the EDF
+coordinator. One turn reads only `(now - 2h, now]`, accepts at most 10,000 rows
+and 8 MiB of materialized input, and must finish within a five-second hard
+budget. Its measured release target is P95 at or below two seconds. The
+complete public snapshot is capped at eight Items and 20 KiB uncompressed.
+Overflow or timeout fails the turn without sampling, truncation, partial
+publication, or widening the source interval; the last-good singleton remains
+unchanged. There is no Radar source edge, dirty frontier, claim, lease,
+quarantine, rank closure, feature cache, or publication-state table.
 
-Radar is one stable `window × venue` shard inside the EDF coordinator. One turn
-claims at most four due target frontiers for that shard, recomputes their compact
-features, ranks the complete compact population once, hydrates only selected
-identities, and atomically publishes the serving closure. Each target frontier
-stores the latest input fingerprint/version and the snapshot claimed by the
-running turn. Completion becomes clean only when latest still equals claimed;
-otherwise the target returns to dirty with the earliest retained deadline.
-There is no rank frontier, intermediate publication queue, extra worker, or
-wake plane.
+The reducer calculates outside its short publication transaction. Publication
+locks one stable singleton and writes the complete payload only when its
+business fingerprint changes. A failed-attempt marker may change operational
+state without replacing the served payload. Restart and catch-up consist only
+of the next bounded fact reread. Stocks Radar has a separate fixed-period
+writer and retains its existing public read model; it does not reuse the Token
+Radar reducer or durable state.
 
-One `window × venue` publication remains atomic while an oversized ordered
-row set is split into deterministic write batches no larger than 1 MiB. A
-single row that exceeds the envelope is quarantined. The high-churn `events`
+Profile and Macro projection claims retain their 30-second lease envelopes.
+The fixed-period News Story writer retains its 25-second operation budget. The
+high-churn `events`
 table uses a one-percent/10,000-row auto-analyze threshold so the 24-hour
 Search planner does not choose a recency scan from stale time-distribution
 statistics.
 
-`/metrics` exposes low-cardinality worker transaction duration, projection
-source/candidate/hydrated/written row counts, change-driven cache hit/miss,
-queue depth, oldest-due delay, and the cumulative per-domain projection
-deadline-miss counter. A real acceptance interval requires a zero counter
-delta as well as zero sampled unresolved misses. Use these amplification and
-latency signals with PostgreSQL activity/lock evidence; CPU alone is not a
+`/metrics` exposes low-cardinality worker transaction duration, periodic Radar
+turn duration/outcome/input/output counts, unchanged/publication counts, and
+hard-budget misses. Frontier-backed domains additionally expose projection
+source/candidate/written counts, queue depth, oldest-due delay, and cumulative
+deadline misses. A real acceptance interval requires zero Radar hard-budget
+misses and no growth in any remaining durable backlog. Use these amplification
+and latency signals with PostgreSQL activity/lock evidence; CPU alone is not a
 root-cause claim.
 
 ## Durable queue and transaction rules
@@ -224,10 +221,9 @@ For missing or stale live data:
 Token Radar:
 
 ```text
-event -> intent -> resolution -> stable Radar source edges
-  -> claim up to 4 target frontiers for one window x venue
-  -> compact feature updates -> one atomic rank closure
-  -> token_radar_current_rows
+event -> intent -> current resolution + market facts
+  -> bounded adjacent-hour read -> deterministic boolean reducer
+  -> one atomic token_radar_current compact snapshot
 ```
 
 Market current is maintained transactionally with `market_ticks`; it has no
@@ -490,28 +486,6 @@ pages and stops at existing current evidence or the 12-hour cutoff. An exhausted
 attempt records a bounded source outcome and may retry after the minimum
 interval; it never creates durable gap or historical-backfill state.
 
-#### Operator-authorized Issue #33 maintenance hard cut
-
-The active production cut is system-wide, not a separate News migration. The
-owner explicitly authorized a no-backup, no-snapshot hard cut and fix-forward
-recovery boundary:
-
-1. stop the old combined runtime;
-2. record the exact pre-cut revision/schema/count boundary without copying or
-   snapshotting production data;
-3. run the explicit maintenance-profile `tracefold db hard-cut` command from
-   `SETUP.md`;
-4. require the role, semantic, queue, history-cleanup, and invariant audits to
-   pass before the legacy login is revoked;
-5. start serve and workers only after the command reports `cutover_ready`;
-6. keep writers stopped and repair forward while still in maintenance if any
-   gate fails.
-
-Old and new writers never coexist. There is no dual read/write, compatibility
-alias, automatic fallback, rolling mixed version, restore proof, or waiver. An
-acceptance bundle must record the operator-authorized fix-forward boundary
-directly; it must not substitute a waived or placeholder proof.
-
 Macro:
 
 The current Macro runtime contains material facts, acquisition targets, six
@@ -672,17 +646,19 @@ Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,
 or `MERGE` in `BEGIN` and `ROLLBACK`.
 
-Hot paths claim narrow stable keys and hydrate wide JSONB only after selection.
-Partial indexes must match the real due/status predicate. An idle worker must
-not scan broad facts merely to prove that no work is due. Current models remain
-bounded by stable product keys; a latest-generation pointer is not a retention
-policy.
+Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
+after selection. Partial indexes must match the real due/status predicate. An
+idle frontier worker must not scan broad facts merely to prove that no work is
+due. Token Radar is the explicit exception: its code-owned 30-second reducer
+performs one indexed, two-hour, row/byte-capped fact read and has no wake or due
+state. Current models remain bounded by stable product keys; a
+latest-generation pointer is not a retention policy.
 
 Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
 `work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
 This prevents two bounded background iterations from multiplying into all
-available PostgreSQL CPU workers while preserving the source-to-current
-priority of Token Radar. The News current-item and asset-identity profile hot
+available PostgreSQL CPU workers while preserving deterministic source-to-
+current work. The News current-item and asset-identity profile hot
 paths use ordered composite indexes; do not replace them with periodic broad
 scans.
 
@@ -696,8 +672,7 @@ The runtime hard-cut migration also resets the retired `powa.coalesce` and
 `powa.frequency` `ALTER SYSTEM` entries before the official image takes over
 the existing PostgreSQL volume.
 
-For an ordinary future migration or production cutover without a separately
-recorded operator hard-cut authorization:
+For an ordinary migration or production cutover:
 
 1. stop writers or establish a maintenance boundary;
 2. take and verify a PostgreSQL backup;
@@ -708,15 +683,46 @@ recorded operator hard-cut authorization:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
+## Token Radar hard cut and acceptance
+
+Migration `20260810_0249` is a one-time, transactional derived-state reset.
+Stop Serve and Workers before applying it. The migration removes all six legacy
+Radar projection tables, legacy Radar terminal rows, and the replay-only schema
+installed by `20260810_0248`; it preserves material facts and creates one empty
+`token_radar_current` singleton. Verify fact counts and stable fact identities
+before and after the migration. Start only the new runtime afterward. There is
+no dual read/write, compatibility adapter, feature flag, legacy fallback,
+staging runtime, or history import.
+
+The independent performance bundle proves, on representative facts:
+
+- reducer P95 at or below two seconds, no turn above five seconds, no overflow,
+  and a continuous 30-minute interval with zero hard-budget misses or growing
+  remaining-domain backlog;
+- `GET /api/token-radar` P95 at or below 100 ms for `200` and 50 ms for `304`;
+- an uncompressed snapshot no larger than 20 KiB;
+- at most 500 DOM nodes on the Radar route and no snapshot-update long task
+  above 50 ms;
+- after the first response, unchanged snapshots return only `304`;
+- committed fact to visible browser Item P95 at or below 60 seconds.
+
+The maintained non-mock browser lane is
+`uv run pytest -q tests/e2e/test_token_radar_browser_release.py`. It builds the
+real React distribution, serves it from FastAPI over an isolated PostgreSQL
+database, opens an initially empty Radar page, then persists three independent
+resolved facts and runs one real Token Radar `load`/`reduce`/`publish` sample.
+The browser waits for its normal 30-second poll and proves the resulting Item
+becomes visible within 60 seconds of fact persistence, keeps the route at no
+more than 500 DOM nodes, and records no update long task above 50 ms. This
+test-only harness never targets an operator or production database and does
+not install route mocks.
+
 ## Issue #33 Workers Runtime V2 acceptance and sealing
 
 Controlled offline workload, isolated startup/recovery, and the real continuous
 30-minute run are independent gates. Tests or a healthy Compose stack cannot
-substitute for the real run. This operator-authorized cut uses no backup, volume
-snapshot, or restore path: a failed gate keeps writers stopped and is repaired
-forward in maintenance. That is the declared cutover contract, not a waivable
-proof. Print the deliberately non-passing `evidence.json` template from the
-current code:
+substitute for the real run. Print the deliberately non-passing `evidence.json`
+template from the current code:
 
 ```bash
 uv run tracefold ops seal-workers-runtime-acceptance --template
@@ -754,21 +760,48 @@ count. A sampled `Lock` wait is measured from PostgreSQL's ungranted-lock
 `waitstart`, must remain within the code-owned 250 ms database lock budget, and
 is sealed with its count and maximum duration for review. Other wait types are
 not interpreted as a blanket failure; their interval maxima are sealed for
-operator and independent review. The collector also requires all six
-Prometheus families for projection deadline misses, projection soft-SLO
-overruns, projection transitions, resource-active gauges, resource-admission
-duration, and resource-service duration. A missing required family fails
-closed instead of becoming an implicit zero.
+operator and independent review. The collector also requires the complete
+low-cardinality Prometheus contract: projection deadlines/transitions,
+processing and terminal counters, last-run time, Radar row/byte gauges,
+and resource active/admission/service series. A missing required family or
+required Radar-labelled series fails closed instead of becoming an implicit
+zero.
 
 Admission and service evidence are independent. Each requires complete
 `capability`, `operation`, and `outcome` labels plus matching cumulative
 `_count`/`_sum` series. Every exact series must remain present and monotonic
 between samples, and each class must show a real positive count delta during
 the 30-minute interval. Active capability gauges must remain within their
-code-owned caps. A Radar whole turn over five seconds increments the per-domain
-soft-SLO counter and is sealed as latency evidence, but that increment alone
-does not fail the gate; it is not a fatal turn deadline. Counter regression or
-an invalid soft-SLO metric shape still fails collection.
+code-owned caps. Worker readiness/metrics and authenticated
+`GET /api/token-radar` are resolved from the actual Compose-published Workers
+and Serve endpoints, including custom host ports. Each API sample performs an
+unconditional `200`, then a request with that exact ETag that must return
+`304`. Serve must remain the same unrestarted container and exact image/revision
+as Workers. Immediately before and after each API pair, the collector reads the
+same PostgreSQL `token_radar_current` singleton. The canonical payload hash and
+Item count returned by Serve must match either database observation; this
+two-read bracket permits one normal publication race but rejects a different
+database or stale unrelated LKG. The `200` ETag must itself be the canonical
+payload hash. The collector seals both latencies, response bytes, Item count,
+payload hash, and a hash of the matching ETag.
+
+The sealed Radar interval requires 59–61 completed turns for the 30-second
+clock, no more than one turn between adjacent ten-second samples, a last-run age
+no greater than 35 seconds at every sample, and exact reconciliation of every
+processing observation with one terminal status. It requires non-empty material
+input on a counter-confirmed turn during the interval. Only samples whose
+processing counter advances contribute workload gauges, and every interval turn
+must have exactly one such observation. The bundle seals maximum
+input/eligible/public rows and input/output bytes while enforcing 10,000 rows,
+8 MiB input, eight public Items, and 20 KiB output. It also requires no `failed`
+or `stale_skipped` turns;
+single-writer clock regressions may remain observable as a terminal status but
+cannot count as release success. Processing histogram P95 must remain at or
+below two seconds, every observed turn at or below five seconds, with zero
+Radar deadline-counter delta and the documented `200`/`304` API P95 limits. A
+Token Radar turn above five seconds is a hard-budget miss, preserves LKG, and
+fails both collection and release acceptance. Counter regression, unexpected
+cadence, or an invalid duration/workload metric shape also fails collection.
 
 More generally, the collector fails closed on a dirty or changing checkout,
 revision/runtime/PID/container changes, restart or OOM, stale readiness,
@@ -810,7 +843,8 @@ the collection summary or any raw sample fails sealing.
 The sealer revalidates the embedded first-sample production query audit and
 recomputes its summary, every sampled wait distribution, required metric-family
 presence, per-series resource monotonicity, independent admission/service
-interval deltas, and recorded Radar soft-SLO counters from the bound JSONL. It
+interval deltas, and recorded Token Radar duration/hard-budget counters from
+the bound JSONL. It
 also requires semantic and permission passes, runtime/model-reservation
 evidence, and reviewer pass. The declared commit must equal the current
 checkout HEAD; the checkout must have no tracked or untracked changes, the

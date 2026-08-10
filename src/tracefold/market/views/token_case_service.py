@@ -2,12 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.market.radar.constants import (
-    TOKEN_RADAR_DEFAULT_VENUE,
-    TOKEN_RADAR_PROJECTION_VERSION,
-)
-
-from .asset_flow_service import public_token_radar_row
 from .token_target_posts_service import TokenTargetPostsService
 from .token_target_social_timeline_service import TokenTargetSocialTimelineService
 
@@ -22,12 +16,10 @@ class TokenCaseService:
         *,
         targets: Any,
         profiles: Any,
-        token_radar: Any,
         market_candles: Any | None = None,
     ) -> None:
         self.targets = targets
         self.profiles = profiles
-        self.token_radar = token_radar
         self.market_candles = market_candles
 
     def dossier(
@@ -62,21 +54,12 @@ class TokenCaseService:
         )
         profile = self.profiles.profile_for_target(target_type=target_type, target_id=target_id)
         market_live = self._market_live(target=target, now_ms=now_ms)
-        current_radar_row = self.token_radar.current_row_for_target(
-            projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-            window=window,
-            venue=TOKEN_RADAR_DEFAULT_VENUE,
-            target_type=target_type,
-            target_id=target_id,
-        )
-        current_radar = public_token_radar_row(current_radar_row) if current_radar_row is not None else None
         return {
             "target": target,
             "profile": profile,
             "timeline": timeline,
             "posts": posts,
             "market_live": market_live,
-            "current_radar": current_radar,
         }
 
     def _market_live(self, *, target: dict[str, Any], now_ms: int | None) -> dict[str, Any]:

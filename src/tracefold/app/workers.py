@@ -45,6 +45,7 @@ from tracefold.macro import (
     acquisition_loop_policy,
 )
 from tracefold.market import (
+    TOKEN_RADAR_REFRESH_SECONDS,
     AssetProfileRefresh,
     CollectorService,
     EventAnchorBackfill,
@@ -52,10 +53,12 @@ from tracefold.market import (
     IngestService,
     MarketTickPoll,
     ProfileProjectionCandidate,
-    RadarProjectionCandidate,
+    RadarCurrentProjectionCycle,
     ResolutionRefresh,
+    StocksRadarCurrentProjection,
     TickLookup,
     TokenImageMirror,
+    TokenRadarCurrentProjection,
 )
 from tracefold.news import (
     NewsAcquisition,
@@ -156,6 +159,7 @@ class _Components:
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
     market_poll: MarketTickPoll | None
+    radar_current: RadarCurrentProjectionCycle
     projections: tuple[Any, ...]
     models: tuple[Any, ...]
     document_model: MacroDocumentAnalysisService | None
@@ -347,6 +351,19 @@ async def run_workers(settings: Settings) -> None:
                         name="market-tick-poll",
                     )
                 )
+            business_tasks.append(
+                group.create_task(
+                    _guard_child(
+                        _run_periodic(
+                            components.radar_current.sample,
+                            period_seconds=TOKEN_RADAR_REFRESH_SECONDS,
+                            stop_event=work_stop_event,
+                        ),
+                        on_fatal=enter_fatal,
+                    ),
+                    name="radar-current-cycle",
+                )
+            )
             if components.news_story is not None:
                 business_tasks.append(
                     group.create_task(
@@ -897,16 +914,21 @@ async def _wire_components(
     wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
     if wired_profile_provider_ids != active_profile_provider_ids:
         raise RuntimeError("profile_provider_wiring_mismatch")
+    token_radar_current = TokenRadarCurrentProjection(db=db, cpu=cpu, telemetry=telemetry)
+    stocks_radar_current = StocksRadarCurrentProjection(db=db, cpu=cpu)
+    radar_current = RadarCurrentProjectionCycle(
+        token=token_radar_current,
+        stocks=stocks_radar_current,
+    )
     projections = (
-        RadarProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=10),
         ProfileProjectionCandidate(
             db=db,
             cpu=cpu,
             runtime_id=runtime_id,
             active_profile_provider_ids=active_profile_provider_ids,
-            stable_order=20,
+            stable_order=10,
         ),
-        MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=30),
+        MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=20),
     )
     return _Components(
         providers=providers,
@@ -920,6 +942,7 @@ async def _wire_components(
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
         market_poll=market_poll,
+        radar_current=radar_current,
         projections=projections,
         models=tuple(model_candidates),
         document_model=document_model,
@@ -1213,7 +1236,6 @@ def _ingest_service_for_repos(repos: Any, *, event_anchor_active_window_ms: int)
         market_tick_current=repos.market_tick_current,
         enriched_events=repos.enriched_events,
         event_anchor_jobs=repos.event_anchor_jobs,
-        radar_source_edges=repos.radar_source_edges,
         persisted_live=repos.persisted_live,
         transaction=repos.transaction,
         event_anchor_active_window_ms=event_anchor_active_window_ms,

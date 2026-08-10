@@ -40,7 +40,6 @@ from tracefold.market.pricing.market_tick import EnrichedEventCapture, MarketTic
 from tracefold.market.pricing.market_tick_current_repository import MarketTickCurrentRepository
 from tracefold.market.pricing.market_tick_persistence import MarketTickPersistenceService
 from tracefold.market.pricing.market_tick_repository import MarketTickRepository
-from tracefold.market.radar.radar_source_edge_repository import RadarSourceEdgeRepository
 from tracefold.platform.postgres.persisted_live import PersistedLiveEventRepository
 
 
@@ -76,7 +75,6 @@ class IngestService:
         market_tick_current: MarketTickCurrentRepository,
         enriched_events: EnrichedEventRepository,
         event_anchor_jobs: EventAnchorBackfillJobRepository,
-        radar_source_edges: RadarSourceEdgeRepository,
         persisted_live: PersistedLiveEventRepository,
         transaction: Callable[[], AbstractContextManager[None]],
         event_anchor_active_window_ms: int,
@@ -95,7 +93,6 @@ class IngestService:
         self.market_tick_current = market_tick_current
         self.enriched_events = enriched_events
         self.event_anchor_jobs = event_anchor_jobs
-        self.radar_source_edges = radar_source_edges
         self.persisted_live = persisted_live
         self.transaction = transaction
         self.event_anchor_active_window_ms = require_event_anchor_active_window_ms(event_anchor_active_window_ms)
@@ -225,10 +222,6 @@ class IngestService:
                 reason="intent_resolution_unresolved",
                 now_ms=prepared.event_ms,
             )
-        self.radar_source_edges.sync_event(
-            event_id=prepared.event_id,
-            now_ms=prepared.event_ms,
-        )
         capture_ticks = [item.tick for item in capture_results if item.tick is not None]
         if capture_ticks:
             MarketTickPersistenceService(self).persist_ticks(

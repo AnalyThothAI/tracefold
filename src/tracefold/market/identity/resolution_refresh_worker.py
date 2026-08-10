@@ -15,7 +15,7 @@ from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     DexTokenCandidate,
 )
-from tracefold.market.radar.constants import WINDOW_MS
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 
@@ -31,7 +31,7 @@ FOUND_SYMBOL_REFRESH_MS = 15 * 60 * 1000
 NOT_FOUND_SYMBOL_REFRESH_MS = 5 * 60 * 1000
 FOUND_ADDRESS_REFRESH_MS = 24 * 60 * 60 * 1000
 NOT_FOUND_ADDRESS_REFRESH_MS = 5 * 60 * 1000
-HOT_LOOKBACK_MS = WINDOW_MS["1h"]
+HOT_LOOKBACK_MS = PRODUCT_WINDOW_MS["1h"]
 HOT_PROJECTION_WINDOWS = ("5m", "1h")
 HOT_PROJECTION_LIMIT = 100
 ERROR_REFRESH_BACKOFF_MS = (30_000, 60_000, 300_000, 1_800_000, 3_600_000)

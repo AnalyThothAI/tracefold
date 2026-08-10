@@ -74,24 +74,6 @@ services:
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "db", "migrate"]
 
-  cutover:
-    <<: *tracefold-app
-    profiles: ["maintenance"]
-    restart: "no"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    secrets:
-      - postgres_password
-    volumes:
-      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
-      - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
-      - ${HOME}/.tracefold/postgres_migrate_password:/root/.tracefold/postgres_migrate_password:ro
-      - ${HOME}/.tracefold/cache:/root/.tracefold/cache
-      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
-    command: ["tracefold", "db", "hard-cut"]
-
   serve:
     <<: *tracefold-app
     init: true

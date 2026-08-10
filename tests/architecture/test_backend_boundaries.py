@@ -16,7 +16,6 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # implementation collaborators of the three public News capabilities, not
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
-    "src/tracefold/app/hard_cut.py": {"tracefold.news.projection"},
     "src/tracefold/app/repositories.py": {"tracefold.news.repository"},
     "src/tracefold/app/workers.py": {
         "tracefold.news.push",
@@ -115,7 +114,7 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
-def test_backend_has_only_the_hard_cut_package_shape() -> None:
+def test_backend_has_only_the_expected_package_shape() -> None:
     assert {path.name for path in SRC.iterdir() if path.is_dir() and path.name != "__pycache__"} == {
         "app",
         "integrations",
@@ -318,11 +317,8 @@ def test_news_kiss_retired_tables_have_no_production_owner() -> None:
         "news_story_input_state",
         "news_projection_frontiers",
     }
-    allowed_absence_audit = SRC / "app" / "hard_cut.py"
     violations: list[str] = []
     for path in _python_files(SRC):
-        if path == allowed_absence_audit:
-            continue
         source = path.read_text(encoding="utf-8")
         violations.extend(f"{path.relative_to(ROOT)}:{table}" for table in retired_tables if table in source)
     assert violations == []

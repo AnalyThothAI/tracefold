@@ -20,9 +20,9 @@ providers / public streams
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model/CPU capabilities, singleton runtime
-status, one fixed-period News Story writer, and one EDF projection
-coordinator for the frontier-backed domains. Workers recover exclusively by
-re-reading PostgreSQL facts, typed Radar/Macro/Profile frontiers, native News
+status, fixed-period News Story, Token Radar, and Stocks Radar writers, and one
+EDF projection coordinator for the remaining frontier-backed domains. Workers
+recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
 Brief/Fed-document model state, the News Story-push state machine,
 and queues on bounded code-owned clocks.
 There is no
@@ -41,8 +41,8 @@ an unknown existing schema or missing role fails instead of being implicitly
 hard-cut.
 
 The same project-scoped application image contains the Python service and a
-production React build. Migration, maintenance cutover, Serve, and Workers use
-that exact image and build revision with different commands and credentials.
+production React build. Migration, Serve, and Workers use that exact image and
+build revision with different commands and credentials.
 `make up` builds the image once and recreates only migration, Serve, and
 Workers; it starts PostgreSQL when absent but does not recreate a running
 PostgreSQL container. Serve owns the static console and public HTTP/WebSocket
@@ -73,7 +73,7 @@ Material facts include:
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`.
 
-Current read models are `token_radar_current_rows`, `token_profile_current`,
+Current read models are `token_radar_current`, `token_profile_current`,
 `market_tick_current`, `news_stories`, `news_story_members`, and the six stable
 rows in `macro_module_current`. Each uses stable product/window/target identity,
 has exactly one runtime writer, is rebuildable from facts, and writes zero
@@ -85,15 +85,16 @@ and persists only the full-window classification, importance, and activity
 values. It never overwrites acquisition-owned facts.
 
 Source connection health in `news_sources`, queues, leases, retries, native
-model runs/jobs, and terminal events are control state. Typed Radar, Macro, and
-Profile frontiers store stable
+model runs/jobs, and terminal events are control state. Typed Macro and Profile
+frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Radar source edges are
-deterministic rebuildable state, not alternate business truth. Profile refresh
-heat tiers, retry attempts, provider circuits, and terminal reasons are
+before its deadline; the deadline is never a start gate. Token Radar has no
+source edge, dirty frontier, claim, lease, or quarantine state: its fixed-period
+writer rereads a bounded fact window and retains the last good singleton on
+failure. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
 The sealed `news_brief_current.served_payload` and rows in
 `macro_document_analyses` are derived model outputs bound to frozen evidence;
@@ -114,7 +115,7 @@ tracefold.market
   identity/      token and asset identity resolution
   pricing/       append-only market facts and current prices
   profiles/      source-backed token profiles and image state
-  radar/         transparent factor projection
+  radar/         bounded change reducers and compact current snapshots
   views/         persisted market read queries
 
 tracefold.news
@@ -236,9 +237,10 @@ releases the shared capability permit before the underlying future actually
 finishes. Projection turns therefore have phase-native deadlines and no
 aggregate fatal watchdog.
 
-Projection claim leases cover the complete legal phase envelope: Radar uses
-45 seconds, while Profile and Macro use 30 seconds each. The fixed-period News
-Story writer has no frontier lease and retains its 25-second operation budget.
+Projection claim leases cover the complete legal phase envelope: Profile and
+Macro use 30 seconds each. The fixed-period Token Radar, Stocks Radar, and News
+Story writers have no frontier lease; each uses its own bounded operation
+budget.
 
 ## Product flows
 
@@ -250,35 +252,55 @@ fact replay rebuilds it.
 
 ```text
 events + intents + resolutions + market facts
-  -> stable Radar source edges
-  -> claim up to 4 target frontiers for one window x venue
-  -> compact scalar feature updates
-  -> one complete Top-N rank
-  -> hydrate wide JSON only for selected identities
-  -> token_radar_current_rows + publication state
-  -> Radar, Search, Token Case
+  -> one bounded read of (now - 2h, now]
+  -> compare rolling current 1h with immediately preceding 1h
+  -> explicit boolean admission + deterministic trigger-time order
+  -> atomic compact token_radar_current singleton (maximum 8 Items)
+  -> Token Radar -> focused Token Case evidence
 ```
 
-The public Radar row is a transparent `factor_snapshot` built only from
-persisted identity, social, and market facts. One bounded `window × venue`
-micro-batch claims at most four target frontiers, within 10,000 source rows,
-4 MiB materialized input, and 1 MiB compact output. Five seconds is a soft
-whole-turn latency observation, never a fatal aggregate timeout; each DB and
-CPU phase is governed by its native deadline plus the bounded completion grace.
-The turn computes feature updates
-and the complete compact-population rank outside write transactions, then
-atomically publishes the closure and completes the exact claimed snapshots.
-Each frontier retains its latest input fingerprint/version and earliest
-deadline while a claimed snapshot runs; a changed latest input returns that
-target to dirty after publication. There is no rank frontier or intermediate
-publication state. Unchanged closures write zero serving rows.
+Token Radar is a change-first research queue, not a score, trading action,
+market screener, security audit, or operational monitor. Every 30 seconds its
+sole writer reads at most 10,000 resolved material-fact rows and 8 MiB of input,
+then runs one pure deterministic reducer with a five-second hard ceiling. The
+only code-owned rule set requires a minimum attention delta, a minimum count of
+independent authors, a maximum duplicate-text share, and a maximum time to the
+required author. Authors have equal weight; follower counts, provider tags,
+KOL/Smart-Money labels, composite weights, normalization, multi-slot
+baselines, and model output cannot affect admission or order.
+
+The reducer scans ordered persisted events to bind each eligible target to the
+first event at which all rules become true. Items are ordered primarily by
+that trigger time descending with deterministic fact-key ties. The public
+snapshot contains only canonical target identity, the current/prior mention
+change, independent-author/text evidence, propagation time, duplicate share,
+market availability and price change from the trigger, at most one
+counter-evidence reason, and the exact trigger Event ID. It has no rank,
+decision, score, factor tree, source-event list, profile, image, external link,
+window, venue, pagination, archive, or user-adjustable parameter.
+
+Publication locks the one stable product row and replaces the complete compact
+payload atomically. A business-identical payload writes zero serving state.
+Oversized input, timeout, or calculation failure never samples or truncates;
+it records an operational failure while preserving the complete last-good
+payload. Restart recovery is the next bounded PostgreSQL reread. Search and
+Token Case read their owning facts directly and never use Radar current state
+as evidence authority. Stocks Radar uses a separate fixed-period writer and
+does not share Token Radar source edges, frontiers, or reducer state.
+
+Migration `20260810_0249` is the irreversible Radar serving hard cut. It removes
+the six retired Radar projection tables and their terminal rows, removes the
+temporary replay-only columns installed by `20260810_0248`, and creates the one
+empty compact singleton. Material Events, intents, resolutions, identities,
+and market facts are unchanged. The new writer rebuilds only from the bounded
+two-hour fact window; there is no history import, dual read/write, compatibility
+adapter, staging runtime, or legacy fallback.
+
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a
-new evidence fingerprint reactivates that target. Radar rank, window,
-watermark, and row-payload changes do not enter the Profile fingerprint:
-Radar can dirty Profile only when the target enters or exits the deduplicated
-serving-set union. Provider, image, identity, or Profile version changes own
-the remaining Profile invalidations.
+new evidence fingerprint reactivates that target. Profile eligibility and
+invalidation come from identity/profile facts and Profile-owned policy; the
+compact Radar queue neither hydrates profiles nor drives Profile lifecycle.
 
 ### News
 

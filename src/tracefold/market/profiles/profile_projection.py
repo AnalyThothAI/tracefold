@@ -22,11 +22,6 @@ from tracefold.market.profiles.token_image_source_admission import (
 from tracefold.market.profiles.token_profile_current_projection import (
     project_token_profile_current,
 )
-from tracefold.market.radar.constants import (
-    TOKEN_RADAR_PROJECTION_VERSION,
-    TOKEN_RADAR_VENUES,
-    WINDOW_MS,
-)
 from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
 
 PROFILE_PROJECTION_VERSION = "token-profile-current-serving-v1"
@@ -38,8 +33,6 @@ _MAINTENANCE_STATEMENT_TIMEOUT_SECONDS = 120.0
 _INPUT_ROW_CAP = 10_000
 _INPUT_BYTE_CAP = 4 * 1024 * 1024
 _OUTPUT_BYTE_CAP = 1 * 1024 * 1024
-_VALID_WINDOWS = tuple(WINDOW_MS)
-_VALID_VENUES = tuple(TOKEN_RADAR_VENUES)
 _PRIVATE_CACHE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
 
 
@@ -369,21 +362,25 @@ def rebuild_all_profiles_for_maintenance(
         worker_name="profile_maintenance_rebuild",
     )
     serving_predicate = """
-        EXISTS (
-          SELECT 1
-          FROM token_radar_current_rows radar
-          WHERE radar.projection_version = %(projection_version)s
-            AND radar."window" = ANY(%(windows)s)
-            AND radar.venue = ANY(%(venues)s)
-            AND radar.target_type_key = target.target_type
-            AND radar.identity_id = target.target_id
+        (
+          target.target_type = 'Asset'
+          AND EXISTS (
+            SELECT 1
+            FROM registry_assets asset
+            WHERE asset.asset_id = target.target_id
+              AND asset.status IN ('candidate', 'canonical')
+          )
+        )
+        OR (
+          target.target_type = 'CexToken'
+          AND EXISTS (
+            SELECT 1
+            FROM cex_tokens token
+            WHERE token.cex_token_id = target.target_id
+              AND token.status IN ('candidate', 'canonical')
+          )
         )
     """
-    params = {
-        "projection_version": TOKEN_RADAR_PROJECTION_VERSION,
-        "windows": list(_VALID_WINDOWS),
-        "venues": list(_VALID_VENUES),
-    }
     inactive_providers = inactive_asset_profile_provider_ids(service.active_profile_provider_ids)
     inactive_targets_deleted = 0
     while inactive_providers:
@@ -406,7 +403,6 @@ def rebuild_all_profiles_for_maintenance(
                 DELETE FROM token_profile_current target
                 WHERE NOT ({serving_predicate})
                 """,
-                params,
             ).rowcount
             or 0
         )
@@ -416,7 +412,6 @@ def rebuild_all_profiles_for_maintenance(
                 DELETE FROM asset_profile_refresh_targets target
                 WHERE NOT ({serving_predicate})
                 """,
-                params,
             ).rowcount
             or 0
         )
@@ -426,7 +421,6 @@ def rebuild_all_profiles_for_maintenance(
                 DELETE FROM token_image_source_dirty_targets target
                 WHERE NOT ({serving_predicate})
                 """,
-                params,
             ).rowcount
             or 0
         )
@@ -436,15 +430,11 @@ def rebuild_all_profiles_for_maintenance(
                 DELETE FROM asset_profiles source
                 WHERE NOT EXISTS (
                   SELECT 1
-                  FROM token_radar_current_rows radar
-                  WHERE radar.projection_version = %(projection_version)s
-                    AND radar."window" = ANY(%(windows)s)
-                    AND radar.venue = ANY(%(venues)s)
-                    AND radar.target_type_key = 'Asset'
-                    AND radar.identity_id = source.asset_id
+                  FROM registry_assets asset
+                  WHERE asset.asset_id = source.asset_id
+                    AND asset.status IN ('candidate', 'canonical')
                 )
                 """,
-                params,
             ).rowcount
             or 0
         )
@@ -454,15 +444,11 @@ def rebuild_all_profiles_for_maintenance(
                 DELETE FROM cex_token_profiles source
                 WHERE NOT EXISTS (
                   SELECT 1
-                  FROM token_radar_current_rows radar
-                  WHERE radar.projection_version = %(projection_version)s
-                    AND radar."window" = ANY(%(windows)s)
-                    AND radar.venue = ANY(%(venues)s)
-                    AND radar.target_type_key = 'CexToken'
-                    AND radar.identity_id = source.cex_token_id
+                  FROM cex_tokens token
+                  WHERE token.cex_token_id = source.cex_token_id
+                    AND token.status IN ('candidate', 'canonical')
                 )
                 """,
-                params,
             ).rowcount
             or 0
         )
@@ -473,17 +459,15 @@ def rebuild_all_profiles_for_maintenance(
             (str(row["target_type"]), str(row["target_id"]))
             for row in repos.conn.execute(
                 """
-                SELECT DISTINCT
-                  target_type_key AS target_type,
-                  identity_id AS target_id
-                FROM token_radar_current_rows
-                WHERE projection_version = %(projection_version)s
-                  AND "window" = ANY(%(windows)s)
-                  AND venue = ANY(%(venues)s)
-                  AND target_type_key IN ('Asset', 'CexToken')
+                SELECT 'Asset' AS target_type, asset_id AS target_id
+                FROM registry_assets
+                WHERE status IN ('candidate', 'canonical')
+                UNION ALL
+                SELECT 'CexToken' AS target_type, cex_token_id AS target_id
+                FROM cex_tokens
+                WHERE status IN ('candidate', 'canonical')
                 ORDER BY target_type, target_id
                 """,
-                params,
             ).fetchall()
         ]
 
@@ -647,27 +631,10 @@ def _load_profile_snapshot(
     target_id: str,
     now_ms: int,
 ) -> dict[str, Any]:
-    serving = (
-        repos.conn.execute(
-            """
-            SELECT 1
-            FROM token_radar_current_rows
-            WHERE projection_version = %s
-              AND "window" = ANY(%s)
-              AND venue = ANY(%s)
-              AND target_type_key = %s
-              AND identity_id = %s
-            LIMIT 1
-            """,
-            (
-                TOKEN_RADAR_PROJECTION_VERSION,
-                list(_VALID_WINDOWS),
-                list(_VALID_VENUES),
-                target_type,
-                target_id,
-            ),
-        ).fetchone()
-        is not None
+    serving = _is_serving_identity(
+        repos,
+        target_type=target_type,
+        target_id=target_id,
     )
     target = {
         "target_type": str(target_type),
@@ -753,6 +720,37 @@ def _load_profile_snapshot(
         }
     )
     return snapshot
+
+
+def _is_serving_identity(
+    repos: Any,
+    *,
+    target_type: str,
+    target_id: str,
+) -> bool:
+    if target_type == "Asset":
+        row = repos.conn.execute(
+            """
+            SELECT 1
+            FROM registry_assets
+            WHERE asset_id = %s
+              AND status IN ('candidate', 'canonical')
+            """,
+            (target_id,),
+        ).fetchone()
+    elif target_type == "CexToken":
+        row = repos.conn.execute(
+            """
+            SELECT 1
+            FROM cex_tokens
+            WHERE cex_token_id = %s
+              AND status IN ('candidate', 'canonical')
+            """,
+            (target_id,),
+        ).fetchone()
+    else:
+        return False
+    return row is not None
 
 
 def _delete_outside_serving_state(

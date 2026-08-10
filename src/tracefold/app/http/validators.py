@@ -3,7 +3,6 @@ from __future__ import annotations
 from tracefold.app.http.exceptions import ApiBadRequest
 
 WINDOWS = {"5m", "1h", "4h", "24h"}
-TOKEN_RADAR_VENUES = {"all", "sol", "eth", "base", "bsc", "cex"}
 MAX_RESPONSE_LIST_ITEMS = 100
 
 
@@ -32,12 +31,6 @@ def _api_limit_int(value: int, *, field: str) -> int:
 
 def _handle_set(raw: str) -> set[str]:
     return {item.strip().lstrip("@").lower() for item in raw.split(",") if item.strip()}
-
-
-def _token_radar_venue(value: str) -> str:
-    if value in TOKEN_RADAR_VENUES:
-        return value
-    raise ApiBadRequest("invalid_venue", field="venue")
 
 
 def _window(value: str) -> str:

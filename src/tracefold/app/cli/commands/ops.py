@@ -6,7 +6,6 @@ from typing import Any
 
 from tracefold.app.cli.commands import queue_ops
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.hard_cut import rebuild_hard_cut_read_models
 from tracefold.app.read_models import rebuild_market_tick_current_batch
 from tracefold.app.reference_data import (
     sync_binance_cex_profiles_once,
@@ -25,12 +24,10 @@ from tracefold.app.workers_runtime_acceptance_v2 import (
 )
 from tracefold.app.workers_runtime_collector import collect_workers_runtime_acceptance
 from tracefold.market import (
-    TOKEN_RADAR_DEFAULT_VENUE,
-    TOKEN_RADAR_PROJECTION_VERSION,
-    factor_distribution_report,
+    TokenRadarStatusUnavailable,
     rebuild_recent_token_intents,
     reprocess_recent_token_intents,
-    token_radar_publication_status,
+    token_radar_status,
 )
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
@@ -38,9 +35,8 @@ from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 _READ_ONLY_OPS_COMMANDS = frozenset(
     {
         "audit-token-intent",
-        "factor-diagnostics",
-        "projection-status",
         "queue-inspect",
+        "radar-status",
         "validate-projections",
     }
 )
@@ -83,14 +79,6 @@ def _handle_ops_exclusive(
     settings: Any,
     lock_db: WorkerDatabase,
 ) -> tuple[int, dict[str, Any]]:
-    if args.ops_command == "hard-cut-rebuild":
-        data = rebuild_hard_cut_read_models(
-            db=lock_db,
-            settings=settings,
-            now_ms=_now_ms(),
-        )
-        return 0, {"ok": True, "data": data}
-
     if args.ops_command == "refresh-asset-profiles":
         data = refresh_asset_profiles_once(settings, limit=args.limit, db=lock_db)
         return 0, {"ok": True, "data": data}
@@ -189,23 +177,21 @@ def _handle_ops_read_only(args: object, *, repos: Any) -> tuple[int, dict[str, A
     if args.ops_command == "queue-inspect":
         return queue_ops.handle_queue_inspect(args, repos)
 
-    if args.ops_command == "factor-diagnostics":
-        rows = repos.token_radar.latest_current_rows(
-            window=args.window,
-            venue=TOKEN_RADAR_DEFAULT_VENUE,
-            limit=args.limit,
-            projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-        )
-        data = factor_distribution_report(rows)
-        return (0 if data["ok"] else 1), {"ok": data["ok"], "data": data}
-
-    if args.ops_command == "projection-status":
+    if args.ops_command == "radar-status":
+        try:
+            status = token_radar_status(repos.conn)
+        except TokenRadarStatusUnavailable as exc:
+            return 1, {
+                "ok": False,
+                "error": exc.code,
+                "data": {
+                    "status": "unavailable",
+                    "required_migration": exc.required_migration,
+                },
+            }
         return 0, {
             "ok": True,
-            "data": token_radar_publication_status(
-                repos.conn,
-                projection_version=TOKEN_RADAR_PROJECTION_VERSION,
-            ),
+            "data": status,
         }
 
     if args.ops_command == "validate-projections":

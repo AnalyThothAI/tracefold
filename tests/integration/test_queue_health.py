@@ -21,7 +21,6 @@ ALL_QUEUE_TABLES = (
     "event_anchor_backfill_jobs",
     "macro_document_analysis_jobs",
     "macro_module_frontiers",
-    "radar_projection_frontiers",
     "token_discovery_dirty_lookup_keys",
     "token_image_source_dirty_targets",
     "token_profile_projection_frontiers",
@@ -51,7 +50,7 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
             object(),
         )
         projection_code, projection_payload = ops.handle_ops(
-            SimpleNamespace(ops_command="projection-status"),
+            SimpleNamespace(ops_command="radar-status"),
             object(),
         )
     finally:
@@ -62,10 +61,10 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
     assert queue_payload["ok"] is projection_payload["ok"] is True
     assert tuple(item["source_table"] for item in queue_payload["data"]["items"]) == ALL_QUEUE_TABLES
     assert all(item["queue_health"]["available"] for item in queue_payload["data"]["items"])
-    assert projection_payload["data"]["status"] == "missing"
+    assert projection_payload["data"]["latest_attempt_status"] == "never"
 
 
-def test_queue_registry_has_one_truthful_owner_for_all_eight_tables() -> None:
+def test_queue_registry_has_one_truthful_owner_for_all_seven_tables() -> None:
     assert queue_tables_for_owner(None) == ALL_QUEUE_TABLES
     assert queue_tables_for_owner("profile_projection") == ("token_profile_projection_frontiers",)
     assert queue_tables_for_owner("unknown") == ()

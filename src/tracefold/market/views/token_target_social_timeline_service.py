@@ -4,9 +4,9 @@ import time
 from typing import Any
 
 from tracefold.market.pricing.message_price_payload import message_price_payload
+from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.validation import require_nonnegative_int
 
-from .asset_flow_service import WINDOW_MS
 from .token_target_cursor import decode_target_cursor, encode_target_cursor
 from .token_target_post_serializer import token_target_post_payload
 from .token_target_stage_builder import build_token_target_stages
@@ -88,7 +88,7 @@ class TokenTargetSocialTimelineService:
 
 def _window_ms(window: str) -> int:
     try:
-        return WINDOW_MS[window]
+        return PRODUCT_WINDOW_MS[window]
     except KeyError as exc:
         raise TokenTargetSocialTimelineWindowError(window) from exc
 

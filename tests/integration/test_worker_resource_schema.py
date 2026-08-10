@@ -17,8 +17,7 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
                 [
                     "worker_runtime_status",
                     "persisted_live_events",
-                    "radar_projection_frontiers",
-                    "radar_source_edges",
+                    "token_radar_current",
                     "macro_module_frontiers",
                     "macro_dataset_projection_states",
                     "token_profile_projection_frontiers",
@@ -37,9 +36,8 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
         "macro_module_frontiers",
         "persisted_live_events",
         "queue_terminal_events",
-        "radar_projection_frontiers",
-        "radar_source_edges",
         "token_profile_projection_frontiers",
+        "token_radar_current",
         "workers_runtime",
     ]
 
@@ -54,16 +52,11 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
             JOIN pg_attribute attribute
               ON attribute.attrelid = constraint_row.conrelid
              AND attribute.attnum = key_columns.attnum
-            WHERE constraint_row.conrelid = 'radar_projection_frontiers'::regclass
+            WHERE constraint_row.conrelid = 'token_radar_current'::regclass
               AND constraint_row.contype = 'p'
             """
         ).fetchone()
     finally:
         conn.close()
 
-    assert radar_pk["columns"] == [
-        "target_type",
-        "target_id",
-        "window_key",
-        "venue",
-    ]
+    assert radar_pk["columns"] == ["singleton_key"]

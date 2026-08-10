@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up status logs down preflight sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers recent asset-flow serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status logs down preflight sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers recent serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -42,6 +42,9 @@ check: ## run static, frontend, architecture, and public-contract checks
 	@uv run ruff format --check .
 	@uv run mypy src
 	@cd web && npm run typecheck && npm run lint && npm run format:check
+	@uv run python scripts/regen_cli_help.py --check
+	@uv run python scripts/regen_score_versions.py --check
+	@uv run python scripts/regen_ws_protocol.py --check
 	@uv run python -m pytest tests/architecture tests/contract -m "architecture or contract"
 	@uv run python -m compileall src tests
 
@@ -87,9 +90,6 @@ workers: ## run the ingestion/projection/provider/model runtime in foreground
 
 recent: ## print recent stored events
 	@$(TRACEFOLD) recent --limit 20
-
-asset-flow: ## print 5m token activity
-	@$(TRACEFOLD) asset-flow --window 5m --limit 20
 
 preflight: ## verify the one-command startup prerequisites
 	@command -v git >/dev/null 2>&1 || { echo "git is not installed or not on PATH" >&2; exit 127; }

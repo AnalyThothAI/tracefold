@@ -17,13 +17,6 @@ def _nonnegative_int(value: str) -> int:
     return parsed
 
 
-def _positive_float(value: str) -> float:
-    parsed = float(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be a positive number")
-    return parsed
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tracefold")
     subcommands = parser.add_subparsers(dest="command")
@@ -39,25 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
     db = subcommands.add_parser("db", help="database lifecycle commands")
     db_subcommands = db.add_subparsers(dest="db_command", required=True)
     db_subcommands.add_parser("migrate", help="apply PostgreSQL migrations")
-    hard_cut = db_subcommands.add_parser(
-        "hard-cut",
-        help="execute the maintenance-window schema/read-model hard cut",
-    )
-    hard_cut.add_argument(
-        "--bootstrap-dsn",
-        required=True,
-        help="legacy tracefold_app maintenance DSN without a password",
-    )
-    hard_cut.add_argument(
-        "--bootstrap-password-file",
-        default="postgres_password",
-        help="legacy maintenance password file",
-    )
-    hard_cut.add_argument(
-        "--execute",
-        action="store_true",
-        required=True,
-    )
     db_subcommands.add_parser("health", help="check PostgreSQL liveness and migration version")
     db_subcommands.add_parser("audit", help="run PostgreSQL count, FK, and projection schema audit")
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
@@ -91,21 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=_positive_int, default=20)
     search.add_argument("--cursor", default="", help="opaque cursor returned by a prior search page")
 
-    asset_flow = subcommands.add_parser("asset-flow", help="rank resolved assets and unresolved attention candidates")
-    asset_flow.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
-    asset_flow.add_argument("--limit", type=_positive_int, default=20)
-
     ops = subcommands.add_parser("ops", help="maintenance commands")
     ops_subcommands = ops.add_subparsers(dest="ops_command", required=True)
-    hard_cut_rebuild = ops_subcommands.add_parser(
-        "hard-cut-rebuild",
-        help="rebuild and audit all hard-cut current read models",
-    )
-    hard_cut_rebuild.add_argument(
-        "--execute",
-        action="store_true",
-        required=True,
-    )
     seal_acceptance = ops_subcommands.add_parser(
         "seal-workers-runtime-acceptance",
         help="validate and seal a complete Workers Runtime V2 acceptance bundle",
@@ -139,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_market_current.add_argument("--after-target-id", default="")
     rebuild_market_current.add_argument("--limit", type=_positive_int, default=500)
     rebuild_market_current.add_argument("--execute", action="store_true", required=True)
-    ops_subcommands.add_parser("projection-status", help="print Token Radar publication state")
+    ops_subcommands.add_parser("radar-status", help="print compact Token Radar singleton status")
     queue_inspect = ops_subcommands.add_parser("queue-inspect", help="inspect worker queue terminal evidence")
     queue_inspect.add_argument("--owner", default="")
     queue_inspect.add_argument("--source-table", default="")
@@ -220,10 +181,4 @@ def build_parser() -> argparse.ArgumentParser:
     audit_token_intent_target = audit_token_intent.add_mutually_exclusive_group(required=True)
     audit_token_intent_target.add_argument("--event-id", default="")
     audit_token_intent_target.add_argument("--intent-id", default="")
-    factor_diagnostics = ops_subcommands.add_parser(
-        "factor-diagnostics",
-        help="inspect token factor distribution health for latest radar rows",
-    )
-    factor_diagnostics.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="1h")
-    factor_diagnostics.add_argument("--limit", type=_positive_int, default=200)
     return parser
