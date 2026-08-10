@@ -84,9 +84,9 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
     asyncio.run(projection.sample())
 
     assert 2.9 < timeouts["token_radar_current_load"] <= 3.0
-    assert 0.9 < timeouts["token_radar_current_reduce"] <= 1.0
-    assert 0.4 < timeouts["token_radar_current_present"] <= 0.5
-    assert 0.4 < timeouts["token_radar_current_publish"] <= 0.5
+    assert 1.4 < timeouts["token_radar_current_reduce"] <= 1.5
+    assert 0.2 < timeouts["token_radar_current_present"] <= 0.25
+    assert 0.2 < timeouts["token_radar_current_publish"] <= 0.25
     assert 4.9 < sum(timeouts.values()) <= 5.0
 
 
