@@ -109,6 +109,9 @@ def test_token_radar_sampler_authenticates_200_then_revalidates_its_etag(monkeyp
     assert evidence["conditional"]["bytes"] == 0
     assert evidence["unconditional"]["etag_sha256"] == evidence["conditional"]["etag_sha256"]
     assert evidence["unconditional"]["data_sha256"] == data_sha256
+    assert evidence["unconditional"]["data_bytes"] == len(
+        json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    )
 
 
 def test_token_radar_database_state_hashes_the_served_payload() -> None:
@@ -680,6 +683,17 @@ def test_token_radar_api_evidence_requires_authenticated_200_and_matching_304() 
         _validate_sample(sample, metadata=_metadata(), previous=None)
 
 
+def test_token_radar_api_output_cap_applies_to_the_snapshot_not_the_http_envelope() -> None:
+    samples = _samples()
+    for sample in samples:
+        sample["token_radar_api"]["unconditional"]["bytes"] = collector_module.TOKEN_RADAR_OUTPUT_BYTE_CAP + 512
+        sample["token_radar_api"]["unconditional"]["data_bytes"] = collector_module.TOKEN_RADAR_OUTPUT_BYTE_CAP
+
+    summary = _summarize(samples)
+
+    assert summary["checks"]["token_radar_api_uncompressed_bytes_at_most_96_kib"] is True
+
+
 def test_bounded_lock_wait_is_recorded_without_failing_the_sample() -> None:
     clock = _VirtualClock()
     sample = _sample(0, clock=clock)
@@ -901,6 +915,7 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
                 "status": 200,
                 "latency_ms": 10.0,
                 "bytes": 1024,
+                "data_bytes": 900,
                 "items": 1,
                 "etag_sha256": "b" * 64,
                 "data_sha256": "c" * 64,

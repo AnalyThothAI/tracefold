@@ -7,7 +7,6 @@ export type OpenApiStatusData = components["schemas"]["StatusData"];
 export type OpenApiRecentData = components["schemas"]["RecentData"];
 export type OpenApiSearchData = components["schemas"]["SearchData"];
 export type OpenApiSearchInspectData = components["schemas"]["SearchInspectData"];
-export type OpenApiStocksRadarData = components["schemas"]["StocksRadarData"];
 export type OpenApiLiveMarketData = components["schemas"]["LiveMarketData"];
 export type OpenApiTargetPostsData = components["schemas"]["TargetPostsData"];
 export type OpenApiTargetSocialTimelineData = components["schemas"]["TargetSocialTimelineData"];
@@ -35,8 +34,6 @@ export type {
   SearchTargetCandidate,
   SearchTopicResult,
   SearchTokenResult,
-  StockRadarRow,
-  StocksRadarData,
   TimelineBucket,
   TokenCaseDossier,
   TokenCasePostsData,

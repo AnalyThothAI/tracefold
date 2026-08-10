@@ -30,9 +30,6 @@ CORE_TABLES = (
 
 PROJECTION_TABLES = (
     "token_radar_current",
-    "stock_attention_target_features",
-    "stocks_radar_current_rows",
-    "stocks_radar_publication_state",
     "news_projection_summary",
     "news_brief_selection_current",
     "news_brief_current",
@@ -155,17 +152,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             LIMIT 1
         """,
         "params": ("audit-missing-target",),
-    },
-    {
-        "name": "stocks_radar_recent",
-        "sql": """
-            SELECT target_id, mentions, latest_seen_ms
-            FROM stocks_radar_current_rows
-            WHERE window_key = %s
-            ORDER BY rank
-            LIMIT 100
-        """,
-        "params": ("1h",),
     },
     {
         "name": "live_market_current",
@@ -432,7 +418,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
     "/api/token-radar": ("token_radar_latest",),
-    "/api/stocks-radar": ("stocks_radar_recent",),
     "/api/live-market": ("live_market_current",),
     "/api/search": ("search_v2_lexical", "search_v2_substring"),
     "/api/search/inspect": (
@@ -732,7 +717,7 @@ class ProjectionValidationAudit:
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
                          WHERE NOT singleton_key
-                            OR schema_version <> 'token_radar_snapshot_v1'
+                            OR schema_version <> 'token_radar_snapshot_v2'
                             OR (
                               latest_attempt_status = 'ready'
                               AND state_fingerprint IS NULL
@@ -745,43 +730,14 @@ class ProjectionValidationAudit:
                               )
                             )
                             OR served_payload ->> 'schema_version'
-                                 <> 'token_radar_snapshot_v1'
+                                 <> 'token_radar_snapshot_v2'
                             OR jsonb_typeof(served_payload -> 'items') <> 'array'
-                            OR jsonb_array_length(served_payload -> 'items') > 8
+                            OR jsonb_array_length(served_payload -> 'items') > 50
                             OR COALESCE((served_payload ->> 'eligible_total')::bigint, -1)
                                  < jsonb_array_length(served_payload -> 'items')
                        )::integer
                      END AS count
               FROM token_radar_current
-            ),
-            stock_expected_ranked AS (
-              SELECT
-                window_key,
-                target_id,
-                row_number() OVER (
-                  PARTITION BY window_key
-                  ORDER BY mentions DESC, latest_seen_ms DESC,
-                           symbol, target_id
-                )::integer AS expected_rank,
-                state_fingerprint
-              FROM stock_attention_target_features
-            ),
-            stock_expected AS (
-              SELECT *
-              FROM stock_expected_ranked
-              WHERE expected_rank <= 100
-            ),
-            stock_mismatch AS (
-              SELECT count(*)::integer AS count
-              FROM stock_expected expected
-              FULL OUTER JOIN stocks_radar_current_rows current
-                ON current.window_key = expected.window_key
-               AND current.target_id = expected.target_id
-              WHERE expected.target_id IS NULL
-                 OR current.target_id IS NULL
-                 OR current.rank IS DISTINCT FROM expected.expected_rank
-                 OR current.state_fingerprint
-                      IS DISTINCT FROM expected.state_fingerprint
             ),
             brief_mismatch AS (
               SELECT count(*)::integer AS count
@@ -813,8 +769,6 @@ class ProjectionValidationAudit:
             SELECT
               (SELECT count FROM radar_mismatch)
                 AS token_radar_current_mismatch,
-              (SELECT count FROM stock_mismatch)
-                AS stocks_radar_current_mismatch,
               (SELECT count FROM brief_mismatch)
                 AS news_brief_selection_snapshot_mismatch,
               (SELECT count FROM brief_current_mismatch)

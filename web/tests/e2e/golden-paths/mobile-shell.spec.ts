@@ -11,7 +11,9 @@ test.beforeEach(({}, testInfo) => {
   test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only layout contract");
 });
 
-test("mobile shell exposes route navigation around compact Radar", async ({ page }) => {
+test("mobile shell exposes Radar, News, and Macro navigation around rich Radar", async ({
+  page,
+}) => {
   await installMockApi(page);
   await page.goto("/");
   await expectMobileTopbarContract(page);
@@ -20,12 +22,12 @@ test("mobile shell exposes route navigation around compact Radar", async ({ page
   await sidebarTrigger.click();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(navigation.getByRole("link", { name: "Radar" })).toBeVisible();
-  await expect(navigation.getByRole("link", { name: "Stocks" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "News" })).toBeVisible();
   await expect(navigation.getByRole("link", { name: "Macro" })).toBeVisible();
   await page.keyboard.press("Escape");
 
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
-  await expect(page.getByText("1 eligible")).toBeVisible();
+  await expect(page.getByText("Showing 1 / 1 eligible")).toBeVisible();
   await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
@@ -36,13 +38,15 @@ test("mobile shell exposes route navigation around compact Radar", async ({ page
   await expectNoUnhandledApiRequests(page);
 });
 
-test("mobile capped Radar remains reachable and two-line", async ({ page }) => {
-  await installMockApi(page, { radarItemCount: 8 });
+test("mobile Top 50 Radar remains scannable and reaches the final row", async ({ page }) => {
+  await installMockApi(page, { radarItemCount: 50 });
   await page.goto("/");
 
   const items = page.locator(".live-radar-item");
-  await expect(items).toHaveCount(8);
-  await expect(items.first().locator(":scope > div")).toHaveCount(2);
+  await expect(items).toHaveCount(50);
+  await expect(items.first().getByLabel("UPEG market facts")).toContainText("Price $0.042");
+  await expect(items.first().getByLabel("UPEG market facts")).toContainText("MCap $42M");
+  await expect(items.first().getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
   const layout = await page.evaluate(() => {
     const center = document.querySelector<HTMLElement>(".center-column");
     const livePage = document.querySelector<HTMLElement>(".live-page");
@@ -71,13 +75,13 @@ test("mobile capped Radar remains reachable and two-line", async ({ page }) => {
 });
 
 test("mobile Radar Case action remains reachable on the final item", async ({ page }) => {
-  await installMockApi(page, { radarItemCount: 8 });
+  await installMockApi(page, { radarItemCount: 50 });
   await page.goto("/");
 
   const lastItem = page.locator(".live-radar-item").last();
   await lastItem.scrollIntoViewIfNeeded();
   await lastItem.getByRole("link", { name: "Open Token Case" }).click();
-  await expect(page).toHaveURL(/focus=trigger&trigger_event_id=event-upeg-8$/);
+  await expect(page).toHaveURL(/focus=trigger&trigger_event_id=event-upeg-50$/);
   await expectNoUnhandledApiRequests(page);
 });
 

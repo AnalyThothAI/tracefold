@@ -11,12 +11,8 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
-from tracefold.app.http.validators import (
-    _limit,
-    _target_type,
-    _window,
-)
-from tracefold.market import StocksRadarService, live_market_snapshot, served_token_radar_snapshot
+from tracefold.app.http.validators import _target_type
+from tracefold.market import live_market_snapshot, served_token_radar_snapshot
 
 router = APIRouter()
 _TokenRadarEnvelope = api_schemas.ApiEnvelope[api_schemas.TokenRadarData]
@@ -61,29 +57,6 @@ def token_radar(request: Request) -> Response:
     return _etagged_token_radar(data, request)
 
 
-@router.get("/stocks-radar", response_model=api_schemas.ApiEnvelope[api_schemas.StocksRadarData])
-def stocks_radar(
-    request: Request,
-    window: Annotated[str, Query()] = "1h",
-    limit: Annotated[int, Query()] = 20,
-) -> JSONResponse:
-    _reject_removed_scope(request)
-    runtime = _authenticated_runtime(request)
-    parsed_window = _window(window)
-    with runtime.repositories() as repos:
-        data = StocksRadarService(
-            conn=repos.conn,
-        ).stocks_radar(
-            window=parsed_window,
-            limit=_limit(limit),
-            now_ms=_now_ms(),
-        )
-    return _validated_json(
-        api_schemas.ApiEnvelope[api_schemas.StocksRadarData],
-        {"ok": True, "data": data},
-    )
-
-
 @router.get("/live-market", response_model=api_schemas.ApiEnvelope[api_schemas.LiveMarketData])
 def live_market(
     request: Request,
@@ -109,11 +82,6 @@ def live_market(
         api_schemas.ApiEnvelope[api_schemas.LiveMarketData],
         {"ok": True, "data": snapshot},
     )
-
-
-def _reject_removed_scope(request: Request) -> None:
-    if "scope" in request.query_params:
-        raise ApiBadRequest("unsupported_query_param", field="scope")
 
 
 def _validate_token_radar_query(request: Request) -> None:

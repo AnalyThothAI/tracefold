@@ -23,15 +23,15 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   await sidebarTrigger.click();
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(primaryNavigation).toBeVisible();
-  for (const routeName of ["Radar", "Stocks", "News", "Macro"]) {
+  for (const routeName of ["Radar", "News", "Macro"]) {
     await expect(primaryNavigation.getByRole("link", { name: routeName })).toBeVisible();
   }
-  await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
 
-  await primaryNavigation.getByRole("link", { name: "Stocks" }).click();
-  await expect(page).toHaveURL(/\/stocks(?:\?|$)/);
+  await primaryNavigation.getByRole("link", { name: "Macro" }).click();
+  await expect(page).toHaveURL(/\/macro(?:\?|$)/);
   await expect(primaryNavigation).toBeHidden();
-  await expect(page.getByRole("region", { name: "US stocks radar" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Macro" })).toBeVisible();
 
   await expect(sidebarTrigger).toBeVisible();
   await sidebarTrigger.click();

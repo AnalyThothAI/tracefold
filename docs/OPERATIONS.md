@@ -86,7 +86,7 @@ tracefold workers
   -> one pinned singleton session / business DB executor 2 / control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
   -> spawn-only Pebble ProcessPool 1
-  -> acquisition clocks + fixed-period News Story, Token Radar, and Stocks Radar writers
+  -> acquisition clocks + fixed-period News Story and Token Radar writers
      + one EDF projection coordinator for Macro/Profile
   -> one serial native-state model arbiter
 ```
@@ -145,10 +145,13 @@ therefore covered by the native database deadline; the async caller adds only a
 bounded completion grace before treating an unfinished future as fatal.
 
 Token Radar is one fixed-period 30-second reducer turn outside the EDF
-coordinator. One turn reads only `(now - 2h, now]`, accepts at most 10,000 rows
-and 8 MiB of materialized input, and must finish within a five-second hard
-budget. Its measured release target is P95 at or below two seconds. The
-complete public snapshot is capped at eight Items and 20 KiB uncompressed.
+coordinator. One turn first reads only `(now - 2h, now]`, accepts at most 10,000
+rows and 8 MiB of materialized input, and deterministically selects at most
+fifty targets. A second bounded query batch-reads presentation facts for that
+selected set from `token_profile_current` and `market_tick_current`; query count
+does not grow with Item count. The complete turn must finish within a five-second
+hard budget, with measured P95 at or below two seconds. The complete public v2
+snapshot is capped at fifty Items and 96 KiB uncompressed.
 Overflow or timeout fails the turn without sampling, truncation, partial
 publication, or widening the source interval; the last-good singleton remains
 unchanged. There is no Radar source edge, dirty frontier, claim, lease,
@@ -158,9 +161,9 @@ The reducer calculates outside its short publication transaction. Publication
 locks one stable singleton and writes the complete payload only when its
 business fingerprint changes. A failed-attempt marker may change operational
 state without replacing the served payload. Restart and catch-up consist only
-of the next bounded fact reread. Stocks Radar has a separate fixed-period
-writer and retains its existing public read model; it does not reuse the Token
-Radar reducer or durable state.
+of the next two bounded reads. There is no Stocks route, writer, query family,
+or read model. The retained `us_equity_symbols` catalog is only a token-identity
+collision guard and owns no runtime Stocks loop.
 
 Profile and Macro projection claims retain their 30-second lease envelopes.
 The fixed-period News Story writer retains its 25-second operation budget. The
@@ -223,7 +226,8 @@ Token Radar:
 ```text
 event -> intent -> current resolution + market facts
   -> bounded adjacent-hour read -> deterministic boolean reducer
-  -> one atomic token_radar_current compact snapshot
+  -> one bounded selected-target profile/market read
+  -> one atomic token_radar_current v2 snapshot
 ```
 
 Market current is maintained transactionally with `market_ticks`; it has no
@@ -650,8 +654,10 @@ Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
 after selection. Partial indexes must match the real due/status predicate. An
 idle frontier worker must not scan broad facts merely to prove that no work is
 due. Token Radar is the explicit exception: its code-owned 30-second reducer
-performs one indexed, two-hour, row/byte-capped fact read and has no wake or due
-state. Current models remain bounded by stable product keys; a
+performs one indexed, two-hour, row/byte-capped evidence read followed by one
+selected-target batch presentation read and has no wake or due state. Both reads
+are bounded independently; there is no per-Item profile or market query. Current
+models remain bounded by stable product keys; a
 latest-generation pointer is not a retention policy.
 
 Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
@@ -683,16 +689,20 @@ For an ordinary migration or production cutover:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
-## Token Radar hard cut and acceptance
+## Token Radar v2 hard cut and acceptance
 
-Migration `20260810_0249` is a one-time, transactional derived-state reset.
-Stop Serve and Workers before applying it. The migration removes all six legacy
-Radar projection tables, legacy Radar terminal rows, and the replay-only schema
-installed by `20260810_0248`; it preserves material facts and creates one empty
-`token_radar_current` singleton. Verify fact counts and stable fact identities
-before and after the migration. Start only the new runtime afterward. There is
-no dual read/write, compatibility adapter, feature flag, legacy fallback,
-staging runtime, or history import.
+Historical migration `20260810_0249` removed the six pre-singleton Radar tables
+and installed the v1 singleton. Migration `20260810_0250` is the current
+one-time, transactional product reset. Stop Serve and Workers before applying
+it. From `0249`, it resets the v1 row to one empty
+`token_radar_snapshot_v2`, replaces the schema constraint with the fifty-Item
+contract, and drops `stock_attention_target_features`,
+`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserves
+material Events, intents, resolutions, identity/profile facts, market facts,
+and the internal `us_equity_symbols` collision guard. Verify fact counts and
+stable fact identities before and after the migration, then start only the new
+runtime. There is no dual read/write, compatibility adapter, feature flag, v1
+fallback, Stocks route, staging runtime, or history import.
 
 The independent performance bundle proves, on representative facts:
 
@@ -700,9 +710,9 @@ The independent performance bundle proves, on representative facts:
   and a continuous 30-minute interval with zero hard-budget misses or growing
   remaining-domain backlog;
 - `GET /api/token-radar` P95 at or below 100 ms for `200` and 50 ms for `304`;
-- an uncompressed snapshot no larger than 20 KiB;
-- at most 500 DOM nodes on the Radar route and no snapshot-update long task
-  above 50 ms;
+- an uncompressed snapshot no larger than 96 KiB;
+- at most 1,000 DOM nodes for a fifty-Item Radar route and no snapshot-update
+  long task above 50 ms;
 - after the first response, unchanged snapshots return only `304`;
 - committed fact to visible browser Item P95 at or below 60 seconds.
 
@@ -712,8 +722,12 @@ real React distribution, serves it from FastAPI over an isolated PostgreSQL
 database, opens an initially empty Radar page, then persists three independent
 resolved facts and runs one real Token Radar `load`/`reduce`/`publish` sample.
 The browser waits for its normal 30-second poll and proves the resulting Item
-becomes visible within 60 seconds of fact persistence, keeps the route at no
-more than 500 DOM nodes, and records no update long task above 50 ms. This
+becomes visible within 60 seconds of fact persistence, exercises same-origin
+icon/current-price/signal-change/market-cap rendering without frontend data
+hydration, and records no update long task above 50 ms. The maintained
+`web/tests/e2e/golden-paths/live-cold-load.spec.ts` browser lane separately
+proves exact fifty-Item order and reachability, no more than 1,000 Radar DOM
+nodes, and an empty-to-fifty refresh with no long task above 50 ms. This
 test-only harness never targets an operator or production database and does
 not install route mocks.
 
@@ -793,7 +807,7 @@ input on a counter-confirmed turn during the interval. Only samples whose
 processing counter advances contribute workload gauges, and every interval turn
 must have exactly one such observation. The bundle seals maximum
 input/eligible/public rows and input/output bytes while enforcing 10,000 rows,
-8 MiB input, eight public Items, and 20 KiB output. It also requires no `failed`
+8 MiB input, fifty public Items, and 96 KiB output. It also requires no `failed`
 or `stale_skipped` turns;
 single-writer clock regressions may remain observable as a terminal status but
 cannot count as release success. Processing histogram P95 must remain at or

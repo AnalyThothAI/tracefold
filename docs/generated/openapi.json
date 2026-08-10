@@ -599,52 +599,6 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
-      "ApiEnvelope_StocksRadarData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/StocksRadarData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[StocksRadarData]",
-        "type": "object"
-      },
       "ApiEnvelope_TargetPostsData_": {
         "additionalProperties": false,
         "properties": {
@@ -9883,434 +9837,6 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
-      "StocksRadarAttentionData": {
-        "additionalProperties": false,
-        "properties": {
-          "latest_seen_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Seen Ms"
-          },
-          "mentions": {
-            "title": "Mentions",
-            "type": "integer"
-          },
-          "unique_authors": {
-            "title": "Unique Authors",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "mentions",
-          "unique_authors",
-          "latest_seen_ms"
-        ],
-        "title": "StocksRadarAttentionData",
-        "type": "object"
-      },
-      "StocksRadarData": {
-        "additionalProperties": false,
-        "properties": {
-          "health": {
-            "$ref": "#/components/schemas/StocksRadarHealthData"
-          },
-          "query": {
-            "$ref": "#/components/schemas/StocksRadarQueryData"
-          },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/StocksRadarRowData"
-            },
-            "title": "Rows",
-            "type": "array"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          }
-        },
-        "required": [
-          "window",
-          "query",
-          "rows",
-          "health"
-        ],
-        "title": "StocksRadarData",
-        "type": "object"
-      },
-      "StocksRadarHealthData": {
-        "additionalProperties": false,
-        "properties": {
-          "quote_ready_count": {
-            "title": "Quote Ready Count",
-            "type": "integer"
-          },
-          "quote_unavailable_count": {
-            "title": "Quote Unavailable Count",
-            "type": "integer"
-          },
-          "returned_count": {
-            "title": "Returned Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "returned_count",
-          "quote_ready_count",
-          "quote_unavailable_count"
-        ],
-        "title": "StocksRadarHealthData",
-        "type": "object"
-      },
-      "StocksRadarLatestEventData": {
-        "additionalProperties": false,
-        "properties": {
-          "author_handle": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Author Handle"
-          },
-          "event_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Event Id"
-          },
-          "received_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Received At Ms"
-          },
-          "text": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Text"
-          }
-        },
-        "required": [
-          "event_id",
-          "author_handle",
-          "text",
-          "received_at_ms"
-        ],
-        "title": "StocksRadarLatestEventData",
-        "type": "object"
-      },
-      "StocksRadarQueryData": {
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "title": "Limit",
-            "type": "integer"
-          },
-          "window": {
-            "title": "Window",
-            "type": "string"
-          },
-          "window_end_ms": {
-            "title": "Window End Ms",
-            "type": "integer"
-          },
-          "window_start_ms": {
-            "title": "Window Start Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "window",
-          "limit",
-          "window_start_ms",
-          "window_end_ms"
-        ],
-        "title": "StocksRadarQueryData",
-        "type": "object"
-      },
-      "StocksRadarQuoteData": {
-        "additionalProperties": false,
-        "properties": {
-          "asof": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Asof"
-          },
-          "change_pct": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Change Pct"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "freshness_class": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Freshness Class"
-          },
-          "latency_class": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latency Class"
-          },
-          "price": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Price"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider"
-          },
-          "provider_symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Symbol"
-          },
-          "reference_close_price": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference Close Price"
-          },
-          "status": {
-            "enum": [
-              "ready",
-              "unavailable"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "price",
-          "reference_close_price",
-          "change_pct",
-          "asof",
-          "provider",
-          "provider_symbol",
-          "latency_class",
-          "freshness_class",
-          "error"
-        ],
-        "title": "StocksRadarQuoteData",
-        "type": "object"
-      },
-      "StocksRadarRowData": {
-        "additionalProperties": false,
-        "properties": {
-          "attention": {
-            "$ref": "#/components/schemas/StocksRadarAttentionData"
-          },
-          "latest_event": {
-            "$ref": "#/components/schemas/StocksRadarLatestEventData"
-          },
-          "quote": {
-            "$ref": "#/components/schemas/StocksRadarQuoteData"
-          },
-          "row_health": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Row Health",
-            "type": "array"
-          },
-          "source_event_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Event Ids",
-            "type": "array"
-          },
-          "target": {
-            "$ref": "#/components/schemas/StocksRadarTargetData"
-          }
-        },
-        "required": [
-          "target",
-          "attention",
-          "latest_event",
-          "quote",
-          "source_event_ids",
-          "row_health"
-        ],
-        "title": "StocksRadarRowData",
-        "type": "object"
-      },
-      "StocksRadarTargetData": {
-        "additionalProperties": false,
-        "properties": {
-          "exchange": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exchange"
-          },
-          "instrument_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instrument Type"
-          },
-          "market": {
-            "const": "us_equity",
-            "title": "Market",
-            "type": "string"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
-          },
-          "symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Symbol"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Id"
-          },
-          "target_type": {
-            "const": "MarketInstrument",
-            "title": "Target Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "target_type",
-          "target_id",
-          "symbol",
-          "market",
-          "exchange",
-          "instrument_type",
-          "name"
-        ],
-        "title": "StocksRadarTargetData",
-        "type": "object"
-      },
       "TargetPostsData": {
         "additionalProperties": false,
         "properties": {
@@ -10595,12 +10121,12 @@
             "items": {
               "$ref": "#/components/schemas/TokenRadarItemData"
             },
-            "maxItems": 8,
+            "maxItems": 50,
             "title": "Items",
             "type": "array"
           },
           "schema_version": {
-            "const": "token_radar_snapshot_v1",
+            "const": "token_radar_snapshot_v2",
             "title": "Schema Version",
             "type": "string"
           }
@@ -10700,6 +10226,30 @@
       "TokenRadarMarketData": {
         "additionalProperties": false,
         "properties": {
+          "market_cap_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Cap Usd"
+          },
+          "observed_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At Ms"
+          },
           "price_change_since_signal": {
             "anyOf": [
               {
@@ -10710,6 +10260,18 @@
               }
             ],
             "title": "Price Change Since Signal"
+          },
+          "price_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Usd"
           },
           "status": {
             "enum": [
@@ -10722,7 +10284,10 @@
         },
         "required": [
           "status",
-          "price_change_since_signal"
+          "price_change_since_signal",
+          "price_usd",
+          "market_cap_usd",
+          "observed_at_ms"
         ],
         "title": "TokenRadarMarketData",
         "type": "object"
@@ -10763,6 +10328,28 @@
             ],
             "title": "Exchange"
           },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "symbol": {
             "title": "Symbol",
             "type": "string"
@@ -10784,6 +10371,8 @@
           "target_type",
           "target_id",
           "symbol",
+          "name",
+          "logo_url",
           "chain",
           "exchange",
           "address"
@@ -11790,59 +11379,6 @@
           }
         },
         "summary": "Status",
-        "tags": [
-          "api"
-        ]
-      }
-    },
-    "/api/stocks-radar": {
-      "get": {
-        "operationId": "stocks_radar_api_stocks_radar_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "window",
-            "required": false,
-            "schema": {
-              "default": "1h",
-              "title": "Window",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 20,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_StocksRadarData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Stocks Radar",
         "tags": [
           "api"
         ]

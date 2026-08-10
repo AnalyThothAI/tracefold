@@ -69,6 +69,9 @@ RETIRED_BACKEND_TABLES = {
     "news_item_agent_briefs",
     "news_item_agent_runs",
     "news_source_quality_rows",
+    "stock_attention_target_features",
+    "stocks_radar_current_rows",
+    "stocks_radar_publication_state",
     "token_radar_source_dirty_events",
     "market_tick_current_dirty_targets",
     "token_capture_tier_dirty_targets",
@@ -384,9 +387,6 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "market_ticks",
         "enriched_events",
         "token_radar_current",
-        "stock_attention_target_features",
-        "stocks_radar_current_rows",
-        "stocks_radar_publication_state",
         "market_instruments",
         "market_observations",
         "market_settlements",
@@ -525,7 +525,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260810_0249"
+    assert version == latest_migration_version() == "20260810_0250"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -550,7 +550,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260810_0249"
+    assert version == latest_migration_version() == "20260810_0250"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -929,7 +929,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260810_0249"
+        assert version == latest_migration_version() == "20260810_0250"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

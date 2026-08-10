@@ -54,10 +54,10 @@ COLLECTION_FILE = "workers-runtime-collection.json"
 _HTTP_TIMEOUT_SECONDS = 1.0
 _MAX_PROBE_BYTES = 64 * 1024
 _MAX_METRICS_BYTES = 4 * 1024 * 1024
-_MAX_TOKEN_RADAR_API_BYTES = 64 * 1024
+_MAX_TOKEN_RADAR_API_BYTES = TOKEN_RADAR_OUTPUT_BYTE_CAP + 4 * 1024
 _TOKEN_RADAR_API_UNCONDITIONAL_P95_MS = 100.0
 _TOKEN_RADAR_API_CONDITIONAL_P95_MS = 50.0
-_TOKEN_RADAR_API_MAX_BYTES = 20 * 1024
+_TOKEN_RADAR_API_MAX_BYTES = TOKEN_RADAR_OUTPUT_BYTE_CAP
 _TOKEN_RADAR_WORKER = "token_radar_current"
 _TOKEN_RADAR_RELEASE_INTERVAL_SECONDS = 30.0
 _TOKEN_RADAR_MAX_LAST_RUN_AGE_SECONDS = _TOKEN_RADAR_RELEASE_INTERVAL_SECONDS + 5.0
@@ -520,6 +520,7 @@ class _ProductionSampler:
                 "status": 200,
                 "latency_ms": unconditional["latency_ms"],
                 "bytes": len(unconditional["payload"]),
+                "data_bytes": len(encoded_data),
                 "items": len(data["items"]),
                 "etag_sha256": hashlib.sha256(etag.encode("utf-8")).hexdigest(),
                 "data_sha256": data_sha256,
@@ -1371,6 +1372,7 @@ def _validate_token_radar_api(api: dict[str, Any]) -> None:
         "status",
         "latency_ms",
         "bytes",
+        "data_bytes",
         "items",
         "etag_sha256",
         "data_sha256",
@@ -1389,6 +1391,7 @@ def _validate_token_radar_api(api: dict[str, Any]) -> None:
         if not _SHA256_PATTERN.fullmatch(etag):
             raise _SampleFailure(f"token_radar_api_{name}_etag")
     items = _nonnegative_int(unconditional.get("items"), stage="token_radar_api_unconditional_items")
+    _nonnegative_int(unconditional.get("data_bytes"), stage="token_radar_api_unconditional_data_bytes")
     if items > TOKEN_RADAR_MAX_ITEMS:
         raise _SampleFailure("token_radar_api_item_cap")
     if not _SHA256_PATTERN.fullmatch(str(unconditional.get("data_sha256") or "")):
@@ -1645,8 +1648,8 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "token_radar_api_conditional_p95_at_most_50_ms": (
             token_radar_api["conditional_p95_ms"] <= _TOKEN_RADAR_API_CONDITIONAL_P95_MS
         ),
-        "token_radar_api_uncompressed_bytes_at_most_20_kib": (
-            token_radar_api["max_unconditional_bytes"] <= _TOKEN_RADAR_API_MAX_BYTES
+        "token_radar_api_uncompressed_bytes_at_most_96_kib": (
+            token_radar_api["max_data_bytes"] <= _TOKEN_RADAR_API_MAX_BYTES
         ),
         "unresolved_deadline_misses_zero": all(
             int(frontier["unresolved_deadline_misses"]) == 0
@@ -1847,6 +1850,7 @@ def _token_radar_api_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     unconditional = []
     conditional = []
     bytes_values = []
+    data_bytes_values = []
     items_values = []
     for sample in samples:
         _validate_token_radar_api(sample)
@@ -1855,11 +1859,13 @@ def _token_radar_api_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         unconditional.append(float(first["latency_ms"]))
         conditional.append(float(second["latency_ms"]))
         bytes_values.append(int(first["bytes"]))
+        data_bytes_values.append(int(first["data_bytes"]))
         items_values.append(int(first["items"]))
     return {
         "unconditional_p95_ms": _nearest_rank_p95(unconditional),
         "conditional_p95_ms": _nearest_rank_p95(conditional),
         "max_unconditional_bytes": max(bytes_values),
+        "max_data_bytes": max(data_bytes_values),
         "max_conditional_bytes": max(
             int(_mapping(sample, "conditional", stage="token_radar_api_conditional")["bytes"]) for sample in samples
         ),

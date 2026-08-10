@@ -31,15 +31,6 @@ export function newsSourcesPath(): string {
   return "/news/sources";
 }
 
-export function stocksPath({
-  window = "1h",
-}: {
-  window?: WindowKey;
-} = {}): string {
-  const search = compactSearch({ window });
-  return "/stocks" + (search ? `?${search}` : "");
-}
-
 export function tokenTargetPath({
   targetType,
   targetId,

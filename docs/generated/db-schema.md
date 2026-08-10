@@ -888,56 +888,6 @@
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `stock_attention_target_features`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `window_key` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `security_name` | `TEXT` | False | `None` |
-| `exchange` | `TEXT` | False | `None` |
-| `instrument_type` | `TEXT` | False | `None` |
-| `mentions` | `INTEGER` | False | `None` |
-| `unique_authors` | `INTEGER` | False | `None` |
-| `latest_seen_ms` | `BIGINT` | False | `None` |
-| `latest_event_id` | `TEXT` | False | `None` |
-| `latest_author_handle` | `TEXT` | True | `None` |
-| `latest_text` | `TEXT` | False | `None` |
-| `source_event_ids` | `ARRAY` | False | `None` |
-| `state_fingerprint` | `TEXT` | False | `None` |
-| `computed_at_ms` | `BIGINT` | False | `None` |
-
-## `stocks_radar_current_rows`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `window_key` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `rank` | `INTEGER` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `security_name` | `TEXT` | False | `None` |
-| `exchange` | `TEXT` | False | `None` |
-| `instrument_type` | `TEXT` | False | `None` |
-| `mentions` | `INTEGER` | False | `None` |
-| `unique_authors` | `INTEGER` | False | `None` |
-| `latest_seen_ms` | `BIGINT` | False | `None` |
-| `latest_event_id` | `TEXT` | False | `None` |
-| `latest_author_handle` | `TEXT` | True | `None` |
-| `latest_text` | `TEXT` | False | `None` |
-| `source_event_ids` | `ARRAY` | False | `None` |
-| `state_fingerprint` | `TEXT` | False | `None` |
-| `computed_at_ms` | `BIGINT` | False | `None` |
-
-## `stocks_radar_publication_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `window_key` | `TEXT` | False | `None` |
-| `state_fingerprint` | `TEXT` | False | `None` |
-| `source_frontier_ms` | `BIGINT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-
 ## `token_discovery_dirty_lookup_keys`
 
 | Column | Type | Nullable | Default |

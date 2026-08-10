@@ -70,7 +70,7 @@ function snapshot() {
   return {
     ok: true,
     data: {
-      schema_version: "token_radar_snapshot_v1",
+      schema_version: "token_radar_snapshot_v2",
       evidence_as_of_ms: 1_778_426_440_000,
       eligible_total: 1,
       items: [
@@ -79,6 +79,8 @@ function snapshot() {
             target_type: "Asset",
             target_id: "asset:solana:token:abc",
             symbol: "UPEG",
+            name: "Unpegged Token",
+            logo_url: `/api/token-images/${"a".repeat(64)}`,
             chain: "solana",
             exchange: null,
             address: "abc",
@@ -92,7 +94,13 @@ function snapshot() {
             time_to_nth_author_ms: 90_000,
             duplicate_share: 0.1,
           },
-          market: { status: "confirmed", price_change_since_signal: 0.12 },
+          market: {
+            status: "confirmed",
+            price_usd: 0.042,
+            price_change_since_signal: 0.12,
+            market_cap_usd: 42_000_000,
+            observed_at_ms: 1_778_426_435_000,
+          },
           counter_evidence: null,
         },
       ],

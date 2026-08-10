@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-TOKEN_RADAR_CURRENT_MIGRATION = "20260810_0249"
+TOKEN_RADAR_CURRENT_MIGRATION = "20260810_0250"
 
 
 class TokenRadarStatusUnavailable(RuntimeError):

@@ -21,10 +21,6 @@ export function createAppRouteObjects(): RouteObject[] {
               lazy: () => import("./token-target.route"),
             },
             {
-              path: "stocks",
-              lazy: () => import("./stocks.route"),
-            },
-            {
               path: "news",
               lazy: () => import("./news.route"),
             },

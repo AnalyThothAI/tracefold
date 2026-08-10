@@ -45,12 +45,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   operator-workbench language. `styles/tokens.css` is the only semantic color,
   type, radius, focus, and shell token contract; production code must not add a
   parallel theme or compatibility alias. Stable routes declare one of three
-  information archetypes with `data-page-archetype`: `scan` for Radar, Stocks,
-  and News lists; `case` for Search, Token Case, and News Story; `decision` for
+  information archetypes with `data-page-archetype`: `scan` for Radar and News
+  lists; `case` for Search, Token Case, and News Story; `decision` for
   Macro. The archetype governs hierarchy and density, never data ownership or
   business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
-- **URL state.** Shareable Search, Stocks, and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Local stores are only for interaction state that should not survive hard reloads.
+- **URL state.** Shareable Search and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Local stores are only for interaction state that should not survive hard reloads.
 - **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth.
 - **Search route.** `/search` reuses the cockpit topbar but owns its
   search-local rail, filters, resolver candidates, and selected result. Topbar
@@ -72,12 +72,18 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   action, `Open Token Case`, targeting its canonical identity and exact trigger
   Event. The browser keeps the server order and never scores, filters, admits,
   fills, or reorders Items.
-- **Token Radar currentness.** `/` is one full-height, maximum-eight compact
-  research queue and does not request `/api/recent`, subscribe to market
-  targets, buffer WebSocket events, hydrate profiles, or render a Tape/task
-  switcher. The header contains only `Radar`, `eligible_total`, and the static
-  `evidence_as_of_ms` timestamp. The feature query polls every 30 seconds with
-  an ETag-bound conditional GET; a `304` reuses the exact cached snapshot.
+- **Token Radar currentness.** `/` is one full-height, maximum-fifty rich
+  research queue over `token_radar_snapshot_v2`. Each real row renders the
+  server-provided same-origin icon or a fixed-size symbol fallback, symbol/name,
+  chain/address, current USD price, price change since the signal, market
+  capitalization, transparent attention/evidence, and one Token Case action.
+  It does not request `/api/recent`, subscribe to market targets, buffer
+  WebSocket events, hydrate profiles or market data, pre-mount fifty empty rows,
+  or render a Tape/task switcher. The header reports the displayed count against
+  `eligible_total` plus the static `evidence_as_of_ms` timestamp. The one feature
+  query polls `/api/token-radar` every 30 seconds with an ETag-bound conditional
+  GET; a `304` reuses the exact cached snapshot. Image elements may read only the
+  same-origin paths already present in that snapshot.
   Cached content survives a recoverable refresh error and shows one standard
   `Update delayed` state. There is no green health badge, per-second age timer,
   client-side staleness inference, or window/venue frame cache.
@@ -187,16 +193,17 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger. `features/live/ui/live.css` owns a single full-height compact queue at every viewport; it has no responsive controls row or table-column mode.
-- **Route controls.** Shells do not render route-specific filter controls. Stocks, News, Macro, Search, and Token Case controls belong to the feature route that consumes them; Token Radar has none. `CockpitShell` and `SearchShell` own only navigation, frame layout, the main route scroll container, and route-appropriate hotkeys. Stock tables use owner-prefixed selectors rather than generic historical selectors such as `.radar-row`, `.metric`, or `.phase`.
-- **Shell navigation.** Desktop users navigate through the collapsible shadcn `AppSidebar`; tablet and mobile users open the same route tree through the topbar `SidebarTrigger` and shadcn drawer. The primary route tree contains exactly Radar, Stocks, News, and Macro in that order; Search remains reachable through the topbar submit flow. Healthy runtime state is silent. Configuration, service, or realtime anomalies appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route. Live has no route-local bottom task navigation.
+- **Route controls.** Shells do not render route-specific filter controls. News, Macro, Search, and Token Case controls belong to the feature route that consumes them; Token Radar has none. `CockpitShell` and `SearchShell` own only navigation, frame layout, the main route scroll container, and route-appropriate hotkeys.
+- **Shell navigation.** Desktop users navigate through the collapsible shadcn `AppSidebar`; tablet and mobile users open the same route tree through the topbar `SidebarTrigger` and shadcn drawer. The primary route tree contains exactly Radar, News, and Macro in that order; Search remains reachable through the topbar submit flow. Healthy runtime state is silent. Configuration, service, or realtime anomalies appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route. Live has no route-local bottom task navigation. `/stocks` is removed and resolves through the standard not-found route; there is no redirect or compatibility screen.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. `LivePage` owns one `minmax(0, 1fr)` Radar row at every viewport, and the compact queue scrolls inside `.live-radar-items`; no retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Score display.** Any displayed ranking score includes its component breakdown from the API. The UI does not recompute ranking facts locally.
 - **Token images.** Token Case/profile surfaces render
-  `profile.identity.logo_url` directly. The API contract guarantees that value
-  is either `null` or a same-origin `/api/token-images/{image_id}` path; DB
+  `profile.identity.logo_url` directly, and Radar renders the v2 Item
+  `target.logo_url` directly. The API contract guarantees either value is
+  `null` or a same-origin `/api/token-images/{image_id}` path; DB
   constraints reject remote provider URLs before they reach the frontend. Do
   not restore `tokenImageUrl`, `/api/token-image?url=...`, local logo filters,
   or any frontend proxy/helper that rewrites GMGN, Binance, OKX, or CEX image
@@ -236,7 +243,7 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/search`, `/stocks`, `/news`, `/news/brief`,
+1. Hard-reload `/`, `/search`, `/news`, `/news/brief`,
    `/news/status`, `/news/sources`, `/news/stories/:storyId`, `/macro`, and
    `/token/:targetType/:targetId?window=1h` with representative query
    params.

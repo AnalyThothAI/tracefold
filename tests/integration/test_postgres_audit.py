@@ -160,12 +160,9 @@ def test_query_audit_public_news_views_read_only_bounded_models():
     assert "gap_unclosed" not in sources["sql"]
 
 
-def test_query_audit_stocks_radar_reads_only_current_projection():
-    query = next(item for item in HOT_QUERIES if item["name"] == "stocks_radar_recent")
-
-    assert "stocks_radar_current_rows" in query["sql"]
-    assert "FROM events" not in query["sql"]
-    assert "token_intent_resolutions" not in query["sql"]
+def test_query_audit_has_no_retired_stocks_product_surface():
+    assert all(item["name"] != "stocks_radar_recent" for item in HOT_QUERIES)
+    assert "/api/stocks-radar" not in PUBLIC_ROUTE_QUERY_COVERAGE
 
 
 def test_query_audit_does_not_restore_retired_token_factor_settlement_hot_path():

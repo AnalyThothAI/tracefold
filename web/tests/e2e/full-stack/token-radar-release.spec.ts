@@ -156,24 +156,10 @@ test("renders a real Token Radar publication within one polling interval", async
     new MutationObserver((records) => {
       if (timings.render) return;
       const mutationTime = performance.now();
-      const targetItem = records
-        .flatMap((record) => {
-          if (
-            record.type === "attributes" &&
-            record.target instanceof Element &&
-            record.target.matches(".live-radar-item") &&
-            !record.target.classList.contains("live-radar-item--empty")
-          ) {
-            return [record.target];
-          }
-          return [...record.addedNodes];
-        })
-        .flatMap((node) => {
-          if (!(node instanceof Element)) return [];
-          if (node.matches(".live-radar-item")) return [node];
-          return [...node.querySelectorAll(".live-radar-item")];
-        })
-        .find((item) => item.textContent?.includes("$E2ERADAR"));
+      if (records.length === 0) return;
+      const targetItem = [...radarQueue.querySelectorAll(".live-radar-item")].find((item) =>
+        item.textContent?.includes("$E2ERADAR"),
+      );
       if (!targetItem) return;
       const request = [...timings.fetches]
         .reverse()
@@ -209,9 +195,9 @@ test("renders a real Token Radar publication within one polling interval", async
       });
       visibilityObserver.observe(targetItem);
     }).observe(radarQueue, {
-      attributeFilter: ["class"],
       attributes: true,
       childList: true,
+      characterData: true,
       subtree: true,
     });
   });
@@ -303,7 +289,11 @@ test("renders a real Token Radar publication within one polling interval", async
   const item = page.locator(".live-radar-item").filter({ hasText: "$E2ERADAR" });
   await expect(item).toHaveCount(1);
   await expect(item).toBeVisible();
-  expect(domNodeCount).toBeLessThanOrEqual(500);
+  await expect(item.getByRole("img", { name: "E2E Radar icon" })).toBeVisible();
+  await expect(item.getByText("Price $12.00", { exact: true })).toBeVisible();
+  await expect(item.getByText("+20% since signal", { exact: true })).toBeVisible();
+  await expect(item.getByText("MCap $12M", { exact: true })).toBeVisible();
+  expect(domNodeCount).toBeLessThanOrEqual(1_000);
 });
 
 function requiredEnvironment(name: string): string {

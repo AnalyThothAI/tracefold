@@ -11,11 +11,11 @@ describe("live radar route", () => {
   afterEach(cleanup);
   beforeEach(() => setupAppRouteTest());
 
-  it("renders the compact server-prioritized queue without Radar URL controls", async () => {
+  it("renders the rich server-prioritized queue without Radar URL controls", async () => {
     renderAppRoute("/?window=4h&venue=sol&sort=score");
 
     expect(await screen.findByRole("heading", { name: "Radar" })).toBeInTheDocument();
-    expect(await screen.findByText("1 eligible")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 1 / 1 eligible")).toBeInTheDocument();
     expect(await screen.findByText(/\$UPEG/)).toBeInTheDocument();
     expect(screen.getByText(/\+5/)).toBeInTheDocument();
     expect(screen.queryByLabelText("radar window")).not.toBeInTheDocument();

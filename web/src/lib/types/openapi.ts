@@ -327,23 +327,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/stocks-radar": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stocks Radar */
-        get: operations["stocks_radar_api_stocks_radar_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/target-posts": {
         parameters: {
             query?: never;
@@ -590,16 +573,6 @@ export interface components {
         /** ApiEnvelope[StatusData] */
         ApiEnvelope_StatusData_: {
             data?: components["schemas"]["StatusData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[StocksRadarData] */
-        ApiEnvelope_StocksRadarData_: {
-            data?: components["schemas"]["StocksRadarData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -3422,115 +3395,6 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** StocksRadarAttentionData */
-        StocksRadarAttentionData: {
-            /** Latest Seen Ms */
-            latest_seen_ms: number | null;
-            /** Mentions */
-            mentions: number;
-            /** Unique Authors */
-            unique_authors: number;
-        };
-        /** StocksRadarData */
-        StocksRadarData: {
-            health: components["schemas"]["StocksRadarHealthData"];
-            query: components["schemas"]["StocksRadarQueryData"];
-            /** Rows */
-            rows: components["schemas"]["StocksRadarRowData"][];
-            /** Window */
-            window: string;
-        };
-        /** StocksRadarHealthData */
-        StocksRadarHealthData: {
-            /** Quote Ready Count */
-            quote_ready_count: number;
-            /** Quote Unavailable Count */
-            quote_unavailable_count: number;
-            /** Returned Count */
-            returned_count: number;
-        };
-        /** StocksRadarLatestEventData */
-        StocksRadarLatestEventData: {
-            /** Author Handle */
-            author_handle: string | null;
-            /** Event Id */
-            event_id: string | null;
-            /** Received At Ms */
-            received_at_ms: number | null;
-            /** Text */
-            text: string | null;
-        };
-        /** StocksRadarQueryData */
-        StocksRadarQueryData: {
-            /** Limit */
-            limit: number;
-            /** Window */
-            window: string;
-            /** Window End Ms */
-            window_end_ms: number;
-            /** Window Start Ms */
-            window_start_ms: number;
-        };
-        /** StocksRadarQuoteData */
-        StocksRadarQuoteData: {
-            /** Asof */
-            asof: string | null;
-            /** Change Pct */
-            change_pct: number | null;
-            /** Error */
-            error: string | null;
-            /** Freshness Class */
-            freshness_class: string | null;
-            /** Latency Class */
-            latency_class: string | null;
-            /** Price */
-            price: number | null;
-            /** Provider */
-            provider: string | null;
-            /** Provider Symbol */
-            provider_symbol: string | null;
-            /** Reference Close Price */
-            reference_close_price: number | null;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ready" | "unavailable";
-        };
-        /** StocksRadarRowData */
-        StocksRadarRowData: {
-            attention: components["schemas"]["StocksRadarAttentionData"];
-            latest_event: components["schemas"]["StocksRadarLatestEventData"];
-            quote: components["schemas"]["StocksRadarQuoteData"];
-            /** Row Health */
-            row_health: string[];
-            /** Source Event Ids */
-            source_event_ids: string[];
-            target: components["schemas"]["StocksRadarTargetData"];
-        };
-        /** StocksRadarTargetData */
-        StocksRadarTargetData: {
-            /** Exchange */
-            exchange: string | null;
-            /** Instrument Type */
-            instrument_type: string | null;
-            /**
-             * Market
-             * @constant
-             */
-            market: "us_equity";
-            /** Name */
-            name: string | null;
-            /** Symbol */
-            symbol: string | null;
-            /** Target Id */
-            target_id: string | null;
-            /**
-             * Target Type
-             * @constant
-             */
-            target_type: "MarketInstrument";
-        };
         /** TargetPostsData */
         TargetPostsData: {
             /** Has More */
@@ -3648,7 +3512,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "token_radar_snapshot_v1";
+            schema_version: "token_radar_snapshot_v2";
         };
         /** TokenRadarEvidenceData */
         TokenRadarEvidenceData: {
@@ -3676,8 +3540,14 @@ export interface components {
         };
         /** TokenRadarMarketData */
         TokenRadarMarketData: {
+            /** Market Cap Usd */
+            market_cap_usd: number | null;
+            /** Observed At Ms */
+            observed_at_ms: number | null;
             /** Price Change Since Signal */
             price_change_since_signal: number | null;
+            /** Price Usd */
+            price_usd: number | null;
             /**
              * Status
              * @enum {string}
@@ -3692,6 +3562,10 @@ export interface components {
             chain: string | null;
             /** Exchange */
             exchange: string | null;
+            /** Logo Url */
+            logo_url: string | null;
+            /** Name */
+            name: string | null;
             /** Symbol */
             symbol: string;
             /** Target Id */
@@ -4245,38 +4119,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StatusData_"];
-                };
-            };
-        };
-    };
-    stocks_radar_api_stocks_radar_get: {
-        parameters: {
-            query?: {
-                window?: string;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_StocksRadarData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

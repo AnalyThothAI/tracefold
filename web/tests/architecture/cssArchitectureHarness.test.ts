@@ -42,7 +42,6 @@ const featureClassPrefixes: Record<string, string[]> = {
   news: ["news-"],
   ops: ["ops-"],
   search: ["search-"],
-  stocks: ["stock-", "stocks-"],
 };
 
 const modifierClassNames = new Set([

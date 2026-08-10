@@ -20,7 +20,7 @@ providers / public streams
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model/CPU capabilities, singleton runtime
-status, fixed-period News Story, Token Radar, and Stocks Radar writers, and one
+status, fixed-period News Story and Token Radar writers, and one
 EDF projection coordinator for the remaining frontier-backed domains. Workers
 recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
 Brief/Fed-document model state, the News Story-push state machine,
@@ -238,7 +238,7 @@ finishes. Projection turns therefore have phase-native deadlines and no
 aggregate fatal watchdog.
 
 Projection claim leases cover the complete legal phase envelope: Profile and
-Macro use 30 seconds each. The fixed-period Token Radar, Stocks Radar, and News
+Macro use 30 seconds each. The fixed-period Token Radar and News
 Story writers have no frontier lease; each uses its own bounded operation
 budget.
 
@@ -252,18 +252,24 @@ fact replay rebuilds it.
 
 ```text
 events + intents + resolutions + market facts
-  -> one bounded read of (now - 2h, now]
+  -> bounded evidence read of (now - 2h, now]
   -> compare rolling current 1h with immediately preceding 1h
   -> explicit boolean admission + deterministic trigger-time order
-  -> atomic compact token_radar_current singleton (maximum 8 Items)
+  -> bounded batch presentation read for the selected targets
+  -> atomic token_radar_current v2 singleton (maximum 50 Items / 96 KiB)
   -> Token Radar -> focused Token Case evidence
 ```
 
 Token Radar is a change-first research queue, not a score, trading action,
 market screener, security audit, or operational monitor. Every 30 seconds its
 sole writer reads at most 10,000 resolved material-fact rows and 8 MiB of input,
-then runs one pure deterministic reducer with a five-second hard ceiling. The
-only code-owned rule set requires a minimum attention delta, a minimum count of
+then runs one pure deterministic reducer with a five-second hard ceiling. After
+selection, a second bounded batch read loads at most fifty target keys from
+`token_profile_current` and `market_tick_current`; it never performs one query
+per Item. The Radar Module exposes only its fixed-period sample interface to
+Workers; the two query interfaces are private internal seams satisfied by the
+Postgres Adapter. The only
+code-owned rule set requires a minimum attention delta, a minimum count of
 independent authors, a maximum duplicate-text share, and a maximum time to the
 required author. Authors have equal weight; follower counts, provider tags,
 KOL/Smart-Money labels, composite weights, normalization, multi-slot
@@ -274,10 +280,12 @@ first event at which all rules become true. Items are ordered primarily by
 that trigger time descending with deterministic fact-key ties. The public
 snapshot contains only canonical target identity, the current/prior mention
 change, independent-author/text evidence, propagation time, duplicate share,
-market availability and price change from the trigger, at most one
-counter-evidence reason, and the exact trigger Event ID. It has no rank,
-decision, score, factor tree, source-event list, profile, image, external link,
-window, venue, pagination, archive, or user-adjustable parameter.
+the optional profile name and same-origin mirrored icon, fresh current USD price,
+fresh market capitalization, price change from the trigger, at most one
+counter-evidence reason, and the exact trigger Event ID. Presentation facts are
+nullable evidence and never affect admission or order. The snapshot has no
+rank, decision, score, factor tree, source-event list, remote image, external
+link, window, venue, pagination, archive, or user-adjustable parameter.
 
 Publication locks the one stable product row and replaces the complete compact
 payload atomically. A business-identical payload writes zero serving state.
@@ -285,8 +293,10 @@ Oversized input, timeout, or calculation failure never samples or truncates;
 it records an operational failure while preserving the complete last-good
 payload. Restart recovery is the next bounded PostgreSQL reread. Search and
 Token Case read their owning facts directly and never use Radar current state
-as evidence authority. Stocks Radar uses a separate fixed-period writer and
-does not share Token Radar source edges, frontiers, or reducer state.
+as evidence authority. There is no Stocks product, route, public read model, or
+writer. `us_equity_symbols` remains only an identity-collision guard for token
+resolution and does not constitute a Stocks surface. General cross-asset Market
+facts and the six Macro modules remain unchanged.
 
 Migration `20260810_0249` is the irreversible Radar serving hard cut. It removes
 the six retired Radar projection tables and their terminal rows, removes the
@@ -296,11 +306,22 @@ and market facts are unchanged. The new writer rebuilds only from the bounded
 two-hour fact window; there is no history import, dual read/write, compatibility
 adapter, staging runtime, or legacy fallback.
 
+Migration `20260810_0250`, directly after `0249`, is the v2 product hard cut. It
+resets the v1 singleton to one empty `token_radar_snapshot_v2`, installs the
+fifty-Item schema invariant, and drops the three Stocks-only derived tables
+`stock_attention_target_features`, `stocks_radar_current_rows`, and
+`stocks_radar_publication_state`. It preserves all material Events, intents,
+resolutions, identities, profile facts, and market facts, including the
+`us_equity_symbols` collision guard. No v1 or Stocks compatibility interface is
+retained.
+
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a
 new evidence fingerprint reactivates that target. Profile eligibility and
 invalidation come from identity/profile facts and Profile-owned policy; the
-compact Radar queue neither hydrates profiles nor drives Profile lifecycle.
+Radar writer only batch-reads already published `token_profile_current` rows
+for optional name/icon presentation. It never calls a profile provider, performs
+per-Item hydration, or drives Profile lifecycle.
 
 ### News
 

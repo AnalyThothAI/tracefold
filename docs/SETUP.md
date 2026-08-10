@@ -288,9 +288,15 @@ source scheduling, and hard-cuts Brief persistence to two singleton tables.
 Token Radar migration `20260810_0249` removes the retired Radar projection
 tables and temporary replay-only schema, then installs the compact singleton.
 It preserves material Events, intents, resolutions, identities, and market
-facts. Stop Serve and Workers while an existing database crosses this revision;
-after migration, start only the new runtime. A fresh database migrates directly
-to head.
+facts. Current migration `20260810_0250` resets that v1 singleton to one empty
+`token_radar_snapshot_v2`, installs the fixed Top-50/96-KiB contract, and drops
+the three Stocks-only derived tables `stock_attention_target_features`,
+`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserves
+all material facts and retains `us_equity_symbols` only as an internal
+token-identity collision guard; there is no Stocks product or route. Stop Serve
+and Workers while an existing database crosses this revision. General
+cross-asset Market facts and Macro remain installed. After migration, start only
+the new runtime. A fresh database migrates directly to head.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -327,14 +333,16 @@ non-zero for a failed/missing migration, stopped or unhealthy required
 container, failed Serve or Workers readiness endpoint, or missing HTML console.
 Use `make logs` for the bounded startup evidence named by a failure.
 
-### Token Radar derived-state reset
+### Token Radar v2 and Stocks derived-state reset
 
-For the one-time Token Radar `0248` to `0249` transition, build the new image
-first, stop Serve and Workers, run the ordinary one-shot migration service, and
-verify that material fact counts and identities are unchanged before starting
-the new runtime. The migration is transactional: failure leaves the old schema
-in place. After it succeeds, fix forward with the new code; old Radar runtime
-code and tables are not retained.
+For the one-time `0249` to `0250` transition, build the new image first, stop
+Serve and Workers, run the ordinary one-shot migration service, and verify that
+material fact counts and identities are unchanged before starting the new
+runtime. The migration is transactional: failure leaves the v1 singleton and
+Stocks-derived tables in place. After it succeeds, fix forward with the new
+code; the v1 packet, Stocks route/writer/read models, and compatibility code are
+not retained. The first new Worker turn reconstructs the v2 singleton only from
+the bounded fact window and its one selected-target profile/market batch read.
 
 Use the ordinary lifecycle after the transition:
 

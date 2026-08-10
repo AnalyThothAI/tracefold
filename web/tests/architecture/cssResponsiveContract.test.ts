@@ -220,40 +220,7 @@ describe("responsive CSS contract", () => {
         ),
     );
 
-    expect(
-      offenders,
-      [
-        "Live Radar must use live-radar-* selectors owned by live.css.",
-        "Stocks must own stock-radar-* selectors in stocks.css.",
-        "Shared RadarControls must own radar-controls-* selectors in shared/ui/RadarControls.css.",
-      ].join("\n"),
-    ).toEqual([]);
-  });
-
-  it("keeps RadarControls styling on the shared primitive instead of feature CSS buckets", () => {
-    const radarControlsSource = readFileSync(join(srcRoot, "shared/ui/RadarControls.tsx"), "utf8");
-    const radarControlsCssPath = join(srcRoot, "shared/ui/RadarControls.css");
-    const radarControlsCss = readFileSync(radarControlsCssPath, "utf8");
-    const featureCssOffenders = collectFiles(join(srcRoot, "features"))
-      .filter(isCssFile)
-      .flatMap((path) => {
-        const css = readFileSync(path, "utf8");
-
-        return findRules(css).flatMap((rule) =>
-          [".radar-controls-group", ".radar-controls-window"]
-            .filter((selector) => selectorContains(rule.selector, selector))
-            .map(
-              (selector) =>
-                `${relativeToSrc(path)}:${lineNumber(css, rule.start)} owns shared ${selector} via ${compactSelector(
-                  rule.selector,
-                )}`,
-            ),
-        );
-      });
-
-    expect(radarControlsSource).not.toContain("segmented");
-    expect(radarControlsCss).toContain("@layer app.primitives");
-    expect(featureCssOffenders).toEqual([]);
+    expect(offenders, "Live Radar must use live-radar-* selectors owned by live.css.").toEqual([]);
   });
 
   it("keeps shared primitive selectors out of feature CSS buckets", () => {
@@ -269,8 +236,6 @@ describe("responsive CSS contract", () => {
       ".page-state-table-row",
       ".page-state-table-skeleton",
       ".token-profile-card",
-      ".radar-controls-group",
-      ".radar-controls-window",
     ];
     const offenders = collectFiles(join(srcRoot, "features"))
       .filter(isCssFile)

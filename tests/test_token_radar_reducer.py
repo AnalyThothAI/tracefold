@@ -9,6 +9,7 @@ from tracefold.market.radar.reducer import (
     TOKEN_RADAR_OUTPUT_BYTE_CAP,
     TokenRadarInputOverflow,
     TokenRadarOutputOverflow,
+    enrich_token_radar,
     reduce_token_radar,
 )
 
@@ -29,12 +30,24 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
             minutes_ago=10,
             text="third thesis",
             signal_price_usd="10",
-            latest_price_usd="12",
-            latest_price_observed_at_ms=NOW_MS - MINUTE_MS,
         ),
     ]
 
-    reduced = reduce_token_radar(rows, now_ms=NOW_MS)
+    reduced = enrich_token_radar(
+        reduce_token_radar(rows, now_ms=NOW_MS),
+        [
+            {
+                "target_type": "Asset",
+                "target_id": "asset-1",
+                "name": "Pepe",
+                "logo_url": f"/api/token-images/{'a' * 64}",
+                "price_usd": "12",
+                "market_cap_usd": "12000000",
+                "observed_at_ms": NOW_MS - MINUTE_MS,
+            }
+        ],
+        now_ms=NOW_MS,
+    )
 
     assert reduced.input_rows == len(rows)
     assert reduced.eligible_rows == 1
@@ -42,7 +55,7 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
     assert reduced.ruleset_fingerprint.startswith("sha256:")
     assert reduced.output_bytes <= TOKEN_RADAR_OUTPUT_BYTE_CAP
     assert reduced.snapshot == {
-        "schema_version": "token_radar_snapshot_v1",
+        "schema_version": "token_radar_snapshot_v2",
         "evidence_as_of_ms": NOW_MS - MINUTE_MS,
         "eligible_total": 1,
         "items": [
@@ -51,6 +64,8 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
                     "target_type": "Asset",
                     "target_id": "asset-1",
                     "symbol": "PEPE",
+                    "name": "Pepe",
+                    "logo_url": f"/api/token-images/{'a' * 64}",
                     "chain": "solana",
                     "exchange": None,
                     "address": "mint-1",
@@ -71,6 +86,9 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
                 "market": {
                     "status": "confirmed",
                     "price_change_since_signal": pytest.approx(0.2),
+                    "price_usd": 12.0,
+                    "market_cap_usd": 12_000_000.0,
+                    "observed_at_ms": NOW_MS - MINUTE_MS,
                 },
                 "counter_evidence": None,
             }
@@ -78,7 +96,7 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
     }
 
 
-def test_reducer_excludes_unresolved_or_weak_targets_and_never_returns_more_than_eight() -> None:
+def test_reducer_excludes_unresolved_or_weak_targets_without_truncating_below_fifty() -> None:
     rows: list[dict[str, object]] = []
     for index in range(10):
         target_id = f"asset-{index:02d}"
@@ -112,9 +130,9 @@ def test_reducer_excludes_unresolved_or_weak_targets_and_never_returns_more_than
 
     assert reduced.snapshot["eligible_total"] == 10
     assert reduced.eligible_rows == 10
-    assert len(reduced.snapshot["items"]) == 8
+    assert len(reduced.snapshot["items"]) == 10
     assert [item["target"]["target_id"] for item in reduced.snapshot["items"]] == [
-        f"asset-{index:02d}" for index in range(8)
+        f"asset-{index:02d}" for index in range(10)
     ]
 
 
@@ -143,7 +161,13 @@ def test_reducer_reports_market_unavailable_as_the_single_counter_evidence() -> 
 
     item = reduce_token_radar(rows, now_ms=NOW_MS).snapshot["items"][0]
 
-    assert item["market"] == {"status": "unavailable", "price_change_since_signal": None}
+    assert item["market"] == {
+        "status": "unavailable",
+        "price_change_since_signal": None,
+        "price_usd": None,
+        "market_cap_usd": None,
+        "observed_at_ms": None,
+    }
     assert item["counter_evidence"] == "market_confirmation_unavailable"
 
 
@@ -168,12 +192,24 @@ def test_market_confirmation_requires_a_nonfuture_tick_fresh_within_five_minutes
             minutes_ago=10,
             text="three",
             signal_price_usd="10",
-            latest_price_usd="11",
-            latest_price_observed_at_ms=latest_observed_at_ms,
         ),
     ]
 
-    snapshot = reduce_token_radar(rows, now_ms=NOW_MS).snapshot
+    snapshot = enrich_token_radar(
+        reduce_token_radar(rows, now_ms=NOW_MS),
+        [
+            {
+                "target_type": "Asset",
+                "target_id": "asset-1",
+                "name": None,
+                "logo_url": None,
+                "price_usd": "11",
+                "market_cap_usd": None,
+                "observed_at_ms": latest_observed_at_ms,
+            }
+        ],
+        now_ms=NOW_MS,
+    ).snapshot
     item = snapshot["items"][0]
 
     assert item["market"]["status"] == expected_status
@@ -279,7 +315,7 @@ def test_fresh_sampled_evidence_advances_header_even_when_nothing_is_eligible() 
     snapshot = reduce_token_radar([weak], now_ms=NOW_MS).snapshot
 
     assert snapshot == {
-        "schema_version": "token_radar_snapshot_v1",
+        "schema_version": "token_radar_snapshot_v2",
         "evidence_as_of_ms": NOW_MS - 5 * MINUTE_MS,
         "eligible_total": 0,
         "items": [],
@@ -330,8 +366,8 @@ def test_reducer_fails_closed_on_row_or_byte_overflow_without_truncation() -> No
         reduce_token_radar([oversized], now_ms=NOW_MS)
 
 
-def test_reducer_fails_closed_when_public_snapshot_exceeds_twenty_kibibytes() -> None:
-    long_value = "x" * 9_000
+def test_reducer_fails_closed_when_public_snapshot_exceeds_ninety_six_kibibytes() -> None:
+    long_value = "x" * 40_000
     rows = [
         {
             **_row(
@@ -361,8 +397,6 @@ def _row(
     symbol: str = "PEPE",
     resolution_status: str = "EXACT",
     signal_price_usd: str | None = None,
-    latest_price_usd: str | None = None,
-    latest_price_observed_at_ms: int | None = None,
 ) -> dict[str, object]:
     return {
         "target_type": "Asset",
@@ -377,6 +411,4 @@ def _row(
         "author_handle": author,
         "text": text,
         "signal_price_usd": signal_price_usd,
-        "latest_price_usd": latest_price_usd,
-        "latest_price_observed_at_ms": latest_price_observed_at_ms,
     }

@@ -53,9 +53,7 @@ from tracefold.market import (
     IngestService,
     MarketTickPoll,
     ProfileProjectionCandidate,
-    RadarCurrentProjectionCycle,
     ResolutionRefresh,
-    StocksRadarCurrentProjection,
     TickLookup,
     TokenImageMirror,
     TokenRadarCurrentProjection,
@@ -159,7 +157,7 @@ class _Components:
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
     market_poll: MarketTickPoll | None
-    radar_current: RadarCurrentProjectionCycle
+    radar_current: TokenRadarCurrentProjection
     projections: tuple[Any, ...]
     models: tuple[Any, ...]
     document_model: MacroDocumentAnalysisService | None
@@ -362,7 +360,7 @@ async def run_workers(settings: Settings) -> None:
                         ),
                         on_fatal=enter_fatal,
                     ),
-                    name="radar-current-cycle",
+                    name="token-radar-current",
                 )
             )
             if components.news_story is not None:
@@ -921,11 +919,6 @@ async def _wire_components(
     if wired_profile_provider_ids != active_profile_provider_ids:
         raise RuntimeError("profile_provider_wiring_mismatch")
     token_radar_current = TokenRadarCurrentProjection(db=db, cpu=cpu, telemetry=telemetry)
-    stocks_radar_current = StocksRadarCurrentProjection(db=db, cpu=cpu)
-    radar_current = RadarCurrentProjectionCycle(
-        token=token_radar_current,
-        stocks=stocks_radar_current,
-    )
     projections = (
         ProfileProjectionCandidate(
             db=db,
@@ -948,7 +941,7 @@ async def _wire_components(
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
         market_poll=market_poll,
-        radar_current=radar_current,
+        radar_current=token_radar_current,
         projections=projections,
         models=tuple(model_candidates),
         document_model=document_model,
@@ -956,7 +949,7 @@ async def _wire_components(
 
 
 async def _reconcile_once(components: _Components) -> None:
-    await components.radar_current.initialize()
+    await components.radar_current.sample()
     await components.asset_profile_refresh.reconcile()
     if components.news is not None:
         await components.news.reconcile()

@@ -65,7 +65,6 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/news/sources") return fulfill(route, newsSourcesFixture());
     if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
     if (path === "/api/news/brief") return fulfill(route, newsGlobalBriefFixture());
-    if (path === "/api/stocks-radar") return fulfill(route, stocksRadarData(url));
     if (path === "/api/macro/overview") return fulfill(route, macroOverviewFixture());
     if (path === "/api/macro/rates-fed") return fulfill(route, macroModuleFixture("rates_fed"));
     if (path === "/api/macro/economy-inflation") {
@@ -175,7 +174,7 @@ function statusData() {
 
 function tokenRadarData(itemCount: number) {
   return {
-    schema_version: "token_radar_snapshot_v1",
+    schema_version: "token_radar_snapshot_v2",
     evidence_as_of_ms: NOW,
     eligible_total: itemCount,
     items: Array.from({ length: itemCount }, (_, index) => radarItem(index)),
@@ -189,6 +188,8 @@ function radarItem(index: number) {
       target_type: "Asset",
       target_id: `${TARGET_ID}${suffix}`,
       symbol: index ? `CASE${index + 1}` : "UPEG",
+      name: index ? `Case ${index + 1}` : "Unpegged Token",
+      logo_url: `/api/token-images/${String(index + 1).padStart(64, "0")}`,
       chain: "eip155:1",
       exchange: null,
       address: index ? `${ADDRESS}${index + 1}` : ADDRESS,
@@ -206,7 +207,13 @@ function radarItem(index: number) {
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.08,
     },
-    market: { status: "confirmed", price_change_since_signal: 0.12 },
+    market: {
+      status: "confirmed",
+      price_usd: 0.042,
+      price_change_since_signal: 0.12,
+      market_cap_usd: 42_000_000,
+      observed_at_ms: NOW - 30_000,
+    },
     counter_evidence: null,
   };
 }
@@ -547,52 +554,5 @@ function post(eventId: string, handle: string, text: string, score: number) {
       ],
       risk_caps: [],
     },
-  };
-}
-
-function stocksRadarData(url: URL) {
-  return {
-    window: url.searchParams.get("window") ?? "1h",
-    query: {
-      window: "1h",
-      limit: 48,
-      window_start_ms: NOW - 3_600_000,
-      window_end_ms: NOW,
-    },
-    rows: [
-      {
-        target: {
-          target_type: "MarketInstrument",
-          target_id: "market_instrument:us_equity:AAPL",
-          symbol: "AAPL",
-          market: "us_equity",
-          exchange: "NASDAQ",
-          instrument_type: "equity",
-          name: "Apple Inc.",
-        },
-        attention: { mentions: 3, unique_authors: 2, latest_seen_ms: NOW },
-        latest_event: {
-          event_id: "event-aapl",
-          author_handle: "toly",
-          text: "$AAPL breakout",
-          received_at_ms: NOW,
-        },
-        quote: {
-          status: "ready",
-          price: 291.87,
-          reference_close_price: 293.25,
-          change_pct: -0.004,
-          asof: "2026-05-12T08:45:45+00:00",
-          provider: "yahoo",
-          provider_symbol: "AAPL",
-          latency_class: "delayed_15m",
-          freshness_class: "delayed_15m",
-          error: null,
-        },
-        source_event_ids: ["event-aapl"],
-        row_health: [],
-      },
-    ],
-    health: { returned_count: 1, quote_ready_count: 1, quote_unavailable_count: 0 },
   };
 }

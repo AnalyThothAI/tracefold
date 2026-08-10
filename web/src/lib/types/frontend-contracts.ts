@@ -278,61 +278,6 @@ export type MarketReadiness = {
   stale_fields: string[];
 };
 
-export type StockQuoteSnapshot = {
-  status: "ready" | "unavailable" | string;
-  price?: number | null;
-  reference_close_price?: number | null;
-  change_pct?: number | null;
-  asof?: string | null;
-  provider?: string | null;
-  provider_symbol?: string | null;
-  latency_class?: string | null;
-  freshness_class?: string | null;
-  error?: string | null;
-};
-
-export type StockRadarRow = {
-  target: {
-    target_type: "MarketInstrument" | string;
-    target_id: string;
-    symbol: string;
-    market?: "us_equity" | string | null;
-    exchange?: string | null;
-    instrument_type?: string | null;
-    name?: string | null;
-  };
-  attention: {
-    mentions: number;
-    unique_authors: number;
-    latest_seen_ms?: number | null;
-  };
-  latest_event: {
-    event_id?: string | null;
-    author_handle?: string | null;
-    text?: string | null;
-    received_at_ms?: number | null;
-  };
-  quote: StockQuoteSnapshot;
-  source_event_ids: string[];
-  row_health: string[];
-};
-
-export type StocksRadarData = {
-  window: WindowKey;
-  query: {
-    window: WindowKey;
-    limit: number;
-    window_start_ms: number;
-    window_end_ms: number;
-  };
-  rows: StockRadarRow[];
-  health: {
-    returned_count: number;
-    quote_ready_count: number;
-    quote_unavailable_count: number;
-  };
-};
-
 // Token Case exposes post-quality evidence independently of retired Radar
 // admission/decision blocks.
 export type ScoreContribution = {

@@ -5,21 +5,60 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("parseTokenRadarSnapshot", () => {
-  it("accepts the exact v1 snapshot without changing server priority", () => {
-    const value = snapshot();
+  it("accepts the exact v2 snapshot and preserves all fifty server-prioritized rows", () => {
+    const value = snapshot(50);
     expect(parseTokenRadarSnapshot(value)).toEqual(value);
-    expect(parseTokenRadarSnapshot(value).items.map((item) => item.target.symbol)).toEqual([
-      "FIRST",
-      "SECOND",
-    ]);
+    expect(parseTokenRadarSnapshot(value).items.map((item) => item.target.symbol)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `TOKEN${index + 1}`),
+    );
   });
 
   it.each([
     ["wrong schema", () => ({ ...snapshot(), schema_version: "legacy" })],
     ["extra root field", () => ({ ...snapshot(), legacy: true })],
     [
-      "more than eight rows",
-      () => ({ ...snapshot(), items: Array.from({ length: 9 }, () => snapshot().items[0]) }),
+      "more than fifty rows",
+      () => ({ ...snapshot(), items: Array.from({ length: 51 }, () => item("EXTRA", "extra")) }),
+    ],
+    [
+      "remote logo URL",
+      () => {
+        const value = snapshot();
+        value.items[0].target.logo_url = "https://images.example/token.png";
+        return value;
+      },
+    ],
+    [
+      "malformed local logo path",
+      () => {
+        const value = snapshot();
+        value.items[0].target.logo_url = "/api/token-images/not-a-content-hash";
+        return value;
+      },
+    ],
+    [
+      "nonpositive current price",
+      () => {
+        const value = snapshot();
+        value.items[0].market.price_usd = 0;
+        return value;
+      },
+    ],
+    [
+      "market metrics without observation time",
+      () => {
+        const value = snapshot();
+        (value.items[0].market as { observed_at_ms: number | null }).observed_at_ms = null;
+        return value;
+      },
+    ],
+    [
+      "market observation after the snapshot evidence clock",
+      () => {
+        const value = snapshot();
+        value.items[0].market.observed_at_ms = value.evidence_as_of_ms + 1;
+        return value;
+      },
     ],
     [
       "invalid duplicate share",
@@ -63,12 +102,14 @@ describe("parseTokenRadarSnapshot", () => {
   });
 });
 
-function snapshot() {
+function snapshot(count = 2) {
   return {
     schema_version: TOKEN_RADAR_SNAPSHOT_SCHEMA,
     evidence_as_of_ms: 1_778_426_440_000,
-    eligible_total: 2,
-    items: [item("FIRST", "one"), item("SECOND", "two")],
+    eligible_total: count,
+    items: Array.from({ length: count }, (_, index) =>
+      item(`TOKEN${index + 1}`, `token-${index + 1}`),
+    ),
   };
 }
 
@@ -78,6 +119,8 @@ function item(symbol: string, id: string) {
       target_type: "Asset" as const,
       target_id: `asset:solana:token:${id}`,
       symbol,
+      name: `${symbol} Network`,
+      logo_url: `/api/token-images/${"a".repeat(64)}`,
       chain: "solana",
       exchange: null,
       address: id,
@@ -91,7 +134,13 @@ function item(symbol: string, id: string) {
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.1,
     },
-    market: { status: "confirmed" as const, price_change_since_signal: 0.12 },
+    market: {
+      status: "confirmed" as const,
+      price_usd: 0.00003281,
+      price_change_since_signal: 0.12,
+      market_cap_usd: 1_250_000,
+      observed_at_ms: 1_778_426_435_000,
+    },
     counter_evidence: null,
   };
 }

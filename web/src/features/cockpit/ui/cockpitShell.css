@@ -29,8 +29,7 @@
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
     border-right: 1px solid var(--border-subtle);
-    background:
-      linear-gradient(180deg, rgba(241, 234, 214, 0.025), transparent 220px), var(--surface-root);
+    background: var(--surface-root);
   }
 
   .search-focus-mode .center-column {

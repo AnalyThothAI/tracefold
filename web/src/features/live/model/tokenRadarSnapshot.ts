@@ -1,6 +1,6 @@
 import type { components } from "@lib/types/openapi";
 
-export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v1" as const;
+export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v2" as const;
 
 export type TokenRadarSnapshotItem = components["schemas"]["TokenRadarItemData"];
 export type TokenRadarSnapshot = components["schemas"]["TokenRadarData"];
@@ -18,9 +18,16 @@ export function parseTokenRadarSnapshot(value: unknown): TokenRadarSnapshot {
     "snapshot.evidence_as_of_ms",
   );
   const eligibleTotal = nonnegativeInteger(snapshot.eligible_total, "snapshot.eligible_total");
-  if (!Array.isArray(snapshot.items) || snapshot.items.length > 8) fail("snapshot.items");
+  if (!Array.isArray(snapshot.items) || snapshot.items.length > 50) fail("snapshot.items");
   const items = snapshot.items.map(parseItem);
   if (eligibleTotal < items.length) fail("snapshot.eligible_total");
+  if (
+    items.some(
+      (item) => item.market.observed_at_ms !== null && item.market.observed_at_ms > evidenceAsOfMs,
+    )
+  ) {
+    fail("snapshot.evidence_as_of_ms");
+  }
   return {
     schema_version: TOKEN_RADAR_SNAPSHOT_SCHEMA,
     evidence_as_of_ms: evidenceAsOfMs,
@@ -48,7 +55,7 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
   const target = record(item.target, `${path}.target`);
   exactKeys(
     target,
-    ["target_type", "target_id", "symbol", "chain", "exchange", "address"],
+    ["target_type", "target_id", "symbol", "name", "logo_url", "chain", "exchange", "address"],
     `${path}.target`,
   );
   if (target.target_type !== "Asset" && target.target_type !== "CexToken")
@@ -76,17 +83,35 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
   const duplicateShare = finiteNumber(evidence.duplicate_share, `${path}.evidence.duplicate_share`);
   if (duplicateShare < 0 || duplicateShare > 1) fail(`${path}.evidence.duplicate_share`);
   const market = record(item.market, `${path}.market`);
-  exactKeys(market, ["status", "price_change_since_signal"], `${path}.market`);
+  exactKeys(
+    market,
+    ["status", "price_usd", "price_change_since_signal", "market_cap_usd", "observed_at_ms"],
+    `${path}.market`,
+  );
   if (market.status !== "confirmed" && market.status !== "unavailable")
     fail(`${path}.market.status`);
   const priceChange = nullableFiniteNumber(
     market.price_change_since_signal,
     `${path}.market.price_change_since_signal`,
   );
+  const priceUsd = nullablePositiveNumber(market.price_usd, `${path}.market.price_usd`);
+  const marketCapUsd = nullablePositiveNumber(
+    market.market_cap_usd,
+    `${path}.market.market_cap_usd`,
+  );
+  const observedAtMs = nullableNonnegativeInteger(
+    market.observed_at_ms,
+    `${path}.market.observed_at_ms`,
+  );
+  const hasMetrics = priceUsd !== null || marketCapUsd !== null;
+  if (hasMetrics !== (observedAtMs !== null)) fail(`${path}.market.observed_at_ms`);
   if (market.status === "unavailable" && priceChange !== null) {
     fail(`${path}.market.price_change_since_signal`);
   }
-  if (market.status === "confirmed" && priceChange === null) {
+  if (
+    market.status === "confirmed" &&
+    (priceChange === null || priceUsd === null || observedAtMs === null)
+  ) {
     fail(`${path}.market.price_change_since_signal`);
   }
   return {
@@ -94,6 +119,8 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
       target_type: target.target_type,
       target_id: nonemptyString(target.target_id, `${path}.target.target_id`),
       symbol: nonemptyString(target.symbol, `${path}.target.symbol`),
+      name: nullableString(target.name, `${path}.target.name`),
+      logo_url: nullableTokenImagePath(target.logo_url, `${path}.target.logo_url`),
       chain: nullableString(target.chain, `${path}.target.chain`),
       exchange: nullableString(target.exchange, `${path}.target.exchange`),
       address: nullableString(target.address, `${path}.target.address`),
@@ -120,7 +147,13 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
       ),
       duplicate_share: duplicateShare,
     },
-    market: { status: market.status, price_change_since_signal: priceChange },
+    market: {
+      status: market.status,
+      price_usd: priceUsd,
+      price_change_since_signal: priceChange,
+      market_cap_usd: marketCapUsd,
+      observed_at_ms: observedAtMs,
+    },
     counter_evidence: counterEvidence(item.counter_evidence, `${path}.counter_evidence`),
   };
 }
@@ -145,6 +178,12 @@ function nullableString(value: unknown, path: string): string | null {
   return value === null ? null : nonemptyString(value, path);
 }
 
+function nullableTokenImagePath(value: unknown, path: string): string | null {
+  const parsed = nullableString(value, path);
+  if (parsed !== null && !/^\/api\/token-images\/[0-9a-f]{64}$/.test(parsed)) fail(path);
+  return parsed;
+}
+
 function counterEvidence(value: unknown, path: string): "market_confirmation_unavailable" | null {
   if (value === null || value === "market_confirmation_unavailable") return value;
   return fail(path);
@@ -159,6 +198,12 @@ function nullableFiniteNumber(value: unknown, path: string): number | null {
   return value === null ? null : finiteNumber(value, path);
 }
 
+function nullablePositiveNumber(value: unknown, path: string): number | null {
+  const parsed = nullableFiniteNumber(value, path);
+  if (parsed !== null && parsed <= 0) fail(path);
+  return parsed;
+}
+
 function integer(value: unknown, path: string): number {
   const parsed = finiteNumber(value, path);
   if (!Number.isInteger(parsed)) fail(path);
@@ -169,6 +214,10 @@ function nonnegativeInteger(value: unknown, path: string): number {
   const parsed = integer(value, path);
   if (parsed < 0) fail(path);
   return parsed;
+}
+
+function nullableNonnegativeInteger(value: unknown, path: string): number | null {
+  return value === null ? null : nonnegativeInteger(value, path);
 }
 
 function fail(path: string): never {

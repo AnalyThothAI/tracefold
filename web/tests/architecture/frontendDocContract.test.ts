@@ -87,7 +87,6 @@ describe("frontend documentation contract", () => {
   it("keeps primary route docs aligned with the app navigation tree", () => {
     const documentedRoutes = [
       { term: "Radar", to: "/" },
-      { term: "Stocks", to: "/stocks" },
       { term: "News", to: "/news" },
       { term: "Macro", to: "/macro" },
     ];

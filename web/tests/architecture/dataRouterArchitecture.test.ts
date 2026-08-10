@@ -55,7 +55,6 @@ describe("data router architecture", () => {
       "@features/macro",
       "@features/news",
       "@features/search",
-      "@features/stocks",
       "@features/token-case",
     ];
 

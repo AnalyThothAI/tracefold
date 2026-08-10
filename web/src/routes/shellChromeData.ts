@@ -4,7 +4,7 @@ import {
   type CockpitShellProps,
   type SearchShellProps,
 } from "@features/cockpit";
-import { searchPath, stocksPath } from "@shared/routing/paths";
+import { searchPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useSocketSnapshot } from "@shared/socket/socketContext";
 import { useQueryClient } from "@tanstack/react-query";
@@ -45,14 +45,6 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       searchInputRef.current?.focus();
       return;
     }
-    if (isTyping) {
-      return;
-    }
-    if (!shouldHandleStocksWindowHotkey(location.pathname, event.key)) {
-      return;
-    }
-    const windows = { "1": "5m", "2": "1h", "3": "4h", "4": "24h" } as const;
-    navigate(stocksPath({ window: windows[event.key as keyof typeof windows] }));
   };
   const searchTargetsNews = shouldRouteTopbarSearchToNews(location.pathname);
   const currentSearchQuery = new URLSearchParams(location.search).get("q") ?? "";
@@ -113,12 +105,4 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
 export function shouldRouteTopbarSearchToNews(pathname: string): boolean {
   const path = pathname.split("?")[0] ?? pathname;
   return path === "/news" || path.startsWith("/news/");
-}
-
-export function shouldHandleStocksWindowHotkey(pathname: string, key: string): boolean {
-  if (!["1", "2", "3", "4"].includes(key)) {
-    return false;
-  }
-  const path = pathname.split("?")[0] ?? pathname;
-  return path === "/stocks" || path.startsWith("/stocks/");
 }

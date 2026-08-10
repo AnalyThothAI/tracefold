@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -49,6 +50,11 @@ def main() -> int:
             }
         },
     )
+    app_home = os.environ.get("TRACEFOLD_E2E_APP_HOME")
+    if not app_home:
+        print("FATAL: TRACEFOLD_E2E_APP_HOME not set", file=sys.stderr)
+        return 1
+    settings.set_config_dir(Path(app_home))
 
     fixed_now_ms = os.environ.get("TRACEFOLD_E2E_FIXED_NOW_MS")
     if fixed_now_ms:

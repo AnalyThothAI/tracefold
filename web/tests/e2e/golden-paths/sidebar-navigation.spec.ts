@@ -34,10 +34,10 @@ test.describe("desktop sidebar navigation", () => {
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
 
-    for (const routeName of ["Radar", "Stocks", "News", "Macro"]) {
+    for (const routeName of ["Radar", "News", "Macro"]) {
       await expect(primaryNavigation.getByRole("link", { name: routeName })).toBeVisible();
     }
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
     const sidebarRoot = page.locator('[data-slot="sidebar"]');
@@ -60,7 +60,6 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/");
 
     await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Stocks", "/stocks");
     await expectSidebarRouteClickFast(page, "Radar", "/");
     await expectSidebarRouteClickFast(page, "Macro", "/macro");
 
@@ -75,7 +74,7 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/");
 
     await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Stocks", "/stocks");
+    await expectSidebarRouteClickFast(page, "Macro", "/macro");
   });
 
   test("keeps desktop sidebar navigation available when route APIs fail", async ({ page }) => {

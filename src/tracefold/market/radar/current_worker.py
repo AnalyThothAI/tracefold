@@ -9,17 +9,12 @@ from tracefold.market.radar.reducer import (
     TokenRadarBudgetExceeded,
     TokenRadarInputOverflow,
     TokenRadarOutputOverflow,
+    enrich_token_radar,
     reduce_token_radar,
 )
 from tracefold.market.radar.snapshot_repository import (
     TokenRadarCurrentRepository,
     TokenRadarPublicationResult,
-)
-from tracefold.market.radar.stocks_current import (
-    STOCKS_RADAR_REDUCER_BUDGET_SECONDS,
-    StocksRadarCurrentRepository,
-    StocksRadarInputOverflow,
-    reduce_stocks_radar,
 )
 from tracefold.platform.resource import (
     CpuTaskTimeout,
@@ -27,12 +22,11 @@ from tracefold.platform.resource import (
     ResourceOperationOverrun,
 )
 
-_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 3.0
+_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 2.25
 _TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS = 1.5
+_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS = 0.75
 _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS = 0.5
 _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS = 0.5
-_STOCKS_RADAR_LOAD_TIMEOUT_SECONDS = 1.5
-_STOCKS_RADAR_PUBLISH_TIMEOUT_SECONDS = 1.0
 
 
 class TokenRadarCurrentService:
@@ -61,6 +55,18 @@ class TokenRadarCurrentService:
                 reduced,
                 evaluation_at_ms=now_ms,
             )
+
+    def load_presentation(
+        self,
+        reduced: Any,
+        *,
+        session_timeout_seconds: float = _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS,
+    ) -> list[dict[str, Any]]:
+        targets = [
+            (str(item["target"]["target_type"]), str(item["target"]["target_id"])) for item in reduced.snapshot["items"]
+        ]
+        with self._session(timeout_seconds=session_timeout_seconds) as repos:
+            return TokenRadarCurrentRepository(repos.conn).load_presentation_facts(targets)
 
     def mark_failed(
         self,
@@ -134,7 +140,11 @@ class TokenRadarCurrentProjection:
             load_timeout = _phase_timeout(
                 deadline,
                 cap=_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
-                reserve_seconds=(_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS),
+                reserve_seconds=(
+                    _TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS
+                    + _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS
+                    + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS
+                ),
             )
             rows = await self.db.run_business(
                 "token_radar_current_load",
@@ -147,7 +157,7 @@ class TokenRadarCurrentProjection:
             compute_timeout = _phase_timeout(
                 deadline,
                 cap=_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS,
-                reserve_seconds=_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
+                reserve_seconds=(_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS),
             )
             reduced = await self.cpu.run(
                 "token_radar_current_reduce",
@@ -155,6 +165,19 @@ class TokenRadarCurrentProjection:
                 {"rows": rows, "now_ms": now_ms, "budget_seconds": compute_timeout},
                 service_timeout_seconds=compute_timeout,
             )
+            present_timeout = _phase_timeout(
+                deadline,
+                cap=_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS,
+                reserve_seconds=_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
+            )
+            presentation_rows = await self.db.run_business(
+                "token_radar_current_present",
+                self.service.load_presentation,
+                reduced,
+                operation_timeout_seconds=present_timeout,
+                session_timeout_seconds=present_timeout,
+            )
+            reduced = enrich_token_radar(reduced, presentation_rows, now_ms=now_ms)
             self._set_rows("eligible", reduced.eligible_rows)
             self._set_rows("public", len(reduced.snapshot["items"]))
             self._set_bytes("input", reduced.input_bytes)
@@ -228,88 +251,6 @@ class TokenRadarCurrentProjection:
             self.telemetry.record_projection_deadline_miss("token_radar_current", "radar")
 
 
-class StocksRadarCurrentService:
-    def __init__(self, *, db: Any, worker_name: str = "stocks_radar_current") -> None:
-        self.db = db
-        self.worker_name = worker_name
-
-    def load(self, *, now_ms: int) -> list[dict[str, Any]]:
-        with self._session() as repos:
-            return StocksRadarCurrentRepository(repos.conn).load_material_inputs(now_ms=now_ms)
-
-    def publish(self, reduced: Any, *, now_ms: int) -> int:
-        with self._session() as repos:
-            return StocksRadarCurrentRepository(repos.conn).publish(reduced, now_ms=now_ms)
-
-    def _session(self) -> Any:
-        return self.db.worker_session(
-            self.worker_name,
-            statement_timeout_seconds=2.0,
-            transaction_timeout_seconds=2.0,
-        )
-
-
-class StocksRadarCurrentProjection:
-    """Independent fixed-period Stocks writer over material facts."""
-
-    def __init__(self, *, db: Any, cpu: Any, clock: Any | None = None) -> None:
-        self.db = db
-        self.cpu = cpu
-        self.clock = clock or _now_ms
-        self.service = StocksRadarCurrentService(db=db)
-
-    async def sample(self) -> None:
-        now_ms = int(self.clock())
-        try:
-            rows = await self.db.run_business(
-                "stocks_radar_current_load",
-                self.service.load,
-                operation_timeout_seconds=_STOCKS_RADAR_LOAD_TIMEOUT_SECONDS,
-                now_ms=now_ms,
-            )
-            reduced = await self.cpu.run(
-                "stocks_radar_current_reduce",
-                _reduce_stocks_payload,
-                {"rows": rows, "now_ms": now_ms},
-                service_timeout_seconds=STOCKS_RADAR_REDUCER_BUDGET_SECONDS,
-            )
-            await self.db.run_business(
-                "stocks_radar_current_publish",
-                self.service.publish,
-                reduced,
-                operation_timeout_seconds=_STOCKS_RADAR_PUBLISH_TIMEOUT_SECONDS,
-                now_ms=now_ms,
-            )
-        except (
-            CpuTaskTimeout,
-            ResourceAdmissionTimeout,
-            StocksRadarInputOverflow,
-        ):
-            return
-
-
-class RadarCurrentProjectionCycle:
-    """One cadence owner that gives Token deterministic CPU priority over Stocks."""
-
-    def __init__(
-        self,
-        *,
-        token: TokenRadarCurrentProjection,
-        stocks: StocksRadarCurrentProjection,
-    ) -> None:
-        self.token = token
-        self.stocks = stocks
-
-    async def initialize(self) -> None:
-        """Publish Token Radar before competing startup reconciliation begins."""
-
-        await self.token.sample()
-
-    async def sample(self) -> None:
-        await self.token.sample()
-        await self.stocks.sample()
-
-
 def _reduce_token_payload(payload: dict[str, Any]) -> Any:
     budget_seconds = float(payload["budget_seconds"])
     return reduce_token_radar(
@@ -317,10 +258,6 @@ def _reduce_token_payload(payload: dict[str, Any]) -> Any:
         now_ms=int(payload["now_ms"]),
         deadline_monotonic=time.monotonic() + budget_seconds,
     )
-
-
-def _reduce_stocks_payload(payload: dict[str, Any]) -> Any:
-    return reduce_stocks_radar(payload["rows"], now_ms=int(payload["now_ms"]))
 
 
 def _error_code(exc: Exception) -> str:
@@ -347,9 +284,6 @@ def _now_ms() -> int:
 
 
 __all__ = [
-    "RadarCurrentProjectionCycle",
-    "StocksRadarCurrentProjection",
-    "StocksRadarCurrentService",
     "TokenRadarCurrentProjection",
     "TokenRadarCurrentService",
 ]

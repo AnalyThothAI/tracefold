@@ -11,7 +11,6 @@ export const queryKeys = {
     ["trigger-target-post", targetKey, eventId] as const,
   searchInspect: (token: string, q: string, window: WindowKey) =>
     ["search-inspect", token, q, window] as const,
-  stocksRadar: (window: WindowKey, limit: number) => ["stocks-radar", window, limit] as const,
   macroPage: (pageId: string) => ["macro", "page", pageId] as const,
   macroSeries: (conceptKeys: string[], window: string) =>
     ["macro", "series", [...conceptKeys].sort(), window] as const,

@@ -40,6 +40,11 @@ _LEGACY_RADAR_TABLES = (
     "radar_source_edges",
     "radar_projection_frontiers",
 )
+_STOCKS_RADAR_TABLES = (
+    "stock_attention_target_features",
+    "stocks_radar_current_rows",
+    "stocks_radar_publication_state",
+)
 
 
 def test_upgrade_from_0248_discards_only_legacy_radar_state() -> None:
@@ -48,7 +53,7 @@ def test_upgrade_from_0248_discards_only_legacy_radar_state() -> None:
         radar_terminal_id, radar_source_terminal_id, retained_terminal_id = _seed_nonempty_0248_state(conn)
         before = _fact_identities(conn)
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260810_0249")
 
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0249"}
         assert _fact_identities(conn) == before
@@ -147,6 +152,87 @@ def test_upgrade_from_0248_discards_only_legacy_radar_state() -> None:
                 },
             }
         ]
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
+def test_upgrade_from_0249_replaces_v1_with_top50_and_drops_stocks_only() -> None:
+    config, conn = _reset_to_0248()
+    try:
+        _seed_nonempty_0248_state(conn)
+        command.upgrade(config, "20260810_0249")
+        before = _fact_identities(conn)
+        fingerprint = "sha256:" + ("1" * 64)
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET ruleset_version = 'token_radar_rules_v1',
+                   ruleset_fingerprint = %s,
+                   input_fingerprint = %s,
+                   state_fingerprint = %s,
+                   evidence_as_of_ms = 10,
+                   evaluation_at_ms = 10,
+                   input_rows = 1,
+                   input_bytes = 1,
+                   latest_attempt_status = 'ready',
+                   served_payload = %s::jsonb,
+                   updated_at_ms = 10
+             WHERE singleton_key = true
+            """,
+            (
+                fingerprint,
+                fingerprint,
+                fingerprint,
+                '{"schema_version":"token_radar_snapshot_v1","evidence_as_of_ms":10,"eligible_total":1,"items":[{}]}',
+            ),
+        )
+        conn.commit()
+
+        command.upgrade(config, "head")
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0250"}
+        assert _fact_identities(conn) == before
+        assert (
+            conn.execute(
+                """
+            SELECT tablename
+              FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename = ANY(%s)
+             ORDER BY tablename
+            """,
+                (list(_STOCKS_RADAR_TABLES),),
+            ).fetchall()
+            == []
+        )
+        assert conn.execute(
+            """
+            SELECT schema_version, latest_attempt_status, served_payload
+              FROM token_radar_current
+             WHERE singleton_key = true
+            """
+        ).fetchone() == {
+            "schema_version": "token_radar_snapshot_v2",
+            "latest_attempt_status": "never",
+            "served_payload": {
+                "schema_version": "token_radar_snapshot_v2",
+                "evidence_as_of_ms": 0,
+                "eligible_total": 0,
+                "items": [],
+            },
+        }
+        constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+              FROM pg_constraint
+             WHERE conrelid = 'token_radar_current'::regclass
+               AND conname = 'token_radar_current_schema_check'
+            """
+        ).fetchone()
+        assert constraint is not None
+        assert "token_radar_snapshot_v2" in constraint["definition"]
+        assert "<= 50" in constraint["definition"]
     finally:
         reset_postgres_schema(conn)
         conn.close()

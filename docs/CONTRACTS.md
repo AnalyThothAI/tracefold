@@ -152,7 +152,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, profile, and market facts owned by those readers |
-| Radar/market | `/api/token-radar`, `/api/stocks-radar`, `/api/live-market` | stable PostgreSQL current read models |
+| Radar/market | `/api/token-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
 | News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | public WorldMonitor RSS plus OpenNews current facts, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
@@ -167,38 +167,54 @@ singleton. It has no product query parameter: `window`, `venue`, `limit`,
 aliased. The existing authentication `token` query remains an authentication
 transport, not a Radar option.
 
-The exact data payload is one `token_radar_snapshot_v1` object:
+The exact data payload is one `token_radar_snapshot_v2` object:
 
 ```json
 {
-  "schema_version": "token_radar_snapshot_v1",
+  "schema_version": "token_radar_snapshot_v2",
   "evidence_as_of_ms": 0,
   "eligible_total": 0,
   "items": []
 }
 ```
 
-`items` contains at most eight entries in server-owned order. Each entry has
+`items` contains at most fifty entries in server-owned order. Each entry has
 exactly canonical `target` identity (`target_type`, `target_id`, `symbol`, and
-nullable `chain`, `exchange`, `address`); one `trigger_event_id` and
-`triggered_at_ms`; `why_now` current/prior 1-hour mention counts and their
-difference; `evidence` new-independent-author count, independent-text
-count, time to the required author, and duplicate share; `market` status
-`confirmed|unavailable` plus nullable price change since the trigger; and one
-nullable `counter_evidence` reason code, exactly
+nullable `name`, same-origin `logo_url`, `chain`, `exchange`, `address`); one
+`trigger_event_id` and `triggered_at_ms`; `why_now` current/prior 1-hour mention
+counts and their difference; `evidence` new-independent-author count,
+independent-text count, time to the required author, and duplicate share; and
+one `market` packet with `status`, nullable current `price_usd`, nullable
+`price_change_since_signal`, nullable `market_cap_usd`, and nullable
+`observed_at_ms`. `logo_url` is either `null` or the exact same-origin form
+`/api/token-images/{64-lowercase-hex-image-id}`. A fresh positive current metric
+requires `observed_at_ms`; a confirmed signal change additionally requires a
+fresh positive current price observed no earlier than the trigger. Missing,
+stale, future, non-positive, or non-finite evidence degrades the affected
+presentation fields rather than changing admission or order. The nullable
+`counter_evidence` remains exactly
 `market_confirmation_unavailable|null`. `eligible_total` counts the complete
-eligible population before the maximum-eight selection. Order is primarily
-newest trigger first with stable fact-key ties.
+eligible population before the maximum-fifty selection. Order is primarily
+newest trigger first with stable fact-key ties. The complete uncompressed
+snapshot is capped at 96 KiB.
 
 The response has `Cache-Control: private, no-cache` and a strong ETag bound to
 the complete served snapshot. A matching `If-None-Match` returns `304` with no
 body. The endpoint never calls a provider, recalculates the reducer, hydrates a
-profile, returns source-event lists, or falls back to the retired row/factor
-contract. Scores, ranks, decisions, factor families, gates, normalization,
-security judgments, windows, venues, and compatibility fields do not exist.
+profile, returns source-event lists, or falls back to the retired v1 row/factor
+contract. The writer obtains profile and market presentation facts in one
+bounded batch read after server selection; the browser makes no per-Item profile
+or live-market data request. Scores, ranks, decisions, factor families,
+gates, normalization, security judgments, windows, venues, and compatibility
+fields do not exist.
 Search and Token Case remain independent fact readers; a Radar link may focus
 the exact trigger Event in Token Case, but Radar current state is not copied
 into the dossier.
+
+`/api/stocks-radar` is removed and returns `404`; there is no compatibility
+alias, redirect, or replacement Stocks contract. The retained US-equity identity
+catalog is an internal collision guard for token resolution, not a public
+Stocks interface.
 
 ### News
 

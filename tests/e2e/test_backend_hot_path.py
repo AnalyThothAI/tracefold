@@ -145,7 +145,7 @@ def _assert_http_surfaces(client: TestClient) -> None:
     radar = client.get("/api/token-radar", headers=auth_headers())
     assert radar.status_code == 200, radar.text
     radar_payload = radar.json()["data"]
-    assert radar_payload["schema_version"] == "token_radar_snapshot_v1"
+    assert radar_payload["schema_version"] == "token_radar_snapshot_v2"
     assert radar_payload["eligible_total"] == 0
     assert radar_payload["items"] == []
 

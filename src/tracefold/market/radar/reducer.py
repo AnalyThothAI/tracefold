@@ -27,6 +27,7 @@ from tracefold.market.radar.constants import (
 _RESOLVED_STATUSES = frozenset({"EXACT", "UNIQUE_BY_CONTEXT"})
 _RESOLVED_TARGET_TYPES = frozenset({"Asset", "CexToken"})
 _SPACE_RE = re.compile(r"\s+")
+_LOCAL_TOKEN_IMAGE_RE = re.compile(r"^/api/token-images/[0-9a-f]{64}$")
 
 
 class TokenRadarInputOverflow(RuntimeError):
@@ -52,6 +53,7 @@ class ReducedTokenRadar:
     output_bytes: int
     eligible_rows: int
     snapshot: dict[str, Any]
+    selected_signal_prices: tuple[str | None, ...]
 
 
 def reduce_token_radar(
@@ -88,15 +90,7 @@ def reduce_token_radar(
         window = "current" if received_at_ms >= current_start_ms else "prior"
         canonical_input = {**row, "window": window}
         canonical_inputs.append(canonical_input)
-        evidence_as_of_ms = max(
-            evidence_as_of_ms,
-            received_at_ms,
-            (
-                int(row["latest_price_observed_at_ms"] or 0)
-                if int(row["latest_price_observed_at_ms"] or 0) <= parsed_now_ms
-                else 0
-            ),
-        )
+        evidence_as_of_ms = max(evidence_as_of_ms, received_at_ms)
         if row["resolution_status"] not in _RESOLVED_STATUSES:
             continue
         target_type = row["target_type"]
@@ -128,11 +122,12 @@ def reduce_token_radar(
 
     candidates.sort(key=_candidate_rank_key)
     eligible_rows = len(candidates)
+    selected = candidates[:TOKEN_RADAR_MAX_ITEMS]
     snapshot = {
         "schema_version": TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
         "evidence_as_of_ms": evidence_as_of_ms,
         "eligible_total": eligible_rows,
-        "items": [candidate["item"] for candidate in candidates[:TOKEN_RADAR_MAX_ITEMS]],
+        "items": [candidate["item"] for candidate in selected],
     }
     output_bytes = len(_canonical_json_bytes(snapshot))
     if output_bytes > TOKEN_RADAR_OUTPUT_BYTE_CAP:
@@ -154,6 +149,84 @@ def reduce_token_radar(
         output_bytes=output_bytes,
         eligible_rows=eligible_rows,
         snapshot=snapshot,
+        selected_signal_prices=tuple(candidate["signal_price_usd"] for candidate in selected),
+    )
+
+
+def enrich_token_radar(
+    reduced: ReducedTokenRadar,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    now_ms: int,
+) -> ReducedTokenRadar:
+    """Attach bounded presentation facts after selection without changing queue order."""
+
+    parsed_now_ms = _nonnegative_int(now_ms, "token_radar_now_ms_invalid")
+    canonical_facts = [_canonical_presentation_fact(row) for row in rows]
+    facts_by_target: dict[tuple[str, str], dict[str, Any]] = {}
+    for canonical_fact in sorted(canonical_facts, key=_presentation_fact_sort_key):
+        key = (
+            str(canonical_fact["target_type"] or ""),
+            str(canonical_fact["target_id"] or ""),
+        )
+        if key[0] in _RESOLVED_TARGET_TYPES and key[1]:
+            facts_by_target.setdefault(key, canonical_fact)
+
+    enriched_items: list[dict[str, Any]] = []
+    evidence_as_of_ms = int(reduced.snapshot["evidence_as_of_ms"])
+    for index, source_item in enumerate(reduced.snapshot["items"]):
+        source_target = source_item["target"]
+        target_key = (str(source_target["target_type"]), str(source_target["target_id"]))
+        fact = facts_by_target.get(target_key)
+        market = _presentation_market(
+            fact,
+            signal_price_usd=(
+                reduced.selected_signal_prices[index] if index < len(reduced.selected_signal_prices) else None
+            ),
+            triggered_at_ms=int(source_item["triggered_at_ms"]),
+            now_ms=parsed_now_ms,
+        )
+        if market["observed_at_ms"] is not None:
+            evidence_as_of_ms = max(evidence_as_of_ms, int(market["observed_at_ms"]))
+        enriched_items.append(
+            {
+                **source_item,
+                "target": {
+                    **source_target,
+                    "name": _text(fact.get("name")) if fact is not None else None,
+                    "logo_url": _local_logo_url(fact.get("logo_url")) if fact is not None else None,
+                },
+                "market": market,
+                "counter_evidence": (None if market["status"] == "confirmed" else "market_confirmation_unavailable"),
+            }
+        )
+
+    snapshot = {
+        "schema_version": TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
+        "evidence_as_of_ms": evidence_as_of_ms,
+        "eligible_total": int(reduced.snapshot["eligible_total"]),
+        "items": enriched_items,
+    }
+    output_bytes = len(_canonical_json_bytes(snapshot))
+    if output_bytes > TOKEN_RADAR_OUTPUT_BYTE_CAP:
+        raise TokenRadarOutputOverflow("token_radar_output_byte_overflow")
+    return ReducedTokenRadar(
+        ruleset_version=reduced.ruleset_version,
+        ruleset_fingerprint=reduced.ruleset_fingerprint,
+        input_fingerprint=reduced.input_fingerprint,
+        state_fingerprint=_fingerprint(
+            {
+                "ruleset_version": reduced.ruleset_version,
+                "ruleset_fingerprint": reduced.ruleset_fingerprint,
+                "snapshot": snapshot,
+            }
+        ),
+        input_rows=reduced.input_rows,
+        input_bytes=reduced.input_bytes,
+        output_bytes=output_bytes,
+        eligible_rows=reduced.eligible_rows,
+        snapshot=snapshot,
+        selected_signal_prices=reduced.selected_signal_prices,
     )
 
 
@@ -203,8 +276,7 @@ def _reduce_target(
     identity = _target_identity(target_key, ordered)
     if identity is None:
         return None
-    market = _market_since_signal(trigger, now_ms=now_ms)
-    counter_evidence = "market_confirmation_unavailable" if market["status"] == "unavailable" else None
+    market = _unavailable_market()
     item = {
         "target": identity,
         "trigger_event_id": trigger["event_id"],
@@ -221,10 +293,11 @@ def _reduce_target(
             "duplicate_share": duplicate_share,
         },
         "market": market,
-        "counter_evidence": counter_evidence,
+        "counter_evidence": "market_confirmation_unavailable",
     }
     return {
         "item": item,
+        "signal_price_usd": trigger["signal_price_usd"],
         "rank": (
             -int(trigger["received_at_ms"]),
             target_key[0],
@@ -247,8 +320,6 @@ def _canonical_source_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "author_handle": _normalized_author(raw.get("author_handle")),
         "text": _text(raw.get("text")),
         "signal_price_usd": _decimal_text(raw.get("signal_price_usd")),
-        "latest_price_usd": _decimal_text(raw.get("latest_price_usd")),
-        "latest_price_observed_at_ms": _optional_nonnegative_int(raw.get("latest_price_observed_at_ms")),
     }
 
 
@@ -264,31 +335,76 @@ def _target_identity(target_key: tuple[str, str], rows: list[dict[str, Any]]) ->
         "target_type": target_key[0],
         "target_id": target_key[1],
         "symbol": symbol,
+        "name": None,
+        "logo_url": None,
         "chain": _text(latest.get("chain")),
         "exchange": _text(latest.get("exchange")),
         "address": _text(latest.get("address")),
     }
 
 
-def _market_since_signal(trigger: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
-    signal = _positive_decimal(trigger.get("signal_price_usd"))
-    latest = _positive_decimal(trigger.get("latest_price_usd"))
-    latest_observed_at_ms = _optional_nonnegative_int(trigger.get("latest_price_observed_at_ms"))
-    triggered_at_ms = _optional_nonnegative_int(trigger.get("received_at_ms"))
-    if (
-        signal is None
-        or latest is None
-        or latest_observed_at_ms is None
-        or triggered_at_ms is None
-        or latest_observed_at_ms < triggered_at_ms
-        or latest_observed_at_ms > now_ms
-        or now_ms - latest_observed_at_ms > LIVE_MARKET_STALE_AFTER_MS
-    ):
-        return {"status": "unavailable", "price_change_since_signal": None}
-    change = float((latest - signal) / signal)
-    if not math.isfinite(change):
-        return {"status": "unavailable", "price_change_since_signal": None}
-    return {"status": "confirmed", "price_change_since_signal": change}
+def _presentation_market(
+    fact: Mapping[str, Any] | None,
+    *,
+    signal_price_usd: Any,
+    triggered_at_ms: int,
+    now_ms: int,
+) -> dict[str, Any]:
+    if fact is None:
+        return _unavailable_market()
+    observed_at_ms = _optional_nonnegative_int(fact.get("observed_at_ms"))
+    if observed_at_ms is None or observed_at_ms > now_ms or now_ms - observed_at_ms > LIVE_MARKET_STALE_AFTER_MS:
+        return _unavailable_market()
+    price = _positive_decimal(fact.get("price_usd"))
+    market_cap = _positive_decimal(fact.get("market_cap_usd"))
+    signal = _positive_decimal(signal_price_usd)
+    change: float | None = None
+    if signal is not None and price is not None and observed_at_ms >= triggered_at_ms:
+        candidate_change = float((price - signal) / signal)
+        change = candidate_change if math.isfinite(candidate_change) else None
+    return {
+        "status": "confirmed" if change is not None else "unavailable",
+        "price_change_since_signal": change,
+        "price_usd": float(price) if price is not None else None,
+        "market_cap_usd": float(market_cap) if market_cap is not None else None,
+        "observed_at_ms": observed_at_ms if price is not None or market_cap is not None else None,
+    }
+
+
+def _unavailable_market() -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "price_change_since_signal": None,
+        "price_usd": None,
+        "market_cap_usd": None,
+        "observed_at_ms": None,
+    }
+
+
+def _canonical_presentation_fact(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "target_type": _text(raw.get("target_type")),
+        "target_id": _text(raw.get("target_id")),
+        "name": _text(raw.get("name")),
+        "logo_url": _local_logo_url(raw.get("logo_url")),
+        "price_usd": _decimal_text(raw.get("price_usd")),
+        "market_cap_usd": _decimal_text(raw.get("market_cap_usd")),
+        "observed_at_ms": _optional_nonnegative_int(raw.get("observed_at_ms")),
+    }
+
+
+def _presentation_fact_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(row.get("target_type") or ""),
+        str(row.get("target_id") or ""),
+        -int(row.get("observed_at_ms") or 0),
+        _canonical_json_bytes(row),
+    )
+
+
+def _local_logo_url(value: Any) -> str | None:
+    text = _text(value)
+    return text if text is not None and _LOCAL_TOKEN_IMAGE_RE.fullmatch(text) else None
 
 
 def _first_event_by_author(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -482,5 +598,6 @@ __all__ = [
     "TokenRadarBudgetExceeded",
     "TokenRadarInputOverflow",
     "TokenRadarOutputOverflow",
+    "enrich_token_radar",
     "reduce_token_radar",
 ]

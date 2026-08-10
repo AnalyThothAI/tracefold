@@ -15,6 +15,9 @@ def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> 
     confirmed_without_change["items"][0]["market"] = {
         "status": "confirmed",
         "price_change_since_signal": None,
+        "price_usd": 1.0,
+        "market_cap_usd": 1_000_000.0,
+        "observed_at_ms": 1,
     }
     with pytest.raises(ValidationError, match="token_radar_confirmed_market_change_required"):
         TokenRadarData.model_validate(confirmed_without_change)
@@ -23,6 +26,9 @@ def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> 
     unavailable_with_change["items"][0]["market"] = {
         "status": "unavailable",
         "price_change_since_signal": 0.1,
+        "price_usd": 1.0,
+        "market_cap_usd": 1_000_000.0,
+        "observed_at_ms": 1,
     }
     with pytest.raises(ValidationError, match="token_radar_unavailable_market_change_forbidden"):
         TokenRadarData.model_validate(unavailable_with_change)
@@ -31,6 +37,9 @@ def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> 
     nonfinite["items"][0]["market"] = {
         "status": "confirmed",
         "price_change_since_signal": math.inf,
+        "price_usd": 1.0,
+        "market_cap_usd": 1_000_000.0,
+        "observed_at_ms": 1,
     }
     with pytest.raises(ValidationError, match="token_radar_confirmed_market_change_required"):
         TokenRadarData.model_validate(nonfinite)
@@ -45,9 +54,52 @@ def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> 
         TokenRadarData.model_validate(unsupported_counter)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("price_usd", 0),
+        ("price_usd", math.inf),
+        ("market_cap_usd", -1),
+        ("market_cap_usd", math.nan),
+    ],
+)
+def test_token_radar_schema_rejects_nonpositive_or_nonfinite_current_metrics(
+    field: str,
+    value: float,
+) -> None:
+    packet = _packet()
+    packet["items"][0]["market"][field] = value
+
+    with pytest.raises(ValidationError):
+        TokenRadarData.model_validate(packet)
+
+
+def test_token_radar_schema_rejects_remote_logo_and_market_timestamp_without_metrics() -> None:
+    remote_logo = _packet()
+    remote_logo["items"][0]["target"]["logo_url"] = "https://remote.example/token.png"
+    with pytest.raises(ValidationError):
+        TokenRadarData.model_validate(remote_logo)
+
+    timestamp_without_metrics = _packet()
+    timestamp_without_metrics["items"][0]["market"] = {
+        "status": "unavailable",
+        "price_change_since_signal": None,
+        "price_usd": None,
+        "market_cap_usd": None,
+        "observed_at_ms": 1,
+    }
+    with pytest.raises(ValidationError, match="token_radar_market_observation_without_metrics"):
+        TokenRadarData.model_validate(timestamp_without_metrics)
+
+    missing_required_market_field = _packet()
+    del missing_required_market_field["items"][0]["market"]["price_usd"]
+    with pytest.raises(ValidationError):
+        TokenRadarData.model_validate(missing_required_market_field)
+
+
 def _packet() -> dict[str, object]:
     return {
-        "schema_version": "token_radar_snapshot_v1",
+        "schema_version": "token_radar_snapshot_v2",
         "evidence_as_of_ms": 1,
         "eligible_total": 1,
         "items": [
@@ -56,6 +108,8 @@ def _packet() -> dict[str, object]:
                     "target_type": "Asset",
                     "target_id": "asset:test",
                     "symbol": "TEST",
+                    "name": "Test Token",
+                    "logo_url": f"/api/token-images/{'a' * 64}",
                     "chain": "eip155:1",
                     "exchange": None,
                     "address": "0xtest",
@@ -76,6 +130,9 @@ def _packet() -> dict[str, object]:
                 "market": {
                     "status": "unavailable",
                     "price_change_since_signal": None,
+                    "price_usd": 1.0,
+                    "market_cap_usd": 1_000_000.0,
+                    "observed_at_ms": 1,
                 },
                 "counter_evidence": "market_confirmation_unavailable",
             }

@@ -1505,9 +1505,24 @@ class TokenRadarTargetData(ExactApiSchema):
     target_type: Literal["Asset", "CexToken"]
     target_id: str
     symbol: str
+    name: str | None
+    logo_url: str | None
     chain: str | None
     exchange: str | None
     address: str | None
+
+    @model_validator(mode="after")
+    def validate_logo_url(self) -> TokenRadarTargetData:
+        prefix = "/api/token-images/"
+        if self.logo_url is not None:
+            image_id = self.logo_url.removeprefix(prefix)
+            if (
+                not self.logo_url.startswith(prefix)
+                or len(image_id) != 64
+                or any(char not in "0123456789abcdef" for char in image_id)
+            ):
+                raise ValueError("token_radar_logo_url_invalid")
+        return self
 
 
 class TokenRadarWhyNowData(ExactApiSchema):
@@ -1532,11 +1547,26 @@ class TokenRadarEvidenceData(ExactApiSchema):
 class TokenRadarMarketData(ExactApiSchema):
     status: Literal["confirmed", "unavailable"]
     price_change_since_signal: float | None
+    price_usd: float | None = Field(gt=0)
+    market_cap_usd: float | None = Field(gt=0)
+    observed_at_ms: int | None = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_market_state(self) -> TokenRadarMarketData:
+        metrics = (self.price_usd, self.market_cap_usd)
+        if any(value is not None and not math.isfinite(value) for value in metrics):
+            raise ValueError("token_radar_market_metric_invalid")
+        if any(value is not None for value in metrics) and self.observed_at_ms is None:
+            raise ValueError("token_radar_market_observation_required")
+        if all(value is None for value in metrics) and self.observed_at_ms is not None:
+            raise ValueError("token_radar_market_observation_without_metrics")
         if self.status == "confirmed":
-            if self.price_change_since_signal is None or not math.isfinite(self.price_change_since_signal):
+            if (
+                self.price_change_since_signal is None
+                or not math.isfinite(self.price_change_since_signal)
+                or self.price_usd is None
+                or self.observed_at_ms is None
+            ):
                 raise ValueError("token_radar_confirmed_market_change_required")
         elif self.price_change_since_signal is not None:
             raise ValueError("token_radar_unavailable_market_change_forbidden")
@@ -1554,81 +1584,21 @@ class TokenRadarItemData(ExactApiSchema):
 
 
 class TokenRadarData(ExactApiSchema):
-    schema_version: Literal["token_radar_snapshot_v1"]
+    schema_version: Literal["token_radar_snapshot_v2"]
     evidence_as_of_ms: int = Field(ge=0)
     eligible_total: int = Field(ge=0)
-    items: list[TokenRadarItemData] = Field(max_length=8)
+    items: list[TokenRadarItemData] = Field(max_length=50)
 
     @model_validator(mode="after")
     def validate_selection_count(self) -> TokenRadarData:
         if self.eligible_total < len(self.items):
             raise ValueError("token_radar_eligible_total_invalid")
+        if any(
+            item.market.observed_at_ms is not None and item.market.observed_at_ms > self.evidence_as_of_ms
+            for item in self.items
+        ):
+            raise ValueError("token_radar_market_observation_after_evidence")
         return self
-
-
-class StocksRadarQueryData(ExactApiSchema):
-    window: str
-    limit: int
-    window_start_ms: int
-    window_end_ms: int
-
-
-class StocksRadarTargetData(ExactApiSchema):
-    target_type: Literal["MarketInstrument"]
-    target_id: str | None
-    symbol: str | None
-    market: Literal["us_equity"]
-    exchange: str | None
-    instrument_type: str | None
-    name: str | None
-
-
-class StocksRadarAttentionData(ExactApiSchema):
-    mentions: int
-    unique_authors: int
-    latest_seen_ms: int | None
-
-
-class StocksRadarLatestEventData(ExactApiSchema):
-    event_id: str | None
-    author_handle: str | None
-    text: str | None
-    received_at_ms: int | None
-
-
-class StocksRadarQuoteData(ExactApiSchema):
-    status: Literal["ready", "unavailable"]
-    price: int | float | None
-    reference_close_price: int | float | None
-    change_pct: int | float | None
-    asof: str | None
-    provider: str | None
-    provider_symbol: str | None
-    latency_class: str | None
-    freshness_class: str | None
-    error: str | None
-
-
-class StocksRadarRowData(ExactApiSchema):
-    target: StocksRadarTargetData
-    attention: StocksRadarAttentionData
-    latest_event: StocksRadarLatestEventData
-    quote: StocksRadarQuoteData
-    source_event_ids: list[str]
-    row_health: list[str]
-
-
-class StocksRadarHealthData(ExactApiSchema):
-    returned_count: int
-    quote_ready_count: int
-    quote_unavailable_count: int
-
-
-class StocksRadarData(ExactApiSchema):
-    window: str
-    query: StocksRadarQueryData
-    rows: list[StocksRadarRowData]
-    health: StocksRadarHealthData
 
 
 class LiveMarketData(ExactApiSchema):

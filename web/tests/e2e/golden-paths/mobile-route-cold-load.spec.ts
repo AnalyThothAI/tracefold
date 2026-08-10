@@ -42,24 +42,6 @@ const routeCases: RouteCase[] = [
     lastMeaningfulSelector: "[aria-labelledby='token-case-timeline'] article:last-of-type",
   },
   {
-    name: "stocks",
-    path: "/stocks",
-    primary: async (page) => {
-      await expect(page.getByRole("region", { name: "US stocks radar" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "US Stocks" })).toBeVisible();
-    },
-    specific: async (page) => {
-      const stock = page.getByRole("article", { name: "stock AAPL" });
-      await expect(stock).toBeVisible();
-      await expect(stock).toContainText("$AAPL");
-      await expect(stock).toContainText("AAPL");
-      await expect(stock).toContainText("yahoo");
-      await expect(page.locator("[aria-label='stocks radar health']")).toContainText("quotes");
-    },
-    nestedOverflowSelectors: [".stocks-radar-panel", ".stocks-radar-table", ".stock-radar-row"],
-    lastMeaningfulSelector: ".stock-radar-row",
-  },
-  {
     name: "news queue",
     path: "/news",
     primary: async (page) => {

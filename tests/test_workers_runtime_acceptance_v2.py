@@ -626,6 +626,7 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
                 "status": 200,
                 "latency_ms": 10.0,
                 "bytes": 1024,
+                "data_bytes": 900,
                 "items": 1,
                 "etag_sha256": "b" * 64,
                 "data_sha256": "c" * 64,

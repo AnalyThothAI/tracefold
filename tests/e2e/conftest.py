@@ -1,7 +1,8 @@
 """End-to-end test fixtures.
 
-Three session-scope fixtures:
+Four session-scope fixtures:
 - e2e_postgres: testcontainers Postgres + alembic upgrade head
+- e2e_app_home: isolated filesystem root for served test assets
 - e2e_uvicorn: subprocess running tests/e2e/_uvicorn_entry.py against e2e_postgres
 - e2e_writer: callable that runs tests/e2e/_writer_entry.py to inject a synthetic event
 
@@ -66,6 +67,11 @@ def _docker_available() -> bool:
 @pytest.fixture(scope="session")
 def e2e_ws_token() -> str:
     return os.environ.get("TRACEFOLD_E2E_WS_TOKEN", E2E_WS_TOKEN)
+
+
+@pytest.fixture(scope="session")
+def e2e_app_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("e2e-app-home")
 
 
 @pytest.fixture(scope="session")
@@ -170,6 +176,7 @@ def e2e_uvicorn(
     e2e_frontend_dist: Path,
     e2e_postgres: str,
     e2e_ws_token: str,
+    e2e_app_home: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[str]:
     """Spawn uvicorn in a subprocess; yield base URL like http://127.0.0.1:PORT.
@@ -183,6 +190,7 @@ def e2e_uvicorn(
         "TRACEFOLD_POSTGRES_DSN": e2e_postgres,
         "TRACEFOLD_E2E_WS_TOKEN": e2e_ws_token,
         "TRACEFOLD_E2E_FIXED_NOW_MS": E2E_MACRO_NOW_MS,
+        "TRACEFOLD_E2E_APP_HOME": str(e2e_app_home),
         "TRACEFOLD_FRONTEND_DIST": str(e2e_frontend_dist),
         "PYTHONPATH": str(ROOT / "src"),
     }
@@ -254,6 +262,7 @@ def e2e_writer(e2e_postgres: str, e2e_ws_token: str) -> Callable[[str, str], Non
 def e2e_token_radar_browser_release(
     e2e_postgres: str,
     e2e_uvicorn: str,
+    e2e_app_home: Path,
     tmp_path: Path,
 ) -> Callable[[], None]:
     """Run non-mock Radar browser evidence against this test's isolated stack."""
@@ -264,6 +273,7 @@ def e2e_token_radar_browser_release(
             postgres_dsn=e2e_postgres,
             base_url=e2e_uvicorn,
             coordination_dir=tmp_path,
+            app_home=e2e_app_home,
         )
 
     return _run

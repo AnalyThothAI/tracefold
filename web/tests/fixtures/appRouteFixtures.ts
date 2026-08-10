@@ -41,7 +41,7 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
 
 export function tokenRadarFixture(overrides: Partial<TokenRadarSnapshot> = {}): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v1",
+    schema_version: "token_radar_snapshot_v2",
     evidence_as_of_ms: NOW,
     eligible_total: 1,
     items: [tokenRadarItemFixture()],
@@ -55,6 +55,8 @@ export function tokenRadarItemFixture() {
       target_type: "Asset" as const,
       target_id: RADAR_TARGET_ID,
       symbol: "UPEG",
+      name: "Unpegged Token",
+      logo_url: `/api/token-images/${"a".repeat(64)}`,
       chain: "eip155:1",
       exchange: null,
       address: RADAR_ADDRESS,
@@ -68,7 +70,13 @@ export function tokenRadarItemFixture() {
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.08,
     },
-    market: { status: "confirmed" as const, price_change_since_signal: 0.12 },
+    market: {
+      status: "confirmed" as const,
+      price_usd: 0.042,
+      price_change_since_signal: 0.12,
+      market_cap_usd: 42_000_000,
+      observed_at_ms: NOW - 30_000,
+    },
     counter_evidence: null,
   };
 }

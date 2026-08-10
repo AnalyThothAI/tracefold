@@ -4,20 +4,13 @@ import asyncio
 
 import pytest
 
-from tracefold.market import StocksRadarCurrentProjection, TokenRadarCurrentProjection
+from tracefold.market import TokenRadarCurrentProjection
 from tracefold.market.radar.reducer import reduce_token_radar
 from tracefold.platform.resource import ResourceOperationOverrun
 
 
-@pytest.mark.parametrize(
-    "projection_type",
-    [
-        TokenRadarCurrentProjection,
-        StocksRadarCurrentProjection,
-    ],
-)
-def test_resource_operation_overrun_is_fatal(projection_type) -> None:
-    projection = projection_type(
+def test_resource_operation_overrun_is_fatal() -> None:
+    projection = TokenRadarCurrentProjection(
         db=_OverrunningDatabase(),
         cpu=object(),
         clock=lambda: 1_800_000_000_000,
@@ -66,6 +59,8 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
             timeouts[operation] = operation_timeout_seconds
             if operation == "token_radar_current_load":
                 return []
+            if operation == "token_radar_current_present":
+                return []
             return {"status": "unchanged"}
 
     class _Cpu:
@@ -88,10 +83,85 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
 
     asyncio.run(projection.sample())
 
-    assert 2.9 < timeouts["token_radar_current_load"] <= 3.0
+    assert 2.2 < timeouts["token_radar_current_load"] <= 2.25
     assert 1.4 < timeouts["token_radar_current_reduce"] <= 1.5
+    assert 0.7 < timeouts["token_radar_current_present"] <= 0.75
     assert 0.4 < timeouts["token_radar_current_publish"] <= 0.5
     assert 4.9 < sum(timeouts.values()) <= 5.0
+
+
+def test_token_radar_enriches_selected_targets_before_publishing() -> None:
+    now_ms = 1_800_000_000_000
+    published = []
+
+    class _Database:
+        async def run_business(
+            self,
+            operation: str,
+            _function,
+            *args,
+            operation_timeout_seconds: float,
+            **_kwargs,
+        ):
+            del operation_timeout_seconds
+            if operation == "token_radar_current_load":
+                return [
+                    {
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "symbol": "PEPE",
+                        "chain": "solana",
+                        "exchange": None,
+                        "address": "mint-1",
+                        "resolution_status": "EXACT",
+                        "event_id": f"event-{index}",
+                        "received_at_ms": now_ms - minutes_ago * 60_000,
+                        "author_handle": f"author-{index}",
+                        "text": f"independent-{index}",
+                        "signal_price_usd": "10" if index == 2 else None,
+                    }
+                    for index, minutes_ago in enumerate((30, 20, 10))
+                ]
+            if operation == "token_radar_current_present":
+                return [
+                    {
+                        "target_type": "Asset",
+                        "target_id": "asset-1",
+                        "name": "Pepe",
+                        "logo_url": f"/api/token-images/{'a' * 64}",
+                        "price_usd": "12",
+                        "market_cap_usd": "12000000",
+                        "observed_at_ms": now_ms - 60_000,
+                    }
+                ]
+            if operation == "token_radar_current_publish":
+                published.append(args[0])
+                return {"status": "published"}
+            raise AssertionError(operation)
+
+    class _Cpu:
+        async def run(self, _operation, function, payload, *, service_timeout_seconds: float):
+            del service_timeout_seconds
+            return function(payload)
+
+    projection = TokenRadarCurrentProjection(
+        db=_Database(),
+        cpu=_Cpu(),
+        clock=lambda: now_ms,
+    )
+
+    asyncio.run(projection.sample())
+
+    assert len(published) == 1
+    item = published[0].snapshot["items"][0]
+    assert item["target"]["name"] == "Pepe"
+    assert item["market"] == {
+        "status": "confirmed",
+        "price_change_since_signal": pytest.approx(0.2),
+        "price_usd": 12.0,
+        "market_cap_usd": 12_000_000.0,
+        "observed_at_ms": now_ms - 60_000,
+    }
 
 
 class _OverrunningDatabase:

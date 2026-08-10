@@ -79,9 +79,9 @@ describe("Tracefold design-system hard cut", () => {
     expect([...css.matchAll(/#[0-9a-fA-F]{6}/g)]).toEqual([]);
   });
 
-  it("exposes four primary research destinations with no duplicate Macro tree", () => {
+  it("exposes three primary research destinations with no duplicate Macro tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(items.map((item) => item.to)).toEqual(["/", "/stocks", "/news", "/macro"]);
+    expect(items.map((item) => item.to)).toEqual(["/", "/news", "/macro"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
@@ -104,11 +104,7 @@ describe("Tracefold design-system hard cut", () => {
     const owners = {
       case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
       decision: ["features/macro/ui/MacroDecisionPage.tsx"],
-      scan: [
-        "features/live/ui/LivePage.tsx",
-        "features/stocks/ui/StocksRadarPage.tsx",
-        "features/news/NewsPage.tsx",
-      ],
+      scan: ["features/live/ui/LivePage.tsx", "features/news/NewsPage.tsx"],
     } as const;
 
     for (const [archetype, paths] of Object.entries(owners)) {

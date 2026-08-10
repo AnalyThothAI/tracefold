@@ -38,6 +38,28 @@ class TokenRadarCurrentRepository:
             ).fetchall()
         ]
 
+    def load_presentation_facts(
+        self,
+        targets: list[tuple[str, str]],
+    ) -> list[dict[str, Any]]:
+        requested = list(
+            dict.fromkeys(
+                (str(target_type), str(target_id))
+                for target_type, target_id in targets
+                if str(target_type) in {"Asset", "CexToken"} and str(target_id)
+            )
+        )
+        if not requested:
+            return []
+        rows = self.conn.execute(
+            _TOKEN_RADAR_PRESENTATION_SQL,
+            (
+                [target_type for target_type, _target_id in requested],
+                [target_id for _target_type, target_id in requested],
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def current(self) -> dict[str, Any]:
         row = self.conn.execute(
             """
@@ -238,9 +260,7 @@ hydrated AS (
     resolved.received_at_ms,
     resolved.author_handle,
     resolved.text,
-    signal_tick.price_usd AS signal_price_usd,
-    latest_tick.price_usd AS latest_price_usd,
-    latest_tick.tick_observed_at_ms AS latest_price_observed_at_ms
+    signal_tick.price_usd AS signal_price_usd
   FROM resolved
   LEFT JOIN registry_assets
     ON resolved.target_type = 'Asset'
@@ -257,10 +277,13 @@ hydrated AS (
      WHERE resolved.target_type = 'CexToken'
        AND price_feed.subject_type = 'CexToken'
        AND price_feed.subject_id = resolved.target_id
+       AND price_feed.provider = 'binance'
+       AND price_feed.feed_type = 'cex_swap'
+       AND price_feed.quote_symbol = 'USDT'
        AND price_feed.status = 'canonical'
      ORDER BY
-       (price_feed.provider = 'binance') DESC,
        price_feed.updated_at_ms DESC,
+       price_feed.native_market_id ASC,
        price_feed.pricefeed_id ASC
      LIMIT 1
   ) preferred_price_feed ON true
@@ -278,14 +301,74 @@ hydrated AS (
    AND signal_tick.tick_id = event_anchor.tick_id
    AND signal_tick.target_type = event_anchor.target_type
    AND signal_tick.target_id = event_anchor.target_id
-  LEFT JOIN market_tick_current latest_tick
-    ON latest_tick.target_type = event_anchor.target_type
-   AND latest_tick.target_id = event_anchor.target_id
 )
 SELECT *
   FROM hydrated
  ORDER BY received_at_ms ASC, event_id ASC, target_type ASC, target_id ASC
  LIMIT %s
+"""
+
+
+_TOKEN_RADAR_PRESENTATION_SQL = r"""
+WITH requested AS (
+  SELECT *
+    FROM unnest(%s::text[], %s::text[]) WITH ORDINALITY
+      AS requested(target_type, target_id, ordinality)
+),
+market_keys AS (
+  SELECT
+    requested.target_type,
+    requested.target_id,
+    requested.ordinality,
+    CASE
+      WHEN requested.target_type = 'Asset' AND registry_assets.asset_id IS NOT NULL
+        THEN 'chain_token'
+      WHEN requested.target_type = 'CexToken' AND preferred_price_feed.pricefeed_id IS NOT NULL
+        THEN 'cex_symbol'
+    END AS market_target_type,
+    CASE
+      WHEN requested.target_type = 'Asset'
+        THEN registry_assets.chain_id || ':' || registry_assets.address
+      WHEN requested.target_type = 'CexToken'
+        THEN preferred_price_feed.provider || ':' || preferred_price_feed.native_market_id
+    END AS market_target_id
+  FROM requested
+  LEFT JOIN registry_assets
+    ON requested.target_type = 'Asset'
+   AND registry_assets.asset_id = requested.target_id
+  LEFT JOIN LATERAL (
+    SELECT price_feed.*
+      FROM price_feeds price_feed
+     WHERE requested.target_type = 'CexToken'
+       AND price_feed.subject_type = 'CexToken'
+       AND price_feed.subject_id = requested.target_id
+       AND price_feed.provider = 'binance'
+       AND price_feed.feed_type = 'cex_swap'
+       AND price_feed.quote_symbol = 'USDT'
+       AND price_feed.status = 'canonical'
+     ORDER BY
+       price_feed.updated_at_ms DESC,
+       price_feed.native_market_id ASC,
+       price_feed.pricefeed_id ASC
+     LIMIT 1
+  ) preferred_price_feed ON true
+)
+SELECT
+  market_keys.target_type,
+  market_keys.target_id,
+  token_profile_current.name,
+  token_profile_current.logo_url,
+  market_tick_current.price_usd,
+  market_tick_current.market_cap_usd,
+  market_tick_current.tick_observed_at_ms AS observed_at_ms
+FROM market_keys
+LEFT JOIN token_profile_current
+  ON token_profile_current.target_type = market_keys.target_type
+ AND token_profile_current.target_id = market_keys.target_id
+LEFT JOIN market_tick_current
+  ON market_tick_current.target_type = market_keys.market_target_type
+ AND market_tick_current.target_id = market_keys.market_target_id
+ORDER BY market_keys.ordinality
 """
 
 

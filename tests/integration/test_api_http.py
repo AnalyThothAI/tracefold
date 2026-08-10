@@ -28,12 +28,8 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
-from tracefold.market.radar.reducer import reduce_token_radar
+from tracefold.market.radar.reducer import enrich_token_radar, reduce_token_radar
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
-from tracefold.market.radar.stocks_current import (
-    StocksRadarCurrentRepository,
-    reduce_stocks_radar,
-)
 from tracefold.news import (
     NewsBriefSource,
     NewsBriefStoryLine,
@@ -429,6 +425,16 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
         repository = TokenRadarCurrentRepository(conn)
         reduced = reduce_token_radar(
             repository.load_material_inputs(now_ms=base_now_ms),
+            now_ms=base_now_ms,
+        )
+        reduced = enrich_token_radar(
+            reduced,
+            repository.load_presentation_facts(
+                [
+                    (str(item["target"]["target_type"]), str(item["target"]["target_id"]))
+                    for item in reduced.snapshot["items"]
+                ]
+            ),
             now_ms=base_now_ms,
         )
         with conn.transaction():
@@ -1831,7 +1837,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
     assert radar.status_code == 200
     assert radar.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v1",
+        "schema_version": "token_radar_snapshot_v2",
         "evidence_as_of_ms": now_ms - 1_000,
         "eligible_total": 0,
         "items": [],
@@ -1871,7 +1877,7 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["schema_version"] == "token_radar_snapshot_v1"
+    assert data["schema_version"] == "token_radar_snapshot_v2"
     assert data["eligible_total"] == 0
     assert data["items"] == []
     assert data["evidence_as_of_ms"] == now_ms - 1_000
@@ -1938,96 +1944,6 @@ def test_live_market_reads_durable_current_without_gateway(tmp_path):
     assert payload["provider"] == "gmgn_dex_quote"
 
 
-def test_stocks_radar_returns_us_equity_market_instruments_with_unavailable_quote_state(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.registry.upsert_us_equity_symbol(
-                symbol="AAPL",
-                exchange="NASDAQ",
-                security_name="Apple Inc. Common Stock",
-                instrument_type="equity",
-                source="test",
-                source_updated_at_ms=now_ms,
-                raw_payload={"Symbol": "AAPL"},
-                observed_at_ms=now_ms,
-            )
-            repos.registry.upsert_us_equity_symbol(
-                symbol="RKLB",
-                exchange="NASDAQ",
-                security_name="Rocket Lab USA, Inc. Common Stock",
-                instrument_type="equity",
-                source="test",
-                source_updated_at_ms=now_ms,
-                raw_payload={"Symbol": "RKLB"},
-                observed_at_ms=now_ms,
-            )
-
-        ingest_event(
-            make_event("event-aapl-1", handle="toly", text="$AAPL breakout", received_at_ms=now_ms - 10_000),
-        )
-        ingest_event(
-            make_event("event-aapl-2", handle="elonmusk", text="$AAPL still bid", received_at_ms=now_ms - 5_000),
-        )
-        ingest_event(
-            make_event("event-rklb-1", handle="toly", text="$RKLB launch cadence", received_at_ms=now_ms - 3_000),
-        )
-        ingest_event(
-            make_token_event(
-                "event-pepe-stock-radar-exclusion",
-                symbol="PEPE",
-                address=PEPE,
-                text=f"$PEPE {PEPE}",
-                received_at_ms=now_ms - 1_000,
-            ),
-        )
-
-        conn = connect_postgres_test(read_only=False)
-        try:
-            repository = StocksRadarCurrentRepository(conn)
-            with conn.transaction():
-                reduced = reduce_stocks_radar(
-                    repository.load_material_inputs(now_ms=now_ms),
-                    now_ms=now_ms,
-                )
-                repository.publish(reduced, now_ms=now_ms)
-        finally:
-            conn.close()
-
-        response = client.get(
-            "/api/stocks-radar",
-            params={"window": "1h", "limit": 10},
-            headers={"Authorization": "Bearer secret"},
-        )
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    rows = data["rows"]
-    symbols = {row["target"]["symbol"] for row in rows}
-    assert symbols == {"AAPL", "RKLB"}
-    assert all(row["target"]["target_type"] == "MarketInstrument" for row in rows)
-    assert all(row["target"]["target_id"].startswith("market_instrument:us_equity:") for row in rows)
-    assert "PEPE" not in symbols
-    assert data["health"] == {
-        "returned_count": 2,
-        "quote_ready_count": 0,
-        "quote_unavailable_count": 2,
-    }
-    by_symbol = {row["target"]["symbol"]: row for row in rows}
-    assert by_symbol["AAPL"]["attention"]["mentions"] == 2
-    assert by_symbol["AAPL"]["attention"]["unique_authors"] == 2
-    assert by_symbol["AAPL"]["quote"]["status"] == "unavailable"
-    assert by_symbol["AAPL"]["quote"]["error"] == "quote_read_model_unavailable"
-    assert by_symbol["AAPL"]["quote"]["provider"] is None
-    assert by_symbol["AAPL"]["row_health"] == ["quote_unavailable"]
-    assert by_symbol["RKLB"]["quote"]["status"] == "unavailable"
-    assert by_symbol["RKLB"]["quote"]["error"] == "quote_read_model_unavailable"
-    assert by_symbol["RKLB"]["quote"]["provider_symbol"] == "RKLB"
-    assert by_symbol["RKLB"]["row_health"] == ["quote_unavailable"]
-
-
 def test_api_notification_routes_are_not_registered(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
 
@@ -2041,6 +1957,18 @@ def test_api_notification_routes_are_not_registered(tmp_path):
         ]
 
     assert [response.status_code for response in responses] == [404, 404, 404, 404]
+
+
+def test_api_stocks_radar_is_not_registered(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/stocks-radar",
+            headers={"Authorization": "Bearer secret"},
+        )
+
+    assert response.status_code == 404
 
 
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
@@ -2095,8 +2023,6 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
                 "author_handle": f"author-{index}",
                 "text": f"independent text {index}",
                 "signal_price_usd": None,
-                "latest_price_usd": None,
-                "latest_price_observed_at_ms": None,
             }
             for index in range(3)
         ],
@@ -2150,15 +2076,29 @@ def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
                 "author_handle": f"author-{target_index}-{event_index}",
                 "text": f"independent evidence {target_index} {event_index}",
                 "signal_price_usd": None,
-                "latest_price_usd": None,
-                "latest_price_observed_at_ms": None,
             }
-            for target_index in range(8)
+            for target_index in range(50)
             for event_index in range(3)
         ],
         now_ms=now_ms,
     )
-    assert len(reduced.snapshot["items"]) == 8
+    reduced = enrich_token_radar(
+        reduced,
+        [
+            {
+                "target_type": "Asset",
+                "target_id": f"asset:perf:{target_index}",
+                "name": f"Performance Token {target_index}",
+                "logo_url": f"/api/token-images/{target_index:064x}",
+                "price_usd": "1.25",
+                "market_cap_usd": "1250000",
+                "observed_at_ms": now_ms,
+            }
+            for target_index in range(50)
+        ],
+        now_ms=now_ms,
+    )
+    assert len(reduced.snapshot["items"]) == 50
     with write_repositories() as repos, repos.transaction():
         TokenRadarCurrentRepository(repos.conn).publish(reduced, evaluation_at_ms=now_ms)
 

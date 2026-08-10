@@ -183,7 +183,7 @@ def test_startup_reconcile_publishes_token_radar_before_competing_business_work(
     calls: list[tuple[str, int | None]] = []
 
     class _Radar:
-        async def initialize(self) -> None:
+        async def sample(self) -> None:
             calls.append(("radar", None))
 
     class _News:

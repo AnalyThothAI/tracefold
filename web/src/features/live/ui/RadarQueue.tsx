@@ -1,19 +1,24 @@
+import {
+  formatSignedPercent,
+  formatTokenPriceUsd,
+  formatUsdCompact,
+  shortAddress,
+} from "@lib/format";
 import { tokenTargetPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { Button } from "@shared/ui/button";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { TokenRadarSnapshot, TokenRadarSnapshotItem } from "../model/tokenRadarSnapshot";
 
 import "./live.css";
 
-const MARKET_PERCENTAGE_FORMATTER = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });
 const RADAR_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   dateStyle: "short",
   timeStyle: "medium",
   hour12: false,
 });
-const RADAR_SLOT_INDEXES = Array.from({ length: 8 }, (_, index) => index);
 
 type RadarQueueProps = {
   bootstrapError: boolean;
@@ -105,17 +110,12 @@ export function RadarQueue({
       ) : null}
       <div className="live-radar-content">
         <ol className="live-radar-items" aria-label="Radar priority queue">
-          <li
-            aria-hidden={items.length > 0 ? true : undefined}
-            className={`live-radar-empty${items.length > 0 ? " live-radar-empty--inactive" : ""}`}
-            inert={items.length > 0 ? true : undefined}
-            role="presentation"
-            style={{ visibility: items.length > 0 ? "hidden" : "visible" }}
-          >
-            <PageState.Empty title="No eligible cases" />
-          </li>
-          {RADAR_SLOT_INDEXES.map((index) => (
-            <RadarQueueItem item={items[index] ?? null} key={index} />
+          <RadarQueueItem item={items[0] ?? null} key="radar-first-slot" />
+          {items.slice(1).map((item) => (
+            <RadarQueueItem
+              item={item}
+              key={`${item.target.target_type}:${item.target.target_id}`}
+            />
           ))}
         </ol>
       </div>
@@ -127,7 +127,9 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
   return (
     <header className="live-radar-header">
       <h1>Radar</h1>
-      {snapshot ? <span>{snapshot.eligible_total} eligible</span> : null}
+      {snapshot ? (
+        <span>{`Showing ${snapshot.items.length} / ${snapshot.eligible_total} eligible`}</span>
+      ) : null}
       {snapshot ? (
         <time
           dateTime={
@@ -146,51 +148,102 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
 }
 
 function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
-  const primaryText = item ? formatPrimaryLine(item) : "";
-  const evidenceText = item ? formatEvidenceLine(item) : "";
-  const casePath = item
-    ? tokenTargetPath({
-        targetType: item.target.target_type,
-        targetId: item.target.target_id,
-        window: "1h",
-        focus: "trigger",
-        triggerEventId: item.trigger_event_id,
-      })
-    : ".";
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null);
+  const empty = item === null;
+  const symbol = item?.target.symbol ?? "";
+  const displayName = item?.target.name ?? symbol;
+  const logoUrl = item?.target.logo_url ?? null;
+  const identity = item === null ? "" : formatIdentity(item);
+  const change = item?.market.price_change_since_signal ?? null;
+  const casePath =
+    item === null
+      ? "/"
+      : tokenTargetPath({
+          targetType: item.target.target_type,
+          targetId: item.target.target_id,
+          window: "1h",
+          focus: "trigger",
+          triggerEventId: item.trigger_event_id,
+        });
   return (
-    <li
-      aria-hidden={item ? undefined : true}
-      className={`live-radar-item${item ? "" : " live-radar-item--empty"}`}
-      inert={item ? undefined : true}
-      style={{ minHeight: 75, visibility: item ? "visible" : "hidden" }}
-    >
-      <div className="live-radar-item-primary">
-        <span aria-label={primaryText || undefined} title={primaryText || undefined}>
-          {primaryText}
+    <li className="live-radar-item">
+      <div className="live-radar-identity">
+        <span className="live-radar-icon" style={empty ? { visibility: "hidden" } : undefined}>
+          <span className="live-radar-icon-fallback" aria-hidden>
+            {symbol.slice(0, 1).toUpperCase() || "\u00a0"}
+          </span>
+          <img
+            alt={empty ? "" : `${displayName} icon`}
+            decoding="async"
+            hidden={empty || logoUrl === null || failedLogoUrl === logoUrl}
+            loading="lazy"
+            onError={() => {
+              setFailedLogoUrl(logoUrl);
+            }}
+            onLoad={() => {
+              setFailedLogoUrl(null);
+            }}
+            src={logoUrl ?? undefined}
+          />
         </span>
-        <Link tabIndex={item ? undefined : -1} to={casePath}>
-          Open Token Case
-        </Link>
+        <span className="live-radar-token-copy">
+          <strong>{empty ? "No eligible cases" : `$${symbol}`}</strong>
+          <span title={empty ? undefined : `${displayName} · ${identity}`}>
+            {empty ? "\u00a0" : displayName}
+          </span>
+          <small>{identity || "\u00a0"}</small>
+        </span>
       </div>
-      <div className="live-radar-item-evidence">{evidenceText}</div>
+      <div
+        className="live-radar-market"
+        aria-hidden={empty || undefined}
+        aria-label={empty ? undefined : `${symbol} market facts`}
+        style={empty ? { visibility: "hidden" } : undefined}
+      >
+        <span>{empty ? "\u00a0" : `Price ${formatPrice(item.market.price_usd)}`}</span>
+        <span
+          className={
+            empty || change === null
+              ? undefined
+              : change > 0
+                ? "is-positive"
+                : change < 0
+                  ? "is-negative"
+                  : undefined
+          }
+        >
+          {empty ? "\u00a0" : `${formatChange(change)} since signal`}
+        </span>
+        <span>{empty ? "\u00a0" : `MCap ${formatMarketCap(item.market.market_cap_usd)}`}</span>
+      </div>
+      <p
+        className="live-radar-item-evidence"
+        aria-hidden={empty || undefined}
+        style={empty ? { visibility: "hidden" } : undefined}
+      >
+        {empty ? "\u00a0" : formatEvidenceLine(item)}
+      </p>
+      <Link
+        aria-hidden={empty || undefined}
+        style={empty ? { visibility: "hidden" } : undefined}
+        tabIndex={empty ? -1 : undefined}
+        to={casePath}
+      >
+        Open Token Case
+      </Link>
     </li>
   );
 }
 
-function formatPrimaryLine(item: TokenRadarSnapshotItem): string {
+function formatIdentity(item: TokenRadarSnapshotItem): string {
   const exchange =
     item.target.exchange && item.target.exchange !== item.target.chain
       ? item.target.exchange
       : null;
-  const identity = [item.target.chain, exchange, shortIdentity(item.target.address ?? "")]
-    .filter(Boolean)
-    .join(" · ");
   return [
-    formatSigned(item.why_now.mention_delta),
-    `$${item.target.symbol}`,
-    identity,
-    formatMarket(item),
-    formatTimestamp(item.triggered_at_ms),
+    item.target.chain,
+    exchange,
+    item.target.address ? shortAddress(item.target.address) : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -199,33 +252,33 @@ function formatPrimaryLine(item: TokenRadarSnapshotItem): string {
 function formatEvidenceLine(item: TokenRadarSnapshotItem): string {
   const counterEvidence = item.counter_evidence ? "counter: market confirmation unavailable" : null;
   return [
-    `mentions ${item.why_now.prior_mentions}→${item.why_now.current_mentions}`,
+    `${formatSigned(item.why_now.mention_delta)} mentions`,
+    `${item.why_now.prior_mentions}→${item.why_now.current_mentions}`,
     `${item.evidence.new_independent_author_count} new authors`,
     `${item.evidence.independent_text_count} independent texts`,
     `formed in ${formatDuration(item.evidence.time_to_nth_author_ms)}`,
     `${formatPercent(item.evidence.duplicate_share)} duplicates`,
+    formatTimestamp(item.triggered_at_ms),
     counterEvidence,
   ]
     .filter(Boolean)
     .join(" · ");
 }
 
-function shortIdentity(value: string): string {
-  return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value;
-}
-
 function formatSigned(value: number): string {
   return value > 0 ? `+${value}` : String(value);
 }
 
-function formatMarket(item: TokenRadarSnapshotItem): string {
-  if (item.market.status === "unavailable" || item.market.price_change_since_signal === null) {
-    return "market unavailable";
-  }
-  const percentage = item.market.price_change_since_signal * 100;
-  const formatted = MARKET_PERCENTAGE_FORMATTER.format(Math.abs(percentage));
-  const sign = percentage > 0 ? "+" : percentage < 0 ? "−" : "";
-  return `${sign}${formatted}% since signal`;
+function formatPrice(value: number | null): string {
+  return value === null ? "—" : formatTokenPriceUsd(value);
+}
+
+function formatChange(value: number | null): string {
+  return value === null ? "—" : formatSignedPercent(value);
+}
+
+function formatMarketCap(value: number | null): string {
+  return value === null ? "—" : formatUsdCompact(value);
 }
 
 function formatPercent(value: number): string {

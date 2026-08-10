@@ -23,7 +23,6 @@ export function mockLiveRadarRoute(apiMock: ApiMock) {
   apiMock.getApiImpl = async (path, requestOptions) => {
     if (path === "/api/status") return ok(appStatusFixture());
     if (path === "/api/token-radar") return ok(tokenRadarFixture());
-    if (path === "/api/stocks-radar") return ok(stocksRadarFixture());
     if (path === "/api/news/feed") return ok(newsFeedFixture());
     if (path === "/api/news/brief") return ok(newsGlobalBriefFixture());
     if (path === "/api/news/status") return ok(newsStatusFixture());
@@ -37,14 +36,6 @@ export function mockLiveRadarRoute(apiMock: ApiMock) {
     if (path === "/api/target-social-timeline") return ok(targetSocialTimelineFixture());
     if (path === "/api/target-posts") return ok(tokenCasePostsFixture());
     throw new Error(`unexpected path ${path}`);
-  };
-}
-
-function stocksRadarFixture() {
-  return {
-    window: "1h",
-    rows: [],
-    health: { returned_count: 0, quote_ready_count: 0, quote_unavailable_count: 0 },
   };
 }
 

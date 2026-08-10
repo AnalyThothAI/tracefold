@@ -133,8 +133,6 @@ from .radar.constants import (
     TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
 )
 from .radar.current_worker import (
-    RadarCurrentProjectionCycle,
-    StocksRadarCurrentProjection,
     TokenRadarCurrentProjection,
     TokenRadarCurrentService,
 )
@@ -145,7 +143,6 @@ from .views.event_token_projection_query import EventTokenProjectionQuery
 from .views.search_events_query import SearchEventsQuery
 from .views.search_inspect_service import SearchInspectService
 from .views.search_service import SearchCursorError, SearchService
-from .views.stocks_radar_service import StocksRadarService
 from .views.token_case_service import (
     TokenCaseService,
     TokenCaseTargetNotFound,
@@ -250,7 +247,6 @@ __all__ = [
     "MentionKeys",
     "NasdaqTraderSymbolClient",
     "ProfileProjectionCandidate",
-    "RadarCurrentProjectionCycle",
     "Reference",
     "RegistryRepository",
     "ResolutionRefresh",
@@ -259,8 +255,6 @@ __all__ = [
     "SearchInspectService",
     "SearchService",
     "Source",
-    "StocksRadarCurrentProjection",
-    "StocksRadarService",
     "TextSurface",
     "TickLookup",
     "TokenCaseService",

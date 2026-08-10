@@ -17,14 +17,13 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
   });
 
-  it("renders exactly four primary destinations in task order", () => {
+  it("renders exactly the three supported primary destinations in task order", () => {
     renderSidebar();
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
     expect(links.map((link) => [link.textContent?.trim(), link.getAttribute("href")])).toEqual([
       ["Radar", "/"],
-      ["Stocks", "/stocks"],
       ["News", "/news"],
       ["Macro", "/macro"],
     ]);
@@ -78,7 +77,7 @@ describe("AppSidebar", () => {
     renderSidebar();
 
     expect(screen.getByRole("link", { name: "Radar" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Stocks" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Stocks" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "News" })).toBeInTheDocument();
     expect(document.querySelectorAll('[data-sidebar="menu-badge"]')).toHaveLength(0);
   });
