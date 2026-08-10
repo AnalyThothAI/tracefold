@@ -265,8 +265,10 @@ market screener, security audit, or operational monitor. Every 30 seconds its
 sole writer reads at most 10,000 resolved material-fact rows and 8 MiB of input,
 then runs one pure deterministic reducer with a five-second hard ceiling. After
 selection, a second bounded batch read loads at most fifty target keys from
-`token_profile_current` and `market_tick_current`; it never performs one query
-per Item. The Radar Module exposes only its fixed-period sample interface to
+`token_profile_current`, `market_tick_current`, and the five-minute slice of
+append-only `market_ticks` needed to recover an independently fresh positive
+market-cap fact; it never performs one query per Item. The Radar Module exposes
+only its fixed-period sample interface to
 Workers; the two query interfaces are private internal seams satisfied by the
 Postgres Adapter. The only
 code-owned rule set requires a minimum attention delta, a minimum count of

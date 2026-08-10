@@ -433,7 +433,8 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
                 [
                     (str(item["target"]["target_type"]), str(item["target"]["target_id"]))
                     for item in reduced.snapshot["items"]
-                ]
+                ],
+                now_ms=base_now_ms,
             ),
             now_ms=base_now_ms,
         )
@@ -2091,8 +2092,9 @@ def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
                 "name": f"Performance Token {target_index}",
                 "logo_url": f"/api/token-images/{target_index:064x}",
                 "price_usd": "1.25",
+                "price_observed_at_ms": now_ms,
                 "market_cap_usd": "1250000",
-                "observed_at_ms": now_ms,
+                "market_cap_observed_at_ms": now_ms,
             }
             for target_index in range(50)
         ],

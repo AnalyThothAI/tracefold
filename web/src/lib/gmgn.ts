@@ -1,23 +1,17 @@
 export function gmgnTokenUrl(chain?: string | null, address?: string | null): string | null {
   const normalizedChain = chain?.trim().toLowerCase();
   const normalizedAddress = address?.trim();
-  if (
-    !normalizedChain ||
-    !normalizedAddress ||
-    normalizedChain === "evm_unknown" ||
-    normalizedChain === "evm"
-  ) {
+  if (!normalizedChain || !normalizedAddress) {
     return null;
   }
-  const chainSlug =
-    normalizedChain === "solana"
-      ? "sol"
-      : normalizedChain === "eip155:1"
-        ? "eth"
-        : normalizedChain === "eip155:56"
-          ? "bsc"
-          : normalizedChain === "eip155:8453"
-            ? "base"
-            : normalizedChain;
-  return `https://gmgn.ai/${chainSlug}/token/${normalizedAddress}`;
+  const chainSlug = GMGN_CHAIN_SLUGS.get(normalizedChain);
+  if (!chainSlug) return null;
+  return `https://gmgn.ai/${chainSlug}/token/${encodeURIComponent(normalizedAddress)}`;
 }
+
+const GMGN_CHAIN_SLUGS = new Map([
+  ["eip155:1", "eth"],
+  ["eip155:56", "bsc"],
+  ["eip155:8453", "base"],
+  ["solana", "sol"],
+]);

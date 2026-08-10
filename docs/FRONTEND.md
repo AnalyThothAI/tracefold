@@ -68,10 +68,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `trigger_event_id`; the route locates and visually focuses that exact Event
   or states that it is unavailable. It does not reconstruct a retired Radar
   rank, lane, decision, or score.
-- **Token Radar drilldown.** Token Radar is the scan surface. Every Item has one
-  action, `Open Token Case`, targeting its canonical identity and exact trigger
-  Event. The browser keeps the server order and never scores, filters, admits,
-  fills, or reorders Items.
+- **Token Radar drilldown.** Token Radar is the scan surface. Every Item links
+  to `Open Token Case`, targeting its canonical identity and exact trigger
+  Event. Rows with a contract address can copy the full address; supported
+  on-chain identities also link that address to GMGN in a new tab. The browser
+  keeps the server order and never scores, filters, admits, fills, or reorders
+  Items.
 - **Token Radar currentness.** `/` is one full-height, maximum-fifty rich
   research queue over `token_radar_snapshot_v2`. Each real row renders the
   server-provided same-origin icon or a fixed-size symbol fallback, symbol/name,

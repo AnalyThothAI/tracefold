@@ -28,7 +28,12 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   await expect(
     item.getByRole("group", { name: "Independent evidence, 4 authors, 5 texts" }),
   ).toBeVisible();
-  await expect(item.locator("details, button")).toHaveCount(0);
+  await expect(item.locator("details")).toHaveCount(0);
+  await expect(item.getByRole("button", { name: "Copy UPEG contract address" })).toBeVisible();
+  await expect(item.getByRole("link", { name: "Open UPEG on GMGN" })).toHaveAttribute(
+    "href",
+    "https://gmgn.ai/eth/token/0x6982508145454Ce325dDbE47a25d4ec3d2311933",
+  );
   await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expect(page.getByLabel("token radar venue filter")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /sort/i })).toHaveCount(0);
@@ -37,7 +42,7 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
     /\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
   expect(radarRequests).toEqual([""]);
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_000);
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   await expectNoUnhandledApiRequests(page);
@@ -67,7 +72,7 @@ test("the capped fifty-item Radar keeps its final item reachable", async ({ page
     ".live-radar-items",
     ".live-radar-item:last-of-type",
   );
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_000);
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
@@ -97,6 +102,6 @@ test("a full snapshot refresh stays below the 50ms browser long-task gate", asyn
     () => (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks ?? [],
   );
   expect(longTasks.filter((duration) => duration > 50)).toEqual([]);
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_000);
+  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoUnhandledApiRequests(page);
 });

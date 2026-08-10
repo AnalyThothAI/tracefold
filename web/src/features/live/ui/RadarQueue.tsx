@@ -4,6 +4,7 @@ import {
   formatUsdCompact,
   shortAddress,
 } from "@lib/format";
+import { gmgnTokenUrl } from "@lib/gmgn";
 import { tokenTargetPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { Button } from "@shared/ui/button";
@@ -149,11 +150,18 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
 
 function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
   const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null);
+  const [copyResult, setCopyResult] = useState<{
+    address: string;
+    status: "copying" | "copied" | "failed";
+  } | null>(null);
   const empty = item === null;
   const symbol = item?.target.symbol ?? "";
   const displayName = item?.target.name ?? symbol;
   const logoUrl = item?.target.logo_url ?? null;
   const identity = item === null ? "" : formatIdentity(item);
+  const address = item?.target.address?.trim() || null;
+  const gmgnUrl = gmgnTokenUrl(item?.target.chain, address);
+  const copyStatus = copyResult?.address === address ? copyResult.status : "idle";
   const change = item?.market.price_change_since_signal ?? null;
   const casePath =
     item === null
@@ -191,7 +199,62 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           <span title={empty ? undefined : `${displayName} · ${identity}`}>
             {empty ? "\u00a0" : displayName}
           </span>
-          <small>{identity || "\u00a0"}</small>
+          <small className="live-radar-contract">
+            <a
+              aria-hidden={empty || undefined}
+              aria-label={gmgnUrl ? `Open ${symbol} on GMGN` : undefined}
+              href={gmgnUrl ?? undefined}
+              rel={gmgnUrl ? "noreferrer" : undefined}
+              tabIndex={gmgnUrl ? undefined : -1}
+              target={gmgnUrl ? "_blank" : undefined}
+              title={address ?? undefined}
+            >
+              {empty
+                ? "\u00a0"
+                : address
+                  ? formatContractIdentity(identity, address)
+                  : identity || "\u00a0"}
+            </a>
+            <button
+              aria-atomic="true"
+              aria-hidden={!address || undefined}
+              aria-label={
+                !address
+                  ? undefined
+                  : copyStatus === "copied"
+                    ? `${symbol} contract address copied`
+                    : copyStatus === "failed"
+                      ? `${symbol} contract address copy failed`
+                      : copyStatus === "copying"
+                        ? `${symbol} contract address copying`
+                        : `Copy ${symbol} contract address`
+              }
+              aria-live="polite"
+              disabled={!address || copyStatus === "copying"}
+              onClick={() => {
+                if (!address) return;
+                setCopyResult({ address, status: "copying" });
+                void copyContractAddress(address).then((copied) => {
+                  setCopyResult((current) =>
+                    current?.address === address && current.status === "copying"
+                      ? { address, status: copied ? "copied" : "failed" }
+                      : current,
+                  );
+                });
+              }}
+              style={!address ? { visibility: "hidden" } : undefined}
+              tabIndex={address ? undefined : -1}
+              type="button"
+            >
+              {copyStatus === "copied"
+                ? "Copied"
+                : copyStatus === "failed"
+                  ? "Copy failed"
+                  : copyStatus === "copying"
+                    ? "Copying…"
+                    : "Copy"}
+            </button>
+          </small>
         </span>
       </div>
       <div
@@ -305,13 +368,21 @@ function formatIdentity(item: TokenRadarSnapshotItem): string {
     item.target.exchange && item.target.exchange !== item.target.chain
       ? item.target.exchange
       : null;
-  return [
-    item.target.chain,
-    exchange,
-    item.target.address ? shortAddress(item.target.address) : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  return [item.target.chain, exchange].filter(Boolean).join(" · ");
+}
+
+function formatContractIdentity(identity: string, address: string): string {
+  return [identity, shortAddress(address)].filter(Boolean).join(" · ");
+}
+
+async function copyContractAddress(address: string): Promise<boolean> {
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(address);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function formatSigned(value: number): string {

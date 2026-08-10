@@ -42,8 +42,9 @@ def test_reducer_emits_exact_compact_packet_with_equal_author_evidence() -> None
                 "name": "Pepe",
                 "logo_url": f"/api/token-images/{'a' * 64}",
                 "price_usd": "12",
+                "price_observed_at_ms": NOW_MS - MINUTE_MS,
                 "market_cap_usd": "12000000",
-                "observed_at_ms": NOW_MS - MINUTE_MS,
+                "market_cap_observed_at_ms": NOW_MS - MINUTE_MS,
             }
         ],
         now_ms=NOW_MS,
@@ -204,8 +205,9 @@ def test_market_confirmation_requires_a_nonfuture_tick_fresh_within_five_minutes
                 "name": None,
                 "logo_url": None,
                 "price_usd": "11",
+                "price_observed_at_ms": latest_observed_at_ms,
                 "market_cap_usd": None,
-                "observed_at_ms": latest_observed_at_ms,
+                "market_cap_observed_at_ms": None,
             }
         ],
         now_ms=NOW_MS,

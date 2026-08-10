@@ -60,13 +60,17 @@ class TokenRadarCurrentService:
         self,
         reduced: Any,
         *,
+        now_ms: int,
         session_timeout_seconds: float = _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
         targets = [
             (str(item["target"]["target_type"]), str(item["target"]["target_id"])) for item in reduced.snapshot["items"]
         ]
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
-            return TokenRadarCurrentRepository(repos.conn).load_presentation_facts(targets)
+            return TokenRadarCurrentRepository(repos.conn).load_presentation_facts(
+                targets,
+                now_ms=now_ms,
+            )
 
     def mark_failed(
         self,
@@ -175,6 +179,7 @@ class TokenRadarCurrentProjection:
                 self.service.load_presentation,
                 reduced,
                 operation_timeout_seconds=present_timeout,
+                now_ms=now_ms,
                 session_timeout_seconds=present_timeout,
             )
             reduced = enrich_token_radar(reduced, presentation_rows, now_ms=now_ms)

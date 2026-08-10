@@ -85,7 +85,7 @@ def test_singleton_publish_is_state_idempotent_and_failure_preserves_lkg(tmp_pat
     assert recovered_row["ruleset_fingerprint"] == reduced.ruleset_fingerprint
 
 
-def test_selected_asset_presentation_facts_join_profile_and_product_market_key(tmp_path) -> None:
+def test_selected_asset_presentation_keeps_fresh_cap_when_newer_price_tick_is_sparse(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -128,6 +128,22 @@ def test_selected_asset_presentation_facts_join_profile_and_product_market_key(t
                   %s, 12, 12000000, '{}'::jsonb, 'tick-hash', %s
                 )
                 """,
+                (NOW_MS - 2 * MINUTE_MS, NOW_MS - 2 * MINUTE_MS, NOW_MS - 2 * MINUTE_MS),
+            )
+            conn.execute(
+                """
+                INSERT INTO market_ticks(
+                  observed_at_ms, tick_id, target_type, target_id,
+                  chain, token_address, source_tier, source_provider,
+                  received_at_ms, price_usd, market_cap_usd,
+                  raw_payload_json, payload_hash, created_at_ms
+                )
+                VALUES (
+                  %s, 'tick-2', 'chain_token', 'solana:mint-1',
+                  'solana', 'mint-1', 'tier2_poll', 'okx_dex_rest',
+                  %s, 13, NULL, '{}'::jsonb, 'tick-2-hash', %s
+                )
+                """,
                 (NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS),
             )
             conn.execute(
@@ -138,9 +154,9 @@ def test_selected_asset_presentation_facts_join_profile_and_product_market_key(t
                   price_usd, market_cap_usd, updated_at_ms, created_at_ms
                 )
                 VALUES (
-                  'chain_token', 'solana:mint-1', %s, 'tick-1',
-                  'tier3_inline', 'gmgn_dex_quote', 'solana', 'mint-1',
-                  12, 12000000, %s, %s
+                  'chain_token', 'solana:mint-1', %s, 'tick-2',
+                  'tier2_poll', 'okx_dex_rest', 'solana', 'mint-1',
+                  13, NULL, %s, %s
                 )
                 """,
                 (NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS),
@@ -148,7 +164,14 @@ def test_selected_asset_presentation_facts_join_profile_and_product_market_key(t
 
         repository = TokenRadarCurrentRepository(conn)
         assert repository.load_material_inputs(now_ms=NOW_MS) == []
-        rows = repository.load_presentation_facts([("Asset", "asset-1"), ("Asset", "missing")])
+        rows = repository.load_presentation_facts(
+            [("Asset", "asset-1"), ("Asset", "missing")],
+            now_ms=NOW_MS,
+        )
+        stale_rows = repository.load_presentation_facts(
+            [("Asset", "asset-1")],
+            now_ms=NOW_MS + 4 * MINUTE_MS + 1,
+        )
     finally:
         conn.close()
 
@@ -158,9 +181,10 @@ def test_selected_asset_presentation_facts_join_profile_and_product_market_key(t
             "target_id": "asset-1",
             "name": "Pepe",
             "logo_url": f"/api/token-images/{'a' * 64}",
-            "price_usd": 12,
+            "price_usd": 13,
+            "price_observed_at_ms": NOW_MS - MINUTE_MS,
             "market_cap_usd": 12_000_000,
-            "observed_at_ms": NOW_MS - MINUTE_MS,
+            "market_cap_observed_at_ms": NOW_MS - 2 * MINUTE_MS,
         },
         {
             "target_type": "Asset",
@@ -168,10 +192,13 @@ def test_selected_asset_presentation_facts_join_profile_and_product_market_key(t
             "name": None,
             "logo_url": None,
             "price_usd": None,
+            "price_observed_at_ms": None,
             "market_cap_usd": None,
-            "observed_at_ms": None,
+            "market_cap_observed_at_ms": None,
         },
     ]
+    assert stale_rows[0]["market_cap_usd"] is None
+    assert stale_rows[0]["market_cap_observed_at_ms"] is None
 
 
 def test_selected_cex_presentation_uses_the_supported_binance_usdt_swap_key(tmp_path) -> None:
@@ -252,7 +279,10 @@ def test_selected_cex_presentation_uses_the_supported_binance_usdt_swap_key(tmp_
                 (NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS, NOW_MS - MINUTE_MS),
             )
 
-        rows = TokenRadarCurrentRepository(conn).load_presentation_facts([("CexToken", "cex-btc")])
+        rows = TokenRadarCurrentRepository(conn).load_presentation_facts(
+            [("CexToken", "cex-btc")],
+            now_ms=NOW_MS,
+        )
     finally:
         conn.close()
 
@@ -263,8 +293,9 @@ def test_selected_cex_presentation_uses_the_supported_binance_usdt_swap_key(tmp_
             "name": "Bitcoin",
             "logo_url": None,
             "price_usd": 70_000,
+            "price_observed_at_ms": NOW_MS - MINUTE_MS,
             "market_cap_usd": None,
-            "observed_at_ms": NOW_MS - MINUTE_MS,
+            "market_cap_observed_at_ms": None,
         }
     ]
 
@@ -317,8 +348,9 @@ def _enriched(rows: list[dict[str, object]]):
                 "name": "Pepe",
                 "logo_url": f"/api/token-images/{'a' * 64}",
                 "price_usd": "12",
+                "price_observed_at_ms": NOW_MS - MINUTE_MS,
                 "market_cap_usd": "12000000",
-                "observed_at_ms": NOW_MS - MINUTE_MS,
+                "market_cap_observed_at_ms": NOW_MS - MINUTE_MS,
             }
         ],
         now_ms=NOW_MS,

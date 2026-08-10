@@ -123,6 +123,7 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
                     for index, minutes_ago in enumerate((30, 20, 10))
                 ]
             if operation == "token_radar_current_present":
+                assert _kwargs["now_ms"] == now_ms
                 return [
                     {
                         "target_type": "Asset",
@@ -130,8 +131,9 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
                         "name": "Pepe",
                         "logo_url": f"/api/token-images/{'a' * 64}",
                         "price_usd": "12",
+                        "price_observed_at_ms": now_ms - 60_000,
                         "market_cap_usd": "12000000",
-                        "observed_at_ms": now_ms - 60_000,
+                        "market_cap_observed_at_ms": now_ms - 60_000,
                     }
                 ]
             if operation == "token_radar_current_publish":

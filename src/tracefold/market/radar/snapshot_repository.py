@@ -5,6 +5,7 @@ from typing import Any, TypedDict
 
 from psycopg.types.json import Jsonb
 
+from tracefold.market.pricing.live_market import LIVE_MARKET_STALE_AFTER_MS
 from tracefold.market.radar.constants import (
     TOKEN_RADAR_INPUT_ROW_CAP,
     TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
@@ -41,7 +42,12 @@ class TokenRadarCurrentRepository:
     def load_presentation_facts(
         self,
         targets: list[tuple[str, str]],
+        *,
+        now_ms: int,
     ) -> list[dict[str, Any]]:
+        parsed_now_ms = int(now_ms)
+        if parsed_now_ms < 0:
+            raise ValueError("token_radar_presentation_now_ms_invalid")
         requested = list(
             dict.fromkeys(
                 (str(target_type), str(target_id))
@@ -56,6 +62,8 @@ class TokenRadarCurrentRepository:
             (
                 [target_type for target_type, _target_id in requested],
                 [target_id for _target_type, target_id in requested],
+                max(0, parsed_now_ms - LIVE_MARKET_STALE_AFTER_MS),
+                parsed_now_ms,
             ),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -352,6 +360,31 @@ market_keys AS (
        price_feed.pricefeed_id ASC
      LIMIT 1
   ) preferred_price_feed ON true
+),
+recent_market_caps AS (
+  SELECT DISTINCT ON (
+    market_keys.market_target_type,
+    market_keys.market_target_id
+  )
+    market_keys.market_target_type,
+    market_keys.market_target_id,
+    market_ticks.market_cap_usd,
+    market_ticks.observed_at_ms AS market_cap_observed_at_ms
+  FROM market_keys
+  JOIN market_ticks
+    ON market_ticks.target_type = market_keys.market_target_type
+   AND market_ticks.target_id = market_keys.market_target_id
+  WHERE market_keys.market_target_type IS NOT NULL
+    AND market_keys.market_target_id IS NOT NULL
+    AND market_ticks.market_cap_usd > 0
+    AND market_ticks.observed_at_ms >= %s
+    AND market_ticks.observed_at_ms <= %s
+  ORDER BY
+    market_keys.market_target_type,
+    market_keys.market_target_id,
+    market_ticks.observed_at_ms DESC,
+    market_ticks.received_at_ms DESC,
+    market_ticks.tick_id DESC
 )
 SELECT
   market_keys.target_type,
@@ -359,8 +392,9 @@ SELECT
   token_profile_current.name,
   token_profile_current.logo_url,
   market_tick_current.price_usd,
-  market_tick_current.market_cap_usd,
-  market_tick_current.tick_observed_at_ms AS observed_at_ms
+  market_tick_current.tick_observed_at_ms AS price_observed_at_ms,
+  recent_market_caps.market_cap_usd,
+  recent_market_caps.market_cap_observed_at_ms
 FROM market_keys
 LEFT JOIN token_profile_current
   ON token_profile_current.target_type = market_keys.target_type
@@ -368,6 +402,9 @@ LEFT JOIN token_profile_current
 LEFT JOIN market_tick_current
   ON market_tick_current.target_type = market_keys.market_target_type
  AND market_tick_current.target_id = market_keys.market_target_id
+LEFT JOIN recent_market_caps
+  ON recent_market_caps.market_target_type = market_keys.market_target_type
+ AND recent_market_caps.market_target_id = market_keys.market_target_id
 ORDER BY market_keys.ordinality
 """
 

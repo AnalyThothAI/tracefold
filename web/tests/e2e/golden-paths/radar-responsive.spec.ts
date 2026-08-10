@@ -27,7 +27,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
     const identityElement = element.querySelector<HTMLElement>(".live-radar-identity");
     const marketElement = element.querySelector<HTMLElement>(".live-radar-market");
     const evidenceElement = element.querySelector<HTMLElement>(".live-radar-item-evidence");
-    const actionElement = element.querySelector<HTMLElement>("a");
+    const actionElement = element.querySelector<HTMLElement>(":scope > a");
     if (!identityElement || !marketElement || !evidenceElement || !actionElement) {
       throw new Error("Radar Item is missing a visible information group");
     }
@@ -105,7 +105,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
   await page.setViewportSize({ width: 1_210, height: 504 });
   const originalViewportLayout = await item.evaluate((element) => {
     const itemBox = element.getBoundingClientRect();
-    const actionBox = element.querySelector("a")?.getBoundingClientRect();
+    const actionBox = element.querySelector(":scope > a")?.getBoundingClientRect();
     const facts = element.querySelectorAll<HTMLElement>(
       ".live-radar-market [role=group], .live-radar-item-evidence [role=group]",
     );
@@ -150,7 +150,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
     await page.setViewportSize({ width, height: 844 });
     const compactLayout = await item.evaluate((element) => {
       const itemBox = element.getBoundingClientRect();
-      const actionBox = element.querySelector("a")?.getBoundingClientRect();
+      const actionBox = element.querySelector(":scope > a")?.getBoundingClientRect();
       const facts = element.querySelectorAll<HTMLElement>(
         ".live-radar-market [role=group], .live-radar-item-evidence [role=group]",
       );
@@ -184,4 +184,44 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   }
+});
+
+test("unsupported-chain address feedback stays contained on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => Promise.reject(new Error("clipboard denied")),
+      },
+    });
+  });
+  await installMockApi(page, { radarUnsupportedChain: true });
+  await page.goto("/");
+
+  const item = page.getByRole("listitem");
+  const contract = item.locator(".live-radar-contract");
+  const copy = item.getByRole("button", { name: "Copy UPEG contract address" });
+  await expect(item.getByRole("link", { name: "Open UPEG on GMGN" })).toHaveCount(0);
+  await copy.click();
+  await expect(item.getByRole("button", { name: "UPEG contract address copy failed" })).toHaveText(
+    "Copy failed",
+  );
+
+  expect(
+    await contract.evaluate((element) => {
+      const contractBox = element.getBoundingClientRect();
+      return (
+        element.scrollWidth <= element.clientWidth + 1 &&
+        [...element.children].every((child) => {
+          const childBox = child.getBoundingClientRect();
+          return (
+            childBox.left >= contractBox.left - 0.5 && childBox.right <= contractBox.right + 0.5
+          );
+        })
+      );
+    }),
+  ).toBe(true);
+  await expectNoDocumentHorizontalOverflow(page);
+  await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
 });

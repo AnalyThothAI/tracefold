@@ -21,6 +21,7 @@ export type MockApiOptions = {
   radarItemCount?: number;
   radarPresentationStress?: boolean;
   radarRefreshItemCount?: number;
+  radarUnsupportedChain?: boolean;
 };
 
 export async function installMockApi(page: Page, options: MockApiOptions = {}) {
@@ -53,7 +54,14 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
         radarRequestCount > 1 && options.radarRefreshItemCount !== undefined
           ? options.radarRefreshItemCount
           : (options.radarItemCount ?? 1);
-      return fulfill(route, tokenRadarData(itemCount, options.radarPresentationStress ?? false));
+      return fulfill(
+        route,
+        tokenRadarData(
+          itemCount,
+          options.radarPresentationStress ?? false,
+          options.radarUnsupportedChain ?? false,
+        ),
+      );
     }
     if (path === "/api/token-case") return fulfill(route, tokenCaseData(url));
     if (path.startsWith("/api/token-images/")) return fulfillTokenImage(route);
@@ -173,16 +181,18 @@ function statusData() {
   };
 }
 
-function tokenRadarData(itemCount: number, presentationStress: boolean) {
+function tokenRadarData(itemCount: number, presentationStress: boolean, unsupportedChain: boolean) {
   return {
     schema_version: "token_radar_snapshot_v2",
     evidence_as_of_ms: NOW,
     eligible_total: itemCount,
-    items: Array.from({ length: itemCount }, (_, index) => radarItem(index, presentationStress)),
+    items: Array.from({ length: itemCount }, (_, index) =>
+      radarItem(index, presentationStress, unsupportedChain),
+    ),
   };
 }
 
-function radarItem(index: number, presentationStress: boolean) {
+function radarItem(index: number, presentationStress: boolean, unsupportedChain: boolean) {
   const suffix = index ? `:${index + 1}` : "";
   const stressFirstItem = presentationStress && index === 0;
   return {
@@ -196,7 +206,7 @@ function radarItem(index: number, presentationStress: boolean) {
           ? `Case ${index + 1}`
           : "Unpegged Token",
       logo_url: `/api/token-images/${String(index + 1).padStart(64, "0")}`,
-      chain: "eip155:1",
+      chain: unsupportedChain && index === 0 ? "eip155:999999" : "eip155:1",
       exchange: null,
       address: index ? `${ADDRESS}${index + 1}` : ADDRESS,
     },

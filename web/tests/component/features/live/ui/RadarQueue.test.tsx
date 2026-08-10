@@ -1,5 +1,5 @@
 import { RadarQueue, type TokenRadarSnapshot } from "@features/live";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -41,8 +41,11 @@ describe("RadarQueue", () => {
     const icon = screen.getByRole("img", { name: "Token 1 Network icon" });
     expect(icon).toHaveAttribute("src", `/api/token-images/${"a".repeat(64)}`);
     expect(icon).toHaveAttribute("decoding", "async");
-    expect(container.querySelector("details, button")).toBeNull();
-    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_000);
+    expect(container.querySelector("details")).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Copy TOKEN\d+ contract address/ })).toHaveLength(
+      50,
+    );
+    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_100);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -94,6 +97,73 @@ describe("RadarQueue", () => {
     expect(row).toHaveTextContent("+5 · 2→7 mentions");
     expect(row).toHaveTextContent("4 authors · 5 texts");
     expect(row).toHaveTextContent("2m · 10% duplicates");
+  });
+
+  it("copies the full contract address and opens the supported asset on GMGN", async () => {
+    const address = "0x514910771af9ca656af840dff83e8264ecf986ca";
+    let resolveCopy!: () => void;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCopy = resolve;
+        }),
+    );
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const snapshot = fixture(1);
+    snapshot.items[0].target.chain = "eip155:1";
+    snapshot.items[0].target.address = address;
+    renderQueue(snapshot);
+
+    const gmgn = screen.getByRole("link", { name: "Open TOKEN1 on GMGN" });
+    expect(gmgn).toHaveAttribute("href", `https://gmgn.ai/eth/token/${address}`);
+    expect(gmgn).toHaveAttribute("target", "_blank");
+    expect(gmgn).toHaveAttribute("rel", "noreferrer");
+
+    const copy = screen.getByRole("button", { name: "Copy TOKEN1 contract address" });
+    fireEvent.click(copy);
+
+    expect(copy).toBeDisabled();
+    expect(copy).toHaveAccessibleName("TOKEN1 contract address copying");
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(address));
+    resolveCopy();
+    await waitFor(() => expect(copy).toHaveTextContent("Copied"));
+    expect(copy).toHaveTextContent("Copied");
+    expect(copy).toHaveAccessibleName("TOKEN1 contract address copied");
+  });
+
+  it("never fabricates a GMGN destination for an unsupported chain", () => {
+    const snapshot = fixture(1);
+    snapshot.items[0].target.chain = "robinhood";
+    renderQueue(snapshot);
+
+    expect(screen.queryByRole("link", { name: "Open TOKEN1 on GMGN" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy TOKEN1 contract address" })).toBeVisible();
+  });
+
+  it("reports a clipboard failure without a compatibility fallback", async () => {
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    renderQueue(fixture(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy TOKEN1 contract address" }));
+
+    expect(
+      await screen.findByRole("button", { name: "TOKEN1 contract address copy failed" }),
+    ).toHaveTextContent("Copy failed");
+  });
+
+  it("does not render address controls or a dangling separator without an address", () => {
+    const snapshot = fixture(1);
+    snapshot.items[0].target.address = null;
+    renderQueue(snapshot);
+
+    expect(screen.queryByRole("link", { name: "Open TOKEN1 on GMGN" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Copy TOKEN1 contract address" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("listitem")).toHaveTextContent("solana");
+    expect(screen.getByRole("listitem")).not.toHaveTextContent("solana ·");
   });
 
   it("allows a new logo source to recover after the previous image failed", () => {
@@ -165,6 +235,13 @@ describe("RadarQueue", () => {
     expect(evidenceClock).toHaveTextContent("no evidence");
     const emptySlot = container.querySelector(".live-radar-item");
     expect(emptySlot).not.toBeNull();
+    const contractSurface = emptySlot?.querySelector(".live-radar-contract");
+    const stableContractLink = contractSurface?.querySelector("a");
+    const stableCopyButton = contractSurface?.querySelector("button");
+    expect(stableContractLink).not.toBeNull();
+    expect(stableCopyButton).not.toBeNull();
+    expect(stableContractLink).not.toHaveAttribute("href");
+    expect(stableCopyButton).toBeDisabled();
     const emptySlotClassName = emptySlot?.className;
     const emptyChildren = [...(emptySlot?.children ?? [])];
     expect(emptySlot).toBeVisible();
@@ -196,9 +273,13 @@ describe("RadarQueue", () => {
     expect([...(container.querySelector(".live-radar-item")?.children ?? [])]).toEqual(
       emptyChildren,
     );
+    expect(container.querySelector(".live-radar-contract a")).toBe(stableContractLink);
+    expect(container.querySelector(".live-radar-contract button")).toBe(stableCopyButton);
+    expect(stableContractLink).toHaveAttribute("href", "https://gmgn.ai/sol/token/token-1");
+    expect(stableCopyButton).not.toBeDisabled();
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
     expect(screen.getAllByRole("link", { name: "Open Token Case" })).toHaveLength(50);
-    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_000);
+    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_100);
   });
 });
 

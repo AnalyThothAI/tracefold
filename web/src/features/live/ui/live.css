@@ -155,8 +155,7 @@
   }
 
   .live-radar-token-copy strong,
-  .live-radar-token-copy span,
-  .live-radar-token-copy small {
+  .live-radar-token-copy > span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -170,18 +169,63 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .live-radar-token-copy span {
+  .live-radar-token-copy > span {
     color: var(--text-secondary);
     font-size: 12px;
     line-height: 1.25;
   }
 
-  .live-radar-token-copy small {
+  .live-radar-contract {
     grid-column: 1 / -1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.25;
+    white-space: nowrap;
+  }
+
+  .live-radar-contract a {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    color: var(--text-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .live-radar-contract a[href] {
+    color: var(--accent-primary);
+    text-decoration: none;
+  }
+
+  .live-radar-contract a[href]:hover,
+  .live-radar-contract a[href]:focus-visible {
+    text-decoration: underline;
+  }
+
+  .live-radar-contract button {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0 2px;
+    font: inherit;
+    line-height: inherit;
+    cursor: pointer;
+  }
+
+  .live-radar-contract button:hover,
+  .live-radar-contract button:focus-visible {
+    color: var(--accent-primary);
+  }
+
+  .live-radar-contract button:disabled {
+    cursor: wait;
+    opacity: 0.72;
   }
 
   .live-radar-market {

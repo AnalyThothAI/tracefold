@@ -186,8 +186,10 @@ def enrich_token_radar(
             triggered_at_ms=int(source_item["triggered_at_ms"]),
             now_ms=parsed_now_ms,
         )
-        if market["observed_at_ms"] is not None:
-            evidence_as_of_ms = max(evidence_as_of_ms, int(market["observed_at_ms"]))
+        if fact is not None and market["price_usd"] is not None:
+            evidence_as_of_ms = max(evidence_as_of_ms, int(fact["price_observed_at_ms"]))
+        if fact is not None and market["market_cap_usd"] is not None:
+            evidence_as_of_ms = max(evidence_as_of_ms, int(fact["market_cap_observed_at_ms"]))
         enriched_items.append(
             {
                 **source_item,
@@ -352,23 +354,45 @@ def _presentation_market(
 ) -> dict[str, Any]:
     if fact is None:
         return _unavailable_market()
-    observed_at_ms = _optional_nonnegative_int(fact.get("observed_at_ms"))
-    if observed_at_ms is None or observed_at_ms > now_ms or now_ms - observed_at_ms > LIVE_MARKET_STALE_AFTER_MS:
-        return _unavailable_market()
-    price = _positive_decimal(fact.get("price_usd"))
-    market_cap = _positive_decimal(fact.get("market_cap_usd"))
+    price_observed_at_ms = _fresh_observed_at_ms(fact.get("price_observed_at_ms"), now_ms=now_ms)
+    market_cap_observed_at_ms = _fresh_observed_at_ms(
+        fact.get("market_cap_observed_at_ms"),
+        now_ms=now_ms,
+    )
+    price = _positive_decimal(fact.get("price_usd")) if price_observed_at_ms is not None else None
+    market_cap = _positive_decimal(fact.get("market_cap_usd")) if market_cap_observed_at_ms is not None else None
     signal = _positive_decimal(signal_price_usd)
     change: float | None = None
-    if signal is not None and price is not None and observed_at_ms >= triggered_at_ms:
+    if (
+        signal is not None
+        and price is not None
+        and price_observed_at_ms is not None
+        and price_observed_at_ms >= triggered_at_ms
+    ):
         candidate_change = float((price - signal) / signal)
         change = candidate_change if math.isfinite(candidate_change) else None
+    metric_observations = [
+        observed_at_ms
+        for metric, observed_at_ms in (
+            (price, price_observed_at_ms),
+            (market_cap, market_cap_observed_at_ms),
+        )
+        if metric is not None and observed_at_ms is not None
+    ]
     return {
         "status": "confirmed" if change is not None else "unavailable",
         "price_change_since_signal": change,
         "price_usd": float(price) if price is not None else None,
         "market_cap_usd": float(market_cap) if market_cap is not None else None,
-        "observed_at_ms": observed_at_ms if price is not None or market_cap is not None else None,
+        "observed_at_ms": min(metric_observations) if metric_observations else None,
     }
+
+
+def _fresh_observed_at_ms(value: Any, *, now_ms: int) -> int | None:
+    observed_at_ms = _optional_nonnegative_int(value)
+    if observed_at_ms is None or observed_at_ms > now_ms or now_ms - observed_at_ms > LIVE_MARKET_STALE_AFTER_MS:
+        return None
+    return observed_at_ms
 
 
 def _unavailable_market() -> dict[str, Any]:
@@ -388,8 +412,9 @@ def _canonical_presentation_fact(raw: Mapping[str, Any]) -> dict[str, Any]:
         "name": _text(raw.get("name")),
         "logo_url": _local_logo_url(raw.get("logo_url")),
         "price_usd": _decimal_text(raw.get("price_usd")),
+        "price_observed_at_ms": _optional_nonnegative_int(raw.get("price_observed_at_ms")),
         "market_cap_usd": _decimal_text(raw.get("market_cap_usd")),
-        "observed_at_ms": _optional_nonnegative_int(raw.get("observed_at_ms")),
+        "market_cap_observed_at_ms": _optional_nonnegative_int(raw.get("market_cap_observed_at_ms")),
     }
 
 
@@ -397,7 +422,12 @@ def _presentation_fact_sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
     return (
         str(row.get("target_type") or ""),
         str(row.get("target_id") or ""),
-        -int(row.get("observed_at_ms") or 0),
+        -max(
+            int(row.get("price_observed_at_ms") or 0),
+            int(row.get("market_cap_observed_at_ms") or 0),
+        ),
+        -int(row.get("price_observed_at_ms") or 0),
+        -int(row.get("market_cap_observed_at_ms") or 0),
         _canonical_json_bytes(row),
     )
 

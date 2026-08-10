@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from tracefold.market.radar.reducer import (
     enrich_token_radar,
     reduce_token_radar,
@@ -24,8 +26,9 @@ def test_v2_enrichment_adds_only_fresh_finite_presentation_facts() -> None:
                 "name": "Pepe",
                 "logo_url": f"/api/token-images/{'a' * 64}",
                 "price_usd": "12",
+                "price_observed_at_ms": NOW_MS - MINUTE_MS,
                 "market_cap_usd": "12000000",
-                "observed_at_ms": NOW_MS - MINUTE_MS,
+                "market_cap_observed_at_ms": NOW_MS - 2 * MINUTE_MS,
             }
         ],
         now_ms=NOW_MS,
@@ -65,7 +68,7 @@ def test_v2_enrichment_adds_only_fresh_finite_presentation_facts() -> None:
                     "price_change_since_signal": 0.2,
                     "price_usd": 12.0,
                     "market_cap_usd": 12_000_000.0,
-                    "observed_at_ms": NOW_MS - MINUTE_MS,
+                    "observed_at_ms": NOW_MS - 2 * MINUTE_MS,
                 },
                 "counter_evidence": None,
             }
@@ -86,8 +89,9 @@ def test_v2_enrichment_rejects_remote_logo_and_degrades_bad_or_stale_metrics_ind
                 "name": "Pepe",
                 "logo_url": "https://remote.example/pepe.png",
                 "price_usd": math.inf,
+                "price_observed_at_ms": NOW_MS - MINUTE_MS,
                 "market_cap_usd": "12000000",
-                "observed_at_ms": NOW_MS - MINUTE_MS,
+                "market_cap_observed_at_ms": NOW_MS - MINUTE_MS,
             }
         ],
         now_ms=NOW_MS,
@@ -101,8 +105,9 @@ def test_v2_enrichment_rejects_remote_logo_and_degrades_bad_or_stale_metrics_ind
                 "name": "Pepe",
                 "logo_url": f"/api/token-images/{'b' * 64}",
                 "price_usd": "12",
+                "price_observed_at_ms": NOW_MS - 5 * MINUTE_MS - 1,
                 "market_cap_usd": "12000000",
-                "observed_at_ms": NOW_MS - 5 * MINUTE_MS - 1,
+                "market_cap_observed_at_ms": NOW_MS - 5 * MINUTE_MS - 1,
             }
         ],
         now_ms=NOW_MS,
@@ -123,6 +128,123 @@ def test_v2_enrichment_rejects_remote_logo_and_degrades_bad_or_stale_metrics_ind
         "market_cap_usd": None,
         "observed_at_ms": None,
     }
+
+
+@pytest.mark.parametrize(
+    (
+        "price_usd",
+        "price_observed_at_ms",
+        "market_cap_usd",
+        "market_cap_observed_at_ms",
+        "expected_status",
+        "expected_price",
+        "expected_cap",
+        "expected_observed_at_ms",
+    ),
+    [
+        (
+            "12",
+            NOW_MS - MINUTE_MS,
+            "12000000",
+            NOW_MS - 2 * MINUTE_MS,
+            "confirmed",
+            12.0,
+            12_000_000.0,
+            NOW_MS - 2 * MINUTE_MS,
+        ),
+        (
+            "12",
+            NOW_MS - MINUTE_MS,
+            "12000000",
+            NOW_MS - 5 * MINUTE_MS - 1,
+            "confirmed",
+            12.0,
+            None,
+            NOW_MS - MINUTE_MS,
+        ),
+        (
+            "12",
+            NOW_MS - 5 * MINUTE_MS - 1,
+            "12000000",
+            NOW_MS - 2 * MINUTE_MS,
+            "unavailable",
+            None,
+            12_000_000.0,
+            NOW_MS - 2 * MINUTE_MS,
+        ),
+        (
+            "12",
+            NOW_MS + 1,
+            "12000000",
+            NOW_MS - 2 * MINUTE_MS,
+            "unavailable",
+            None,
+            12_000_000.0,
+            NOW_MS - 2 * MINUTE_MS,
+        ),
+        (
+            "12",
+            NOW_MS - MINUTE_MS,
+            "12000000",
+            NOW_MS + 1,
+            "confirmed",
+            12.0,
+            None,
+            NOW_MS - MINUTE_MS,
+        ),
+        (
+            "-12",
+            NOW_MS - MINUTE_MS,
+            "12000000",
+            NOW_MS - 2 * MINUTE_MS,
+            "unavailable",
+            None,
+            12_000_000.0,
+            NOW_MS - 2 * MINUTE_MS,
+        ),
+        (
+            "12",
+            NOW_MS - MINUTE_MS,
+            "-12000000",
+            NOW_MS - 2 * MINUTE_MS,
+            "confirmed",
+            12.0,
+            None,
+            NOW_MS - MINUTE_MS,
+        ),
+    ],
+)
+def test_v2_enrichment_validates_price_and_market_cap_freshness_independently(
+    price_usd: str,
+    price_observed_at_ms: int,
+    market_cap_usd: str,
+    market_cap_observed_at_ms: int,
+    expected_status: str,
+    expected_price: float | None,
+    expected_cap: float | None,
+    expected_observed_at_ms: int,
+) -> None:
+    item = enrich_token_radar(
+        reduce_token_radar(_eligible_rows(), now_ms=NOW_MS),
+        [
+            {
+                "target_type": "Asset",
+                "target_id": "asset-1",
+                "name": None,
+                "logo_url": None,
+                "price_usd": price_usd,
+                "price_observed_at_ms": price_observed_at_ms,
+                "market_cap_usd": market_cap_usd,
+                "market_cap_observed_at_ms": market_cap_observed_at_ms,
+            }
+        ],
+        now_ms=NOW_MS,
+    ).snapshot["items"][0]
+
+    assert item["market"]["status"] == expected_status
+    assert item["market"]["price_usd"] == expected_price
+    assert item["market"]["market_cap_usd"] == expected_cap
+    assert item["market"]["observed_at_ms"] == expected_observed_at_ms
 
 
 def test_reducer_selects_exact_first_fifty_from_sixty_eligible_targets() -> None:
@@ -160,19 +282,26 @@ def test_repository_batch_loads_selected_presentation_facts_in_one_statement() -
                 "name": "Pepe",
                 "logo_url": f"/api/token-images/{'a' * 64}",
                 "price_usd": 1,
+                "price_observed_at_ms": NOW_MS,
                 "market_cap_usd": 1_000_000,
-                "observed_at_ms": NOW_MS,
+                "market_cap_observed_at_ms": NOW_MS,
             }
         ]
     )
 
     rows = TokenRadarCurrentRepository(connection).load_presentation_facts(
-        [("Asset", "asset-1"), ("Asset", "asset-1"), ("CexToken", "cex-1")]
+        [("Asset", "asset-1"), ("Asset", "asset-1"), ("CexToken", "cex-1")],
+        now_ms=NOW_MS,
     )
 
     assert len(connection.calls) == 1
     assert "unnest" in connection.calls[0][0]
-    assert connection.calls[0][1] == (["Asset", "CexToken"], ["asset-1", "cex-1"])
+    assert connection.calls[0][1] == (
+        ["Asset", "CexToken"],
+        ["asset-1", "cex-1"],
+        NOW_MS - 5 * MINUTE_MS,
+        NOW_MS,
+    )
     assert rows[0]["name"] == "Pepe"
 
 

@@ -18,7 +18,8 @@ def run_token_radar_current(conn: Any, *, now_ms: int) -> dict[str, Any]:
             [
                 (str(item["target"]["target_type"]), str(item["target"]["target_id"]))
                 for item in reduced.snapshot["items"]
-            ]
+            ],
+            now_ms=now_ms,
         ),
         now_ms=now_ms,
     )

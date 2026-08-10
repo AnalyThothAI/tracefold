@@ -188,10 +188,15 @@ one `market` packet with `status`, nullable current `price_usd`, nullable
 `price_change_since_signal`, nullable `market_cap_usd`, and nullable
 `observed_at_ms`. `logo_url` is either `null` or the exact same-origin form
 `/api/token-images/{64-lowercase-hex-image-id}`. A fresh positive current metric
-requires `observed_at_ms`; a confirmed signal change additionally requires a
-fresh positive current price observed no earlier than the trigger. Missing,
-stale, future, non-positive, or non-finite evidence degrades the affected
-presentation fields rather than changing admission or order. The nullable
+requires `observed_at_ms`; price and market capitalization are selected from
+persisted market facts and validated independently against the same five-minute
+freshness bound. When both fields are present, `observed_at_ms` is the earlier
+of their actual observation times, so the packet never presents the older fact
+as newer than it is. When only one field is present, it is that field's
+observation time. A confirmed signal change additionally requires a fresh
+positive current price observed no earlier than the trigger. Missing, stale,
+future, non-positive, or non-finite evidence degrades only the affected
+presentation field rather than changing admission or order. The nullable
 `counter_evidence` remains exactly
 `market_confirmation_unavailable|null`. `eligible_total` counts the complete
 eligible population before the maximum-fifty selection. Order is primarily
@@ -202,9 +207,10 @@ The response has `Cache-Control: private, no-cache` and a strong ETag bound to
 the complete served snapshot. A matching `If-None-Match` returns `304` with no
 body. The endpoint never calls a provider, recalculates the reducer, hydrates a
 profile, returns source-event lists, or falls back to the retired v1 row/factor
-contract. The writer obtains profile and market presentation facts in one
-bounded batch read after server selection; the browser makes no per-Item profile
-or live-market data request. Scores, ranks, decisions, factor families,
+contract. The writer obtains profile, current-price, and independently fresh
+positive market-cap facts in one bounded batch read after server selection;
+the browser makes no per-Item profile or live-market data request. Scores,
+ranks, decisions, factor families,
 gates, normalization, security judgments, windows, venues, and compatibility
 fields do not exist.
 Search and Token Case remain independent fact readers; a Radar link may focus

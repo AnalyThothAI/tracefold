@@ -3,6 +3,9 @@ export function compactNumber(value: number | null | undefined): string {
     return "-";
   }
   const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) {
+    return `${trim(value / 1_000_000_000)}B`;
+  }
   if (abs >= 1_000_000) {
     return `${trim(value / 1_000_000)}M`;
   }
