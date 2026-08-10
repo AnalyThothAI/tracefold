@@ -250,7 +250,10 @@ uv run tracefold macro status
 Treasury, FOMC, speech, completed BTC settlement, fixed ETF Nasdaq daily, and
 Yahoo continuous-futures daily datasets use the most recent five years.
 Yahoo intraday acquisition requests one month of five-minute bars initially
-and the rolling day thereafter. Older deep history is optional enrichment.
+for ETFs and VIX. High-session futures and continuous BTC request five days
+initially so one batch remains within the code-owned 5,000-fact budget. Every
+Yahoo intraday dataset requests the rolling day thereafter. Older deep history
+is optional enrichment.
 No optional backfill state blocks Coverage, Current Health, or projection;
 History Depth remains explicit. Credit and WTI retain longer reliable public
 history where one bounded source response makes that history cheap and

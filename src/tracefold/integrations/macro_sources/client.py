@@ -388,9 +388,9 @@ class MacroSourceClient:
     ) -> FetchBatch:
         if spec.instrument_id is None:
             raise MacroSourceError("yfinance_instrument_missing")
-        interval = str(spec.metadata.get("bar_interval") or "5m")
-        initial_period = str(spec.metadata.get("initial_period") or "1mo")
-        incremental_period = str(spec.metadata.get("incremental_period") or "1d")
+        interval = _required_yfinance_metadata(spec, "bar_interval")
+        initial_period = _required_yfinance_metadata(spec, "initial_period")
+        incremental_period = _required_yfinance_metadata(spec, "incremental_period")
         start_date = _optional_date(cursor.get("start_date"))
         end_date = _optional_date(cursor.get("end_date"))
         period = incremental_period if _optional_int(cursor.get("observed_at_ms")) is not None else initial_period
@@ -1629,6 +1629,13 @@ def _optional_int(value: Any) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _required_yfinance_metadata(spec: DatasetSpec, key: str) -> str:
+    value = spec.metadata.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise MacroSourceError(f"yfinance_history_{key}_missing")
+    return value.strip()
 
 
 def _optional_date(value: Any) -> date | None:

@@ -602,6 +602,11 @@ missing paid or unimplementable capabilities are deleted rather than displayed
 as permanent product gaps. Operator config only enables source families;
 cadence, lease, timeout, batch, and resource limits are code-owned.
 
+OpenBB is not a runtime dependency or provider router. It does not supply data
+or entitlement, and routing an existing source through it would add a second
+provider/configuration/error layer without changing source identity. Macro uses
+its direct, narrow adapters and never adds a provider waterfall around them.
+
 The current nominal and real curves come from Treasury, with FRED as labelled
 history. CPI and labor release facts come from BLS, while GDP, PCE, and core PCE
 release facts come from BEA's public official release pages; the matching FRED

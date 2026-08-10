@@ -136,7 +136,7 @@ def _yfinance_intraday(
         metadata={
             "role": "best_effort_private_research_market_proxy",
             "bar_interval": "5m",
-            "initial_period": "1mo",
+            "initial_period": ("5d" if market_calendar in {"us_futures", "continuous"} else "1mo"),
             "incremental_period": "1d",
             "prepost": True,
             "market_calendar": market_calendar,

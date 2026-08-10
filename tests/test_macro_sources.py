@@ -13,7 +13,7 @@ from tracefold.integrations.macro_sources import (
     MacroSourceError,
     MacroSourceUnavailable,
 )
-from tracefold.macro import DocumentFact, ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro import DATASET_REGISTRY, DocumentFact, ReleaseFact, SeriesFact, require_dataset
 from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
@@ -905,6 +905,134 @@ def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_p
     assert all(batch.diagnostics["request_count"] == 1 for batch in (initial, incremental))
     assert initial.diagnostics["decoded_bytes"] > 0
     assert incremental.response_hash == initial.response_hash
+
+
+@pytest.mark.parametrize(
+    "dataset_id",
+    ("yfinance.es_future.intraday", "yfinance.btc_yahoo.intraday"),
+)
+def test_yfinance_high_session_initial_fetch_stays_within_the_fact_budget(
+    dataset_id: str,
+) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        row_count = {"1mo": 5_001, "5d": 1_440, "1d": 288}[request.url.params["range"]]
+        first_timestamp = int(datetime(2026, 7, 21, tzinfo=UTC).timestamp())
+        timestamps = tuple(first_timestamp + index * 300 for index in range(row_count))
+        prices = tuple(6_300.0 + index for index in range(row_count))
+        return _yahoo_chart_response(
+            request,
+            timestamps=timestamps,
+            opens=prices,
+            highs=prices,
+            lows=prices,
+            closes=prices,
+            volumes=prices,
+        )
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        initial = client.fetch(
+            require_dataset(dataset_id),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+        incremental = client.fetch(
+            require_dataset(dataset_id),
+            partition_key="latest",
+            cursor=initial.cursor,
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(initial.facts) == 1_440
+    assert len(incremental.facts) == 288
+    assert [call.url.params["range"] for call in calls] == ["5d", "1d"]
+    assert all(call.url.params["interval"] == "5m" for call in calls)
+
+
+def test_yfinance_intraday_registry_has_one_code_owned_window_per_market_clock() -> None:
+    intraday = {
+        spec.dataset_id: spec
+        for spec in DATASET_REGISTRY.values()
+        if spec.adapter_id == "yfinance_history" and spec.frequency == "intraday"
+    }
+    high_session_dataset_ids = {
+        "yfinance.btc_yahoo.intraday",
+        "yfinance.cl_future.intraday",
+        "yfinance.dx_future.intraday",
+        "yfinance.es_future.intraday",
+        "yfinance.gc_future.intraday",
+        "yfinance.hg_future.intraday",
+        "yfinance.nq_future.intraday",
+        "yfinance.rty_future.intraday",
+        "yfinance.zb_future.intraday",
+        "yfinance.zn_future.intraday",
+    }
+    monthly_dataset_ids = {
+        "yfinance.dxy.intraday",
+        "yfinance.gld.intraday",
+        "yfinance.hyg.intraday",
+        "yfinance.ief.intraday",
+        "yfinance.iwm.intraday",
+        "yfinance.lqd.intraday",
+        "yfinance.qqq.intraday",
+        "yfinance.spy.intraday",
+        "yfinance.tlt.intraday",
+        "yfinance.uso.intraday",
+        "yfinance.vix_index.intraday",
+    }
+
+    assert set(intraday) == high_session_dataset_ids | monthly_dataset_ids
+    assert all(intraday[dataset_id].metadata["initial_period"] == "5d" for dataset_id in high_session_dataset_ids)
+    assert all(intraday[dataset_id].metadata["initial_period"] == "1mo" for dataset_id in monthly_dataset_ids)
+    assert all(spec.metadata["incremental_period"] == "1d" for spec in intraday.values())
+
+
+@pytest.mark.parametrize(
+    ("metadata_key", "error_code"),
+    (
+        ("bar_interval", "yfinance_history_bar_interval_missing"),
+        ("initial_period", "yfinance_history_initial_period_missing"),
+        ("incremental_period", "yfinance_history_incremental_period_missing"),
+    ),
+)
+def test_yfinance_history_requires_code_owned_window_metadata(
+    metadata_key: str,
+    error_code: str,
+) -> None:
+    spec = require_dataset("yfinance.es_future.intraday")
+    metadata = dict(spec.metadata)
+    metadata.pop(metadata_key)
+    malformed_spec = replace(spec, metadata=metadata)
+
+    client = MacroSourceClient(
+        transport=httpx.MockTransport(
+            lambda request: _yahoo_chart_response(
+                request,
+                timestamps=(int(datetime(2026, 7, 27, 23, 55, tzinfo=UTC).timestamp()),),
+                opens=(6_300.0,),
+                highs=(6_300.0,),
+                lows=(6_300.0,),
+                closes=(6_300.0,),
+                volumes=(1_000.0,),
+            )
+        )
+    )
+    try:
+        with pytest.raises(MacroSourceError, match=error_code):
+            client.fetch(
+                malformed_spec,
+                partition_key="latest",
+                cursor={},
+                now_ms=NOW_MS,
+            )
+    finally:
+        client.close()
 
 
 def test_yfinance_daily_continuous_proxy_uses_five_year_then_monthly_period() -> None:
