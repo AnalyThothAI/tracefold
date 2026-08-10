@@ -344,10 +344,13 @@ eleven 100-item pages, and stops at the first already persisted provider record
 or the 12-hour cutoff. There is no persisted gap boundary, gap version, or
 historical backfill state. OpenNews provider record ID is the source-local fact
 identity, so WSS/REST overlap updates or no-ops the same row. Provider
-annotations are bounded descriptive metadata and cannot affect identity,
-Story, importance, ordering, or Brief; they may only qualify an already
-projected Story for outbound Push. The acquisition role changes freshness and
-health semantics, not ranking or reporting-origin tier.
+annotations are bounded descriptive metadata and cannot affect source identity,
+materialized Story identity/aggregates/population, importance, material
+admission, ordering, or Brief. A selected numeric score may qualify an already
+projected Story for outbound Push or a downstream read-time filter, including
+the browser's fixed strict `>70` focus mode; neither changes the materialized
+Story population. The acquisition role changes freshness and health semantics,
+not ranking or reporting-origin tier.
 
 The sole Story writer loads active RSS Items from the 96-hour feed window and
 OpenNews Items from the 12-hour primary window. It expands RSS facts in the

@@ -20,6 +20,7 @@ export type NewsSources = NewsSchemas["NewsSourcesData"];
 export type NewsFeedFilters = {
   category: string | null;
   level: NewsLevel | null;
+  providerScoreGt: number | null;
   q: string;
   reportingOrigin: string | null;
   sort: "importance" | "latest";
@@ -33,6 +34,7 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
       filters.category,
       filters.level,
       filters.reportingOrigin,
+      filters.providerScoreGt,
       filters.sort,
     ),
     queryFn: async ({ pageParam }) =>
@@ -43,6 +45,7 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
             filters.category,
             filters.level,
             filters.reportingOrigin,
+            filters.providerScoreGt,
             filters.sort,
             pageParam ?? "first",
           ])}`,
@@ -51,6 +54,7 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
             cursor: pageParam,
             level: filters.level,
             limit: 25,
+            provider_score_gt: filters.providerScoreGt,
             q: filters.q,
             reporting_origin: filters.reportingOrigin,
             sort: filters.sort,

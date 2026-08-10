@@ -47,6 +47,10 @@ describe("News feed density contract", () => {
     expect(cssRule(feedCss, ".news-story-title h2")).toContain("font-size: 1rem");
     expect(cssRule(feedCss, ".news-story-why > summary")).toContain("min-height: 1.7rem");
     expect(page).toMatch(
+      /className="news-story-classification"[\s\S]*?<OpenNewsScoreBadge[\s\S]*?news-severity/,
+    );
+    expect(page).toMatch(/<OpenNewsScoreBadge score={story\.provider_evidence/);
+    expect(page).toMatch(
       /<details className="news-story-why">[\s\S]*?<summary>[\s\S]*?为什么重要[\s\S]*?Tracefold/,
     );
     expect(page).not.toContain('<details className="news-story-why" open>');

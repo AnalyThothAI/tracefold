@@ -92,13 +92,15 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `公共全球简报`, `状态`, and `来源`, backed respectively by `/news`,
   `/news/brief`, `/news/status`, and `/news/sources`. Story detail remains at
   `/news/stories/:storyId` and carries the same navigation. There is one public
-  product and no personalized or score-threshold mode. Feed requests use the
-  current server population with `sort=latest` and `limit=25`; Tracefold
-  importance remains an optional server sort. `/news/brief` renders one whole
-  atomic current/LKG snapshot, never publication history or a personalized
-  variant. Its server-ordered Top Stories are the primary document; L1 or
-  degraded L2 prose is a separately labelled enhancement and cannot reorder or
-  replace that evidence.
+  product and no personalized or user-adjustable score threshold. The default
+  `重点` mode requests the current server population with the fixed strict
+  `provider_score_gt=70`, `sort=latest`, and `limit=25`; URL-owned `view=all`
+  exposes the complete population without that threshold. Tracefold importance
+  remains an optional server sort. `/news/brief` renders one whole atomic
+  current/LKG snapshot, never publication history or a personalized variant.
+  Its server-ordered Top Stories are the primary document; L1 or degraded L2
+  prose is a separately labelled enhancement and cannot reorder or replace that
+  evidence.
 
   News query, mode, category, deterministic severity, actual reporting origin,
   and sort are URL-owned. Search calls the News Feed with `q`; it does not call
@@ -115,18 +117,20 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   origin, relative time, and independent-origin count provide context. The
   canonical persisted headline is primary; the browser makes no model call.
   Only a valid safe plain-text description is shown, clamped to two lines.
-  Provider score, signal, grade, coins, and Push state are not reading-layer
-  decoration. Tracefold importance is secondary and its supplied factors live
-  under row-local `为什么重要`. The primary row action opens
+  The backend-selected numeric OpenNews score is the first compact metadata
+  badge and is omitted without numeric evidence; provider signal, grade, coins,
+  and Push state are not reading-layer decoration. Tracefold importance is
+  secondary and its supplied factors live under row-local `为什么重要`. The
+  primary row action opens
   `/news/stories/:storyId`; a separate link opens original evidence when a
   valid URL exists and is otherwise omitted. Missing values are omitted.
   At 1280×720 the target is at least four to five rows, and at 390×844 about two
   rows, with no horizontal overflow.
 
   `/news/stories/:storyId` reads `/api/news/stories/{story_id}` and is
-  reading-first: canonical headline, severity, reporting origin/time,
-  independent-origin count, valid description, and representative original
-  link precede related reports. Complete member
+  reading-first: canonical headline, selected numeric OpenNews score, severity,
+  reporting origin/time, independent-origin count, valid description, and
+  representative original link precede related reports. Complete member
   pagination remains reachable. Internal IDs, complete factor math, provider
   metadata, and aggregation evidence do not replace canonical evidence.
   User-facing language is `新闻事件`, `相关报道`, and `独立来源`; machine terms
@@ -252,9 +256,12 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, topbar controls stay contained, the full-height Radar shows explicit content age and refresh health, no Tape/task bar exists, and the final Radar row is reachable without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar compact title/status group, wrapped controls, full-height list, and no-overflow contract remain intact.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News Feed requests
-   latest 25-row pages; search and origin filters change server results;
-   canonical-headline rows remain readable; provider-score/Push decoration is
-   absent; Feed health is inline; and Story audit evidence starts collapsed. On
+   latest 25-row pages with strict `provider_score_gt=70` in the default `重点`
+   mode; `全部` removes only that fixed threshold; search and origin filters
+   survive mode changes and alter server results; canonical-headline rows remain
+   readable; the selected OpenNews score is visible while provider signal,
+   grade, and Push decoration remain absent; Feed health is inline; and Story
+   audit evidence starts collapsed. On
    `/news/brief`, verify Top Stories stay in exact server order, citation links
    open the matching Story, linkless evidence remains visible, L1/L2 is labelled
    separately, current/degraded/LKG/unavailable states are truthful, and no

@@ -122,12 +122,14 @@ The maintained chain takes the first five RSS/Atom wire entries before gates,
 keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
 before the stable Top 20 per category, and unions the selected physical Items
 with the complete current 12-hour primary OpenNews lane. Provider AI metadata is
-descriptive and may qualify outbound Push only; it cannot affect Story identity,
-public scoring, admission, ordering, or Brief. The public seed applies the
-pinned JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items
-with the same identity kernel before selection. The public selector is one
-global server-owned order with no profile, preference, embedding, topic
-grouping, entity veto, private diversity rule, or client-side reorder.
+descriptive and cannot affect Story identity, public scoring, material
+admission, ordering, or Brief. A selected numeric OpenNews score may qualify
+outbound Push and the downstream fixed `>70` reader focus filter; neither
+changes the materialized Story population. The public seed applies the pinned
+JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items with the
+same identity kernel before selection. The public selector is one global
+server-owned order with no profile, preference, embedding, topic grouping,
+entity veto, private diversity rule, or client-side reorder.
 
 `tests/test_news_public_sources.py`, `tests/test_news_rss_adapter.py`, and
 `tests/test_news_worldmonitor_parity.py` are the maintained local suites. They

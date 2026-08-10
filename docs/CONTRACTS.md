@@ -235,8 +235,11 @@ The News public surface is exactly five read-only routes:
 Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
-The React `/news` surface is public Feed plus Brief. It keeps server order and
-does not add a personalized or provider-score-only default view.
+The React `/news` primary reading modes are public Feed plus Brief, alongside
+the Status and Sources evidence pages. The default `重点` Feed uses the fixed
+strict `provider_score_gt=70`; URL-owned `view=all` removes that read filter.
+Both keep server order, and neither adds personalization or a user-adjustable
+threshold.
 
 NewsItem identity is `(source_id, source_item_key)`. RSS identity prefers GUID,
 then canonical URL, then a deterministic title/publication-time key. OpenNews
@@ -254,11 +257,12 @@ metadata is limited to the provider-source label, `score`, `signal`, `grade`,
 and coin details.
 Provider annotations merge metadata into the same current row; translation
 frames received from OpenNews and non-news messages are discarded. Provider
-metadata is descriptive and
-does not affect Story identity, classification, importance, Feed ordering, or
-Brief. A numeric provider score may qualify the already projected Story for
-the separate outbound push state machine. The timestamp at which the current
-numeric score value changed is persisted separately from Story-owned
+metadata is descriptive and does not affect Story identity, classification,
+importance, Feed ordering, or Brief. A numeric provider score may qualify the
+already projected Story for a read-time `provider_score_gt` filter or the
+separate outbound push state machine; neither changes the materialized Story
+population. The timestamp at which the current numeric score value changed is
+persisted separately from Story-owned
 `updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is
 the full SHA-256 of the earliest normalized title in the selected physical
 RSS/OpenNews component using WorldMonitor-compatible identity.

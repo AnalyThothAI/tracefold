@@ -67,6 +67,11 @@ const routeCases: RouteCase[] = [
     },
     specific: async (page) => {
       await expect(page.getByRole("navigation", { name: "新闻视图" })).toBeVisible();
+      await expect(page.getByRole("navigation", { name: "新闻范围" })).toBeVisible();
+      await expect(page.getByRole("link", { name: /重点/ })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
       await expect(page.getByLabel("news search")).toBeVisible();
       await expect(page.getByRole("combobox", { name: "新闻排序" })).toBeVisible();
       await expect(
@@ -74,6 +79,8 @@ const routeCases: RouteCase[] = [
       ).toBeVisible();
       const rows = page.locator(".news-story-row");
       await expect(rows).toHaveCount(5);
+      await expect(page.locator(".news-provider-score")).toHaveCount(5);
+      await expect(page.locator(".news-provider-score").first()).toBeVisible();
       const fullyVisibleRows = await rows.evaluateAll(
         (elements) =>
           elements.filter((element) => {

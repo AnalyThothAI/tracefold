@@ -53,6 +53,9 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
 
   const rows = page.locator(".news-story-row");
   await expect(rows).toHaveCount(6);
+  await expect(page.getByRole("link", { name: /重点/ })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".news-provider-score")).toHaveCount(6);
+  await expect(page.locator(".news-provider-score").first()).toContainText("OpenNews88");
   const fullyVisible = await rows.evaluateAll(
     (elements) =>
       elements.filter((element) => {

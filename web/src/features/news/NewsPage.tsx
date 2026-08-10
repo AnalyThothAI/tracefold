@@ -31,9 +31,11 @@ type NewsPageProps =
   | { token: string; view: "brief" | "feed" | "sources" | "status" }
   | { storyId: string; token: string; view: "story" };
 
+type FeedMode = "all" | "focus";
 type Facet = { count: number; label?: string; value: string };
 
 const DETAIL_TITLE_EXPANSION_THRESHOLD = 56;
+const HIGH_SIGNAL_THRESHOLD = 70;
 
 const CATEGORY_LABELS: Record<string, string> = {
   conflict: "冲突",
@@ -70,14 +72,23 @@ export function NewsPage(props: NewsPageProps) {
 
 function FeedRoute({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const mode: FeedMode = searchParams.get("view") === "all" ? "all" : "focus";
   const q = searchParams.get("q")?.trim() ?? "";
   const category = searchParams.get("category") || null;
   const level = parseLevel(searchParams.get("level"));
   const reportingOrigin = searchParams.get("reporting_origin") || null;
   const sort = searchParams.get("sort") === "importance" ? "importance" : "latest";
+  const providerScoreGt = mode === "focus" ? HIGH_SIGNAL_THRESHOLD : null;
+  useEffect(() => {
+    if (!searchParams.has("provider_score_gt")) return;
+    const canonicalParams = new URLSearchParams(searchParams);
+    canonicalParams.delete("provider_score_gt");
+    setSearchParams(canonicalParams, { replace: true });
+  }, [searchParams, setSearchParams]);
   const query = useNewsFeedWithToken(token, {
     category,
     level,
+    providerScoreGt,
     q,
     reportingOrigin,
     sort,
@@ -92,7 +103,9 @@ function FeedRoute({ token }: { token: string }) {
   const originFacets = firstPage?.facets.reporting_origins ?? [];
   const hasActiveFilters = Boolean(q || category || level || reportingOrigin);
   const storyListRef = useRef<HTMLDivElement>(null);
-  const feedIdentity = [q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join("\u001f");
+  const feedIdentity = [mode, q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join(
+    "\u001f",
+  );
   const storyFeed = useAnchoredStoryFeed(
     storyListRef,
     serverStories,
@@ -109,6 +122,7 @@ function FeedRoute({ token }: { token: string }) {
     sort?: "importance" | "latest";
   }) => {
     const params = new URLSearchParams(searchParams);
+    params.delete("provider_score_gt");
     const nextSort = changes.sort ?? sort;
     params.set("sort", nextSort);
     setOptionalParam(params, "q", changes.q === undefined ? q : changes.q);
@@ -139,7 +153,11 @@ function FeedRoute({ token }: { token: string }) {
       <header className="news-story-header">
         <div className="news-heading-copy">
           <h1>全球新闻</h1>
-          <p>公共来源聚合与新闻事件</p>
+          <p>
+            {mode === "focus"
+              ? `OpenNews > ${HIGH_SIGNAL_THRESHOLD} · 高信号动态`
+              : "公共来源完整新闻事件"}
+          </p>
         </div>
         <NewsInlineStatus
           error={statusQuery.isError}
@@ -154,9 +172,11 @@ function FeedRoute({ token }: { token: string }) {
           category={category}
           categoryFacets={categoryFacets}
           level={level}
+          mode={mode}
           onChange={updateFeedParams}
           originFacets={originFacets}
           reportingOrigin={reportingOrigin}
+          searchParams={searchParams}
           sort={sort}
         />
       </div>
@@ -187,7 +207,9 @@ function FeedRoute({ token }: { token: string }) {
           hint={
             hasActiveFilters
               ? "换个关键词或减少筛选条件后再试。"
-              : "新闻会在下一轮公共来源采集后出现。"
+              : mode === "focus"
+                ? `当前没有 OpenNews 分数严格高于 ${HIGH_SIGNAL_THRESHOLD} 的新闻。`
+                : "新闻会在下一轮公共来源采集后出现。"
           }
           title={hasActiveFilters ? "没有匹配的新闻" : "暂无新闻"}
         />
@@ -226,14 +248,17 @@ function NewsFeedControls({
   category,
   categoryFacets,
   level,
+  mode,
   onChange,
   originFacets,
   reportingOrigin,
+  searchParams,
   sort,
 }: {
   category: string | null;
   categoryFacets: Facet[];
   level: NewsLevel | null;
+  mode: FeedMode;
   onChange: (changes: {
     category?: string | null;
     level?: NewsLevel | null;
@@ -242,10 +267,12 @@ function NewsFeedControls({
   }) => void;
   originFacets: Facet[];
   reportingOrigin: string | null;
+  searchParams: URLSearchParams;
   sort: "importance" | "latest";
 }) {
   return (
     <div className="news-filter-bar">
+      <NewsFeedModeTabs active={mode} searchParams={searchParams} />
       <label className="news-sort-control">
         <span>排序</span>
         <select
@@ -313,6 +340,32 @@ function NewsFeedControls({
         </div>
       </details>
     </div>
+  );
+}
+
+function NewsFeedModeTabs({
+  active,
+  searchParams,
+}: {
+  active: FeedMode;
+  searchParams: URLSearchParams;
+}) {
+  return (
+    <nav aria-label="新闻范围" className="news-feed-mode">
+      <Link
+        aria-current={active === "focus" ? "page" : undefined}
+        to={{ pathname: newsPath(), search: feedModeSearch(searchParams, "focus") }}
+      >
+        <span>重点</span>
+        <small>OpenNews &gt; {HIGH_SIGNAL_THRESHOLD}</small>
+      </Link>
+      <Link
+        aria-current={active === "all" ? "page" : undefined}
+        to={{ pathname: newsPath(), search: feedModeSearch(searchParams, "all") }}
+      >
+        全部
+      </Link>
+    </nav>
   );
 }
 
@@ -474,6 +527,7 @@ function StoryCard({ story }: { story: NewsStory }) {
       <div className="news-story-primary">
         <header className="news-story-meta">
           <span className="news-story-classification">
+            <OpenNewsScoreBadge score={story.provider_evidence?.provider_metadata.score} />
             <span className="news-severity" data-level={story.level}>
               {LEVEL_LABELS[story.level]}
             </span>
@@ -649,6 +703,7 @@ function StoryHero({ story }: { story: NewsStory }) {
   return (
     <header className="news-story-hero">
       <div className="news-story-badges">
+        <OpenNewsScoreBadge score={story.provider_evidence?.provider_metadata.score} />
         <span data-level={story.level}>{LEVEL_LABELS[story.level]}</span>
         <span>{CATEGORY_LABELS[story.category] ?? story.category}</span>
         <span>{story.source_name}</span>
@@ -686,6 +741,22 @@ function StoryHero({ story }: { story: NewsStory }) {
         ) : null}
       </div>
     </header>
+  );
+}
+
+function OpenNewsScoreBadge({ score }: { score: number | null | undefined }) {
+  const numericScore = numericProviderScore(score);
+  if (numericScore == null) return null;
+  const formattedScore = formatPoints(numericScore);
+  return (
+    <span
+      aria-label={`OpenNews 评分 ${formattedScore}`}
+      className="news-provider-score"
+      data-band={numericScore > HIGH_SIGNAL_THRESHOLD ? "high" : "standard"}
+    >
+      <span>OpenNews</span>
+      <b>{formattedScore}</b>
+    </span>
   );
 }
 
@@ -981,6 +1052,19 @@ function parseLevel(value: string | null): NewsLevel | null {
 function setOptionalParam(params: URLSearchParams, name: string, value: string | null | undefined) {
   if (value) params.set(name, value);
   else params.delete(name);
+}
+
+function feedModeSearch(searchParams: URLSearchParams, mode: FeedMode): string {
+  const params = new URLSearchParams(searchParams);
+  params.delete("provider_score_gt");
+  if (mode === "all") params.set("view", "all");
+  else params.delete("view");
+  const value = params.toString();
+  return value ? `?${value}` : "";
+}
+
+function numericProviderScore(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function validExternalUrl(value: string | null | undefined): string | null {

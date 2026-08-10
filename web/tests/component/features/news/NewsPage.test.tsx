@@ -38,15 +38,17 @@ describe("NewsPage", () => {
 
   afterEach(cleanup);
 
-  it("defaults to the latest public server feed with 25 rows", async () => {
+  it("defaults to the latest OpenNews >70 feed with 25 rows", async () => {
     const observed = {
       limit: null as string | null,
+      providerScoreGt: null as string | null,
       sort: null as string | null,
     };
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
         observed.limit = params.get("limit");
+        observed.providerScoreGt = params.get("provider_score_gt");
         observed.sort = params.get("sort");
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
@@ -55,10 +57,51 @@ describe("NewsPage", () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
     expect(await screen.findByRole("heading", { name: "全球新闻" })).toBeInTheDocument();
-    expect(screen.getByText("公共来源聚合与新闻事件")).toBeInTheDocument();
+    expect(screen.getByText("OpenNews > 70 · 高信号动态")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "全球新闻" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: /重点/ })).toHaveAttribute("aria-current", "page");
     expect(observed.sort).toBe("latest");
     expect(observed.limit).toBe("25");
+    expect(observed.providerScoreGt).toBe("70");
+  });
+
+  it("keeps the complete Feed reachable through a URL-owned all mode", async () => {
+    let providerScoreGt: string | null = "unobserved";
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, ({ request }) => {
+        providerScoreGt = new URL(request.url).searchParams.get("provider_score_gt");
+        return HttpResponse.json({ ok: true, data: newsFeedFixture() });
+      }),
+    );
+
+    renderNews(<NewsPage token="test-token" view="feed" />, "/news?view=all&provider_score_gt=70");
+
+    expect(await screen.findByRole("link", { name: "全部" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(providerScoreGt).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).not.toHaveTextContent("provider_score_gt"),
+    );
+  });
+
+  it("preserves active filters when switching from all News to focus", async () => {
+    renderNews(
+      <NewsPage token="test-token" view="feed" />,
+      "/news?view=all&sort=importance&q=bitcoin&category=economic&level=high&reporting_origin=reuters",
+    );
+
+    const focusLink = await screen.findByRole("link", { name: /重点/ });
+    const href = focusLink.getAttribute("href");
+    expect(href).not.toBeNull();
+    const params = new URL(href!, "https://tracefold.local").searchParams;
+    expect(params.get("view")).toBeNull();
+    expect(params.get("sort")).toBe("importance");
+    expect(params.get("q")).toBe("bitcoin");
+    expect(params.get("category")).toBe("economic");
+    expect(params.get("level")).toBe("high");
+    expect(params.get("reporting_origin")).toBe("reuters");
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
@@ -124,7 +167,7 @@ describe("NewsPage", () => {
     );
   });
 
-  it("renders the canonical source title without provider-score decoration", async () => {
+  it("renders the canonical source title with its selected OpenNews score", async () => {
     const feed = newsFeedFixture();
     const story = feed.stories[0];
     story.description = "多个央行正在重新评估政策路径。";
@@ -137,7 +180,7 @@ describe("NewsPage", () => {
     const row = sourceTitle.closest("article");
     expect(row).not.toBeNull();
     expect(within(row!).getByText("多个央行正在重新评估政策路径。")).toBeInTheDocument();
-    expect(within(row!).queryByText(/OpenNews/)).not.toBeInTheDocument();
+    expect(within(row!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
     const whySummary = within(row!).getByText("为什么重要").closest("summary");
     const whyDisclosure = whySummary?.closest("details");
     expect(whySummary).not.toBeNull();
@@ -151,6 +194,20 @@ describe("NewsPage", () => {
       "href",
       "https://representative.example/news",
     );
+  });
+
+  it("omits the OpenNews score cleanly when provider evidence is unavailable", async () => {
+    const feed = newsFeedFixture();
+    feed.stories[0].provider_evidence = null;
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" view="feed" />, "/news?view=all");
+
+    const title = await screen.findByRole("heading", { name: feed.stories[0].title });
+    const row = title.closest("article");
+    expect(row).not.toBeNull();
+    expect(within(row!).queryByLabelText(/OpenNews 评分/)).not.toBeInTheDocument();
+    expect(within(row!).queryByText(/暂无.*分数|未评分/)).not.toBeInTheDocument();
   });
 
   it("omits invalid summaries instead of rendering placeholder copy", async () => {
@@ -525,7 +582,7 @@ describe("NewsPage", () => {
     const hero = title.closest(".news-story-hero") as HTMLElement | null;
     expect(hero).not.toBeNull();
     expect(within(hero!).getByText(detail.source_name)).toBeInTheDocument();
-    expect(within(hero!).queryByText(/OpenNews/)).not.toBeInTheDocument();
+    expect(within(hero!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
     const auditSummary = screen.getByText("查看 Tracefold 评分与新闻事件审计");
     expect(title.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(

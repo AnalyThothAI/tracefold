@@ -1,4 +1,5 @@
 import { useNewsFeedWithToken, useNewsSourcesWithToken } from "@features/news/useNewsPage";
+import { queryKeys } from "@shared/query/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
@@ -12,12 +13,22 @@ import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
 describe("useNewsFeedWithToken", () => {
+  it("separates focus and complete Feed cache identities", () => {
+    const focus = queryKeys.newsFeed("", null, null, null, 70, "latest");
+    const complete = queryKeys.newsFeed("", null, null, null, null, "latest");
+
+    expect(focus).not.toEqual(complete);
+    expect(focus[5]).toBe(70);
+    expect(complete[5]).toBeNull();
+  });
+
   it("reads only the WorldMonitor-compatible Feed endpoint", async () => {
     let category: string | null = null;
     let level: string | null = null;
     let limit: string | null = null;
     let q: string | null = null;
     let reportingOrigin: string | null = null;
+    let providerScoreGt: string | null = null;
     let sort: string | null = null;
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
@@ -27,6 +38,7 @@ describe("useNewsFeedWithToken", () => {
         limit = params.get("limit");
         q = params.get("q");
         reportingOrigin = params.get("reporting_origin");
+        providerScoreGt = params.get("provider_score_gt");
         sort = params.get("sort");
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
@@ -36,6 +48,7 @@ describe("useNewsFeedWithToken", () => {
         useNewsFeedWithToken("token", {
           category: "economic",
           level: "high",
+          providerScoreGt: 70,
           q: "bitcoin",
           reportingOrigin: "reuters",
           sort: "latest",
@@ -48,6 +61,7 @@ describe("useNewsFeedWithToken", () => {
     expect(limit).toBe("25");
     expect(q).toBe("bitcoin");
     expect(reportingOrigin).toBe("reuters");
+    expect(providerScoreGt).toBe("70");
     expect(sort).toBe("latest");
     expect(result.current.data?.pages[0].stories[0].importance_score).toBe(83);
   });
