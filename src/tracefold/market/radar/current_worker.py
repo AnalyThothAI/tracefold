@@ -23,7 +23,7 @@ from tracefold.platform.resource import (
 )
 
 _TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 3.0
-_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS = 1.5
+_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS = 2.5
 _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS = 0.25
 _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS = 0.25
 _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS = 0.5
@@ -144,11 +144,7 @@ class TokenRadarCurrentProjection:
             load_timeout = _phase_timeout(
                 deadline,
                 cap=_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
-                reserve_seconds=(
-                    _TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS
-                    + _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS
-                    + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS
-                ),
+                reserve_seconds=(_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS),
             )
             rows = await self.db.run_business(
                 "token_radar_current_load",

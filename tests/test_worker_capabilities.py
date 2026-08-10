@@ -425,8 +425,8 @@ def test_cpu_process_shares_one_total_timeout_between_admission_and_service() ->
                 _sleep_and_return,
                 0.05,
                 2,
-                service_timeout_seconds=1.5,
-                total_timeout_seconds=1.5,
+                service_timeout_seconds=2.5,
+                total_timeout_seconds=2.5,
             )
             assert await blocking == 1
             return result

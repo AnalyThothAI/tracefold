@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
 from tracefold.market import TokenRadarCurrentProjection
+from tracefold.market.radar.current_worker import _phase_timeout
 from tracefold.market.radar.reducer import reduce_token_radar
 from tracefold.platform.resource import ResourceOperationOverrun
 
@@ -86,10 +88,25 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
     asyncio.run(projection.sample())
 
     assert 2.9 < timeouts["token_radar_current_load"] <= 3.0
-    assert 1.4 < timeouts["token_radar_current_reduce"] <= 1.5
+    assert 2.4 < timeouts["token_radar_current_reduce"] <= 2.5
     assert 0.2 < timeouts["token_radar_current_present"] <= 0.25
     assert 0.2 < timeouts["token_radar_current_publish"] <= 0.25
-    assert 4.9 < sum(timeouts.values()) <= 5.0
+
+
+def test_token_radar_compute_borrows_only_unused_time_and_preserves_the_tail() -> None:
+    full_budget = _phase_timeout(
+        time.monotonic() + 4.0,
+        cap=2.5,
+        reserve_seconds=0.5,
+    )
+    cold_load_budget = _phase_timeout(
+        time.monotonic() + 2.0,
+        cap=2.5,
+        reserve_seconds=0.5,
+    )
+
+    assert 2.49 < full_budget <= 2.5
+    assert 1.49 < cold_load_budget <= 1.5
 
 
 def test_token_radar_enriches_selected_targets_before_publishing() -> None:
