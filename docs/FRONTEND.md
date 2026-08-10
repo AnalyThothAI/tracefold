@@ -77,6 +77,11 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   server-provided same-origin icon or a fixed-size symbol fallback, symbol/name,
   chain/address, current USD price, price change since the signal, market
   capitalization, transparent attention/evidence, and one Token Case action.
+  Identity uses one primary symbol/name line plus one canonical identity line;
+  market and evidence are separate labelled scan groups rather than one clipped
+  prose string. Desktop keeps at least four complete decisions visible at the
+  `1280x504` sidebar boundary; the reported `1210x504` viewport remains fully
+  contained, and mobile evidence values wrap instead of being ellipsized.
   It does not request `/api/recent`, subscribe to market targets, buffer
   WebSocket events, hydrate profiles or market data, pre-mount fifty empty rows,
   or render a Tape/task switcher. The header reports the displayed count against
@@ -257,7 +262,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    fallback marks, with no browser requests to provider image URLs such as
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, the full-height Radar shows its static evidence timestamp, no filter/Tape/task bar exists, each Case action is reachable, and the final Radar Item is visible without overlap.
-8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar title/evidence group, two-line Items, full-height list, and no-overflow contract remain intact.
+8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar title, labelled market/evidence groups, full-height list, and no-overflow contract remain intact.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News Feed requests
    latest 25-row pages with strict `provider_score_gt=70` in the default `重点`
    mode; `全部` removes only that fixed threshold; search and origin filters

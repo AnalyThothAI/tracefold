@@ -6,7 +6,7 @@ const archetypes = [
   {
     name: "scan",
     path: "/",
-    ready: (page: Page) => page.getByRole("heading", { name: "Token Radar" }),
+    ready: (page: Page) => page.getByRole("heading", { name: "Radar" }),
   },
   {
     name: "case",
@@ -28,7 +28,7 @@ test.beforeEach(async ({ page }) => {
       }
     });
   });
-  await installMockApi(page);
+  await installMockApi(page, { radarItemCount: 8 });
 });
 
 test("freezes representative scan and case archetypes", async ({ page }) => {

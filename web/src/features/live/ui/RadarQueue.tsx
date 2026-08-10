@@ -200,8 +200,15 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
         aria-label={empty ? undefined : `${symbol} market facts`}
         style={empty ? { visibility: "hidden" } : undefined}
       >
-        <span>{empty ? "\u00a0" : `Price ${formatPrice(item.market.price_usd)}`}</span>
         <span
+          aria-label={empty ? undefined : `Price ${formatPrice(item.market.price_usd)}`}
+          data-label="Price"
+          role="group"
+        >
+          {empty ? "\u00a0" : formatPrice(item.market.price_usd)}
+        </span>
+        <span
+          aria-label={empty ? undefined : `Since signal ${formatChange(change)}`}
           className={
             empty || change === null
               ? undefined
@@ -211,18 +218,76 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
                   ? "is-negative"
                   : undefined
           }
+          data-label="Since signal"
+          role="group"
         >
-          {empty ? "\u00a0" : `${formatChange(change)} since signal`}
+          {empty ? "\u00a0" : formatChange(change)}
         </span>
-        <span>{empty ? "\u00a0" : `MCap ${formatMarketCap(item.market.market_cap_usd)}`}</span>
+        <span
+          aria-label={
+            empty ? undefined : `Market cap ${formatMarketCap(item.market.market_cap_usd)}`
+          }
+          data-label="Market cap"
+          role="group"
+        >
+          {empty ? "\u00a0" : formatMarketCap(item.market.market_cap_usd)}
+        </span>
       </div>
-      <p
+      <div
         className="live-radar-item-evidence"
         aria-hidden={empty || undefined}
+        aria-label={empty ? undefined : `${symbol} evidence`}
         style={empty ? { visibility: "hidden" } : undefined}
       >
-        {empty ? "\u00a0" : formatEvidenceLine(item)}
-      </p>
+        <span
+          aria-label={
+            empty
+              ? undefined
+              : `Attention ${formatSigned(item.why_now.mention_delta)}, ${item.why_now.prior_mentions} to ${item.why_now.current_mentions} mentions`
+          }
+          data-label="Attention"
+          role="group"
+        >
+          {empty
+            ? "\u00a0"
+            : `${formatSigned(item.why_now.mention_delta)} · ${item.why_now.prior_mentions}→${item.why_now.current_mentions} mentions`}
+        </span>
+        <span
+          aria-label={
+            empty
+              ? undefined
+              : `Independent evidence, ${item.evidence.new_independent_author_count} authors, ${item.evidence.independent_text_count} texts`
+          }
+          data-label="Independent"
+          role="group"
+        >
+          {empty
+            ? "\u00a0"
+            : `${item.evidence.new_independent_author_count} authors · ${item.evidence.independent_text_count} texts`}
+        </span>
+        <span
+          aria-label={
+            empty
+              ? undefined
+              : `Formation quality, ${formatDuration(item.evidence.time_to_nth_author_ms)}, ${formatPercent(item.evidence.duplicate_share)} duplicates`
+          }
+          data-label="Formation"
+          role="group"
+        >
+          {empty
+            ? "\u00a0"
+            : `${formatDuration(item.evidence.time_to_nth_author_ms)} · ${formatPercent(item.evidence.duplicate_share)} duplicates`}
+        </span>
+        <time
+          dateTime={empty ? undefined : new Date(item.triggered_at_ms).toISOString()}
+          title="Signal trigger time"
+        >
+          {empty ? "\u00a0" : formatTimestamp(item.triggered_at_ms)}
+        </time>
+        {item?.counter_evidence ? (
+          <span className="live-radar-counter">Market confirmation unavailable</span>
+        ) : null}
+      </div>
       <Link
         aria-hidden={empty || undefined}
         style={empty ? { visibility: "hidden" } : undefined}
@@ -244,22 +309,6 @@ function formatIdentity(item: TokenRadarSnapshotItem): string {
     item.target.chain,
     exchange,
     item.target.address ? shortAddress(item.target.address) : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-function formatEvidenceLine(item: TokenRadarSnapshotItem): string {
-  const counterEvidence = item.counter_evidence ? "counter: market confirmation unavailable" : null;
-  return [
-    `${formatSigned(item.why_now.mention_delta)} mentions`,
-    `${item.why_now.prior_mentions}→${item.why_now.current_mentions}`,
-    `${item.evidence.new_independent_author_count} new authors`,
-    `${item.evidence.independent_text_count} independent texts`,
-    `formed in ${formatDuration(item.evidence.time_to_nth_author_ms)}`,
-    `${formatPercent(item.evidence.duplicate_share)} duplicates`,
-    formatTimestamp(item.triggered_at_ms),
-    counterEvidence,
   ]
     .filter(Boolean)
     .join(" · ");

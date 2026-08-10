@@ -77,37 +77,35 @@
     min-height: 0;
     overflow: auto;
     display: grid;
+    grid-auto-rows: max-content;
     align-content: start;
-    gap: 8px;
+    gap: 7px;
     margin: 0;
     padding: 10px 12px 12px;
     list-style: none;
   }
 
   .live-radar-item {
+    box-sizing: border-box;
     min-width: 0;
-    min-height: 60px;
+    min-height: 84px;
     contain: layout paint;
     display: grid;
-    grid-template-columns: minmax(220px, 1.05fr) minmax(300px, 1fr) minmax(260px, 1.25fr) auto;
-    align-items: center;
-    gap: 10px 16px;
+    grid-template-columns: minmax(210px, 0.85fr) minmax(360px, 1.4fr) auto;
+    grid-template-areas:
+      "identity market action"
+      "evidence evidence action";
+    align-items: stretch;
+    gap: 5px 20px;
     border: 1px solid var(--border-faint);
     border-left: 3px solid var(--accent-border);
     border-radius: var(--radius-md);
     background: var(--surface-raised);
-    padding: 10px 12px;
-  }
-
-  @media (min-width: 1101px) {
-    .live-radar-item {
-      box-sizing: border-box;
-      contain: strict;
-      height: 60px;
-    }
+    padding: 6px 16px;
   }
 
   .live-radar-identity {
+    grid-area: identity;
     min-width: 0;
     display: flex;
     align-items: center;
@@ -150,8 +148,10 @@
 
   .live-radar-token-copy {
     display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
     min-width: 0;
-    gap: 1px;
+    gap: 2px 6px;
   }
 
   .live-radar-token-copy strong,
@@ -165,36 +165,65 @@
   .live-radar-token-copy strong {
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 14px;
+    line-height: 1.2;
     font-variant-numeric: tabular-nums;
   }
 
   .live-radar-token-copy span {
     color: var(--text-secondary);
     font-size: 12px;
+    line-height: 1.25;
   }
 
   .live-radar-token-copy small {
+    grid-column: 1 / -1;
     color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 11px;
+    line-height: 1.25;
   }
 
   .live-radar-market {
+    grid-area: market;
     min-width: 0;
+    margin: 0;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    column-gap: 0;
     font-variant-numeric: tabular-nums;
   }
 
-  .live-radar-market span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .live-radar-market > span {
+    min-width: 0;
+    display: grid;
+    align-content: center;
+    gap: 3px;
+    border-left: 1px solid var(--border-faint);
+    padding-left: 14px;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.2;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .live-radar-market > span:first-child {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .live-radar-market > span::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.15;
   }
 
   .live-radar-market .is-positive {
@@ -206,15 +235,22 @@
   }
 
   .live-radar-item > a {
+    grid-area: action;
+    align-self: center;
     justify-self: end;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
     border: 1px solid var(--accent-border);
     border-radius: 4px;
     background: var(--accent-soft);
     color: var(--accent-primary);
-    padding: 5px 8px;
+    padding: 7px 10px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 1;
     text-decoration: none;
+    white-space: nowrap;
   }
 
   .live-radar-item > a:hover,
@@ -223,33 +259,62 @@
   }
 
   .live-radar-item-evidence {
+    grid-area: evidence;
     min-width: 0;
-    margin: 0;
-    overflow: hidden;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto auto;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .live-radar-item-evidence > span[role="group"] {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+    border-left: 1px solid var(--border-faint);
+    padding-left: 14px;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.2;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .live-radar-item-evidence > span[role="group"]:first-child {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .live-radar-item-evidence > span[role="group"]::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.15;
+  }
+
+  .live-radar-item-evidence time {
     color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-    text-overflow: ellipsis;
+    font-size: 10.5px;
+    line-height: 1.2;
     white-space: nowrap;
   }
 
-  @media (max-width: 1100px) {
-    .live-radar-item {
-      grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr) auto;
-    }
-
-    .live-radar-item-evidence {
-      grid-column: 1 / 3;
-    }
-
-    .live-radar-item > a {
-      grid-column: 3;
-      grid-row: 1 / 3;
-    }
+  .live-radar-counter {
+    color: var(--signal-caution);
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    white-space: nowrap;
   }
 
-  @media (max-width: 767px) {
+  @media (max-width: 900px) {
     .live-radar-header {
       height: 52px;
       gap: 8px;
@@ -273,7 +338,12 @@
     }
 
     .live-radar-item {
+      min-height: 154px;
       grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "identity action"
+        "market market"
+        "evidence evidence";
       gap: 8px 10px;
       padding: 9px;
     }
@@ -284,18 +354,20 @@
       height: 34px;
     }
 
-    .live-radar-market,
+    .live-radar-market > span,
+    .live-radar-item-evidence > span[role="group"] {
+      padding-left: 8px;
+    }
+
     .live-radar-item-evidence {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .live-radar-item-evidence time,
+    .live-radar-counter {
       grid-column: 1 / -1;
-    }
-
-    .live-radar-item > a {
-      grid-column: 2;
-      grid-row: 1;
-    }
-
-    .live-radar-item-evidence {
-      text-overflow: ellipsis;
+      justify-self: start;
     }
   }
 }

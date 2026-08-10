@@ -290,9 +290,9 @@ test("renders a real Token Radar publication within one polling interval", async
   await expect(item).toHaveCount(1);
   await expect(item).toBeVisible();
   await expect(item.getByRole("img", { name: "E2E Radar icon" })).toBeVisible();
-  await expect(item.getByText("Price $12.00", { exact: true })).toBeVisible();
-  await expect(item.getByText("+20% since signal", { exact: true })).toBeVisible();
-  await expect(item.getByText("MCap $12M", { exact: true })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Price $12.00" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Since signal +20%" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Market cap $12M" })).toBeVisible();
   expect(domNodeCount).toBeLessThanOrEqual(1_000);
 });
 

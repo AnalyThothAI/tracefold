@@ -21,12 +21,13 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   const item = page.locator(".live-radar-item").first();
   await expect(item.getByText("$UPEG", { exact: true })).toBeVisible();
   await expect(item.getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
-  await expect(item.getByText("Price $0.042", { exact: true })).toBeVisible();
-  await expect(item.getByText("+12% since signal", { exact: true })).toBeVisible();
-  await expect(item.getByText("MCap $42M", { exact: true })).toBeVisible();
-  await expect(item.getByText("+5 mentions", { exact: false })).toBeVisible();
-  await expect(item.getByText("2→7", { exact: false })).toBeVisible();
-  await expect(item.getByText("4 new authors", { exact: false })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Price $0.042" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Since signal +12%" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Market cap $42M" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Attention +5, 2 to 7 mentions" })).toBeVisible();
+  await expect(
+    item.getByRole("group", { name: "Independent evidence, 4 authors, 5 texts" }),
+  ).toBeVisible();
   await expect(item.locator("details, button")).toHaveCount(0);
   await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expect(page.getByLabel("token radar venue filter")).toHaveCount(0);

@@ -28,7 +28,7 @@ test("token route renders the HANSA case dossier and loads another post page", a
 
   await tokenCase.getByRole("link", { name: "返回 Token Radar" }).click();
 
-  await expect(page.getByRole("heading", { name: "Token Radar" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(

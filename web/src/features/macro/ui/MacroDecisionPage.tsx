@@ -141,7 +141,7 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
         <span>CURRENT FACTS · DETERMINISTIC</span>
         <h2 id="macro-current-facts">当前事实摘要</h2>
       </header>
-      <div className="macro-decision__module-grid" aria-label="六个宏观模块">
+      <section className="macro-decision__module-grid" aria-label="六个宏观模块">
         {data.modules.map((module) => (
           <article
             key={module.module_id}
@@ -169,7 +169,7 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
             <Link to={module.href}>进入模块</Link>
           </article>
         ))}
-      </div>
+      </section>
     </section>
   );
 }

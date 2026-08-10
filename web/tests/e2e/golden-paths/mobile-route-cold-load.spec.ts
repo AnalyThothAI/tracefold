@@ -124,11 +124,10 @@ const routeCases: RouteCase[] = [
     },
     specific: async (page) => {
       await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "当前事实摘要" })).toBeVisible();
       await expect(
-        page.getByRole("heading", { name: "真实利率回落正在缓和风险资产的贴现压力" }),
-      ).toBeVisible();
-      await expect(page.getByRole("table", { name: "十二资产冻结事实与稀疏展望" })).toBeVisible();
-      await expect(page.getByRole("region", { name: "六个宏观模块" })).toBeVisible();
+        page.getByRole("region", { name: "六个宏观模块" }).locator("article"),
+      ).toHaveCount(6);
     },
     nestedOverflowSelectors: [
       ".macro-decision",

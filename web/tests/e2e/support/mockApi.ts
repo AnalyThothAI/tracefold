@@ -19,6 +19,7 @@ export type MockApiOptions = {
   delayNonBootstrapMs?: number;
   failNonBootstrap?: boolean;
   radarItemCount?: number;
+  radarPresentationStress?: boolean;
   radarRefreshItemCount?: number;
 };
 
@@ -52,7 +53,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
         radarRequestCount > 1 && options.radarRefreshItemCount !== undefined
           ? options.radarRefreshItemCount
           : (options.radarItemCount ?? 1);
-      return fulfill(route, tokenRadarData(itemCount));
+      return fulfill(route, tokenRadarData(itemCount, options.radarPresentationStress ?? false));
     }
     if (path === "/api/token-case") return fulfill(route, tokenCaseData(url));
     if (path.startsWith("/api/token-images/")) return fulfillTokenImage(route);
@@ -172,23 +173,28 @@ function statusData() {
   };
 }
 
-function tokenRadarData(itemCount: number) {
+function tokenRadarData(itemCount: number, presentationStress: boolean) {
   return {
     schema_version: "token_radar_snapshot_v2",
     evidence_as_of_ms: NOW,
     eligible_total: itemCount,
-    items: Array.from({ length: itemCount }, (_, index) => radarItem(index)),
+    items: Array.from({ length: itemCount }, (_, index) => radarItem(index, presentationStress)),
   };
 }
 
-function radarItem(index: number) {
+function radarItem(index: number, presentationStress: boolean) {
   const suffix = index ? `:${index + 1}` : "";
+  const stressFirstItem = presentationStress && index === 0;
   return {
     target: {
       target_type: "Asset",
       target_id: `${TARGET_ID}${suffix}`,
       symbol: index ? `CASE${index + 1}` : "UPEG",
-      name: index ? `Case ${index + 1}` : "Unpegged Token",
+      name: stressFirstItem
+        ? "超长中文代币名称用于验证窄屏完整展示"
+        : index
+          ? `Case ${index + 1}`
+          : "Unpegged Token",
       logo_url: `/api/token-images/${String(index + 1).padStart(64, "0")}`,
       chain: "eip155:1",
       exchange: null,
@@ -197,19 +203,19 @@ function radarItem(index: number) {
     trigger_event_id: index ? `event-upeg-${index + 1}` : "event-upeg-1",
     triggered_at_ms: NOW - (index + 1) * 60_000,
     why_now: {
-      current_mentions: 7 + index,
-      prior_mentions: 2,
-      mention_delta: 5 + index,
+      current_mentions: stressFirstItem ? 12_345 : 7 + index,
+      prior_mentions: stressFirstItem ? 1_234 : 2,
+      mention_delta: stressFirstItem ? 11_111 : 5 + index,
     },
     evidence: {
-      new_independent_author_count: 4,
-      independent_text_count: 5,
+      new_independent_author_count: stressFirstItem ? 1_234 : 4,
+      independent_text_count: stressFirstItem ? 5_678 : 5,
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.08,
     },
     market: {
       status: "confirmed",
-      price_usd: 0.042,
+      price_usd: stressFirstItem ? 0.000000000123456789 : 0.042,
       price_change_since_signal: 0.12,
       market_cap_usd: 42_000_000,
       observed_at_ms: NOW - 30_000,

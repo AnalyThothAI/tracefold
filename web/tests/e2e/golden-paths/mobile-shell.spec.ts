@@ -44,8 +44,8 @@ test("mobile Top 50 Radar remains scannable and reaches the final row", async ({
 
   const items = page.locator(".live-radar-item");
   await expect(items).toHaveCount(50);
-  await expect(items.first().getByLabel("UPEG market facts")).toContainText("Price $0.042");
-  await expect(items.first().getByLabel("UPEG market facts")).toContainText("MCap $42M");
+  await expect(items.first().getByRole("group", { name: "Price $0.042" })).toBeVisible();
+  await expect(items.first().getByRole("group", { name: "Market cap $42M" })).toBeVisible();
   await expect(items.first().getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
   const layout = await page.evaluate(() => {
     const center = document.querySelector<HTMLElement>(".center-column");
@@ -54,12 +54,31 @@ test("mobile Top 50 Radar remains scannable and reaches the final row", async ({
     const items = document.querySelector<HTMLElement>(".live-radar-items");
     return {
       centerMaxScroll: center ? center.scrollHeight - center.clientHeight : null,
+      itemsContainContents: [...document.querySelectorAll<HTMLElement>(".live-radar-item")].every(
+        (item) => {
+          const itemBox = item.getBoundingClientRect();
+          return (
+            item.scrollHeight <= item.clientHeight + 1 &&
+            [...item.querySelectorAll<HTMLElement>(".live-radar-item-evidence [role=group]")].every(
+              (fact) =>
+                fact.scrollWidth <= fact.clientWidth + 1 &&
+                fact.scrollHeight <= fact.clientHeight + 1 &&
+                getComputedStyle(fact).textOverflow !== "ellipsis",
+            ) &&
+            [...item.children].every((child) => {
+              const childBox = child.getBoundingClientRect();
+              return childBox.top >= itemBox.top - 0.5 && childBox.bottom <= itemBox.bottom + 0.5;
+            })
+          );
+        },
+      ),
       livePageGridRows: livePage ? getComputedStyle(livePage).gridTemplateRows : null,
       itemsMaxScroll: items ? items.scrollHeight - items.clientHeight : null,
       queueOverflowY: queue ? getComputedStyle(queue).overflowY : null,
     };
   });
   expect(layout.centerMaxScroll).toBe(0);
+  expect(layout.itemsContainContents).toBe(true);
   expect(layout.itemsMaxScroll).toBeGreaterThan(0);
   expect(layout.livePageGridRows?.trim().split(/\s+/)).toHaveLength(1);
   expect(layout.queueOverflowY).toBe("hidden");

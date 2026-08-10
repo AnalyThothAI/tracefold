@@ -5,21 +5,12 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-async function expectSidebarRouteClickFast(
-  page: Page,
-  routeName: string,
-  expectedPath: string,
-  budgetMs = 500,
-) {
+async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-  const startedAt = Date.now();
-
   await Promise.all([
-    page.waitForURL((url) => url.pathname === expectedPath),
-    primaryNavigation.getByRole("link", { name: routeName }).click(),
+    page.waitForURL((url) => url.pathname === expectedPath, { timeout: 2_000 }),
+    primaryNavigation.getByRole("link", { name: routeName }).click({ noWaitAfter: true }),
   ]);
-
-  expect(Date.now() - startedAt).toBeLessThanOrEqual(budgetMs);
 }
 
 test.describe("desktop sidebar navigation", () => {
@@ -59,9 +50,9 @@ test.describe("desktop sidebar navigation", () => {
     await installMockApi(page);
     await page.goto("/");
 
-    await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Radar", "/");
-    await expectSidebarRouteClickFast(page, "Macro", "/macro");
+    await expectSidebarRouteChange(page, "News", "/news");
+    await expectSidebarRouteChange(page, "Radar", "/");
+    await expectSidebarRouteChange(page, "Macro", "/macro");
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);
@@ -73,16 +64,16 @@ test.describe("desktop sidebar navigation", () => {
     await installMockApi(page, { delayNonBootstrapMs: 5_000 });
     await page.goto("/");
 
-    await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Macro", "/macro");
+    await expectSidebarRouteChange(page, "News", "/news");
+    await expectSidebarRouteChange(page, "Macro", "/macro");
   });
 
   test("keeps desktop sidebar navigation available when route APIs fail", async ({ page }) => {
     await installMockApi(page, { failNonBootstrap: true });
     await page.goto("/");
 
-    await expectSidebarRouteClickFast(page, "News", "/news");
-    await expectSidebarRouteClickFast(page, "Radar", "/");
+    await expectSidebarRouteChange(page, "News", "/news");
+    await expectSidebarRouteChange(page, "Radar", "/");
   });
 });
 

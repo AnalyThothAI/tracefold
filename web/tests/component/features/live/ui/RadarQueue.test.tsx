@@ -1,5 +1,5 @@
 import { RadarQueue, type TokenRadarSnapshot } from "@features/live";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -24,12 +24,9 @@ describe("RadarQueue", () => {
     );
     expect(rows[0]).toHaveTextContent("Token 1 Network");
     expect(rows[0]).toHaveTextContent("solana · token-1");
-    expect(rows[0]).toHaveTextContent("Price $0.00003281");
-    expect(rows[0]).toHaveTextContent("+12% since signal");
-    expect(rows[0]).toHaveTextContent("MCap $1.3M");
-    expect(rows[0]).toHaveTextContent(
-      "+5 mentions · 2→7 · 4 new authors · 5 independent texts · formed in 2m · 10% duplicates",
-    );
+    expect(rows[0]).toHaveTextContent("$0.00003281");
+    expect(rows[0]).toHaveTextContent("+12%");
+    expect(rows[0]).toHaveTextContent("$1.3M");
 
     const actions = screen.getAllByRole("link", { name: "Open Token Case" });
     expect(actions).toHaveLength(50);
@@ -67,9 +64,36 @@ describe("RadarQueue", () => {
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(fallback).toHaveTextContent("T");
-    expect(row).toHaveTextContent("Price —");
-    expect(row).toHaveTextContent("— since signal");
-    expect(row).toHaveTextContent("MCap —");
+    expect(within(row).getByRole("group", { name: "Price —" })).toHaveTextContent("—");
+    expect(within(row).getByRole("group", { name: "Since signal —" })).toHaveTextContent("—");
+    expect(within(row).getByRole("group", { name: "Market cap —" })).toHaveTextContent("—");
+  });
+
+  it("presents market and evidence as labelled scan groups instead of a clipped sentence", () => {
+    renderQueue(fixture(1));
+    const row = screen.getByRole("listitem");
+    const market = screen.getByLabelText("TOKEN1 market facts");
+    const evidence = screen.getByLabelText("TOKEN1 evidence");
+
+    expect(within(market).getByRole("group", { name: "Price $0.00003281" })).toBeVisible();
+    expect(within(market).getByRole("group", { name: "Since signal +12%" })).toBeVisible();
+    expect(within(market).getByRole("group", { name: "Market cap $1.3M" })).toBeVisible();
+    expect(
+      within(evidence).getByRole("group", { name: "Attention +5, 2 to 7 mentions" }),
+    ).toBeVisible();
+    expect(
+      within(evidence).getByRole("group", {
+        name: "Independent evidence, 4 authors, 5 texts",
+      }),
+    ).toBeVisible();
+    expect(
+      within(evidence).getByRole("group", {
+        name: "Formation quality, 2m, 10% duplicates",
+      }),
+    ).toBeVisible();
+    expect(row).toHaveTextContent("+5 · 2→7 mentions");
+    expect(row).toHaveTextContent("4 authors · 5 texts");
+    expect(row).toHaveTextContent("2m · 10% duplicates");
   });
 
   it("allows a new logo source to recover after the previous image failed", () => {
