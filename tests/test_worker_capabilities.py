@@ -403,6 +403,39 @@ def test_cpu_process_is_spawn_only_and_serial_across_caller_cancellation() -> No
     assert asyncio.run(scenario()) == "spawn"
 
 
+def test_cpu_process_shares_one_total_timeout_between_admission_and_service() -> None:
+    async def scenario() -> int:
+        capability = CpuProcess()
+        try:
+            await capability.prewarm()
+            submitted = asyncio.Event()
+            blocking = asyncio.create_task(
+                capability.run(
+                    "blocking",
+                    _sleep_and_return,
+                    1.1,
+                    1,
+                    service_timeout_seconds=2.0,
+                    on_submitted=submitted.set,
+                )
+            )
+            await asyncio.wait_for(submitted.wait(), timeout=1.0)
+            result = await capability.run(
+                "wait_then_compute",
+                _sleep_and_return,
+                0.05,
+                2,
+                service_timeout_seconds=1.5,
+                total_timeout_seconds=1.5,
+            )
+            assert await blocking == 1
+            return result
+        finally:
+            capability.close()
+
+    assert asyncio.run(scenario()) == 2
+
+
 def test_cpu_native_timeout_finishes_before_the_wrapper_watchdog() -> None:
     async def scenario() -> None:
         capability = CpuProcess()

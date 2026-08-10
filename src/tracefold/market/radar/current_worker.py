@@ -168,6 +168,7 @@ class TokenRadarCurrentProjection:
                 _reduce_token_payload,
                 {"rows": rows, "now_ms": now_ms, "budget_seconds": compute_timeout},
                 service_timeout_seconds=compute_timeout,
+                total_timeout_seconds=compute_timeout,
             )
             present_timeout = _phase_timeout(
                 deadline,

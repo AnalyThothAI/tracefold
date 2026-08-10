@@ -71,7 +71,9 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
             payload,
             *,
             service_timeout_seconds: float,
+            total_timeout_seconds: float | None = None,
         ):
+            assert total_timeout_seconds == service_timeout_seconds
             timeouts[operation] = service_timeout_seconds
             return reduce_token_radar(payload["rows"], now_ms=payload["now_ms"])
 
@@ -142,8 +144,16 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
             raise AssertionError(operation)
 
     class _Cpu:
-        async def run(self, _operation, function, payload, *, service_timeout_seconds: float):
-            del service_timeout_seconds
+        async def run(
+            self,
+            _operation,
+            function,
+            payload,
+            *,
+            service_timeout_seconds: float,
+            total_timeout_seconds: float | None = None,
+        ):
+            assert total_timeout_seconds == service_timeout_seconds
             return function(payload)
 
     projection = TokenRadarCurrentProjection(

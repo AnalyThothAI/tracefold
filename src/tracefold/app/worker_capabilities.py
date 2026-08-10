@@ -262,15 +262,21 @@ class CpuProcess:
         /,
         *args: Any,
         service_timeout_seconds: float,
+        total_timeout_seconds: float | None = None,
         on_submitted: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> T:
         if not self._accepting or self._closed:
             raise RuntimeError("cpu_process_closed")
         _require_spawn_safe_function(function)
-        admission_started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        admission_started = loop.time()
+        total_timeout = None if total_timeout_seconds is None else float(total_timeout_seconds)
+        if total_timeout is not None and total_timeout <= 0.0:
+            raise ValueError("cpu_total_timeout_seconds_required")
+        admission_timeout = 1.0 if total_timeout is None else total_timeout
         try:
-            await asyncio.wait_for(self._gate.acquire(), timeout=1.0)
+            await asyncio.wait_for(self._gate.acquire(), timeout=admission_timeout)
         except TimeoutError as exc:
             _record_admission(
                 self._telemetry,
@@ -287,14 +293,19 @@ class CpuProcess:
             "accepted",
             admission_started,
         )
-        loop = asyncio.get_running_loop()
+        service_timeout = float(service_timeout_seconds)
+        if total_timeout is not None:
+            service_timeout = min(
+                service_timeout,
+                max(0.001, total_timeout - (loop.time() - admission_started)),
+            )
         submitted_at = loop.time()
         try:
             underlying = self._pool.schedule(
                 function,
                 args=args,
                 kwargs=kwargs,
-                timeout=float(service_timeout_seconds),
+                timeout=service_timeout,
             )
         except BaseException:
             self._gate.release()
@@ -322,7 +333,7 @@ class CpuProcess:
             {wrapped},
             timeout=max(
                 0.001,
-                float(service_timeout_seconds) + _CPU_FUTURE_COMPLETION_GRACE_SECONDS,
+                service_timeout + _CPU_FUTURE_COMPLETION_GRACE_SECONDS,
             ),
         )
         if not done:
@@ -330,9 +341,7 @@ class CpuProcess:
         try:
             return await wrapped
         except FutureTimeoutError as exc:
-            raise CpuTaskTimeout(
-                f"cpu_task_timeout:{_operation_name(operation_name)}:{float(service_timeout_seconds):g}s"
-            ) from exc
+            raise CpuTaskTimeout(f"cpu_task_timeout:{_operation_name(operation_name)}:{service_timeout:g}s") from exc
         except ProcessExpired as exc:
             raise CpuTaskProcessExpired(f"cpu_task_process_expired:pid={exc.pid}:exitcode={exc.exitcode}") from exc
 
