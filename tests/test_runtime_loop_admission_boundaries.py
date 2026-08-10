@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tracefold.app import workers as workers_module
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.workers import (
     _MARKET_TICK_POLL_SECONDS,
@@ -60,6 +61,38 @@ def test_productive_due_loop_has_a_minimum_repoll_cadence() -> None:
 
     assert len(started_at) == 2
     assert started_at[1] - started_at[0] >= 0.20
+
+
+def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    samples = 0
+
+    async def _wait(_stop_event: asyncio.Event, seconds: float) -> None:
+        waits.append(seconds)
+
+    async def scenario() -> None:
+        nonlocal samples
+        stop_event = asyncio.Event()
+
+        async def sample() -> None:
+            nonlocal samples
+            samples += 1
+            stop_event.set()
+
+        await _run_periodic(
+            sample,
+            period_seconds=30.0,
+            initial_delay_seconds=30.0,
+            stop_event=stop_event,
+        )
+
+    monkeypatch.setattr(workers_module, "_wait_or_stop", _wait)
+    asyncio.run(scenario())
+
+    assert samples == 1
+    assert waits[0] == 30.0
 
 
 def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:

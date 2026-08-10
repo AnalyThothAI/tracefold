@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from tracefold.market import StocksRadarCurrentProjection, TokenRadarCurrentProjection
+from tracefold.market.radar.reducer import reduce_token_radar
 from tracefold.platform.resource import ResourceOperationOverrun
 
 
@@ -48,6 +49,49 @@ def test_token_radar_outer_timeout_records_operational_failure() -> None:
     asyncio.run(projection.sample())
 
     assert failures == [("token_radar_sample_budget_exceeded", 1_800_000_000_000)]
+
+
+def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() -> None:
+    timeouts: dict[str, float] = {}
+
+    class _Database:
+        async def run_business(
+            self,
+            operation: str,
+            _function,
+            *_args,
+            operation_timeout_seconds: float,
+            **_kwargs,
+        ):
+            timeouts[operation] = operation_timeout_seconds
+            if operation == "token_radar_current_load":
+                return []
+            return {"status": "unchanged"}
+
+    class _Cpu:
+        async def run(
+            self,
+            operation: str,
+            _function,
+            payload,
+            *,
+            service_timeout_seconds: float,
+        ):
+            timeouts[operation] = service_timeout_seconds
+            return reduce_token_radar(payload["rows"], now_ms=payload["now_ms"])
+
+    projection = TokenRadarCurrentProjection(
+        db=_Database(),
+        cpu=_Cpu(),
+        clock=lambda: 1_800_000_000_000,
+    )
+
+    asyncio.run(projection.sample())
+
+    assert 2.9 < timeouts["token_radar_current_load"] <= 3.0
+    assert 1.4 < timeouts["token_radar_current_reduce"] <= 1.5
+    assert 0.4 < timeouts["token_radar_current_publish"] <= 0.5
+    assert 4.9 < sum(timeouts.values()) <= 5.0
 
 
 class _OverrunningDatabase:

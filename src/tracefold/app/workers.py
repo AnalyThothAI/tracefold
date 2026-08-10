@@ -357,6 +357,7 @@ async def run_workers(settings: Settings) -> None:
                         _run_periodic(
                             components.radar_current.sample,
                             period_seconds=TOKEN_RADAR_REFRESH_SECONDS,
+                            initial_delay_seconds=TOKEN_RADAR_REFRESH_SECONDS,
                             stop_event=work_stop_event,
                         ),
                         on_fatal=enter_fatal,
@@ -591,8 +592,13 @@ async def _run_periodic(
     sample: Callable[[], Awaitable[None]],
     *,
     period_seconds: float,
+    initial_delay_seconds: float = 0.0,
     stop_event: asyncio.Event,
 ) -> None:
+    if initial_delay_seconds > 0.0:
+        await _wait_or_stop(stop_event, initial_delay_seconds)
+        if stop_event.is_set():
+            return
     loop = asyncio.get_running_loop()
     deadline = loop.time()
     while not stop_event.is_set():
@@ -950,6 +956,7 @@ async def _wire_components(
 
 
 async def _reconcile_once(components: _Components) -> None:
+    await components.radar_current.initialize()
     await components.asset_profile_refresh.reconcile()
     if components.news is not None:
         await components.news.reconcile()

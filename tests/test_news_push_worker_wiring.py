@@ -179,8 +179,12 @@ def test_rss_catalog_is_wired_only_when_explicitly_enabled(
     assert any(getattr(turn, "__self__", None) is components.news for turn, _idle in components.due_turns)
 
 
-def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
+def test_startup_reconcile_publishes_token_radar_before_competing_business_work() -> None:
     calls: list[tuple[str, int | None]] = []
+
+    class _Radar:
+        async def initialize(self) -> None:
+            calls.append(("radar", None))
 
     class _News:
         async def reconcile(self) -> None:
@@ -196,6 +200,7 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
             calls.append(("profile", None))
 
     components = SimpleNamespace(
+        radar_current=_Radar(),
         asset_profile_refresh=_ProfileRefresh(),
         news=_News(),
         news_push=_Push(),
@@ -205,8 +210,8 @@ def test_startup_reconcile_initializes_push_even_without_candidates() -> None:
 
     asyncio.run(workers._reconcile_once(components))  # type: ignore[arg-type]
 
-    assert [name for name, _value in calls] == ["profile", "news", "push"]
-    assert calls[2][1] is not None
+    assert [name for name, _value in calls] == ["radar", "profile", "news", "push"]
+    assert calls[3][1] is not None
 
 
 @pytest.mark.parametrize(

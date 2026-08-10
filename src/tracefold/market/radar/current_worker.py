@@ -27,10 +27,12 @@ from tracefold.platform.resource import (
     ResourceOperationOverrun,
 )
 
-_LOAD_TIMEOUT_SECONDS = 1.5
-_COMPUTE_TIMEOUT_SECONDS = 2.5
-_PUBLISH_TIMEOUT_SECONDS = 1.0
-_FAILURE_TIMEOUT_SECONDS = 0.5
+_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 3.0
+_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS = 1.5
+_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS = 0.5
+_TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS = 0.5
+_STOCKS_RADAR_LOAD_TIMEOUT_SECONDS = 1.5
+_STOCKS_RADAR_PUBLISH_TIMEOUT_SECONDS = 1.0
 
 
 class TokenRadarCurrentService:
@@ -42,7 +44,7 @@ class TokenRadarCurrentService:
         self,
         *,
         now_ms: int,
-        session_timeout_seconds: float = _LOAD_TIMEOUT_SECONDS,
+        session_timeout_seconds: float = _TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
             return TokenRadarCurrentRepository(repos.conn).load_material_inputs(now_ms=now_ms)
@@ -52,7 +54,7 @@ class TokenRadarCurrentService:
         reduced: Any,
         *,
         now_ms: int,
-        session_timeout_seconds: float = _PUBLISH_TIMEOUT_SECONDS,
+        session_timeout_seconds: float = _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
     ) -> TokenRadarPublicationResult:
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
             return TokenRadarCurrentRepository(repos.conn).publish(
@@ -65,7 +67,7 @@ class TokenRadarCurrentService:
         *,
         now_ms: int,
         error_code: str,
-        session_timeout_seconds: float = _FAILURE_TIMEOUT_SECONDS,
+        session_timeout_seconds: float = _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
     ) -> int:
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
             return TokenRadarCurrentRepository(repos.conn).record_failure(
@@ -116,7 +118,7 @@ class TokenRadarCurrentProjection:
             await self._mark_failed(
                 "token_radar_sample_budget_exceeded",
                 now_ms=now_ms,
-                deadline=time.monotonic() + _FAILURE_TIMEOUT_SECONDS,
+                deadline=time.monotonic() + _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
             )
         finally:
             if deadline_missed:
@@ -129,7 +131,11 @@ class TokenRadarCurrentProjection:
 
     async def _sample_with_deadline(self, *, now_ms: int, deadline: float) -> tuple[str, bool]:
         try:
-            load_timeout = _phase_timeout(deadline, cap=_LOAD_TIMEOUT_SECONDS, reserve_seconds=3.5)
+            load_timeout = _phase_timeout(
+                deadline,
+                cap=_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
+                reserve_seconds=(_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS),
+            )
             rows = await self.db.run_business(
                 "token_radar_current_load",
                 self.service.load,
@@ -138,7 +144,11 @@ class TokenRadarCurrentProjection:
                 session_timeout_seconds=load_timeout,
             )
             self._set_rows("input", len(rows))
-            compute_timeout = _phase_timeout(deadline, cap=_COMPUTE_TIMEOUT_SECONDS, reserve_seconds=1.0)
+            compute_timeout = _phase_timeout(
+                deadline,
+                cap=_TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS,
+                reserve_seconds=_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
+            )
             reduced = await self.cpu.run(
                 "token_radar_current_reduce",
                 _reduce_token_payload,
@@ -149,7 +159,10 @@ class TokenRadarCurrentProjection:
             self._set_rows("public", len(reduced.snapshot["items"]))
             self._set_bytes("input", reduced.input_bytes)
             self._set_bytes("output", reduced.output_bytes)
-            publish_timeout = _phase_timeout(deadline, cap=_PUBLISH_TIMEOUT_SECONDS)
+            publish_timeout = _phase_timeout(
+                deadline,
+                cap=_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
+            )
             result = await self.db.run_business(
                 "token_radar_current_publish",
                 self.service.publish,
@@ -177,7 +190,10 @@ class TokenRadarCurrentProjection:
 
     async def _mark_failed(self, error_code: str, *, now_ms: int, deadline: float) -> None:
         try:
-            timeout = _phase_timeout(deadline, cap=_FAILURE_TIMEOUT_SECONDS)
+            timeout = _phase_timeout(
+                deadline,
+                cap=_TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
+            )
             await self.db.run_business(
                 "token_radar_current_fail",
                 self.service.mark_failed,
@@ -248,7 +264,7 @@ class StocksRadarCurrentProjection:
             rows = await self.db.run_business(
                 "stocks_radar_current_load",
                 self.service.load,
-                operation_timeout_seconds=_LOAD_TIMEOUT_SECONDS,
+                operation_timeout_seconds=_STOCKS_RADAR_LOAD_TIMEOUT_SECONDS,
                 now_ms=now_ms,
             )
             reduced = await self.cpu.run(
@@ -261,7 +277,7 @@ class StocksRadarCurrentProjection:
                 "stocks_radar_current_publish",
                 self.service.publish,
                 reduced,
-                operation_timeout_seconds=_PUBLISH_TIMEOUT_SECONDS,
+                operation_timeout_seconds=_STOCKS_RADAR_PUBLISH_TIMEOUT_SECONDS,
                 now_ms=now_ms,
             )
         except (
@@ -283,6 +299,11 @@ class RadarCurrentProjectionCycle:
     ) -> None:
         self.token = token
         self.stocks = stocks
+
+    async def initialize(self) -> None:
+        """Publish Token Radar before competing startup reconciliation begins."""
+
+        await self.token.sample()
 
     async def sample(self) -> None:
         await self.token.sample()
