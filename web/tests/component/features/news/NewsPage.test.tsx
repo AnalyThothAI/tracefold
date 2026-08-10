@@ -138,7 +138,15 @@ describe("NewsPage", () => {
     expect(row).not.toBeNull();
     expect(within(row!).getByText("多个央行正在重新评估政策路径。")).toBeInTheDocument();
     expect(within(row!).queryByText(/OpenNews/)).not.toBeInTheDocument();
-    expect(within(row!).getByText(/为什么重要：严重度 41.3/)).toBeInTheDocument();
+    const whySummary = within(row!).getByText("为什么重要").closest("summary");
+    const whyDisclosure = whySummary?.closest("details");
+    expect(whySummary).not.toBeNull();
+    expect(whyDisclosure).not.toHaveAttribute("open");
+    fireEvent.click(whySummary!);
+    expect(whyDisclosure).toHaveAttribute("open");
+    expect(
+      within(row!).getByText(/严重度 41.3 · 来源 20 · 佐证 12 · 时效 9.8/),
+    ).toBeInTheDocument();
     expect(within(row!).getByRole("link", { name: /查看原文/ })).toHaveAttribute(
       "href",
       "https://representative.example/news",

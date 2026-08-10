@@ -64,6 +64,23 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   expect(fullyVisible).toBeGreaterThanOrEqual(4);
 });
 
+test("desktop News detail keeps navigation adjacent to the story", async ({ page }) => {
+  await installMockApi(page);
+  await page.goto("/news/stories/story-global-policy");
+
+  const backLink = page.getByRole("link", { name: "返回全球新闻" });
+  const hero = page.locator(".news-story-hero");
+  await expect(backLink).toBeVisible();
+  await expect(hero).toBeVisible();
+
+  const backBox = await backLink.boundingBox();
+  const heroBox = await hero.boundingBox();
+  if (!backBox || !heroBox) throw new Error("News detail layout boxes are unavailable");
+
+  const navigationToStoryGap = heroBox.y - (backBox.y + backBox.height);
+  expect(navigationToStoryGap).toBeLessThanOrEqual(32);
+});
+
 test("a 668-character News feed title renders at no more than two lines", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
@@ -86,6 +103,27 @@ test("a 668-character News feed title renders at no more than two lines", async 
   expect(metrics.clamp).toBe("2");
   expect(metrics.textLength).toBe(668);
   expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight * 2 + 1);
+});
+
+test("News card disclosures stay interactive above the primary row link", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 720 });
+  await installMockApi(page);
+  await routeNewsFeed(page, ["Readable News card with secondary evidence"]);
+  await page.goto("/news");
+
+  const disclosure = page.locator(".news-story-why");
+  const summary = disclosure.locator("summary");
+  const originalLink = page.getByRole("link", { name: /查看原文/ });
+
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await summary.click();
+  await expect(disclosure).toHaveAttribute("open", "");
+  await originalLink.click({ trial: true });
+
+  await summary.focus();
+  await expect(summary).toBeFocused();
+  await summary.press("Enter");
+  await expect(disclosure).not.toHaveAttribute("open", "");
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {

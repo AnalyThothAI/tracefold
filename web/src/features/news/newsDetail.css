@@ -1,4 +1,9 @@
 @layer app.features {
+  .news-panel.news-detail-shell {
+    grid-template-rows: none;
+    grid-auto-rows: max-content;
+  }
+
   .news-story-detail,
   .news-brief-document {
     display: grid;

@@ -1,6 +1,6 @@
 import { newsPath, newsStoryPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
-import { ArrowLeft, ExternalLink, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, ChevronDown, ExternalLink, SlidersHorizontal } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -470,40 +470,49 @@ function StoryCard({ story }: { story: NewsStory }) {
   ].filter(Boolean);
 
   return (
-    <article className="news-story-row" data-story-id={story.story_id}>
+    <article className="news-story-row" data-level={story.level} data-story-id={story.story_id}>
       <div className="news-story-primary">
         <header className="news-story-meta">
-          <span className="news-severity" data-level={story.level}>
-            {LEVEL_LABELS[story.level]}
+          <span className="news-story-classification">
+            <span className="news-severity" data-level={story.level}>
+              {LEVEL_LABELS[story.level]}
+            </span>
+            <span>{CATEGORY_LABELS[story.category] ?? story.category}</span>
           </span>
-          <span>{CATEGORY_LABELS[story.category] ?? story.category}</span>
-          <span>{story.source_name}</span>
-          <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
-            {relativeTime(story.last_published_at_ms)}
-          </time>
-          <span>{story.source_count} 家独立来源</span>
+          <span className="news-story-context">
+            <span>{story.source_name}</span>
+            <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
+              {relativeTime(story.last_published_at_ms)}
+            </time>
+            <span>{story.source_count} 家独立来源</span>
+          </span>
         </header>
         <Link className="news-story-title" to={newsStoryPath(story.story_id)}>
           <h2>{displayTitle}</h2>
         </Link>
         {summary ? <p className="news-story-summary">{summary}</p> : null}
-        <div className="news-story-signals">
+        <footer className="news-story-footer">
+          <details className="news-story-why">
+            <summary>
+              <span>为什么重要</span>
+              <b>Tracefold {story.importance_score}</b>
+              <ChevronDown aria-hidden />
+            </summary>
+            <p>
+              严重度 {formatPoints(factors.severity_points)} · 来源{" "}
+              {formatPoints(factors.source_points)} · 佐证{" "}
+              {formatPoints(factors.corroboration_points)} · 时效{" "}
+              {formatPoints(factors.recency_points)}
+              {boosts.length ? ` · ${boosts.join(" · ")}` : ""}
+            </p>
+          </details>
           {originalUrl ? (
             <a className="news-original-link" href={originalUrl} rel="noreferrer" target="_blank">
               查看原文
               <ExternalLink aria-hidden />
             </a>
           ) : null}
-        </div>
-      </div>
-      <div className="news-story-why">
-        <b>Tracefold {story.importance_score}</b>
-        <span>
-          为什么重要：严重度 {formatPoints(factors.severity_points)} · 来源{" "}
-          {formatPoints(factors.source_points)} · 佐证 {formatPoints(factors.corroboration_points)}{" "}
-          · 时效 {formatPoints(factors.recency_points)}
-          {boosts.length ? ` · ${boosts.join(" · ")}` : ""}
-        </span>
+        </footer>
       </div>
     </article>
   );
