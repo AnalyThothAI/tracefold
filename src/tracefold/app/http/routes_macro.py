@@ -10,6 +10,7 @@ from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_json
+from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.macro import (
     MACRO_MODULE_IDS,
     MACRO_MODULE_LABELS,
@@ -94,6 +95,8 @@ def _read_module(request: Request, module_id: MacroModuleId) -> dict[str, Any]:
             "reason": module_reason,
             "href": _MODULE_HREFS[module_id],
         }
+    if module_id == "rates_fed":
+        payload["document_analysis_runtime"] = macro_document_analysis_runtime(runtime.settings)
     payload["availability"] = "available"
     payload["reason"] = _available_module_reason(payload)
     return payload

@@ -439,6 +439,139 @@ def test_fomc_calendar_adapter_stores_distinct_full_text_document_types() -> Non
     assert all(len(fact.content_text) > 200 for fact in facts)
 
 
+def test_fomc_schedule_adapter_emits_official_meeting_dates_without_fetching_documents() -> None:
+    calendar = """
+    <html><main>
+      <div class="panel panel-default">
+        <div class="panel-heading"><h4><a id="current">2026 FOMC Meetings</a></h4></div>
+        <div class="row fomc-meeting">
+          <div class="fomc-meeting__month"><strong>July</strong></div>
+          <div class="fomc-meeting__date">28-29</div>
+          <a href="/newsevents/pressreleases/monetary20260729a.htm">Statement</a>
+        </div>
+        <div class="row fomc-meeting">
+          <div class="fomc-meeting__month"><strong>September</strong></div>
+          <div class="fomc-meeting__date">15-16*</div>
+        </div>
+      </div>
+      <div class="panel panel-default">
+        <div class="panel-heading"><h4><a id="future">2027 FOMC Meetings</a></h4></div>
+        <div class="row fomc-meeting">
+          <div class="fomc-meeting__month"><strong>January</strong></div>
+          <div class="fomc-meeting__date">26-27</div>
+        </div>
+      </div>
+    </main></html>
+    """
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=calendar, request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("federal_reserve.fomc.schedule"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert len(requests) == 1
+    assert [type(fact) for fact in batch.facts] == [ReleaseFact, ReleaseFact, ReleaseFact]
+    revisions = {fact.release_id.split(":", maxsplit=3)[1] for fact in batch.facts}
+    assert len(revisions) == 1
+    assert [
+        (
+            ":".join(fact.release_id.split(":")[2:]),
+            fact.series_id,
+            fact.reference_period,
+            fact.scheduled_at_ms,
+            fact.actual_value,
+        )
+        for fact in batch.facts
+    ] == [
+        ("2026-07-28:2026-07-29", "FOMC_MEETING", "2026-07-28..2026-07-29", None, None),
+        ("2026-09-15:2026-09-16", "FOMC_MEETING_SEP", "2026-09-15..2026-09-16", None, None),
+        ("2027-01-26:2027-01-27", "FOMC_MEETING", "2027-01-26..2027-01-27", None, None),
+    ]
+    assert all(fact.release_id.startswith("FOMC_CALENDAR:") for fact in batch.facts)
+    assert batch.cursor == {
+        "calendar_years": [2026, 2027],
+        "latest_meeting_end": "2027-01-27",
+    }
+
+
+def test_treasury_auction_adapter_emits_typed_demand_metrics_for_completed_results() -> None:
+    response_payload = {
+        "data": [
+            {
+                "record_date": "2026-07-27",
+                "cusip": "91282ABC1",
+                "security_type": "Note",
+                "security_term": "10-Year",
+                "auction_date": "2026-07-27",
+                "closing_time_comp": "01:00 PM",
+                "bid_to_cover_ratio": "2.67",
+                "high_yield": "4.321",
+                "offering_amt": "42000000000",
+                "comp_accepted": "40000000000",
+                "indirect_bidder_accepted": "28000000000",
+                "direct_bidder_accepted": "5000000000",
+                "primary_dealer_accepted": "7000000000",
+                "pdf_filenm_comp_results": "R_20260727_1.pdf",
+            },
+            {
+                "record_date": "2026-08-03",
+                "cusip": "91282FUT1",
+                "security_type": "Note",
+                "security_term": "10-Year",
+                "auction_date": "2026-08-03",
+                "closing_time_comp": "01:00 PM",
+                "bid_to_cover_ratio": "null",
+                "high_yield": "null",
+                "offering_amt": "42000000000",
+                "comp_accepted": "null",
+                "indirect_bidder_accepted": "null",
+                "direct_bidder_accepted": "null",
+                "primary_dealer_accepted": "null",
+                "pdf_filenm_comp_results": "null",
+            },
+        ],
+        "meta": {"total-count": 2},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload, request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("treasury.auction.results"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    assert [(fact.series_id, fact.actual_value, fact.unit) for fact in batch.facts] == [
+        ("10_YEAR:bid_to_cover", 2.67, "ratio"),
+        ("10_YEAR:direct_award_share", 12.5, "percent"),
+        ("10_YEAR:high_yield", 4.321, "percent"),
+        ("10_YEAR:indirect_award_share", 70.0, "percent"),
+        ("10_YEAR:offering_amount", 42_000_000_000.0, "usd"),
+        ("10_YEAR:primary_dealer_award_share", 17.5, "percent"),
+    ]
+    assert {fact.release_id for fact in batch.facts} == {"TREASURY_AUCTION:91282ABC1:2026-07-27"}
+    assert all(fact.scheduled_at_ms == 1785171600000 for fact in batch.facts)
+    assert all(fact.published_at_ms is None for fact in batch.facts)
+    assert batch.cursor == {"auction_date": "2026-07-27", "record_date": "2026-07-27"}
+
+
 def test_fomc_calendar_adapter_extracts_official_sep_pdf(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

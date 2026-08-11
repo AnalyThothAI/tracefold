@@ -23,6 +23,7 @@ from tracefold.macro.dependencies import (
 from tracefold.macro.projection import (
     MacroProjectionService,
     compute_macro_module_projection,
+    rebuild_all_macro_modules_for_maintenance,
 )
 from tracefold.market import MarketObservationFact
 from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
@@ -151,6 +152,66 @@ def test_macro_projection_publish_rejects_changed_dataset_fingerprint() -> None:
         if writer_conn is not None:
             writer_conn.close()
         conn.close()
+
+
+def test_rates_projection_uses_target_state_for_shared_sofr_dependency() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.sofr")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            assert repos.macro.ensure_target(spec, now_ms=NOW_MS, max_attempts=5) == 1
+            target = repos.macro.claim_target(
+                clock_kind=spec.clock_kind,
+                lease_owner="sofr-fixture",
+                lease_ms=45_000,
+                now_ms=NOW_MS,
+                target_keys=(spec.target_key,),
+            )
+            assert target is not None
+            assert repos.macro.complete_target(
+                target_key=spec.target_key,
+                lease_owner="sofr-fixture",
+                cursor={"reference_date": "2026-05-18"},
+                next_due_at_ms=NOW_MS + spec.refresh_seconds * 1_000,
+                completed_at_ms=NOW_MS,
+            )
+            assert (
+                repos.macro.insert_series_fact(
+                    SeriesFact(
+                        dataset_id=spec.dataset_id,
+                        series_id=spec.series_id,
+                        reference_date=date(2026, 5, 18),
+                        vintage_date=date(2026, 5, 18),
+                        value_numeric=4.31,
+                        value_text=None,
+                        unit=spec.unit,
+                        published_at_ms=NOW_MS,
+                        received_at_ms=NOW_MS,
+                        source_url=spec.source_url,
+                        raw_data={"fixture": "shared-sofr-rates-input"},
+                    )
+                )
+                == 1
+            )
+
+        result = rebuild_all_macro_modules_for_maintenance(
+            db=_SingleConnectionDB(conn),
+            now_ms=NOW_MS,
+        )
+        with repository_session_for_connection(conn) as repos:
+            persisted = repos.macro.module_current("rates_fed")
+    finally:
+        conn.close()
+
+    assert result["modules_computed"] == 6
+    assert persisted is not None
+    sofr_state = next(
+        state for state in persisted["payload_json"]["evidence"]["dataset_states"] if state["dataset_id"] == "fred.sofr"
+    )
+    assert sofr_state["required_for_current"] is True
+    assert sofr_state["current_health"] == "current"
+    assert sofr_state["current_reason"]["code"] == "within_freshness_budget"
 
 
 def test_macro_maintenance_reseeds_clean_unchanged_frontiers() -> None:

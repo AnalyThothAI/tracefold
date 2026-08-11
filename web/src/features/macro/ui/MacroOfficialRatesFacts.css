@@ -1,0 +1,152 @@
+@layer app.features {
+  .macro-decision__meeting-calendar,
+  .macro-decision__auction-results {
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    padding: 0.7rem;
+  }
+
+  .macro-decision__meeting-calendar > header,
+  .macro-decision__auction-results > header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+
+  .macro-decision__auction-results > header {
+    display: grid;
+    justify-content: stretch;
+    gap: 0.1rem;
+  }
+
+  .macro-decision__meeting-calendar > header > div,
+  .macro-decision__auction-results > header {
+    min-width: 0;
+  }
+
+  .macro-decision__meeting-calendar h3,
+  .macro-decision__auction-results h3,
+  .macro-decision__auction-results p {
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+
+  .macro-decision__meeting-calendar h3,
+  .macro-decision__auction-results h3 {
+    margin-top: 0.1rem;
+    font-size: 0.8rem;
+  }
+
+  .macro-decision__meeting-calendar > header span,
+  .macro-decision__auction-results > header span {
+    color: var(--text-muted);
+    font-size: 0.59rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .macro-decision__meeting-calendar > header small,
+  .macro-decision__auction-results > header p {
+    overflow-wrap: anywhere;
+    color: var(--text-muted);
+    font-size: 0.61rem;
+  }
+
+  .macro-decision__meeting-calendar > div,
+  .macro-decision__auction-results > div {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .macro-decision__meeting-calendar article,
+  .macro-decision__auction-results article {
+    display: grid;
+    align-content: start;
+    gap: 0.42rem;
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+    padding-top: 0.5rem;
+  }
+
+  .macro-decision__meeting-calendar article > header,
+  .macro-decision__auction-results article > header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .macro-decision__auction-results article > header > div {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+  }
+
+  .macro-decision__meeting-calendar article > header :is(strong, span),
+  .macro-decision__auction-results article > header :is(strong, small) {
+    overflow-wrap: anywhere;
+  }
+
+  .macro-decision__meeting-calendar article > header span,
+  .macro-decision__auction-results article > header small {
+    color: var(--text-muted);
+    font-size: 0.61rem;
+  }
+
+  .macro-decision__meeting-calendar dl,
+  .macro-decision__auction-results dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .macro-decision__meeting-calendar dl > div,
+  .macro-decision__auction-results dl > div {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+  }
+
+  .macro-decision__meeting-calendar dt,
+  .macro-decision__auction-results dt {
+    color: var(--text-muted);
+    font-size: 0.58rem;
+  }
+
+  .macro-decision__meeting-calendar dd,
+  .macro-decision__auction-results dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+  }
+
+  .macro-decision__meeting-calendar article > a,
+  .macro-decision__auction-results article > a {
+    justify-self: start;
+    overflow-wrap: anywhere;
+    font-size: 0.62rem;
+  }
+
+  @media (max-width: 430px) {
+    .macro-decision__meeting-calendar > header {
+      flex-direction: column;
+    }
+
+    .macro-decision__meeting-calendar dl,
+    .macro-decision__auction-results dl {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}

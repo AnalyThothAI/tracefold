@@ -671,7 +671,7 @@ wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
 `liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed payload (rates v6, economy/liquidity v5, and
+explicit typed payload (rates v7, economy/liquidity v5, and
 credit/volatility/cross-asset v7), deterministic module-specific analysis, exact
 market timestamps, natural publication cadence, source roles, importance
 ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
@@ -689,6 +689,16 @@ history, and funding comparisons remain deterministic. Credit exposes spread,
 funding cost, bank supply, and borrower quality concurrently and never reduces
 them to a score.
 
+Rates v7 also carries the current official FOMC calendar snapshot and recent
+Treasury auction-demand facts. The calendar adapter emits one immutable
+revision across all meetings on the official page, so an official reschedule
+replaces the prior snapshot in the read model without deleting its audit facts.
+Auction bid-to-cover, high yield, offering amount, and bidder award shares enter
+the existing release-fact family from Treasury Fiscal Data. The competitive
+close is a scheduled clock; no result publication time is invented. SOFR has
+one Registry owner and one fact identity while the dependency graph makes that
+same fact available to both Rates and Liquidity.
+
 Macro has no second judgment publication, daily narrative, or archive product.
 The overview is a compact index over the six current module rows; each module
 is a deterministic descriptive view over persisted facts.
@@ -699,17 +709,25 @@ Fed document analysis is the only model-derived Macro state. It receives one
 bounded official body plus effective-dated role/prior-signal context, verifies
 exact excerpts against that body, and inserts one immutable analysis for the
 exact document/model/prompt identity. It feeds the descriptive `rates_fed`
-module and is never a publication gate for the other five modules.
+module as a supporting capability and never gates official Rates/Fed current
+health. Publication, completion of the native job, advancement of the derived
+Dataset projection state, and dirtying the `rates_fed` frontier share one
+transaction. A maintenance rebuild derives the same state from immutable
+analyses and native jobs.
 
 Migrations `20260801_0235` and `20260801_0236` are irreversible hard cuts: they
 remove retired News acquisition and Macro derived/control history without
 adding compatibility tables or readers.
 Historical migration `20260801_0237` introduced a persisted OpenNews recovery
-boundary; current migration `20260809_0247` removes that state in favor of
+boundary; News migration `20260809_0247` removes that state in favor of
 newest-first 12-hour overlap. `20260801_0238` adds the two News-owned
 push-control tables with an
 uninitialized baseline, so the first enabled reconcile suppresses the current
 eligible set without a network call.
+Migration `20260810_0251` is the Rates v7 hard cut: it deletes the rebuildable
+v6 `rates_fed` current/frontier rows and changes the database schema invariant
+to v7. Typed Macro facts and immutable analyses are preserved and the sole
+projection writer rebuilds the current row.
 
 ## Safety boundary
 

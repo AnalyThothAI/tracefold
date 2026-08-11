@@ -1116,11 +1116,58 @@ class MacroFedRosterData(ExactApiSchema):
     officials: list[MacroFedOfficialData]
 
 
+class MacroFedMeetingData(ExactApiSchema):
+    meeting_id: str
+    start_date: date
+    end_date: date
+    has_sep: bool
+    calendar_published_at_ms: int | None
+    received_at_ms: int
+    source_url: str
+
+
+class MacroFedMeetingCalendarData(ExactApiSchema):
+    revision_id: str | None
+    meetings: list[MacroFedMeetingData]
+
+
 class MacroFedData(ExactApiSchema):
+    meeting_calendar: MacroFedMeetingCalendarData
     institutional_stance: MacroFedInstitutionalStanceData
     officials_distribution: MacroFedOfficialsDistributionData
     timeline: list[MacroFedTimelineEventData]
     roster: MacroFedRosterData
+
+
+class MacroTreasuryAuctionResultData(ExactApiSchema):
+    auction_id: str
+    cusip: str
+    security_term: str
+    auction_date: date
+    scheduled_at_ms: int | None
+    published_at_ms: int | None
+    received_at_ms: int
+    source_url: str
+    bid_to_cover_ratio: float | None
+    high_yield_pct: float | None
+    offering_amount_usd: float | None
+    indirect_award_share_pct: float | None
+    direct_award_share_pct: float | None
+    primary_dealer_award_share_pct: float | None
+
+
+class MacroTreasuryAuctionsData(ExactApiSchema):
+    recent_results: list[MacroTreasuryAuctionResultData]
+
+
+class MacroDocumentAnalysisRuntimeData(ExactApiSchema):
+    state: Literal["disabled", "unconfigured", "active"]
+    enabled: bool
+    configured: bool
+    worker_active: bool = Field(
+        description="Configuration admission (enabled and configured), not observed worker process liveness."
+    )
+    model: str
 
 
 class MacroReleaseObservationData(ExactApiSchema):
@@ -1302,7 +1349,7 @@ class MacroCrossAssetFuturesData(ExactApiSchema):
 
 
 class MacroRatesFedPersistedData(ExactApiSchema):
-    schema_version: Literal["macro_rates_fed_v6"]
+    schema_version: Literal["macro_rates_fed_v7"]
     module_id: Literal["rates_fed"]
     label: str
     status: MacroModuleStatusData
@@ -1313,10 +1360,12 @@ class MacroRatesFedPersistedData(ExactApiSchema):
     curve: MacroCurveData
     policy_pricing: MacroPolicyPricingData
     fed: MacroFedData
+    treasury_auctions: MacroTreasuryAuctionsData
     positioning: list[MacroPositionData]
 
 
 class MacroRatesFedReadData(MacroRatesFedPersistedData):
+    document_analysis_runtime: MacroDocumentAnalysisRuntimeData
     availability: Literal["available"]
     reason: MacroReason | None
 

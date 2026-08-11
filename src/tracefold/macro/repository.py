@@ -1255,6 +1255,59 @@ class MacroRepository:
             "completed": int(row["completed"]),
         }
 
+    def document_analysis_projection_state(self) -> dict[str, Any]:
+        """Derive an append-only analysis change token plus native job buckets."""
+
+        # The table rejects UPDATE/DELETE, so row_count changes on every legal
+        # material mutation even when a backdated ID leaves both maxima unchanged.
+        analysis_summary = dict(
+            self.conn.execute(
+                """
+                SELECT count(*)::bigint AS row_count,
+                       max(analysis_id) AS max_analysis_id,
+                       max(created_at_ms)::bigint AS source_frontier_ms
+                  FROM macro_document_analyses
+                """
+            ).fetchone()
+        )
+        job_state = self.document_analysis_job_state()
+        if job_state["failed"] > 0:
+            acquisition_status = "failed"
+        elif int(analysis_summary["row_count"]) > 0:
+            acquisition_status = "current"
+        elif job_state["open"] > 0:
+            acquisition_status = "pending"
+        else:
+            acquisition_status = "uninitialized"
+        return {
+            "dataset_id": "federal_reserve.document.analysis",
+            "material_fingerprint": _payload_hash(
+                {
+                    "schema_version": "macro_document_analysis_projection_input_v2",
+                    "analysis_summary": analysis_summary,
+                    "job_state": job_state,
+                }
+            ),
+            "acquisition_status": acquisition_status,
+            "source_frontier_ms": int(analysis_summary["source_frontier_ms"] or 0),
+        }
+
+    def refresh_document_analysis_projection_state(
+        self,
+        *,
+        updated_at_ms: int,
+    ) -> bool:
+        """Persist the rebuildable derived-analysis Dataset input."""
+
+        state = self.document_analysis_projection_state()
+        return self.upsert_dataset_projection_state(
+            dataset_id=str(state["dataset_id"]),
+            material_fingerprint=str(state["material_fingerprint"]),
+            acquisition_status=str(state["acquisition_status"]),
+            source_frontier_ms=int(state["source_frontier_ms"]),
+            updated_at_ms=int(updated_at_ms),
+        )
+
     def ensure_document_analysis_jobs(
         self,
         *,
@@ -1266,6 +1319,7 @@ class MacroRepository:
         speech_lookback_days: int,
         limit: int = 2_000,
         document_ids: tuple[str, ...] | None = None,
+        refresh_projection_state: bool = True,
     ) -> int:
         rows = self.conn.execute(
             """
@@ -1398,6 +1452,8 @@ class MacroRepository:
                 ),
             )
             written += int(cursor.rowcount)
+        if refresh_projection_state:
+            self.refresh_document_analysis_projection_state(updated_at_ms=now_ms)
         return written
 
     def claim_document_analysis_job(

@@ -9,6 +9,7 @@ import type {
   MacroModuleId,
   MacroModuleUnavailableReadData,
   MacroOverviewReadData,
+  MacroDatasetState,
   MacroReason,
   MacroTypedModuleReadData,
 } from "../model/macroTypes";
@@ -19,6 +20,9 @@ import "./MacroDecisionBrief.css";
 import "./MacroDecisionOverview.css";
 import "./MacroDecisionPage.css";
 import "./MacroDecisionPageResponsive.css";
+import "./MacroDatasetStatus.css";
+import "./MacroOverviewStatus.css";
+import "./MacroUpdateState.css";
 
 const MODULE_ROUTES: ReadonlyArray<{ id: MacroModuleId; path: string; label: string }> = [
   { id: "rates_fed", path: "/macro/rates-fed", label: "利率与美联储" },
@@ -53,12 +57,12 @@ export function MacroOverviewPage({
   return (
     <PageState.Stale updating={query.isFetching && !query.isPending}>
       <section aria-label="每日宏观主线" className="macro-decision" data-page-archetype="decision">
-        <MacroHeader
-          data={data}
-          stale={query.isError || data.transport.state === "stale"}
-          onRefresh={() => void query.refetch()}
-        />
+        <MacroHeader data={data} onRefresh={() => void query.refetch()} />
         <MacroNavigation />
+        {query.isError ? (
+          <UpdateDelayed error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
+        <OverviewStatus data={data} />
         <ModuleOverview data={data} />
       </section>
     </PageState.Stale>
@@ -81,7 +85,16 @@ export function MacroModulePage({
     return <PageState.Loading label={`读取${moduleLabel(moduleId)}`} layout="route" rows={6} />;
   }
   if (query.data.availability === "unavailable") {
-    return <UnavailableModule module={query.data} moduleId={moduleId} />;
+    return (
+      <PageState.Stale updating={query.isFetching && !query.isPending}>
+        <UnavailableModule
+          delayedError={query.isError ? query.error : undefined}
+          module={query.data}
+          moduleId={moduleId}
+          onRetry={() => void query.refetch()}
+        />
+      </PageState.Stale>
+    );
   }
   const module = query.data;
   return (
@@ -99,31 +112,26 @@ export function MacroModulePage({
           </Button>
         </header>
         <MacroNavigation activeModule={moduleId} />
+        {query.isError ? (
+          <UpdateDelayed error={query.error} onRetry={() => void query.refetch()} />
+        ) : null}
+        <ModuleDiagnostics module={module} />
         {module.module_id === "rates_fed" ? <RatesDecisionSummary module={module} /> : null}
         <MacroModuleSections module={module} />
-        <ModuleDiagnostics module={module} />
       </section>
     </PageState.Stale>
   );
 }
 
-function MacroHeader({
-  data,
-  stale,
-  onRefresh,
-}: {
-  data: MacroOverviewReadData;
-  stale: boolean;
-  onRefresh: () => void;
-}) {
+function MacroHeader({ data, onRefresh }: { data: MacroOverviewReadData; onRefresh: () => void }) {
   return (
     <header className="macro-decision__header">
       <div>
         <span>ONE CURRENT SESSION · NO FALLBACK</span>
         <h1>宏观事实总览</h1>
         <p>
-          最新事实 {formatInstant(data.latest_fact_at_ms)} ·{" "}
-          {stale ? "传输缓存可能陈旧" : "读取成功"}
+          最新事实 {formatInstant(data.latest_fact_at_ms)} · 传输状态{" "}
+          {transportLabel(data.transport.state)}
         </p>
       </div>
       <Button onClick={onRefresh} size="sm" variant="outline">
@@ -131,6 +139,46 @@ function MacroHeader({
         刷新
       </Button>
     </header>
+  );
+}
+
+function OverviewStatus({ data }: { data: MacroOverviewReadData }) {
+  return (
+    <section aria-label="宏观总览状态" className="macro-decision__overview-status">
+      <header>
+        <span>SERVER-OWNED OVERVIEW STATUS</span>
+        <h2>总览状态</h2>
+      </header>
+      <dl>
+        <StatusDatum
+          label="传输状态"
+          state={data.transport.state}
+          value={transportLabel(data.transport.state)}
+        />
+        <StatusDatum label="总览读取于" value={formatInstant(data.read_at_ms)} />
+        <StatusDatum
+          label="最近成功读取"
+          value={formatInstant(data.transport.last_successful_read_at_ms)}
+        />
+        <StatusDatum label="最新事实" value={formatInstant(data.latest_fact_at_ms)} />
+        <StatusDatum
+          label="数据覆盖"
+          state={data.data_quality.coverage_state}
+          value={`${coverageLabel(data.data_quality.coverage_state)} · ${data.data_quality.coverage_gap_count} 个缺口`}
+        />
+        <StatusDatum
+          label="当前质量"
+          state={data.data_quality.current_health_state}
+          value={`${healthLabel(data.data_quality.current_health_state)} · ${data.data_quality.current_health_gap_count} 个缺口`}
+        />
+        <StatusDatum
+          label="历史质量"
+          state={data.data_quality.history_depth_state}
+          value={`${historyLabel(data.data_quality.history_depth_state)} · ${data.data_quality.history_gap_count} 个缺口`}
+        />
+      </dl>
+      {data.transport.reason ? <ReasonSummary reason={data.transport.reason} /> : null}
+    </section>
   );
 }
 
@@ -151,21 +199,43 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
               <span>CURRENT FACTS</span>
               <h3>{module.label}</h3>
             </header>
-            <p>{module.summary?.headline ?? module.reason?.message ?? "尚无模块投影。"}</p>
+            <p>{module.summary?.headline ?? "该模块没有可用摘要。"}</p>
             <dl>
               <div>
+                <dt>模块可用性</dt>
+                <dd>{availabilityLabel(module.availability)}</dd>
+              </div>
+              <div>
                 <dt>当前事实</dt>
-                <dd>{healthLabel(module.current_health_state)}</dd>
+                <dd>
+                  {module.current_health_state
+                    ? healthLabel(module.current_health_state)
+                    : "未提供"}
+                </dd>
               </div>
               <div>
                 <dt>required 历史</dt>
-                <dd>{historyLabel(module.history_depth_state)}</dd>
+                <dd>
+                  {module.history_depth_state ? historyLabel(module.history_depth_state) : "未提供"}
+                </dd>
               </div>
               <div>
                 <dt>数据合同</dt>
-                <dd>{module.coverage_state === "complete" ? "完整" : "部分"}</dd>
+                <dd>{module.coverage_state ? coverageLabel(module.coverage_state) : "未提供"}</dd>
+              </div>
+              <div>
+                <dt>最新事实</dt>
+                <dd>{formatInstant(module.latest_fact_at_ms)}</dd>
+              </div>
+              <div>
+                <dt>缺口计数</dt>
+                <dd>
+                  覆盖 {module.coverage_gap_count} · 当前 {module.current_health_gap_count} · 历史{" "}
+                  {module.history_gap_count}
+                </dd>
               </div>
             </dl>
+            {module.reason ? <ReasonSummary reason={module.reason} /> : null}
             <Link to={module.href}>进入模块</Link>
           </article>
         ))}
@@ -175,24 +245,164 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
 }
 
 function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
+  const auditOpen = module.evidence.dataset_states.some(
+    (dataset) =>
+      (dataset.required_for_current && dataset.current_health !== "current") ||
+      (dataset.required_for_history &&
+        dataset.history_depth !== "complete" &&
+        dataset.history_depth !== "not_required"),
+  );
   return (
-    <aside className="macro-decision__diagnostic-strip" aria-label="模块诊断">
-      <strong>
-        当前事实 {healthLabel(module.status.current_health.state)} · required 历史{" "}
-        {historyLabel(module.status.history_depth.state)} · 数据合同{" "}
-        {coverageLabel(module.status.coverage.state)}
-      </strong>
-      <span>{module.reason?.message ?? "当前模块直接读取持久化事实与确定性计算结果。"}</span>
-    </aside>
+    <section
+      aria-label="数据集状态"
+      className="macro-decision__dataset-status macro-decision__diagnostic-strip"
+    >
+      <header>
+        <div>
+          <span>SERVER-OWNED DATASET STATES</span>
+          <h2>数据集状态</h2>
+          <p>{module.reason?.message ?? "状态、时钟与恢复信息均直接来自当前模块读模型。"}</p>
+        </div>
+        <dl aria-label="模块状态">
+          <StatusDatum
+            label="当前事实"
+            state={module.status.current_health.state}
+            value={healthLabel(module.status.current_health.state)}
+          />
+          <StatusDatum
+            label="历史深度"
+            state={module.status.history_depth.state}
+            value={historyLabel(module.status.history_depth.state)}
+          />
+          <StatusDatum
+            label="数据合同"
+            state={module.status.coverage.state}
+            value={coverageLabel(module.status.coverage.state)}
+          />
+        </dl>
+      </header>
+      {module.evidence.dataset_states.length ? (
+        <details className="macro-decision__dataset-audit" open={auditOpen}>
+          <summary>数据集审计 · {module.evidence.dataset_states.length} 条</summary>
+          <div className="macro-decision__dataset-grid">
+            {module.evidence.dataset_states.map((dataset) => (
+              <DatasetStatus key={dataset.dataset_id} dataset={dataset} />
+            ))}
+          </div>
+        </details>
+      ) : (
+        <p className="macro-decision__dataset-empty">服务端未返回数据集状态。</p>
+      )}
+    </section>
+  );
+}
+
+function DatasetStatus({ dataset }: { dataset: MacroDatasetState }) {
+  return (
+    <article data-health={dataset.current_health}>
+      <header>
+        <div>
+          <h3>{dataset.label}</h3>
+          <small>{dataset.dataset_id}</small>
+        </div>
+        {dataset.critical ? <span>关键数据集</span> : null}
+      </header>
+      <dl>
+        <StatusDatum
+          label="当前健康"
+          state={dataset.current_health}
+          value={healthLabel(dataset.current_health)}
+        />
+        <StatusDatum label="当前合同" value={dataset.required_for_current ? "必需" : "支持"} />
+        <StatusDatum label="历史合同" value={dataset.required_for_history ? "必需" : "不要求"} />
+        <StatusDatum label="来源角色" value={dataset.source_role} />
+        <StatusDatum
+          label="来源状态"
+          state={dataset.source_state}
+          value={sourceStateLabel(dataset.source_state)}
+        />
+        <StatusDatum label="信任层级" value={trustTierLabel(dataset.trust_tier)} />
+        <StatusDatum
+          label="市场状态"
+          state={dataset.market_state}
+          value={marketLabel(dataset.market_state)}
+        />
+        <StatusDatum
+          label="历史深度"
+          state={dataset.history_depth}
+          value={historyLabel(dataset.history_depth)}
+        />
+        <StatusDatum label="数据截止" value={dataset.latest_reference ?? "尚无引用时点"} />
+        <StatusDatum label="接收于" value={formatInstant(dataset.latest_received_at_ms)} />
+        {dataset.last_market_at_ms != null ? (
+          <StatusDatum label="市场时钟" value={formatInstant(dataset.last_market_at_ms)} />
+        ) : null}
+        {dataset.next_open_ms != null ? (
+          <StatusDatum label="下次开市" value={formatInstant(dataset.next_open_ms)} />
+        ) : null}
+      </dl>
+      {dataset.source_url ? (
+        <a href={dataset.source_url} rel="noreferrer" target="_blank">
+          原始来源
+        </a>
+      ) : null}
+      <DatasetReason label="当前原因" reason={dataset.current_reason} />
+      <DatasetReason label="历史原因" reason={dataset.history_reason} />
+    </article>
+  );
+}
+
+function StatusDatum({ label, state, value }: { label: string; state?: string; value: string }) {
+  return (
+    <div data-state={state}>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function DatasetReason({ label, reason }: { label: string; reason: MacroReason }) {
+  return (
+    <div className="macro-decision__dataset-reason" data-impact={reason.impact}>
+      <strong>{label}</strong>
+      <p>{reason.message}</p>
+      <small>
+        {reason.code} · 恢复：{recoveryLabel(reason.recovery)}
+      </small>
+      {reason.next_action ? <small>{reason.next_action}</small> : null}
+      <AffectedDatasets reason={reason} />
+      {reason.next_check_at_ms != null ? (
+        <time>下次检查 {formatInstant(reason.next_check_at_ms)}</time>
+      ) : null}
+    </div>
+  );
+}
+
+function ReasonSummary({ reason }: { reason: MacroReason }) {
+  return (
+    <div className="macro-decision__reason-summary" data-impact={reason.impact}>
+      <strong>{reason.message}</strong>
+      <small>{reason.code}</small>
+      <small>恢复：{recoveryLabel(reason.recovery)}</small>
+      {reason.next_action ? <small>{reason.next_action}</small> : null}
+      <AffectedDatasets reason={reason} />
+      {reason.next_check_at_ms != null ? (
+        <time>下次检查 {formatInstant(reason.next_check_at_ms)}</time>
+      ) : null}
+    </div>
   );
 }
 
 function UnavailableModule({
+  delayedError,
   module,
   moduleId,
+  onRetry,
 }: {
+  delayedError?: unknown;
   module: MacroModuleUnavailableReadData;
   moduleId: MacroModuleId;
+  onRetry: () => void;
 }) {
   return (
     <section aria-label={module.label} className="macro-decision" data-page-archetype="decision">
@@ -204,7 +414,8 @@ function UnavailableModule({
         </div>
       </header>
       <MacroNavigation activeModule={moduleId} />
-      <ReasonPanel reason={module.reason} title="模块不可用" />
+      {delayedError !== undefined ? <UpdateDelayed error={delayedError} onRetry={onRetry} /> : null}
+      <ReasonPanel onRetry={onRetry} reason={module.reason} title="模块不可用" />
     </section>
   );
 }
@@ -228,16 +439,61 @@ function MacroNavigation({ activeModule }: { activeModule?: MacroModuleId }) {
   );
 }
 
-function ReasonPanel({ reason, title }: { reason: MacroReason; title: string }) {
+function ReasonPanel({
+  onRetry,
+  reason,
+  title,
+}: {
+  onRetry?: () => void;
+  reason: MacroReason;
+  title: string;
+}) {
   return (
     <section className="macro-decision__notice" data-impact={reason.impact}>
       <div>
         <span>STATUS</span>
         <h2>{title}</h2>
         <p>{reason.message}</p>
+        <dl className="macro-decision__reason-meta">
+          <StatusDatum label="原因代码" value={reason.code} />
+        </dl>
+        <small>恢复：{recoveryLabel(reason.recovery)}</small>
         {reason.next_action ? <small>{reason.next_action}</small> : null}
+        <AffectedDatasets reason={reason} />
+        {reason.next_check_at_ms != null ? (
+          <time>下次检查 {formatInstant(reason.next_check_at_ms)}</time>
+        ) : null}
       </div>
+      {reason.retryable && onRetry ? (
+        <Button onClick={onRetry} size="sm" type="button" variant="outline">
+          Retry
+        </Button>
+      ) : null}
     </section>
+  );
+}
+
+function AffectedDatasets({ reason }: { reason: MacroReason }) {
+  if (!reason.affected_dataset_ids.length) return null;
+  return <small>受影响数据集：{reason.affected_dataset_ids.join("、")}</small>;
+}
+
+function UpdateDelayed({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <aside
+      aria-label="Update delayed"
+      aria-live="polite"
+      className="macro-decision__update-delayed"
+      role="status"
+    >
+      <div>
+        <strong>Update delayed</strong>
+        <span>{errorText(error)}</span>
+      </div>
+      <Button onClick={onRetry} size="sm" type="button" variant="outline">
+        Retry
+      </Button>
+    </aside>
   );
 }
 
@@ -275,5 +531,56 @@ function historyLabel(value: string | null): string {
 }
 
 function coverageLabel(value: string | null): string {
-  return value === "complete" ? "完整" : "部分";
+  return value === "complete" ? "完整" : value === "partial" ? "部分" : "未提供";
+}
+
+function availabilityLabel(value: "available" | "unavailable"): string {
+  return value === "available" ? "可用" : "不可用";
+}
+
+function transportLabel(value: "current" | "stale"): string {
+  return value === "current" ? "当前" : "陈旧";
+}
+
+function marketLabel(value: string): string {
+  return (
+    {
+      closed: "休市",
+      maintenance: "维护中",
+      not_applicable: "不适用",
+      open: "开市",
+      unknown: "未知",
+    }[value] ?? value
+  );
+}
+
+function recoveryLabel(value: MacroReason["recovery"]): string {
+  return {
+    automatic: "自动重试",
+    next_session: "下个交易时段",
+    none: "无需恢复",
+    operator_action: "需要操作员处理",
+  }[value];
+}
+
+function sourceStateLabel(value: MacroDatasetState["source_state"]): string {
+  return {
+    degraded: "降级",
+    failed: "失败",
+    healthy: "健康",
+    not_applicable: "不适用",
+  }[value];
+}
+
+function trustTierLabel(value: MacroDatasetState["trust_tier"]): string {
+  return {
+    exchange: "交易所",
+    official: "官方",
+    untrusted_proxy: "未验证代理",
+  }[value];
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : "后台刷新失败；正在保留上次成功读取。";
 }

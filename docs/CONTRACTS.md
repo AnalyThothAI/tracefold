@@ -437,7 +437,7 @@ daily narrative or historical-session product. Each module route returns its
 matching persisted schema or `macro_module_unavailable_v1` with a typed reason:
 
 - overview: `macro_overview_v9`
-- `macro_rates_fed_v6`
+- `macro_rates_fed_v7`
 - `macro_economy_inflation_v5`
 - `macro_liquidity_funding_v5`
 - `macro_credit_v7`
@@ -445,13 +445,16 @@ matching persisted schema or `macro_module_unavailable_v1` with a typed reason:
 - `macro_cross_asset_v7`
 
 The five non-rates modules share identity, clocks, status, summary,
-contradictions, falsifiers, checkpoints, and evidence lineage. Rates v6
+contradictions, falsifiers, checkpoints, and evidence lineage. Rates v7
 deliberately has no generic `summary`, `top_changes`, contradiction, or
 falsifier fields. Its `decision` contract is tenor-native: 2Y/10Y/30Y current
 facts, actual baseline dates for 1D/1W/MTD/3M/past-30-day changes,
 session-completeness state, 2s10s/10s30s summaries, same-day 10Y/30Y
 nominal-real-Breakeven decomposition, window-qualified classifications, and
-fact references. Treasury completed-session curves are decision-primary; FRED
+fact references. It additionally exposes one revisioned official FOMC meeting
+calendar and recent typed Treasury auction results (bid-to-cover, high yield,
+offering amount, and indirect/direct/primary-dealer award shares). Treasury
+completed-session curves are decision-primary; FRED
 single-tenor series are history/reconciliation only. Treasury cross-sections,
 Fed events, credit ladders, and the ETF comparison matrix are explicit typed
 fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
@@ -461,9 +464,11 @@ is `complete`, `partial`, `insufficient`, or `not_required`. Each Dataset
 additionally exposes market state and source state. Optional history cannot
 lower Current Health. Only declared required windows affect reader-facing
 History Depth. One missing or schema-mismatched module produces a typed
-unavailable slot without failing the other five. All seven reads use
-`macro_module_current` only; they never call a provider/model, advance a
-target, rebuild a projection, or write fallback content.
+unavailable slot without failing the other five. All seven fact payloads use
+`macro_module_current` only; the Rates read additionally attaches the
+secret-free optional-analysis runtime state from Serve configuration. Reads
+never call a provider/model, advance a target, rebuild a projection, or write
+fallback content.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
@@ -502,8 +507,9 @@ lineage. A closed or maintenance market preserves the last expected bar as
 age alone. WTI is the separate official FRED/EIA `DCOILWTICO` benchmark. The Rates
 payload exposes Treasury nominal and real maturity cross-sections for current,
 1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,
-and transparent curve-shape inputs. Paid CME probability gaps are not part of
-the supported contract.
+transparent curve-shape inputs, the official FOMC schedule snapshot, Treasury
+auction-demand facts, and the shared SOFR fact. Paid CME probabilities are not
+part of the supported contract and no probability proxy is synthesized.
 
 Volatility exclusively owns the official CFE VX settlement curve. A served
 `market_settlement_v2` fact requires the official `Expiration Date`; schema
@@ -524,6 +530,16 @@ exists. The current immutable-analysis admission window is 550 days for FOMC
 materials and 120 days for speeches. Older official bodies remain durable raw
 evidence but do not block current module reads.
 
+Document analysis is a supporting capability. Missing, disabled, or
+unconfigured analysis cannot lower official Rates/Fed Current Health; the Fed
+stance/distribution remains typed `no_call`. The Rates read adds a secret-free
+`document_analysis_runtime` state (`disabled`, `unconfigured`, or `active`)
+from Serve runtime configuration, while the persisted v7 module remains a
+deterministic fact projection. `active`/`worker_active` means only that the
+configuration admission conditions are satisfied (`enabled && configured`);
+it is not a worker heartbeat or process-liveness claim. Successful immutable
+analysis publication and its Dataset/frontier advancement are atomic.
+
 Credit exposes IG/BBB/BB/B/CCC OAS, actual-sample history statistics, IG/HY
 effective yields, deterministic comparisons with EFFR and 10Y Treasury, SLOOS
 standards and demand for C&I/CRE/consumer, loan delinquency/charge-off facts,
@@ -540,7 +556,7 @@ retired News acquisition and Macro derived/control history while preserving
 current items, material facts, acquisition targets, Fed document analysis, and
 the six module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
-current migration `20260809_0247` removes it in favor of bounded 12-hour
+News migration `20260809_0247` removes it in favor of bounded 12-hour
 overlap. `20260801_0238` adds the News push baseline and delivery ledger.
 Applying these migrations does not send a message; delivery begins only after an explicit
 webhook-backed push configuration and the first enabled reconcile establishes
@@ -614,8 +630,10 @@ collection only after the other typed gates and independent review are bound.
 
 `macro status` reports the bounded acquisition target count/statuses, each of
 the six module current rows with its health, history depth, fact cutoff, and
-update time, plus Fed document-analysis job counts. It is a PostgreSQL-only
-diagnostic: it invokes no provider/model and writes nothing.
+update time, Fed document-analysis job counts, and the secret-free analysis
+runtime state (`enabled`, gateway `configured`, configuration-derived
+`worker_active`, and model name). It invokes no provider/model and writes
+nothing; `worker_active` is admission state, not observed process liveness.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

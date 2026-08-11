@@ -93,12 +93,20 @@ def test_explicit_backfill_enqueues_and_drains_before_returning(monkeypatch) -> 
 
 def test_macro_status_reports_targets_modules_and_document_analysis(monkeypatch) -> None:
     fake_repos = SimpleNamespace(macro=_FakeMacroRepository())
+    settings = SimpleNamespace(
+        llm=SimpleNamespace(
+            api_key=None,
+            base_url=None,
+            macro_document_analysis_enabled=False,
+            macro_document_analysis_model="gpt-5.4-mini",
+        )
+    )
 
     @contextmanager
     def fake_repositories(_settings):
         yield fake_repos
 
-    monkeypatch.setattr(macro_cli, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(macro_cli, "load_settings", lambda **_kwargs: settings)
     monkeypatch.setattr(macro_cli, "repositories", fake_repositories)
     exit_code, payload = macro_cli._handle_status()
 
@@ -114,3 +122,10 @@ def test_macro_status_reports_targets_modules_and_document_analysis(monkeypatch)
         }
     ]
     assert payload["data"]["document_analysis_jobs"]["open"] == 0
+    assert payload["data"]["document_analysis_runtime"] == {
+        "state": "disabled",
+        "enabled": False,
+        "configured": False,
+        "worker_active": False,
+        "model": "gpt-5.4-mini",
+    }

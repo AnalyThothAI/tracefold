@@ -533,22 +533,28 @@ FOMC/Board/Reserve Bank full-text facts feed
 `macro_document_analysis_jobs`. A speech waits for its effective-dated role
 match. Each claim performs model I/O outside the write transaction, validates
 exact excerpts against the frozen official body, then atomically inserts the
-immutable analysis and completes the job. Restart reclaims an expired lease
-without duplicating analysis identity. A failed analysis affects only the
-document-dependent module evidence; it is not a global runtime gate.
+immutable analysis, completes the job, advances the derived Dataset state, and
+dirties the `rates_fed` frontier. Restart reclaims an expired lease without
+duplicating analysis identity. A failed or disabled analysis affects only the
+supporting document evidence; official Rates/Fed Current Health stays
+independent and Fed judgment fields remain `no_call`.
 
 The Macro projection domain maps changed datasets through the static
 dataset/calculation/module dependency graph. One EDF turn loads only the
 affected module's bounded history, computes outside the database, rechecks the
 input fingerprint, and publishes that module in one short transaction.
-Unchanged payloads write zero serving rows. The overview and six module routes
-read only `macro_module_current`; they never call a provider/model or repair
-state.
+Unchanged payloads write zero serving rows. The overview and six module fact
+payloads read only `macro_module_current`; Rates additionally exposes the
+secret-free optional-analysis runtime state. They never call a provider/model
+or repair state.
 
 `uv run tracefold macro status` reports acquisition target counts/statuses,
-each module's current health, history depth, fact cutoff and update time, and
-Fed document-analysis job counts. The command performs no provider call and no
-write.
+each module's current health, history depth, fact cutoff and update time, Fed
+document-analysis job counts, and whether the optional analysis worker
+configuration is `disabled`, `unconfigured`, or active. Active means its
+configuration admission conditions are satisfied, not that a worker process
+heartbeat was observed. The command performs no provider call and no write.
+`uv run tracefold config` exposes the same secret-free booleans.
 
 Migrations `20260801_0235` and `20260801_0236` are irreversible. They delete
 the retired News acquisition history and Macro publication, per-attempt, and
@@ -692,7 +698,7 @@ For an ordinary migration or production cutover:
 ## Token Radar v2 hard cut and acceptance
 
 Historical migration `20260810_0249` removed the six pre-singleton Radar tables
-and installed the v1 singleton. Migration `20260810_0250` is the current
+and installed the v1 singleton. Migration `20260810_0250` is the Token Radar
 one-time, transactional product reset. Stop Serve and Workers before applying
 it. From `0249`, it resets the v1 row to one empty
 `token_radar_snapshot_v2`, replaces the schema constraint with the fifty-Item
@@ -703,6 +709,13 @@ and the internal `us_equity_symbols` collision guard. Verify fact counts and
 stable fact identities before and after the migration, then start only the new
 runtime. There is no dual read/write, compatibility adapter, feature flag, v1
 fallback, Stocks route, staging runtime, or history import.
+
+Migration `20260810_0251` is the current database head and the Rates v7 hard
+cut. It deletes only the rebuildable v6 `rates_fed` current/frontier rows,
+changes the persisted schema constraint to `macro_rates_fed_v7`, and preserves
+all typed Macro/Market facts, acquisition state, documents, jobs, and immutable
+analyses. Restart the sole Macro projection writer to rebuild the Rates row;
+there is no v6 reader or compatibility path.
 
 The independent performance bundle proves, on representative facts:
 

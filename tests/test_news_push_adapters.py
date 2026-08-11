@@ -144,6 +144,8 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
             "api_key": "translation-secret",
             "base_url": "https://translator.test/v1",
             "news_brief_model": "fast-title-translator",
+            "macro_document_analysis_enabled": True,
+            "macro_document_analysis_model": "policy-evidence-model",
         },
         news={
             "push": {
@@ -170,6 +172,13 @@ def test_config_diagnostics_expose_only_news_push_configured_booleans(monkeypatc
     assert payload["data"]["news"]["brief"] == {
         "direct_configured": True,
         "groq_configured": False,
+    }
+    assert payload["data"]["macro"]["document_analysis"] == {
+        "state": "active",
+        "enabled": True,
+        "configured": True,
+        "worker_active": True,
+        "model": "policy-evidence-model",
     }
     rendered = json.dumps(payload)
     assert _FEISHU_TEST_URL not in rendered
