@@ -304,11 +304,13 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           data-label="Price"
           role="group"
         >
-          {formatPrice(item?.market.price_usd ?? null)}
-          <MarketObservation
-            label="Price observation time"
-            value={item?.market.price_observed_at_ms ?? null}
-          />
+          <span className="live-radar-market-reading">
+            <span>{formatPrice(item?.market.price_usd ?? null)}</span>
+            <MarketObservation
+              label="Price observation time"
+              value={item?.market.price_observed_at_ms ?? null}
+            />
+          </span>
         </span>
         <span
           aria-label={`Since signal ${formatChange(change)}`}
@@ -324,18 +326,22 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           data-label="Since signal"
           role="group"
         >
-          {formatChange(change)}
+          <span className="live-radar-market-reading">
+            <span>{formatChange(change)}</span>
+          </span>
         </span>
         <span
           aria-label={`Market cap ${formatMarketCap(item?.market.market_cap_usd ?? null)}, ${formatObservation(item?.market.market_cap_observed_at_ms ?? null)}`}
           data-label="Market cap"
           role="group"
         >
-          {formatMarketCap(item?.market.market_cap_usd ?? null)}
-          <MarketObservation
-            label="Market-cap observation time"
-            value={item?.market.market_cap_observed_at_ms ?? null}
-          />
+          <span className="live-radar-market-reading">
+            <span>{formatMarketCap(item?.market.market_cap_usd ?? null)}</span>
+            <MarketObservation
+              label="Market-cap observation time"
+              value={item?.market.market_cap_observed_at_ms ?? null}
+            />
+          </span>
         </span>
       </div>
       <div

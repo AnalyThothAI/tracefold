@@ -10,6 +10,45 @@ test.beforeEach(({}, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1366", "fixed narrow-desktop visual contract");
 });
 
+test("Radar desktop rows do not clip rendered text", async ({ page }) => {
+  await page.setViewportSize({ width: 1_280, height: 504 });
+  await installMockApi(page, { radarItemCount: 1 });
+  await page.goto("/");
+
+  const item = page.locator(".live-radar-item").first();
+  await expect(item).toBeVisible();
+
+  const clippedText = await item.evaluate((element) => {
+    const itemBox = element.getBoundingClientRect();
+    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const clipped: string[] = [];
+    let node = walker.nextNode();
+    while (node) {
+      const text = node.textContent?.trim() ?? "";
+      if (text) {
+        const range = element.ownerDocument.createRange();
+        range.selectNodeContents(node);
+        const lineBoxes = [...range.getClientRects()];
+        if (
+          lineBoxes.some(
+            (box) =>
+              box.left < itemBox.left - 0.5 ||
+              box.right > itemBox.right + 0.5 ||
+              box.top < itemBox.top - 0.5 ||
+              box.bottom > itemBox.bottom - 0.5,
+          )
+        ) {
+          clipped.push(text);
+        }
+      }
+      node = walker.nextNode();
+    }
+    return clipped;
+  });
+
+  expect(clippedText).toEqual([]);
+});
+
 test("Radar remains readable in the narrow desktop workbench", async ({ page }) => {
   await page.setViewportSize({ width: 1_280, height: 504 });
   await installMockApi(page, { radarItemCount: 8, radarPresentationStress: true });
@@ -176,7 +215,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
         ),
       };
     });
-    expect(compactLayout).toEqual({
+    expect(compactLayout, `${width}px Radar Item geometry`).toEqual({
       actionContained: true,
       contentsContained: true,
       factsFit: true,
