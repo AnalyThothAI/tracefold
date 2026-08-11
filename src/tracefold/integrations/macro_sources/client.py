@@ -79,6 +79,76 @@ class _ReserveSpeechDiscovery:
     fallback_required: bool = False
 
 
+class _FomcScheduleParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.current_year: int | None = None
+        self.row_depth: int | None = None
+        self.field_depth: int | None = None
+        self.field: str | None = None
+        self.month_parts: list[str] = []
+        self.date_parts: list[str] = []
+        self.rows: list[tuple[int, str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "div":
+            return
+        self.depth += 1
+        classes = set(str(dict(attrs).get("class") or "").split())
+        if "fomc-meeting" in classes:
+            self.row_depth = self.depth
+            self.field_depth = None
+            self.field = None
+            self.month_parts = []
+            self.date_parts = []
+            return
+        if self.row_depth is None:
+            return
+        if "fomc-meeting__month" in classes:
+            self.field = "month"
+            self.field_depth = self.depth
+        elif "fomc-meeting__date" in classes:
+            self.field = "date"
+            self.field_depth = self.depth
+
+    def handle_data(self, data: str) -> None:
+        normalized = " ".join(data.split())
+        if not normalized:
+            return
+        year_match = re.search(r"\b(20\d{2})\s+FOMC\s+Meetings\b", normalized, flags=re.IGNORECASE)
+        if year_match is not None and self.row_depth is None:
+            self.current_year = int(year_match.group(1))
+        if self.row_depth is None:
+            return
+        if self.field == "month":
+            self.month_parts.append(normalized)
+        elif self.field == "date":
+            self.date_parts.append(normalized)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "div":
+            return
+        if tag == "div" and self.field_depth == self.depth:
+            self.field_depth = None
+            self.field = None
+        if tag == "div" and self.row_depth == self.depth:
+            if self.current_year is not None and self.month_parts and self.date_parts:
+                self.rows.append(
+                    (
+                        self.current_year,
+                        " ".join(self.month_parts),
+                        " ".join(self.date_parts),
+                    )
+                )
+            self.row_depth = None
+            self.field_depth = None
+            self.field = None
+            self.month_parts = []
+            self.date_parts = []
+        self.depth = max(0, self.depth - 1)
+
+
 _FETCH_BUDGET: ContextVar[_FetchBudget | None] = ContextVar(
     "tracefold_macro_fetch_budget",
     default=None,
@@ -180,8 +250,10 @@ class MacroSourceClient:
             "cftc_tff": self._fetch_cftc_tff,
             "bls_release": self._fetch_bls_release,
             "fed_board_speech_archive": self._fetch_board_speech_archive,
+            "fed_fomc_schedule": self._fetch_fomc_schedule,
             "fed_fomc_calendar": self._fetch_fed_fomc_calendar,
             "fed_reserve_bank_sitemaps": self._fetch_reserve_bank_speeches,
+            "treasury_fiscaldata_auctions": self._fetch_treasury_auctions,
         }
         if spec.adapter_id == "cfe_settlement":
             return self._fetch_cfe_settlement(spec, partition_key, cursor, received_at_ms)
@@ -1094,6 +1166,186 @@ class MacroSourceClient:
             completion=("continuation" if has_more_documents or not completed else "complete"),
         )
 
+    def _fetch_fomc_schedule(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        _cursor: dict[str, Any],
+        received_at_ms: int,
+    ) -> FetchBatch:
+        response = self._get(
+            spec.source_url,
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        meetings = _fomc_schedule_rows(response.text)
+        if not meetings:
+            raise MacroSourceError("fed_fomc_schedule_missing")
+        calendar_revision = _fomc_calendar_revision(meetings)
+        published_date = _official_last_update_date(response.text)
+        published_at_ms = min(_date_release_ms(published_date), received_at_ms) if published_date is not None else None
+        facts = tuple(
+            ReleaseFact(
+                dataset_id=spec.dataset_id,
+                release_id=(f"FOMC_CALENDAR:{calendar_revision}:{start_date.isoformat()}:{end_date.isoformat()}"),
+                series_id="FOMC_MEETING_SEP" if has_sep else spec.series_id,
+                reference_period=f"{start_date.isoformat()}..{end_date.isoformat()}",
+                scheduled_at_ms=None,
+                published_at_ms=published_at_ms,
+                received_at_ms=received_at_ms,
+                actual_value=None,
+                prior_value=None,
+                revised_prior_value=None,
+                estimate_value=None,
+                unit=spec.unit,
+                importance_tier=int(spec.metadata.get("importance_tier") or 1),
+                source_url=str(response.url),
+                raw_data={
+                    "meeting_start_date": start_date.isoformat(),
+                    "meeting_end_date": end_date.isoformat(),
+                    "has_sep": has_sep,
+                    "calendar_last_updated_date": published_date.isoformat() if published_date else None,
+                },
+            )
+            for start_date, end_date, has_sep in meetings
+        )
+        return _batch(
+            spec,
+            partition_key,
+            facts,
+            response,
+            cursor={
+                "calendar_years": sorted({start.year for start, _end, _sep in meetings}),
+                "latest_meeting_end": max(end for _start, end, _sep in meetings).isoformat(),
+            },
+        )
+
+    def _fetch_treasury_auctions(
+        self,
+        spec: DatasetSpec,
+        partition_key: str,
+        _cursor: dict[str, Any],
+        received_at_ms: int,
+    ) -> FetchBatch:
+        received_date = datetime.fromtimestamp(received_at_ms / 1_000, tz=UTC).date()
+        lookback_days = int(spec.metadata.get("lookback_days") or 120)
+        response = self._get(
+            spec.source_url,
+            params={
+                "filter": f"auction_date:gte:{(received_date - timedelta(days=lookback_days)).isoformat()}",
+                "sort": "-auction_date,-record_date,cusip",
+                "page[size]": "100",
+            },
+            headers={"Accept": "application/json"},
+        )
+        _require_success(response, source_id=spec.source_id)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise MacroSourceError("treasury_auction_json_invalid") from exc
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise MacroSourceError("treasury_auction_rows_missing")
+        facts: list[ReleaseFact] = []
+        completed_rows: list[dict[str, Any]] = []
+        for raw_row in rows:
+            if not isinstance(raw_row, dict):
+                continue
+            bid_to_cover = _optional_number(raw_row.get("bid_to_cover_ratio"))
+            auction_date = _optional_date(raw_row.get("auction_date"))
+            record_date = _optional_date(raw_row.get("record_date"))
+            cusip = str(raw_row.get("cusip") or "").strip()
+            if bid_to_cover is None or auction_date is None or record_date is None or not cusip:
+                continue
+            completed_rows.append(raw_row)
+            release_id = f"TREASURY_AUCTION:{cusip}:{auction_date.isoformat()}"
+            term = _treasury_term_id(str(raw_row.get("security_term") or ""))
+            scheduled_at_ms = _treasury_auction_close_ms(
+                auction_date,
+                str(raw_row.get("closing_time_comp") or ""),
+            )
+            result_filename = str(raw_row.get("pdf_filenm_comp_results") or "").strip()
+            source_url = (
+                "https://fiscaldata.treasury.gov/static-data/published-reports/"
+                f"auctions-query/results/{result_filename}"
+                if result_filename and result_filename.lower() != "null"
+                else str(response.url)
+            )
+            metric_values: dict[str, tuple[float | None, str]] = {
+                "bid_to_cover": (bid_to_cover, "ratio"),
+                "high_yield": (
+                    _first_number(
+                        raw_row.get("high_yield"),
+                        raw_row.get("high_discnt_rate"),
+                        raw_row.get("high_investment_rate"),
+                    ),
+                    "percent",
+                ),
+                "offering_amount": (_optional_number(raw_row.get("offering_amt")), "usd"),
+            }
+            accepted = _optional_number(raw_row.get("comp_accepted"))
+            if accepted is not None and accepted > 0:
+                metric_values.update(
+                    {
+                        "indirect_award_share": (
+                            _percentage(raw_row.get("indirect_bidder_accepted"), accepted),
+                            "percent",
+                        ),
+                        "direct_award_share": (
+                            _percentage(raw_row.get("direct_bidder_accepted"), accepted),
+                            "percent",
+                        ),
+                        "primary_dealer_award_share": (
+                            _percentage(raw_row.get("primary_dealer_accepted"), accepted),
+                            "percent",
+                        ),
+                    }
+                )
+            for metric, (value, unit) in sorted(metric_values.items()):
+                if value is None:
+                    continue
+                facts.append(
+                    ReleaseFact(
+                        dataset_id=spec.dataset_id,
+                        release_id=release_id,
+                        series_id=f"{term}:{metric}",
+                        reference_period=auction_date.isoformat(),
+                        scheduled_at_ms=scheduled_at_ms,
+                        published_at_ms=None,
+                        received_at_ms=received_at_ms,
+                        actual_value=value,
+                        prior_value=None,
+                        revised_prior_value=None,
+                        estimate_value=None,
+                        unit=unit,
+                        importance_tier=int(spec.metadata.get("importance_tier") or 2),
+                        source_url=source_url,
+                        raw_data={
+                            "record_date": record_date.isoformat(),
+                            "auction_date": auction_date.isoformat(),
+                            "cusip": cusip,
+                            "security_type": raw_row.get("security_type"),
+                            "security_term": raw_row.get("security_term"),
+                            "metric": metric,
+                        },
+                    )
+                )
+        if not completed_rows:
+            return _batch(spec, partition_key, (), response, cursor={})
+        latest_auction_date = max(_required_date(row.get("auction_date")) for row in completed_rows)
+        latest_record_date = max(_required_date(row.get("record_date")) for row in completed_rows)
+        facts.sort(key=lambda fact: (fact.reference_period, fact.release_id, fact.series_id))
+        return _batch(
+            spec,
+            partition_key,
+            tuple(facts),
+            response,
+            cursor={
+                "auction_date": latest_auction_date.isoformat(),
+                "record_date": latest_record_date.isoformat(),
+            },
+        )
+
     def _fetch_fomc_document(
         self,
         spec: DatasetSpec,
@@ -1648,6 +1900,125 @@ def _optional_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+def _required_date(value: Any) -> date:
+    parsed = _optional_date(value)
+    if parsed is None:
+        raise MacroSourceError("macro_source_date_invalid")
+    return parsed
+
+
+def _optional_number(value: Any) -> float | None:
+    return _finite_float(value)
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        parsed = _optional_number(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _percentage(numerator: Any, denominator: float) -> float | None:
+    value = _optional_number(numerator)
+    if value is None or denominator <= 0:
+        return None
+    return round((value / denominator) * 100.0, 6)
+
+
+def _treasury_term_id(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", str(value).strip()).strip("_").upper()
+    if not normalized:
+        raise MacroSourceError("treasury_auction_security_term_missing")
+    return normalized
+
+
+def _treasury_auction_close_ms(auction_date: date, close_time: str) -> int | None:
+    try:
+        parsed_time = datetime.strptime(str(close_time).strip().upper(), "%I:%M %p").time()
+    except ValueError:
+        return None
+    localized = datetime(
+        auction_date.year,
+        auction_date.month,
+        auction_date.day,
+        parsed_time.hour,
+        parsed_time.minute,
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    return int(localized.timestamp() * 1_000)
+
+
+def _official_last_update_date(value: str) -> date | None:
+    match = re.search(
+        r"Last\s+Update:\s*"
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(\d{1,2}),\s+(20\d{2})",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(
+            f"{match.group(1)} {match.group(2)}, {match.group(3)}",
+            "%B %d, %Y",
+        ).date()
+    except ValueError:
+        return None
+
+
+def _fomc_schedule_rows(value: str) -> tuple[tuple[date, date, bool], ...]:
+    parser = _FomcScheduleParser()
+    parser.feed(value)
+    parsed_rows: set[tuple[date, date, bool]] = set()
+    for year, month_text, date_text in parser.rows:
+        month_tokens = re.findall(
+            r"January|February|March|April|May|June|July|August|September|October|November|December|"
+            r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec",
+            month_text,
+            flags=re.IGNORECASE,
+        )
+        day_match = re.search(r"\b(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?", date_text)
+        if not month_tokens or day_match is None:
+            continue
+        try:
+            start_month = datetime.strptime(month_tokens[0][:3].title(), "%b").month
+            end_month = (
+                datetime.strptime(month_tokens[1][:3].title(), "%b").month if len(month_tokens) > 1 else start_month
+            )
+            start_day = int(day_match.group(1))
+            end_day = int(day_match.group(2) or start_day)
+            end_year = year
+            if len(month_tokens) == 1 and end_day < start_day:
+                end_month = start_month + 1
+                if end_month == 13:
+                    end_month = 1
+                    end_year += 1
+            start_date = date(year, start_month, start_day)
+            end_date = date(end_year, end_month, end_day)
+        except ValueError:
+            continue
+        parsed_rows.add((start_date, end_date, "*" in date_text))
+    return tuple(sorted(parsed_rows))
+
+
+def _fomc_calendar_revision(meetings: tuple[tuple[date, date, bool], ...]) -> str:
+    encoded = json.dumps(
+        [
+            {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "has_sep": has_sep,
+            }
+            for start_date, end_date, has_sep in meetings
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
 def _optional_us_date(value: Any) -> date | None:

@@ -263,11 +263,13 @@ targets are `current`; incomplete targets remain visible without blocking the
 workbench. Open or failed document analyses remain explicit module-local gaps.
 
 A good `macro status` reports bounded acquisition target counts/statuses, all
-six current module rows with health/history/fact-cutoff clocks, and Fed
-document-analysis job counts. Diagnose a missing value by concept ID and source
-role through its target current state/cursor, fact family, and three module
-quality axes. A public-source timeout, weekend settlement lag, or delayed Yahoo
-proxy is a visible quality state; it is not a frontend defect.
+six current module rows with health/history/fact-cutoff clocks, Fed
+document-analysis job counts, and the optional analysis runtime state. A
+default `disabled` analysis worker is supporting evidence, not a Rates/Fed
+outage. Diagnose a missing value by concept ID and source role through its
+target current state/cursor, fact family, and three module quality axes. A
+public-source timeout, weekend settlement lag, or delayed Yahoo proxy is a
+visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets, module frontiers, six
@@ -283,12 +285,12 @@ irreversibly delete retired News acquisition history and Macro publication,
 per-attempt, and stored intermediate history while preserving current items,
 facts, targets, document analyses, and module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
-current migration `20260809_0247` removes that state, installs public RSS
+News migration `20260809_0247` removes that state, installs public RSS
 source scheduling, and hard-cuts Brief persistence to two singleton tables.
 Token Radar migration `20260810_0249` removes the retired Radar projection
 tables and temporary replay-only schema, then installs the compact singleton.
 It preserves material Events, intents, resolutions, identities, and market
-facts. Current migration `20260810_0250` resets that v1 singleton to one empty
+facts. Migration `20260810_0250` resets that v1 singleton to one empty
 `token_radar_snapshot_v2`, installs the fixed Top-50/96-KiB contract, and drops
 the three Stocks-only derived tables `stock_attention_target_features`,
 `stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserves
@@ -297,6 +299,10 @@ token-identity collision guard; there is no Stocks product or route. Stop Serve
 and Workers while an existing database crosses this revision. General
 cross-asset Market facts and Macro remain installed. After migration, start only
 the new runtime. A fresh database migrates directly to head.
+Current head `20260810_0251` hard-cuts only the rebuildable Rates v6 serving
+row/frontier to `macro_rates_fed_v7`; typed facts, acquisition state, official
+documents, jobs, and immutable analyses are preserved. Stop Serve and Workers,
+apply the migration, then let the sole Macro projection writer rebuild Rates.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile

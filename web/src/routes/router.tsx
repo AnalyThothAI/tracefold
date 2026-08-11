@@ -58,6 +58,24 @@ export function createAppRouteObjects(): RouteObject[] {
                 };
               },
             },
+            {
+              path: "macro/overview",
+              lazy: async () => {
+                const { MacroOverviewPage } = await import("@features/macro");
+                return {
+                  Component: function MacroOverviewAliasRoute() {
+                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
+                    return (
+                      <MacroOverviewPage
+                        bootstrapError={bootstrapError}
+                        bootstrapLoading={bootstrapLoading}
+                        token={token}
+                      />
+                    );
+                  },
+                };
+              },
+            },
             ...(
               [
                 ["rates-fed", "rates_fed"],

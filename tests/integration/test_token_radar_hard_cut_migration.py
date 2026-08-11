@@ -191,7 +191,7 @@ def test_upgrade_from_0249_replaces_v1_with_top50_and_drops_stocks_only() -> Non
 
         command.upgrade(config, "head")
 
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0250"}
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0251"}
         assert _fact_identities(conn) == before
         assert (
             conn.execute(

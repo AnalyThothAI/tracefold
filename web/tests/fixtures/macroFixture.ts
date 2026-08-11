@@ -48,8 +48,15 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "rates_fed") {
     return {
       ...moduleCore(moduleId),
-      schema_version: "macro_rates_fed_v6",
+      schema_version: "macro_rates_fed_v7",
       module_id: "rates_fed",
+      document_analysis_runtime: {
+        state: "disabled",
+        enabled: false,
+        configured: false,
+        worker_active: false,
+        model: "gpt-5.4-mini",
+      },
       decision: {
         state: "available",
         reference_date: "2026-07-29",
@@ -271,6 +278,20 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
       },
       policy_pricing: { rates: [indicatorFixture("fred.dff", "有效联邦基金利率", 4.33)] },
       fed: {
+        meeting_calendar: {
+          revision_id: "fomc-calendar-2026-07-28",
+          meetings: [
+            {
+              meeting_id: "FOMC:2026-09-15:2026-09-16",
+              start_date: "2026-09-15",
+              end_date: "2026-09-16",
+              has_sep: true,
+              calendar_published_at_ms: CUTOFF_MS - 86_400_000,
+              received_at_ms: CUTOFF_MS - 30_000,
+              source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+            },
+          ],
+        },
         institutional_stance: {
           state: "no_call",
           direction: "no_call",
@@ -295,6 +316,26 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
           reason: "effective_dated_roster_not_ingested",
           officials: [],
         },
+      },
+      treasury_auctions: {
+        recent_results: [
+          {
+            auction_id: "TREASURY_AUCTION:91282CQB0:2026-07-27",
+            cusip: "91282CQB0",
+            security_term: "10-Year Note",
+            auction_date: "2026-07-27",
+            scheduled_at_ms: Date.parse("2026-07-27T17:00:00Z"),
+            published_at_ms: Date.parse("2026-07-27T17:00:00Z"),
+            received_at_ms: CUTOFF_MS - 30_000,
+            source_url: "https://fiscal.treasury.gov/reports-statements/treasury-auctions/",
+            bid_to_cover_ratio: 2.67,
+            high_yield_pct: 4.321,
+            offering_amount_usd: 42_000_000_000,
+            indirect_award_share_pct: 70,
+            direct_award_share_pct: 12.5,
+            primary_dealer_award_share_pct: 17.5,
+          },
+        ],
       },
       positioning: [],
     };

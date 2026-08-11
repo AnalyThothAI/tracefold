@@ -5,11 +5,14 @@ from contextlib import contextmanager
 from datetime import date
 from typing import Any
 
+import httpx
+
 from tests.postgres_test_utils import (
     connect_postgres_test,
     repository_session_for_connection,
     reset_postgres_schema,
 )
+from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import FetchBatch, SeriesFact, require_dataset
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.market import MarketObservationFact, MarketSettlementFact
@@ -139,6 +142,118 @@ class _EmptyCompletedBackfillClient:
 class _FailingClient:
     def fetch(self, *_args: Any, **_kwargs: Any) -> FetchBatch:
         raise RuntimeError("official_source_failed")
+
+
+def test_official_fomc_schedule_and_treasury_auctions_flow_through_one_fact_pipeline(
+    tmp_path,
+) -> None:
+    now_ms = 1_785_171_600_000
+    calendar = """
+    <html><body>
+      <h3>2026 FOMC Meetings</h3>
+      <div class="row fomc-meeting">
+        <div class="fomc-meeting__month">September</div>
+        <div class="fomc-meeting__date">15-16*</div>
+      </div>
+      <div class="row fomc-meeting">
+        <div class="fomc-meeting__month">October</div>
+        <div class="fomc-meeting__date">27-28</div>
+      </div>
+    </body></html>
+    """
+    auctions = {
+        "data": [
+            {
+                "record_date": "2026-07-27",
+                "cusip": "91282ABC1",
+                "security_type": "Note",
+                "security_term": "10-Year",
+                "auction_date": "2026-07-27",
+                "closing_time_comp": "01:00 PM",
+                "bid_to_cover_ratio": "2.67",
+                "high_yield": "4.321",
+                "offering_amt": "42000000000",
+                "comp_accepted": "40000000000",
+                "indirect_bidder_accepted": "28000000000",
+                "direct_bidder_accepted": "5000000000",
+                "primary_dealer_accepted": "7000000000",
+                "pdf_filenm_comp_results": "R_20260727_1.pdf",
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.federalreserve.gov":
+            return httpx.Response(200, text=calendar, request=request)
+        if request.url.host == "api.fiscaldata.treasury.gov":
+            return httpx.Response(200, json=auctions, request=request)
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        reset_postgres_schema(conn)
+        schedule_service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_official_state",
+            clock_kind="official_state",
+            source_client=client,
+            clock_ms=lambda: now_ms,
+            target_keys=("federal_reserve.fomc.schedule:latest",),
+        )
+        auction_service = MacroAcquisitionService(
+            db=_TestDb(conn),
+            worker_name="macro_scheduled_release",
+            clock_kind="scheduled_release",
+            source_client=client,
+            clock_ms=lambda: now_ms,
+            target_keys=("treasury.auction.results:latest",),
+        )
+        schedule_service.ensure_targets(now_ms=now_ms)
+        auction_service.ensure_targets(now_ms=now_ms)
+
+        schedule_result = schedule_service.run_once()
+        auction_result = auction_service.run_once()
+
+        fact_counts = conn.execute(
+            """
+            SELECT dataset_id, count(*)::int AS count
+            FROM macro_release_facts
+            WHERE dataset_id IN ('federal_reserve.fomc.schedule', 'treasury.auction.results')
+            GROUP BY dataset_id
+            ORDER BY dataset_id
+            """
+        ).fetchall()
+        projection_states = conn.execute(
+            """
+            SELECT dataset_id, acquisition_status
+            FROM macro_dataset_projection_states
+            WHERE dataset_id IN ('federal_reserve.fomc.schedule', 'treasury.auction.results')
+            ORDER BY dataset_id
+            """
+        ).fetchall()
+        frontier = conn.execute(
+            """
+            SELECT status
+            FROM macro_module_frontiers
+            WHERE module_id = 'rates_fed'
+            """
+        ).fetchone()
+    finally:
+        client.close()
+        conn.close()
+
+    assert schedule_result is not None and schedule_result["rows_inserted"] == 2
+    assert auction_result is not None and auction_result["rows_inserted"] == 6
+    assert [(row["dataset_id"], row["count"]) for row in fact_counts] == [
+        ("federal_reserve.fomc.schedule", 2),
+        ("treasury.auction.results", 6),
+    ]
+    assert [(row["dataset_id"], row["acquisition_status"]) for row in projection_states] == [
+        ("federal_reserve.fomc.schedule", "current"),
+        ("treasury.auction.results", "current"),
+    ]
+    assert frontier is not None and frontier["status"] == "dirty"
 
 
 def test_explicit_backfill_claims_only_requested_target_keys(tmp_path) -> None:

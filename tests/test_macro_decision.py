@@ -5,11 +5,13 @@ from datetime import UTC, date, datetime
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.macro import (
+    MACRO_MODULE_IDS,
     NATURAL_CHANGE_REGISTRY,
     module_payloads,
     natural_change_calculation,
 )
 from tracefold.macro.coverage import COVERAGE_MANIFEST
+from tracefold.macro.dependencies import MODULE_DATASET_DEPENDENCIES
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.module_payloads import build_typed_module_payload
 from tracefold.macro.reasons import macro_reason
@@ -52,6 +54,61 @@ def _market_row(dataset_id: str, observed_at_ms: int, value: float) -> dict:
         "published_at_ms": observed_at_ms,
         "received_at_ms": NOW_MS,
         "source_url": "https://finance.yahoo.com/",
+    }
+
+
+def _document_row(*, dataset_id: str, document_type: str, suffix: str) -> dict:
+    return {
+        "document_id": f"document:{suffix}",
+        "dataset_id": dataset_id,
+        "document_type": document_type,
+        "title": f"Federal Reserve {suffix}",
+        "effective_date": date(2026, 7, 27),
+        "published_at_ms": NOW_MS - 10_000,
+        "received_at_ms": NOW_MS - 9_000,
+        "source_url": "https://www.federalreserve.gov/monetarypolicy.htm",
+        "metadata_json": {},
+    }
+
+
+def _release_row(
+    *,
+    dataset_id: str,
+    release_id: str,
+    series_id: str,
+    reference_period: str,
+    actual_value: float | None,
+    unit: str,
+    received_at_ms: int = NOW_MS,
+    scheduled_at_ms: int | None = None,
+    published_at_ms: int | None = None,
+) -> dict:
+    return {
+        "release_fact_id": f"release:{dataset_id}:{release_id}:{series_id}:{received_at_ms}",
+        "dataset_id": dataset_id,
+        "release_id": release_id,
+        "series_id": series_id,
+        "reference_period": reference_period,
+        "scheduled_at_ms": scheduled_at_ms,
+        "published_at_ms": published_at_ms,
+        "received_at_ms": received_at_ms,
+        "actual_value": actual_value,
+        "prior_value": None,
+        "revised_prior_value": None,
+        "estimate_value": None,
+        "unit": unit,
+        "importance_tier": 2,
+        "source_url": "https://example.com/official",
+        "fact_hash": f"hash:{release_id}:{series_id}:{actual_value}",
+        "raw_data_json": {},
+    }
+
+
+def _current_target(dataset_id: str) -> dict:
+    return {
+        "dataset_id": dataset_id,
+        "partition_key": "latest",
+        "status": "current",
     }
 
 
@@ -180,13 +237,232 @@ def test_implemented_fed_capabilities_exclude_unavailable_licensed_products() ->
     assert capabilities["fed.reserve_bank_speeches"]["state"] == "available"
     assert capabilities["fed.roster"]["state"] == "available"
     assert capabilities["fed.document_analysis"]["state"] == "available"
+    assert capabilities["fed.fomc_schedule"]["state"] == "available"
+    assert capabilities["rates.treasury_auctions"]["state"] == "available"
     assert "rates.cme_policy_futures" not in capabilities
     assert all(spec.adapter_id != "unavailable" for spec in DATASET_REGISTRY.values())
     assert DATASET_REGISTRY["cboe.cfe.vx.settlement"].module_id == "volatility"
     assert DATASET_REGISTRY["nasdaq.spy.daily"].module_id == "cross_asset"
+
+
+def test_rates_payload_uses_only_the_latest_official_fomc_calendar_revision() -> None:
+    old_received_at_ms = NOW_MS - 100_000
+    release_rows = [
+        _release_row(
+            dataset_id="federal_reserve.fomc.schedule",
+            release_id="FOMC_CALENDAR:old:2026-09-15:2026-09-16",
+            series_id="FOMC_MEETING_SEP",
+            reference_period="2026-09-15..2026-09-16",
+            actual_value=None,
+            unit="meeting",
+            received_at_ms=old_received_at_ms,
+        ),
+        _release_row(
+            dataset_id="federal_reserve.fomc.schedule",
+            release_id="FOMC_CALENDAR:new:2026-09-16:2026-09-17",
+            series_id="FOMC_MEETING_SEP",
+            reference_period="2026-09-16..2026-09-17",
+            actual_value=None,
+            unit="meeting",
+        ),
+        _release_row(
+            dataset_id="federal_reserve.fomc.schedule",
+            release_id="FOMC_CALENDAR:new:2026-10-27:2026-10-28",
+            series_id="FOMC_MEETING",
+            reference_period="2026-10-27..2026-10-28",
+            actual_value=None,
+            unit="meeting",
+        ),
+    ]
+
+    module = _module("rates_fed", release_rows=release_rows)
+
+    assert module["schema_version"] == "macro_rates_fed_v7"
+    assert module["fed"]["meeting_calendar"] == {
+        "revision_id": "new",
+        "meetings": [
+            {
+                "meeting_id": "FOMC:2026-09-16:2026-09-17",
+                "start_date": "2026-09-16",
+                "end_date": "2026-09-17",
+                "has_sep": True,
+                "calendar_published_at_ms": None,
+                "received_at_ms": NOW_MS,
+                "source_url": "https://example.com/official",
+            },
+            {
+                "meeting_id": "FOMC:2026-10-27:2026-10-28",
+                "start_date": "2026-10-27",
+                "end_date": "2026-10-28",
+                "has_sep": False,
+                "calendar_published_at_ms": None,
+                "received_at_ms": NOW_MS,
+                "source_url": "https://example.com/official",
+            },
+        ],
+    }
+    api_schemas.MacroRatesFedPersistedData.model_validate(module)
+
+
+def test_rates_payload_groups_treasury_auction_metrics_without_inventing_publication_time() -> None:
+    release_id = "TREASURY_AUCTION:91282ABC1:2026-07-27"
+    scheduled_at_ms = 1_785_171_600_000
+    metrics = {
+        "bid_to_cover": (2.67, "ratio"),
+        "direct_award_share": (12.5, "percent"),
+        "high_yield": (4.321, "percent"),
+        "indirect_award_share": (70.0, "percent"),
+        "offering_amount": (42_000_000_000.0, "usd"),
+        "primary_dealer_award_share": (17.5, "percent"),
+    }
+    release_rows = [
+        _release_row(
+            dataset_id="treasury.auction.results",
+            release_id=release_id,
+            series_id=f"10_YEAR:{metric}",
+            reference_period="2026-07-27",
+            actual_value=value,
+            unit=unit,
+            scheduled_at_ms=scheduled_at_ms,
+        )
+        for metric, (value, unit) in metrics.items()
+    ]
+
+    module = _module("rates_fed", release_rows=release_rows)
+
+    assert module["treasury_auctions"]["recent_results"] == [
+        {
+            "auction_id": release_id,
+            "cusip": "91282ABC1",
+            "security_term": "10_YEAR",
+            "auction_date": "2026-07-27",
+            "scheduled_at_ms": scheduled_at_ms,
+            "published_at_ms": None,
+            "received_at_ms": NOW_MS,
+            "source_url": "https://example.com/official",
+            "bid_to_cover_ratio": 2.67,
+            "high_yield_pct": 4.321,
+            "offering_amount_usd": 42_000_000_000.0,
+            "indirect_award_share_pct": 70.0,
+            "direct_award_share_pct": 12.5,
+            "primary_dealer_award_share_pct": 17.5,
+        }
+    ]
+    api_schemas.MacroRatesFedPersistedData.model_validate(module)
     assert DATASET_REGISTRY["yfinance.spy.intraday"].module_id == "cross_asset"
     assert all(capability.requirement in {"required", "supporting"} for capability in COVERAGE_MANIFEST.values())
     assert "licensed_unavailable" not in json.dumps(module, sort_keys=True)
+
+
+def test_every_coverage_dataset_is_a_declared_module_input_dependency() -> None:
+    for module_id in MACRO_MODULE_IDS:
+        covered_dataset_ids = {
+            dataset_id
+            for capability in COVERAGE_MANIFEST.values()
+            if capability.module_id == module_id
+            for dataset_id in capability.dataset_ids
+        }
+
+        assert covered_dataset_ids <= set(MODULE_DATASET_DEPENDENCIES[module_id])
+
+
+def test_missing_fed_document_analysis_does_not_degrade_current_rates_facts() -> None:
+    required_series_ids = (
+        "treasury.daily_nominal_curve",
+        "treasury.daily_real_curve",
+        "fred.effr",
+        "fred.dfedtaru",
+        "fred.dfedtarl",
+        "fred.sofr",
+    )
+    document_rows = [
+        _document_row(
+            dataset_id="federal_reserve.fomc.documents",
+            document_type="statement",
+            suffix="fomc-statement",
+        ),
+        _document_row(
+            dataset_id="federal_reserve.board.speeches",
+            document_type="speech",
+            suffix="board-speech",
+        ),
+        _document_row(
+            dataset_id="federal_reserve.reserve_bank.speeches",
+            document_type="speech",
+            suffix="reserve-bank-speech",
+        ),
+    ]
+    module = _module(
+        "rates_fed",
+        series_rows=[
+            _series_row(
+                dataset_id=dataset_id,
+                reference_date=date(2026, 7, 27),
+            )
+            for dataset_id in required_series_ids
+        ],
+        document_rows=document_rows,
+        role_rows=[
+            {
+                "role_fact_id": "role:chair",
+                "dataset_id": "federal_reserve.fomc.roster",
+                "official_id": "fedoff_chair",
+                "official_name": "Test Chair",
+                "role_title": "Chair",
+                "organization": "Board of Governors",
+                "effective_start": date(2026, 1, 1),
+                "effective_end": None,
+                "fomc_participant": True,
+                "fomc_voter": True,
+                "source_url": "https://www.federalreserve.gov/aboutthefed.htm",
+                "received_at_ms": NOW_MS - 8_000,
+            }
+        ],
+        target_states=[
+            _current_target(dataset_id)
+            for dataset_id in (
+                *required_series_ids,
+                *(row["dataset_id"] for row in document_rows),
+            )
+        ],
+        analysis_job_state={"open": 0, "failed": 0},
+    )
+
+    analysis_capability = next(
+        item
+        for item in module["status"]["coverage"]["capabilities"]
+        if item["capability_id"] == "fed.document_analysis"
+    )
+    analysis_state = _dataset_state(module, "federal_reserve.document.analysis")
+
+    assert module["status"]["current_health"]["state"] == "current"
+    assert analysis_capability["requirement"] == "supporting"
+    assert analysis_state["required_for_current"] is False
+    assert analysis_state["current_health"] == "unavailable"
+    assert analysis_state["current_reason"]["code"] == "derived_fact_pending"
+    assert module["fed"]["institutional_stance"]["state"] == "no_call"
+    assert module["fed"]["institutional_stance"]["reason"]
+
+
+def test_rates_payload_consumes_shared_sofr_fact_as_policy_evidence() -> None:
+    module = _module(
+        "rates_fed",
+        series_rows=[
+            _series_row(
+                dataset_id="fred.sofr",
+                reference_date=date(2026, 7, 27),
+                value=4.31,
+            )
+        ],
+        target_states=[_current_target("fred.sofr")],
+    )
+
+    api_schemas.MacroRatesFedPersistedData.model_validate(module)
+    assert [row["dataset_id"] for row in module["policy_pricing"]["rates"]] == ["fred.sofr"]
+    assert any(row["dataset_id"] == "fred.sofr" for row in module["evidence"]["latest_facts"])
+    sofr_state = _dataset_state(module, "fred.sofr")
+    assert sofr_state["required_for_current"] is True
+    assert sofr_state["current_health"] == "current"
 
 
 def test_official_vx_curve_is_expiry_sorted_owned_only_by_volatility_and_keeps_source_clock() -> None:
@@ -347,7 +623,7 @@ def test_rates_payload_is_tenor_native_and_matches_the_issue_31_acceptance_sampl
 
     api_schemas.MacroRatesFedPersistedData.model_validate(module)
     assert module == reversed_module
-    assert module["schema_version"] == "macro_rates_fed_v6"
+    assert module["schema_version"] == "macro_rates_fed_v7"
     assert "summary" not in module
     assert "contradictions" not in module
     assert "falsifiers" not in module

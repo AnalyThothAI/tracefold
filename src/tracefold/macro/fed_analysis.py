@@ -10,9 +10,15 @@ from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tracefold.macro.dependencies import (
+    MODULE_DATASET_DEPENDENCIES,
+    module_input_fingerprint,
+    module_projection_version,
+)
 from tracefold.macro.domain import MacroModelExpectedError
 from tracefold.macro.fed_roles import match_effective_role
 from tracefold.platform.model_candidate import ModelCandidate
+from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 FED_DOCUMENT_ANALYSIS_PROMPT_VERSION = "fed_document_analysis_v2_evidence_ids"
@@ -22,6 +28,7 @@ FED_SPEECH_ANALYSIS_LOOKBACK_DAYS = 120
 _MAX_ATTEMPTS = 3
 _LEASE_MS = 600_000
 _RETRY_MS = 300_000
+_RATES_FED_PROJECTION_DEADLINE_MS = 60_000
 _STATEMENT_TIMEOUT_SECONDS = 120.0
 
 PolicyRelevance = Literal["policy_signal", "not_policy_signal", "uncertain"]
@@ -211,7 +218,7 @@ class MacroDocumentAnalysisService:
 
     def _ensure_jobs(self, now: int) -> int:
         with self._session() as repos, repos.transaction():
-            return int(
+            written = int(
                 repos.macro.ensure_document_analysis_jobs(
                     model_name=self.agent.model_name,
                     prompt_version=FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -219,8 +226,11 @@ class MacroDocumentAnalysisService:
                     now_ms=now,
                     fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
                     speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+                    refresh_projection_state=False,
                 )
             )
+            _refresh_rates_fed_projection_input(repos, updated_at_ms=now)
+            return written
 
     def _peek_job(self, now: int) -> dict[str, Any] | None:
         with self._session() as repos:
@@ -246,6 +256,7 @@ class MacroDocumentAnalysisService:
                 now_ms=now,
                 fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
                 speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+                refresh_projection_state=False,
             )
             job = repos.macro.claim_document_analysis_job(
                 model_name=self.agent.model_name,
@@ -255,6 +266,7 @@ class MacroDocumentAnalysisService:
                 now_ms=now,
                 analysis_job_id=analysis_job_id,
             )
+            _refresh_rates_fed_projection_input(repos, updated_at_ms=now)
         return {"jobs_written": jobs_written, "job": dict(job) if job is not None else None}
 
     def _load_job(self, job: Mapping[str, Any]) -> dict[str, Any]:
@@ -326,6 +338,10 @@ class MacroDocumentAnalysisService:
             )
             if written != 1:
                 raise RuntimeError("macro_document_analysis_insert_conflict")
+            _refresh_rates_fed_projection_input(
+                repos,
+                updated_at_ms=completed_at_ms,
+            )
         return {
             "status": "published",
             "analysis_id": analysis_id,
@@ -359,6 +375,10 @@ class MacroDocumentAnalysisService:
                     "document_id": job["document_id"],
                     "jobs_written": jobs_written,
                 }
+            _refresh_rates_fed_projection_input(
+                repos,
+                updated_at_ms=completed_at_ms,
+            )
         return {
             "status": "failed",
             "document_id": job["document_id"],
@@ -388,6 +408,36 @@ class MacroDocumentAnalysisService:
             self.worker_name,
             statement_timeout_seconds=_STATEMENT_TIMEOUT_SECONDS,
         )
+
+
+def _refresh_rates_fed_projection_input(
+    repos: Any,
+    *,
+    updated_at_ms: int,
+) -> bool:
+    changed = repos.macro.refresh_document_analysis_projection_state(
+        updated_at_ms=updated_at_ms,
+    )
+    if not changed:
+        return False
+    dataset_states = repos.macro.dataset_projection_states(
+        dataset_ids=MODULE_DATASET_DEPENDENCIES["rates_fed"],
+    )
+    repos.projection_frontiers.mark_dirty(
+        MACRO_FRONTIER,
+        key={"module_id": "rates_fed"},
+        dirty_at_ms=updated_at_ms,
+        deadline_at_ms=updated_at_ms + _RATES_FED_PROJECTION_DEADLINE_MS,
+        input_fingerprint=module_input_fingerprint("rates_fed", dataset_states),
+        version=module_projection_version("rates_fed"),
+        extra_insert={
+            "source_frontier_ms": max(
+                (int(row["source_frontier_ms"]) for row in dataset_states),
+                default=0,
+            )
+        },
+    )
+    return True
 
 
 def canonicalize_document_analysis(

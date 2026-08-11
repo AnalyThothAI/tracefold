@@ -38,6 +38,15 @@ describe("Macro current-fact routes", () => {
     );
   });
 
+  it("renders /macro/overview as an alias of the current overview", async () => {
+    renderAppRoute("/macro/overview");
+
+    expect(await screen.findByRole("heading", { name: "宏观事实总览" })).toBeVisible();
+    await waitFor(() =>
+      expect(apiMock.readApi).toHaveBeenCalledWith("/api/macro/overview", { token: "secret" }),
+    );
+  });
+
   it.each([
     ["/macro/rates-fed", "/api/macro/rates-fed", "利率与美联储"],
     ["/macro/economy-inflation", "/api/macro/economy-inflation", "经济与通胀"],

@@ -18,7 +18,7 @@ from tracefold.macro.history_policy import (
     series_history_limits,
 )
 from tracefold.macro.module_payloads import build_typed_module_payload
-from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
+from tracefold.macro.registry import DATASET_REGISTRY
 from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 _INPUT_ROW_CAP = 10_000
@@ -81,28 +81,37 @@ class MacroProjectionService:
                 for row in repos.macro.target_states()
                 if str(row.get("partition_key") or "") == "latest"
             }
+            document_analysis_state = repos.macro.document_analysis_projection_state()
             state_writes = 0
             for dataset_id in sorted(DATASET_REGISTRY):
                 material = material_by_dataset.get(dataset_id)
                 target = target_by_dataset.get(dataset_id)
-                state_writes += int(
-                    repos.macro.upsert_dataset_projection_state(
-                        dataset_id=dataset_id,
-                        material_fingerprint=_stable_hash(
+                if dataset_id == "federal_reserve.document.analysis":
+                    projection_state = document_analysis_state
+                else:
+                    projection_state = {
+                        "material_fingerprint": _stable_hash(
                             {
                                 "dataset_id": dataset_id,
                                 "row_count": int(material["row_count"]) if material else 0,
                                 "max_fact_hash": str(material["max_fact_hash"]) if material else None,
                             }
                         ),
-                        acquisition_status=str(
+                        "acquisition_status": str(
                             target.get("status")
                             if target is not None
                             else "current"
                             if material is not None
                             else "uninitialized"
                         ),
-                        source_frontier_ms=(int(material["source_frontier_ms"] or 0) if material is not None else 0),
+                        "source_frontier_ms": (int(material["source_frontier_ms"] or 0) if material is not None else 0),
+                    }
+                state_writes += int(
+                    repos.macro.upsert_dataset_projection_state(
+                        dataset_id=dataset_id,
+                        material_fingerprint=str(projection_state["material_fingerprint"]),
+                        acquisition_status=str(projection_state["acquisition_status"]),
+                        source_frontier_ms=int(projection_state["source_frontier_ms"]),
                         updated_at_ms=now_ms,
                     )
                 )
@@ -174,7 +183,6 @@ class MacroProjectionService:
         settlement_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "market_settlement")
         release_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "release")
         document_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "document")
-        module_dataset_ids = tuple(spec.dataset_id for spec in datasets_for_module(claim.module_id))
         with self._session() as repos:
             dataset_states = repos.macro.dataset_projection_states(dataset_ids=dataset_ids)
             current_fingerprint = module_input_fingerprint(claim.module_id, dataset_states)
@@ -249,7 +257,7 @@ class MacroProjectionService:
                     if claim.module_id == "rates_fed"
                     else {"total": 0, "open": 0, "failed": 0, "completed": 0}
                 ),
-                "target_states": repos.macro.target_states(dataset_ids=module_dataset_ids),
+                "target_states": repos.macro.target_states(dataset_ids=dataset_ids),
             }
         _require_bounded_input(payload)
         return payload

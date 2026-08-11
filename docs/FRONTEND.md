@@ -178,8 +178,14 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 
   Rates begins with the persisted 2Y/10Y/30Y completed-session matrix,
   2s10s/10s30s, and aligned 10Y/30Y nominal-real-breakeven decomposition. It
-  then renders maturity cross-sections, source clocks, Fed institutional stance,
-  officials distribution, and the event timeline. Cross-Asset keeps the fixed
+  then renders maturity cross-sections, source clocks, the official FOMC
+  meeting calendar, recent Treasury auction-demand facts, Fed institutional
+  stance, officials distribution, and the event timeline. The optional Fed
+  analysis runtime configuration is a separate `disabled`/`unconfigured`/`active`
+  evidence lane. `active` means the worker's configuration admission conditions
+  are satisfied; it is not a process-liveness signal. Disabled analysis does not
+  make official Rates/Fed facts unavailable,
+  and `no_call` never renders as a zero-score distribution. Cross-Asset keeps the fixed
   ETF matrix, normalized comparison, futures, and USD-index facts distinct.
   Credit keeps its four concurrent dimensions and no composite score.
   Volatility alone owns the official-expiry CFE VX settlement curve.
@@ -189,6 +195,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   A missing module renders its typed unavailable reason without hiding the
   other five. At desktop, tablet, and mobile widths, content becomes labelled
   stacked sections without horizontal scrolling or hover-only evidence.
+
+  Module headers and the Dataset audit render server-owned group/Dataset
+  health, exact reasons, affected Dataset IDs, source/effective/received
+  clocks, recovery mode, and next-check time. A cached refetch failure is
+  visibly stale instead of silently presenting the cached body as current;
+  typed unavailable states retain their retry or operator-recovery action.
 - **Page state.** Only an active first HTTP request may show Loading.
   Bootstrap pending/error, disabled query, transport error, same-session stale
   cache, and typed module-unavailable states use distinct `PageState.*`

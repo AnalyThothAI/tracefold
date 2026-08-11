@@ -3069,6 +3069,46 @@
         "title": "MacroDatasetStateData",
         "type": "object"
       },
+      "MacroDocumentAnalysisRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "disabled",
+              "unconfigured",
+              "active"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "worker_active": {
+            "description": "Configuration admission (enabled and configured), not observed worker process liveness.",
+            "title": "Worker Active",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "enabled",
+          "configured",
+          "worker_active",
+          "model"
+        ],
+        "title": "MacroDocumentAnalysisRuntimeData",
+        "type": "object"
+      },
       "MacroEconomyInflationReadData": {
         "additionalProperties": false,
         "properties": {
@@ -3329,6 +3369,9 @@
           "institutional_stance": {
             "$ref": "#/components/schemas/MacroFedInstitutionalStanceData"
           },
+          "meeting_calendar": {
+            "$ref": "#/components/schemas/MacroFedMeetingCalendarData"
+          },
           "officials_distribution": {
             "$ref": "#/components/schemas/MacroFedOfficialsDistributionData"
           },
@@ -3344,6 +3387,7 @@
           }
         },
         "required": [
+          "meeting_calendar",
           "institutional_stance",
           "officials_distribution",
           "timeline",
@@ -3410,6 +3454,88 @@
           "analysis_id"
         ],
         "title": "MacroFedInstitutionalStanceData",
+        "type": "object"
+      },
+      "MacroFedMeetingCalendarData": {
+        "additionalProperties": false,
+        "properties": {
+          "meetings": {
+            "items": {
+              "$ref": "#/components/schemas/MacroFedMeetingData"
+            },
+            "title": "Meetings",
+            "type": "array"
+          },
+          "revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Id"
+          }
+        },
+        "required": [
+          "revision_id",
+          "meetings"
+        ],
+        "title": "MacroFedMeetingCalendarData",
+        "type": "object"
+      },
+      "MacroFedMeetingData": {
+        "additionalProperties": false,
+        "properties": {
+          "calendar_published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calendar Published At Ms"
+          },
+          "end_date": {
+            "format": "date",
+            "title": "End Date",
+            "type": "string"
+          },
+          "has_sep": {
+            "title": "Has Sep",
+            "type": "boolean"
+          },
+          "meeting_id": {
+            "title": "Meeting Id",
+            "type": "string"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meeting_id",
+          "start_date",
+          "end_date",
+          "has_sep",
+          "calendar_published_at_ms",
+          "received_at_ms",
+          "source_url"
+        ],
+        "title": "MacroFedMeetingData",
         "type": "object"
       },
       "MacroFedOfficialData": {
@@ -5201,6 +5327,9 @@
           "decision": {
             "$ref": "#/components/schemas/MacroRatesDecisionData"
           },
+          "document_analysis_runtime": {
+            "$ref": "#/components/schemas/MacroDocumentAnalysisRuntimeData"
+          },
           "evidence": {
             "$ref": "#/components/schemas/MacroModuleEvidenceData"
           },
@@ -5248,12 +5377,15 @@
             ]
           },
           "schema_version": {
-            "const": "macro_rates_fed_v6",
+            "const": "macro_rates_fed_v7",
             "title": "Schema Version",
             "type": "string"
           },
           "status": {
             "$ref": "#/components/schemas/MacroModuleStatusData"
+          },
+          "treasury_auctions": {
+            "$ref": "#/components/schemas/MacroTreasuryAuctionsData"
           }
         },
         "required": [
@@ -5268,7 +5400,9 @@
           "curve",
           "policy_pricing",
           "fed",
+          "treasury_auctions",
           "positioning",
+          "document_analysis_runtime",
           "availability",
           "reason"
         ],
@@ -6245,6 +6379,159 @@
           "reason"
         ],
         "title": "MacroTransportStateData",
+        "type": "object"
+      },
+      "MacroTreasuryAuctionResultData": {
+        "additionalProperties": false,
+        "properties": {
+          "auction_date": {
+            "format": "date",
+            "title": "Auction Date",
+            "type": "string"
+          },
+          "auction_id": {
+            "title": "Auction Id",
+            "type": "string"
+          },
+          "bid_to_cover_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid To Cover Ratio"
+          },
+          "cusip": {
+            "title": "Cusip",
+            "type": "string"
+          },
+          "direct_award_share_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direct Award Share Pct"
+          },
+          "high_yield_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Yield Pct"
+          },
+          "indirect_award_share_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indirect Award Share Pct"
+          },
+          "offering_amount_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offering Amount Usd"
+          },
+          "primary_dealer_award_share_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Dealer Award Share Pct"
+          },
+          "published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At Ms"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "scheduled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled At Ms"
+          },
+          "security_term": {
+            "title": "Security Term",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "auction_id",
+          "cusip",
+          "security_term",
+          "auction_date",
+          "scheduled_at_ms",
+          "published_at_ms",
+          "received_at_ms",
+          "source_url",
+          "bid_to_cover_ratio",
+          "high_yield_pct",
+          "offering_amount_usd",
+          "indirect_award_share_pct",
+          "direct_award_share_pct",
+          "primary_dealer_award_share_pct"
+        ],
+        "title": "MacroTreasuryAuctionResultData",
+        "type": "object"
+      },
+      "MacroTreasuryAuctionsData": {
+        "additionalProperties": false,
+        "properties": {
+          "recent_results": {
+            "items": {
+              "$ref": "#/components/schemas/MacroTreasuryAuctionResultData"
+            },
+            "title": "Recent Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "recent_results"
+        ],
+        "title": "MacroTreasuryAuctionsData",
         "type": "object"
       },
       "MacroVolatilityCrossAssetImpliedData": {

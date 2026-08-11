@@ -1,0 +1,192 @@
+@layer app.features {
+  .macro-decision__document-analysis-runtime,
+  .macro-decision__fed-distribution,
+  .macro-decision__fed-roster {
+    display: grid;
+    gap: 0.55rem;
+    min-width: 0;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    padding: 0.7rem;
+  }
+
+  .macro-decision__document-analysis-runtime > header,
+  .macro-decision__fed-distribution > header,
+  .macro-decision__fed-roster > header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+
+  .macro-decision__document-analysis-runtime > header > div,
+  .macro-decision__fed-distribution > header > div,
+  .macro-decision__fed-roster > header > div {
+    min-width: 0;
+  }
+
+  .macro-decision__document-analysis-runtime h3,
+  .macro-decision__fed-distribution h3,
+  .macro-decision__fed-roster h3,
+  .macro-decision__fed-distribution p,
+  .macro-decision__fed-roster p {
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+
+  .macro-decision__document-analysis-runtime h3,
+  .macro-decision__fed-distribution h3,
+  .macro-decision__fed-roster h3 {
+    margin-top: 0.1rem;
+    font-size: 0.8rem;
+  }
+
+  .macro-decision__document-analysis-runtime > header span,
+  .macro-decision__fed-distribution > header span,
+  .macro-decision__fed-roster > header span {
+    color: var(--text-muted);
+    font-size: 0.59rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .macro-decision__document-analysis-runtime > header > strong,
+  .macro-decision__fed-distribution > header > strong,
+  .macro-decision__fed-roster > header > strong {
+    flex: 0 0 auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 0.22rem 0.4rem;
+    font-size: 0.61rem;
+  }
+
+  .macro-decision__document-analysis-runtime[data-state="active"] > header > strong {
+    border-color: var(--signal-positive-border);
+    color: var(--signal-positive);
+  }
+
+  .macro-decision__document-analysis-runtime[data-state="disabled"] > header > strong,
+  .macro-decision__document-analysis-runtime[data-state="unconfigured"] > header > strong {
+    border-color: var(--signal-caution-border);
+    color: var(--signal-caution);
+  }
+
+  .macro-decision__fed-distribution > header > strong[data-state="current"],
+  .macro-decision__fed-roster > header > strong[data-state="current"] {
+    border-color: var(--signal-positive-border);
+    color: var(--signal-positive);
+  }
+
+  .macro-decision__fed-distribution > header > strong[data-state="no_call"] {
+    border-color: var(--signal-caution-border);
+    color: var(--signal-caution);
+  }
+
+  .macro-decision__fed-roster > header > strong[data-state="unavailable"] {
+    border-color: var(--signal-negative-border);
+    color: var(--signal-negative);
+  }
+
+  .macro-decision__fed-distribution dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .macro-decision__document-analysis-runtime > p {
+    overflow-wrap: anywhere;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.63rem;
+  }
+
+  .macro-decision__document-analysis-runtime dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+    gap: 0.35rem;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .macro-decision__document-analysis-runtime dl > div {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+  }
+
+  .macro-decision__document-analysis-runtime dt {
+    color: var(--text-muted);
+    font-size: 0.58rem;
+  }
+
+  .macro-decision__document-analysis-runtime dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+  }
+
+  .macro-decision__fed-distribution dl > div {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+  }
+
+  .macro-decision__fed-distribution dt,
+  .macro-decision__fed-distribution p,
+  .macro-decision__fed-roster p,
+  .macro-decision__fed-roster li span {
+    color: var(--text-muted);
+    font-size: 0.63rem;
+  }
+
+  .macro-decision__fed-distribution dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+  }
+
+  .macro-decision__fed-roster ul {
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .macro-decision__fed-roster-unavailable {
+    display: grid;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+
+  .macro-decision__fed-roster-unavailable small {
+    overflow-wrap: anywhere;
+    color: var(--text-muted);
+    font-size: 0.59rem;
+  }
+
+  .macro-decision__fed-roster li {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+    padding-top: 0.35rem;
+  }
+
+  .macro-decision__fed-roster li :is(strong, span) {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 430px) {
+    .macro-decision__fed-distribution dl {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+}

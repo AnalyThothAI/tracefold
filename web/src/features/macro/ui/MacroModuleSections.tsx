@@ -49,7 +49,9 @@ import {
 } from "./MacroCharts";
 
 import "./MacroRatesDecision.css";
+import "./MacroFedCommunication.css";
 import "./MacroModuleSections.css";
+import "./MacroOfficialRatesFacts.css";
 
 type Section = { id: string; label: string };
 
@@ -356,6 +358,7 @@ function RatesSection({ module, active }: { module: MacroRatesFedReadData; activ
         />
         <LatestMetricStrip indicators={indicators} />
         <MacroIndicatorTable indicators={indicators} />
+        <TreasuryAuctionResults rows={module.treasury_auctions.recent_results} />
       </ModuleWorkbench>
     );
   }
@@ -480,14 +483,9 @@ function RatesCurveCharts({
 }
 
 function FedCommunication({ module }: { module: MacroRatesFedReadData }) {
-  const fed = asRecord(module.fed);
-  const institutional = readRecord(fed, "institutional_stance");
-  const distribution = readRecord(fed, "officials_distribution");
-  const eventCounts = readRecord(distribution, "stance_event_counts");
-  const officialCounts = readRecord(distribution, "stance_unique_official_counts");
-  const institutionalDirection = readText(institutional, "direction");
-  const institutionalReason = readText(institutional, "reason");
-  const institutionalAnalysisId = readText(institutional, "analysis_id");
+  const { institutional_stance: institutional, officials_distribution: distribution } = module.fed;
+  const eventCounts = distribution.stance_event_counts;
+  const officialCounts = distribution.stance_unique_official_counts;
   const stances = ["hawkish", "neutral", "dovish", "mixed"] as const;
   const groups: MacroBarGroup[] = stances.map((stance) => ({
     id: stance,
@@ -496,13 +494,13 @@ function FedCommunication({ module }: { module: MacroRatesFedReadData }) {
       {
         id: "events",
         label: "事件数",
-        value: readNumber(eventCounts, stance),
+        value: eventCounts[stance],
         color: chartColor(0),
       },
       {
         id: "officials",
         label: "独立官员数",
-        value: readNumber(officialCounts, stance),
+        value: officialCounts[stance],
         color: chartColor(1),
       },
     ],
@@ -514,22 +512,245 @@ function FedCommunication({ module }: { module: MacroRatesFedReadData }) {
       module={module}
       title="制度立场、官员分布与事件时间线"
     >
-      {institutionalDirection || institutionalReason || institutionalAnalysisId ? (
+      <DocumentAnalysisRuntime runtime={module.document_analysis_runtime} />
+      <FedMeetingCalendar calendar={module.fed.meeting_calendar} />
+      {institutional.direction || institutional.reason || institutional.analysis_id ? (
         <div className="macro-decision__fed-callout">
           <span>机构立场</span>
-          {institutionalDirection ? <strong>{stanceLabel(institutionalDirection)}</strong> : null}
-          {institutionalReason ? <p>{institutionalReason}</p> : null}
-          {institutionalAnalysisId ? (
+          {institutional.direction ? <strong>{stanceLabel(institutional.direction)}</strong> : null}
+          {institutional.reason ? <p>{institutional.reason}</p> : null}
+          {institutional.analysis_id ? (
             <details>
               <summary>查看分析审计</summary>
-              <small>{institutionalAnalysisId}</small>
+              <small>{institutional.analysis_id}</small>
             </details>
           ) : null}
         </div>
       ) : null}
-      <MacroBarChart groups={groups} title="近 90 日已审阅沟通分布" />
-      <FedTimeline rows={readRecords(fed, "timeline")} />
+      <FedDistribution distribution={distribution} groups={groups} />
+      <FedRoster roster={module.fed.roster} />
+      <FedTimeline rows={asRecords(module.fed.timeline)} />
     </ModuleWorkbench>
+  );
+}
+
+function DocumentAnalysisRuntime({
+  runtime,
+}: {
+  runtime: MacroRatesFedReadData["document_analysis_runtime"];
+}) {
+  const copy = documentAnalysisRuntimeCopy(runtime.state);
+  return (
+    <section
+      aria-label="文档分析运行态"
+      className="macro-decision__document-analysis-runtime"
+      data-state={runtime.state}
+    >
+      <header>
+        <div>
+          <span>OPTIONAL DOCUMENT ANALYSIS</span>
+          <h3>文档分析运行态</h3>
+        </div>
+        <strong>{copy.label}</strong>
+      </header>
+      <p>{copy.description}</p>
+      <dl>
+        <StatusMetric label="运行状态" value={copy.label} />
+        <StatusMetric label="已启用" value={booleanLabel(runtime.enabled)} />
+        <StatusMetric label="网关已配置" value={booleanLabel(runtime.configured)} />
+        <StatusMetric label="Worker 装配条件" value={runtime.worker_active ? "满足" : "不满足"} />
+        <StatusMetric label="模型（运行审计）" value={runtime.model || "未指定"} />
+      </dl>
+    </section>
+  );
+}
+
+function FedMeetingCalendar({
+  calendar,
+}: {
+  calendar: MacroRatesFedReadData["fed"]["meeting_calendar"];
+}) {
+  if (!calendar.meetings.length) return null;
+  const referenceDate = new Date(
+    Math.max(...calendar.meetings.map((meeting) => meeting.received_at_ms)),
+  )
+    .toISOString()
+    .slice(0, 10);
+  const upcoming = calendar.meetings.filter((meeting) => meeting.end_date >= referenceDate);
+  const visibleMeetings = (upcoming.length ? upcoming : calendar.meetings.slice(-2)).slice(0, 8);
+  return (
+    <section aria-label="官方 FOMC 会议日历" className="macro-decision__meeting-calendar">
+      <header>
+        <div>
+          <span>OFFICIAL FOMC CALENDAR</span>
+          <h3>官方 FOMC 会议日历</h3>
+        </div>
+        {calendar.revision_id ? <small>{calendar.revision_id}</small> : null}
+      </header>
+      {calendar.meetings.length ? (
+        <div>
+          {visibleMeetings.map((meeting) => (
+            <article key={meeting.meeting_id}>
+              <header>
+                <strong>
+                  {meeting.start_date}—{meeting.end_date}
+                </strong>
+                <span>{meeting.has_sep ? "包含 SEP" : "不含 SEP"}</span>
+              </header>
+              <dl>
+                <StatusMetric
+                  label="日历发布"
+                  value={formatOptionalInstant(meeting.calendar_published_at_ms)}
+                />
+                <StatusMetric label="系统接收" value={formatInstant(meeting.received_at_ms)} />
+              </dl>
+              <a href={meeting.source_url} rel="noreferrer" target="_blank">
+                Federal Reserve 原始日历
+              </a>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TreasuryAuctionResults({
+  rows,
+}: {
+  rows: MacroRatesFedReadData["treasury_auctions"]["recent_results"];
+}) {
+  if (!rows.length) return null;
+  return (
+    <section aria-label="美国国债拍卖结果" className="macro-decision__auction-results">
+      <header>
+        <span>OFFICIAL TREASURY AUCTIONS</span>
+        <h3>美国国债拍卖结果</h3>
+        <p>结果按服务端顺序展示投标、收益率和分配比例。</p>
+      </header>
+      <div>
+        {rows.map((auction) => (
+          <article key={auction.auction_id}>
+            <header>
+              <div>
+                <strong>{auction.security_term}</strong>
+                <small>
+                  {auction.cusip} · {auction.auction_date}
+                </small>
+              </div>
+            </header>
+            <dl>
+              <StatusMetric
+                label="投标覆盖倍数"
+                value={formatAuctionNumber(auction.bid_to_cover_ratio)}
+              />
+              <StatusMetric
+                label="最高得标收益率"
+                value={formatAuctionPercent(auction.high_yield_pct)}
+              />
+              <StatusMetric label="发行额" value={formatAuctionUsd(auction.offering_amount_usd)} />
+              <StatusMetric
+                label="投标分配"
+                value={`间接 ${formatAuctionPercent(auction.indirect_award_share_pct)} · 直接 ${formatAuctionPercent(auction.direct_award_share_pct)} · 一级交易商 ${formatAuctionPercent(auction.primary_dealer_award_share_pct)}`}
+              />
+              <StatusMetric
+                label="计划时间"
+                value={formatOptionalInstant(auction.scheduled_at_ms)}
+              />
+              <StatusMetric
+                label="官方发布"
+                value={formatOptionalInstant(auction.published_at_ms)}
+              />
+              <StatusMetric label="系统接收" value={formatInstant(auction.received_at_ms)} />
+            </dl>
+            <a href={auction.source_url} rel="noreferrer" target="_blank">
+              Treasury 原始拍卖结果
+            </a>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FedDistribution({
+  distribution,
+  groups,
+}: {
+  distribution: MacroRatesFedReadData["fed"]["officials_distribution"];
+  groups: MacroBarGroup[];
+}) {
+  const chartTitle = `近 ${distribution.window_days} 日已审阅沟通分布`;
+  return (
+    <section aria-label="官员沟通分布" className="macro-decision__fed-distribution">
+      <header>
+        <div>
+          <span>OFFICIALS DISTRIBUTION</span>
+          <h3>官员沟通分布</h3>
+        </div>
+        <strong data-state={distribution.state}>
+          {fedDistributionStateLabel(distribution.state)}
+        </strong>
+      </header>
+      <dl>
+        <StatusMetric label="状态" value={fedDistributionStateLabel(distribution.state)} />
+        <StatusMetric label="截止日" value={distribution.as_of ?? "尚无截止日"} />
+        <StatusMetric label="观察窗口" value={`${distribution.window_days} 日`} />
+        <StatusMetric label="已分析事件" value={String(distribution.analyzed_event_count)} />
+        <StatusMetric label="独立官员" value={String(distribution.unique_official_count)} />
+        <StatusMetric label="不确定事件" value={String(distribution.uncertain_event_count)} />
+      </dl>
+      {distribution.state === "current" ? (
+        <MacroBarChart groups={groups} title={chartTitle} />
+      ) : (
+        <p>服务端尚未形成官员沟通分布；零计数不作为有效分布绘图。</p>
+      )}
+    </section>
+  );
+}
+
+function FedRoster({ roster }: { roster: MacroRatesFedReadData["fed"]["roster"] }) {
+  return (
+    <section aria-label="美联储官员名册" className="macro-decision__fed-roster">
+      <header>
+        <div>
+          <span>EFFECTIVE-DATED ROSTER</span>
+          <h3>美联储官员名册</h3>
+        </div>
+        <strong data-state={roster.state}>{fedRosterStateLabel(roster.state)}</strong>
+      </header>
+      {roster.state === "current" ? (
+        <>
+          <p>当前有效官员 {roster.officials.length} 位。</p>
+          {roster.officials.length ? (
+            <ul>
+              {roster.officials.map((official) => (
+                <li key={official.role_fact_id}>
+                  <strong>{official.official_name}</strong>
+                  <span>
+                    {official.role_title} · {official.organization}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : (
+        <div className="macro-decision__fed-roster-unavailable">
+          <p>服务端尚未提供当前有效期官员名册。</p>
+          {roster.reason ? <small>{roster.reason}</small> : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function StatusMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
   );
 }
 
@@ -1204,6 +1425,38 @@ function checkpointHistoryLabel(value: string): string {
   );
 }
 
+function fedDistributionStateLabel(value: "current" | "no_call"): string {
+  return value === "current" ? "当前" : "未形成判断";
+}
+
+function fedRosterStateLabel(value: "current" | "unavailable"): string {
+  return value === "current" ? "当前" : "不可用";
+}
+
+function documentAnalysisRuntimeCopy(
+  value: MacroRatesFedReadData["document_analysis_runtime"]["state"],
+): { description: string; label: string } {
+  return {
+    active: {
+      description:
+        "文档分析已启用且模型网关已配置；这表示 Worker 可被运行时装配，不代表进程存活。分析结果属于独立证据轨，不替代官方事实。",
+      label: "可装配",
+    },
+    disabled: {
+      description: "可选文档分析未启用；不影响利率与美联储官方事实健康。",
+      label: "未启用",
+    },
+    unconfigured: {
+      description: "可选文档分析已启用，但模型网关未配置；官方事实健康不由此状态降级。",
+      label: "未配置",
+    },
+  }[value];
+}
+
+function booleanLabel(value: boolean): string {
+  return value ? "是" : "否";
+}
+
 function creditStateLabel(value: string): string {
   return (
     {
@@ -1658,6 +1911,26 @@ function formatInstant(value: number): string {
     hour12: false,
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatOptionalInstant(value: number | null): string {
+  return value == null ? "尚无时间" : formatInstant(value);
+}
+
+function formatAuctionNumber(value: number | null): string {
+  return value == null
+    ? "—"
+    : new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(value);
+}
+
+function formatAuctionPercent(value: number | null): string {
+  return value == null ? "—" : `${formatAuctionNumber(value)}%`;
+}
+
+function formatAuctionUsd(value: number | null): string {
+  return value == null
+    ? "—"
+    : `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value)} USD`;
 }
 
 function formatOptional(value: number | null, unit: string | null): string {

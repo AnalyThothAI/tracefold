@@ -1356,6 +1356,25 @@ export interface components {
              */
             trust_tier: "official" | "exchange" | "untrusted_proxy";
         };
+        /** MacroDocumentAnalysisRuntimeData */
+        MacroDocumentAnalysisRuntimeData: {
+            /** Configured */
+            configured: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Model */
+            model: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "disabled" | "unconfigured" | "active";
+            /**
+             * Worker Active
+             * @description Configuration admission (enabled and configured), not observed worker process liveness.
+             */
+            worker_active: boolean;
+        };
         /** MacroEconomyInflationReadData */
         MacroEconomyInflationReadData: {
             /**
@@ -1433,6 +1452,7 @@ export interface components {
         /** MacroFedData */
         MacroFedData: {
             institutional_stance: components["schemas"]["MacroFedInstitutionalStanceData"];
+            meeting_calendar: components["schemas"]["MacroFedMeetingCalendarData"];
             officials_distribution: components["schemas"]["MacroFedOfficialsDistributionData"];
             roster: components["schemas"]["MacroFedRosterData"];
             /** Timeline */
@@ -1459,6 +1479,36 @@ export interface components {
              * @enum {string}
              */
             state: "current" | "no_call";
+        };
+        /** MacroFedMeetingCalendarData */
+        MacroFedMeetingCalendarData: {
+            /** Meetings */
+            meetings: components["schemas"]["MacroFedMeetingData"][];
+            /** Revision Id */
+            revision_id: string | null;
+        };
+        /** MacroFedMeetingData */
+        MacroFedMeetingData: {
+            /** Calendar Published At Ms */
+            calendar_published_at_ms: number | null;
+            /**
+             * End Date
+             * Format: date
+             */
+            end_date: string;
+            /** Has Sep */
+            has_sep: boolean;
+            /** Meeting Id */
+            meeting_id: string;
+            /** Received At Ms */
+            received_at_ms: number;
+            /** Source Url */
+            source_url: string;
+            /**
+             * Start Date
+             * Format: date
+             */
+            start_date: string;
         };
         /** MacroFedOfficialData */
         MacroFedOfficialData: {
@@ -2005,6 +2055,7 @@ export interface components {
             availability: "available";
             curve: components["schemas"]["MacroCurveData"];
             decision: components["schemas"]["MacroRatesDecisionData"];
+            document_analysis_runtime: components["schemas"]["MacroDocumentAnalysisRuntimeData"];
             evidence: components["schemas"]["MacroModuleEvidenceData"];
             fed: components["schemas"]["MacroFedData"];
             /** Label */
@@ -2026,8 +2077,9 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_rates_fed_v6";
+            schema_version: "macro_rates_fed_v7";
             status: components["schemas"]["MacroModuleStatusData"];
+            treasury_auctions: components["schemas"]["MacroTreasuryAuctionsData"];
         };
         /** MacroRatesLatestObservationData */
         MacroRatesLatestObservationData: {
@@ -2330,6 +2382,45 @@ export interface components {
              * @enum {string}
              */
             state: "current" | "stale";
+        };
+        /** MacroTreasuryAuctionResultData */
+        MacroTreasuryAuctionResultData: {
+            /**
+             * Auction Date
+             * Format: date
+             */
+            auction_date: string;
+            /** Auction Id */
+            auction_id: string;
+            /** Bid To Cover Ratio */
+            bid_to_cover_ratio: number | null;
+            /** Cusip */
+            cusip: string;
+            /** Direct Award Share Pct */
+            direct_award_share_pct: number | null;
+            /** High Yield Pct */
+            high_yield_pct: number | null;
+            /** Indirect Award Share Pct */
+            indirect_award_share_pct: number | null;
+            /** Offering Amount Usd */
+            offering_amount_usd: number | null;
+            /** Primary Dealer Award Share Pct */
+            primary_dealer_award_share_pct: number | null;
+            /** Published At Ms */
+            published_at_ms: number | null;
+            /** Received At Ms */
+            received_at_ms: number;
+            /** Scheduled At Ms */
+            scheduled_at_ms: number | null;
+            /** Security Term */
+            security_term: string;
+            /** Source Url */
+            source_url: string;
+        };
+        /** MacroTreasuryAuctionsData */
+        MacroTreasuryAuctionsData: {
+            /** Recent Results */
+            recent_results: components["schemas"]["MacroTreasuryAuctionResultData"][];
         };
         /** MacroVolatilityCrossAssetImpliedData */
         MacroVolatilityCrossAssetImpliedData: {

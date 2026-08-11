@@ -16,14 +16,15 @@ from tracefold.macro.calculations import (
     natural_change_calculation,
 )
 from tracefold.macro.coverage import coverage_for_module
+from tracefold.macro.dependencies import MODULE_DATASET_DEPENDENCIES
 from tracefold.macro.domain import MACRO_MODULE_LABELS, DatasetSpec, MacroModuleId
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.market_calendar import market_clock
 from tracefold.macro.reasons import macro_reason
-from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
+from tracefold.macro.registry import DATASET_REGISTRY
 
 _SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
-    "rates_fed": "macro_rates_fed_v6",
+    "rates_fed": "macro_rates_fed_v7",
     "economy_inflation": "macro_economy_inflation_v5",
     "liquidity_funding": "macro_liquidity_funding_v5",
     "credit": "macro_credit_v7",
@@ -93,7 +94,11 @@ def build_typed_module_payload(
     role_rows = role_rows or []
     analysis_rows = analysis_rows or []
     settlement_rows = _current_settlement_revisions(settlement_rows)
-    specs = datasets_for_module(module_id)
+    specs = tuple(
+        DATASET_REGISTRY[dataset_id]
+        for dataset_id in MODULE_DATASET_DEPENDENCIES[module_id]
+        if dataset_id in DATASET_REGISTRY
+    )
     dataset_ids = {spec.dataset_id for spec in specs}
     module_facts = [
         row
@@ -115,6 +120,7 @@ def build_typed_module_payload(
         target_states,
         module_facts,
         now_ms,
+        module_id=module_id,
         analysis_job_state=analysis_job_state,
     )
     coverage = _coverage(module_id)
@@ -229,15 +235,20 @@ def _dataset_states(
     facts: list[dict[str, Any]],
     now_ms: int,
     *,
+    module_id: MacroModuleId | None = None,
     analysis_job_state: dict[str, int] | None,
 ) -> list[dict[str, Any]]:
-    required_dataset_ids = {
-        dataset_id
-        for spec in specs
-        for capability in coverage_for_module(spec.module_id)
-        if capability.requirement == "required"
-        for dataset_id in capability.dataset_ids
-    }
+    effective_module_id = module_id or (specs[0].module_id if specs else None)
+    required_dataset_ids = (
+        {
+            dataset_id
+            for capability in coverage_for_module(effective_module_id)
+            if capability.requirement == "required"
+            for dataset_id in capability.dataset_ids
+        }
+        if effective_module_id is not None
+        else set()
+    )
     targets_by_dataset: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in targets:
         targets_by_dataset[str(row["dataset_id"])].append(row)
@@ -723,7 +734,9 @@ def _rates_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
             groups["document_rows"],
             groups["role_rows"],
             groups["analysis_rows"],
+            groups["release_rows"],
         ),
+        "treasury_auctions": _treasury_auction_results(groups["release_rows"]),
         "positioning": _position_rows(groups["position_rows"], "cftc.tff.rates_positions"),
     }
 
@@ -1324,6 +1337,7 @@ def _fed_payload(
     document_rows: list[dict[str, Any]],
     role_rows: list[dict[str, Any]],
     analysis_rows: list[dict[str, Any]],
+    release_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     role_rows = effective_roster_rows(role_rows)
     rows = sorted(
@@ -1444,6 +1458,7 @@ def _fed_payload(
             latest_policy_speech_by_official[official_id] = event
     stance_names = ("hawkish", "neutral", "dovish", "mixed")
     return {
+        "meeting_calendar": _fomc_meeting_calendar(release_rows),
         "institutional_stance": {
             "state": "current" if institutional is not None else "no_call",
             "direction": institutional["analysis"]["stance"] if institutional else "no_call",
@@ -1500,6 +1515,121 @@ def _fed_payload(
             ],
         },
     }
+
+
+def _fomc_meeting_calendar(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    snapshots: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("dataset_id") != "federal_reserve.fomc.schedule":
+            continue
+        release_parts = str(row.get("release_id") or "").split(":")
+        if len(release_parts) != 4 or release_parts[0] != "FOMC_CALENDAR":
+            continue
+        snapshots[release_parts[1]].append(row)
+    if not snapshots:
+        return {"revision_id": None, "meetings": []}
+    revision_id, snapshot_rows = max(
+        snapshots.items(),
+        key=lambda item: (
+            max(int(row.get("received_at_ms") or 0) for row in item[1]),
+            item[0],
+        ),
+    )
+    latest_by_period: dict[str, dict[str, Any]] = {}
+    for row in snapshot_rows:
+        reference_period = str(row.get("reference_period") or "")
+        current = latest_by_period.get(reference_period)
+        if current is None or _release_order(row) > _release_order(current):
+            latest_by_period[reference_period] = row
+    meetings = []
+    for reference_period, row in latest_by_period.items():
+        dates = reference_period.split("..", maxsplit=1)
+        if len(dates) != 2:
+            continue
+        try:
+            start_date = date.fromisoformat(dates[0])
+            end_date = date.fromisoformat(dates[1])
+        except ValueError:
+            continue
+        meetings.append(
+            {
+                "meeting_id": f"FOMC:{start_date.isoformat()}:{end_date.isoformat()}",
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "has_sep": str(row.get("series_id") or "") == "FOMC_MEETING_SEP",
+                "calendar_published_at_ms": (
+                    int(row["published_at_ms"]) if row.get("published_at_ms") is not None else None
+                ),
+                "received_at_ms": int(row["received_at_ms"]),
+                "source_url": row["source_url"],
+            }
+        )
+    meetings.sort(key=lambda item: (item["start_date"], item["end_date"], item["meeting_id"]))
+    return {"revision_id": revision_id, "meetings": meetings}
+
+
+def _treasury_auction_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_metrics: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        if row.get("dataset_id") != "treasury.auction.results":
+            continue
+        release_id = str(row.get("release_id") or "")
+        series_id = str(row.get("series_id") or "")
+        if not release_id.startswith("TREASURY_AUCTION:") or ":" not in series_id:
+            continue
+        key = (release_id, series_id)
+        current = latest_metrics.get(key)
+        if current is None or _release_order(row) > _release_order(current):
+            latest_metrics[key] = row
+    by_auction: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for (release_id, _series_id), row in latest_metrics.items():
+        by_auction[release_id].append(row)
+    results = []
+    field_by_metric = {
+        "bid_to_cover": "bid_to_cover_ratio",
+        "high_yield": "high_yield_pct",
+        "offering_amount": "offering_amount_usd",
+        "indirect_award_share": "indirect_award_share_pct",
+        "direct_award_share": "direct_award_share_pct",
+        "primary_dealer_award_share": "primary_dealer_award_share_pct",
+    }
+    for release_id, auction_rows in by_auction.items():
+        release_parts = release_id.split(":")
+        if len(release_parts) != 3:
+            continue
+        try:
+            auction_date = date.fromisoformat(release_parts[2])
+        except ValueError:
+            continue
+        latest_row = max(auction_rows, key=_release_order)
+        term = str(latest_row.get("series_id") or "").split(":", maxsplit=1)[0]
+        metrics: dict[str, float | None] = {field: None for field in field_by_metric.values()}
+        for row in auction_rows:
+            series_parts = str(row.get("series_id") or "").split(":", maxsplit=1)
+            if len(series_parts) != 2 or series_parts[0] != term:
+                continue
+            field = field_by_metric.get(series_parts[1])
+            if field is not None and row.get("actual_value") is not None:
+                metrics[field] = float(row["actual_value"])
+        results.append(
+            {
+                "auction_id": release_id,
+                "cusip": release_parts[1],
+                "security_term": term,
+                "auction_date": auction_date.isoformat(),
+                "scheduled_at_ms": (
+                    int(latest_row["scheduled_at_ms"]) if latest_row.get("scheduled_at_ms") is not None else None
+                ),
+                "published_at_ms": (
+                    int(latest_row["published_at_ms"]) if latest_row.get("published_at_ms") is not None else None
+                ),
+                "received_at_ms": max(int(row["received_at_ms"]) for row in auction_rows),
+                "source_url": latest_row["source_url"],
+                **metrics,
+            }
+        )
+    results.sort(key=lambda item: (item["auction_date"], item["auction_id"]), reverse=True)
+    return {"recent_results": results[:12]}
 
 
 def _indicator_rows(

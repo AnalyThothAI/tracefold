@@ -7,6 +7,9 @@ from tracefold.macro.domain import DatasetSpec, MacroModuleId
 _FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
 _TREASURY_XML = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
+_TREASURY_AUCTIONS_API = (
+    "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query"
+)
 _BEA_CURRENT_RELEASES = "https://www.bea.gov/news/current-releases"
 _DAILY_FRESHNESS_SECONDS = 172_800
 _WEEKLY_FRESHNESS_SECONDS = 950_400
@@ -747,6 +750,51 @@ _DATASETS = (
     _fred("VXNCLS", module="volatility", label="纳斯达克100波动率指数", unit="index", frequency="daily"),
     _fred("GVZCLS", module="volatility", label="黄金ETF波动率指数", unit="index", frequency="daily"),
     _fred("OVXCLS", module="volatility", label="原油ETF波动率指数", unit="index", frequency="daily"),
+    DatasetSpec(
+        dataset_id="federal_reserve.fomc.schedule",
+        concept_id="fed.fomc_schedule",
+        source_role="release",
+        module_id="rates_fed",
+        clock_kind="official_state",
+        fact_family="release",
+        adapter_id="fed_fomc_schedule",
+        source_id="federal_reserve",
+        source_url="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        label="FOMC 官方会议日历",
+        series_id="FOMC_MEETING",
+        unit="meeting",
+        frequency="event",
+        freshness_seconds=7_776_000,
+        refresh_seconds=21_600,
+        critical=False,
+        metadata={
+            "official_owner": "Board of Governors of the Federal Reserve System",
+            "importance_tier": 1,
+        },
+    ),
+    DatasetSpec(
+        dataset_id="treasury.auction.results",
+        concept_id="rates.treasury_auction_demand",
+        source_role="release",
+        module_id="rates_fed",
+        clock_kind="scheduled_release",
+        fact_family="release",
+        adapter_id="treasury_fiscaldata_auctions",
+        source_id="us_treasury_fiscal_data",
+        source_url=_TREASURY_AUCTIONS_API,
+        label="美国国债拍卖需求",
+        series_id="TREASURY_AUCTION",
+        unit="mixed",
+        frequency="event",
+        freshness_seconds=604_800,
+        refresh_seconds=21_600,
+        critical=False,
+        metadata={
+            "official_owner": "U.S. Department of the Treasury",
+            "importance_tier": 2,
+            "lookback_days": 120,
+        },
+    ),
     DatasetSpec(
         dataset_id="federal_reserve.fomc.documents",
         concept_id="fed.policy_documents",

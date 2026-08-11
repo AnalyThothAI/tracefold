@@ -42,6 +42,20 @@ _COVERAGE = (
         ("fred.effr", "fred.dfedtaru", "fred.dfedtarl", "fred.sofr"),
     ),
     CoverageSpec(
+        "rates.treasury_auctions",
+        "rates_fed",
+        "美国国债拍卖需求与分配结果",
+        "supporting",
+        ("treasury.auction.results",),
+    ),
+    CoverageSpec(
+        "fed.fomc_schedule",
+        "rates_fed",
+        "FOMC 官方会议日历",
+        "supporting",
+        ("federal_reserve.fomc.schedule",),
+    ),
+    CoverageSpec(
         "fed.fomc_materials",
         "rates_fed",
         "FOMC statement、minutes、SEP 与 implementation material",
@@ -73,7 +87,7 @@ _COVERAGE = (
         "fed.document_analysis",
         "rates_fed",
         "不可变、证据绑定的政策文件分析",
-        "required",
+        "supporting",
         ("federal_reserve.document.analysis",),
     ),
     CoverageSpec(

@@ -14,17 +14,18 @@ from tracefold.app.database import WorkerDatabase
 from tracefold.app.http import routes_macro
 from tracefold.app.http.app import create_app
 from tracefold.app.repositories import repositories_for_connection
+from tracefold.macro.dependencies import MODULE_DATASET_DEPENDENCIES
 from tracefold.macro.domain import MACRO_MODULE_IDS, SeriesFact
 from tracefold.macro.module_payloads import build_typed_module_payload
 from tracefold.macro.projection import rebuild_all_macro_modules_for_maintenance
-from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
+from tracefold.macro.registry import DATASET_REGISTRY
 from tracefold.platform.config.settings import Settings
 
 AUTH = {"Authorization": "Bearer secret"}
 CUTOFF_MS = int(datetime(2026, 7, 28, 12, 50, tzinfo=UTC).timestamp() * 1_000)
 
 
-def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
+def test_rates_curve_material_facts_project_to_v7_postgres_and_public_api(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -82,11 +83,20 @@ def test_rates_curve_material_facts_project_to_v6_postgres_and_public_api(
 
     assert persisted is not None
     stored = persisted["payload_json"]
-    assert stored["schema_version"] == "macro_rates_fed_v6"
+    assert stored["schema_version"] == "macro_rates_fed_v7"
     assert "summary" not in stored
     assert "top_changes" not in stored
     assert response.status_code == 200
     data = response.json()["data"]
+    assert data["document_analysis_runtime"] == {
+        "state": "disabled",
+        "enabled": False,
+        "configured": False,
+        "worker_active": False,
+        "model": "gpt-5.4-mini",
+    }
+    assert data["fed"]["meeting_calendar"] == {"revision_id": None, "meetings": []}
+    assert data["treasury_auctions"] == {"recent_results": []}
     assert data["decision"]["headline"] == ("最近完整交易日：2Y 下行4bp，10Y 上行6bp，30Y 上行11bp（2026-07-29）")
     matrix = {item["tenor"]: item for item in data["decision"]["tenor_matrix"]}
     assert matrix["10Y"]["current"]["yield_pct"] == 4.67
@@ -216,7 +226,11 @@ def test_claimable_required_targets_publish_automatic_next_check_over_http(
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
-            acquired_specs = tuple(spec for spec in datasets_for_module("rates_fed") if spec.clock_kind != "derived")
+            acquired_specs = tuple(
+                DATASET_REGISTRY[dataset_id]
+                for dataset_id in MODULE_DATASET_DEPENDENCIES["rates_fed"]
+                if DATASET_REGISTRY[dataset_id].clock_kind != "derived"
+            )
             for spec in acquired_specs:
                 repos.macro.ensure_target(spec, now_ms=CUTOFF_MS - 2_000, max_attempts=2)
             repos.macro.conn.execute(

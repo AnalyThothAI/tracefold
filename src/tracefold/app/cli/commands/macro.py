@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from tracefold.app.repositories import repositories
+from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import (
     MacroAcquisitionService,
@@ -206,6 +207,7 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
                         }
                         for row in modules
                     ],
+                    "document_analysis_runtime": macro_document_analysis_runtime(settings),
                     "document_analysis_jobs": document_analysis_jobs,
                 }
             ),

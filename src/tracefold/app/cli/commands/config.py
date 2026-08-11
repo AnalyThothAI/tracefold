@@ -4,6 +4,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.platform.config.settings import load_settings, write_default_config
 from tracefold.platform.paths import config_path
 
@@ -82,6 +83,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "translation_configured": bool(settings.llm.api_key),
                     },
                 },
+                "macro": {"document_analysis": macro_document_analysis_runtime(settings)},
                 "providers": {
                     "gmgn": {
                         "configured": settings.gmgn_configured,

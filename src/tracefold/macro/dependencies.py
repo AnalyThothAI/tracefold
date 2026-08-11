@@ -9,8 +9,8 @@ from tracefold.macro.calculations import (
     CALCULATION_REGISTRY,
     NATURAL_CHANGE_REGISTRY,
 )
+from tracefold.macro.coverage import coverage_for_module
 from tracefold.macro.domain import MACRO_MODULE_IDS, MacroModuleId
-from tracefold.macro.module_payloads import schema_version_for_module
 from tracefold.macro.registry import DATASET_REGISTRY, datasets_for_module
 
 
@@ -24,6 +24,9 @@ def _module_calculation_ids(module_id: MacroModuleId) -> tuple[str, ...]:
 
 def _module_dataset_ids(module_id: MacroModuleId) -> tuple[str, ...]:
     dataset_ids = {spec.dataset_id for spec in datasets_for_module(module_id)}
+    dataset_ids.update(
+        dataset_id for capability in coverage_for_module(module_id) for dataset_id in capability.dataset_ids
+    )
     for feature_id in _module_calculation_ids(module_id):
         dataset_ids.update(CALCULATION_REGISTRY[feature_id].input_dataset_ids)
     return tuple(sorted(dataset_ids))
@@ -46,6 +49,8 @@ DATASET_MODULE_DEPENDENCIES = MappingProxyType(
 
 
 def module_projection_version(module_id: MacroModuleId) -> str:
+    from tracefold.macro.module_payloads import schema_version_for_module
+
     dataset_ids = MODULE_DATASET_DEPENDENCIES[module_id]
     calculation_ids = MODULE_CALCULATION_DEPENDENCIES[module_id]
     payload = {
