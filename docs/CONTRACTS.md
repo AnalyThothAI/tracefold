@@ -444,10 +444,13 @@ reconciliation disables prior RSS rows and releases their claims,
 `/api/news/sources` serves OpenNews only, Story uses its current OpenNews
 population, and status returns `rss.enabled=false` without an RSS degradation
 reason. OpenNews uses one WSS
-stream for current facts and bounded REST overlap after initial connection,
-reconnect, or queue overflow. REST reads newest-first from page 1, at most
-eleven 100-item pages, and stops at the first existing provider record or the
-12-hour cutoff. Each RSS turn claims at most one due source and persists its
+stream for current facts. Initial connection and reconnect each trigger one
+bounded REST overlap; queue overflow ends the current stream so its reconnect
+uses the same single trigger. REST reads newest-first from page 1, at most
+eleven 100-item pages, and stops at the provider's last page, the first provider
+record persisted before the attempt, or the 12-hour cutoff. It consumes the
+terminating overlap row, and an eleven-page exhaustion records its outcome
+without scheduling another search. Each RSS turn claims at most one due source and persists its
 conditional-fetch and bounded outcome state. There is no persisted gap flag,
 boundary, version, or unbounded recovery lane. OpenNews acquisition priority
 does not alter deterministic Story scoring, selector ordering, or its

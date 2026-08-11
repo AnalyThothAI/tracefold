@@ -72,7 +72,6 @@ class NewsAcquisition:
         self._rss_sources_by_id = {source.source_id: source for source in self.rss_sources}
         self._opennews_queue: asyncio.Queue[OpenNewsEvent] = asyncio.Queue(maxsize=_OPENNEWS_BUFFER_CAPACITY)
         self._opennews_recovery_requested = asyncio.Event()
-        self._opennews_connected = False
         self._opennews_last_recovery_attempt_at_ms: int | None = None
 
     @property
@@ -86,9 +85,7 @@ class NewsAcquisition:
             operation_timeout_seconds=3.0,
         )
         self._opennews_last_recovery_attempt_at_ms = int(last_attempt_at_ms) if last_attempt_at_ms is not None else None
-        if self.opennews_enabled:
-            self._opennews_recovery_requested.set()
-        else:
+        if not self.opennews_enabled:
             await self._update_opennews_status(
                 connected=False,
                 error_code="opennews_token_missing",
@@ -177,8 +174,7 @@ class NewsAcquisition:
                     group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
                     group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
             except* ResourceAdmissionTimeout:
-                self._opennews_connected = False
-                self._opennews_recovery_requested.set()
+                pass
             if not stop_event.is_set():
                 await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
 
@@ -189,7 +185,6 @@ class NewsAcquisition:
         while not stop_event.is_set():
             try:
                 await client.connect()
-                self._opennews_connected = True
                 await self._update_opennews_status(
                     connected=True,
                     error_code=None,
@@ -208,25 +203,18 @@ class NewsAcquisition:
                     try:
                         self._opennews_queue.put_nowait(event)
                     except asyncio.QueueFull:
-                        await self._update_opennews_status(
-                            connected=True,
-                            error_code="opennews_buffer_overflow",
-                        )
-                        self._opennews_recovery_requested.set()
+                        raise OpenNewsExpectedError("opennews_buffer_overflow") from None
             except asyncio.CancelledError:
                 raise
             except OpenNewsExpectedError as exc:
-                self._opennews_connected = False
                 await self._update_opennews_status(
                     connected=False,
                     error_code=exc.code,
                 )
-                self._opennews_recovery_requested.set()
             finally:
                 await client.close()
             if not stop_event.is_set():
                 await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
-        self._opennews_connected = False
         await self._update_opennews_status(
             connected=False,
             error_code=None,
@@ -246,17 +234,13 @@ class NewsAcquisition:
                     events.append(self._opennews_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
-            try:
-                await self.db.run_business(
-                    "opennews_live_publish",
-                    self._record_opennews_events_sync,
-                    tuple(events),
-                    _now_ms(),
-                    operation_timeout_seconds=3.0,
-                )
-            except BaseException:
-                self._opennews_recovery_requested.set()
-                raise
+            await self.db.run_business(
+                "opennews_live_publish",
+                self._record_opennews_events_sync,
+                tuple(events),
+                _now_ms(),
+                operation_timeout_seconds=3.0,
+            )
 
     async def _opennews_recovery_loop(self, stop_event: asyncio.Event) -> None:
         client = self.opennews_rest_client
@@ -293,9 +277,9 @@ class NewsAcquisition:
                 overlap_complete = False
                 for page in range(1, _OPENNEWS_RECOVERY_MAX_PAGES + 1):
                     try:
-                        events = await self.finite_operations.run(
+                        overlap_page = await self.finite_operations.run(
                             "opennews_rest_recovery",
-                            client.fetch_page,
+                            client.fetch_overlap_page,
                             page,
                             timeout_seconds=25.0,
                         )
@@ -304,7 +288,7 @@ class NewsAcquisition:
                     outcome = await self.db.run_business(
                         "opennews_recovery_publish",
                         self._record_opennews_recovery_page_sync,
-                        tuple(events[:100]),
+                        overlap_page.events,
                         started_at_ms,
                         operation_timeout_seconds=3.0,
                     )
@@ -315,7 +299,7 @@ class NewsAcquisition:
                         + int(outcome["metadata_updated"])
                     )
                     rejected += int(outcome["rejected"])
-                    overlap_complete = bool(outcome["overlap_complete"])
+                    overlap_complete = bool(outcome["overlap_complete"]) or overlap_page.is_last_page
                     if overlap_complete:
                         break
                 completed = await self.db.run_business(
@@ -329,8 +313,8 @@ class NewsAcquisition:
                     {"rejected": rejected},
                     operation_timeout_seconds=3.0,
                 )
-                if not completed or not overlap_complete:
-                    self._opennews_recovery_requested.set()
+                if not completed:
+                    raise RuntimeError("opennews_recovery_completion_lost")
             except asyncio.CancelledError:
                 raise
             except OpenNewsExpectedError as exc:

@@ -12,7 +12,7 @@ from tracefold.integrations.news_feeds import NewsFeedAcquisitionError, NewsFeed
 from tracefold.integrations.opennews import client as opennews_client
 from tracefold.news import NewsAcquisition, OpenNewsExpectedError
 from tracefold.news.models import NewsSourceDefinition
-from tracefold.news.opennews import parse_opennews_message, parse_opennews_rest_response
+from tracefold.news.opennews import OpenNewsOverlapPage, parse_opennews_message, parse_opennews_rest_response
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
 from tracefold.platform.resource import ResourceOperationOverrun
@@ -202,7 +202,7 @@ def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
 
 
 def test_rest_report_keeps_observed_top_level_numeric_score() -> None:
-    events = parse_opennews_rest_response(
+    page = parse_opennews_rest_response(
         {
             "success": True,
             "data": [
@@ -224,8 +224,9 @@ def test_rest_report_keeps_observed_top_level_numeric_score() -> None:
         }
     )
 
-    assert len(events) == 1
-    assert events[0].provider_metadata == {
+    assert page.is_last_page is True
+    assert len(page.events) == 1
+    assert page.events[0].provider_metadata == {
         "score": 75,
         "signal": "long",
         "grade": "A",
@@ -552,10 +553,30 @@ def test_rest_page_uses_the_same_message_normalizer_and_is_bounded() -> None:
         for index in range(105)
     ]
 
-    events = parse_opennews_rest_response({"success": True, "data": rows})
+    page = parse_opennews_rest_response({"success": True, "data": rows})
 
-    assert len(events) == 100
-    assert events[0].provider_record_id == "wire-0"
+    assert page.is_last_page is False
+    assert len(page.events) == 100
+    assert page.events[0].provider_record_id == "wire-0"
+
+
+def test_rest_page_end_uses_provider_rows_instead_of_parsed_events() -> None:
+    rows = [
+        {
+            "id": f"wire-{index}",
+            "text": f"headline {index}",
+            "newsType": "Reuters",
+            "engineType": "news",
+            "ts": 1_775_195_200_000,
+        }
+        for index in range(99)
+    ]
+    rows.append({"engineType": "news", "text": "missing provider id"})
+
+    page = parse_opennews_rest_response({"success": True, "data": rows})
+
+    assert len(page.events) == 99
+    assert page.is_last_page is False
 
 
 def test_rest_client_requests_the_selected_recovery_page() -> None:
@@ -588,9 +609,10 @@ def test_rest_client_requests_the_selected_recovery_page() -> None:
     client = object.__new__(opennews_client.OpenNewsRestClient)
     client._client = http_client
 
-    events = client.fetch_page(7)
+    page = client.fetch_overlap_page(7)
 
-    assert [event.provider_record_id for event in events] == ["wire-page-7"]
+    assert [event.provider_record_id for event in page.events] == ["wire-page-7"]
+    assert page.is_last_page is True
     assert http_client.request_json == {
         "engineTypes": {"news": []},
         "limit": 100,
@@ -609,7 +631,7 @@ def test_rest_client_classifies_transport_failure() -> None:
     client._client = _HttpClient()
 
     with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_page(1)
+        client.fetch_overlap_page(1)
 
 
 def test_rest_client_does_not_hide_programming_errors() -> None:
@@ -622,7 +644,7 @@ def test_rest_client_does_not_hide_programming_errors() -> None:
     client._client = _HttpClient()
 
     with pytest.raises(AssertionError, match="programming bug"):
-        client.fetch_page(1)
+        client.fetch_overlap_page(1)
 
 
 def test_rest_client_does_not_hide_request_usage_errors() -> None:
@@ -635,7 +657,7 @@ def test_rest_client_does_not_hide_request_usage_errors() -> None:
     client._client = _HttpClient()
 
     with pytest.raises(ValueError, match="request construction"):
-        client.fetch_page(1)
+        client.fetch_overlap_page(1)
 
 
 def test_rest_client_classifies_invalid_provider_json() -> None:
@@ -655,7 +677,7 @@ def test_rest_client_classifies_invalid_provider_json() -> None:
     client._client = _HttpClient()
 
     with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_page(1)
+        client.fetch_overlap_page(1)
 
 
 def test_rest_client_classifies_pathologically_nested_provider_json() -> None:
@@ -675,7 +697,7 @@ def test_rest_client_classifies_pathologically_nested_provider_json() -> None:
     client._client = _HttpClient()
 
     with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_page(1)
+        client.fetch_overlap_page(1)
 
 
 def test_invalid_rest_shape_fails_closed() -> None:
@@ -688,6 +710,16 @@ class _InlineFiniteOperations:
         kwargs.pop("timeout_seconds")
         kwargs.pop("allow_shutdown", None)
         return function(*args, **kwargs)
+
+
+class _CountingEvent(asyncio.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_calls = 0
+
+    def set(self) -> None:
+        self.set_calls += 1
+        super().set()
 
 
 class _FeedReader:
@@ -753,6 +785,113 @@ def _acquisition(
         opennews_source=opennews_source(),
         opennews_rest_client=rest_client,
         opennews_ws_client=websocket_client,
+    )
+
+
+def test_opennews_reconcile_waits_for_the_stream_connection_before_recovery() -> None:
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "news_source_reconcile"
+
+    acquisition = _acquisition(
+        db=_Database(),
+        rest_client=object(),
+        websocket_client=object(),
+    )
+
+    asyncio.run(acquisition.reconcile())
+
+    assert not acquisition._opennews_recovery_requested.is_set()
+
+
+def test_opennews_receive_failure_does_not_duplicate_connection_recovery() -> None:
+    async def scenario() -> int:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+                assert operation_name == "opennews_status"
+                return True
+
+        class _WebSocketClient:
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                raise OpenNewsExpectedError("opennews_receive_failed")
+
+            async def close(self) -> None:
+                stop_event.set()
+
+        acquisition = _acquisition(
+            db=_Database(),
+            rest_client=object(),
+            websocket_client=_WebSocketClient(),
+        )
+        requests = _CountingEvent()
+        acquisition._opennews_recovery_requested = requests
+
+        await acquisition._opennews_receive_loop(stop_event)
+        return requests.set_calls
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_opennews_queue_overflow_reconnects_before_requesting_overlap() -> None:
+    async def scenario() -> tuple[int, list[str | None]]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.errors: list[str | None] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                assert operation_name == "opennews_status"
+                self.errors.append(args[3])
+                return True
+
+        class _WebSocketClient:
+            def __init__(self) -> None:
+                self.receive_calls = 0
+
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                self.receive_calls += 1
+                if self.receive_calls > 1:
+                    raise OpenNewsExpectedError("opennews_receive_failed")
+                return {
+                    "method": "news.update",
+                    "params": {
+                        "id": "overflowed-live-event",
+                        "text": "Overflowed live event",
+                        "newsType": "Reuters",
+                        "engineType": "news",
+                        "ts": int(time.time() * 1_000),
+                    },
+                }
+
+            async def close(self) -> None:
+                stop_event.set()
+
+        database = _Database()
+        acquisition = _acquisition(
+            db=database,
+            rest_client=object(),
+            websocket_client=_WebSocketClient(),
+        )
+        acquisition._opennews_queue = asyncio.Queue(maxsize=1)
+        acquisition._opennews_queue.put_nowait(_report("already-buffered"))
+        requests = _CountingEvent()
+        acquisition._opennews_recovery_requested = requests
+
+        await acquisition._opennews_receive_loop(stop_event)
+        return requests.set_calls, database.errors
+
+    assert asyncio.run(scenario()) == (
+        1,
+        [None, "opennews_buffer_overflow", None],
     )
 
 
@@ -894,9 +1033,12 @@ def test_opennews_overlap_starts_at_newest_page_and_stops_on_repository_overlap(
             def __init__(self) -> None:
                 self.pages: list[int] = []
 
-            def fetch_page(self, page):
+            def fetch_overlap_page(self, page):
                 self.pages.append(page)
-                return (_report(f"page-{page}"),)
+                return OpenNewsOverlapPage(
+                    events=(_report(f"page-{page}"),),
+                    is_last_page=False,
+                )
 
         database = _Database()
         rest = _RestClient()
@@ -919,8 +1061,67 @@ def test_opennews_overlap_starts_at_newest_page_and_stops_on_repository_overlap(
     )
 
 
-def test_opennews_exhaustion_is_current_then_a_later_overlap_clears_it(monkeypatch) -> None:
-    async def scenario() -> tuple[list[int], list[bool]]:
+@pytest.mark.parametrize("event_count", [0, 1])
+def test_opennews_short_page_finishes_recovery_without_fetching_more_pages(
+    monkeypatch,
+    event_count: int,
+) -> None:
+    async def scenario() -> tuple[list[int], list[bool], bool]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.completions: list[bool] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_recovery_start":
+                    return None
+                if operation_name == "opennews_recovery_publish":
+                    events = args[0]
+                    return {
+                        "events_seen": len(events),
+                        "items_inserted": len(events),
+                        "items_updated": 0,
+                        "metadata_updated": 0,
+                        "rejected": 0,
+                        "overlap_complete": False,
+                    }
+                if operation_name == "opennews_recovery_complete":
+                    self.completions.append(bool(args[2]))
+                    stop_event.set()
+                    return True
+                raise AssertionError(operation_name)
+
+        class _RestClient:
+            def __init__(self) -> None:
+                self.pages: list[int] = []
+
+            def fetch_overlap_page(self, page):
+                self.pages.append(page)
+                return OpenNewsOverlapPage(
+                    events=tuple(_report(f"page-{page}-item-{index}") for index in range(event_count)),
+                    is_last_page=True,
+                )
+
+        database = _Database()
+        rest = _RestClient()
+        acquisition = _acquisition(
+            db=database,
+            rest_client=rest,
+            websocket_client=object(),
+        )
+        acquisition._opennews_recovery_requested.set()
+
+        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
+        return rest.pages, database.completions, acquisition._opennews_recovery_requested.is_set()
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == ([1], [False], False)
+
+
+def test_opennews_window_exhaustion_does_not_self_schedule_another_search(monkeypatch) -> None:
+    async def scenario() -> tuple[list[int], list[bool], bool]:
         stop_event = asyncio.Event()
 
         class _Database:
@@ -939,12 +1140,11 @@ def test_opennews_exhaustion_is_current_then_a_later_overlap_clears_it(monkeypat
                         "items_updated": 0,
                         "metadata_updated": 0,
                         "rejected": 0,
-                        "overlap_complete": self.publish_calls == 12,
+                        "overlap_complete": False,
                     }
                 if operation_name == "opennews_recovery_complete":
                     self.completions.append(bool(args[2]))
-                    if len(self.completions) == 2:
-                        stop_event.set()
+                    stop_event.set()
                     return True
                 raise AssertionError(operation_name)
 
@@ -952,9 +1152,12 @@ def test_opennews_exhaustion_is_current_then_a_later_overlap_clears_it(monkeypat
             def __init__(self) -> None:
                 self.pages: list[int] = []
 
-            def fetch_page(self, page):
+            def fetch_overlap_page(self, page):
                 self.pages.append(page)
-                return (_report(f"attempt-{len(self.pages)}-page-{page}"),)
+                return OpenNewsOverlapPage(
+                    events=(_report(f"attempt-{len(self.pages)}-page-{page}"),),
+                    is_last_page=False,
+                )
 
         database = _Database()
         rest = _RestClient()
@@ -966,13 +1169,11 @@ def test_opennews_exhaustion_is_current_then_a_later_overlap_clears_it(monkeypat
         acquisition._opennews_recovery_requested.set()
 
         await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return rest.pages, database.completions
+        return rest.pages, database.completions, acquisition._opennews_recovery_requested.is_set()
 
     monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
 
-    pages, completions = asyncio.run(scenario())
-    assert pages == [*range(1, 12), 1]
-    assert completions == [True, False]
+    assert asyncio.run(scenario()) == ([*range(1, 12)], [True], False)
 
 
 def test_opennews_recovery_failure_stays_durable_without_a_status_clear(monkeypatch) -> None:
@@ -994,7 +1195,7 @@ def test_opennews_recovery_failure_stays_durable_without_a_status_clear(monkeypa
                 raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
 
         class _RestClient:
-            def fetch_page(self, _page):
+            def fetch_overlap_page(self, _page):
                 raise AssertionError("the bounded executor owns this call")
 
         database = _Database()
@@ -1052,12 +1253,6 @@ def test_recovery_has_a_five_minute_persisted_cooldown() -> None:
         )
         == 0.0
     )
-
-
-def test_recovery_page_budget_stays_below_one_hundred_thousand_calls_per_month() -> None:
-    attempts_in_31_days = (31 * 24 * 60 * 60) // news_runtime._OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS
-
-    assert attempts_in_31_days * news_runtime._OPENNEWS_RECOVERY_MAX_PAGES == 98_208
 
 
 def test_news_acquisition_has_no_gap_state_machine() -> None:

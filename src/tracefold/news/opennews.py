@@ -57,7 +57,13 @@ class OpenNewsEvent:
     entry: NewsFeedEntry | None
 
 
-def parse_opennews_rest_response(payload: object) -> tuple[OpenNewsEvent, ...]:
+@dataclass(frozen=True, slots=True)
+class OpenNewsOverlapPage:
+    events: tuple[OpenNewsEvent, ...]
+    is_last_page: bool
+
+
+def parse_opennews_rest_response(payload: object) -> OpenNewsOverlapPage:
     if not isinstance(payload, Mapping):
         raise OpenNewsExpectedError("opennews_rest_payload_invalid")
     value: object = payload.get("data", payload)
@@ -72,7 +78,10 @@ def parse_opennews_rest_response(payload: object) -> tuple[OpenNewsEvent, ...]:
         parsed = parse_opennews_message({"method": "news.update", "params": row})
         if parsed is not None:
             events.append(parsed)
-    return tuple(events)
+    return OpenNewsOverlapPage(
+        events=tuple(events),
+        is_last_page=len(value) < OPENNEWS_REST_LIMIT,
+    )
 
 
 def parse_opennews_message(message: object) -> OpenNewsEvent | None:
@@ -311,6 +320,7 @@ __all__ = [
     "OPENNEWS_REST_LIMIT",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
+    "OpenNewsOverlapPage",
     "parse_opennews_message",
     "parse_opennews_rest_response",
 ]

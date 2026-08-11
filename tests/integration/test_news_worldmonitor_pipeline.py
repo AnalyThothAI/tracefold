@@ -1096,6 +1096,12 @@ def test_opennews_recovery_stops_at_the_first_existing_provider_record() -> None
             score=60,
             published_at_ms=NOW_MS - 60_000,
         )
+        refreshed_existing = _event(
+            record_id="existing-overlap",
+            title="Existing overlap report",
+            score=80,
+            published_at_ms=NOW_MS - 60_000,
+        )
         with conn.transaction():
             repository.sync_sources((source,), now_ms=NOW_MS)
             repository.record_opennews_events(
@@ -1116,7 +1122,7 @@ def test_opennews_recovery_stops_at_the_first_existing_provider_record() -> None
                         score=70,
                         published_at_ms=NOW_MS,
                     ),
-                    existing,
+                    refreshed_existing,
                     _event(
                         record_id="must-not-cross-overlap",
                         title="Older report beyond overlap",
@@ -1130,13 +1136,74 @@ def test_opennews_recovery_stops_at_the_first_existing_provider_record() -> None
 
         assert outcome["events_seen"] == 3
         assert outcome["items_inserted"] == 1
+        assert outcome["items_updated"] == 1
+        assert outcome["overlap_complete"] is True
+        assert outcome["stop_reason"] == "existing_provider_record"
+        rows = conn.execute(
+            "SELECT provider_record_id, provider_metadata FROM news_items ORDER BY provider_record_id"
+        ).fetchall()
+        provider_ids = {str(row["provider_record_id"]) for row in rows}
+        assert provider_ids == {"existing-overlap", "new-before-overlap"}
+        refreshed = next(row for row in rows if row["provider_record_id"] == "existing-overlap")
+        assert refreshed["provider_metadata"]["score"] == 80
+    finally:
+        conn.close()
+
+
+def test_opennews_recovery_ignores_live_rows_created_after_the_attempt_started() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        stable_boundary = _event(
+            record_id="stable-boundary",
+            title="Stable overlap boundary",
+            score=60,
+            published_at_ms=NOW_MS - 60_000,
+        )
+        live_after_start = _event(
+            record_id="live-after-start",
+            title="Live row arriving during recovery",
+            score=70,
+            published_at_ms=NOW_MS,
+        )
+        missing_gap = _event(
+            record_id="missing-gap",
+            title="Gap row that recovery must retain",
+            score=75,
+            published_at_ms=NOW_MS - 30_000,
+        )
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS - 2)
+            repository.record_opennews_events(
+                source=source,
+                events=(stable_boundary,),
+                observed_at_ms=NOW_MS - 1,
+            )
+            repository.mark_opennews_recovery_attempt(
+                source_id=source.source_id,
+                started_at_ms=NOW_MS,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(live_after_start,),
+                observed_at_ms=NOW_MS + 1,
+            )
+            outcome = repository.record_opennews_recovery_page(
+                source=source,
+                events=(live_after_start, missing_gap, stable_boundary),
+                observed_at_ms=NOW_MS + 2,
+                recovery_started_at_ms=NOW_MS,
+            )
+
         assert outcome["overlap_complete"] is True
         assert outcome["stop_reason"] == "existing_provider_record"
         provider_ids = {
             str(row["provider_record_id"])
-            for row in conn.execute("SELECT provider_record_id FROM news_items ORDER BY provider_record_id").fetchall()
+            for row in conn.execute("SELECT provider_record_id FROM news_items").fetchall()
         }
-        assert provider_ids == {"existing-overlap", "new-before-overlap"}
+        assert provider_ids == {"stable-boundary", "live-after-start", "missing-gap"}
     finally:
         conn.close()
 

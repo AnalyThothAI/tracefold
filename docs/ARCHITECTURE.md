@@ -425,12 +425,16 @@ as public HTTPS and must resolve only to globally routable addresses before the
 Adapter sends them.
 
 OpenNews is the primary low-latency acquisition lane. Its persistent
-authenticated WSS receiver feeds one bounded queue. After initial connection,
-reconnect, or queue overflow, REST starts from the newest page, reads at most
-eleven 100-item pages, and stops at the first already persisted provider record
-or the 12-hour cutoff. There is no persisted gap boundary, gap version, or
-historical backfill state. OpenNews provider record ID is the source-local fact
-identity, so WSS/REST overlap updates or no-ops the same row. Provider
+authenticated WSS receiver feeds one bounded queue. Initial connection and
+reconnect each trigger one REST overlap; queue overflow ends the current stream
+so its reconnect uses that same single path. REST starts from the newest page,
+reads at most eleven 100-item pages, and stops at the provider's last page, the
+first provider record persisted before the attempt, or the 12-hour cutoff. A
+full eleven-page attempt records exhaustion and waits for the next connection
+event instead of scheduling itself. There is no persisted gap boundary, gap
+version, or historical backfill state. OpenNews provider record ID is the
+source-local fact identity, so WSS/REST overlap updates or no-ops every consumed
+row, including the terminating overlap row. Provider
 annotations are bounded descriptive metadata and cannot affect source identity,
 materialized Story identity/aggregates/population, importance, material
 admission, ordering, or Brief. A selected numeric score may qualify an already

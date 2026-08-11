@@ -744,9 +744,9 @@ class NewsRepository:
         recovery_started_at_ms: int,
     ) -> dict[str, Any]:
         report_ids = [event.provider_record_id for event in events if event.observation_kind == "report"]
-        existing_ids: set[str] = set()
+        stable_existing_ids: set[str] = set()
         if report_ids:
-            existing_ids = {
+            stable_existing_ids = {
                 str(row["provider_record_id"])
                 for row in self.conn.execute(
                     """
@@ -754,8 +754,9 @@ class NewsRepository:
                       FROM news_items
                      WHERE source_id = %s
                        AND provider_record_id = ANY(%s)
+                       AND first_observed_at_ms < %s
                     """,
-                    (source.source_id, report_ids),
+                    (source.source_id, report_ids, int(recovery_started_at_ms)),
                 ).fetchall()
             }
         prefix: list[OpenNewsEvent] = []
@@ -763,7 +764,8 @@ class NewsRepository:
         cutoff_ms = int(observed_at_ms) - _STORY_ACTIVE_WINDOW_MS
         for event in events:
             if event.observation_kind == "report":
-                if event.provider_record_id in existing_ids:
+                if event.provider_record_id in stable_existing_ids:
+                    prefix.append(event)
                     stop_reason = "existing_provider_record"
                     break
                 if (

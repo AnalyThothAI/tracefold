@@ -326,9 +326,11 @@ and every resolved address is globally routable.
 
 The primary low-latency OpenNews lane owns one persistent WSS receiver outside
 the finite-operation capability, a 256-event queue, and one bounded REST
-overlap loop. After initial connection, reconnect, or queue overflow, REST
-starts at the newest page and reads at most eleven 100-item pages. It stops at
-the first already persisted provider record or an Item older than 12 hours.
+overlap loop. Initial connection and reconnect each trigger one overlap. Queue
+overflow ends the current stream, then its reconnect follows that same path.
+REST starts at the newest page and reads at most eleven 100-item pages. It stops
+at the provider's last page, the first provider record persisted before the
+attempt, or an Item older than 12 hours, and upserts the terminating overlap row.
 The source row records the bounded attempt/outcome/rejection counts, but there
 is no gap flag, boundary, version, or historical backfill state.
 `/api/news/sources` lists OpenNews first, then enabled RSS schedule/claim outcomes. This
@@ -519,9 +521,10 @@ rolling SLO breaches; otherwise the state is `live`. A missing
 The HTTP service remains ready when News is degraded; the structured News
 health object names the affected layer. Facts and Story cards never wait for
 the model or outbound delivery. Each OpenNews overlap reads at most 11 REST
-pages and stops at existing current evidence or the 12-hour cutoff. An exhausted
-attempt records a bounded source outcome and may retry after the minimum
-interval; it never creates durable gap or historical-backfill state.
+pages and stops at the provider's last page, stable existing current evidence,
+or the 12-hour cutoff. An exhausted attempt records one bounded source outcome
+and waits for the next connection event; it does not schedule another search
+or create durable gap or historical-backfill state.
 
 Macro:
 

@@ -10,9 +10,10 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
 
-from tracefold.news import OpenNewsEvent, OpenNewsExpectedError
+from tracefold.news import OpenNewsExpectedError
 from tracefold.news.opennews import (
     OPENNEWS_REST_LIMIT,
+    OpenNewsOverlapPage,
     parse_opennews_rest_response,
 )
 
@@ -42,7 +43,9 @@ class OpenNewsRestClient:
             },
         )
 
-    def fetch_page(self, page: int) -> tuple[OpenNewsEvent, ...]:
+    def fetch_overlap_page(self, page: int) -> OpenNewsOverlapPage:
+        """Fetch chronological News facts for WSS gap closure, not product search."""
+
         page_number = int(page)
         try:
             response = self._client.post(
