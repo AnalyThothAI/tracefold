@@ -63,10 +63,12 @@ class _DexMarket:
     def __init__(self, *, candidates: list[DexTokenCandidate]) -> None:
         self.candidates = candidates
         self.search_requests = 0
+        self.chain_requests: list[tuple[str, ...]] = []
 
     def search_tokens(self, *, query: str, chain_ids: tuple[str, ...]) -> list[DexTokenCandidate]:
-        del query, chain_ids
+        del query
         self.search_requests += 1
+        self.chain_requests.append(chain_ids)
         return list(self.candidates)
 
 
@@ -204,6 +206,29 @@ def test_resolution_refresh_commits_provider_fact_before_bounded_reprocess(tmp_p
     assert resolution["target_id"] == f"asset:eip155:1:erc20:{ADDRESS}"
     assert discovery == {"status": "found", "candidate_count": 1}
     assert queue_count == 0
+
+
+def test_resolution_refresh_default_discovery_uses_canonical_robinhood_chain(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        _ingest_service(conn).ingest_event(make_event("event-rhc", text="$RHC", received_at_ms=NOW_MS))
+        market = _DexMarket(candidates=[])
+        worker = ResolutionRefresh(
+            db=_InlineDatabase(conn),
+            dex_discovery_market=market,
+            finite_operations=_InlineFiniteOperations(),
+            runtime_id="integration-test",
+        )
+
+        progressed = asyncio.run(worker.turn(now_ms=NOW_MS + 60_000))
+    finally:
+        conn.close()
+
+    assert progressed is True
+    assert len(market.chain_requests) == 1
+    assert "robinhood" in market.chain_requests[0]
+    assert "eip155:4663" not in market.chain_requests[0]
 
 
 def test_resolution_refresh_releases_exact_claim_before_provider_submission(tmp_path) -> None:

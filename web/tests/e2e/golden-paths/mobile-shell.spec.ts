@@ -27,7 +27,7 @@ test("mobile shell exposes Radar, News, and Macro navigation around rich Radar",
   await page.keyboard.press("Escape");
 
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
-  await expect(page.getByText("Showing 1 / 1 eligible")).toBeVisible();
+  await expect(page.getByText("1 eligible · showing 1 / 50")).toBeVisible();
   await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
@@ -49,7 +49,7 @@ test("mobile Top 50 Radar remains scannable and reaches the final row", async ({
   await expect(items.first().getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
   const layout = await page.evaluate(() => {
     const center = document.querySelector<HTMLElement>(".center-column");
-    const livePage = document.querySelector<HTMLElement>(".live-page");
+    const livePage = document.querySelector<HTMLElement>(".live-radar-page");
     const queue = document.querySelector<HTMLElement>(".live-radar-queue");
     const items = document.querySelector<HTMLElement>(".live-radar-items");
     return {

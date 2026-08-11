@@ -57,7 +57,7 @@ class OkxDexClient:
         body_items = [item for item in body_items if item is not None]
         if not body_items:
             return []
-        rows = self._post("/api/v6/dex/market/price", body=body_items)
+        rows = self._post("/api/v6/dex/market/price-info", body=body_items)
         prices: list[OkxDexTokenPrice] = []
         for row in rows:
             price = _price_from_row(row)
@@ -142,6 +142,9 @@ def _price_from_row(row: dict[str, Any]) -> OkxDexTokenPrice | None:
         address=normalized_address,
         observed_at_ms=observed_at_ms,
         price_usd=_float(row.get("price") or row.get("priceUsd")),
+        market_cap_usd=_float(row.get("marketCap")),
+        liquidity_usd=_float(row.get("liquidity")),
+        holders=_int(row.get("holders")),
         raw=dict(row),
     )
 

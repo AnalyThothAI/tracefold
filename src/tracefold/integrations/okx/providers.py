@@ -160,10 +160,10 @@ def _dex_token_quote(price: Any) -> DexTokenQuote:
         observed_at_ms=price.observed_at_ms,
         price_usd=price.price_usd,
         raw=price.raw,
-        market_cap_usd=None,
-        liquidity_usd=None,
+        market_cap_usd=price.market_cap_usd,
+        liquidity_usd=price.liquidity_usd,
         volume_24h_usd=None,
-        holders=None,
+        holders=price.holders,
     )
 
 

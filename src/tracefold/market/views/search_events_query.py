@@ -5,22 +5,15 @@ import re
 from typing import Any
 
 from tracefold.market.capture.evidence_repository import decode_event_row
-from tracefold.market.identity.chain_identity import canonical_chain_address
+from tracefold.market.identity.chain_identity import (
+    canonical_chain_address,
+    canonical_chain_id,
+    canonical_evm_chain_ids,
+)
 from tracefold.market.identity.resolver_policy import TOKEN_RESOLVER_POLICY_VERSION
 from tracefold.platform.validation import require_nonnegative_int
 
 _SUBSTRING_QUERY_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
-_EVM_REGISTRY_CHAINS = ("eip155:1", "eip155:8453", "eip155:56")
-_REGISTRY_CHAIN_ALIASES = {
-    "eth": "eip155:1",
-    "ethereum": "eip155:1",
-    "base": "eip155:8453",
-    "bsc": "eip155:56",
-    "bnb": "eip155:56",
-    "sol": "solana",
-    "solana": "solana",
-    "ton": "ton",
-}
 
 
 class SearchEventsQuery:
@@ -204,9 +197,10 @@ class SearchEventsQuery:
             clauses.append("registry_assets.chain_id = %s")
             params.append(registry_chain)
         elif chain in {"evm", "evm_unknown"}:
-            placeholders = ",".join("%s" for _ in _EVM_REGISTRY_CHAINS)
+            evm_registry_chains = canonical_evm_chain_ids()
+            placeholders = ",".join("%s" for _ in evm_registry_chains)
             clauses.append(f"registry_assets.chain_id IN ({placeholders})")
-            params.extend(_EVM_REGISTRY_CHAINS)
+            params.extend(evm_registry_chains)
         rows = self.conn.execute(
             f"""
             SELECT
@@ -541,7 +535,8 @@ def _json_array(value: Any) -> list[str]:
 def _registry_chain(chain: str | None) -> str | None:
     if not chain:
         return None
-    return _REGISTRY_CHAIN_ALIASES.get(chain.strip().lower())
+    normalized = chain.strip().lower()
+    return None if normalized in {"evm", "evm_unknown"} else canonical_chain_id(normalized)
 
 
 def _safe_substring_query(query: str) -> bool:

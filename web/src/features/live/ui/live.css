@@ -1,5 +1,5 @@
 @layer app.features {
-  .live-page {
+  .live-radar-page {
     display: grid;
     grid-template-rows: minmax(0, 1fr);
     width: 100%;
@@ -24,10 +24,11 @@
   }
 
   .live-radar-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
     min-width: 0;
     height: 60px;
-    align-items: baseline;
+    align-items: center;
     gap: 12px;
     contain: strict;
     border-bottom: 1px solid var(--border-faint);
@@ -50,8 +51,16 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .live-radar-method {
+    color: var(--text-secondary) !important;
+  }
+
+  .live-radar-count {
+    justify-self: start;
+  }
+
   .live-radar-header time {
-    margin-left: auto;
+    justify-self: end;
   }
 
   .live-radar-delay {
@@ -87,9 +96,10 @@
 
   .live-radar-item {
     box-sizing: border-box;
+    height: 84px;
     min-width: 0;
     min-height: 84px;
-    contain: layout paint;
+    contain: strict;
     display: grid;
     grid-template-columns: minmax(210px, 0.85fr) minmax(360px, 1.4fr) auto;
     grid-template-areas:
@@ -188,13 +198,32 @@
     white-space: nowrap;
   }
 
-  .live-radar-contract a {
+  .live-radar-contract a,
+  .live-radar-contract > span {
     min-width: 0;
     flex: 0 1 auto;
     overflow: hidden;
     color: var(--text-muted);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .live-radar-contract a {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    text-overflow: clip;
+  }
+
+  .live-radar-contract a > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .live-radar-gmgn {
+    flex: 0 0 auto;
+    color: var(--accent-primary);
   }
 
   .live-radar-contract a[href] {
@@ -360,17 +389,25 @@
 
   @media (max-width: 900px) {
     .live-radar-header {
-      height: 52px;
-      gap: 8px;
-      padding: 12px 10px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      height: 68px;
+      gap: 3px 8px;
+      padding: 9px 10px;
     }
 
     .live-radar-header h1 {
       font-size: 18px;
     }
 
+    .live-radar-header .live-radar-count,
     .live-radar-header time {
-      max-width: 38%;
+      justify-self: end;
+    }
+
+    .live-radar-header .live-radar-method,
+    .live-radar-header time {
+      min-width: 0;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -382,7 +419,9 @@
     }
 
     .live-radar-item {
+      height: auto;
       min-height: 154px;
+      contain: layout paint;
       grid-template-columns: minmax(0, 1fr) auto;
       grid-template-areas:
         "identity action"

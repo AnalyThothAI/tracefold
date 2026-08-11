@@ -44,66 +44,6 @@ export type EventRecord = {
   } | null;
 };
 
-export type EntityRecord = {
-  entity_type: string;
-  normalized_value: string;
-  chain?: string | null;
-  author_handle?: string | null;
-  received_at_ms?: number | null;
-};
-
-export type AlertRecord = {
-  alert_type: string;
-  event_id: string;
-  author_handle?: string | null;
-  entity_key?: string | null;
-  entity_type?: string | null;
-  normalized_value?: string | null;
-  chain?: string | null;
-  token_resolution_status?: string | null;
-  received_at_ms?: number | null;
-  is_first_seen_global?: number | boolean | null;
-  is_first_seen_by_author?: number | boolean | null;
-  confidence?: number | null;
-  summary?: string | null;
-  evidence?: string | null;
-};
-
-export type TokenIntentRecord = {
-  intent_id?: string | null;
-  event_id?: string | null;
-  display_symbol?: string | null;
-  display_name?: string | null;
-  chain_hint?: string | null;
-  address_hint?: string | null;
-  intent_status?: string | null;
-  intent_confidence?: number | null;
-};
-
-export type TokenResolutionRecord = {
-  resolution_id?: string | null;
-  intent_id?: string | null;
-  event_id?: string | null;
-  target_type?: string | null;
-  target_id?: string | null;
-  symbol?: string | null;
-  pricefeed_id?: string | null;
-  price?: TokenMessagePrice | null;
-  resolution_status?: string | null;
-  reason_codes_json?: string[];
-  candidate_ids_json?: string[];
-  lookup_keys_json?: string[];
-};
-
-export type LivePayload = {
-  type: "event";
-  event: EventRecord;
-  entities: EntityRecord[];
-  token_intents?: TokenIntentRecord[];
-  token_resolutions?: TokenResolutionRecord[];
-  harness?: unknown | null;
-};
-
 export type LiveMarketUpdatePayload = {
   type: "live_market_update";
   target_type: string;
@@ -113,11 +53,6 @@ export type LiveMarketUpdatePayload = {
   market: {
     decision_latest: MarketObservationSnapshot;
   };
-};
-
-export type RecentData = {
-  events: EventRecord[];
-  items: LivePayload[];
 };
 
 export type SearchItem = {

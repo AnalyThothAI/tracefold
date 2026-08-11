@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from tracefold.market.identity.chain_identity import canonical_chain_id
 from tracefold.market.identity.deterministic_token_resolver import (
     DeterministicTokenResolver,
 )
@@ -115,17 +116,7 @@ def _chain_id(chain: Any) -> str | None:
     normalized = str(chain).strip().lower()
     if normalized in {"", "unknown", "evm_unknown"}:
         return None
-    if normalized in {"eth", "ethereum"}:
-        return "eip155:1"
-    if normalized == "base":
-        return "eip155:8453"
-    if normalized in {"bsc", "bnb"}:
-        return "eip155:56"
-    if normalized in {"sol", "solana"}:
-        return "solana"
-    if normalized in {"ton", "toncoin", "the open network"}:
-        return "ton"
-    return normalized
+    return canonical_chain_id(normalized)
 
 
 def _address(address: Any) -> str | None:

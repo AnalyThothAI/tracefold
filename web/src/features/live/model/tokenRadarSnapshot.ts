@@ -60,6 +60,14 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
   );
   if (target.target_type !== "Asset" && target.target_type !== "CexToken")
     fail(`${path}.target.target_type`);
+  const chain = nullableString(target.chain, `${path}.target.chain`);
+  const exchange = nullableString(target.exchange, `${path}.target.exchange`);
+  const address = nullableString(target.address, `${path}.target.address`);
+  const assetIdentityValid =
+    target.target_type === "Asset" && chain !== null && address !== null && exchange === null;
+  const cexIdentityValid =
+    target.target_type === "CexToken" && exchange !== null && chain === null && address === null;
+  if (!assetIdentityValid && !cexIdentityValid) fail(`${path}.target`);
   const whyNow = record(item.why_now, `${path}.why_now`);
   exactKeys(whyNow, ["current_mentions", "prior_mentions", "mention_delta"], `${path}.why_now`);
   const currentMentions = nonnegativeInteger(
@@ -121,9 +129,9 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
       symbol: nonemptyString(target.symbol, `${path}.target.symbol`),
       name: nullableString(target.name, `${path}.target.name`),
       logo_url: nullableTokenImagePath(target.logo_url, `${path}.target.logo_url`),
-      chain: nullableString(target.chain, `${path}.target.chain`),
-      exchange: nullableString(target.exchange, `${path}.target.exchange`),
-      address: nullableString(target.address, `${path}.target.address`),
+      chain,
+      exchange,
+      address,
     },
     trigger_event_id: nonemptyString(item.trigger_event_id, `${path}.trigger_event_id`),
     triggered_at_ms: nonnegativeInteger(item.triggered_at_ms, `${path}.triggered_at_ms`),

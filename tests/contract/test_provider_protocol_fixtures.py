@@ -10,9 +10,10 @@ import httpx
 import pytest
 
 from tracefold.integrations.okx.dex_client import OkxDexClient, _candidate_from_row
-from tracefold.integrations.okx.providers import OkxDexDiscoveryProvider
+from tracefold.integrations.okx.providers import OkxDexDiscoveryProvider, OkxDexQuoteProvider
 from tracefold.market import (
     CollectorService,
+    DexTokenQuoteRequest,
     IngestedEvent,
     materialize_event,
     normalize_gmgn_payload,
@@ -296,6 +297,102 @@ def test_okx_dex_search_fixture_maps_rest_candidate_and_domain_candidate() -> No
     assert domain_candidates[0].raw == candidates[0].raw
     assert domain_candidates[0].raw["providerExtraProfile"] == {"sourceRank": "fixture-only"}
     assert not hasattr(domain_candidates[0], "providerExtraProfile")
+
+
+def test_okx_batch_token_trading_information_preserves_quote_market_facts() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/api/v6/dex/market/price-info"
+        assert json.loads(request.content) == [
+            {
+                "chainIndex": "4663",
+                "tokenContractAddress": "0x020bfc650a365f8bb26819deaabf3e21291018b4",
+            },
+            {
+                "chainIndex": "501",
+                "tokenContractAddress": "Mirror111111111111111111111111111111111111",
+            },
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "data": [
+                    {
+                        "chainIndex": "4663",
+                        "tokenContractAddress": "0x020bfc650a365f8bb26819deaabf3e21291018b4",
+                        "time": "1786406400123",
+                        "price": "0.0032",
+                        "marketCap": "82000000.5",
+                        "liquidity": "4200000.25",
+                        "holders": "11002",
+                    },
+                    {
+                        "chainIndex": "501",
+                        "tokenContractAddress": "Mirror111111111111111111111111111111111111",
+                        "time": "1786406400124",
+                        "price": "0.12",
+                        "marketCap": "123456",
+                        "liquidity": "45678",
+                        "holders": "321",
+                    },
+                ],
+                "msg": "",
+            },
+        )
+
+    client = OkxDexClient(base_url="https://web3.okx.test", transport=httpx.MockTransport(handler))
+    provider = OkxDexQuoteProvider(client)
+    try:
+        quotes = provider.token_quotes(
+            [
+                DexTokenQuoteRequest(
+                    chain_id="robinhood",
+                    address="0x020BFc650A365f8BB26819dEAabF3e21291018b4",
+                ),
+                DexTokenQuoteRequest(
+                    chain_id="solana",
+                    address="Mirror111111111111111111111111111111111111",
+                ),
+            ]
+        )
+    finally:
+        provider.close()
+
+    assert len(requests) == 1
+    assert [
+        (
+            quote.chain_id,
+            quote.address,
+            quote.observed_at_ms,
+            quote.price_usd,
+            quote.market_cap_usd,
+            quote.liquidity_usd,
+            quote.holders,
+        )
+        for quote in quotes
+    ] == [
+        (
+            "robinhood",
+            "0x020bfc650a365f8bb26819deaabf3e21291018b4",
+            1_786_406_400_123,
+            0.0032,
+            82_000_000.5,
+            4_200_000.25,
+            11_002,
+        ),
+        (
+            "solana",
+            "Mirror111111111111111111111111111111111111",
+            1_786_406_400_124,
+            0.12,
+            123_456,
+            45_678,
+            321,
+        ),
+    ]
 
 
 def _load_json(name: str) -> Any:

@@ -4,7 +4,6 @@ export type { components, operations, paths } from "./openapi";
 
 export type OpenApiBootstrapData = components["schemas"]["BootstrapData"];
 export type OpenApiStatusData = components["schemas"]["StatusData"];
-export type OpenApiRecentData = components["schemas"]["RecentData"];
 export type OpenApiSearchData = components["schemas"]["SearchData"];
 export type OpenApiSearchInspectData = components["schemas"]["SearchInspectData"];
 export type OpenApiLiveMarketData = components["schemas"]["LiveMarketData"];
@@ -14,17 +13,13 @@ export type OpenApiTargetSocialTimelineData = components["schemas"]["TargetSocia
 // frontend-contracts: these UI/domain shapes still encode frontend-specific view models
 // that are richer than the current extensible OpenAPI response schemas.
 export type {
-  AlertRecord,
   ApiResponse,
   BootstrapData,
-  EntityRecord,
   EventRecord,
   LiveMarketUpdatePayload,
-  LivePayload,
   LiveMarketSnapshot,
   MarketCandle,
   MarketObservationSnapshot,
-  RecentData,
   ScoreBlock,
   ScoreContribution,
   SearchAmbiguousResult,
@@ -40,13 +35,11 @@ export type {
   TokenCasePostsQuery,
   TokenCaseSocialTimelineData,
   TokenCaseSocialTimelineQuery,
-  TokenIntentRecord,
   TokenPostItem,
   TokenPostRange,
   TokenPostsData,
   TokenProfileBlock,
   TokenReference,
-  TokenResolutionRecord,
   TokenSocialTimelineData,
   TokenTimelineStage,
   TokenTimelinePost,

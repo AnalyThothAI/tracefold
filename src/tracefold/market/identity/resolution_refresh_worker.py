@@ -19,6 +19,7 @@ from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 from tracefold.platform.validation import require_nonnegative_int, require_positive_int
 
+from .chain_identity import canonical_chain_id, default_dex_discovery_chain_ids
 from .discovery_repository import DISCOVERY_PROVIDER
 from .identity_evidence_policy import (
     CONFIDENCE_PROVIDER_CANDIDATE,
@@ -49,13 +50,7 @@ class ResolutionRefresh:
         runtime_id: str,
         claim_limit: int = 1,
         reprocess_limit: int = _REPROCESS_PAGE_LIMIT,
-        chain_ids: tuple[str, ...] = (
-            "solana",
-            "eip155:1",
-            "eip155:56",
-            "eip155:8453",
-            "ton",
-        ),
+        chain_ids: tuple[str, ...] | None = None,
     ) -> None:
         if dex_discovery_market is None:
             raise RuntimeError("resolution_refresh_provider_required")
@@ -64,7 +59,7 @@ class ResolutionRefresh:
         self.name = "resolution_refresh"
         self.claim_owner = f"resolution_refresh:{runtime_id}"
         self.dex_discovery_market = dex_discovery_market
-        self.chain_ids = tuple(chain_ids)
+        self.chain_ids = default_dex_discovery_chain_ids() if chain_ids is None else tuple(chain_ids)
         if not self.chain_ids:
             raise ValueError("resolution_refresh_chain_ids_required")
         self.max_attempts = 3
@@ -776,17 +771,7 @@ def _chain_id(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
-    if normalized.startswith("eip155:"):
-        return normalized
-    if normalized in {"eth", "ethereum"}:
-        return "eip155:1"
-    if normalized in {"bsc", "bnb", "bnb_chain"}:
-        return "eip155:56"
-    if normalized == "base":
-        return "eip155:8453"
-    if normalized in {"sol", "solana"}:
-        return "solana"
-    return normalized
+    return canonical_chain_id(normalized)
 
 
 def _normalize_symbol(value: Any) -> str:

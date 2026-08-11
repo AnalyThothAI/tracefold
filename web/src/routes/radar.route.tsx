@@ -1,4 +1,4 @@
-import { LivePage, RadarQueue, useTokenRadarQuery } from "@features/live";
+import { RadarPage, RadarQueue, useTokenRadarQuery } from "@features/live";
 
 import { useShellRouteContext } from "./shellRouteContext";
 
@@ -13,7 +13,7 @@ export function Component() {
   const error = query.error instanceof Error ? query.error : null;
 
   return (
-    <LivePage>
+    <RadarPage>
       <RadarQueue
         bootstrapError={bootstrapError}
         bootstrapLoading={bootstrapLoading}
@@ -25,6 +25,6 @@ export function Component() {
         onSessionRetry={() => globalThis.location.reload()}
         sessionAvailable={sessionAvailable}
       />
-    </LivePage>
+    </RadarPage>
   );
 }

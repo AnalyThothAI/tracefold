@@ -11,9 +11,11 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.market import (
     CaptureResult,
+    DeterministicTokenResolver,
     EnrichedEventCapture,
     IngestService,
     MarketTick,
+    MentionKeys,
     market_tick_id,
     parse_gmgn_token_payload,
 )
@@ -139,6 +141,30 @@ def test_ingest_unknown_chain_ca_is_retained_as_unresolved_asset(tmp_path):
     assert result.token_intents[0]["address_hint"] == "0xd0667d0618Dc9B6d2a0A55f428b47C64Bcf00416"
     assert result.token_resolutions[0]["resolution_status"] == "NIL"
     assert result.token_resolutions[0]["target_id"] is None
+
+
+def test_address_only_resolution_prioritizes_canonical_robinhood_over_unknown_chains(tmp_path):
+    conn, repos, _ingest = open_ingest(tmp_path)
+    address = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+    try:
+        with repos.transaction():
+            repos.registry.upsert_chain_asset(chain_id="aaa", address=address, observed_at_ms=1)
+            robinhood = repos.registry.upsert_chain_asset(
+                chain_id="robinhood",
+                address=address,
+                observed_at_ms=1,
+            )
+        decision = DeterministicTokenResolver(registry=repos.registry).resolve(
+            intent_id="intent-robinhood-address",
+            event_id="event-robinhood-address",
+            keys=MentionKeys(address=address),
+            decision_time_ms=2,
+        )
+    finally:
+        conn.close()
+
+    assert decision.target_id == robinhood["asset_id"]
+    assert decision.reason_codes == ["RESOLVED_BY_CHAIN_PRIORITY"]
 
 
 def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_path):

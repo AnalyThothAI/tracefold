@@ -10,15 +10,17 @@ from solders.pubkey import Pubkey
 
 from tracefold.market.capture.entity import ExtractedEntity, is_valid_ton_friendly_address
 from tracefold.market.capture.tweet_text import CASHTAG_RE, HASHTAG_RE, MENTION_RE, URL_RE
+from tracefold.market.identity.chain_identity import evm_query_chain_ids
 
 EVM_CA_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
 SOLANA_CA_RE = re.compile(r"(?<![A-Za-z0-9])[1-9A-HJ-NP-Za-km-z]{32,44}(?![A-Za-z0-9])")
 TON_CA_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{48}(?![A-Za-z0-9_-])")
-RESOLVED_EVM_CHAINS = frozenset({"eth", "base", "bsc"})
+RESOLVED_EVM_CHAINS = evm_query_chain_ids() - {"evm", "evm_unknown"}
 EVM_CHAIN_HINT_PATTERNS = (
     ("bsc", re.compile(r"\b(?:bsc|bnb\s+chain|binance\s+smart\s+chain|bep[-\s]?20)\b", re.IGNORECASE)),
     ("eth", re.compile(r"\b(?:eth|ethereum|erc[-\s]?20)\b", re.IGNORECASE)),
     ("base", re.compile(r"\b(?:on\s+base|base\s+(?:mainnet|chain|token|ca))\b", re.IGNORECASE)),
+    ("robinhood", re.compile(r"\brobinhood(?:\s+chain)?\b", re.IGNORECASE)),
 )
 EXPLORER_HOST_CHAINS = {
     "etherscan.io": "eth",

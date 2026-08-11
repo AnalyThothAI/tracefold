@@ -97,6 +97,59 @@ def test_token_radar_schema_rejects_remote_logo_and_market_timestamp_without_met
         TokenRadarData.model_validate(missing_required_market_field)
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        {
+            "target_type": "Asset",
+            "target_id": "asset:test",
+            "symbol": "TEST",
+            "name": None,
+            "logo_url": None,
+            "chain": "eip155:1",
+            "exchange": "binance",
+            "address": "0xtest",
+        },
+        {
+            "target_type": "Asset",
+            "target_id": "asset:test",
+            "symbol": "TEST",
+            "name": None,
+            "logo_url": None,
+            "chain": "eip155:1",
+            "exchange": None,
+            "address": None,
+        },
+        {
+            "target_type": "CexToken",
+            "target_id": "cex:test",
+            "symbol": "TEST",
+            "name": None,
+            "logo_url": None,
+            "chain": "eip155:1",
+            "exchange": "binance",
+            "address": None,
+        },
+        {
+            "target_type": "CexToken",
+            "target_id": "cex:test",
+            "symbol": "TEST",
+            "name": None,
+            "logo_url": None,
+            "chain": None,
+            "exchange": None,
+            "address": None,
+        },
+    ],
+)
+def test_token_radar_schema_rejects_ambiguous_target_identity(target: dict[str, object]) -> None:
+    packet = _packet()
+    packet["items"][0]["target"] = target
+
+    with pytest.raises(ValidationError, match="token_radar_target_identity_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
 def _packet() -> dict[str, object]:
     return {
         "schema_version": "token_radar_snapshot_v2",

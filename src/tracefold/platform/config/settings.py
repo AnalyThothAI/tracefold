@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from tracefold.platform.paths import app_home, app_log_path, config_path
 
-DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc")
+DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc", "robinhood")
 DEFAULT_UPSTREAM_CHANNELS = ("twitter_monitor_basic", "twitter_monitor_token")
 DEFAULT_GMGN_APP_VERSION = "20260429-12894-ccec416"
 
@@ -158,7 +158,7 @@ class OkxProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dex_base_url: str = "https://web3.okx.com"
-    dex_chain_indexes: tuple[str, ...] = ("501", "1", "56", "8453", "607")
+    dex_chain_indexes: tuple[str, ...] = ("501", "1", "56", "8453", "607", "4663")
     dex_api_key: str | None = None
     dex_secret_key: str | None = None
     dex_passphrase: str | None = None
@@ -416,7 +416,7 @@ gmgn:
 providers:
   okx:
     dex_base_url: "https://web3.okx.com"
-    dex_chain_indexes: ["501", "1", "56", "8453", "607"]
+    dex_chain_indexes: ["501", "1", "56", "8453", "607", "4663"]
     dex_api_key:
     dex_secret_key:
     dex_passphrase:
@@ -448,7 +448,7 @@ news:
     feishu_signing_secret:
 
 upstream:
-  chains: ["sol", "eth", "base", "bsc"]
+  chains: ["sol", "eth", "base", "bsc", "robinhood"]
   channels: ["twitter_monitor_basic", "twitter_monitor_token"]
   app_version: "{DEFAULT_GMGN_APP_VERSION}"
   proxy:

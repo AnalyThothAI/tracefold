@@ -6,6 +6,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from tracefold.market.identity.chain_identity import canonical_chain_id
 from tracefold.market.identity.identity_evidence_policy import (
     CONFIDENCE_UNKNOWN,
     select_current_identity,
@@ -75,7 +76,7 @@ class IdentityEvidenceRepository:
                 evidence_kind,
                 provider,
                 lookup_mode,
-                _chain(chain_id),
+                canonical_chain_id(chain_id),
                 _address(address),
                 _symbol(symbol) if symbol else None,
                 name,
@@ -96,7 +97,7 @@ class IdentityEvidenceRepository:
             "evidence_kind": evidence_kind,
             "provider": provider,
             "lookup_mode": lookup_mode,
-            "chain_id": _chain(chain_id),
+            "chain_id": canonical_chain_id(chain_id),
             "address": _address(address),
             "symbol": _symbol(symbol) if symbol else None,
             "name": name,
@@ -214,19 +215,6 @@ def _evidence_id(
 def _single_returning_changed(cursor: Any, row: Any | None) -> bool:
     returning_mutation_count(cursor, row, error_code="identity_evidence_repository_rowcount_invalid")
     return row is not None and bool(row.get("changed", True))
-
-
-def _chain(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"eth", "ethereum"}:
-        return "eip155:1"
-    if normalized == "base":
-        return "eip155:8453"
-    if normalized in {"bsc", "bnb"}:
-        return "eip155:56"
-    if normalized in {"sol", "solana"}:
-        return "solana"
-    return normalized
 
 
 def _address(value: str) -> str:

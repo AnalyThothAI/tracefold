@@ -19,8 +19,8 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
       db: {
         ok: true,
         schema_ok: true,
-        current_revision: "20260731_0233",
-        expected_revision: "20260731_0233",
+        current_revision: "20260810_0251",
+        expected_revision: "20260810_0251",
         error_code: null,
       },
       workers_runtime: {

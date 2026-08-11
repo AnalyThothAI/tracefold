@@ -19,7 +19,6 @@ from tracefold.market.radar.snapshot_repository import (
 from tracefold.platform.resource import (
     CpuTaskTimeout,
     ResourceAdmissionTimeout,
-    ResourceOperationOverrun,
 )
 
 _TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 3.0
@@ -200,8 +199,6 @@ class TokenRadarCurrentProjection:
             if self.telemetry is not None:
                 self.telemetry.record_projection_cache("token_radar_current", outcome)
             return outcome, False
-        except ResourceOperationOverrun:
-            raise
         except (
             CpuTaskTimeout,
             ResourceAdmissionTimeout,
@@ -227,8 +224,6 @@ class TokenRadarCurrentProjection:
                 error_code=error_code,
                 session_timeout_seconds=timeout,
             )
-        except ResourceOperationOverrun:
-            raise
         except (ResourceAdmissionTimeout, TokenRadarBudgetExceeded):
             return
 

@@ -104,7 +104,7 @@ describe("Tracefold design-system hard cut", () => {
     const owners = {
       case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
       decision: ["features/macro/ui/MacroDecisionPage.tsx"],
-      scan: ["features/live/ui/LivePage.tsx", "features/news/NewsPage.tsx"],
+      scan: ["features/live/ui/RadarPage.tsx", "features/news/NewsPage.tsx"],
     } as const;
 
     for (const [archetype, paths] of Object.entries(owners)) {

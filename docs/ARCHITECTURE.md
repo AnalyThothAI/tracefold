@@ -248,7 +248,11 @@ budget.
 
 `market_tick_current` is transactionally maintained from append-only
 `market_ticks`; it has no projection worker or dirty queue. Explicit bounded
-fact replay rebuilds it.
+fact replay rebuilds it. The bounded market poll reserves its first batch slots
+for the current Radar target keys and fills the remainder by 24-hour activity.
+This is acquisition scheduling only: market presentation facts do not affect
+Radar admission or order, so the dependency cannot feed a market result back
+into queue membership.
 
 ```text
 events + intents + resolutions + market facts

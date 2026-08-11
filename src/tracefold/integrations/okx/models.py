@@ -25,4 +25,7 @@ class OkxDexTokenPrice:
     address: str
     observed_at_ms: int
     price_usd: float | None
+    market_cap_usd: float | None
+    liquidity_usd: float | None
+    holders: int | None
     raw: dict[str, Any]

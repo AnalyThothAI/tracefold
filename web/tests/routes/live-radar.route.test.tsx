@@ -15,7 +15,8 @@ describe("live radar route", () => {
     renderAppRoute("/?window=4h&venue=sol&sort=score");
 
     expect(await screen.findByRole("heading", { name: "Radar" })).toBeInTheDocument();
-    expect(await screen.findByText("Showing 1 / 1 eligible")).toBeInTheDocument();
+    expect(await screen.findByText("1 eligible · showing 1 / 50")).toBeInTheDocument();
+    expect(screen.getByText("1h acceleration · newest trigger first")).toBeInTheDocument();
     expect(await screen.findByText(/\$UPEG/)).toBeInTheDocument();
     expect(screen.getByText(/\+5/)).toBeInTheDocument();
     expect(screen.queryByLabelText("radar window")).not.toBeInTheDocument();
@@ -62,7 +63,7 @@ describe("live radar route", () => {
     });
     renderAppRoute("/");
 
-    expect(await screen.findByText("no evidence")).toBeInTheDocument();
+    expect(await screen.findByText("No evidence yet")).toBeInTheDocument();
     expect(screen.getByText("No eligible cases")).toBeInTheDocument();
     expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
   });

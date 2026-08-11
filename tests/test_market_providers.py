@@ -212,6 +212,11 @@ def test_multi_target_quotes_use_the_bounded_bulk_provider_only() -> None:
     assert bulk_fallback.calls == [requests]
 
 
+def test_robinhood_chain_uses_the_official_okx_chain_index() -> None:
+    assert okx_providers.okx_chain_index("robinhood") == "4663"
+    assert okx_providers.okx_index_to_chain_id("4663") == "robinhood"
+
+
 def test_okx_production_wiring_constructs_rest_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

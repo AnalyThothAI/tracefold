@@ -82,7 +82,7 @@ export function createAppRouteObjects(): RouteObject[] {
             },
             {
               index: true,
-              lazy: () => import("./live.route"),
+              lazy: () => import("./radar.route"),
             },
           ],
         },

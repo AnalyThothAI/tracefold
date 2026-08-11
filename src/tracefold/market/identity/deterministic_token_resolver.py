@@ -17,6 +17,7 @@ ADDRESS_CHAIN_PRIORITY = (
     "eip155:1",
     "eip155:8453",
     "eip155:56",
+    "robinhood",
     "eip155:42161",
     "eip155:43114",
     "ton",

@@ -10,7 +10,7 @@ from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.http.validators import _target_type
-from tracefold.market import live_market_snapshot, served_token_radar_snapshot
+from tracefold.market import live_market_snapshot
 
 router = APIRouter()
 _TokenRadarEnvelope = api_schemas.ApiEnvelope[api_schemas.TokenRadarData]
@@ -51,7 +51,7 @@ def token_radar(request: Request) -> Response:
     _validate_token_radar_query(request)
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
-        data = served_token_radar_snapshot(repos.token_radar_current.current())
+        data = repos.token_radar_current.served_snapshot()
     return _etagged_token_radar(data, request)
 
 

@@ -92,7 +92,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
   });
   await expect(identity.getByText("$UPEG", { exact: true })).toBeVisible();
   await expect(market.getByRole("group", { name: /^Price / })).toBeVisible();
-  await expect(evidence).toContainText("8% duplicates");
+  await expect(evidence).toContainText("8% duplicate");
   await expect(action).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);

@@ -97,6 +97,22 @@ describe("parseTokenRadarSnapshot", () => {
         return value;
       },
     ],
+    [
+      "asset with an exchange",
+      () => {
+        const value = snapshot();
+        (value.items[0].target as { exchange: string | null }).exchange = "binance";
+        return value;
+      },
+    ],
+    [
+      "asset without an address",
+      () => {
+        const value = snapshot();
+        (value.items[0].target as { address: string | null }).address = null;
+        return value;
+      },
+    ],
   ])("rejects %s", (_name, makeValue) => {
     expect(() => parseTokenRadarSnapshot(makeValue())).toThrow(/token_radar_snapshot_contract/);
   });

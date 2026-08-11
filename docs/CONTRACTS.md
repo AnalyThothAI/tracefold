@@ -34,6 +34,11 @@ The configuration schema uses typed nested models directly
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
+Fresh configs subscribe GMGN to `sol`, `eth`, `base`, `bsc`, and `robinhood`.
+The default OKX DEX discovery/quote set includes chain index `4663`, whose
+canonical Tracefold chain ID is `robinhood`; no runtime alias or inferred
+fallback supplies that mapping.
+
 Top-level `handles`, top-level `notifications`, and `news.sources` are retired
 inputs. Any equivalent retired key fails
 validation; there is no alias, merge, or generated-source fallback.
@@ -202,6 +207,13 @@ presentation field rather than changing admission or order. The nullable
 eligible population before the maximum-fifty selection. Order is primarily
 newest trigger first with stable fact-key ties. The complete uncompressed
 snapshot is capped at 96 KiB.
+
+Target identity is a closed discriminated contract. `Asset` requires non-empty
+`chain` and `address` with `exchange=null`; `CexToken` requires a non-empty
+`exchange` with `chain=null` and `address=null`. Robinhood Chain uses the single
+internal chain value `robinhood` (provider adapters map its external chain index
+`4663` at the OKX boundary); the public payload does not publish a second
+`eip155:4663` alias.
 
 The response has `Cache-Control: private, no-cache` and a strong ETag bound to
 the complete served snapshot. A matching `If-None-Match` returns `304` with no

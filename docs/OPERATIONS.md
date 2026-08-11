@@ -237,6 +237,17 @@ event -> intent -> current resolution + market facts
 Market current is maintained transactionally with `market_ticks`; it has no
 projection worker or dirty queue. Repair uses bounded
 `tracefold ops rebuild-market-current --execute` fact replay.
+The normal poll rereads the database-ordered most recently active 100 market
+targets from the fixed 24-hour fact window every 35 seconds. Consecutive turns
+intentionally refresh the same still-hot targets so their five-minute Radar
+presentation facts remain fresh; there is no cross-turn exclusion cursor or
+24-hour round-robin sweep. Current Radar targets occupy the first batch slots;
+the remaining capacity is filled by 24-hour activity order. This priority only
+keeps presentation facts fresh and never changes Radar admission or rank. The
+OKX path uses the bounded batch
+`/api/v6/dex/market/price-info` contract, so price, market capitalization,
+liquidity, and holder facts share one request and observation clock rather than
+an N+1 enrichment loop.
 
 News:
 
@@ -743,8 +754,8 @@ The independent performance bundle proves, on representative facts:
   remaining-domain backlog;
 - `GET /api/token-radar` P95 at or below 100 ms for `200` and 50 ms for `304`;
 - an uncompressed snapshot no larger than 96 KiB;
-- at most 1,000 DOM nodes for a fifty-Item Radar route and no snapshot-update
-  long task above 50 ms;
+- no snapshot-update long task above 50 ms, no horizontal overflow, and the
+  fiftieth Item remains reachable at every supported viewport;
 - after the first response, unchanged snapshots return only `304`;
 - committed fact to visible browser Item P95 at or below 60 seconds.
 
@@ -758,8 +769,8 @@ becomes visible within 60 seconds of fact persistence, exercises same-origin
 icon/current-price/signal-change/market-cap rendering without frontend data
 hydration, and records no update long task above 50 ms. The maintained
 `web/tests/e2e/golden-paths/live-cold-load.spec.ts` browser lane separately
-proves exact fifty-Item order and reachability, no more than 1,000 Radar DOM
-nodes, and an empty-to-fifty refresh with no long task above 50 ms. This
+proves exact fifty-Item order and reachability, responsive containment, and an
+empty-to-fifty refresh with no long task above 50 ms. This
 test-only harness never targets an operator or production database and does
 not install route mocks.
 

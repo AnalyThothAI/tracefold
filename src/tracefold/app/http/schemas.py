@@ -1584,7 +1584,7 @@ class TokenRadarTargetData(ExactApiSchema):
     address: str | None
 
     @model_validator(mode="after")
-    def validate_logo_url(self) -> TokenRadarTargetData:
+    def validate_target(self) -> TokenRadarTargetData:
         prefix = "/api/token-images/"
         if self.logo_url is not None:
             image_id = self.logo_url.removeprefix(prefix)
@@ -1594,6 +1594,20 @@ class TokenRadarTargetData(ExactApiSchema):
                 or any(char not in "0123456789abcdef" for char in image_id)
             ):
                 raise ValueError("token_radar_logo_url_invalid")
+        asset_identity_valid = (
+            self.target_type == "Asset"
+            and bool(self.chain and self.chain.strip())
+            and bool(self.address and self.address.strip())
+            and self.exchange is None
+        )
+        cex_identity_valid = (
+            self.target_type == "CexToken"
+            and bool(self.exchange and self.exchange.strip())
+            and self.chain is None
+            and self.address is None
+        )
+        if not asset_identity_valid and not cex_identity_valid:
+            raise ValueError("token_radar_target_identity_invalid")
         return self
 
 

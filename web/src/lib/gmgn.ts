@@ -13,5 +13,6 @@ const GMGN_CHAIN_SLUGS = new Map([
   ["eip155:1", "eth"],
   ["eip155:56", "bsc"],
   ["eip155:8453", "base"],
+  ["robinhood", "robinhood"],
   ["solana", "sol"],
 ]);

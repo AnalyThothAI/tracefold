@@ -311,7 +311,7 @@ def _header_value(headers: Any, key: str) -> str | None:
 
 
 def _api_address(*, chain: str, address: str) -> str:
-    if chain in {"eth", "base", "bsc"} and is_address(address):
+    if chain in {"eth", "base", "bsc", "robinhood"} and is_address(address):
         return address.lower()
     return address
 

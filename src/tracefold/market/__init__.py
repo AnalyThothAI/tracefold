@@ -130,15 +130,10 @@ from .radar.constants import (
     TOKEN_RADAR_MAX_ITEMS,
     TOKEN_RADAR_OUTPUT_BYTE_CAP,
     TOKEN_RADAR_REFRESH_SECONDS,
-    TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
 )
-from .radar.current_worker import (
-    TokenRadarCurrentProjection,
-    TokenRadarCurrentService,
-)
+from .radar.current_worker import TokenRadarCurrentProjection
 from .radar.operations import TokenRadarStatusUnavailable, token_radar_status
-from .radar.reducer import reduce_token_radar
-from .radar.snapshot_repository import TokenRadarCurrentRepository, served_token_radar_snapshot
+from .radar.snapshot_repository import TokenRadarCurrentRepository
 from .views.event_token_projection_query import EventTokenProjectionQuery
 from .views.search_events_query import SearchEventsQuery
 from .views.search_inspect_service import SearchInspectService
@@ -184,7 +179,6 @@ __all__ = [
     "TOKEN_RADAR_MAX_ITEMS",
     "TOKEN_RADAR_OUTPUT_BYTE_CAP",
     "TOKEN_RADAR_REFRESH_SECONDS",
-    "TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION",
     "TOKEN_REPROCESS_WINDOW",
     "TOKEN_RESOLVER_POLICY_VERSION",
     "AssetMarketProviderBundle",
@@ -275,7 +269,6 @@ __all__ = [
     "TokenProfileSourceQuery",
     "TokenRadarCurrentProjection",
     "TokenRadarCurrentRepository",
-    "TokenRadarCurrentService",
     "TokenRadarStatusUnavailable",
     "TokenSnapshot",
     "TokenTargetCursorError",
@@ -307,11 +300,9 @@ __all__ = [
     "parse_gmgn_token_payload",
     "rebuild_all_profiles_for_maintenance",
     "rebuild_recent_token_intents",
-    "reduce_token_radar",
     "reprocess_recent_token_intents",
     "require_event_anchor_active_window_ms",
     "select_current_identity",
-    "served_token_radar_snapshot",
     "sync_binance_usdt_perp_routes",
     "sync_cex_token_profiles",
     "sync_us_equity_symbols",

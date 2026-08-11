@@ -36,3 +36,40 @@ def test_other_token_info_errors_still_fail_closed() -> None:
             client.lookup_token_info(chain="ton", address="invalid-provider-address")
     finally:
         client.close()
+
+
+def test_robinhood_lookup_normalizes_evm_address_without_changing_chain_identity() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "address": "0x020bfc650a365f8bb26819deaabf3e21291018b4",
+                    "symbol": "STONKBROKER",
+                },
+            },
+        )
+
+    client = GmgnOpenApiClient(
+        api_key="test-key",
+        force_ipv4=False,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = client.lookup_token_info(
+            chain="robinhood",
+            address="0x020BFc650A365f8BB26819dEAabF3e21291018b4",
+        )
+    finally:
+        client.close()
+
+    assert len(requests) == 1
+    assert requests[0].url.params["chain"] == "robinhood"
+    assert requests[0].url.params["address"] == "0x020bfc650a365f8bb26819deaabf3e21291018b4"
+    assert result.info is not None
+    assert result.info.chain == "robinhood"
+    assert result.info.address == "0x020bfc650a365f8bb26819deaabf3e21291018b4"

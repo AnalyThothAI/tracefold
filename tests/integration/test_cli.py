@@ -328,6 +328,8 @@ class CliTests(unittest.TestCase):
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
         self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
+        self.assertEqual(settings.upstream.chains, ("sol", "eth", "base", "bsc", "robinhood"))
+        self.assertEqual(settings.providers.okx.dex_chain_indexes, ("501", "1", "56", "8453", "607", "4663"))
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {

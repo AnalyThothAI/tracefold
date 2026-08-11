@@ -3,10 +3,7 @@ from __future__ import annotations
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.market.radar.reducer import enrich_token_radar, reduce_token_radar
-from tracefold.market.radar.snapshot_repository import (
-    TokenRadarCurrentRepository,
-    served_token_radar_snapshot,
-)
+from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 
 NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
@@ -65,7 +62,7 @@ def test_singleton_publish_is_state_idempotent_and_failure_preserves_lkg(tmp_pat
     assert initial_failure_writes == 1
     assert initial_failure["latest_attempt_status"] == "failed"
     assert initial_failure["ruleset_version"] is None
-    assert served_token_radar_snapshot(initial_failure) == {
+    assert _served_payload(initial_failure) == {
         "schema_version": "token_radar_snapshot_v2",
         "evidence_as_of_ms": 0,
         "eligible_total": 0,
@@ -76,11 +73,11 @@ def test_singleton_publish_is_state_idempotent_and_failure_preserves_lkg(tmp_pat
     assert after_unchanged == published
     assert failed_writes == 1
     assert failed["latest_attempt_status"] == "failed"
-    assert served_token_radar_snapshot(failed) == served_token_radar_snapshot(published)
+    assert _served_payload(failed) == _served_payload(published)
     assert recovered == {"status": "recovered", "rows_written": 1}
     assert recovered_row["latest_attempt_status"] == "ready"
     assert recovered_row["latest_error_code"] is None
-    assert served_token_radar_snapshot(recovered_row) == served_token_radar_snapshot(published)
+    assert _served_payload(recovered_row) == _served_payload(published)
     assert recovered_row["ruleset_version"] == reduced.ruleset_version
     assert recovered_row["ruleset_fingerprint"] == reduced.ruleset_fingerprint
 
@@ -316,6 +313,12 @@ def _stored(conn) -> dict[str, object]:
     conn.commit()
     assert row is not None
     return dict(row)
+
+
+def _served_payload(row: dict[str, object]) -> dict[str, object]:
+    payload = row.get("served_payload")
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _eligible_rows() -> list[dict[str, object]]:

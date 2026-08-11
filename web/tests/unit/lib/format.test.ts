@@ -2,7 +2,6 @@ import {
   compactNumber,
   formatPercentShare,
   formatRelativeTime,
-  formatRisk,
   formatSignedPercent,
   formatTokenPriceUsd,
   formatUsdCompact,
@@ -39,9 +38,5 @@ describe("format helpers", () => {
     expect(formatTokenPriceUsd(0.00001360704303591779)).toBe("$0.00001361");
     expect(formatTokenPriceUsd(0.0000000006522)).toBe("$6.52e-10");
     expect(formatTokenPriceUsd(null)).toBe("-");
-  });
-
-  it("formats stock health codes", () => {
-    expect(formatRisk("quote_unavailable")).toBe("quote unavailable");
   });
 });

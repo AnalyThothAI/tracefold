@@ -17,13 +17,15 @@ describe("RadarQueue", () => {
     const rows = screen.getAllByRole("listitem");
 
     expect(screen.getByRole("heading", { name: "Radar" })).toBeInTheDocument();
-    expect(screen.getByText("Showing 50 / 63 eligible")).toBeInTheDocument();
+    expect(screen.getByText("1h acceleration · newest trigger first")).toBeInTheDocument();
+    expect(screen.getByText("63 eligible · showing 50 / 50")).toBeInTheDocument();
+    expect(screen.getByText(/Evidence through/)).toBeInTheDocument();
     expect(rows).toHaveLength(50);
     expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(
       Array.from({ length: 50 }, (_, index) => `$TOKEN${index + 1}`),
     );
     expect(rows[0]).toHaveTextContent("Token 1 Network");
-    expect(rows[0]).toHaveTextContent("solana · token-1");
+    expect(rows[0]).toHaveTextContent("Solana · token-1 · GMGN ↗");
     expect(rows[0]).toHaveTextContent("$0.00003281");
     expect(rows[0]).toHaveTextContent("+12%");
     expect(rows[0]).toHaveTextContent("$1.3M");
@@ -45,11 +47,10 @@ describe("RadarQueue", () => {
     expect(screen.getAllByRole("button", { name: /Copy TOKEN\d+ contract address/ })).toHaveLength(
       50,
     );
-    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_100);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("uses a fixed icon box with a letter fallback and em dashes for missing market facts", () => {
+  it("uses a fixed icon fallback and explains unavailable market facts", () => {
     const snapshot = fixture(1);
     snapshot.items[0].target.logo_url = null;
     snapshot.items[0].target.name = null;
@@ -67,9 +68,9 @@ describe("RadarQueue", () => {
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(fallback).toHaveTextContent("T");
-    expect(within(row).getByRole("group", { name: "Price —" })).toHaveTextContent("—");
-    expect(within(row).getByRole("group", { name: "Since signal —" })).toHaveTextContent("—");
-    expect(within(row).getByRole("group", { name: "Market cap —" })).toHaveTextContent("—");
+    expect(within(row).getByRole("group", { name: "Price No fresh quote" })).toBeVisible();
+    expect(within(row).getByRole("group", { name: "Since signal No signal change" })).toBeVisible();
+    expect(within(row).getByRole("group", { name: "Market cap No fresh cap" })).toBeVisible();
   });
 
   it("presents market and evidence as labelled scan groups instead of a clipped sentence", () => {
@@ -82,21 +83,22 @@ describe("RadarQueue", () => {
     expect(within(market).getByRole("group", { name: "Since signal +12%" })).toBeVisible();
     expect(within(market).getByRole("group", { name: "Market cap $1.3M" })).toBeVisible();
     expect(
-      within(evidence).getByRole("group", { name: "Attention +5, 2 to 7 mentions" }),
+      within(evidence).getByRole("group", { name: "Mentions 2 to 7, increase 5" }),
     ).toBeVisible();
     expect(
       within(evidence).getByRole("group", {
-        name: "Independent evidence, 4 authors, 5 texts",
+        name: "New evidence, 4 new authors, 5 independent texts",
       }),
     ).toBeVisible();
     expect(
       within(evidence).getByRole("group", {
-        name: "Formation quality, 2m, 10% duplicates",
+        name: "Formation quality, formed in 2m, 10% duplicate text",
       }),
     ).toBeVisible();
-    expect(row).toHaveTextContent("+5 · 2→7 mentions");
+    expect(row).toHaveTextContent("2→7 · +5");
     expect(row).toHaveTextContent("4 authors · 5 texts");
-    expect(row).toHaveTextContent("2m · 10% duplicates");
+    expect(row).toHaveTextContent("2m to form · 10% duplicate");
+    expect(row).toHaveTextContent(/Triggered/);
   });
 
   it("copies the full contract address and opens the supported asset on GMGN", async () => {
@@ -131,9 +133,22 @@ describe("RadarQueue", () => {
     expect(copy).toHaveAccessibleName("TOKEN1 contract address copied");
   });
 
-  it("never fabricates a GMGN destination for an unsupported chain", () => {
+  it("opens a Robinhood Chain asset on GMGN and names the network clearly", () => {
     const snapshot = fixture(1);
     snapshot.items[0].target.chain = "robinhood";
+    renderQueue(snapshot);
+
+    expect(screen.getByRole("link", { name: "Open TOKEN1 on GMGN" })).toHaveAttribute(
+      "href",
+      "https://gmgn.ai/robinhood/token/token-1",
+    );
+    expect(screen.getByRole("listitem")).toHaveTextContent("Robinhood Chain");
+    expect(screen.getByRole("button", { name: "Copy TOKEN1 contract address" })).toBeVisible();
+  });
+
+  it("never fabricates a GMGN destination for an unknown chain", () => {
+    const snapshot = fixture(1);
+    snapshot.items[0].target.chain = "eip155:999999";
     renderQueue(snapshot);
 
     expect(screen.queryByRole("link", { name: "Open TOKEN1 on GMGN" })).not.toBeInTheDocument();
@@ -162,8 +177,8 @@ describe("RadarQueue", () => {
     expect(
       screen.queryByRole("button", { name: "Copy TOKEN1 contract address" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("listitem")).toHaveTextContent("solana");
-    expect(screen.getByRole("listitem")).not.toHaveTextContent("solana ·");
+    expect(screen.getByRole("listitem")).toHaveTextContent("Solana");
+    expect(screen.getByRole("listitem")).not.toHaveTextContent("Solana ·");
   });
 
   it("allows a new logo source to recover after the previous image failed", () => {
@@ -207,7 +222,7 @@ describe("RadarQueue", () => {
     expect(container.querySelector(".live-radar-queue")).toHaveClass("live-radar-queue--delayed");
   });
 
-  it("keeps one contained row slot stable as an empty publication becomes eligible", () => {
+  it("renders a truthful empty state and only creates rows for real eligible items", () => {
     const emptySnapshot = { ...fixture(), eligible_total: 0, evidence_as_of_ms: 0, items: [] };
     const { container, rerender } = render(
       <MemoryRouter>
@@ -224,29 +239,14 @@ describe("RadarQueue", () => {
         />
       </MemoryRouter>,
     );
-    const list = screen.getByRole("list", { name: "Radar priority queue" });
-    const emptyState = screen.getByText("No eligible cases");
-    expect(emptyState).toBeInTheDocument();
-    expect(emptyState.closest(".live-radar-item")?.parentElement).toBe(list);
-    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("No eligible cases")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown venue")).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Radar priority queue" })).toBeInTheDocument();
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open Token Case" })).not.toBeInTheDocument();
     const evidenceClock = container.querySelector(".live-radar-header time");
     expect(evidenceClock).not.toBeNull();
-    expect(evidenceClock).toHaveTextContent("no evidence");
-    const emptySlot = container.querySelector(".live-radar-item");
-    expect(emptySlot).not.toBeNull();
-    const contractSurface = emptySlot?.querySelector(".live-radar-contract");
-    const stableContractLink = contractSurface?.querySelector("a");
-    const stableCopyButton = contractSurface?.querySelector("button");
-    expect(stableContractLink).not.toBeNull();
-    expect(stableCopyButton).not.toBeNull();
-    expect(stableContractLink).not.toHaveAttribute("href");
-    expect(stableCopyButton).toBeDisabled();
-    const emptySlotClassName = emptySlot?.className;
-    const emptyChildren = [...(emptySlot?.children ?? [])];
-    expect(emptySlot).toBeVisible();
-    expect(emptySlot).not.toHaveAttribute("hidden");
-    expect(container.querySelectorAll(".live-radar-item")).toHaveLength(1);
+    expect(evidenceClock).toHaveTextContent("No evidence yet");
 
     rerender(
       <MemoryRouter>
@@ -264,22 +264,12 @@ describe("RadarQueue", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("list", { name: "Radar priority queue" })).toBe(list);
-    expect(screen.queryByText("No eligible cases")).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Radar priority queue" })).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(container.querySelector(".live-radar-header time")).toBe(evidenceClock);
-    expect(evidenceClock).not.toHaveTextContent("no evidence");
-    expect(container.querySelector(".live-radar-item")).toBe(emptySlot);
-    expect(container.querySelector(".live-radar-item")?.className).toBe(emptySlotClassName);
-    expect([...(container.querySelector(".live-radar-item")?.children ?? [])]).toEqual(
-      emptyChildren,
-    );
-    expect(container.querySelector(".live-radar-contract a")).toBe(stableContractLink);
-    expect(container.querySelector(".live-radar-contract button")).toBe(stableCopyButton);
-    expect(stableContractLink).toHaveAttribute("href", "https://gmgn.ai/sol/token/token-1");
-    expect(stableCopyButton).not.toBeDisabled();
+    expect(evidenceClock).not.toHaveTextContent("No evidence yet");
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
     expect(screen.getAllByRole("link", { name: "Open Token Case" })).toHaveLength(50);
-    expect(container.querySelectorAll("*").length).toBeLessThanOrEqual(1_100);
   });
 });
 

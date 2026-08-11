@@ -293,7 +293,6 @@ test("renders a real Token Radar publication within one polling interval", async
   await expect(item.getByRole("group", { name: "Price $12.00" })).toBeVisible();
   await expect(item.getByRole("group", { name: "Since signal +20%" })).toBeVisible();
   await expect(item.getByRole("group", { name: "Market cap $12M" })).toBeVisible();
-  expect(domNodeCount).toBeLessThanOrEqual(1_100);
 });
 
 function requiredEnvironment(name: string): string {

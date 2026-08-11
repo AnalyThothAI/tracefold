@@ -10,7 +10,8 @@ describe("gmgnTokenUrl", () => {
     expect(gmgnTokenUrl("eip155:1", evm)).toBe(`https://gmgn.ai/eth/token/${evm}`);
     expect(gmgnTokenUrl("eip155:56", evm)).toBe(`https://gmgn.ai/bsc/token/${evm}`);
     expect(gmgnTokenUrl("eip155:8453", evm)).toBe(`https://gmgn.ai/base/token/${evm}`);
-    expect(gmgnTokenUrl("robinhood", "AAPL")).toBeNull();
+    expect(gmgnTokenUrl("robinhood", evm)).toBe(`https://gmgn.ai/robinhood/token/${evm}`);
+    expect(gmgnTokenUrl("eip155:4663", evm)).toBeNull();
     expect(gmgnTokenUrl("constructor", evm)).toBeNull();
     expect(gmgnTokenUrl(null, evm)).toBeNull();
     expect(gmgnTokenUrl("eip155:1", null)).toBeNull();

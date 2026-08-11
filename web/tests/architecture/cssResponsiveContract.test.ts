@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,11 +44,13 @@ describe("responsive CSS contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps LivePage and Radar as one bounded full-height scroll surface", () => {
+  it("keeps RadarPage and its queue as one bounded full-height scroll surface", () => {
     const liveCssPath = join(srcRoot, "features/live/ui/live.css");
     const liveCss = readFileSync(liveCssPath, "utf8");
     const rules = findRules(liveCss);
-    const livePageRules = rules.filter((rule) => selectorContains(rule.selector, ".live-page"));
+    const livePageRules = rules.filter((rule) =>
+      selectorContains(rule.selector, ".live-radar-page"),
+    );
     const radarQueueRules = rules.filter((rule) =>
       selectorContains(rule.selector, ".live-radar-queue"),
     );
@@ -62,7 +64,7 @@ describe("responsive CSS contract", () => {
           declarationValue(rule.body, "grid-template-rows") === "minmax(0, 1fr)" &&
           declarationValue(rule.body, "overflow") === "hidden",
       ),
-      ".live-page must reserve exactly one full-height Radar row",
+      ".live-radar-page must reserve exactly one full-height Radar row",
     ).toBe(true);
     expect(
       radarQueueRules.some(
@@ -163,16 +165,6 @@ describe("responsive CSS contract", () => {
         "Route-specific filters belong to their feature pages; the shell owns only navigation, frame, and scroll.",
       ].join("\n"),
     ).toEqual([]);
-
-    const cockpitIndex = readFileSync(join(srcRoot, "features/cockpit/index.ts"), "utf8");
-    const cockpitRadarControlOffenders = collectFiles(join(srcRoot, "features/cockpit"))
-      .filter((path) => [".ts", ".tsx"].includes(extname(path)))
-      .filter((path) => readFileSync(path, "utf8").includes("RadarControls"))
-      .map(relativeToSrc);
-
-    expect(cockpitIndex).not.toContain("RadarControls");
-    expect(cockpitRadarControlOffenders).toEqual([]);
-    expect(existsSync(join(cockpitUiRoot, "RadarControls.tsx"))).toBe(false);
   });
 
   it("keeps retired generic radar table selectors out of live CSS", () => {

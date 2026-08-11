@@ -93,45 +93,6 @@ export function formatScore(value: number | null | undefined): string {
   return String(Math.round(value));
 }
 
-export function formatRisk(value: string | null | undefined): string {
-  const labels: Record<string, string> = {
-    author_concentration_high: "作者集中",
-    duplicate_text_cluster: "重复文本",
-    repeated_text_cluster: "重复文本簇",
-    market_missing: "市场缺失",
-    missing_market: "市场缺失",
-    no_venue: "无交易场所",
-    public_stream_coverage: "公共流覆盖",
-    thin_author_set: "作者过少",
-    thin_mentions: "提及过少",
-    insufficient_baseline: "基线不足",
-    insufficient_history: "历史不足",
-    pending_observation: "市场观测中",
-    market_observation_pending: "市场观测中",
-    provider_not_configured: "行情源未配置",
-    provider_not_found: "行情源无结果",
-    provider_error: "行情源错误",
-    rate_limited: "行情限流",
-    dead: "行情观测失败",
-    stale_market: "市场过旧",
-    identity_not_tradeable: "身份不可交易",
-    low_information_posts: "信息密度低",
-    attribution_confidence_low: "归因置信低",
-    missing_social_start: "社交起点缺失",
-    chase_risk: "追高风险",
-    missing_price: "价格缺失",
-    missing_social_history: "社交历史不足",
-    market_freshness_missing: "市场新鲜度不足",
-    market_metadata_missing: "市场元数据不足",
-    SYMBOL_NOT_IN_REGISTRY: "registry 未命中",
-    SYMBOL_CANDIDATES_STALE: "候选价格过期",
-    ADDRESS_NOT_IN_REGISTRY: "地址未入库",
-    NO_MARKET_DOMINANT_CHAIN_ASSET: "候选不唯一",
-    CEX_PRICEFEED_NOT_IN_REGISTRY: "CEX 行情未入库",
-  };
-  return labels[value ?? ""] ?? (value ? value.replaceAll("_", " ") : "-");
-}
-
 function trim(value: number): string {
   return value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, "");
 }

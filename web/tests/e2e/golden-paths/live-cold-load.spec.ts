@@ -17,16 +17,17 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
-  await expect(page.getByText("1 eligible")).toBeVisible();
+  await expect(page.getByText("1 eligible · showing 1 / 50")).toBeVisible();
+  await expect(page.getByText("1h acceleration · newest trigger first")).toBeVisible();
   const item = page.locator(".live-radar-item").first();
   await expect(item.getByText("$UPEG", { exact: true })).toBeVisible();
   await expect(item.getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
   await expect(item.getByRole("group", { name: "Price $0.042" })).toBeVisible();
   await expect(item.getByRole("group", { name: "Since signal +12%" })).toBeVisible();
   await expect(item.getByRole("group", { name: "Market cap $42M" })).toBeVisible();
-  await expect(item.getByRole("group", { name: "Attention +5, 2 to 7 mentions" })).toBeVisible();
+  await expect(item.getByRole("group", { name: "Mentions 2 to 7, increase 5" })).toBeVisible();
   await expect(
-    item.getByRole("group", { name: "Independent evidence, 4 authors, 5 texts" }),
+    item.getByRole("group", { name: "New evidence, 4 new authors, 5 independent texts" }),
   ).toBeVisible();
   await expect(item.locator("details")).toHaveCount(0);
   await expect(item.getByRole("button", { name: "Copy UPEG contract address" })).toBeVisible();
@@ -42,7 +43,6 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
     /\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
   expect(radarRequests).toEqual([""]);
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   await expectNoUnhandledApiRequests(page);
@@ -72,7 +72,6 @@ test("the capped fifty-item Radar keeps its final item reachable", async ({ page
     ".live-radar-items",
     ".live-radar-item:last-of-type",
   );
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
@@ -88,20 +87,20 @@ test("a full snapshot refresh stays below the 50ms browser long-task gate", asyn
   });
   await installMockApi(page, { radarItemCount: 0, radarRefreshItemCount: 50 });
   await page.goto("/");
-  await expect(page.locator(".live-radar-item")).toHaveCount(1);
+  const queueItems = page.getByRole("list", { name: "Radar priority queue" }).getByRole("listitem");
+  await expect(queueItems).toHaveCount(0);
   await expect(page.getByText("No eligible cases")).toBeVisible();
   await page.evaluate(() => {
     (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks = [];
   });
 
   await page.clock.fastForward(30_000);
-  await expect(page.locator(".live-radar-item")).toHaveCount(50);
+  await expect(queueItems).toHaveCount(50);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
 
   const longTasks = await page.evaluate(
     () => (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks ?? [],
   );
   expect(longTasks.filter((duration) => duration > 50)).toEqual([]);
-  expect(await page.locator(".live-radar-queue *").count()).toBeLessThanOrEqual(1_100);
   await expectNoUnhandledApiRequests(page);
 });

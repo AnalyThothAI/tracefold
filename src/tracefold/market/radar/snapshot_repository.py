@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, TypedDict
 
 from psycopg.types.json import Jsonb
@@ -68,21 +67,20 @@ class TokenRadarCurrentRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def current(self) -> dict[str, Any]:
+    def served_snapshot(self) -> dict[str, Any]:
         row = self.conn.execute(
             """
-            SELECT schema_version, ruleset_version, ruleset_fingerprint,
-                   input_fingerprint, state_fingerprint,
-                   evidence_as_of_ms, evaluation_at_ms,
-                   latest_attempt_status, latest_error_code,
-                   served_payload
+            SELECT served_payload
               FROM token_radar_current
              WHERE singleton_key = true
             """
         ).fetchone()
         if row is None:
             raise RuntimeError("token_radar_current_singleton_missing")
-        return dict(row)
+        payload = row.get("served_payload")
+        if not isinstance(payload, dict):
+            raise RuntimeError("token_radar_current_payload_invalid")
+        return dict(payload)
 
     def publish(
         self,
@@ -93,8 +91,7 @@ class TokenRadarCurrentRepository:
         require_transaction(self.conn, operation="publish_token_radar_current")
         current = self.conn.execute(
             """
-            SELECT input_fingerprint, state_fingerprint,
-                   latest_attempt_status, evaluation_at_ms
+            SELECT state_fingerprint, latest_attempt_status, evaluation_at_ms
               FROM token_radar_current
              WHERE singleton_key = true
              FOR UPDATE
@@ -200,13 +197,6 @@ class TokenRadarCurrentRepository:
             ),
         )
         return mutation_count(cursor, error_code="token_radar_current_failure_count_invalid")
-
-
-def served_token_radar_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
-    payload = row.get("served_payload")
-    if not isinstance(payload, Mapping):
-        raise RuntimeError("token_radar_current_payload_invalid")
-    return dict(payload)
 
 
 _TOKEN_RADAR_INPUT_SQL = r"""
@@ -412,5 +402,4 @@ ORDER BY market_keys.ordinality
 __all__ = [
     "TokenRadarCurrentRepository",
     "TokenRadarPublicationResult",
-    "served_token_radar_snapshot",
 ]

@@ -601,6 +601,44 @@ def test_api_search_rejects_malformed_cursor(tmp_path):
     assert response.json() == {"ok": False, "error": "invalid_cursor"}
 
 
+def test_api_search_resolves_robinhood_contracts_by_canonical_chain(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            ethereum = repos.registry.upsert_chain_asset(
+                chain_id="eip155:1",
+                address=PEPE,
+                observed_at_ms=now_ms,
+            )
+            robinhood = repos.registry.upsert_chain_asset(
+                chain_id="robinhood",
+                address=PEPE,
+                observed_at_ms=now_ms,
+            )
+        prefixed = client.get(
+            "/api/search",
+            params={"q": f"robinhood:{PEPE}"},
+            headers={"Authorization": "Bearer secret"},
+        )
+        unprefixed = client.get(
+            "/api/search",
+            params={"q": PEPE},
+            headers={"Authorization": "Bearer secret"},
+        )
+
+    assert prefixed.status_code == 200
+    assert [candidate["target_id"] for candidate in prefixed.json()["data"]["target_candidates"]] == [
+        robinhood["asset_id"]
+    ]
+    assert unprefixed.status_code == 200
+    assert {candidate["target_id"] for candidate in unprefixed.json()["data"]["target_candidates"]} == {
+        ethereum["asset_id"],
+        robinhood["asset_id"],
+    }
+
+
 def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     settings = make_settings(tmp_path)
     settings.news.rss_enabled = True

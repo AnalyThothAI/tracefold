@@ -46,8 +46,9 @@ OpenNews original headline and freezes any translation only inside its delivery
 envelope. The six Macro modules are also deterministic views
 over persisted facts.
 
-Token Radar does not publish a honeypot, contract, holder, liquidity, Smart
-Money, or token-safety judgment. Removing those former product gates does not
+Token Radar publishes a canonical address for copying and source navigation;
+it does not publish a honeypot, holder, liquidity, Smart Money, contract-risk,
+or token-safety judgment. Removing those former product gates does not
 relax application security: HTTP/WebSocket authentication, exact request
 validation, secret handling, PostgreSQL role/transaction integrity, migration
 confirmation, and source-fact provenance remain mandatory and are not Radar

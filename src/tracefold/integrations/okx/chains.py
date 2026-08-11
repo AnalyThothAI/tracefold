@@ -6,6 +6,7 @@ OKX_CHAIN_INDEX_TO_CHAIN = {
     "501": "solana",
     "8453": "base",
     "607": "ton",
+    "4663": "robinhood",
 }
 
 OKX_CHAIN_TO_CHAIN_INDEX = {
@@ -19,4 +20,5 @@ OKX_CHAIN_TO_CHAIN_INDEX = {
     "base": "8453",
     "ton": "607",
     "toncoin": "607",
+    "robinhood": "4663",
 }
