@@ -76,7 +76,7 @@ _RESOURCE_CAPS = {
     "database_control": 1.0,
     "finite_operation": 3.0,
     "model_adapter": 1.0,
-    "cpu_process": 1.0,
+    "cpu_process": 2.0,
 }
 _DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
 _DEADLINE_DOMAINS = ("radar", *_DOMAINS)

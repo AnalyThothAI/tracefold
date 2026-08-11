@@ -740,6 +740,7 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
             "postgres_transaction_duration",
         ),
         (("telemetry", "resource_active", "finite_operation"), 4.0, "worker_resource_active_limit"),
+        (("telemetry", "resource_active", "cpu_process"), 3.0, "worker_resource_active_limit"),
     ],
 )
 def test_resource_or_postgres_cap_violation_fails_sample(path, value, stage) -> None:
@@ -749,6 +750,14 @@ def test_resource_or_postgres_cap_violation_fails_sample(path, value, stage) -> 
 
     with pytest.raises(_SampleFailure, match=stage):
         _validate_sample(sample, metadata=_metadata(), previous=None)
+
+
+def test_two_isolated_cpu_processes_may_be_active_together() -> None:
+    clock = _VirtualClock()
+    sample = _sample(0, clock=clock)
+    sample["telemetry"]["resource_active"]["cpu_process"] = 2.0
+
+    _validate_sample(sample, metadata=_metadata(), previous=None)
 
 
 def test_lock_wait_over_database_budget_fails_sample() -> None:

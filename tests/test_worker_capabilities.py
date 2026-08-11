@@ -11,8 +11,10 @@ import pytest
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import (
-    prewarm_worker_cpu_modules,
-    worker_cpu_modules_loaded,
+    news_cpu_modules_loaded,
+    prewarm_news_cpu_modules,
+    prewarm_projection_cpu_modules,
+    projection_cpu_modules_loaded,
 )
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import CpuTaskTimeout, ResourceOperationOverrun
@@ -455,19 +457,19 @@ def test_cpu_native_timeout_finishes_before_the_wrapper_watchdog() -> None:
     asyncio.run(scenario())
 
 
-def test_cpu_process_preloads_all_worker_compute_modules() -> None:
+def test_projection_cpu_process_preloads_only_short_worker_compute_modules() -> None:
     async def scenario() -> tuple[str, ...]:
         capability = CpuProcess()
         try:
             await capability.prewarm()
             expected = await capability.run(
-                "workers_cpu_modules_prewarm",
-                prewarm_worker_cpu_modules,
+                "projection_cpu_modules_prewarm",
+                prewarm_projection_cpu_modules,
                 service_timeout_seconds=20.0,
             )
             loaded = await capability.run(
-                "workers_cpu_modules_loaded",
-                worker_cpu_modules_loaded,
+                "projection_cpu_modules_loaded",
+                projection_cpu_modules_loaded,
                 service_timeout_seconds=2.0,
             )
             assert loaded == expected
@@ -475,4 +477,30 @@ def test_cpu_process_preloads_all_worker_compute_modules() -> None:
         finally:
             capability.close()
 
-    assert asyncio.run(scenario())
+    loaded = asyncio.run(scenario())
+
+    assert loaded
+    assert "tracefold.news.projection" not in loaded
+
+
+def test_news_cpu_process_preloads_only_news_compute() -> None:
+    async def scenario() -> tuple[str, ...]:
+        capability = CpuProcess()
+        try:
+            await capability.prewarm()
+            expected = await capability.run(
+                "news_cpu_modules_prewarm",
+                prewarm_news_cpu_modules,
+                service_timeout_seconds=20.0,
+            )
+            loaded = await capability.run(
+                "news_cpu_modules_loaded",
+                news_cpu_modules_loaded,
+                service_timeout_seconds=2.0,
+            )
+            assert loaded == expected
+            return loaded
+        finally:
+            capability.close()
+
+    assert asyncio.run(scenario()) == ("tracefold.news.projection",)

@@ -19,7 +19,8 @@ providers / public streams
 
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
-acquisition, the bounded external/model/CPU capabilities, singleton runtime
+acquisition, the bounded external/model capabilities, one short-projection CPU
+lane, an isolated News Story CPU lane when News is enabled, singleton runtime
 status, fixed-period News Story and Token Radar writers, and one
 EDF projection coordinator for the remaining frontier-backed domains. Workers
 recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
@@ -413,8 +414,10 @@ duplicating physical Story membership. Facts arriving during calculation wait
 for the next 60-second turn. A load-time compare-and-set prevents an older
 snapshot from overwriting a newer publication. The turn is bounded by 10,000
 rows, 8 MiB input, and a 25-second CPU budget; unchanged or superseded input
-writes zero serving rows. There are no News frontiers, similarity-edge rows,
-aliases, membership history, or sampled/adaptive population path.
+writes zero serving rows. Its isolated serial CPU process prevents this long
+calculation from blocking Token Radar, Profile, or Macro CPU admission. There
+are no News frontiers, similarity-edge rows, aliases, membership history, or
+sampled/adaptive population path.
 
 NewsItem identity is `(source_id, source_item_key)`. RSS prefers a non-empty
 GUID, then the canonical URL, then a deterministic title/publication-time key;

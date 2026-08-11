@@ -89,6 +89,44 @@ def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> No
     assert "translator" not in parameters
 
 
+def test_news_story_uses_a_dedicated_cpu_lane() -> None:
+    class _BriefPublisher:
+        def __init__(self, **_kwargs: Any) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    short_cpu = object()
+    news_cpu = object()
+    settings = Settings(
+        upstream={"channels": []},
+        news={"enabled": True},
+        providers={"binance": {"enabled": False}, "macro_sources": {"enabled": False}},
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
+        monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
+        components = asyncio.run(
+            workers._wire_components(
+                settings=settings,
+                db=object(),  # type: ignore[arg-type]
+                telemetry=object(),  # type: ignore[arg-type]
+                finite=object(),  # type: ignore[arg-type]
+                model_adapter=object(),  # type: ignore[arg-type]
+                projection_cpu=short_cpu,  # type: ignore[arg-type]
+                news_cpu=news_cpu,  # type: ignore[arg-type]
+                runtime_id="runtime-dedicated-news-cpu",
+            )
+        )
+
+    assert components.news_story is not None
+    assert components.news_story.cpu is news_cpu
+    assert components.radar_current.cpu is short_cpu
+    assert all(projection.cpu is short_cpu for projection in components.projections)
+
+
 def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -122,7 +160,8 @@ def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
-            cpu=object(),  # type: ignore[arg-type]
+            projection_cpu=object(),  # type: ignore[arg-type]
+            news_cpu=object(),  # type: ignore[arg-type]
             runtime_id="runtime-public-brief",
         )
     )
@@ -168,7 +207,8 @@ def test_rss_catalog_is_wired_only_when_explicitly_enabled(
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
-            cpu=object(),  # type: ignore[arg-type]
+            projection_cpu=object(),  # type: ignore[arg-type]
+            news_cpu=object(),  # type: ignore[arg-type]
             runtime_id=f"runtime-rss-{rss_enabled}",
         )
     )
@@ -306,7 +346,8 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
             telemetry=object(),  # type: ignore[arg-type]
             finite=finite,  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
-            cpu=object(),  # type: ignore[arg-type]
+            projection_cpu=object(),  # type: ignore[arg-type]
+            news_cpu=object() if news_enabled else None,  # type: ignore[arg-type]
             runtime_id="runtime-1",
         )
     )
@@ -354,7 +395,8 @@ def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.Mo
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
-            cpu=object(),  # type: ignore[arg-type]
+            projection_cpu=object(),  # type: ignore[arg-type]
+            news_cpu=None,
             runtime_id="runtime-disabled-gmgn",
         )
     )
@@ -432,7 +474,8 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
             db=_Database(),  # type: ignore[arg-type]
             finite=_Capability("finite"),  # type: ignore[arg-type]
             model_adapter=_Capability("model"),  # type: ignore[arg-type]
-            cpu=_Capability("cpu"),  # type: ignore[arg-type]
+            projection_cpu=_Capability("cpu"),  # type: ignore[arg-type]
+            news_cpu=_Capability("news_cpu"),  # type: ignore[arg-type]
             components=SimpleNamespace(
                 providers=AssetMarketProviders(),
                 collector=None,
@@ -449,3 +492,5 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
     assert calls.index("push_close") < calls.index("db_drain")
     assert calls.index("push_close") < calls.index("finite_drain")
     assert calls.index("push_close") < calls.index("model_drain")
+    assert calls.index("news_cpu_close_admission") < calls.index("news_cpu_drain")
+    assert calls.index("news_cpu_drain") < calls.index("news_cpu_close")

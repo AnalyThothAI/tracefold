@@ -24,7 +24,7 @@ from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
 from tracefold.app.provider_ownership import configured_profile_provider_ids, gmgn_stream_enabled
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
-from tracefold.app.worker_cpu_prewarm import prewarm_worker_cpu_modules
+from tracefold.app.worker_cpu_prewarm import prewarm_news_cpu_modules, prewarm_projection_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
@@ -185,7 +185,8 @@ async def run_workers(settings: Settings) -> None:
     lock_conn: Any | None = None
     finite = FiniteOperations(telemetry=telemetry)
     model_adapter = ModelAdapter(telemetry=telemetry)
-    cpu = CpuProcess(telemetry=telemetry)
+    projection_cpu = CpuProcess(telemetry=telemetry)
+    news_cpu = CpuProcess(telemetry=telemetry) if settings.news.enabled else None
     components: _Components | None = None
     server: uvicorn.Server | None = None
     graceful = False
@@ -214,7 +215,9 @@ async def run_workers(settings: Settings) -> None:
             server.should_exit = True
         finite.close_admission()
         model_adapter.close_admission()
-        cpu.close_admission()
+        projection_cpu.close_admission()
+        if news_cpu is not None:
+            news_cpu.close_admission()
         if db is not None:
             db.close_business_admission()
         fatal_watchdog = signal_loop.call_later(
@@ -232,12 +235,19 @@ async def run_workers(settings: Settings) -> None:
         lock_conn = db.acquire_steady_runtime_lock()
         db.check_pinned_liveness(lock_conn)
         db.prewarm_control_connection()
-        await cpu.prewarm()
-        await cpu.run(
-            "workers_cpu_modules_prewarm",
-            prewarm_worker_cpu_modules,
+        await projection_cpu.prewarm()
+        await projection_cpu.run(
+            "projection_cpu_modules_prewarm",
+            prewarm_projection_cpu_modules,
             service_timeout_seconds=20.0,
         )
+        if news_cpu is not None:
+            await news_cpu.prewarm()
+            await news_cpu.run(
+                "news_cpu_modules_prewarm",
+                prewarm_news_cpu_modules,
+                service_timeout_seconds=20.0,
+            )
         began: bool = await db.run_control(
             "workers_runtime_begin",
             _runtime_begin,
@@ -252,7 +262,9 @@ async def run_workers(settings: Settings) -> None:
             lock_conn = None
             finite.close()
             model_adapter.close()
-            cpu.close()
+            projection_cpu.close()
+            if news_cpu is not None:
+                news_cpu.close()
             await db.aclose()
             db.close_executors()
             raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
@@ -263,7 +275,8 @@ async def run_workers(settings: Settings) -> None:
             telemetry=telemetry,
             finite=finite,
             model_adapter=model_adapter,
-            cpu=cpu,
+            projection_cpu=projection_cpu,
+            news_cpu=news_cpu,
             runtime_id=runtime_id,
         )
         await _reconcile_once(components)
@@ -476,7 +489,8 @@ async def run_workers(settings: Settings) -> None:
                     db=db,
                     finite=finite,
                     model_adapter=model_adapter,
-                    cpu=cpu,
+                    projection_cpu=projection_cpu,
+                    news_cpu=news_cpu,
                     components=components,
                 ),
                 on_fatal=enter_fatal,
@@ -538,7 +552,8 @@ async def run_workers(settings: Settings) -> None:
             runtime_id=runtime_id,
             finite=finite,
             model_adapter=model_adapter,
-            cpu=cpu,
+            projection_cpu=projection_cpu,
+            news_cpu=news_cpu,
             phase=phase,
         )
     finally:
@@ -736,7 +751,8 @@ async def _wire_components(
     telemetry: TelemetryRegistry,
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
-    cpu: CpuProcess,
+    projection_cpu: CpuProcess,
+    news_cpu: CpuProcess | None,
     runtime_id: str,
 ) -> _Components:
     providers = wire_asset_market(settings)
@@ -776,7 +792,9 @@ async def _wire_components(
             opennews_rest_client=opennews_rest,
             opennews_ws_client=opennews_ws,
         )
-        news_story = NewsStoryProjection(db=db, cpu=cpu)
+        if news_cpu is None:
+            raise RuntimeError("news_cpu_missing")
+        news_story = NewsStoryProjection(db=db, cpu=news_cpu)
         news_brief = NewsBriefCandidate(
             db=db,
             model_adapter=model_adapter,
@@ -917,16 +935,16 @@ async def _wire_components(
     wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
     if wired_profile_provider_ids != active_profile_provider_ids:
         raise RuntimeError("profile_provider_wiring_mismatch")
-    token_radar_current = TokenRadarCurrentProjection(db=db, cpu=cpu, telemetry=telemetry)
+    token_radar_current = TokenRadarCurrentProjection(db=db, cpu=projection_cpu, telemetry=telemetry)
     projections = (
         ProfileProjectionCandidate(
             db=db,
-            cpu=cpu,
+            cpu=projection_cpu,
             runtime_id=runtime_id,
             active_profile_provider_ids=active_profile_provider_ids,
             stable_order=10,
         ),
-        MacroProjectionCandidate(db=db, cpu=cpu, runtime_id=runtime_id, stable_order=20),
+        MacroProjectionCandidate(db=db, cpu=projection_cpu, runtime_id=runtime_id, stable_order=20),
     )
     return _Components(
         providers=providers,
@@ -973,14 +991,17 @@ async def _graceful_cleanup(
     db: WorkerDatabase,
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
-    cpu: CpuProcess,
+    projection_cpu: CpuProcess,
+    news_cpu: CpuProcess | None,
     components: _Components,
 ) -> None:
     try:
         db.close_business_admission()
         finite.close_admission()
         model_adapter.close_admission()
-        cpu.close_admission()
+        projection_cpu.close_admission()
+        if news_cpu is not None:
+            news_cpu.close_admission()
         if components.collector is not None:
             await _within(components.collector.close(), started_at)
         if components.news is not None:
@@ -1006,11 +1027,15 @@ async def _graceful_cleanup(
             raise RuntimeError("finite_operation_drain_timeout")
         if not await model_adapter.drain(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("model_adapter_drain_timeout")
-        if not await cpu.drain(timeout_seconds=_remaining(started_at)):
+        if not await projection_cpu.drain(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("cpu_process_drain_timeout")
+        if news_cpu is not None and not await news_cpu.drain(timeout_seconds=_remaining(started_at)):
+            raise RuntimeError("news_cpu_process_drain_timeout")
         finite.close()
         model_adapter.close()
-        cpu.close()
+        projection_cpu.close()
+        if news_cpu is not None:
+            news_cpu.close()
     except TimeoutError as exc:
         raise RuntimeError("graceful_deadline_exceeded") from exc
     except Exception as exc:
@@ -1049,13 +1074,16 @@ async def _fatal_exit(
     runtime_id: str,
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
-    cpu: CpuProcess,
+    projection_cpu: CpuProcess,
+    news_cpu: CpuProcess | None,
     phase: str,
 ) -> None:
     logger.opt(exception=exc).critical("Workers runtime fatal exit")
     finite.close_admission()
     model_adapter.close_admission()
-    cpu.close_admission()
+    projection_cpu.close_admission()
+    if news_cpu is not None:
+        news_cpu.close_admission()
     fatal_code = _fatal_code(exc, phase=phase)
     if db is not None:
         db.close_business_admission()

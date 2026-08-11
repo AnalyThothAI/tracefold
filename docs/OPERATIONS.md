@@ -89,7 +89,8 @@ tracefold workers
   -> one DB pool min 1 / max 4 / max_waiting 3
   -> one pinned singleton session / business DB executor 2 / control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
-  -> spawn-only Pebble ProcessPool 1
+  -> spawn-only Pebble ProcessPool 1 for Token Radar / Profile / Macro
+  -> when News is enabled, spawn-only Pebble ProcessPool 1 for News Story
   -> acquisition clocks + fixed-period News Story and Token Radar writers
      + one EDF projection coordinator for Macro/Profile
   -> one serial native-state model arbiter
@@ -171,6 +172,9 @@ collision guard and owns no runtime Stocks loop.
 
 Profile and Macro projection claims retain their 30-second lease envelopes.
 The fixed-period News Story writer retains its 25-second operation budget. The
+long News compute runs in its own one-process lane; it cannot consume the
+admission permit used by the five-second Token Radar turn or the short
+Profile/Macro projections. Both lanes remain serial and code-owned. The
 high-churn `events`
 table uses a one-percent/10,000-row auto-analyze threshold so the 24-hour
 Search planner does not choose a recency scan from stale time-distribution
